@@ -578,12 +578,18 @@ fn mutating_regex_targets_are_read_modify_write() {
         ("$value =~ s/a/b/r;", PirAccessMode::Read),
         ("$value =~ tr/a/b/;", PirAccessMode::ReadModifyWrite),
         ("$value =~ tr/a/b/r;", PirAccessMode::Read),
+        // A match reads its place and never writes it, so it must not share
+        // the in-place `s///` classification.
+        ("$value =~ /a/;", PirAccessMode::Read),
+        ("$value !~ /a/;", PirAccessMode::Read),
     ] {
         let graph = lower(source);
         let regex_node = must_some(graph.nodes.iter().find(|node| {
             matches!(
                 node.operation,
-                PirOperation::Substitution { .. } | PirOperation::Transliteration { .. }
+                PirOperation::Substitution { .. }
+                    | PirOperation::Transliteration { .. }
+                    | PirOperation::Match { .. }
             )
         }));
         assert_eq!(regex_node.access, Some(expected_access), "access classification for {source}");

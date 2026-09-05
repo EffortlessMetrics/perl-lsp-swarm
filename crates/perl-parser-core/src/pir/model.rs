@@ -1223,7 +1223,7 @@ mod tests {
             nodes: vec![],
             edges: vec![],
             receipt: PirReceipt {
-                schema_version: 1,
+                schema_version: PIR_RECEIPT_VERSION,
                 source_identity: None,
                 lowering_mode: PirLoweringMode::HirV0,
                 node_count: 0,
@@ -1260,7 +1260,7 @@ mod tests {
             nodes: vec![node],
             edges: vec![],
             receipt: PirReceipt {
-                schema_version: 1,
+                schema_version: PIR_RECEIPT_VERSION,
                 source_identity: None,
                 lowering_mode: PirLoweringMode::HirV0,
                 node_count: 1,
@@ -1297,7 +1297,7 @@ mod tests {
             nodes: vec![node.clone()],
             edges: vec![],
             receipt: PirReceipt {
-                schema_version: 1,
+                schema_version: PIR_RECEIPT_VERSION,
                 source_identity: None,
                 lowering_mode: PirLoweringMode::HirV0,
                 node_count: 1,
@@ -1323,7 +1323,7 @@ mod tests {
             nodes: vec![],
             edges: vec![],
             receipt: PirReceipt {
-                schema_version: 1,
+                schema_version: PIR_RECEIPT_VERSION,
                 source_identity: None,
                 lowering_mode: PirLoweringMode::HirV0,
                 node_count: 0,
