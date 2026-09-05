@@ -216,6 +216,16 @@ pub struct SymbolTable {
     current_package: String,
 }
 
+/// Return `true` if `name` introduces a Moo/Moose method modifier.
+///
+/// This module mints the synthetic modifier symbols, so it owns the keyword set.
+/// Consumers that need to recognise those symbols later (for example definition
+/// redirection in `analysis::semantic`) share this predicate rather than
+/// repeating the list and drifting from it.
+pub(crate) fn is_method_modifier_keyword(name: &str) -> bool {
+    matches!(name, "before" | "after" | "around" | "override" | "augment")
+}
+
 /// Return `true` if the method is one of Perl's always-available `UNIVERSAL` methods.
 ///
 /// Used in analyze/index workflow stages to keep method lookup behavior
@@ -1618,7 +1628,7 @@ impl SymbolExtractor {
     }
 
     fn is_moose_method_modifier(name: &str) -> bool {
-        matches!(name, "before" | "after" | "around" | "override" | "augment")
+        is_method_modifier_keyword(name)
     }
 
     /// Detect Moo/Moose `extends 'Parent'` and `with 'Role'` declarations.
@@ -2993,7 +3003,13 @@ impl SymbolExtractor {
         }
 
         let search_start = object.location.end.min(self.source.len());
-        let search_end = search_start.saturating_add(160).min(self.source.len());
+        let mut search_end = search_start.saturating_add(160).min(self.source.len());
+        // Keep both window edges on char boundaries. `search_start` comes from a
+        // node span; clamp the window end down when needed so method-token lookup
+        // remains available.
+        while search_end > search_start && !self.source.is_char_boundary(search_end) {
+            search_end -= 1;
+        }
         if search_start >= search_end || !self.source.is_char_boundary(search_start) {
             return call_node.location;
         }
@@ -3411,8 +3427,19 @@ impl SymbolExtractor {
             Err(_) => return, // Skip variable extraction if regex fails
         };
 
-        // The value includes quotes, so strip them
-        let content = if value.len() >= 2 { &value[1..value.len() - 1] } else { value };
+        // The value includes quotes, so strip them. Quote characters are
+        // single-byte ASCII, so only strip when both boundary bytes actually
+        // are quote bytes — a blind `[1..len-1]` panics when either edge lands
+        // inside a multi-byte char (found by the parser_integration fuzzer).
+        let (content, content_offset) = if value.len() >= 2 {
+            let bytes = value.as_bytes();
+            let first = bytes.first().copied();
+            let last = bytes.last().copied();
+            let quoted = matches!(first, Some(b'"' | b'\'')) && matches!(last, Some(b'"' | b'\''));
+            if quoted { (&value[1..value.len() - 1], 1) } else { (value, 0) }
+        } else {
+            (value, 0)
+        };
 
         for cap in scalar_re.captures_iter(content) {
             if let Some(m) = cap.get(0) {
@@ -3426,7 +3453,7 @@ impl SymbolExtractor {
 
                 // Calculate the location within the original string
                 // This is approximate - in the actual string location
-                let start_offset = string_location.start + 1 + m.start(); // +1 for opening quote
+                let start_offset = string_location.start + content_offset + m.start();
                 let end_offset = start_offset + m.len();
 
                 let reference = SymbolReference {
@@ -4650,6 +4677,72 @@ sub jump {
         assert!(
             !has_lowercase_foo_subroutine,
             "should NOT have Subroutine symbol for lowercase 'foo'"
+        );
+    }
+
+    /// Regression for the parser_integration/structured_perl_programs fuzz
+    /// panics (nightly run 33230657955): quote stripping in
+    /// `extract_vars_from_string` sliced `[1..len-1]` unconditionally, which
+    /// panics when either edge lands inside a multi-byte char. Quote
+    /// characters are ASCII, so stripping must only fire on actual quote
+    /// bytes.
+    #[test]
+    fn extract_vars_from_string_multibyte_edges_do_not_panic() {
+        let mut extractor = SymbolExtractor::new_with_source("");
+        let loc = SourceLocation { start: 0, end: 0 };
+
+        // Start edge mid-char: byte index 1 lands inside U+FFFD (bytes 0..3),
+        // the exact shape of the CI panic.
+        extractor.extract_vars_from_string("\u{FFFD}$trigger", loc);
+        assert_eq!(
+            extractor.table.references["trigger"][0].location,
+            SourceLocation { start: 3, end: 11 },
+            "reference must span `$trigger`, not shift by a stripped quote"
+        );
+
+        // End edge mid-char: value starts with a quote byte but ends inside a
+        // multi-byte char, so the closing quote check must reject the strip.
+        let mut extractor_end = SymbolExtractor::new_with_source("");
+        extractor_end.extract_vars_from_string("\"$ok\u{FFFD}", loc);
+        assert_eq!(
+            extractor_end.table.references["ok"][0].location,
+            SourceLocation { start: 1, end: 4 },
+            "reference must span `$ok`, not shift from malformed quote stripping"
+        );
+
+        // Behavior guard: real quoted values are still stripped before the
+        // regex scan.
+        let mut extractor_quoted = SymbolExtractor::new_with_source("");
+        extractor_quoted.extract_vars_from_string("\"$quoted\"", loc);
+        assert_eq!(
+            extractor_quoted.table.references["quoted"][0].location,
+            SourceLocation { start: 1, end: 8 },
+            "reference must span `$quoted`, accounting for the stripped opening quote"
+        );
+    }
+
+    /// Regression for the semantic_model fuzz panic (nightly run 33230657955):
+    /// the 160-byte method-name search window in
+    /// `method_reference_location` checked `search_start` for a char boundary
+    /// but not `search_end`, so `start + 160` landing inside a multi-byte
+    /// char panicked on the window slice.
+    #[test]
+    fn method_reference_window_end_respects_char_boundary() {
+        // Layout relative to search_start (end of `$obj`, byte 4): the window
+        // spans 160 bytes, ending inside the multi-byte `ü` after the padding.
+        let padding = "a".repeat(149);
+        let code = format!("$obj->method(\"{padding}\u{FC}\");");
+        assert_eq!(code.chars().count(), 4 + 10 + 149 + 1 + 3);
+
+        let mut parser = Parser::new(&code);
+        let ast = must(parser.parse());
+        let extractor = SymbolExtractor::new_with_source(&code);
+        let table = extractor.extract(&ast);
+
+        assert_eq!(
+            table.references["method"][0].location,
+            SourceLocation { start: 6, end: 12 },
+            "method reference must span the method token, not the whole call"
         );
     }
 }
