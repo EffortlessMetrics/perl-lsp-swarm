@@ -822,6 +822,32 @@ const fn occurrence_kind_tag(kind: OccurrenceKind) -> &'static str {
     }
 }
 
+/// Whether Perl's word class admits `character`.
+///
+/// Perl identifiers are XID intersected with `\w`, which is
+/// `Alphabetic + Mark + Decimal_Number + Connector_Punctuation + Join_Control`.
+/// XID additionally admits `Other_ID_Start` and `Other_ID_Continue`, two small
+/// closed sets Unicode keeps for backward compatibility and Perl does not
+/// accept — `New::U+2118` is a well-formed XID name and invalid Perl.
+/// Subtracting them reproduces `perl-module`'s
+/// `is_xid_*(ch) && is_perl_word_char(ch)` without the `regex` dependency that
+/// predicate needs. Every other XID character is `L`, `Nl`, `M`, `Nd` or `Pc`,
+/// all of which `\w` contains.
+const fn perl_word_admits(character: char) -> bool {
+    !matches!(
+        character,
+        // Other_ID_Start outside `\w`.
+        '\u{2118}' | '\u{212e}'
+        // Other_ID_Continue, none of which `\w` contains.
+        | '\u{b7}' | '\u{387}' | '\u{1369}'..='\u{1371}' | '\u{19da}'
+    )
+}
+
+/// Whether `character` may start a Perl identifier.
+fn starts_identifier(character: char) -> bool {
+    character == '_' || (is_xid_start(character) && perl_word_admits(character))
+}
+
 /// Whether `character` may continue a Perl identifier.
 ///
 /// This is the identifier policy `perl-module::is_lookup_safe_module_name` is
@@ -832,7 +858,7 @@ const fn occurrence_kind_tag(kind: OccurrenceKind) -> &'static str {
 /// *standard* rather than the function is the closest available alignment, and
 /// it avoids a second, ASCII-only package grammar.
 fn continues_identifier(character: char) -> bool {
-    character == '_' || is_xid_continue(character)
+    character == '_' || (is_xid_continue(character) && perl_word_admits(character))
 }
 
 /// A Perl package name this profile will write into source.
@@ -845,8 +871,7 @@ fn valid_package(value: &str) -> bool {
     !value.is_empty()
         && value.split("::").all(|part| {
             let mut characters = part.chars();
-            characters.next().is_some_and(|first| first == '_' || is_xid_start(first))
-                && characters.all(continues_identifier)
+            characters.next().is_some_and(starts_identifier) && characters.all(continues_identifier)
         })
 }
 
@@ -1971,6 +1996,43 @@ mod tests {
         assert!(plan.is_complete(), "a Unicode module was refused: {:?}", plan.blockers);
         assert_eq!(plan.resource.target_path, "lib/Bistro/\u{4e2d}\u{6587}.pm");
         assert_eq!(plan.edits[0].new_text, "package Bistro::\u{4e2d}\u{6587}");
+    }
+
+    /// XID admits `Other_ID_Start` and `Other_ID_Continue` for backward
+    /// compatibility, and Perl's word class does not. `New::\u{2118}` is a
+    /// well-formed XID name that Perl rejects, so planning it would write
+    /// invalid source.
+    #[test]
+    fn an_xid_character_outside_perls_word_class_is_not_a_package_name() {
+        for (label, target) in [
+            ("U+2118 script capital P", "New::\u{2118}"),
+            ("U+212E estimated sign", "New::\u{212e}"),
+            ("U+00B7 middle dot", "New::Na\u{b7}me"),
+            ("U+0387 greek ano teleia", "New::Na\u{387}me"),
+            ("U+1369 ethiopic digit one", "New::Na\u{1369}me"),
+            ("U+19DA new tai lue one", "New::Na\u{19da}me"),
+        ] {
+            let plan = ModuleMovePlan::build(
+                source(),
+                ModuleMoveTarget::Package(target.into()),
+                vec![declaration()],
+                source_only_snapshot(),
+                false,
+            );
+            assert!(
+                plan.blockers.contains(&ModuleMoveBlocker::UnsafeTarget),
+                "{label} was accepted as a package name"
+            );
+        }
+    }
+
+    /// The same characters must not read as identifier continuations either,
+    /// or an occurrence bordering one would be refused as a longer name.
+    #[test]
+    fn an_xid_only_character_is_a_boundary_not_a_continuation() {
+        let item = occurrence_at("use Old::Name\u{2118}", 40, 4);
+        let plan = plan(vec![declaration(), item], source_only_snapshot());
+        assert!(plan.is_complete(), "{:?}", plan.blockers);
     }
 
     /// A digit is not an XID start, so the digit-leading rule survives the
