@@ -17,6 +17,8 @@ const REGEX_ANALYSIS_BLOCK: [(DiagnosticCode, &str, DiagnosticSeverity); 8] = [
     (DiagnosticCode::RegexAnalysisIncomplete, "PL1007", DiagnosticSeverity::Information),
 ];
 
+/// A published code is a compatibility surface: clients store it in suppression
+/// config, so `as_str` and `parse_code` must agree in both directions forever.
 #[test]
 fn every_regex_analysis_code_is_stable_and_round_trips() {
     for (code, expected, _) in REGEX_ANALYSIS_BLOCK {
@@ -29,6 +31,8 @@ fn every_regex_analysis_code_is_stable_and_round_trips() {
     }
 }
 
+/// The catalog owns severity, category, documentation URL, and hint. A code
+/// missing any of them reaches the client as an unexplained identifier.
 #[test]
 fn every_regex_analysis_code_carries_catalog_metadata() {
     for (code, expected, severity) in REGEX_ANALYSIS_BLOCK {

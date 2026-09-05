@@ -77,6 +77,7 @@ fn compatibility_diagnostics(source: &str) -> Vec<Diagnostic> {
     DiagnosticsProvider::new().get_diagnostics(&ast, &errors, source, None)
 }
 
+/// Every diagnostic carrying exactly `code`, matched in full rather than by prefix.
 fn with_code<'a>(diagnostics: &'a [Diagnostic], code: &str) -> Vec<&'a Diagnostic> {
     diagnostics.iter().filter(|&diagnostic| diagnostic.code.as_deref() == Some(code)).collect()
 }
@@ -88,6 +89,7 @@ fn with_code<'a>(diagnostics: &'a [Diagnostic], code: &str) -> Vec<&'a Diagnosti
 const CANONICAL_REGEX_CODES: [&str; 9] =
     ["PL609", "PL1000", "PL1001", "PL1002", "PL1003", "PL1004", "PL1005", "PL1006", "PL1007"];
 
+/// Whether `code` is one the canonical projection can publish, by exact membership.
 fn is_canonical_regex_code(code: &str) -> bool {
     CANONICAL_REGEX_CODES.contains(&code)
 }
