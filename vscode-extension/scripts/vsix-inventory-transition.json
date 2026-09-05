@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14678,
-  "reason": "Closes the orphaned-schema gap in #14678. The candidate wires an extension-owned resource census from the activation ownership registry into src/extensionOwnedResourceCensus.ts and the activate() extension API, growing the bundled out/extension.js from 1626479 to 1636125 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
-  "base_baseline_file_sha256": "6bb74251f37db9dc496d6e9d9a69e949c12499a208187adf4a3cfb4102bad707",
-  "candidate_baseline_file_sha256": "ead549f99a68d55a78f83a3b94d6e95cfc860be529d79813b6bc6ff13e070a75",
-  "base_inventory_sha256": "59427c5d2cd28808b9f35d31979e2419d488c844143695357245732a88356679",
-  "candidate_inventory_sha256": "a526f424818662c8ec573c84cd9360eccfff0e3ee7a56d7123c4df047fdc02df"
+  "owner_issue": 14155,
+  "reason": "Refreshes a stale size-only row. out/extension.js on current main packages at 1640957 bytes where the baseline landed in #14719 recorded 1636669; extension source landed after that baseline (#14474, #14624, #14755, #14760) and the smoke's transition instrument now fails every unrelated PR with 'total bytes grew from 1814627 to 1818915'. Measured from a clean npm ci, npm run package, and the transition instrument's own archive projection at current main. The 29-file package is unchanged: no file additions, removals, or permission loosening.",
+  "base_baseline_file_sha256": "a966dac61b30ed8f950dc9910b5dfaf354ff131cf797dcd7ea24f6b1fa756c2a",
+  "candidate_baseline_file_sha256": "bc56a9d640213d509add8c24f807a35efdce01fccce5fd9c6f2b0a380f7441fd",
+  "base_inventory_sha256": "71c92a4b4282c160e4db6417312fa3622a9ba9a8266bce7fbe6172b9ad5004f1",
+  "candidate_inventory_sha256": "114b0ad804f9267deabbdc0bcc0a1ba92d7436c207447727c82f287077a45d8d"
 }
