@@ -209,6 +209,28 @@ fn canonical_embedded_code_range_is_narrower_than_the_compatibility_range() {
     );
 }
 
+/// An analyzer limit reaches the client as `PL1001`, on the construct that hit it.
+///
+/// Also the negative control for `PL1007`: a *limit* and an *exhaustion* are
+/// different events. A limit says "I saw this and it is over the threshold";
+/// exhaustion says "I stopped before the end of the evidence". Publishing both for
+/// one limit would be a duplicate notice, so this asserts the limit alone.
+#[test]
+fn an_analyzer_limit_is_published_once_and_is_not_also_an_incompleteness() {
+    let source = format!("my $re = qr/{}/;\n", "\\p{L}".repeat(60));
+
+    let diagnostics = canonical_diagnostics(&source);
+    assert_eq!(
+        with_code(&diagnostics, "PL1001").len(),
+        1,
+        "exceeding the unicode-property budget publishes exactly one limit: {diagnostics:#?}"
+    );
+    assert!(
+        with_code(&diagnostics, "PL1007").is_empty(),
+        "a limit is not an incomplete analysis; publishing both is a duplicate notice"
+    );
+}
+
 /// Both paths run in the same pass. Publishing the same execution risk under one
 /// code twice is the failure this pins.
 #[test]
