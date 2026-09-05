@@ -290,6 +290,12 @@ impl CpanfileLex {
             // rather than opening a `q{...}` literal.
             if matches!(ch, '$' | '@' | '%' | '&') {
                 index += 1;
+                // `$#array` is the last-index variable. Without this the `#`
+                // starts a comment, swallowing the statement terminator and the
+                // declaration that follows it.
+                if ch == '$' && chars.get(index) == Some(&'#') {
+                    index += 1;
+                }
                 while chars.get(index).is_some_and(|&next| is_identifier_char(next)) {
                     index += 1;
                 }
@@ -447,8 +453,9 @@ fn opens_hash_subscript(buf: &str) -> bool {
     match chars.last() {
         // A chained subscript: `$h{a}{b}`, `$h->[0]{b}`.
         Some('}' | ']') => true,
-        // A dereference block: `${name}`, `@{$ref}`.
+        // A dereference block: `${name}`, `@{$ref}`, `$#{$ref}`.
         Some('$' | '@' | '%') => true,
+        Some('#') => chars.len() >= 2 && chars[chars.len() - 2] == '$',
         // An arrow dereference: `$h->{k}`.
         Some('>') => chars.len() >= 2 && chars[chars.len() - 2] == '-',
         // A variable name, which must carry a sigil. Without the sigil check
@@ -708,14 +715,36 @@ fn split_cpanfile_arguments(arguments: &str) -> Vec<String> {
 /// `$enabled ? 'Foo' : 'Bar'` do not.
 fn sole_plain_literal(slice: &str) -> Option<String> {
     let chars: Vec<char> = slice.trim().chars().collect();
-    if !matches!(chars.first(), Some('\'' | '"')) {
+    let delimiter = *chars.first()?;
+    if !matches!(delimiter, '\'' | '"') {
         return None;
     }
     let end = skip_delimited(&chars, 0)?;
     if end != chars.len() {
         return None;
     }
-    Some(chars[1..end - 1].iter().collect())
+    let content = &chars[1..end - 1];
+    // A double-quoted literal interpolates, so `"Foo::$variant"` names its
+    // module only at run time. Single quotes do not interpolate, and an
+    // escaped sigil is ordinary text.
+    if delimiter == '"' && interpolates(content) {
+        return None;
+    }
+    Some(content.iter().collect())
+}
+
+/// Whether double-quoted content carries an unescaped interpolation sigil.
+fn interpolates(content: &[char]) -> bool {
+    let mut index = 0;
+    while index < content.len() {
+        match content[index] {
+            '\\' => index += 1,
+            '$' | '@' => return true,
+            _ => {}
+        }
+        index += 1;
+    }
+    false
 }
 
 /// The module and version a prereq call declares, when its argument shape is
@@ -1499,6 +1528,99 @@ mod tests {
                 "the block still closes: {:?}",
                 facts.prereqs
             );
+        }
+    }
+
+    #[test]
+    fn cpanfile_interpolated_modules_do_not_become_facts() {
+        // A double-quoted module interpolates, so the name exists only at run
+        // time. Publishing the source text would name a module that does not
+        // exist.
+        for module in ["\"Foo::$variant\"", "\"${prefix}::Foo\"", "\"Foo::@{[ x() ]}\""] {
+            let content = format!("requires {module};\nrequires 'Unconditional';\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+
+            assert_eq!(
+                facts.prereqs.iter().filter(|p| p.module == "Unconditional").count(),
+                1,
+                "the plain declaration survives: {:?}",
+                facts.prereqs
+            );
+            assert!(
+                facts.prereqs.iter().all(|p| p.module == "Unconditional"),
+                "{module} names its module at run time: {:?}",
+                facts.prereqs
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_interpolated_versions_keep_the_named_module() {
+        // The module is still named literally, so the fact stands without a
+        // version rather than being suppressed.
+        let content = "requires 'Foo', \"1.$minor\";\n";
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        assert_eq!(
+            facts.prereqs,
+            vec![Prereq {
+                module: "Foo".to_string(),
+                version: None,
+                phase: "runtime".to_string(),
+                relation: "requires".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn cpanfile_non_interpolating_literals_are_still_read() {
+        // Single quotes never interpolate, and an escaped sigil is ordinary
+        // text: neither may be mistaken for a computed value.
+        for (declaration, module) in [
+            ("requires \"Static::Name\";", "Static::Name"),
+            ("requires 'Foo::$variant';", "Foo::$variant"),
+            ("requires \"Foo\\$literal\";", "Foo\\$literal"),
+        ] {
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), declaration);
+            assert!(
+                facts.prereqs.iter().any(|p| p.module == module),
+                "{declaration} is fixed text: {:?}",
+                facts.prereqs
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_last_index_variables_are_not_comments() {
+        // `$#array` is the last-index variable. Reading its `#` as a comment
+        // swallows the statement terminator and the declaration after it.
+        for version in ["$#versions", "$#$ref", "$#{$ref}"] {
+            let content = format!("requires 'Foo', {version};\nrequires 'Second';\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+
+            assert!(
+                facts.prereqs.iter().any(|p| p.module == "Second"),
+                "{version} must not swallow the next declaration: {:?}",
+                facts.prereqs
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_real_comments_are_still_comments() {
+        // Teaching the scanner about `$#` must not stop `#` starting a comment
+        // in every other position.
+        let content = concat!(
+            "requires 'Kept';\n",
+            "# requires 'Commented::Out';\n",
+            "requires 'Also::Kept'; # trailing comment with a ; and a {\n",
+            "requires 'Last';\n",
+        );
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        assert!(!facts.prereqs.iter().any(|p| p.module == "Commented::Out"));
+        for kept in ["Kept", "Also::Kept", "Last"] {
+            assert!(facts.prereqs.iter().any(|p| p.module == kept), "{kept}: {:?}", facts.prereqs);
         }
     }
 
