@@ -1016,7 +1016,9 @@ mod tests {
 
     #[test]
     fn pir_callee_dynamic_equality() {
-        assert_eq!(PirCallee::Dynamic, PirCallee::Dynamic);
+        let left = PirCallee::Dynamic;
+        let right = PirCallee::Dynamic;
+        assert_eq!(left, right);
     }
 
     #[test]

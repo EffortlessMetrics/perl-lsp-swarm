@@ -31,6 +31,7 @@ mod extractor;
 mod lexical_contribution;
 mod lower;
 mod model;
+mod place;
 
 pub use extractor::{
     BodyExtractionResult, LEXICAL_EXTRACTOR_RECEIPT_VERSION, LexicalBindingFact,
@@ -53,3 +54,4 @@ pub use model::{
     PirLiteralKind, PirLoweringMode, PirMethod, PirNode, PirOperation, PirReceipt, PirReceiver,
     PirRegexModifiers, PirRegexTarget, PirSourceAnchor, PirTargetAccess, SymbolName,
 };
+pub use place::{PirGlobSlotKind, PirPlace, PirPlaceId, PirPlaceKind, PirPlaceOrigin};
