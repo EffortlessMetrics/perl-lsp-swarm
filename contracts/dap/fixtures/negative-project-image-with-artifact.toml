@@ -49,6 +49,12 @@ build_revision = "build-2026-08-25-a1b2c3"
 architecture = "amd64"
 libc = "glibc"
 
+[profile.adapter]
+binary_path = "/usr/local/bin/perl-dap"
+version = "0.17.0"
+hash = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+target = "amd64"
+
 [profile.artifact]
 source_identity = "release:perllsp@9.9.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 artifact_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

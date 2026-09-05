@@ -49,6 +49,12 @@ build_revision = "build-2026-08-25-a1b2c3"
 architecture = "amd64"
 libc = "musl"
 
+[profile.adapter]
+binary_path = "/usr/local/bin/perl-dap"
+version = "0.17.0"
+hash = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+target = "amd64"
+
 [profile.security]
 run_as_non_root = true
 uid = 10001

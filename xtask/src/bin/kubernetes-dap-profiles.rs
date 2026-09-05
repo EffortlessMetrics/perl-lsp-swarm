@@ -48,6 +48,65 @@ const REQUIRED_TOPOLOGY_CODES: &[RejectionReason] = &[
     RejectionReason::ImageIdentityNotExact,
 ];
 
+/// Every required fact a contract may declare, bound to the typed rejection the
+/// validator raises when a candidate profile fails it. Validation is bidirectional:
+/// a contract cannot declare a required fact with no enforcement, and this table
+/// cannot claim enforcement for a fact no admitted profile requires. Adding a fact
+/// to the contract without a check therefore fails the gate instead of silently
+/// inflating generated coverage.
+const ENFORCED_REQUIRED_FACTS: &[(&str, &str, RejectionReason)] = &[
+    ("project_image", "image_digest_and_build_identity", RejectionReason::ImageIdentityNotExact),
+    ("project_image", "image_libc_identity", RejectionReason::LoaderContractMismatch),
+    (
+        "project_image",
+        "adapter_binary_path_version_hash_target",
+        RejectionReason::AdapterIdentityNotExact,
+    ),
+    (
+        "project_image",
+        "project_perl_path_version_environment",
+        RejectionReason::ProjectPerlIdentityMismatch,
+    ),
+    (
+        "project_image",
+        "exact_workspace_root_and_source_paths",
+        RejectionReason::SourceNamespaceMismatch,
+    ),
+    (
+        "project_image",
+        "non_root_security_resource_cleanup",
+        RejectionReason::SecurityContextMissing,
+    ),
+    ("project_image", "no_network_listener", RejectionReason::NetworkListenerForbidden),
+    (
+        "injected_tool",
+        "injection_source_artifact_digest_and_build_revision",
+        RejectionReason::InjectionSourceUnbound,
+    ),
+    ("injected_tool", "injected_artifact_libc_identity", RejectionReason::LoaderContractMismatch),
+    (
+        "injected_tool",
+        "copy_and_post_copy_digest_verification",
+        RejectionReason::ArtifactDigestUnverified,
+    ),
+    ("injected_tool", "executable_mode", RejectionReason::ExecutableModeInvalid),
+    (
+        "injected_tool",
+        "host_container_os_libc_architecture_loader_compatibility",
+        RejectionReason::LoaderContractMismatch,
+    ),
+    (
+        "injected_tool",
+        "tool_volume_ownership_and_read_only_mount",
+        RejectionReason::ToolMountNotReadOnly,
+    ),
+    (
+        "injected_tool",
+        "project_container_perl_authority_not_init_image_perl",
+        RejectionReason::InitImagePerlSubstitutionForbidden,
+    ),
+];
+
 /// Minimum number of security requirements; #10112 lists eight ownership and
 /// disposition facts that must stay explicit.
 const MINIMUM_SECURITY_REQUIREMENTS: usize = 8;
@@ -125,6 +184,7 @@ enum RejectionReason {
     ServiceAccountTokenForbidden,
     DapCellEvidenceMissing,
     InstallModeIdentityConflict,
+    AdapterIdentityNotExact,
 }
 
 impl RejectionReason {
@@ -158,6 +218,7 @@ impl RejectionReason {
         Self::ServiceAccountTokenForbidden,
         Self::DapCellEvidenceMissing,
         Self::InstallModeIdentityConflict,
+        Self::AdapterIdentityNotExact,
     ];
 
     fn as_str(self) -> &'static str {
@@ -193,6 +254,7 @@ impl RejectionReason {
             Self::ServiceAccountTokenForbidden => "service_account_token_forbidden",
             Self::DapCellEvidenceMissing => "dap_cell_evidence_missing",
             Self::InstallModeIdentityConflict => "install_mode_identity_conflict",
+            Self::AdapterIdentityNotExact => "adapter_identity_not_exact",
         }
     }
 }
@@ -502,6 +564,27 @@ impl ProfileContract {
                 if seen.insert(fact.as_str(), ()).is_some() {
                     bail!("admitted profile {profile_id} repeats required fact {fact:?}");
                 }
+                if !ENFORCED_REQUIRED_FACTS
+                    .iter()
+                    .any(|(owner, key, _)| *owner == row.profile_id && key == fact)
+                {
+                    bail!(
+                        "admitted profile {profile_id} declares required fact {fact:?} with no \
+                         enforcement entry in ENFORCED_REQUIRED_FACTS"
+                    );
+                }
+            }
+        }
+
+        for (owner, fact, _) in ENFORCED_REQUIRED_FACTS {
+            let declared = self.admitted_profiles.iter().any(|row| {
+                row.profile_id == *owner && row.required_facts.iter().any(|f| f == fact)
+            });
+            if !declared {
+                bail!(
+                    "ENFORCED_REQUIRED_FACTS claims enforcement of {fact:?} for profile {owner:?}, \
+                     which the contract does not declare"
+                );
             }
         }
 
@@ -723,6 +806,18 @@ struct ImageIdentity {
     libc: String,
 }
 
+/// Exact adapter (perl-dap) identity inside a project image. The contract's
+/// `adapter_binary_path_version_hash_target` required fact has no other carrier:
+/// without it an image containing no identified debugger would be admitted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct AdapterIdentity {
+    binary_path: String,
+    version: String,
+    hash: String,
+    target: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct InjectedArtifact {
@@ -842,6 +937,7 @@ struct ProfileDocument {
     perl: PerlEnvironment,
     launch_plan: LaunchPlan,
     image: Option<ImageIdentity>,
+    adapter: Option<AdapterIdentity>,
     artifact: Option<InjectedArtifact>,
     resource_profile: Option<String>,
     cleanup_owner: Option<String>,
@@ -866,15 +962,17 @@ fn is_exact_digest(value: &str) -> bool {
     hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn is_bound_source_identity(value: &str) -> bool {
-    match value.rsplit_once('@') {
-        Some((_, digest)) => is_exact_digest(digest),
-        None => false,
+/// An injected-tool source identity is `<artifact-source>@<build-revision>@sha256:<64 hex>`.
+/// All three components are load-bearing: a digest alone names bytes without
+/// naming where they came from or which build produced them, so an empty
+/// prefix or a missing revision is not a bound source identity.
+fn parse_source_identity(value: &str) -> Option<(&str, &str, &str)> {
+    let (prefix, digest) = value.rsplit_once('@')?;
+    let (source, revision) = prefix.rsplit_once('@')?;
+    if source.trim().is_empty() || revision.trim().is_empty() || !is_exact_digest(digest) {
+        return None;
     }
-}
-
-fn source_identity_digest(value: &str) -> Option<&str> {
-    value.rsplit_once('@').map(|(_, digest)| digest)
+    Some((source, revision, digest))
 }
 
 fn is_normalized_workspace_path(value: &str) -> bool {
@@ -1087,6 +1185,31 @@ impl ProfileDocument {
                         why("project_image cannot include injected-artifact identity".into()),
                     );
                 }
+                let Some(adapter) = &self.adapter else {
+                    return rejection(
+                        RejectionReason::AdapterIdentityNotExact,
+                        why("project_image requires an exact adapter binary path, version, hash, and target".into()),
+                    );
+                };
+                if !is_normalized_workspace_path(&adapter.binary_path)
+                    || adapter.version.trim().is_empty()
+                    || !is_exact_digest(&adapter.hash)
+                    || adapter.target.trim().is_empty()
+                {
+                    return rejection(
+                        RejectionReason::AdapterIdentityNotExact,
+                        why("adapter identity needs an absolute binary path, a version, an exact sha256 hash, and a target".into()),
+                    );
+                }
+                if adapter.target != image.architecture {
+                    return rejection(
+                        RejectionReason::AdapterIdentityNotExact,
+                        why(format!(
+                            "adapter target {:?} does not match project image architecture {:?}",
+                            adapter.target, image.architecture
+                        )),
+                    );
+                }
             }
             InstallMode::InjectedTool => {
                 let Some(artifact) = &self.artifact else {
@@ -1095,15 +1218,18 @@ impl ProfileDocument {
                         why("injected_tool requires an exact injected artifact description".into()),
                     );
                 };
-                if !is_bound_source_identity(&artifact.source_identity) {
+                // Parse once: the digest used for the copy comparison below is the
+                // same one that made this source identity bound in the first place.
+                let Some((_, _, source_digest)) = parse_source_identity(&artifact.source_identity)
+                else {
                     return rejection(
                         RejectionReason::InjectionSourceUnbound,
                         why(format!(
-                            "injection source {:?} is not bound to an exact digest and revision",
+                            "injection source {:?} is not bound to an exact source, build revision, and digest",
                             artifact.source_identity
                         )),
                     );
-                }
+                };
                 if artifact.libc.trim().is_empty() {
                     return rejection(
                         RejectionReason::LoaderContractMismatch,
@@ -1123,10 +1249,6 @@ impl ProfileDocument {
                         ),
                     );
                 }
-                let source_digest = match source_identity_digest(&artifact.source_identity) {
-                    Some(digest) => digest,
-                    None => "",
-                };
                 if source_digest != artifact.artifact_digest.as_str()
                     || source_digest != artifact.copied_digest.as_str()
                 {
@@ -1157,6 +1279,14 @@ impl ProfileDocument {
                     return rejection(
                         RejectionReason::InstallModeIdentityConflict,
                         why("injected_tool cannot include image identity".into()),
+                    );
+                }
+                // The injected artifact already carries the adapter identity; a
+                // second, independently-declared one would be duplicate authority.
+                if self.adapter.is_some() {
+                    return rejection(
+                        RejectionReason::InstallModeIdentityConflict,
+                        why("injected_tool carries adapter identity in the artifact, not a separate adapter row".into()),
                     );
                 }
             }
@@ -1447,13 +1577,29 @@ impl FixtureDocument {
     }
 }
 
-fn load_fixtures(fixtures_dir: &Path) -> Result<Vec<FixtureDocument>> {
+/// One committed fixture: the typed document plus the raw document as JSON, so
+/// the published schema is checked against exactly the bytes the typed validator
+/// accepted rather than a re-serialization of the parsed form.
+#[derive(Debug)]
+struct LoadedFixture {
+    document: FixtureDocument,
+    json: serde_json::Value,
+}
+
+fn load_fixtures(fixtures_dir: &Path) -> Result<Vec<LoadedFixture>> {
     let entries =
         fs::read_dir(fixtures_dir).with_context(|| format!("read {}", fixtures_dir.display()))?;
-    let mut paths: Vec<PathBuf> = entries
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "toml"))
-        .collect();
+    // A directory entry that cannot be read is a gate failure, not a fixture to
+    // silently skip: dropping it would let `--check` validate a partial set.
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry
+            .with_context(|| format!("enumerate fixture directory {}", fixtures_dir.display()))?;
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "toml") {
+            paths.push(path);
+        }
+    }
     paths.sort();
     if paths.is_empty() {
         bail!("fixture directory {} contains no .toml fixtures", fixtures_dir.display());
@@ -1464,12 +1610,28 @@ fn load_fixtures(fixtures_dir: &Path) -> Result<Vec<FixtureDocument>> {
             .with_context(|| format!("read fixture {}", path.display()))?;
         let fixture = FixtureDocument::from_str(&source)
             .with_context(|| format!("load fixture {}", path.display()))?;
-        fixtures.push(fixture);
+        // The generated status names fixtures by id; an id that has drifted from
+        // its file stem would point readers at a file that no longer exists.
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .with_context(|| format!("fixture path {} has no usable file stem", path.display()))?;
+        if fixture.fixture_id != stem {
+            bail!(
+                "fixture {} declares id {:?} but its file stem is {:?}",
+                path.display(),
+                fixture.fixture_id,
+                stem
+            );
+        }
+        let json = toml_source_to_json(&source)
+            .with_context(|| format!("convert fixture {} to JSON", path.display()))?;
+        fixtures.push(LoadedFixture { document: fixture, json });
     }
     let mut ids = BTreeMap::new();
     for fixture in &fixtures {
-        if ids.insert(fixture.fixture_id.as_str(), ()).is_some() {
-            bail!("duplicate fixture id {:?}", fixture.fixture_id);
+        if ids.insert(fixture.document.fixture_id.as_str(), ()).is_some() {
+            bail!("duplicate fixture id {:?}", fixture.document.fixture_id);
         }
     }
     Ok(fixtures)
@@ -1496,6 +1658,51 @@ fn outcome_label(
         }
         _ => bail!("fixture {:?} has an invalid expectation shape", fixture.fixture_id),
     })
+}
+
+/// Every admitted install mode must keep exactly one passing positive fixture.
+/// Without this, deleting both positives and regenerating the status leaves the
+/// required gate green with no committed proof that anything is admissible at all.
+fn verify_admission_coverage(
+    contract: &ProfileContract,
+    fixtures: &[FixtureDocument],
+) -> Result<()> {
+    for profile in &contract.admitted_profiles {
+        let positives: Vec<&FixtureDocument> = fixtures
+            .iter()
+            .filter(|fixture| {
+                fixture.expectation == Expectation::Admit
+                    && fixture.profile.install_mode == profile.install_mode
+            })
+            .collect();
+        match positives.len() {
+            0 => bail!(
+                "admitted profile {:?} (install mode `{}`) has no passing positive fixture; \
+                 admission is unproven",
+                profile.profile_id,
+                profile.install_mode.as_str()
+            ),
+            1 => {}
+            count => bail!(
+                "admitted profile {:?} (install mode `{}`) has {count} positive fixtures; \
+                 exactly one bound positive is required",
+                profile.profile_id,
+                profile.install_mode.as_str()
+            ),
+        }
+    }
+    let admitted_modes: Vec<InstallMode> =
+        contract.admitted_profiles.iter().map(|profile| profile.install_mode).collect();
+    for fixture in fixtures.iter().filter(|fixture| fixture.expectation == Expectation::Admit) {
+        if !admitted_modes.contains(&fixture.profile.install_mode) {
+            bail!(
+                "positive fixture {:?} uses install mode `{}`, which the contract does not admit",
+                fixture.fixture_id,
+                fixture.profile.install_mode.as_str()
+            );
+        }
+    }
+    Ok(())
 }
 
 fn render_status(contract: &ProfileContract, fixtures: &[FixtureDocument]) -> Result<String> {
@@ -1711,6 +1918,98 @@ fn validate_published_schema_values(
     Ok(())
 }
 
+/// Convert a committed TOML document to JSON so it can be checked against the
+/// published JSON Schema that claims to describe it.
+fn toml_source_to_json(source: &str) -> Result<serde_json::Value> {
+    let value: toml::Value = toml::from_str(source).context("parse TOML document")?;
+    serde_json::to_value(value).context("convert TOML document to JSON")
+}
+
+/// Serves the sibling published schema from memory. The gate must never reach
+/// the network to resolve a `$ref`, and an unexpected URI is a failure rather
+/// than a silently empty document.
+struct LocalSchemas {
+    documents: BTreeMap<String, serde_json::Value>,
+}
+
+impl jsonschema::Retrieve for LocalSchemas {
+    fn retrieve(
+        &self,
+        uri: &jsonschema::Uri<String>,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+        self.documents
+            .get(uri.as_str())
+            .cloned()
+            .ok_or_else(|| format!("no locally published schema for {uri}").into())
+    }
+}
+
+fn compile_schema(
+    schema: &serde_json::Value,
+    extra: &[(&str, &serde_json::Value)],
+) -> Result<jsonschema::Validator> {
+    let documents = extra
+        .iter()
+        .map(|(uri, document)| ((*uri).to_string(), (*document).clone()))
+        .collect::<BTreeMap<_, _>>();
+    jsonschema::options()
+        .with_retriever(LocalSchemas { documents })
+        .build(schema)
+        .context("compile published JSON schema")
+}
+
+fn assert_valid(
+    validator: &jsonschema::Validator,
+    instance: &serde_json::Value,
+    subject: &str,
+) -> Result<()> {
+    let errors: Vec<String> = validator
+        .iter_errors(instance)
+        .map(|error| format!("{}: {error}", error.instance_path()))
+        .collect();
+    if !errors.is_empty() {
+        bail!("{subject} does not satisfy its published schema:\n  {}", errors.join("\n  "));
+    }
+    Ok(())
+}
+
+/// Validate the committed contract and every committed fixture against the two
+/// published JSON Schemas. Without this the gate only inspected selected schema
+/// fields, so either schema could drift away from the documents it claims to
+/// describe while `--check` stayed green.
+fn validate_documents_against_schemas(
+    profile_path: &Path,
+    fixture_path: &Path,
+    contract_source: &str,
+    fixtures: &[LoadedFixture],
+) -> Result<()> {
+    let profile_schema: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(profile_path)?)
+            .with_context(|| format!("parse profile schema {}", profile_path.display()))?;
+    let fixture_schema: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fixture_path)?)
+            .with_context(|| format!("parse fixture schema {}", fixture_path.display()))?;
+
+    let contract_json = toml_source_to_json(contract_source).context("convert contract to JSON")?;
+    let profile_validator = compile_schema(&profile_schema, &[])?;
+    assert_valid(&profile_validator, &contract_json, "committed contract")?;
+
+    // The fixture schema reuses the profile schema's reason-code enum through a
+    // relative `$ref`; register the profile schema under the URI that reference
+    // resolves to so the gate never depends on network retrieval.
+    let profile_uri =
+        "https://effortlessmetrics.com/schemas/kubernetes_dap_workspace_profile.v1.schema.json";
+    let fixture_validator = compile_schema(&fixture_schema, &[(profile_uri, &profile_schema)])?;
+    for fixture in fixtures {
+        assert_valid(
+            &fixture_validator,
+            &fixture.json,
+            &format!("fixture {:?}", fixture.document.fixture_id),
+        )?;
+    }
+    Ok(())
+}
+
 fn validate_published_schemas(profile_path: &Path, fixture_path: &Path) -> Result<()> {
     let profile_source = fs::read_to_string(profile_path)
         .with_context(|| format!("read profile schema {}", profile_path.display()))?;
@@ -1729,10 +2028,19 @@ fn run(cli: &Cli) -> Result<()> {
     let contract = ProfileContract::from_str(&contract_source)?;
     contract.validate()?;
     validate_published_schemas(&cli.profile_schema, &cli.fixture_schema)?;
-    let fixtures = load_fixtures(&cli.fixtures_dir)?;
+    let loaded = load_fixtures(&cli.fixtures_dir)?;
+    validate_documents_against_schemas(
+        &cli.profile_schema,
+        &cli.fixture_schema,
+        &contract_source,
+        &loaded,
+    )?;
+    let fixtures: Vec<FixtureDocument> =
+        loaded.into_iter().map(|fixture| fixture.document).collect();
     for fixture in &fixtures {
         fixture.verify_against(&contract)?;
     }
+    verify_admission_coverage(&contract, &fixtures)?;
 
     let rendered = render_status(&contract, &fixtures)?;
 
@@ -1806,7 +2114,7 @@ mod tests {
             .parent()
             .ok_or_else(|| anyhow!("cannot derive repository root from {:?}", manifest_dir))?
             .join(DEFAULT_FIXTURES_DIR);
-        load_fixtures(&fixtures_dir)
+        Ok(load_fixtures(&fixtures_dir)?.into_iter().map(|fixture| fixture.document).collect())
     }
 
     fn find_fixture<'a>(fixtures: &'a [FixtureDocument], id: &str) -> Result<&'a FixtureDocument> {
@@ -2122,5 +2430,175 @@ mod tests {
         contract.complete = true;
         assert!(contract.validate().is_err());
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Falsifiers for the gate's own integrity checks. Each mutates the committed
+    // state in exactly one way and requires the check to catch it.
+    // -----------------------------------------------------------------------
+
+    fn fixtures_dir_copy(dir: &tempfile::TempDir) -> Result<PathBuf> {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let source = manifest_dir
+            .parent()
+            .ok_or_else(|| anyhow!("cannot derive repository root from {:?}", manifest_dir))?
+            .join(DEFAULT_FIXTURES_DIR);
+        let target = dir.path().join("fixtures");
+        fs::create_dir_all(&target)?;
+        for entry in fs::read_dir(&source)? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|ext| ext == "toml") {
+                let name = path
+                    .file_name()
+                    .ok_or_else(|| anyhow!("fixture {} has no file name", path.display()))?;
+                fs::copy(&path, target.join(name))?;
+            }
+        }
+        Ok(target)
+    }
+
+    fn documents(dir: &Path) -> Result<Vec<FixtureDocument>> {
+        Ok(load_fixtures(dir)?.into_iter().map(|fixture| fixture.document).collect())
+    }
+
+    #[test]
+    fn removing_either_positive_fixture_loses_admission_proof() -> Result<()> {
+        let contract = committed_contract()?;
+        for positive in ["positive-project-image", "positive-injected-tool"] {
+            let dir = tempfile::tempdir()?;
+            let fixtures_dir = fixtures_dir_copy(&dir)?;
+            fs::remove_file(fixtures_dir.join(format!("{positive}.toml")))?;
+            let loaded = documents(&fixtures_dir)?;
+            let error = verify_admission_coverage(&contract, &loaded)
+                .expect_err("removing {positive} must lose admission proof");
+            assert!(
+                error.to_string().contains("no passing positive fixture"),
+                "unexpected error for {positive}: {error}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_positive_for_one_install_mode_is_rejected() -> Result<()> {
+        let contract = committed_contract()?;
+        let dir = tempfile::tempdir()?;
+        let fixtures_dir = fixtures_dir_copy(&dir)?;
+        let source = fs::read_to_string(fixtures_dir.join("positive-project-image.toml"))?
+            .replace("positive-project-image", "positive-project-image-copy");
+        fs::write(fixtures_dir.join("positive-project-image-copy.toml"), source)?;
+        let loaded = documents(&fixtures_dir)?;
+        assert!(verify_admission_coverage(&contract, &loaded).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_id_must_match_its_file_stem() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let fixtures_dir = fixtures_dir_copy(&dir)?;
+        let path = fixtures_dir.join("negative-node-port-service.toml");
+        let source = fs::read_to_string(&path)?;
+        fs::write(fixtures_dir.join("negative-renamed-service.toml"), source)?;
+        fs::remove_file(&path)?;
+        let error = load_fixtures(&fixtures_dir).expect_err("renamed fixture must be caught");
+        assert!(error.to_string().contains("file stem"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn unreadable_fixture_directory_fails_instead_of_validating_a_partial_set() {
+        let missing = Path::new("contracts/dap/fixtures-does-not-exist");
+        assert!(load_fixtures(missing).is_err());
+    }
+
+    #[test]
+    fn required_fact_without_enforcement_fails_contract_validation() -> Result<()> {
+        let mut contract = ProfileContract::from_str(COMMITTED_CONTRACT)?;
+        contract.admitted_profiles[0].required_facts.push("newly_invented_fact".into());
+        let error = contract.validate().expect_err("unenforced required fact must fail");
+        assert!(error.to_string().contains("ENFORCED_REQUIRED_FACTS"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_an_enforced_required_fact_fails_contract_validation() -> Result<()> {
+        let mut contract = ProfileContract::from_str(COMMITTED_CONTRACT)?;
+        contract.admitted_profiles[0]
+            .required_facts
+            .retain(|fact| fact != "adapter_binary_path_version_hash_target");
+        assert!(contract.validate().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn committed_documents_satisfy_their_published_schemas() -> Result<()> {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest_dir
+            .parent()
+            .ok_or_else(|| anyhow!("cannot derive repository root from {:?}", manifest_dir))?;
+        let loaded = load_fixtures(&root.join(DEFAULT_FIXTURES_DIR))?;
+        validate_documents_against_schemas(
+            &root.join(DEFAULT_PROFILE_SCHEMA),
+            &root.join(DEFAULT_FIXTURE_SCHEMA),
+            COMMITTED_CONTRACT,
+            &loaded,
+        )
+    }
+
+    #[test]
+    fn ordinary_schema_drift_is_caught_by_document_validation() -> Result<()> {
+        // Not a hand-inspected field: tighten an ordinary constraint the committed
+        // documents already violate, and require the gate to notice.
+        let mut profile_schema: serde_json::Value = serde_json::from_str(COMMITTED_SCHEMA)?;
+        profile_schema["properties"]["contract_id"]["minLength"] = serde_json::json!(4096);
+        let validator = compile_schema(&profile_schema, &[])?;
+        let contract_json = toml_source_to_json(COMMITTED_CONTRACT)?;
+        assert!(assert_valid(&validator, &contract_json, "contract").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_schema_rejects_a_structurally_invalid_candidate() -> Result<()> {
+        let profile_schema: serde_json::Value = serde_json::from_str(COMMITTED_SCHEMA)?;
+        let fixture_schema: serde_json::Value = serde_json::from_str(COMMITTED_FIXTURE_SCHEMA)?;
+        let validator = compile_schema(
+            &fixture_schema,
+            &[(
+                "https://effortlessmetrics.com/schemas/kubernetes_dap_workspace_profile.v1.schema.json",
+                &profile_schema,
+            )],
+        )?;
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest_dir
+            .parent()
+            .ok_or_else(|| anyhow!("cannot derive repository root from {:?}", manifest_dir))?;
+        let source = fs::read_to_string(
+            root.join(DEFAULT_FIXTURES_DIR).join("positive-project-image.toml"),
+        )?;
+        let mut json = toml_source_to_json(&source)?;
+        assert!(assert_valid(&validator, &json, "unmodified fixture").is_ok());
+        // An unknown profile field is a document-shape error, not an admission decision.
+        json["profile"]["not_a_profile_field"] = serde_json::json!("x");
+        assert!(assert_valid(&validator, &json, "mutated fixture").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn digest_only_or_revisionless_injection_sources_are_unbound() {
+        let digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        assert!(parse_source_identity(&format!("release:perllsp@9.9.0@{digest}")).is_some());
+        assert!(parse_source_identity(&format!("@{digest}")).is_none());
+        assert!(parse_source_identity(&format!("release:perllsp@{digest}")).is_none());
+        assert!(parse_source_identity(&format!("release:perllsp@@{digest}")).is_none());
+        assert!(parse_source_identity(&format!("release:perllsp@9.9.0@{digest}x")).is_none());
+    }
+
+    #[test]
+    fn project_image_without_identified_adapter_is_rejected() -> Result<()> {
+        let fixtures = committed_fixtures()?;
+        let mut profile = find_fixture(&fixtures, "positive-project-image")?.profile.clone();
+        evaluate(&profile)?;
+        profile.adapter = None;
+        assert_rejected_with(&profile, RejectionReason::AdapterIdentityNotExact)
     }
 }

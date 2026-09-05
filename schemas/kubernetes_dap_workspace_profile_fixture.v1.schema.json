@@ -20,7 +20,9 @@
         }
       },
       "then": {
-        "required": ["expected_rejection"]
+        "required": [
+          "expected_rejection"
+        ]
       }
     },
     {
@@ -33,7 +35,9 @@
       },
       "then": {
         "not": {
-          "required": ["expected_rejection"]
+          "required": [
+            "expected_rejection"
+          ]
         }
       }
     }
@@ -47,7 +51,10 @@
       "minLength": 1
     },
     "expectation": {
-      "enum": ["admit", "reject"]
+      "enum": [
+        "admit",
+        "reject"
+      ]
     },
     "expected_rejection": {
       "$ref": "kubernetes_dap_workspace_profile.v1.schema.json#/$defs/reason_code"
@@ -58,47 +65,79 @@
   },
   "$defs": {
     "install_mode": {
-      "enum": ["project_image", "injected_tool"]
+      "enum": [
+        "project_image",
+        "injected_tool"
+      ]
     },
     "deployment_mode": {
-      "enum": ["workspace_container_process", "standalone_deployment"]
+      "enum": [
+        "workspace_container_process",
+        "standalone_deployment"
+      ]
     },
     "sharing_mode": {
-      "enum": ["dedicated_workspace", "shared_multi_tenant"]
+      "enum": [
+        "dedicated_workspace",
+        "shared_multi_tenant"
+      ]
     },
     "stream_owner": {
-      "enum": ["parent", "adapter"]
+      "enum": [
+        "parent",
+        "adapter"
+      ]
     },
     "profile_transport_kind": {
-      "enum": ["stdio", "tcp"]
+      "enum": [
+        "stdio",
+        "tcp"
+      ]
     },
     "perl_authority": {
-      "enum": ["project_container", "init_image", "baseline_image"]
+      "enum": [
+        "project_container",
+        "init_image",
+        "baseline_image"
+      ]
     },
     "service_account_token": {
-      "enum": ["absent", "mounted_unused", "mounted_used"]
+      "enum": [
+        "absent",
+        "mounted_unused",
+        "mounted_used"
+      ]
     },
     "service_kind": {
-      "enum": ["service", "ingress", "load_balancer", "node_port"]
+      "enum": [
+        "service",
+        "ingress",
+        "load_balancer",
+        "node_port"
+      ]
     },
     "tool_mount": {
-      "enum": ["read_only", "read_write"]
+      "enum": [
+        "read_only",
+        "read_write"
+      ]
     },
     "cell_state": {
-      "enum": ["evidence_backed", "not_proven", "unsupported"]
-    },
-    "sha256_digest": {
-      "type": "string",
-      "pattern": "^sha256:[0-9a-fA-F]{64}$"
-    },
-    "non_empty_string": {
-      "type": "string",
-      "minLength": 1
+      "enum": [
+        "evidence_backed",
+        "not_proven",
+        "unsupported"
+      ]
     },
     "profile_transport": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["transport", "stream_owner", "tty", "shell"],
+      "required": [
+        "transport",
+        "stream_owner",
+        "tty",
+        "shell"
+      ],
       "properties": {
         "transport": {
           "$ref": "#/$defs/profile_transport_kind"
@@ -117,26 +156,33 @@
     "source_paths": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["client", "adapter", "debuggee"],
+      "required": [
+        "client",
+        "adapter",
+        "debuggee"
+      ],
       "properties": {
         "client": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "adapter": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "debuggee": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         }
       }
     },
     "workspace_paths": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["root", "source_paths"],
+      "required": [
+        "root",
+        "source_paths"
+      ],
       "properties": {
         "root": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "source_paths": {
           "$ref": "#/$defs/source_paths"
@@ -146,16 +192,21 @@
     "loader_contract": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["os", "libc", "architecture", "container_matches"],
+      "required": [
+        "os",
+        "libc",
+        "architecture",
+        "container_matches"
+      ],
       "properties": {
         "os": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "libc": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "architecture": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "container_matches": {
           "type": "boolean"
@@ -177,55 +228,64 @@
           "$ref": "#/$defs/perl_authority"
         },
         "interpreter_path": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "version": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "include_roots": {
           "type": "array",
           "minItems": 1,
           "items": {
-            "$ref": "#/$defs/non_empty_string"
+            "$ref": "#/$defs/candidate_string"
           }
         },
         "dependency_authority": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         }
       }
     },
     "launch_plan": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["authority", "perl_identity"],
+      "required": [
+        "authority",
+        "perl_identity"
+      ],
       "properties": {
         "authority": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "perl_identity": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         }
       }
     },
     "image_identity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "digest", "build_revision", "architecture", "libc"],
+      "required": [
+        "repository",
+        "digest",
+        "build_revision",
+        "architecture",
+        "libc"
+      ],
       "properties": {
         "repository": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "digest": {
-          "$ref": "#/$defs/sha256_digest"
+          "$ref": "#/$defs/candidate_digest"
         },
         "build_revision": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "architecture": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "libc": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         }
       }
     },
@@ -244,45 +304,35 @@
       ],
       "properties": {
         "source_identity": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "artifact_digest": {
-          "$ref": "#/$defs/sha256_digest"
+          "$ref": "#/$defs/candidate_digest"
         },
         "copied_digest": {
-          "$ref": "#/$defs/sha256_digest"
+          "$ref": "#/$defs/candidate_digest"
         },
         "post_copy_verified": {
           "type": "boolean"
         },
         "exec_mode": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "tool_mount": {
           "$ref": "#/$defs/tool_mount"
         },
         "target_arch": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "libc": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         }
       }
     },
     "security_disposition": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "run_as_non_root",
-        "uid",
-        "gid",
-        "service_account_token",
-        "kubernetes_credentials",
-        "network_listener",
-        "writable_paths_declared",
-        "secrets_redacted_from_receipts",
-        "adapter_selection_isolation"
-      ],
+      "required": [],
       "properties": {
         "run_as_non_root": {
           "type": "boolean"
@@ -313,15 +363,20 @@
         "adapter_selection_isolation": {
           "type": "boolean"
         }
-      }
+      },
+      "description": "Candidate security facts. Every fact is optional here because an omitted fact is a committed negative case that the validator must reject with `security_context_missing`; requiring them would contradict the fixtures this schema describes."
     },
     "dap_cell_claim": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cell_id", "claimed_state", "evidence"],
+      "required": [
+        "cell_id",
+        "claimed_state",
+        "evidence"
+      ],
       "properties": {
         "cell_id": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "claimed_state": {
           "$ref": "#/$defs/cell_state"
@@ -329,7 +384,7 @@
         "evidence": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/non_empty_string"
+            "$ref": "#/$defs/candidate_string"
           }
         }
       }
@@ -337,7 +392,9 @@
     "service_exposure": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind"],
+      "required": [
+        "kind"
+      ],
       "properties": {
         "kind": {
           "$ref": "#/$defs/service_kind"
@@ -347,10 +404,13 @@
     "listener_config": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bind_address", "port"],
+      "required": [
+        "bind_address",
+        "port"
+      ],
       "properties": {
         "bind_address": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "port": {
           "type": "integer",
@@ -362,7 +422,10 @@
     "sidecar_projection": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["shares_filesystem", "perl_authority"],
+      "required": [
+        "shares_filesystem",
+        "perl_authority"
+      ],
       "properties": {
         "shares_filesystem": {
           "type": "boolean"
@@ -375,7 +438,9 @@
     "attach_policy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["process_id_targeting"],
+      "required": [
+        "process_id_targeting"
+      ],
       "properties": {
         "process_id_targeting": {
           "type": "boolean"
@@ -385,10 +450,14 @@
     "cluster_access": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["owner", "kubectl_exec", "port_forward"],
+      "required": [
+        "owner",
+        "kubectl_exec",
+        "port_forward"
+      ],
       "properties": {
         "owner": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "kubectl_exec": {
           "type": "boolean"
@@ -401,7 +470,9 @@
     "kubernetes_api_dependency": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["rbac_dependency"],
+      "required": [
+        "rbac_dependency"
+      ],
       "properties": {
         "rbac_dependency": {
           "type": "boolean"
@@ -411,30 +482,37 @@
     "operator_role": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["role"],
+      "required": [
+        "role"
+      ],
       "properties": {
         "role": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         }
       }
     },
     "path_rewrite_entry": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["from", "to"],
+      "required": [
+        "from",
+        "to"
+      ],
       "properties": {
         "from": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "to": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         }
       }
     },
     "path_rewrite": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["table"],
+      "required": [
+        "table"
+      ],
       "properties": {
         "table": {
           "type": "array",
@@ -448,20 +526,24 @@
     "lsp_profile_binding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["inherits_lsp_profile"],
+      "required": [
+        "inherits_lsp_profile"
+      ],
       "properties": {
         "inherits_lsp_profile": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         }
       }
     },
     "capability_catalog": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["static_catalog"],
+      "required": [
+        "static_catalog"
+      ],
       "properties": {
         "static_catalog": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         }
       }
     },
@@ -483,7 +565,7 @@
       ],
       "properties": {
         "profile_id": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "install_mode": {
           "$ref": "#/$defs/install_mode"
@@ -512,14 +594,17 @@
         "image": {
           "$ref": "#/$defs/image_identity"
         },
+        "adapter": {
+          "$ref": "#/$defs/adapter_identity"
+        },
         "artifact": {
           "$ref": "#/$defs/injected_artifact"
         },
         "resource_profile": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "cleanup_owner": {
-          "$ref": "#/$defs/non_empty_string"
+          "$ref": "#/$defs/candidate_string"
         },
         "security": {
           "$ref": "#/$defs/security_disposition"
@@ -559,6 +644,39 @@
         },
         "capability_catalog": {
           "$ref": "#/$defs/capability_catalog"
+        }
+      }
+    },
+    "candidate_string": {
+      "description": "A candidate profile field. Emptiness is an admission decision made by the validator, not a document-shape error.",
+      "type": "string"
+    },
+    "candidate_digest": {
+      "description": "A candidate digest field. Exactness is an admission decision made by the validator, not a document-shape error.",
+      "type": "string"
+    },
+    "adapter_identity": {
+      "description": "Exact adapter identity inside a project image.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "binary_path",
+        "version",
+        "hash",
+        "target"
+      ],
+      "properties": {
+        "binary_path": {
+          "$ref": "#/$defs/candidate_string"
+        },
+        "version": {
+          "$ref": "#/$defs/candidate_string"
+        },
+        "hash": {
+          "$ref": "#/$defs/candidate_digest"
+        },
+        "target": {
+          "$ref": "#/$defs/candidate_string"
         }
       }
     }

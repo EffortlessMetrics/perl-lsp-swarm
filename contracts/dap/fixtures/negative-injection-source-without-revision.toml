@@ -1,13 +1,14 @@
 schema_version = "kubernetes_dap_workspace_profile_fixture.v1"
-fixture_id = "negative-missing-resource-profile"
+fixture_id = "negative-injection-source-without-revision"
 expectation = "reject"
-expected_rejection = "resource_profile_missing"
+expected_rejection = "injection_source_unbound"
 
 [profile]
-profile_id = "acme-dev-project-image"
-install_mode = "project_image"
+profile_id = "negative-injection-source-without-revision"
+install_mode = "injected_tool"
 deployment_mode = "workspace_container_process"
 sharing_mode = "dedicated_workspace"
+resource_profile = "dap-subject-medium"
 cleanup_owner = "process-tree:adapter-parent/pod:kubelet"
 
 [profile.transport]
@@ -41,18 +42,15 @@ dependency_authority = "carton.snapshot@sha256:ddddddddddddddddddddddddddddddddd
 authority = "#4841-launch-plan-v3"
 perl_identity = "/usr/local/bin/perl@5.38.2"
 
-[profile.image]
-repository = "registry.example/acme/dev"
-digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-build_revision = "build-2026-08-25-a1b2c3"
-architecture = "amd64"
+[profile.artifact]
+source_identity = "release:perllsp@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+artifact_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+copied_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+post_copy_verified = true
+exec_mode = "0555"
+tool_mount = "read_only"
+target_arch = "amd64"
 libc = "glibc"
-
-[profile.adapter]
-binary_path = "/usr/local/bin/perl-dap"
-version = "0.17.0"
-hash = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-target = "amd64"
 
 [profile.security]
 run_as_non_root = true

@@ -78,12 +78,16 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 
 ## Fixture matrix
 
-2 positive and 44 negative deterministic fixtures.
+2 positive and 53 negative deterministic fixtures.
 
 | Fixture | Expectation | Typed outcome |
 | --- | --- | --- |
+| `negative-adapter-binary-path-relative` | `reject` | reject `adapter_identity_not_exact` |
+| `negative-adapter-hash-not-exact` | `reject` | reject `adapter_identity_not_exact` |
 | `negative-adapter-kubectl-port-forward` | `reject` | reject `adapter_owned_cluster_access_forbidden` |
 | `negative-adapter-selection-not-isolated` | `reject` | reject `security_context_missing` |
+| `negative-adapter-target-mismatch` | `reject` | reject `adapter_identity_not_exact` |
+| `negative-adapter-version-missing` | `reject` | reject `adapter_identity_not_exact` |
 | `negative-ambient-listener` | `reject` | reject `network_listener_forbidden` |
 | `negative-artifact-arch-loader-mismatch` | `reject` | reject `loader_contract_mismatch` |
 | `negative-attach-process-id` | `reject` | reject `attach_injection_unsupported` |
@@ -91,15 +95,20 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 | `negative-capability-catalog-claim` | `reject` | reject `capability_catalog_inheritance_forbidden` |
 | `negative-container-loader-mismatch` | `reject` | reject `loader_contract_mismatch` |
 | `negative-digest-mismatch-after-copy` | `reject` | reject `artifact_digest_unverified` |
+| `negative-digest-only-injection-source` | `reject` | reject `injection_source_unbound` |
 | `negative-downgraded-initial-dap-cell` | `reject` | reject `dap_cell_evidence_missing` |
 | `negative-editor-path-rewrite` | `reject` | reject `editor_path_translation_forbidden` |
 | `negative-empty-dap-claims` | `reject` | reject `dap_cell_evidence_missing` |
 | `negative-empty-workspace-paths` | `reject` | reject `source_namespace_mismatch` |
 | `negative-fabricated-dap-evidence` | `reject` | reject `dap_cell_evidence_missing` |
 | `negative-init-image-perl` | `reject` | reject `init_image_perl_substitution_forbidden` |
+| `negative-injected-tool-with-adapter-row` | `reject` | reject `install_mode_identity_conflict` |
 | `negative-injected-tool-with-image` | `reject` | reject `install_mode_identity_conflict` |
+| `negative-injection-source-empty-revision` | `reject` | reject `injection_source_unbound` |
+| `negative-injection-source-without-revision` | `reject` | reject `injection_source_unbound` |
 | `negative-kubernetes-api-rbac` | `reject` | reject `kubernetes_api_dependency_forbidden` |
 | `negative-lsp-profile-inheritance` | `reject` | reject `lsp_profile_projection_forbidden` |
+| `negative-missing-adapter-identity` | `reject` | reject `adapter_identity_not_exact` |
 | `negative-missing-cleanup-owner` | `reject` | reject `cleanup_ownership_missing` |
 | `negative-missing-resource-profile` | `reject` | reject `resource_profile_missing` |
 | `negative-musl-glibc-loader-mismatch` | `reject` | reject `loader_contract_mismatch` |
@@ -129,4 +138,4 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 | `positive-injected-tool` | `admit` | admit |
 | `positive-project-image` | `admit` | admit |
 
-All 29 typed rejection reasons are exercised by at least one negative fixture.
+All 30 typed rejection reasons are exercised by at least one negative fixture.

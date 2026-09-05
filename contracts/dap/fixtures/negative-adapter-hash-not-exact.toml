@@ -1,13 +1,14 @@
 schema_version = "kubernetes_dap_workspace_profile_fixture.v1"
-fixture_id = "negative-missing-resource-profile"
+fixture_id = "negative-adapter-hash-not-exact"
 expectation = "reject"
-expected_rejection = "resource_profile_missing"
+expected_rejection = "adapter_identity_not_exact"
 
 [profile]
-profile_id = "acme-dev-project-image"
+profile_id = "negative-adapter-hash-not-exact"
 install_mode = "project_image"
 deployment_mode = "workspace_container_process"
 sharing_mode = "dedicated_workspace"
+resource_profile = "dap-subject-medium"
 cleanup_owner = "process-tree:adapter-parent/pod:kubelet"
 
 [profile.transport]
@@ -51,7 +52,7 @@ libc = "glibc"
 [profile.adapter]
 binary_path = "/usr/local/bin/perl-dap"
 version = "0.17.0"
-hash = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+hash = "latest"
 target = "amd64"
 
 [profile.security]
