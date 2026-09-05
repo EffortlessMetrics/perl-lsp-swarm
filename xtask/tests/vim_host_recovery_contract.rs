@@ -653,16 +653,28 @@ fn the_stimulus_matcher_handles_quoted_windows_paths_and_exe_suffixes() -> Resul
         r#""C:\work tree\target\debug\perllsp.exe" --stdio"#,
         needle,
     ));
-    ensure!(unix_args_match_serving_server(
-        r#"C:\work tree\target\debug\perllsp --stdio"#,
-        needle,
-    ));
+    ensure!(
+        unix_args_match_serving_server(r#"C:\work tree\target\debug\perllsp --stdio"#, needle,)
+    );
     ensure!(!unix_args_match_serving_server(
         r#""C:\work tree\target\debug\perllsp.exe" --tcp"#,
         needle,
     ));
     ensure!(!unix_args_match_serving_server(
         r#"C:\other tree\target\debug\perllsp.exe --stdio"#,
+        needle,
+    ));
+    // Rejoining the leading tokens is what lets an unquoted spaced path
+    // match, so the anchor has to be proven to survive it: a supervisor
+    // that carries the same spaced candidate path as a mid-line argument
+    // must still not match, quoted or not. Without the start anchor this
+    // widening would kill the supervising process (bot P1, review #12831).
+    ensure!(!unix_args_match_serving_server(
+        r#"cargo run -p xtask -- editor-compat vim run --candidate "C:\work tree\target\debug\perllsp.exe" --stdio"#,
+        needle,
+    ));
+    ensure!(!unix_args_match_serving_server(
+        r#"C:\tools\xtask.exe --candidate C:\work tree\target\debug\perllsp --stdio"#,
         needle,
     ));
     Ok(())

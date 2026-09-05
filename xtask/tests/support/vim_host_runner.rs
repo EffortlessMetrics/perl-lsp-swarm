@@ -1501,14 +1501,10 @@ fn validate_repeating_event(
         "{family} event {index_key} {index} is not exactly one greater than the last seen {}",
         *last_index
     );
-    ensure!(
-        index <= cap,
-        "{family} event {index_key} {index} exceeds the journey cap {cap}"
-    );
+    ensure!(index <= cap, "{family} event {index_key} {index} exceeds the journey cap {cap}");
     *last_index = index;
     Ok(())
 }
-
 
 /// Advance the observed lifecycle rank, rejecting any event that arrives out
 /// of order. Used by every dedicated match arm so no event kind can bypass

@@ -570,12 +570,21 @@ fn shell_words(args: &str) -> Vec<String> {
 
 pub fn unix_args_match_serving_server(args: &str, normalized_needle: &str) -> bool {
     let tokens = shell_words(args);
-    match tokens.first() {
-        Some(argv0) if normalize_process_path(argv0) == normalize_process_path(normalized_needle) => {
-            tokens.iter().any(|token| token == "--stdio")
+    let needle = normalize_process_path(normalized_needle);
+    // argv[0] must be the exact candidate. An unquoted Windows command line
+    // whose executable path contains a space (`C:\work tree\...perllsp
+    // --stdio`) tokenizes into several words, so the leading tokens are
+    // rejoined and compared as a whole. The match stays anchored at the
+    // start of the command line, which is what keeps a supervising
+    // `cargo run ... --candidate <path>` or `xtask ... --candidate <path>`
+    // from matching: there the candidate path appears mid-line, never as
+    // argv[0].
+    for split in 1..=tokens.len() {
+        if normalize_process_path(&tokens[..split].join(" ")) == needle {
+            return tokens[split..].iter().any(|token| token == "--stdio");
         }
-        _ => false,
     }
+    false
 }
 
 /// Find every running process that is the exact serving server: argv[0]
@@ -726,15 +735,17 @@ fn spawn_stimulus_watcher(
     let thread_state = Arc::clone(&state);
     let markers_dir = markers_dir.to_path_buf();
     let needle = candidate_needle(candidate);
-    let handle = std::thread::spawn(move || loop {
-        let stop = thread_state.lock().map(|state| state.stop).unwrap_or(true);
-        if stop {
-            break;
+    let handle = std::thread::spawn(move || {
+        loop {
+            let stop = thread_state.lock().map(|state| state.stop).unwrap_or(true);
+            if stop {
+                break;
+            }
+            if let Ok(mut state) = thread_state.lock() {
+                watcher_cycle(&markers_dir, &needle, &mut state);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
         }
-        if let Ok(mut state) = thread_state.lock() {
-            watcher_cycle(&markers_dir, &needle, &mut state);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(150));
     });
     (state, handle)
 }
@@ -748,10 +759,7 @@ fn stop_stimulus_watcher(
         state.stop = true;
     }
     let _ = handle.join();
-    state
-        .lock()
-        .map(|mut state| std::mem::take(&mut state.records))
-        .unwrap_or_default()
+    state.lock().map(|mut state| std::mem::take(&mut state.records)).unwrap_or_default()
 }
 
 /// Whether every stimulus event marker has a watcher record that actually
