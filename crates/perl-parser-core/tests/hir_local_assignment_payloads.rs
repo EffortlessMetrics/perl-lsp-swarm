@@ -13,9 +13,7 @@ fn find_assignment<'a>(node: &'a Node, expected_op: &str) -> Option<&'a Node> {
         return Some(node);
     }
 
-    node.children()
-        .into_iter()
-        .find_map(|child| find_assignment(child, expected_op))
+    node.children().into_iter().find_map(|child| find_assignment(child, expected_op))
 }
 
 fn source_slice<'a>(source: &'a str, start: usize, end: usize) -> Result<&'a str, String> {
@@ -86,21 +84,14 @@ fn assert_local_assignment_hir(
     if body.expr(rhs_id).is_none() {
         return Err("local assignment rhs was not lowered".to_string());
     }
-    let rhs_range = body
-        .source_map
-        .expr_range(rhs_id)
-        .ok_or("expected local assignment rhs range")?;
+    let rhs_range =
+        body.source_map.expr_range(rhs_id).ok_or("expected local assignment rhs range")?;
     if source_slice(source, rhs_range.start, rhs_range.end)? != expected_rhs {
-        return Err(format!(
-            "unexpected local assignment rhs range/value: {:?}",
-            rhs_range
-        ));
+        return Err(format!("unexpected local assignment rhs range/value: {:?}", rhs_range));
     }
 
-    let assignment_range = body
-        .source_map
-        .expr_range(init_id)
-        .ok_or("expected local assignment expression range")?;
+    let assignment_range =
+        body.source_map.expr_range(init_id).ok_or("expected local assignment expression range")?;
     let expected_assignment = source_slice(
         source,
         source.find('$').ok_or("expected local variable")?,
@@ -113,10 +104,7 @@ fn assert_local_assignment_hir(
         ));
     }
 
-    let stmt_range = body
-        .source_map
-        .stmt_range(stmt_id)
-        .ok_or("expected local statement range")?;
+    let stmt_range = body.source_map.stmt_range(stmt_id).ok_or("expected local statement range")?;
     if source_slice(source, stmt_range.start, stmt_range.end)? != source.trim_end_matches(';') {
         return Err(format!("unexpected local statement range: {stmt_range:?}"));
     }
@@ -145,10 +133,9 @@ fn local_simple_assignment_payload_reaches_canonical_hir() -> Result<(), String>
 
 #[test]
 fn local_symbolic_compound_assignment_payloads_reach_canonical_hir() -> Result<(), String> {
-    for (source, op, rhs) in [
-        ("local $main::z += 1;", "+=", "1"),
-        ("local $main::z .= 'q';", ".=", "'q'"),
-    ] {
+    for (source, op, rhs) in
+        [("local $main::z += 1;", "+=", "1"), ("local $main::z .= 'q';", ".=", "'q'")]
+    {
         assert_local_assignment_hir(
             source,
             op,
@@ -202,4 +189,36 @@ fn non_local_repetition_assignment_remains_one_rmw_expression() -> Result<(), St
         return Err(format!("non-local x= lost its package place: {:?}", body.expr(lhs_id)));
     }
     Ok(())
+}
+
+#[test]
+fn recovered_local_assignment_does_not_become_exact_hir() -> Result<(), String> {
+    // A missing RHS is recovered at the AST as `MissingExpression`. The body
+    // lowerer must keep the assignment (so the write is still visible) but the
+    // RHS must fail closed as an opaque node, never a fabricated exact value.
+    let source = "local $main::z x=;";
+    let output = perl_parser_core::Parser::new(source).parse_with_recovery();
+    if output.diagnostics.is_empty() {
+        return Err("expected recovery diagnostics for a missing repetition RHS".to_string());
+    }
+    let hir = lower_ast(&output.ast);
+    let body = hir.root_body().ok_or("expected canonical production root body")?;
+    let root = body.block(body.root_block).ok_or("expected root HIR block")?;
+    let stmt = root.stmts.first().and_then(|id| body.stmt(*id)).ok_or("expected statement")?;
+    let HirStmt::Let { storage: DeclStorageClass::Local, init: Some(init_id), .. } = stmt else {
+        return Err(format!("recovered local must stay a local Let, got {stmt:?}"));
+    };
+    let Some(HirExpr::Assign { rhs, mode: AssignMode::ReadModifyWrite, .. }) = body.expr(*init_id)
+    else {
+        return Err(format!(
+            "recovered local must keep its RMW assignment, got {:?}",
+            body.expr(*init_id)
+        ));
+    };
+    match body.expr(*rhs) {
+        Some(HirExpr::Opaque { ast_kind }) if ast_kind == "MissingExpression" => Ok(()),
+        other => {
+            Err(format!("recovered RHS must lower as opaque MissingExpression, got {other:?}"))
+        }
+    }
 }

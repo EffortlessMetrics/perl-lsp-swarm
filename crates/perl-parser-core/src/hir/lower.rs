@@ -898,7 +898,8 @@ impl Lowerer {
                 self.visit_children(node, confidence);
             }
             NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
-                let (variables, has_embedded_initializer) = variable_decl_bindings(variable);
+                let variables = variable_decl_bindings(variable);
+                let initializer = declaration_initializer_node(variable, initializer.as_deref());
                 let item_id = self.push_item(
                     node,
                     variables.first().map(|binding| binding.range),
@@ -907,22 +908,16 @@ impl Lowerer {
                         declarator: declarator.clone(),
                         variables: variables.clone(),
                         attribute_count: attributes.len(),
-                        has_initializer: initializer.is_some() || has_embedded_initializer,
-                        initializer_range: declaration_initializer_node(variable, initializer.as_deref())
-                            .map(|initializer| initializer.location),
+                        has_initializer: initializer.is_some(),
+                        initializer_range: initializer.map(|initializer| initializer.location),
                         is_list: false,
                     }),
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
                 self.record_declaration_bindings(declarator, &variables, item_id);
-                self.record_variable_stash_effects(
-                    declarator,
-                    &variables,
-                    declaration_initializer_node(variable, initializer.as_deref()),
-                    item_id,
-                );
-                if let Some(initializer) = declaration_initializer_node(variable, initializer.as_deref()) {
+                self.record_variable_stash_effects(declarator, &variables, initializer, item_id);
+                if let Some(initializer) = initializer {
                     self.visit(initializer, confidence);
                 }
             }
@@ -2365,20 +2360,6 @@ impl Lowerer {
         None
     }
 
-    fn visit_declaration_variable_payload(
-        &mut self,
-        variable: &Node,
-        confidence: RecoveryConfidence,
-    ) {
-        match &variable.kind {
-            NodeKind::Assignment { rhs, .. } => self.visit(rhs, confidence),
-            NodeKind::VariableWithAttributes { variable, .. } => {
-                self.visit_declaration_variable_payload(variable, confidence);
-            }
-            _ => {}
-        }
-    }
-
     fn visit_declaration_list_entries(
         &mut self,
         variables: &[Node],
@@ -2913,19 +2894,36 @@ fn is_isa_target(node: &Node) -> bool {
         if sigil == "@" && package_and_symbol(name, None).1 == "ISA")
 }
 
-fn variable_decl_bindings(node: &Node) -> (Vec<VariableBinding>, bool) {
+fn variable_decl_bindings(node: &Node) -> Vec<VariableBinding> {
     match &node.kind {
-        NodeKind::Assignment { lhs, .. } => (variable_binding(lhs).into_iter().collect(), true),
+        NodeKind::Assignment { lhs, .. } => variable_binding(lhs).into_iter().collect(),
         NodeKind::VariableWithAttributes { variable, .. } => variable_decl_bindings(variable),
-        _ => (variable_binding(node).into_iter().collect(), false),
+        _ => variable_binding(node).into_iter().collect(),
     }
 }
 
+/// The expression that initializes a single-variable declaration, as the flat
+/// lowerer sees it.
+///
+/// `my`/`our`/`state` carry their RHS in the separate `initializer` field.
+/// `local $x = EXPR` (and compound forms such as `local $x .= EXPR`) instead
+/// parse the whole assignment into `variable`, because `local` accepts
+/// arbitrary lvalues. The flat lowerer wants only that assignment's RHS: the
+/// localized `$x` is the declaration's own binding, and traversing it as an
+/// expression would record a spurious self-reference in the scope graph. The
+/// canonical body lowerer lowers the embedded assignment node itself, because
+/// there the operator and place are the payload.
 fn declaration_initializer_node<'a>(
     variable: &'a Node,
     initializer: Option<&'a Node>,
 ) -> Option<&'a Node> {
-    initializer.or_else(|| matches!(&variable.kind, NodeKind::Assignment { .. }).then_some(variable))
+    initializer.or_else(|| match &variable.kind {
+        NodeKind::Assignment { rhs, .. } => Some(rhs),
+        NodeKind::VariableWithAttributes { variable, .. } => {
+            declaration_initializer_node(variable, None)
+        }
+        _ => None,
+    })
 }
 
 fn require_target(argument: Option<&Node>) -> Option<String> {
@@ -3332,37 +3330,45 @@ impl<'a> BodyBuilder2<'a> {
                 let sigil = sigil_from_str(sigil_str);
                 let storage = storage_class_for_decl(declarator);
 
-                let init_expr_id = declaration_initializer_node(variable, initializer.as_deref()).map(|init_node| {
-                    if initializer.is_none() {
-                        return self.lower_expr(variable);
-                    }
-                    // Allocate the write-place for the declared variable.
-                    // Always Lexical regardless of declarator — the place IS the
-                    // declaration site, not a resolved binding.
-                    let place_kind = match declarator.as_str() {
-                        "our" => VariableKind::Package,
-                        _ => VariableKind::Lexical,
-                    };
-                    let place_expr = HirExpr::Variable(HirVariable {
-                        sigil: sigil_from_str(sigil_str),
-                        name: var_name.clone(),
-                        kind: place_kind,
-                        access: AccessMode::Write,
-                    });
-                    let place_id = self.alloc_expr(place_expr, variable.location);
+                let init_expr_id = match (initializer.as_deref(), &variable.kind) {
+                    // `local $x = EXPR` / `local $x .= EXPR`: the parser stores the
+                    // whole assignment in `variable`, so lower that node directly. It
+                    // already owns the place, RHS, operator mode, and exact range; a
+                    // second synthetic assignment would double-count the write.
+                    (None, NodeKind::Assignment { .. }) => Some(self.lower_expr(variable)),
+                    (None, _) => None,
+                    (Some(init_node), _) => Some({
+                        // Allocate the write-place for the declared variable.
+                        // Always Lexical regardless of declarator — the place IS the
+                        // declaration site, not a resolved binding.
+                        let place_kind = match declarator.as_str() {
+                            "our" => VariableKind::Package,
+                            _ => VariableKind::Lexical,
+                        };
+                        let place_expr = HirExpr::Variable(HirVariable {
+                            sigil: sigil_from_str(sigil_str),
+                            name: var_name.clone(),
+                            kind: place_kind,
+                            access: AccessMode::Write,
+                        });
+                        let place_id = self.alloc_expr(place_expr, variable.location);
 
-                    // Lower the RHS.
-                    let rhs_id = self.lower_expr(init_node);
+                        // Lower the RHS.
+                        let rhs_id = self.lower_expr(init_node);
 
-                    // Assign node spanning from variable to end of initializer.
-                    let assign_range = SourceLocation {
-                        start: variable.location.start,
-                        end: init_node.location.end,
-                    };
-                    let assign_expr =
-                        HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
-                    self.alloc_expr(assign_expr, assign_range)
-                });
+                        // Assign node spanning from variable to end of initializer.
+                        let assign_range = SourceLocation {
+                            start: variable.location.start,
+                            end: init_node.location.end,
+                        };
+                        let assign_expr = HirExpr::Assign {
+                            lhs: place_id,
+                            rhs: rhs_id,
+                            mode: AssignMode::Simple,
+                        };
+                        self.alloc_expr(assign_expr, assign_range)
+                    }),
+                };
 
                 self.alloc_stmt(
                     HirStmt::Let {
