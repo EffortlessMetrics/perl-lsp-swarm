@@ -78,7 +78,7 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 
 ## Fixture matrix
 
-2 positive and 56 negative deterministic fixtures.
+2 positive and 57 negative deterministic fixtures.
 
 | Fixture | Expectation | Typed outcome |
 | --- | --- | --- |
@@ -120,6 +120,7 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 | `negative-project-perl-plan-differs` | `reject` | reject `project_perl_identity_mismatch` |
 | `negative-relative-perl-include-root` | `reject` | reject `project_perl_identity_mismatch` |
 | `negative-relative-perl-interpreter` | `reject` | reject `project_perl_identity_mismatch` |
+| `negative-reversed-optional-cell-state` | `reject` | reject `dap_cell_evidence_missing` |
 | `negative-secrets-unredacted` | `reject` | reject `security_context_missing` |
 | `negative-security-context-root` | `reject` | reject `security_context_missing` |
 | `negative-service-account-token-used` | `reject` | reject `service_account_token_forbidden` |

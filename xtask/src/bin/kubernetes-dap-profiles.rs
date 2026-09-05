@@ -1704,9 +1704,24 @@ impl ProfileDocument {
                     );
                 }
             }
+            // The contract states each cell's confidence, and a profile may cite
+            // a cell but not restate it. Only the evidence-backed direction was
+            // guarded, so an optional cell could be claimed `unsupported` where
+            // the contract says `not_proven` (or the reverse) and the published
+            // boundary would silently move.
+            if claim.claimed_state != row.state {
+                return rejection(
+                    RejectionReason::DapCellEvidenceMissing,
+                    why(format!(
+                        "cell {:?} is claimed {} but the contract states {}",
+                        claim.cell_id,
+                        claim.claimed_state.as_str(),
+                        row.state.as_str()
+                    )),
+                );
+            }
             if claim.claimed_state == CellState::EvidenceBacked
                 && (row.family != CellFamily::InitialAdmitted
-                    || row.state != CellState::EvidenceBacked
                     || claim.evidence.is_empty()
                     || claim.evidence.iter().any(|item| item.trim().is_empty()))
             {
@@ -3075,5 +3090,45 @@ mod tests {
             assert_rejected_with(&profile, RejectionReason::LoaderContractMismatch)?;
         }
         Ok(())
+    }
+
+    /// The contract states each cell's confidence; a profile may cite a cell
+    /// but not restate it. Only the evidence-backed direction was guarded.
+    #[test]
+    fn a_profile_cannot_restate_an_optional_cell_confidence() -> Result<()> {
+        let fixtures = committed_fixtures()?;
+        let base = find_fixture(&fixtures, POSITIVE_PROJECT_IMAGE)?;
+        for (cell_id, contradicting) in
+            [("evaluate_repl", CellState::Unsupported), ("process_id_attach", CellState::NotProven)]
+        {
+            let mut profile = base.profile.clone();
+            profile.dap_claims.push(DapCellClaim {
+                cell_id: cell_id.into(),
+                claimed_state: contradicting,
+                evidence: Vec::new(),
+            });
+            assert_rejected_with(&profile, RejectionReason::DapCellEvidenceMissing)?;
+        }
+        Ok(())
+    }
+
+    /// Restating a cell at the confidence the contract already publishes is not
+    /// a contradiction, so the check must not reject it.
+    #[test]
+    fn restating_an_optional_cell_at_its_contract_state_is_admitted() -> Result<()> {
+        let contract = committed_contract()?;
+        let fixtures = committed_fixtures()?;
+        let mut profile = find_fixture(&fixtures, POSITIVE_PROJECT_IMAGE)?.profile.clone();
+        let row = contract
+            .dap_cells
+            .iter()
+            .find(|row| row.cell_id == "evaluate_repl")
+            .context("contract must carry the evaluate_repl cell")?;
+        profile.dap_claims.push(DapCellClaim {
+            cell_id: row.cell_id.clone(),
+            claimed_state: row.state,
+            evidence: Vec::new(),
+        });
+        profile.evaluate(&contract).map_err(Into::into)
     }
 }
