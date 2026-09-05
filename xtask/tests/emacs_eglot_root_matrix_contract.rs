@@ -331,3 +331,76 @@ fn declared_observation_slots_match_the_driver_receipt_keys() -> Result<(), Box<
     );
     Ok(())
 }
+
+/// Depth of the last balanced top-level form, or the byte offset where the
+/// driver's parenthesis nesting first goes negative.
+///
+/// Reads elisp the way the Emacs reader does for this purpose: string
+/// literals, backslash escapes, character literals, and `;` comments cannot
+/// contribute parentheses. Anything left is real structure.
+fn driver_form_balance(driver: &str) -> Result<usize, String> {
+    let bytes: Vec<char> = driver.chars().collect();
+    let (mut depth, mut top_level_forms) = (0i32, 0usize);
+    let (mut in_string, mut in_comment) = (false, false);
+    let mut index = 0;
+    while index < bytes.len() {
+        let current = bytes[index];
+        if in_string {
+            match current {
+                '\\' => index += 1,
+                '"' => in_string = false,
+                _ => {}
+            }
+        } else if in_comment {
+            if current == '\n' {
+                in_comment = false;
+            }
+        } else {
+            match current {
+                // `?(` and `?\)` are characters, not structure.
+                '?' if index + 1 < bytes.len() => {
+                    index += if bytes[index + 1] == '\\' { 2 } else { 1 };
+                }
+                '"' => in_string = true,
+                ';' => in_comment = true,
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return Err(format!("unbalanced `)` at character {index}"));
+                    }
+                    if depth == 0 {
+                        top_level_forms += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    if depth != 0 {
+        return Err(format!("{depth} form(s) left open at end of driver"));
+    }
+    Ok(top_level_forms)
+}
+
+/// The instrument has to be readable before any of its stock-seam
+/// guarantees mean anything: an unbalanced driver cannot load in batch
+/// Emacs, so it reaches neither its observation path nor its typed
+/// refusal, and every textual seam assertion above passes vacuously.
+///
+/// This is the cheapest check that can falsify instrument reachability
+/// without an Emacs toolchain on the runner.
+#[test]
+fn root_probe_driver_is_a_readable_elisp_program() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let driver = read(&root, DRIVER)?;
+    let forms = driver_form_balance(&driver).map_err(|error| format!("{DRIVER}: {error}"))?;
+    // Negative control on the reader: a driver whose parentheses all hid
+    // inside strings would balance trivially at zero forms.
+    assert!(
+        forms >= 10,
+        "driver should read as its top-level requires and defuns, found {forms} forms"
+    );
+    Ok(())
+}

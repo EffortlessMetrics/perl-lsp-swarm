@@ -11,6 +11,7 @@
 (require 'json)
 (require 'project)
 (require 'eglot)
+(require 'seq)
 (require 'subr-x)
 
 (defconst perl-lsp-root-probe-schema-version "emacs_eglot_project_root_observations.v1")
@@ -40,24 +41,59 @@
     "connect_failed"))
 
 (defun perl-lsp-root-probe--initialize-request-root-uri (server)
-  "Extract the initialize request rootUri from this exact server's events."
+  "Return this exact server's initialize rootUri as a typed outcome.
+
+The car is `observed' when the initialize request itself supplied the
+answer — cdr is the URI string, or :null for a literal JSON null — and
+`unavailable' when the instrument could not read that evidence at all,
+with a typed refusal token as cdr.  The two are never collapsed: an
+unreadable event log is an instrument refusal, not an observation that
+stock Eglot sent no root."
   (let* ((events (ignore-errors (jsonrpc-events-buffer server)))
          (text (and events
                     (buffer-live-p events)
                     (with-current-buffer events
                       (buffer-string)))))
-    (when (and text
-               (string-match "\"rootUri\"[[:space:]]*:[[:space:]]*\\(?:\"\\([^\"]*\\)\"\\|null\\)"
-                             text))
-      ;; Only the quoted alternative captures, so a literal `null' leaves
-      ;; group 1 unset and the caller records the native null sentinel.  The
-      ;; group holds the URI itself: no surrounding quotes, no trailing
-      ;; whitespace can reach the receipt as part of the observed root.
-      (match-string 1 text))))
+    (cond
+     ((null text) (cons 'unavailable "initialize_events_unreadable"))
+     ;; Only the two alternatives capture, and each holds the answer
+     ;; itself: no surrounding quotes and no trailing whitespace can
+     ;; reach the receipt as part of the observed root.
+     ((not (string-match
+            "\"rootUri\"[[:space:]]*:[[:space:]]*\\(?:\"\\([^\"]*\\)\"\\|\\(null\\)\\)"
+            text))
+      (cons 'unavailable "initialize_root_uri_absent"))
+     ((match-beginning 1) (cons 'observed (match-string 1 text)))
+     (t (cons 'observed :null)))))
 
-(defun perl-lsp-root-probe--live-server-count (server)
-  "Return one only when this case's exact server process is still live."
-  (if (and server (process-live-p (jsonrpc--process server))) 1 0))
+(defun perl-lsp-root-probe--live-server-processes ()
+  "Return the Eglot server processes that are live right now.
+
+Uses only the public process list and Eglot's own process-naming
+convention, so no private session registry is consulted."
+  (seq-filter (lambda (process)
+                (and (process-live-p process)
+                     (string-prefix-p "EGLOT" (process-name process))))
+              (process-list)))
+
+(defun perl-lsp-root-probe--live-server-count (server baseline)
+  "Count the live server processes this case is answerable for.
+
+SERVER is the exact connection this case created, when `eglot--connect'
+returned one.  BASELINE is the set of Eglot processes already live
+before the attempt: those belong to other sessions and can neither
+satisfy nor fail this case.  Counting the non-baseline survivors rather
+than SERVER alone also catches the leak where `eglot--connect' spawned a
+process and then raised, so this case never received the handle — the
+old exact-server check recorded zero survivors for exactly that case."
+  (let ((surviving (seq-count (lambda (process) (not (memq process baseline)))
+                              (perl-lsp-root-probe--live-server-processes)))
+        (exact (and server (jsonrpc--process server))))
+    ;; A server whose process somehow predates the attempt is still this
+    ;; case's own session, so it is never excused by the baseline.
+    (if (and exact (process-live-p exact) (memq exact baseline))
+        (1+ surviving)
+      surviving)))
 
 (defun perl-lsp-root-probe-run ()
   "Run one stock project.el/Eglot root observation and write its receipt."
@@ -85,48 +121,66 @@
          ;; may close it before the receipt is written.
          (opened-mode (symbol-name (buffer-local-value 'major-mode buffer))))
     (let* ((server nil)
+          ;; Captured before any connect attempt: every Eglot process
+          ;; already live belongs to another session and is excluded from
+          ;; this case's cleanup answer in both directions.
+          (baseline (perl-lsp-root-probe--live-server-processes))
           (session-result
            ;; Stock behavior ends here when no server program is supplied:
            ;; there is nothing to contact, so the receipt records the
            ;; manual action instead of inventing a session fact.
            (if candidate
                (condition-case err
-                   (setq server
-                          (with-current-buffer buffer
-                            (let ((eglot-sync-connect 30)
-                                  (eglot-autoreconnect nil)
-                                  (eglot-autoshutdown t))
-                              ;; Mirror the landed bundled adapter: this is
-                              ;; exactly what stock `eglot-contact' runs,
-                              ;; so the observed selection stays stock
-                              ;; behavior end to end.
-                              (eglot--connect
-                               (list major-mode)
-                               (eglot--current-project)
-                               'eglot-lsp-server
-                               (list candidate "--stdio")
-                               '("perl"))))))
+                   ;; The connect and the observation are one protected
+                   ;; body: a `progn' is required here, because a bare
+                   ;; second form would be read as a handler for the
+                   ;; condition named by its head rather than as code.
+                   (progn
+                     (setq server
+                           (with-current-buffer buffer
+                             (let ((eglot-sync-connect 30)
+                                   (eglot-autoreconnect nil)
+                                   (eglot-autoshutdown t))
+                               ;; Mirror the landed bundled adapter: this
+                               ;; is exactly what stock `eglot-contact'
+                               ;; runs, so the observed selection stays
+                               ;; stock behavior end to end.
+                               (eglot--connect
+                                (list major-mode)
+                                (eglot--current-project)
+                                'eglot-lsp-server
+                                (list candidate "--stdio")
+                                '("perl")))))
                      (if (and server (process-live-p (jsonrpc--process server)))
-                         (let ((observed
-                                `((initialize_root_uri
-                                   . ,(or
-                                       (perl-lsp-root-probe--initialize-request-root-uri server)
-                                       :null)))))
-                           ;; Observe while alive, then end the session here
-                           ;; only; final cleanup verification stays with
-                           ;; the single post-run cleanup phase below.
+                         (let* ((root-uri
+                                 (perl-lsp-root-probe--initialize-request-root-uri
+                                  server))
+                                (observed
+                                 (if (eq (car root-uri) 'observed)
+                                     `((session_established . t)
+                                       (initialize_root_uri . ,(cdr root-uri)))
+                                   ;; The session is a fact; its initialize
+                                   ;; evidence is not.  Refuse the root
+                                   ;; rather than let an unreadable event
+                                   ;; log serialize as an observed null.
+                                   `((session_established . t)
+                                     (initialize_root_uri . :null)
+                                     (manual_action_required . :true)
+                                     (refusal_reason . ,(cdr root-uri))))))
+                           ;; Observe while alive, then end the session
+                           ;; here only; final cleanup verification stays
+                           ;; with the single post-run cleanup phase below.
                            (condition-case _shutdown
                                (eglot-shutdown server nil 15 t)
                              (error nil))
-                           (append observed
-                                   '((session_established . t))))
+                           observed)
                        '((session_established . :false)
                          (manual_action_required . :true)
-                         (refusal_reason . "no_live_session")))
-                   (error
-                    `((session_established . :false)
-                      (manual_action_required . :true)
-                      (refusal_reason . ,(perl-lsp-root-probe--error-token err)))))
+                         (refusal_reason . "no_live_session"))))
+                 (error
+                  `((session_established . :false)
+                    (manual_action_required . :true)
+                    (refusal_reason . ,(perl-lsp-root-probe--error-token err)))))
              '((session_established . :false)
                (manual_action_required . :true)
                (refusal_reason . "candidate_executable_not_supplied"))))
@@ -135,7 +189,8 @@
           (cleanup-buffer-dead (not (buffer-live-p buffer))))
       ;; Post-cleanup verification drives the receipt: cleanup is proven,
       ;; never asserted while optimism was still possible.
-      (setq cleanup-live-servers (perl-lsp-root-probe--live-server-count server))
+      (setq cleanup-live-servers
+            (perl-lsp-root-probe--live-server-count server baseline))
       (when (> cleanup-live-servers 0)
         ;; Fail closed before any receipt exists: a torn-down-but-alive
         ;; server process may never back a recorded observation, so the
