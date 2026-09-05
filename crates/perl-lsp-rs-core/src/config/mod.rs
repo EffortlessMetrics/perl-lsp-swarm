@@ -605,7 +605,31 @@ impl ServerConfig {
                 self.ai_completion.rate_limit_rps = rps;
             }
             if let Some(inflight) = ai.get("maxInflight").and_then(|v| v.as_u64()) {
-                self.ai_completion.max_inflight = inflight as u32;
+                // The configuration authority catalog declares `ai.max_inflight`
+                // as `UnsignedRange { minimum: 1, maximum: 64 }` with
+                // `KeepLastValid`. This channel bypassed both: `as u32` wraps,
+                // so 4294967296 became 0 — and then a gate capacity of 1, i.e.
+                // *tighter* than the user asked for — while 65..=u32::MAX
+                // sailed past the declared maximum.
+                //
+                // Pre-existing, but `max_inflight` is now a live-concurrency
+                // ceiling rather than only the token bucket's burst (`#8300`),
+                // so an out-of-range value changes how many requests may be
+                // simultaneously active. Honour the declared contract here.
+                match u32::try_from(inflight) {
+                    Ok(value) if AI_MAX_INFLIGHT_RANGE.contains(&value) => {
+                        self.ai_completion.max_inflight = value;
+                    }
+                    _ => {
+                        tracing::warn!(
+                            requested = inflight,
+                            minimum = *AI_MAX_INFLIGHT_RANGE.start(),
+                            maximum = *AI_MAX_INFLIGHT_RANGE.end(),
+                            retained = self.ai_completion.max_inflight,
+                            "aiCompletion.maxInflight is out of range; keeping the previous value"
+                        );
+                    }
+                }
             }
             if let Some(fallback) = ai.get("fallback").and_then(|v| v.as_bool()) {
                 self.ai_completion.fallback = fallback;
@@ -1894,6 +1918,13 @@ pub(crate) const SYSTEM_INC_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 /// resets the epoch, so a genuinely stalled host performs at most two bounded
 /// spawns instead of re-probing on every `get_system_inc()` call.
 const SYSTEM_INC_PROBE_MAX_ATTEMPTS: u32 = 2;
+
+/// Accepted range for `aiCompletion.maxInflight` (`#8300`).
+///
+/// Mirrors the `Validation::UnsignedRange { minimum: 1, maximum: 64 }` declared
+/// for `ai.max_inflight` in `configuration_authority::catalog`, so the
+/// client-settings channel cannot admit a value the authority would reject.
+const AI_MAX_INFLIGHT_RANGE: std::ops::RangeInclusive<u32> = 1..=64;
 
 /// Deterministic probe replacement for the bounded-retry proof (#12945).
 ///
@@ -3773,6 +3804,49 @@ profile = "recommended"
         }));
         assert!(config.perltidy_profile.is_none());
         Ok(())
+    }
+
+    /// `aiCompletion.maxInflight` must honour the authority catalog's
+    /// `1..=64` / `KeepLastValid` contract on the client-settings channel
+    /// (`#8300`).
+    ///
+    /// Before this, the channel did `inflight as u32`, which wraps. The
+    /// interesting case is not the obvious "too big" one — it is that
+    /// `4294967296` truncated to `0` and then became a gate capacity of **1**,
+    /// silently giving the user a *tighter* ceiling than they asked for.
+    #[test]
+    fn ai_max_inflight_out_of_range_keeps_the_previous_value() {
+        let mut config = ServerConfig::default();
+
+        // A valid value is accepted, and establishes the "previous valid"
+        // state the rejections below must preserve.
+        config.update_from_value(&serde_json::json!({ "aiCompletion": { "maxInflight": 8 } }));
+        assert_eq!(config.ai_completion.max_inflight, 8);
+
+        // The declared maximum is inclusive.
+        config.update_from_value(&serde_json::json!({ "aiCompletion": { "maxInflight": 64 } }));
+        assert_eq!(config.ai_completion.max_inflight, 64, "64 is within 1..=64");
+
+        for rejected in [
+            0_u64,               // below the minimum; previously became capacity 1
+            65,                  // above the declared maximum
+            u64::from(u32::MAX), // far above it, but does not wrap
+            4_294_967_296,       // wraps to 0 under `as u32`
+            4_294_967_297,       // wraps to 1 under `as u32`
+            u64::MAX,            // wraps to u32::MAX under `as u32`
+        ] {
+            config.update_from_value(
+                &serde_json::json!({ "aiCompletion": { "maxInflight": rejected } }),
+            );
+            assert_eq!(
+                config.ai_completion.max_inflight, 64,
+                "maxInflight={rejected} is out of range and must keep the previous valid value"
+            );
+        }
+
+        // Still usable afterwards: rejection does not latch the field.
+        config.update_from_value(&serde_json::json!({ "aiCompletion": { "maxInflight": 1 } }));
+        assert_eq!(config.ai_completion.max_inflight, 1);
     }
 
     #[test]

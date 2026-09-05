@@ -1,6 +1,7 @@
 //! OpenAI-compatible completion provider.
 
 use super::destination::{ApprovedDestination, credential_may_attach, validate_endpoint};
+use super::inflight::{InflightCounters, InflightGate};
 use super::prompt::build_fim_prompt;
 use super::rate_limiter::RateLimiter;
 use super::sanitize::{sanitize_completion_text, sanitize_streaming_text};
@@ -15,10 +16,29 @@ use crate::providers::inline_completion::{
 use std::io::{BufRead, BufReader};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use ureq::unversioned::resolver::{ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
 /// Configuration for the OpenAI-compatible provider.
+///
+/// # Supported construction, and the 0.18.0 field addition
+///
+/// Build this with [`OpenAiConfig::new`] and assign the optional fields
+/// afterwards. That is the supported strategy and it survives field additions.
+///
+/// The fields are public, so an exhaustive struct literal also compiles — but
+/// it is *not* a supported construction path, because every new field breaks
+/// it. `max_inflight` (`#8300`) is such an addition: a downstream literal that
+/// enumerated every field of the 0.17.0 struct no longer compiles.
+///
+/// This crate is published and pre-1.0. Under Cargo's 0.x rules the minor
+/// component is the breaking-change vehicle, and this change lands in the
+/// 0.18.0 release (`docs/releases/v0.18-release-topology.md`), whose AI
+/// security umbrella (#4955) is this work's parent. So the break is carried by
+/// a version bump that already signals it, rather than slipped into a patch.
+///
+/// Callers using `new` plus field assignment need no change.
 #[derive(Debug, Clone)]
 pub struct OpenAiConfig {
     /// The API endpoint URL (e.g. `https://api.openai.com/v1/chat/completions`).
@@ -35,12 +55,24 @@ pub struct OpenAiConfig {
     pub timeout_ms: u64,
     /// Allow plain HTTP when the endpoint resolves to loopback only.
     pub local_model_mode: bool,
+    /// Maximum simultaneously active backend requests (`#8300`).
+    ///
+    /// A live-request ceiling, not a rate. The provider builds its own
+    /// [`InflightGate`] from this so the gate's lifetime is exactly the
+    /// backend generation's.
+    pub max_inflight: u32,
 }
 
 /// An OpenAI-compatible completion provider using ureq for HTTP.
 pub struct OpenAiProvider {
     config: OpenAiConfig,
     limiter: Arc<RateLimiter>,
+    /// Live concurrency ceiling for this backend generation (`#8300`).
+    ///
+    /// Owned rather than shared: reconfiguring the AI profile builds a new
+    /// provider, so a new generation starts with an empty gate while permits
+    /// outstanding on the old one drain into the gate they came from.
+    inflight: InflightGate,
     /// Destination validated once on first use; subsequent requests only
     /// re-check credential binding against the URL about to be dispatched.
     approved: OnceLock<ApprovedDestination>,
@@ -57,6 +89,7 @@ impl OpenAiConfig {
             api_key_prefix: Some(DEFAULT_AI_API_KEY_PREFIX.to_string()),
             timeout_ms,
             local_model_mode: false,
+            max_inflight: 1,
         }
     }
 }
@@ -100,8 +133,35 @@ impl Resolver for PinnedIpResolver {
 
 impl OpenAiProvider {
     /// Create a new provider with the given config and rate limiter.
+    ///
+    /// The live concurrency gate is built here from `config.max_inflight`, so
+    /// it belongs to this provider generation (`#8300`).
     pub fn new(config: OpenAiConfig, limiter: Arc<RateLimiter>) -> Self {
-        Self { config, limiter, approved: OnceLock::new() }
+        let inflight = InflightGate::new(config.max_inflight);
+        Self { config, limiter, inflight, approved: OnceLock::new() }
+    }
+
+    /// A snapshot of this generation's live-concurrency counters.
+    ///
+    /// This is the supported way to observe the gate. It returns a copied
+    /// snapshot rather than the gate itself, so reading occupancy cannot
+    /// consume it. The counters are bounded and numeric: no prompt, source,
+    /// completion, endpoint, or credential material is derivable from them.
+    pub fn inflight_counters(&self) -> InflightCounters {
+        self.inflight.counters()
+    }
+
+    /// The live gate itself — a test seam, not supported API.
+    ///
+    /// Prefer [`Self::inflight_counters`] to observe occupancy. This accessor
+    /// hands out the gate, and [`InflightGate::try_acquire`] on it takes a real
+    /// permit: a caller holding permits here starves the provider's own
+    /// requests into `Saturated`. That is what makes it useful for constructing
+    /// saturation in tests, and why it is not something to reach for in
+    /// application code.
+    #[doc(hidden)]
+    pub fn inflight(&self) -> &InflightGate {
+        &self.inflight
     }
 
     fn approved_destination(&self) -> Result<&ApprovedDestination, BackendError> {
@@ -707,6 +767,14 @@ impl InlineCompletionBackend for OpenAiProvider {
         req: &BackendRequest,
         sink: &mut dyn FnMut(StreamChunk) -> StreamControl,
     ) -> Result<(), BackendError> {
+        // Live concurrency ceiling (#8300). Taken before the rate-limiter token
+        // so a request that has nowhere to run does not burn rate budget, and
+        // held for the whole of `stream()` — every exit below, including `?`
+        // and panic unwind, releases it by dropping this guard.
+        let Some(_permit) = self.inflight.try_acquire() else {
+            return Err(BackendError::Saturated);
+        };
+
         if !self.limiter.try_acquire() {
             return Err(BackendError::RateLimited);
         }
@@ -721,7 +789,7 @@ impl InlineCompletionBackend for OpenAiProvider {
         }
 
         let body = self.build_request_body(req);
-        let timeout = std::time::Duration::from_millis(req.timeout_ms);
+        let timeout = Duration::from_millis(req.timeout_ms);
         let agent = Self::build_http_agent(timeout, approved);
         let auth_value = self.auth_header_value()?;
 

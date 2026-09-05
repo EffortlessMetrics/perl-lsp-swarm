@@ -12,6 +12,8 @@
 //! 6. AI enabled, no backend registered, fallback=true -- deterministic fallback
 //! 7. AI enabled, no backend registered, fallback=false -- empty result
 //! 8. AI enabled, backend errors, fallback=true -- deterministic fallback
+//! 9. AI enabled, concurrency ceiling saturated -- deterministic fallback, or
+//!    an empty result when fallback=false (`#8300`)
 //!
 //! Requires the `expose_lsp_test_api` feature to access `LspServer::test_*`
 //! methods.
@@ -152,6 +154,27 @@ impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
     }
 }
 
+/// Mock backend that always reports a saturated concurrency ceiling (`#8300`).
+///
+/// Distinct from [`MockRateLimitedBackend`]: the request was not too frequent,
+/// it had nowhere to run.
+struct MockSaturatedBackend;
+
+impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+    for MockSaturatedBackend
+{
+    fn stream(
+        &self,
+        _req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+        _sink: &mut dyn FnMut(
+            perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+        )
+            -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+    ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+        Err(perl_lsp_rs_core::providers::inline_completion::BackendError::Saturated)
+    }
+}
+
 /// Mock backend that always returns a provider error.
 struct MockErrorBackend;
 
@@ -289,6 +312,51 @@ fn test_ai_rate_limited_with_fallback_returns_deterministic()
         texts.contains(&"strict;"),
         "expected deterministic 'strict;' on rate limit fallback, got: {texts:?}",
     );
+    Ok(())
+}
+
+/// A saturated concurrency ceiling must degrade to deterministic completions,
+/// not surface an error to the editor (`#8300`).
+///
+/// This is the user-visible half of "automatic saturation defaults to immediate
+/// fallback/no-result": the request never waited behind remote work, and the
+/// user still got a suggestion.
+#[test]
+fn test_ai_saturated_with_fallback_returns_deterministic() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = setup_server()?;
+    let uri = "file:///ai_saturated.pl";
+    open_doc(&server, uri, "use ");
+
+    server.test_configure_ai_completion(true, true);
+    server.test_install_ai_backend(Some(Arc::new(MockSaturatedBackend)));
+
+    let result = inline_completion(&server, uri, 0, 4)?;
+    let items = result["items"].as_array().ok_or("items array")?;
+
+    assert!(!items.is_empty(), "expected deterministic fallback when the gate is saturated");
+    let texts: Vec<&str> = items.iter().filter_map(|item| item["insertText"].as_str()).collect();
+    assert!(
+        texts.contains(&"strict;"),
+        "expected deterministic 'strict;' on saturation fallback, got: {texts:?}",
+    );
+    Ok(())
+}
+
+/// With fallback disabled, saturation yields an empty result rather than an
+/// error response — a saturated ceiling is not a failed request.
+#[test]
+fn test_ai_saturated_without_fallback_returns_empty() -> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_saturated_nofb.pl";
+    open_doc(&server, uri, "use ");
+
+    server.test_configure_ai_completion(true, false);
+    server.test_install_ai_backend(Some(Arc::new(MockSaturatedBackend)));
+
+    let result = inline_completion(&server, uri, 0, 4)?;
+    let items = result["items"].as_array().ok_or("items array")?;
+    assert!(items.is_empty(), "expected empty result, got: {items:?}");
     Ok(())
 }
 

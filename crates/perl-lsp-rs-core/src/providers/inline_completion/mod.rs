@@ -350,6 +350,18 @@ pub struct InlineCompletionList {
 // ── AI backend interface ─────────────────────────────────────────────────────
 
 /// Error type for backend operations.
+///
+/// # The 0.18.0 `Saturated` addition
+///
+/// This enum is not `#[non_exhaustive]`, so a downstream `match` that
+/// enumerates every variant without a wildcard arm stops compiling when a
+/// variant is added. [`BackendError::Saturated`] (`#8300`) is such an addition.
+///
+/// This crate is published and pre-1.0, so the minor component is the
+/// breaking-change vehicle, and the change lands in the 0.18.0 release
+/// (`docs/releases/v0.18-release-topology.md`) rather than a patch. Downstream
+/// matches that already carry a `_` arm — the shape recommended for an error
+/// enum that is expected to grow — need no change.
 #[derive(Debug)]
 pub enum BackendError {
     /// Network or IO error.
@@ -361,7 +373,15 @@ pub enum BackendError {
     /// Request timed out.
     Timeout,
     /// Rate limit exceeded.
+    ///
+    /// Requests-per-second control only. A saturated concurrency ceiling is
+    /// [`Self::Saturated`], not this.
     RateLimited,
+    /// The live concurrency ceiling (`maxInflight`) was already full (`#8300`).
+    ///
+    /// Distinct from [`Self::RateLimited`]: the request was not too frequent,
+    /// it had nowhere to run. Carries no request or response content.
+    Saturated,
     /// Request was cancelled.
     Cancelled,
 }
@@ -374,6 +394,7 @@ impl std::fmt::Display for BackendError {
             Self::Provider(msg) => write!(f, "provider error: {}", msg),
             Self::Timeout => write!(f, "request timed out"),
             Self::RateLimited => write!(f, "rate limit exceeded"),
+            Self::Saturated => write!(f, "concurrency limit reached"),
             Self::Cancelled => write!(f, "request cancelled"),
         }
     }
@@ -390,7 +411,7 @@ impl perl_parser_core::ErrorClass for BackendError {
             Self::Auth(_) => perl_parser_core::ErrorCategory::UserError,
             // All three may succeed on retry after backoff or cancellation
             // resolution.
-            Self::Timeout | Self::RateLimited | Self::Cancelled => {
+            Self::Timeout | Self::RateLimited | Self::Saturated | Self::Cancelled => {
                 perl_parser_core::ErrorCategory::Transient
             }
         }

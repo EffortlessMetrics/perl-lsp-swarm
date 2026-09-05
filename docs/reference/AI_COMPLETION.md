@@ -52,11 +52,21 @@ ignored key.
 | `apiKeyPrefix` | string | `"Bearer"` | no — rejected (#5684) | Scheme prepended to the key, sent as `<prefix> <key>`. Set to `""` to send the raw key with no prefix — required by providers that expect a bare token. Values containing control characters are ignored. |
 | `timeoutMs` | integer | `1800` | yes | Per-request timeout in milliseconds. |
 | `maxOutputTokens` | integer | `64` | yes | Maximum tokens the model may generate per request. |
-| `rateLimitRps` | float | `1.0` | yes | Maximum requests per second (token-bucket rate). |
-| `maxInflight` | integer | `1` | yes | Maximum concurrent in-flight requests (burst size). |
+| `rateLimitRps` | float | `1.0` | yes | Maximum requests per second (token-bucket rate). Controls how often a request may *start*, not how many may run at once. |
+| `maxInflight` | integer | `1` | yes | Maximum *simultaneously active* requests, in the range `1..=64`; a value outside that range is ignored and the previous one kept. A permit is held for the whole request and released on every outcome — success, error, timeout, or cancellation. This answers a different question from `rateLimitRps`: how many may run at once, rather than how often one may start. It is not yet fully independent of it, though — see the note below. |
 | `fallback` | boolean | `true` | yes | Fall back to deterministic completions on AI failure. |
 | `streaming.enabled` | boolean | `true` | no — rejected (#4997) | Enable streaming mode (progressive ghost text). Streaming preferences never imply backend authorization. |
 | `streaming.updateDebounceMs` | integer | `60` | yes | Minimum milliseconds between streamed ghost text updates. The first and final cumulative updates are always emitted. |
+
+> **`maxInflight` currently also sets the rate limiter's burst capacity.**
+> The two settings answer different questions, but they are not yet wired
+> independently: the same value is passed to the token bucket as its burst
+> allowance, so raising `maxInflight` also raises how many requests may
+> start in a single burst, even though `rateLimitRps` is unchanged.
+> Lowering it likewise tightens the burst. Decoupling them would change
+> rate-limit behaviour for anyone already running `maxInflight >
+> rateLimitRps`, which is an observable change that belongs in its own
+> claim rather than in #8300's concurrency ceiling.
 
 Arming the remote backend additionally requires an accepted trusted
 activation; until the server-owned adapter lands, remote construction fails
@@ -229,9 +239,17 @@ the server falls back to deterministic pattern-based completions when
 
 - Increase `timeoutMs` if the provider is slow (default is 1800ms).
 - Check `rateLimitRps` and `maxInflight`. With defaults of 1.0 rps and 1
-  concurrent request, rapid typing will hit the rate limiter. The server
-  returns `RateLimited` errors silently and falls back to deterministic
-  completions.
+  concurrent request, rapid typing will hit both limits. Exceeding
+  `rateLimitRps` is reported as `RateLimited` ("too frequent"); exceeding
+  `maxInflight` is reported as `Saturated` ("nowhere to run"). Both are
+  handled silently, and what happens next depends on `fallback`: with
+  `fallback` enabled (the default) the request falls back to deterministic
+  completions; with `fallback` disabled it returns no completion at all.
+- Requests never queue for a slot. If `maxInflight` is already reached the
+  request resolves immediately rather than waiting behind a remote call.
+  Waiting would hold one of the language server's four shared read slots — the
+  same pool that serves hover and go-to-definition — so a busy AI backend would
+  slow down unrelated editor features.
 - After the trusted activation adapter lands, streaming may lower perceived
   latency. Generic `streaming.enabled` settings are currently rejected.
 
