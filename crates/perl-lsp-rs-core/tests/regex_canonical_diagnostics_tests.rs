@@ -209,6 +209,35 @@ fn canonical_embedded_code_range_is_narrower_than_the_compatibility_range() {
     );
 }
 
+/// A syntax error elsewhere in the file must not silence a regex finding.
+///
+/// The blocking-parse-error gate exists so semantic lints cannot cascade false
+/// positives off a salvaged AST (#5089). The retained table is not a semantic lint:
+/// it is parser-owned geometry for the exact source, computed during the parse that
+/// produced these very errors. Publishing it behind that gate lost findings the
+/// compatibility path still published, because the legacy advisory was emitted with
+/// the parse errors — ahead of the gate — while the session suppresses that scan.
+#[test]
+fn a_backtracking_risk_survives_an_unrelated_blocking_parse_error() {
+    // `qr/(a+)+b/` is the nested quantifier; the unclosed brace is the unrelated
+    // blocking error. They share no bytes.
+    const SOURCE: &str = "my $re = qr/(a+)+b/;\nif (1) {\n";
+
+    let diagnostics = canonical_diagnostics(SOURCE);
+
+    // Control: the fixture must actually trip the gate, or the assertion below
+    // passes for the wrong reason on a file that simply parses.
+    assert!(
+        diagnostics.iter().any(|diagnostic| diagnostic.code.as_deref() == Some("PL002")),
+        "fixture must carry a blocking parse error: {diagnostics:#?}"
+    );
+    assert_eq!(
+        with_code(&diagnostics, "PL1000").len(),
+        1,
+        "the backtracking risk must still be published: {diagnostics:#?}"
+    );
+}
+
 /// An analyzer limit reaches the client as `PL1001`, on the construct that hit it.
 ///
 /// Also the negative control for `PL1007`: a *limit* and an *exhaustion* are

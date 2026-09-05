@@ -507,6 +507,33 @@ impl DiagnosticsProvider {
             });
         }
 
+        // Canonical regex findings (#7024), published *outside* the blocking-parse-error
+        // gate below.
+        //
+        // That gate exists because a salvaged AST makes semantic lints produce cascading
+        // false positives (#5089). This is not a semantic lint: the retained table is
+        // parser-owned geometry for the exact source, computed during the parse that
+        // produced these very errors, and it is already declined outright when it does
+        // not match the source. A syntax error elsewhere in the file does not make the
+        // bytes of a regex body less certain.
+        //
+        // Gating it was a regression rather than a design choice. Before retention, a
+        // backtracking risk arrived as a parser `Advisory` and was published in the loop
+        // above, which runs ahead of the gate — so it survived a blocking error. The
+        // session suppresses that legacy scan at the source, so with the projection
+        // inside the gate the finding vanished for any file carrying an unrelated
+        // syntax error. Measured on `my $re = qr/(a+)+b/;` plus an unclosed brace: the
+        // compatibility path published the risk and the canonical path published
+        // nothing. `a_backtracking_risk_survives_an_unrelated_blocking_parse_error`
+        // pins it.
+        let embedded_code_spans = match self.canonical_regex_analysis(source) {
+            Some(table) => {
+                diagnostics.extend(project_canonical_regex_diagnostics(table));
+                super::regex_canonical::embedded_code_spans(table)
+            }
+            None => Vec::new(),
+        };
+
         // Skip lint/scope analysis when there are blocking parse errors —
         // the salvaged AST is unreliable and produces cascading false
         // positives. Only parse-error diagnostics are shown in this case.
@@ -554,20 +581,10 @@ impl DiagnosticsProvider {
             check_loop_control_labels(ast, &symbol_table, &mut diagnostics);
             check_source_filter_risk(ast, &mut diagnostics);
 
-            // Security anti-pattern detection (string eval, two-arg open, backtick exec)
-            // Canonical regex findings (#7024). When the caller supplied the
-            // parser-retained analysis for this exact source, it is the authority for
-            // every regex finding: exact spans, catalog codes, typed classes. The
-            // AST-flag embedded-code lint then stays silent so the same finding is
-            // not published twice under two identities.
-            let canonical_regex = self.canonical_regex_analysis(source);
-            let embedded_code_spans = match canonical_regex {
-                Some(table) => {
-                    diagnostics.extend(project_canonical_regex_diagnostics(table));
-                    super::regex_canonical::embedded_code_spans(table)
-                }
-                None => Vec::new(),
-            };
+            // Security anti-pattern detection (string eval, two-arg open, backtick exec).
+            // The AST-flag embedded-code lint stays silent wherever the canonical
+            // projection above already covered the same span, so one finding is not
+            // published twice under two identities.
             check_security_with_canonical_regex(ast, &mut diagnostics, &embedded_code_spans);
             check_ffi_checklib(ast, &mut diagnostics);
             check_eval_error_flow(ast, &mut diagnostics);
