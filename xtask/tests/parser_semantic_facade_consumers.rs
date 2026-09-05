@@ -24,10 +24,12 @@
 //! they remain semantic authority and consumers must import from
 //! `perl_semantic_analyzer` instead.
 //!
-//! Known limitation: comment stripping is lexical and does not tokenize
-//! string literals, so a `//` or unbalanced `/*` inside a string can hide the
-//! remainder of that line from the scan. This mirrors the precision of the
-//! sibling TDD facade guard and stays on the safe side for import statements.
+//! Normalization elides string literals as well as comments, so the guards'
+//! own detector fixtures do not read as violations and no source needs a
+//! whole-file exclusion: a real facade import in a fixture-bearing file is
+//! executable code and is still reported. Character literals are deliberately
+//! not tracked — a forbidden token cannot fit in one, and `'` is ambiguous
+//! with lifetimes.
 
 use std::{
     fs,
@@ -48,17 +50,6 @@ const SCAN_ROOTS: &[&str] = &["crates", "xtask", "fuzz"];
 /// Directory names never scanned: build output is generated, not governed
 /// source, and can contain vendored copies of facade consumers.
 const SKIPPED_DIR_NAMES: &[&str] = &["target"];
-
-/// Facade-guard sources excluded from their own scan. These files carry the
-/// forbidden tokens deliberately, as string fixtures proving the detector
-/// rejects them; because comment stripping is lexical and does not tokenize
-/// string literals, scanning them would report the detector's own evidence as
-/// a violation. The list is exact paths, never a prefix, so a real consumer
-/// cannot hide behind it.
-const GUARD_SELF_PATHS: &[&str] = &[
-    "xtask/tests/parser_semantic_facade_consumers.rs",
-    "xtask/tests/parser_tdd_facade_consumers.rs",
-];
 
 /// Leading path segments of `perl-parser` modules that re-export semantic
 /// authority.
@@ -108,6 +99,22 @@ fn repo_root() -> PathBuf {
 
 /// Strip line comments and (nested) block comments while preserving all other
 /// structure, including newlines and brace groups.
+/// Normalize a source before matching: elide comments *and* string literals,
+/// leaving executable code.
+///
+/// Eliding string literals is what lets the facade guards be scanned like
+/// every other governed source. They carry the forbidden tokens deliberately,
+/// as fixtures proving the detector rejects them, and those fixtures live in
+/// string literals; a real `use perl_parser::semantic::…` in the same file is
+/// executable code and still reported. Excluding such files wholesale would
+/// leave governed Rust consumers outside the contract — the exact hole this
+/// guard exists to close.
+///
+/// Literal forms handled: ordinary `"…"` with backslash escapes, raw strings
+/// `r"…"` / `r#"…"#` at any hash depth, and the `b` byte-string prefix.
+/// Character literals are deliberately not tracked: a forbidden token cannot
+/// fit in one, and `'` is ambiguous with lifetimes, so treating it as a
+/// literal opener would swallow real code.
 fn code_without_comments(source: &str) -> String {
     let chars: Vec<char> = source.chars().collect();
     let mut out = String::with_capacity(source.len());
@@ -124,6 +131,10 @@ fn code_without_comments(source: &str) -> String {
         } else if block_depth > 0 && chars[index] == '*' && chars.get(index + 1) == Some(&'/') {
             block_depth -= 1;
             index += 2;
+        } else if block_depth == 0
+            && let Some(next) = string_literal_end(&chars, index)
+        {
+            index = next;
         } else {
             if block_depth == 0 {
                 out.push(chars[index]);
@@ -132,6 +143,50 @@ fn code_without_comments(source: &str) -> String {
         }
     }
     out
+}
+
+/// If a string literal opens at `index`, return the index just past its close.
+/// An unterminated literal consumes the remainder, which keeps the scan on the
+/// safe side of a malformed source rather than resuming mid-literal.
+fn string_literal_end(chars: &[char], index: usize) -> Option<usize> {
+    let mut cursor = index;
+    if chars[cursor] == 'b' {
+        cursor += 1;
+    }
+    let raw = chars.get(cursor) == Some(&'r');
+    if raw {
+        cursor += 1;
+    }
+    let mut hashes = 0usize;
+    if raw {
+        while chars.get(cursor) == Some(&'#') {
+            hashes += 1;
+            cursor += 1;
+        }
+    }
+    if chars.get(cursor) != Some(&'"') {
+        return None;
+    }
+    // A prefix only opens a literal when it is not the tail of an identifier,
+    // so `over"` or `my_r"` are not misread as literal openers.
+    if index > 0 && (chars[index - 1].is_ascii_alphanumeric() || chars[index - 1] == '_') {
+        return None;
+    }
+    cursor += 1;
+    while cursor < chars.len() {
+        if !raw && chars[cursor] == '\\' {
+            cursor += 2;
+            continue;
+        }
+        if chars[cursor] == '"' {
+            let close = cursor + 1;
+            if chars[close..].iter().take(hashes).filter(|c| **c == '#').count() == hashes {
+                return Some(close + hashes);
+            }
+        }
+        cursor += 1;
+    }
+    Some(chars.len())
 }
 
 fn skip_whitespace(chars: &[char], mut index: usize) -> usize {
@@ -287,7 +342,6 @@ fn collect_rs_files(
         if child_relative.starts_with(FACADE_CRATE_PREFIX)
             || child_relative == "crates/perl-parser"
             || SKIPPED_DIR_NAMES.contains(&name.as_str())
-            || GUARD_SELF_PATHS.contains(&child_relative.as_str())
         {
             continue;
         }
@@ -501,10 +555,68 @@ fn scan_reaches_every_directory_of_each_governed_member() {
         !files.iter().any(|file| file.split('/').any(|segment| segment == "target")),
         "build output must never be scanned as governed source"
     );
-    for guard in GUARD_SELF_PATHS {
+    for guard in [
+        "xtask/tests/parser_semantic_facade_consumers.rs",
+        "xtask/tests/parser_tdd_facade_consumers.rs",
+    ] {
         assert!(
-            !files.iter().any(|file| file == guard),
-            "{guard} carries forbidden tokens as detector fixtures and must stay excluded"
+            files.iter().any(|file| file == guard),
+            "{guard} must be scanned like any other governed source; no file is excluded wholesale"
         );
     }
+}
+
+/// The guards carry forbidden tokens as fixtures, so they must be readable by
+/// the scan without reporting themselves — and a genuine facade import in the
+/// same file must still be reported. Whole-file exclusion would satisfy the
+/// first and silently break the second.
+#[test]
+fn fixture_bearing_guard_files_are_scanned_without_reporting_their_own_fixtures() {
+    let (violations, failures) = unregistered_facade_imports();
+    assert!(failures.is_empty(), "scan must not fail: {failures:?}");
+    assert!(violations.is_empty(), "detector fixtures must not read as violations: {violations:?}");
+}
+
+#[test]
+fn a_real_import_beside_detector_fixtures_is_still_reported() {
+    let fixture_bearing_guard = "\
+const FIXTURE: &str = \"use perl_parser::semantic::SemanticAnalyzer;\";
+const RAW_FIXTURE: &str = r#\"use perl_parser::{SymbolTable, Symbol};\"#;
+// use perl_parser::type_inference::TypeEnvironment;
+use perl_parser::declaration::ParentMap;
+";
+    let hits = forbidden_facade_references(&code_without_comments(fixture_bearing_guard));
+    assert_eq!(
+        hits,
+        vec!["perl_parser::declaration".to_string()],
+        "only the executable import may be reported; string and comment fixtures must not be"
+    );
+}
+
+#[test]
+fn raw_and_byte_string_literals_do_not_leak_or_swallow_code() {
+    let source = "\
+const A: &str = r\"use perl_parser::semantic::X;\";
+const B: &[u8] = b\"use perl_parser::symbol::Y;\";
+const C: &str = r##\"a \"# not a close\" use perl_parser::scope_analyzer::Z;\"##;
+use perl_parser::type_inference::TypeEnvironment;
+";
+    let hits = forbidden_facade_references(&code_without_comments(source));
+    assert_eq!(
+        hits,
+        vec!["perl_parser::type_inference".to_string()],
+        "raw/byte literals must be elided whole, and must not swallow the code after them"
+    );
+}
+
+#[test]
+fn an_identifier_ending_in_a_literal_prefix_does_not_open_a_literal() {
+    // `over` ends in `r`; treating that as a raw-string prefix would elide the
+    // rest of the file and hide every import after it.
+    let source = "\
+let over\"x\" = 1;
+use perl_parser::semantic::SemanticAnalyzer;
+";
+    let hits = forbidden_facade_references(&code_without_comments(source));
+    assert_eq!(hits, vec!["perl_parser::semantic".to_string()]);
 }
