@@ -700,7 +700,13 @@ impl<'a> Parser<'a> {
                 None
             };
 
-            let end = self.previous_position();
+            // The initializer is parsed through `parse_assignment`, which does
+            // not advance `previous_position()`; anchor the end on the parsed
+            // nodes (see `parse_variable_declaration`).
+            let end = initializer
+                .as_ref()
+                .map_or(variable.location.end, |node| node.location.end)
+                .max(self.previous_position());
             Ok(Node::new(
                 NodeKind::VariableDeclaration {
                     declarator,

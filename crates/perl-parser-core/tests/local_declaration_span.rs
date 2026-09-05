@@ -57,6 +57,8 @@ fn local_expression_spans_embedded_assignment() -> Result<(), String> {
     for (source, expected) in [
         ("my $keep = local $main::z = 'a';", "local $main::z = 'a'"),
         ("foo(local $main::z = 'a');", "local $main::z = 'a'"),
+        // Parenthesized complex lvalue argument takes its own parser branch.
+        ("foo(local($ENV{PATH}) = '/bin');", "local($ENV{PATH}) = '/bin'"),
     ] {
         assert_declaration_spans(source, "local", expected)?;
     }

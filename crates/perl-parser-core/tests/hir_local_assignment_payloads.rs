@@ -4,7 +4,7 @@ mod cpan_test_helpers;
 
 use cpan_test_helpers::{assert_clean_parse, parse};
 use perl_parser_core::hir::{
-    AccessMode, AssignMode, DeclStorageClass, HirExpr, HirStmt, VariableKind, lower_ast,
+    AccessMode, AssignMode, DeclStorageClass, HirExpr, HirStmt, VariableKind, lower_ast, lower_body,
 };
 use perl_parser_core::{Node, NodeKind};
 
@@ -221,4 +221,44 @@ fn recovered_local_assignment_does_not_become_exact_hir() -> Result<(), String> 
             Err(format!("recovered RHS must lower as opaque MissingExpression, got {other:?}"))
         }
     }
+}
+
+#[test]
+fn mirror_lowerer_keeps_local_assignment_place_and_mode() -> Result<(), String> {
+    // The test-only `lower_body` mirror must agree with the canonical builder on
+    // the embedded local assignment: package storage for the place, write vs
+    // read-modify-write access, and the matching assignment mode.
+    for (source, expected_mode, expected_access) in [
+        ("local $main::z = 'a';", AssignMode::Simple, AccessMode::Write),
+        ("local $x += 1;", AssignMode::ReadModifyWrite, AccessMode::ReadModifyWrite),
+    ] {
+        assert_clean_parse(source);
+        let body = lower_body(&parse(source));
+        let root = body.block(body.root_block).ok_or("expected root block")?;
+        let stmt = root.stmts.first().and_then(|id| body.stmt(*id)).ok_or("expected statement")?;
+        let HirStmt::Let { storage: DeclStorageClass::Local, init: Some(init_id), .. } = stmt
+        else {
+            return Err(format!("{source}: mirror must keep a local Let, got {stmt:?}"));
+        };
+        let Some(HirExpr::Assign { lhs, mode, .. }) = body.expr(*init_id) else {
+            return Err(format!(
+                "{source}: mirror init must be Assign, got {:?}",
+                body.expr(*init_id)
+            ));
+        };
+        if mode != &expected_mode {
+            return Err(format!("{source}: mirror mode {mode:?} != {expected_mode:?}"));
+        }
+        match body.expr(*lhs) {
+            Some(HirExpr::Variable(variable))
+                if variable.kind == VariableKind::Package && variable.access == expected_access => {
+            }
+            other => {
+                return Err(format!(
+                    "{source}: mirror place must be a package {expected_access:?} place, got {other:?}"
+                ));
+            }
+        }
+    }
+    Ok(())
 }

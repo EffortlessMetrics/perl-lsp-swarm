@@ -748,9 +748,15 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
                     HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
                 builder.alloc_expr(assign_expr, assign_range)
             });
-            let init_expr_id = init_expr_id.or_else(|| {
-                matches!(&variable.kind, NodeKind::Assignment { .. })
-                    .then(|| lower_expr(builder, variable))
+            let init_expr_id = init_expr_id.or_else(|| match &variable.kind {
+                // `local $x OP EXPR`: the parser stores the whole assignment in
+                // `variable`. Lower it directly so the operator picks the mode;
+                // the place is the dynamically scoped package slot, never a
+                // lexical, so a PIR consumer sees a stash modification.
+                NodeKind::Assignment { lhs, rhs, op } => {
+                    Some(lower_assignment(builder, variable, lhs, rhs, op, VariableKind::Package))
+                }
+                _ => None,
             });
 
             builder.alloc_stmt(
@@ -824,21 +830,43 @@ pub(super) fn glob_expr(pattern: &str) -> HirExpr {
 }
 
 /// Lower an assignment target. A plain variable becomes a place with the
-/// requested access mode; anything else falls back to ordinary expression
-/// lowering, as this mirror does not model subscript places.
-fn lower_place(builder: &mut BodyBuilder, node: &Node, access: AccessMode) -> HirExprId {
+/// requested storage kind and access mode; anything else falls back to
+/// ordinary expression lowering, as this mirror does not model subscript
+/// places.
+fn lower_place(
+    builder: &mut BodyBuilder,
+    node: &Node,
+    kind: VariableKind,
+    access: AccessMode,
+) -> HirExprId {
     match &node.kind {
         NodeKind::Variable { sigil, name } => {
-            let var = HirVariable {
-                sigil: Sigil::from_str(sigil),
-                name: name.clone(),
-                kind: VariableKind::Lexical,
-                access,
-            };
+            let var =
+                HirVariable { sigil: Sigil::from_str(sigil), name: name.clone(), kind, access };
             builder.alloc_expr(HirExpr::Variable(var), node.location)
         }
         _ => lower_expr(builder, node),
     }
+}
+
+/// Lower an `Assignment` node. Mirrors the canonical builder: `=` writes its
+/// target, every compound operator reads then writes it.
+fn lower_assignment(
+    builder: &mut BodyBuilder,
+    node: &Node,
+    lhs: &Node,
+    rhs: &Node,
+    op: &str,
+    place_kind: VariableKind,
+) -> HirExprId {
+    let (mode, access) = if op == "=" {
+        (AssignMode::Simple, AccessMode::Write)
+    } else {
+        (AssignMode::ReadModifyWrite, AccessMode::ReadModifyWrite)
+    };
+    let lhs_id = lower_place(builder, lhs, place_kind, access);
+    let rhs_id = lower_expr(builder, rhs);
+    builder.alloc_expr(HirExpr::Assign { lhs: lhs_id, rhs: rhs_id, mode }, node.location)
 }
 
 fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
@@ -863,16 +891,7 @@ fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
         }
 
         NodeKind::Assignment { lhs, rhs, op } => {
-            // Mirror the canonical builder: `=` writes its target, every
-            // compound operator reads then writes it.
-            let (mode, access) = if op == "=" {
-                (AssignMode::Simple, AccessMode::Write)
-            } else {
-                (AssignMode::ReadModifyWrite, AccessMode::ReadModifyWrite)
-            };
-            let lhs_id = lower_place(builder, lhs, access);
-            let rhs_id = lower_expr(builder, rhs);
-            builder.alloc_expr(HirExpr::Assign { lhs: lhs_id, rhs: rhs_id, mode }, range)
+            lower_assignment(builder, node, lhs, rhs, op, VariableKind::Lexical)
         }
 
         NodeKind::Heredoc { delimiter, interpolated, indented, command, body_span, .. } => builder
