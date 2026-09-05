@@ -197,6 +197,9 @@ fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
         "do not ",
         "no ",
         "omit ",
+        // Both boundary forms: the prefix is space-anchored, while a suffix occurrence
+        // can still end the clause ("the acceptance surface is omitted.").
+        "omitted ",
         "omitted",
         "missing ",
     ]
@@ -451,6 +454,24 @@ Later content.
         errors.iter().any(|error| error.contains("an anti-inference rule")),
         "expected the anti-inference requirement to fail closed: {errors:?}"
     );
+}
+
+#[test]
+fn an_omitted_obligation_immediately_before_a_marker_fails_closed() {
+    // `omitted` is the one negation token that also has to match at the end of a clause,
+    // so it carries both boundary forms. Without the space-anchored form it would stop
+    // matching a space-normalized prefix.
+    let text = r#"
+## Shift-left claim admission
+Before the first delegated mutation, retain a coherent claim and semantic owner.
+This lane records an omitted acceptance surface and an omitted proof ceiling.
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(errors.iter().any(|error| error.contains("acceptance surface")), "{errors:?}");
+    assert!(errors.iter().any(|error| error.contains("proof ceiling")), "{errors:?}");
 }
 
 #[test]
