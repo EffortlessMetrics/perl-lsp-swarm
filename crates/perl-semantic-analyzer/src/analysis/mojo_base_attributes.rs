@@ -222,11 +222,26 @@ fn owns_runtime_control_flow(node: &Node) -> bool {
 /// Whether `Mojo::Base` would install an accessor for this attribute name.
 ///
 /// `Mojo::Base::attr` refuses any name outside `/^[a-zA-Z_]\w*$/` with
-/// `Attribute "NAME" invalid` (verified against the upstream `Mojo/Base.pm`
-/// source), so a name it rejects declares no accessor at all — publishing one
-/// would be a member that cannot exist at runtime. This rejects a falsy `'0'`,
-/// a digit-leading `'9lives'`, and a hyphenated `'has-dash'` alike rather than
-/// special-casing any single spelling.
+/// `Attribute "NAME" invalid`, so a name it rejects declares no accessor at
+/// all — publishing one would be a member that cannot exist at runtime. This
+/// rejects a falsy `'0'`, a digit-leading `'9lives'`, and a hyphenated
+/// `'has-dash'` alike rather than special-casing any single spelling.
+///
+/// **What this rule is and is not verified against.** It comes from the
+/// released `Mojo/Base.pm` source, not from anything in this repository. The
+/// workspace fixture
+/// `test_corpus/real_projects/mojolicious_skeleton/lib/Mojo/Base.pm` is an
+/// explicitly sparse skeleton whose `_attr` only croaks
+/// `Attribute name is required` on a falsy name; it is a parser fixture and
+/// must not be read as the oracle for this rule. Nor has the pattern been
+/// checked against every release in the reviewed `>=8.0.0,<10.0.0` range — no
+/// source for those is available here.
+///
+/// That residual uncertainty is taken on the safe side deliberately. If some
+/// release in range does not enforce the pattern, this omits an accessor for
+/// an unusual name; if one enforces it and this did not, it would publish a
+/// method that cannot exist. The first is recoverable, matching the
+/// under-reporting bias applied throughout this module.
 ///
 /// The two halves of that pattern are deliberately asymmetric. The first
 /// character is the literal class `[a-zA-Z_]`, so it stays ASCII — `'éleading'`

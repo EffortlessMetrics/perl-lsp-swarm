@@ -611,6 +611,7 @@ pub fn mojo_base_object_facts(
                 SemanticReasonCode::UnsupportedEffect,
             )
         });
+        let slot_undetermined = supersession.is_some();
         facts.members.push(mint_member_fact(
             declaration,
             name,
@@ -618,7 +619,12 @@ pub fn mojo_base_object_facts(
             generation,
             supersession,
         ));
-        facts.reader_results.push(mint_reader_fact(declaration, owning_package, generation));
+        facts.reader_results.push(mint_reader_fact(
+            declaration,
+            owning_package,
+            generation,
+            slot_undetermined,
+        ));
         facts.setter_results.push(mint_setter_fact(declaration, owning_package, generation));
     }
 
@@ -873,6 +879,7 @@ fn mint_reader_fact(
     declaration: &MojoBaseAttributeDeclaration,
     package: &str,
     generation: &SourceGeneration,
+    slot_undetermined: bool,
 ) -> CallableResultFact {
     let (fact_id, entity_id) = mojo_base_reader_identity(
         declaration.file_id,
@@ -881,6 +888,22 @@ fn mint_reader_fact(
         generation,
     );
     let (mut relation, mut limitations, mut boundary_kind) = reader_relation(&declaration.default);
+    if slot_undetermined {
+        // The surviving declaration for this slot is a best-effort choice, so
+        // its default proves nothing about what a read yields: the live
+        // accessor may be a different declaration with a different default.
+        // The member already carries the ordering boundary; without this the
+        // reader would still present that declaration's value shape as
+        // established.
+        //
+        // The setter is deliberately *not* degraded alongside it. Every
+        // `Mojo::Base` accessor returns the invocant on write, whichever
+        // declaration won, so the `ReceiverSelf` relation stays exact — the
+        // uncertainty is about the value, not the write contract.
+        relation = CallableResultRelation::Unknown;
+        limitations.push(CallableResultLimitation::Unsupported);
+        boundary_kind = BoundaryKind::CompileTimeExecution;
+    }
     if !declaration.unmodeled_options.is_empty() {
         // `Mojo::Base` accepts the options (`weak => 1` and friends), so the
         // accessor and its write contract are unaffected — but an option this

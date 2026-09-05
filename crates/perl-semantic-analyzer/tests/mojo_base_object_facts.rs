@@ -1059,3 +1059,43 @@ fn a_repeat_contested_across_phases_reports_an_undetermined_winner() {
         "the run-phase declaration executes last and is the best-effort survivor"
     );
 }
+
+#[test]
+fn an_undetermined_slot_degrades_the_reader_but_not_the_write_contract() {
+    // When the surviving declaration for a slot is a best-effort choice, its
+    // default proves nothing about what a read yields — the live accessor may
+    // be a different declaration with a different default. The reader must not
+    // present that shape as established.
+    //
+    // The setter is deliberately unaffected: every `Mojo::Base` accessor
+    // returns the invocant on write whichever declaration won, so the
+    // `ReceiverSelf` relation stays exact. The uncertainty is about the value,
+    // not the write contract.
+    let contested = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "CHECK { has(name => 'from_check'); }\n",
+        "INIT { has(name => 'from_init'); }\n",
+    );
+    let facts = only_facts(contested);
+    assert_eq!(member_names(&facts), ["name"]);
+    assert_eq!(
+        facts.reader_results[0].relation,
+        CallableResultRelation::Unknown,
+        "a best-effort survivor cannot claim its default's value shape"
+    );
+    assert_eq!(
+        facts.setter_results[0].relation,
+        CallableResultRelation::ReceiverSelf,
+        "the write contract holds whichever declaration won"
+    );
+
+    // Control: an uncontested constant default still yields a concrete shape,
+    // so the degradation above isolates the contest rather than always firing.
+    let settled = "package App;\nuse Mojo::Base -base;\nhas name => 'anon';\n";
+    let settled_facts = only_facts(settled);
+    assert_eq!(
+        settled_facts.reader_results[0].relation,
+        CallableResultRelation::Concrete(ValueShape::Scalar)
+    );
+}
