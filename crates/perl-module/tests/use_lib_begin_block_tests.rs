@@ -894,3 +894,26 @@ fn pod_between_a_closed_block_and_a_pragma_keeps_the_pragma() {
         "an unterminated expression gained a statement boundary it should not have"
     );
 }
+
+/// An unfinished expression after a closed block still suppresses.
+///
+/// Only the stripped closing brace may be treated as ignorable. The quote
+/// toggles and the heredoc opener each `continue` before the general content
+/// tracker, so they had to set `has_code_content` explicitly; without that an
+/// empty `''` or `""` after a block looked like no content at all, a following
+/// POD section discarded it, and the pragma below was exposed as though it
+/// were reachable code — inventing an `@INC` root from unfinished editor text.
+#[test]
+fn an_unfinished_expression_after_a_block_still_suppresses() {
+    for unfinished in ["''", "\"\"", "'\\\\'", "my $x = 'unclosed", "<<EOF", "my $x = ("] {
+        let source = format!(
+            "sub f {{ return 1; }}\n{unfinished}\n=pod\n\nprose\n\n=cut\nuse lib 'phantom';\n"
+        );
+
+        assert_eq!(
+            extract_use_lib_operations(&source),
+            vec![],
+            "{unfinished:?} was treated as empty, inventing a path from below the POD"
+        );
+    }
+}

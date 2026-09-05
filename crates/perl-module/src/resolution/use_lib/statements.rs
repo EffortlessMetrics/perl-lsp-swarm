@@ -27,6 +27,12 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
     // Content that is not merely the closing brace of a block that already
     // ended. `strip_statement_prefix` drops those braces, so a slice holding
     // nothing else is still "empty" for the purpose of moving `start`.
+    //
+    // Every branch that sets `has_content` must set this too, except the one
+    // that excludes `}`. A branch that returns early without it — the quote
+    // toggles and the heredoc opener each `continue` — makes an unfinished
+    // expression look empty, and a following POD section then discards it and
+    // exposes the pragma below as though it were reachable code.
     let mut has_code_content = false;
     let mut pending_heredocs = VecDeque::new();
     let mut scan_end = source.len();
@@ -54,6 +60,7 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
         if ch == '\'' && !in_double {
             in_single = !in_single;
             has_content = true;
+            has_code_content = true;
             i += 1;
             continue;
         }
@@ -61,6 +68,7 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
         if ch == '"' && !in_single {
             in_double = !in_double;
             has_content = true;
+            has_code_content = true;
             i += 1;
             continue;
         }
@@ -96,6 +104,7 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
         {
             pending_heredocs.push_back((tag, strip_indent));
             has_content = true;
+            has_code_content = true;
             i = advance_char_index(&chars, i, heredoc_end);
             continue;
         }
