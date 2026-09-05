@@ -1131,6 +1131,213 @@ pub struct CompatibilityRailState {
     pub reason: String,
     pub schema_version: Option<String>,
     pub evidence_refs: Vec<String>,
+    /// Rail that produced this evidence, for execution-like rails.
+    ///
+    /// `reason` is prose and cannot be consumed. Without this field an
+    /// available `execution` rail is indistinguishable from an evaluated one,
+    /// so a consumer would have to infer "scaffold replay" from a sentence
+    /// (#8254). Rails that are not execution-like carry `None` and serialize
+    /// with no key at all, leaving existing artifacts unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mechanism: Option<ExecutionMechanism>,
+}
+
+/// Which compatibility rail a [`CompatibilityRailState`] describes.
+///
+/// The same struct carries the execution, EIR, oracle, curated-gold,
+/// registry, and history rails, so the admissible mechanism claim depends on
+/// which rail is being described rather than on the struct alone.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompatibilityRailRole {
+    /// The selected-executor rail.
+    Execution,
+    /// The EIR evaluation rail.
+    Eir,
+    /// The differential real-Perl oracle rail.
+    DifferentialOracle,
+    /// A rail that represents no execution at all — curated gold, the
+    /// semantic-boundary registry, or failure-cluster history.
+    NonExecution,
+}
+
+impl CompatibilityRailRole {
+    /// The one mechanism this rail may name, if it is execution-like.
+    ///
+    /// Each execution-like rail is defined by the rail that feeds it, so a
+    /// mechanism belonging to a different rail is a category error rather
+    /// than a mere unsupported claim: fixture replay on the `eir` rail is
+    /// precisely the relabeling #8254 exists to reject.
+    pub fn admissible_mechanism(self) -> Option<ExecutionMechanism> {
+        match self {
+            Self::Execution => Some(ExecutionMechanism::FixtureReplay),
+            Self::Eir => Some(ExecutionMechanism::EirExecution),
+            Self::DifferentialOracle => Some(ExecutionMechanism::RealPerlOracle),
+            Self::NonExecution => None,
+        }
+    }
+
+    /// Stable canonical name used in diagnostics.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Execution => "execution",
+            Self::Eir => "eir",
+            Self::DifferentialOracle => "differential_oracle",
+            Self::NonExecution => "non-execution",
+        }
+    }
+}
+
+impl fmt::Display for CompatibilityRailRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Why a rail's execution-mechanism claim is not admissible.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RailMechanismViolation {
+    /// An execution-like rail offered evidence without naming its rail.
+    Missing {
+        /// Rail that failed to name its mechanism.
+        rail: CompatibilityRailRole,
+    },
+    /// A rail that represents no execution named an execution mechanism.
+    NotExecutionLike {
+        /// Mechanism the rail claimed.
+        mechanism: ExecutionMechanism,
+    },
+    /// A rail with no evidence still named a mechanism.
+    ClaimWithoutEvidence {
+        /// Rail that made the claim.
+        rail: CompatibilityRailRole,
+        /// Mechanism the rail claimed.
+        mechanism: ExecutionMechanism,
+    },
+    /// The mechanism belongs to a different rail.
+    WrongRail {
+        /// Rail that made the claim.
+        rail: CompatibilityRailRole,
+        /// Mechanism the rail claimed.
+        mechanism: ExecutionMechanism,
+        /// Mechanism that rail may name.
+        expected: ExecutionMechanism,
+    },
+    /// The rail claimed a mechanism no current rail can supply.
+    Unsupported {
+        /// Rail that made the claim.
+        rail: CompatibilityRailRole,
+        /// Mechanism the rail claimed.
+        mechanism: ExecutionMechanism,
+    },
+}
+
+impl fmt::Display for RailMechanismViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Missing { rail } => write!(
+                f,
+                "{rail} rail offers evidence without naming its execution mechanism; \
+                 an available rail that names no mechanism leaves its claim to prose"
+            ),
+            Self::NotExecutionLike { mechanism } => write!(
+                f,
+                "a rail that represents no execution claims execution mechanism \
+                 {mechanism}"
+            ),
+            Self::ClaimWithoutEvidence { rail, mechanism } => write!(
+                f,
+                "{rail} rail is not available yet claims execution mechanism \
+                 {mechanism}; a rail without evidence names no mechanism"
+            ),
+            Self::WrongRail { rail, mechanism, expected } => write!(
+                f,
+                "{rail} rail claims execution mechanism {mechanism}, but only \
+                 {expected} evidence can reach it; relabeling a receipt does not \
+                 move it to another rail"
+            ),
+            Self::Unsupported { rail, mechanism } => write!(
+                f,
+                "{rail} rail claims execution mechanism {mechanism}, which no current \
+                 rail can supply; relabeling a receipt does not create its evidence"
+            ),
+        }
+    }
+}
+
+/// Reject a rail whose execution-mechanism claim it cannot support.
+///
+/// An execution-like rail that offers evidence must name the rail that
+/// produced it, so a consumer reads the mechanism instead of inferring it from
+/// `reason`. A rail without evidence names nothing, a mechanism belonging to
+/// another rail is refused outright, and a mechanism outside
+/// [`SUPPORTED_EXECUTION_MECHANISMS`] is refused wherever it appears.
+///
+/// Together these make an available `eir` or `differential_oracle` rail
+/// unreachable today: each may name only its own mechanism, and neither
+/// mechanism is currently supported. That is the intended result — no EIR or
+/// oracle evidence exists, so no such rail can be published (#8254).
+pub fn validate_rail_mechanism(
+    role: CompatibilityRailRole,
+    rail: &CompatibilityRailState,
+) -> Result<(), RailMechanismViolation> {
+    let offers_evidence = matches!(
+        rail.availability,
+        CompatibilityRailAvailability::Available | CompatibilityRailAvailability::Partial
+    );
+    let Some(admissible) = role.admissible_mechanism() else {
+        return match rail.mechanism {
+            Some(mechanism) => Err(RailMechanismViolation::NotExecutionLike { mechanism }),
+            None => Ok(()),
+        };
+    };
+    match rail.mechanism {
+        None if offers_evidence => Err(RailMechanismViolation::Missing { rail: role }),
+        None => Ok(()),
+        Some(mechanism) if !offers_evidence => {
+            Err(RailMechanismViolation::ClaimWithoutEvidence { rail: role, mechanism })
+        }
+        Some(mechanism) if mechanism != admissible => {
+            Err(RailMechanismViolation::WrongRail { rail: role, mechanism, expected: admissible })
+        }
+        Some(mechanism) if !SUPPORTED_EXECUTION_MECHANISMS.contains(&mechanism) => {
+            Err(RailMechanismViolation::Unsupported { rail: role, mechanism })
+        }
+        Some(_) => Ok(()),
+    }
+}
+
+/// Reject any rail of one observation whose mechanism claim is inadmissible.
+///
+/// The observation is what a compatibility consumer reads, so validating the
+/// rails together keeps one seam authoritative rather than leaving each caller
+/// to remember which rail carries which role.
+pub fn validate_observation_rail_mechanisms(
+    observation: &CompatibilityObservation,
+) -> Result<(), RailMechanismViolation> {
+    validate_rail_mechanism(CompatibilityRailRole::Execution, &observation.execution)?;
+    validate_rail_mechanism(CompatibilityRailRole::NonExecution, &observation.curated_gold)?;
+    validate_rail_mechanism(
+        CompatibilityRailRole::DifferentialOracle,
+        &observation.differential_oracle,
+    )?;
+    validate_rail_mechanism(CompatibilityRailRole::Eir, &observation.eir)?;
+    Ok(())
+}
+
+/// Reject any rail of one series — or of its current observation — whose
+/// mechanism claim is inadmissible.
+pub fn validate_series_rail_mechanisms(
+    series: &CompilerCompatibilitySeries,
+) -> Result<(), RailMechanismViolation> {
+    validate_observation_rail_mechanisms(&series.current_observation)?;
+    validate_rail_mechanism(CompatibilityRailRole::Execution, &series.execution)?;
+    validate_rail_mechanism(CompatibilityRailRole::NonExecution, &series.curated_gold)?;
+    validate_rail_mechanism(
+        CompatibilityRailRole::DifferentialOracle,
+        &series.differential_oracle,
+    )?;
+    validate_rail_mechanism(CompatibilityRailRole::Eir, &series.eir)?;
+    Ok(())
 }
 
 /// Parse or compile acceptance counts for one immutable series.
@@ -1534,6 +1741,206 @@ mod tests {
             validate_execution_mechanism("execute", Some(ExecutionMechanism::FixtureReplay))
                 .is_ok()
         );
+    }
+
+    fn rail(
+        availability: CompatibilityRailAvailability,
+        mechanism: Option<ExecutionMechanism>,
+    ) -> CompatibilityRailState {
+        CompatibilityRailState {
+            availability,
+            reason: "fixture".into(),
+            schema_version: None,
+            evidence_refs: Vec::new(),
+            mechanism,
+        }
+    }
+
+    #[test]
+    fn an_available_execution_rail_names_its_mechanism() {
+        // The whole point of the field: an available rail is readable as
+        // fixture replay without parsing `reason`.
+        let replay =
+            rail(CompatibilityRailAvailability::Available, Some(ExecutionMechanism::FixtureReplay));
+        assert!(validate_rail_mechanism(CompatibilityRailRole::Execution, &replay).is_ok());
+        assert_eq!(replay.mechanism, Some(ExecutionMechanism::FixtureReplay));
+    }
+
+    #[test]
+    fn an_available_execution_rail_without_a_mechanism_is_rejected() {
+        // This is the pre-#14763 shape: available, with the claim left to prose.
+        for availability in
+            [CompatibilityRailAvailability::Available, CompatibilityRailAvailability::Partial]
+        {
+            assert_eq!(
+                validate_rail_mechanism(
+                    CompatibilityRailRole::Execution,
+                    &rail(availability, None)
+                ),
+                Err(RailMechanismViolation::Missing { rail: CompatibilityRailRole::Execution }),
+                "an execution rail offering evidence must name the rail that produced it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rail_without_evidence_may_not_name_a_mechanism() {
+        for availability in
+            [CompatibilityRailAvailability::NotAvailable, CompatibilityRailAvailability::Stale]
+        {
+            assert_eq!(
+                validate_rail_mechanism(
+                    CompatibilityRailRole::Execution,
+                    &rail(availability, Some(ExecutionMechanism::FixtureReplay))
+                ),
+                Err(RailMechanismViolation::ClaimWithoutEvidence {
+                    rail: CompatibilityRailRole::Execution,
+                    mechanism: ExecutionMechanism::FixtureReplay,
+                }),
+                "an absent rail that names a mechanism is claiming evidence it does not have"
+            );
+        }
+    }
+
+    #[test]
+    fn fixture_replay_cannot_be_relabelled_onto_the_eir_or_oracle_rail() {
+        // #8254's central recurrence: scaffold evidence promoted by moving it
+        // to a rail that implies evaluation.
+        for (role, expected) in [
+            (CompatibilityRailRole::Eir, ExecutionMechanism::EirExecution),
+            (CompatibilityRailRole::DifferentialOracle, ExecutionMechanism::RealPerlOracle),
+        ] {
+            assert_eq!(
+                validate_rail_mechanism(
+                    role,
+                    &rail(
+                        CompatibilityRailAvailability::Available,
+                        Some(ExecutionMechanism::FixtureReplay),
+                    ),
+                ),
+                Err(RailMechanismViolation::WrongRail {
+                    rail: role,
+                    mechanism: ExecutionMechanism::FixtureReplay,
+                    expected,
+                }),
+                "fixture replay must not satisfy an EIR or oracle rail"
+            );
+            assert_eq!(role.admissible_mechanism(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn the_execution_rail_cannot_claim_an_unbacked_mechanism() {
+        // Relabeling the selected executor as evaluation is refused as a
+        // category error before it is even tested for support.
+        assert_eq!(
+            validate_rail_mechanism(
+                CompatibilityRailRole::Execution,
+                &rail(
+                    CompatibilityRailAvailability::Available,
+                    Some(ExecutionMechanism::EirExecution)
+                )
+            ),
+            Err(RailMechanismViolation::WrongRail {
+                rail: CompatibilityRailRole::Execution,
+                mechanism: ExecutionMechanism::EirExecution,
+                expected: ExecutionMechanism::FixtureReplay,
+            })
+        );
+    }
+
+    #[test]
+    fn an_available_eir_rail_is_unreachable_while_its_evidence_does_not_exist() {
+        // An EIR rail may name only `eir_execution`, and that mechanism is not
+        // in SUPPORTED_EXECUTION_MECHANISMS. No available EIR rail can be
+        // published until the evidence lands with it.
+        assert_eq!(
+            validate_rail_mechanism(
+                CompatibilityRailRole::Eir,
+                &rail(
+                    CompatibilityRailAvailability::Available,
+                    Some(ExecutionMechanism::EirExecution)
+                )
+            ),
+            Err(RailMechanismViolation::Unsupported {
+                rail: CompatibilityRailRole::Eir,
+                mechanism: ExecutionMechanism::EirExecution,
+            })
+        );
+        // ...and it cannot dodge that by declining to name a mechanism either.
+        assert_eq!(
+            validate_rail_mechanism(
+                CompatibilityRailRole::Eir,
+                &rail(CompatibilityRailAvailability::Available, None)
+            ),
+            Err(RailMechanismViolation::Missing { rail: CompatibilityRailRole::Eir })
+        );
+    }
+
+    #[test]
+    fn a_rail_representing_no_execution_names_no_mechanism() {
+        assert!(
+            validate_rail_mechanism(
+                CompatibilityRailRole::NonExecution,
+                &rail(CompatibilityRailAvailability::Available, None)
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            validate_rail_mechanism(
+                CompatibilityRailRole::NonExecution,
+                &rail(
+                    CompatibilityRailAvailability::Available,
+                    Some(ExecutionMechanism::FixtureReplay)
+                )
+            ),
+            Err(RailMechanismViolation::NotExecutionLike {
+                mechanism: ExecutionMechanism::FixtureReplay
+            }),
+            "curated gold, the registry, and history represent no execution"
+        );
+    }
+
+    #[test]
+    fn a_rail_without_a_mechanism_keeps_the_previous_wire_format()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Existing artifacts predate the field; they must stay byte-identical
+        // and decodable rather than acquiring a null.
+        let absent = rail(CompatibilityRailAvailability::NotAvailable, None);
+        let encoded = serde_json::to_string(&absent)?;
+        assert!(
+            !encoded.contains("mechanism"),
+            "a rail with no mechanism must serialize no key: {encoded}"
+        );
+        let decoded: CompatibilityRailState = serde_json::from_str(&encoded)?;
+        assert_eq!(decoded, absent);
+
+        let replay =
+            rail(CompatibilityRailAvailability::Available, Some(ExecutionMechanism::FixtureReplay));
+        let encoded = serde_json::to_string(&replay)?;
+        assert!(encoded.contains(r#""mechanism":"fixture_replay""#), "{encoded}");
+        let decoded: CompatibilityRailState = serde_json::from_str(&encoded)?;
+        assert_eq!(decoded.mechanism, Some(ExecutionMechanism::FixtureReplay));
+        Ok(())
+    }
+
+    #[test]
+    fn every_rail_role_has_exactly_one_admissible_mechanism() {
+        // Guards the mapping itself: two rails sharing a mechanism, or an
+        // execution-like rail losing its own, would let evidence cross rails.
+        assert_eq!(
+            CompatibilityRailRole::Execution.admissible_mechanism(),
+            Some(ExecutionMechanism::FixtureReplay)
+        );
+        assert_eq!(
+            CompatibilityRailRole::Eir.admissible_mechanism(),
+            Some(ExecutionMechanism::EirExecution)
+        );
+        assert_eq!(
+            CompatibilityRailRole::DifferentialOracle.admissible_mechanism(),
+            Some(ExecutionMechanism::RealPerlOracle)
+        );
+        assert_eq!(CompatibilityRailRole::NonExecution.admissible_mechanism(), None);
     }
 
     #[test]
