@@ -23,6 +23,39 @@ Before creating a candidate, check whether an equivalent current PR already impl
 the same claim. Do not inspect sibling claim implementation details, touched-file
 overlap, nearby symbols, or unrelated worktrees as a routine ownership check.
 
+## Shift-left claim admission
+
+This is a static provider contract and routing guide. It cannot observe or enforce
+model behavior, live ownership, or whether a later mutation actually honored the
+admission; those boundaries remain explicit `NOT_PROVEN` obligations for the lane.
+
+Before the first delegated mutation or direct candidate edit, retain one compact lane
+admission:
+
+- **Claim and semantic owner:** one acceptance-and-rollback claim, the component or
+  policy that owns its meaning, and the real consumer affected.
+- **Current authority and production seam:** the controlling issue or contract, current
+  source-backed facts and contradictions, and the production seam or observable route
+  the claim must reach.
+- **Acceptance surface:** the behavior, artifact, or external observation that decides
+  whether the claim is satisfied.
+- **First falsifier:** the cheapest realistic wrong implementation, current defect,
+  negative control, or direct observation that can disprove the claim before broad
+  verification.
+- **Proof ceiling:** what the focused proof can establish, what remains `NOT_PROVEN`,
+  and which broader proof is deferred.
+- **Mutation owner and route:** the one writer, the earliest missing judgment, and the
+  named next or backward route.
+
+Read-only research may precede admission. If the claim, current authority, acceptance
+surface, or first falsifier is unresolved, do not infer it or mint a candidate. Route
+to `$prepare-issue` or `$prepare-proof`, then admit the lane when the missing judgment
+is available.
+
+Keep the admission runtime-local unless it changes durable claim, authority, or proof
+state; publish only that compact delta. It is not a stage record, lease, scheduler, or
+tracked frontier.
+
 ## Entry route
 
 Enter at the earliest absent or stale useful judgment:
