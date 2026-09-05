@@ -21,8 +21,11 @@ use perl_parser_core::Parser;
 use perl_parser_core::hir::{
     DynamicBoundary, DynamicBoundaryKind, HirFile, HirItem, HirKind, disposition, lower_ast,
 };
-use perl_parser_core::pir::{PirCallee, PirOperation, lower_hir, lower_hir_bodies};
+use perl_parser_core::pir::{
+    PirCallee, PirEdgeKind, PirGraph, PirId, PirOperation, lower_hir, lower_hir_bodies,
+};
 use perl_tdd_support::must_some;
+use std::collections::{HashMap, HashSet};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -188,8 +191,44 @@ fn tie_boundary_follows_its_arguments_in_evaluation_order() -> TestResult {
     Ok(())
 }
 
-/// The same ordering, observed through the flat PIR graph the boundary actually
-/// reaches — the surface where the `Fallthrough` edges exist.
+/// Walk the `Fallthrough` chain of a flat PIR graph from its entry node,
+/// returning the visited node ids in control-flow order.
+///
+/// Position in `graph.nodes` is **not** control-flow order: PIR splices operand
+/// nodes in beside their expression parent, so a node can be appended to the
+/// vector after the operation it feeds while the edges still run operand-first.
+/// Any ordering claim therefore has to follow edges, not vector indices.
+fn fallthrough_order(graph: &PirGraph) -> Vec<PirId> {
+    let mut next: HashMap<PirId, PirId> = HashMap::new();
+    let mut has_incoming: HashSet<PirId> = HashSet::new();
+    for edge in &graph.edges {
+        if edge.kind == PirEdgeKind::Fallthrough
+            && let Some(to) = edge.to
+        {
+            next.insert(edge.from, to);
+            has_incoming.insert(to);
+        }
+    }
+    let Some(entry) = graph.nodes.iter().map(|node| node.id).find(|id| !has_incoming.contains(id))
+    else {
+        return Vec::new();
+    };
+
+    let mut order = vec![entry];
+    let mut seen: HashSet<PirId> = HashSet::from([entry]);
+    let mut cursor = entry;
+    while let Some(&following) = next.get(&cursor) {
+        if !seen.insert(following) {
+            break;
+        }
+        order.push(following);
+        cursor = following;
+    }
+    order
+}
+
+/// The same ordering, observed through the flat PIR graph's actual
+/// `Fallthrough` edges rather than through node-vector positions.
 #[test]
 fn flat_pir_reaches_the_tie_boundary_after_its_arguments() -> TestResult {
     let mut parser = Parser::new("tie %hash, 'Tie::StdHash', build_args();\n");
@@ -197,20 +236,79 @@ fn flat_pir_reaches_the_tie_boundary_after_its_arguments() -> TestResult {
     let hir = lower_ast(&output.ast);
     let graph = lower_hir(&hir);
 
-    let call_index = must_some(graph.nodes.iter().position(|node| {
+    let call_id = must_some(graph.nodes.iter().find_map(|node| {
         matches!(&node.operation, PirOperation::Call { callee: PirCallee::Named { name, .. }, .. } if name == "build_args")
+            .then_some(node.id)
     }));
-    let boundary_index = must_some(
+    let boundary_id = must_some(graph.nodes.iter().find_map(|node| {
+        matches!(&node.operation, PirOperation::DynamicBoundary { .. }).then_some(node.id)
+    }));
+
+    let order = fallthrough_order(&graph);
+    let call_step = must_some(order.iter().position(|id| *id == call_id));
+    let boundary_step = must_some(order.iter().position(|id| *id == boundary_id));
+
+    assert!(
+        call_step < boundary_step,
+        "control must reach build_args() before the tie boundary along the \
+         Fallthrough chain; got call at step {call_step}, boundary at step \
+         {boundary_step}, chain {order:?}"
+    );
+    Ok(())
+}
+
+/// Known limitation, pinned deliberately: in a **nested expression** context the
+/// flat PIR graph reaches the consuming operation before the tie boundary.
+///
+/// `my $obj = tie %h, 'C';` is legal Perl and parses cleanly, but flat PIR
+/// yields `LexicalWrite($obj) -> Assign -> Literal('C') -> DynamicBoundary`, so
+/// the assignment that consumes the tie's result precedes the tie dispatch.
+///
+/// The cause is not this slice's emission order. `pir::lower` splices ordinary
+/// operand nodes back in beside their expression parent through
+/// `push_node_maybe_operand`, while `lower_dynamic_boundary` appends through
+/// `push_node` — so no dynamic boundary participates in operand splicing. Making
+/// them participate would change lowering for every existing boundary kind
+/// (`CoderefCall` and `EmbeddedRegexCode` in particular depend on staying
+/// adjacent to their owning item, guarded by `debug_assert!`), which is wider
+/// than this claim.
+///
+/// This test exists so the limitation is discoverable and cannot be relied upon
+/// by accident. It asserts the boundary is still *present* and records the
+/// current ordering; when the shared PIR seam is fixed, this test should fail
+/// and be replaced by the correct-order assertion.
+#[test]
+fn nested_tie_boundary_currently_trails_its_consumer_in_flat_pir() -> TestResult {
+    let mut parser = Parser::new("package Main;\nmy $obj = tie %hash, 'Tie::StdHash';\n");
+    let output = parser.parse_with_recovery();
+    assert_eq!(
+        output.diagnostics.len(),
+        0,
+        "the nested form must parse cleanly, or this limitation is about something else"
+    );
+    let hir = lower_ast(&output.ast);
+    let graph = lower_hir(&hir);
+
+    let boundary_id = must_some(graph.nodes.iter().find_map(|node| {
+        matches!(&node.operation, PirOperation::DynamicBoundary { .. }).then_some(node.id)
+    }));
+    let assign_id = must_some(
         graph
             .nodes
             .iter()
-            .position(|node| matches!(&node.operation, PirOperation::DynamicBoundary { .. })),
+            .find_map(|node| matches!(&node.operation, PirOperation::Assign).then_some(node.id)),
     );
 
+    let order = fallthrough_order(&graph);
+    let boundary_step = must_some(order.iter().position(|id| *id == boundary_id));
+    let assign_step = must_some(order.iter().position(|id| *id == assign_id));
+
     assert!(
-        call_index < boundary_index,
-        "the flat PIR graph must reach build_args() before the tie boundary; \
-         got call at {call_index}, boundary at {boundary_index}"
+        assign_step < boundary_step,
+        "pinning the known limitation: flat PIR currently reaches the consuming \
+         Assign before the tie boundary. If this now fails, the shared \
+         dynamic-boundary splicing seam was fixed — replace this test with the \
+         correct-order assertion rather than relaxing it. chain {order:?}"
     );
     Ok(())
 }
