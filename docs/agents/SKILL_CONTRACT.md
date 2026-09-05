@@ -238,7 +238,9 @@ candidate.
 
 - one claim normally has one current candidate;
 - one writer mutates that candidate branch/worktree at a time;
-- focused research, oracle, proof, review, and CI evidence work may assist;
+- focused research, oracle, proof, review, and CI evidence work may run concurrently;
+- read-only reviewers may inspect the same candidate and publish useful findings without
+  writer allocation, a claim, or a wait; writer exclusivity begins only at mutation;
 - helpers do not inspect sibling claim implementation details or touched-file overlap as
   routine ownership checks;
 - before creating a candidate, check for an equivalent current PR and explicit
@@ -248,7 +250,7 @@ candidate.
 - a substantial claim does not require another orchestrator identity.
 
 Do not add orchestration metadata, executor DAGs, lane reservations, candidate
-frontiers, or persistent liveness state to skills or tracked files.
+frontiers, PR claim ceremony, or persistent liveness state to skills or tracked files.
 
 ## Brief and return contract
 
@@ -326,9 +328,10 @@ The provider-local skills must establish:
   filtering;
 - `finish-pr` routes substantive candidates without useful current review through
   `final-challenge`, `orchestrate-work`, and `review-pr` before integration;
-- `review-pr` reconstructs candidate/evidence, traces production reachability,
-  challenges proof/evidence, verifies external/semantic truth, checks authority,
-  complexity, risk, and rollback, and publishes findings or a useful clean conclusion;
+- `review-pr` admits concurrent read-only review, reconstructs candidate/evidence, traces
+  production reachability, challenges proof/evidence, verifies external/semantic truth,
+  checks authority, complexity, risk, and rollback, and publishes findings or a useful
+  clean conclusion without acquiring writer ownership;
 - `verify-live-ci` reads integration facts only after `REVIEW_CURRENT`;
 - accepted repair refreshes affected proof and review dimensions without exact-head
   ceremony;
