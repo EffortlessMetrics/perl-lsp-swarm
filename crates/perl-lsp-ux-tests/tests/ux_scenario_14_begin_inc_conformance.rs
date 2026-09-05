@@ -6,6 +6,25 @@
 //! The exact-symbol fixture drives diagnostics, goto-definition, and hover.
 //! The prefix fixture separately drives completion, preserving the consumer
 //! shape contract documented for the main Scenario 14 grid.
+//!
+//! The module deliberately lives under `vendor/`, not `lib/`. The server adds
+//! conventional workspace directories such as `lib/` to the effective `@INC`
+//! on its own, so a `lib/` fixture resolves whether or not the pragma is seen
+//! and every assertion below would pass against a scanner that ignored the
+//! `BEGIN` block entirely. `vendor/` is reachable only through the pragma, so
+//! the control fixture genuinely raises PL701 and the positive assertions
+//! genuinely fail when the pragma stops reaching the effective `@INC`.
+//!
+//! What this scenario does *not* prove: it does not falsify the bounded
+//! textual scanner's `BEGIN` peel. The HIR path recognizes the block form
+//! independently, so disabling the peel in
+//! `perl_module::resolution::use_lib::statements` leaves every assertion here
+//! green (verified by mutation). The peel is falsified at its own layer by
+//! `perl-module`'s `use_lib_begin_block_tests`; the ordering seam between the
+//! two sources is falsified by `inc_context`'s
+//! `effective_inc_context_merges_hir_roots_with_source_roots`. This scenario
+//! covers the end-to-end consumer contract: whichever source resolves it, the
+//! block-leading pragma must move the editor consumers together.
 
 use perl_lsp_ux_tests::binary_available;
 use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
@@ -17,7 +36,7 @@ const EXACT_SOURCE: &str = "\
 use strict;\n\
 use warnings;\n\
 BEGIN {\n\
-    use lib qw(lib);\n\
+    use lib qw(vendor);\n\
 }\n\
 use BeginIncModule;\n\
 \n\
@@ -28,7 +47,7 @@ const COMPLETION_SOURCE: &str = "\
 use strict;\n\
 use warnings;\n\
 BEGIN {\n\
-    use lib qw(lib);\n\
+    use lib qw(vendor);\n\
 }\n\
 use Beg\n\
 ";
@@ -82,7 +101,7 @@ fn scenario_14_begin_scoped_use_lib_consumer_consistency() -> Result<(), String>
         ScenarioConfig { timeout: Duration::from_secs(20), ..Default::default() }
             .with_file("fixture.pl", EXACT_SOURCE)
             .with_file("control.pl", CONTROL_SOURCE)
-            .with_file("lib/BeginIncModule.pm", MODULE_SOURCE),
+            .with_file("vendor/BeginIncModule.pm", MODULE_SOURCE),
     )
     .expect("Failed to create UX harness");
 
