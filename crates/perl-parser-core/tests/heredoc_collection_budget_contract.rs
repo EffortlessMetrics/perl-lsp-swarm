@@ -13,9 +13,11 @@
 //! diagnostics, and usage on every host.
 
 use perl_ast::NodeKind;
-use perl_parser_core::error::{ErrorCategory, ErrorClass, ParseBudget, ParseStopCause};
+use perl_parser_core::error::{
+    ErrorCategory, ErrorClass, ParseBudget, ParseDiagnosticAnchor, ParseStopCause,
+};
 use perl_parser_core::{ParseError, ParseOutput, Parser, ParserConfigIdentity};
-use perl_tdd_support::must_some;
+use perl_tdd_support::{must_some, must_some_with};
 
 /// One heredoc-bearing statement. Kept separate so its exact charge can be
 /// measured on its own and reused as a boundary threshold below.
@@ -323,6 +325,25 @@ fn a_single_overrunning_drain_reports_exhaustion_without_a_later_drain() {
         overrun.budget_usage.heredoc_scan_bytes >= 1,
         "the overrunning work must still be charged"
     );
+
+    // The after-work report anchors through its own expression, so it needs its
+    // own assertion: the pre-check's anchor is proven separately in
+    // `refusal_anchors_at_the_declaration_it_refused`.
+    let declaration =
+        must_some_with(FIRST_STATEMENT.find("<<EOF"), "fixture must contain the declaration");
+    let reported = must_some_with(
+        overrun
+            .diagnostics
+            .iter()
+            .find(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. })),
+        "the overrun must surface its typed diagnostic",
+    );
+    assert_eq!(
+        reported.location(),
+        Some(declaration),
+        "an overrunning drain must anchor at the declaration it was collecting"
+    );
+    assert!(declaration > 0, "the fixture must not place the declaration at offset 0");
 }
 
 // ---------------------------------------------------------------------------
@@ -463,4 +484,70 @@ fn exhaustion_does_not_turn_later_heredocs_into_depth_syntax_errors() {
             "no diagnostic from a resource limit may be classified as a user syntax error: {error}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The diagnostic anchors at the declaration whose collection was refused.
+// ---------------------------------------------------------------------------
+
+/// The refusal must point at the heredoc it refused, not at the cursor.
+///
+/// `location` and `diagnostic_anchor` are what make this diagnostic
+/// actionable: the removed wall clock anchored at a bare `byte_cursor`, which
+/// pointed wherever statement parsing happened to have reached and was useless
+/// to a reader. Nothing else in this suite reads the offset, so an
+/// implementation that anchored at `0`, at EOF, or at the wrong declaration
+/// would pass every other test here.
+///
+/// The refused declaration is deliberately the *second* one in the source. A
+/// budget that admits the first drain and refuses the second cannot be
+/// satisfied by anchoring at the start of the file or at the first heredoc.
+#[test]
+fn refusal_anchors_at_the_declaration_it_refused() {
+    let source = two_heredoc_statements();
+    let second_declaration =
+        must_some_with(source.find("<<EOF2"), "fixture must contain the second declaration");
+
+    // Charge of the first statement alone: setting exactly this as the limit
+    // lets the first drain finish (landing on the limit truncates nothing) and
+    // refuses the second at its pre-check.
+    let first_charge =
+        parse_with_budget(FIRST_STATEMENT, unlimited_budget()).budget_usage.heredoc_scan_bytes;
+
+    let output = parse_with_budget(&source, heredoc_scan_budget(first_charge));
+
+    assert!(
+        matches!(output.stop_cause(), Some(ParseStopCause::HeredocBudgetExhausted { .. })),
+        "the fixture must refuse the second collection, got {:?}",
+        output.stop_cause()
+    );
+    assert_eq!(
+        heredoc_contents(&output),
+        vec!["body a line one\nbody a line two".to_string(), String::new()],
+        "the admitted first body must be attached and only the refused one left unresolved"
+    );
+
+    let refusal = must_some_with(
+        output
+            .diagnostics
+            .iter()
+            .find(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. })),
+        "a refused collection must emit its typed diagnostic",
+    );
+
+    assert_eq!(
+        refusal.location(),
+        Some(second_declaration),
+        "the diagnostic must anchor at the refused declaration, not at the parse cursor"
+    );
+    assert_eq!(
+        refusal.diagnostic_anchor(),
+        ParseDiagnosticAnchor::Exact(second_declaration),
+        "the anchor projection must agree with `location`"
+    );
+
+    // Guards against an anchor that is accidentally right: neither end of the
+    // source may satisfy the assertions above.
+    assert!(second_declaration > 0, "the fixture must not place the refusal at offset 0");
+    assert!(second_declaration < source.len(), "the fixture must not place the refusal at EOF");
 }

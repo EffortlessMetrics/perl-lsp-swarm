@@ -513,8 +513,8 @@ perl-lsp's approach is pragmatic:
    navigation, completion, and diagnostics -- they might just be slightly
    wrong in pathological edge cases.
 
-3. **Never hang, never crash.**  Byte budgets and recursion
-   guards ensure the parser always terminates.  When limits are exceeded,
+3. **Never hang, never crash.**  Byte budgets and recursion guards ensure
+   the parser always terminates.  When limits are exceeded,
    an `UnknownRest` token preserves everything parsed so far.
 
 4. **Let the user help.**  When the parser genuinely cannot disambiguate
@@ -546,11 +546,11 @@ ambiguity tables, no runtime costs.
 
 Real-world input is adversarial.  Fuzz testing will find the pathological
 heredoc, the 200-level nested regex, the 10 MB single-line string.  Set
-explicit byte budgets and recursion limits from
-day one -- deterministic ones, so the same source always parses the same way
-(a wall clock makes the result depend on the host, not the input).  Emit a degraded token and move on.  A slow parser that eventually
-produces output is worse than a fast parser that says "I gave up here" and
-keeps going.
+explicit byte budgets and recursion limits from day one, and make them
+deterministic -- a wall clock makes the outcome depend on the host rather than
+the input, so the same file parses two ways on two machines.  Emit a degraded
+token and move on.  A slow parser that eventually produces output is worse
+than a fast parser that says "I gave up here" and keeps going.
 
 ### 3. IDE Parsers Are Not Compiler Parsers
 
