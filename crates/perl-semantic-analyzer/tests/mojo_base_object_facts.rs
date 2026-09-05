@@ -993,3 +993,69 @@ fn a_fully_qualified_subroutine_still_collides() {
     let clean = only_facts(elsewhere);
     assert_eq!(clean.members[0].explicit_method, MojoBaseExplicitMethodState::None);
 }
+
+#[test]
+fn a_repeated_attribute_name_mints_one_live_member() {
+    // `Mojo::Base` installs each accessor into the same package slot with an
+    // unconditional `monkey_patch`, so a repeated name leaves exactly one live
+    // method. Minting two independent unbounded members would publish an
+    // accessor that no longer exists and let a consumer select the stale
+    // reader semantics.
+    let code = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "has name => 'first';\n",
+        "has name => 'second';\n",
+        "has 'other';\n",
+    );
+    let facts = only_facts(code);
+    assert_eq!(member_names(&facts), ["name", "other"], "one live member per slot");
+    assert_eq!(facts.reader_results.len(), facts.members.len());
+    assert_eq!(facts.setter_results.len(), facts.members.len());
+    // The surviving declaration is the later one, so its anchor is the second
+    // `has` statement.
+    let start = facts.members[0].envelope.anchor.start_byte as usize;
+    assert!(
+        code[start..].starts_with("has name => 'second'"),
+        "the later declaration is the live one, got {:?}",
+        &code[start..start + 20.min(code.len() - start)]
+    );
+    // Two run-phase declarations execute in source order, so the winner is
+    // determinate and the surviving fact needs no caveat.
+    assert!(
+        facts.members[0].envelope.boundary.is_none(),
+        "a run-phase repeat resolves determinately"
+    );
+    assert!(facts.members[1].envelope.boundary.is_none());
+}
+
+#[test]
+fn a_repeat_contested_across_phases_reports_an_undetermined_winner() {
+    // A run-phase `has` executes after every phaser, so it wins here — but the
+    // relative order of phasers is not modelled (`CHECK` blocks run in reverse
+    // declaration order), so a contested slot involving one is best-effort and
+    // must say so rather than present the survivor as settled.
+    let code = concat!(
+        "package App;
+",
+        "use Mojo::Base -base;
+",
+        "BEGIN { has(name => 'from_begin'); }
+",
+        "has name => 'from_run';
+",
+    );
+    let facts = only_facts(code);
+    assert_eq!(member_names(&facts), ["name"], "still one live member");
+    let boundary = must_some(facts.members[0].envelope.boundary.clone());
+    assert_eq!(
+        boundary.kind,
+        BoundaryKind::CompileTimeExecution,
+        "a phaser in the contest makes the survivor undetermined"
+    );
+    let start = facts.members[0].envelope.anchor.start_byte as usize;
+    assert!(
+        code[start..].starts_with("has name => 'from_run'"),
+        "the run-phase declaration executes last and is the best-effort survivor"
+    );
+}

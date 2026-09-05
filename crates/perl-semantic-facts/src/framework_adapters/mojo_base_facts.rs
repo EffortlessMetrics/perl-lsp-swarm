@@ -515,6 +515,7 @@ pub fn mojo_base_object_facts(
     let generation = &activation.source_generation;
     let (_, import_end_byte) = activation.source_interval;
 
+    let mut admitted: Vec<(&MojoBaseAttributeDeclaration, &str)> = Vec::new();
     for declaration in declarations {
         if declaration.package.as_deref() != package {
             continue;
@@ -569,12 +570,54 @@ pub fn mojo_base_object_facts(
         let Some(name) = declaration.name.literal() else {
             continue;
         };
-        let Some(owning_package) = package else {
+        if package.is_none() {
             // An activation without an owning package cannot own a member:
             // the generated-member payload requires a real package identity.
             continue;
+        }
+        admitted.push((declaration, name));
+    }
+    let Some(owning_package) = package else {
+        return facts;
+    };
+
+    // One package slot holds one accessor. `attr` installs each with an
+    // unconditional `monkey_patch`, so a repeated name leaves exactly one live
+    // method and the earlier declarations are gone. Minting an independent
+    // unbounded member for each would publish accessors that no longer exist
+    // and let a consumer read the superseded default as current.
+    for (index, (declaration, name)) in admitted.iter().enumerate() {
+        let Some(live) = live_declaration_index(&admitted, name) else {
+            continue;
         };
-        facts.members.push(mint_member_fact(declaration, name, owning_package, generation));
+        if live != index {
+            continue;
+        }
+        let contested = admitted.iter().filter(|(_, other)| other == name).count() > 1;
+        // When a repeat is contested only between run-phase declarations the
+        // later one determinately wins, so the surviving fact needs no caveat.
+        // When any competitor runs in a phaser the relative order is not
+        // modelled here — `CHECK` blocks run in reverse declaration order, for
+        // one — so the surviving choice is best-effort and says so.
+        let supersession = (contested
+            && admitted.iter().any(|(other, other_name)| {
+                other_name == name && other.execution_phase != MojoBaseExecutionPhase::Run
+            }))
+        .then(|| {
+            BoundaryLink::new(
+                None,
+                BoundaryKind::CompileTimeExecution,
+                BoundaryDisposition::Degrade,
+                SemanticReasonCode::UnsupportedEffect,
+            )
+        });
+        facts.members.push(mint_member_fact(
+            declaration,
+            name,
+            owning_package,
+            generation,
+            supersession,
+        ));
         facts.reader_results.push(mint_reader_fact(declaration, owning_package, generation));
         facts.setter_results.push(mint_setter_fact(declaration, owning_package, generation));
     }
@@ -583,6 +626,35 @@ pub fn mojo_base_object_facts(
         facts.parents.push(mint_parent_fact(activation, file_id, package, parent, generation));
     }
     facts
+}
+
+/// Index of the declaration that leaves the live accessor for `name`.
+///
+/// Execution order decides, not source order alone: `BEGIN` runs during
+/// compilation, `UNITCHECK`/`CHECK`/`INIT` after it, and ordinary statements
+/// last, so a run-phase `has` overwrites any phaser's accessor regardless of
+/// where it is written. Within one phase the later declaration wins.
+fn live_declaration_index(
+    admitted: &[(&MojoBaseAttributeDeclaration, &str)],
+    name: &str,
+) -> Option<usize> {
+    admitted
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, candidate))| *candidate == name)
+        .max_by_key(|(index, (declaration, _))| {
+            (execution_rank(declaration.execution_phase), *index)
+        })
+        .map(|(index, _)| index)
+}
+
+/// Relative order in which a phase's statements execute.
+fn execution_rank(phase: MojoBaseExecutionPhase) -> u8 {
+    match phase {
+        MojoBaseExecutionPhase::CompileImmediate => 0,
+        MojoBaseExecutionPhase::PostCompile => 1,
+        MojoBaseExecutionPhase::Run => 2,
+    }
 }
 
 /// Parent package established by an exact activation.
@@ -651,19 +723,8 @@ fn mint_member_fact(
     name: &str,
     package: &str,
     generation: &SourceGeneration,
+    supersession: Option<BoundaryLink>,
 ) -> MojoBaseGeneratedMemberFact {
-    let (fact_id, entity_id) = mojo_base_member_identity(
-        declaration.file_id,
-        declaration.declaration_index,
-        declaration.name_index,
-        generation,
-    );
-    // The generator anchor is the real `has` statement: a generated member has
-    // no body of its own, so it never receives a fabricated source interval.
-    let source_anchor_id = declaration
-        .declaration_anchor
-        .anchor_id
-        .unwrap_or(AnchorId(u64::from(declaration.declaration_anchor.start_byte)));
     // Which of a colliding pair is live after initialization depends on the
     // declaration's phase, so the two cases cannot share one boundary.
     //
@@ -681,6 +742,12 @@ fn mint_member_fact(
     // reported as undetermined rather than guessed. Claiming the accessor is
     // live here would be exactly the overclaim this producer refuses
     // elsewhere.
+    // A contested slot is the stronger caveat: when the surviving declaration
+    // itself is uncertain, saying which explicit method it shadows is beside
+    // the point, so supersession takes the single boundary slot when present.
+    if let Some(supersession) = supersession {
+        return build_member_fact(declaration, name, package, generation, Some(supersession));
+    }
     let boundary = match (declaration.explicit_method, declaration.execution_phase) {
         (MojoBaseExplicitMethodState::None, _) => None,
         (
@@ -701,6 +768,29 @@ fn mint_member_fact(
             ))
         }
     };
+    build_member_fact(declaration, name, package, generation, boundary)
+}
+
+/// Assemble one generated-member fact with an already-decided boundary.
+fn build_member_fact(
+    declaration: &MojoBaseAttributeDeclaration,
+    name: &str,
+    package: &str,
+    generation: &SourceGeneration,
+    boundary: Option<BoundaryLink>,
+) -> MojoBaseGeneratedMemberFact {
+    let (fact_id, entity_id) = mojo_base_member_identity(
+        declaration.file_id,
+        declaration.declaration_index,
+        declaration.name_index,
+        generation,
+    );
+    // The generator anchor is the real `has` statement: a generated member has
+    // no body of its own, so it never receives a fabricated source interval.
+    let source_anchor_id = declaration
+        .declaration_anchor
+        .anchor_id
+        .unwrap_or(AnchorId(u64::from(declaration.declaration_anchor.start_byte)));
     MojoBaseGeneratedMemberFact {
         envelope: generated_envelope(
             SemanticFactKind::Declaration,
