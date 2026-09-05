@@ -366,22 +366,19 @@ impl Coordinator {
     /// iff this call newly claimed `active` ownership of the URI (nothing
     /// was queued or in-flight for it) -- see the doc comment on
     /// `ParseWorker::enqueue`, the public wrapper this backs.
-    #[cfg(any(test, feature = "expose_lsp_test_api"))]
-    fn enqueue(&self, job: ParseJob) -> bool {
-        let mut state = self.state.lock();
-        let newly_active = self.enqueue_locked(&mut state, job);
-        drop(state);
-        if newly_active {
-            self.cvar.notify_one();
-        }
-        newly_active
-    }
-
     /// Enqueue only while the coordinator is still accepting asynchronous
     /// work. The shutdown flag is checked under the same lock that orders
     /// `take_next`'s final empty-queue check, so a caller cannot select a
     /// worker, lose the last worker to shutdown, and then strand a job in a
     /// queue that no thread will drain.
+    ///
+    /// The atomicity is against *shutdown*, the pool's only designed path to
+    /// zero live workers. Thread death without shutdown — a panic escaping
+    /// both `catch_unwind` and `FinishGuard` in the worker loop — is not
+    /// ordered by this lock; that case is covered by `ParseWorker::try_enqueue`'s
+    /// `is_operational()` pre-check, which is a sample rather than an
+    /// interlock. Stated so the next reader need not re-derive which
+    /// transition the lock actually orders.
     fn try_enqueue(&self, job: ParseJob) -> Result<bool, ParseJob> {
         let mut state = self.state.lock();
         if self.shutdown.load(Ordering::SeqCst) {
@@ -1024,7 +1021,16 @@ impl ParseWorker {
     /// burst increments the counter once per coalesced-away edit but only
     /// ever decrements it once (when the *one* surviving job eventually
     /// publishes), permanently over-counting (#3660).
-    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    /// Test-only admission that goes through the production path and asserts
+    /// the job was accepted.
+    ///
+    /// Deliberately a delegate rather than a second admission function. The
+    /// coalescing, settlement, metrics, and panic-recovery tests below are the
+    /// proof that those invariants hold for the admission production actually
+    /// uses; a parallel `enqueue` skipping `try_enqueue`'s shutdown and
+    /// liveness checks would leave every one of them green against a path no
+    /// caller takes.
+    #[cfg(test)]
     pub(crate) fn enqueue(
         &self,
         uri: String,
@@ -1033,14 +1039,12 @@ impl ParseWorker {
         generation_handle: Arc<AtomicU32>,
         text: Arc<str>,
     ) -> bool {
-        self.coordinator.enqueue(ParseJob {
-            uri,
-            normalized_uri,
-            generation,
-            generation_handle,
-            text,
-            enqueued_at: Instant::now(),
-        })
+        match self.try_enqueue(uri, normalized_uri, generation, generation_handle, text) {
+            Ok(newly_active) => newly_active,
+            Err(()) => {
+                panic!("test enqueue refused: the pool must be operational and not shut down here")
+            }
+        }
     }
 
     /// Try to enqueue a job, rejecting it when shutdown has already won the

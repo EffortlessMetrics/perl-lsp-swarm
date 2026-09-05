@@ -1840,9 +1840,14 @@ mod tests {
             .expect("didChange must parse synchronously after shutdown");
         let documents = server.documents.lock();
         let document = documents.get(uri).expect("fallback document must be retained");
+        // didOpen accepts its first snapshot at FIRST_ACCEPTED_DOCUMENT_GENERATION;
+        // the didChange above advances exactly one generation past it. Asserting
+        // the first generation instead would pass when the fallback published
+        // nothing at all, which is the opposite of this test's claim.
+        let changed_generation = crate::state::FIRST_ACCEPTED_DOCUMENT_GENERATION.get() + 1;
         assert_eq!(
             document.current_parsed().map(|snapshot| snapshot.generation()),
-            Some(1),
+            Some(changed_generation),
             "the synchronous fallback must publish the changed generation"
         );
     }
