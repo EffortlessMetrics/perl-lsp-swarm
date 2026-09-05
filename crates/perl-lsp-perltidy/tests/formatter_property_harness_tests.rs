@@ -334,7 +334,7 @@ fn fph_policy_pins() -> TestResult {
     assert_eq!(panic_regions.len(), 1, "harness must have one const alignment block");
     for (panic_start, _) in harness_source.match_indices("panic!") {
         assert!(
-            panic_regions.iter().any(|&&(region_start, region_end)| region_start <= panic_start
+            panic_regions.iter().any(|&(region_start, region_end)| region_start <= panic_start
                 && panic_start < region_end),
             "harness has a runtime panic-family exception; the only panic! calls may be compile-time const-alignment diagnostics"
         );
