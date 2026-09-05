@@ -1,0 +1,238 @@
+name: Repair non-Rust inventory authority
+
+on:
+  push:
+    branches:
+      - fix/14688-retire-non-rust-snapshot
+    paths:
+      - .github/workflows/repair-14688.yml
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    name: "Complete #14688 current-tree cutover"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/14688-retire-non-rust-snapshot
+          fetch-depth: 0
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
+          cache-targets: false
+          shared-key: repair-14688-${{ hashFiles('Cargo.lock') }}
+
+      - name: Merge current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git fetch origin main
+          git merge --no-edit origin/main
+
+      - name: Apply the authority cutover
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import gzip
+
+          payload = """
+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
+          """
+          script = gzip.decompress(base64.b64decode(payload)).decode("utf-8")
+          exec(compile(script, "repair-14688.py", "exec"), {"__name__": "__main__"})
+          PY
+
+      - name: Format the changed Rust surfaces
+        run: cargo fmt --all
+
+      - name: Verify the focused behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p perl-ci-hygiene git_hooks
+          cargo test --locked -p xtask file_policy
+          cargo test --locked -p xtask --test file_policy
+          cargo test --locked -p xtask --test non_rust_inventory_conflict_topology
+          cargo clippy --locked -p xtask --all-targets -- -D warnings
+          cargo clippy --locked -p perl-ci-hygiene --all-targets -- -D warnings
+          cargo fmt --all -- --check
+
+      - name: Verify the bounded diff
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for protected in docs/policy/NON_RUST_INVENTORY.md policy/non-rust-allowlist.toml .gitattributes
+          do
+            git diff --quiet origin/main...HEAD -- "$protected" || {
+              echo "::error::$protected changed in the committed branch diff"
+              exit 1
+            }
+            git diff --quiet -- "$protected" || {
+              echo "::error::$protected changed in the working tree"
+              exit 1
+            }
+          done
+
+          {
+            git diff --name-only origin/main...HEAD
+            git diff --name-only
+          } | sort -u > /tmp/repair-14688-paths
+
+          while IFS= read -r path
+          do
+            case "$path" in
+              .ci/gate-policy.yaml|.github/workflows/ci.yml|.github/workflows/post-merge-status.yml|.github/workflows/repair-14688.yml|crates/perl-ci-hygiene/src/git_hooks.rs|docs/FILE_POLICY.md|docs/development/FILE_POLICY_RAIL.md|docs/policy/NON_RUST_POLICY.md|xtask/src/main.rs|xtask/src/tasks/file_policy.rs|xtask/tests/file_policy.rs|xtask/tests/non_rust_inventory_conflict_topology.rs)
+                ;;
+              "")
+                ;;
+              *)
+                echo "::error::unexpected repair path: $path"
+                exit 1
+                ;;
+            esac
+          done < /tmp/repair-14688-paths
+
+          git diff --check
+
+      - name: Commit and push the verified repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          git diff --cached --check
+          git commit -m "fix(ci): make non-Rust inventory check current-tree authoritative"
+          git push origin HEAD:fix/14688-retire-non-rust-snapshot
