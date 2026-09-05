@@ -269,7 +269,7 @@ fn test_command_exists_does_not_execute_path_hijacked_which() -> Result<(), Box<
         );
         let marker = child_env("SECURITY_MARKER")?;
         assert!(!Path::new(&marker).exists(), "PATH probe executed a hijacked which");
-        println!("{CHILD_PROOF_MARKER}=test_command_exists_does_not_execute_path_hijacked_which");
+        emit_child_proof_marker("test_command_exists_does_not_execute_path_hijacked_which");
         return Ok(());
     }
 
@@ -317,7 +317,7 @@ fn test_command_exists_does_not_execute_candidate_binary() -> Result<(), Box<dyn
         let marker = child_env("SECURITY_MARKER")?;
         assert!(exists, "candidate should be discoverable in PATH");
         assert!(!Path::new(&marker).exists(), "command_exists executed the candidate");
-        println!("{CHILD_PROOF_MARKER}=test_command_exists_does_not_execute_candidate_binary");
+        emit_child_proof_marker("test_command_exists_does_not_execute_candidate_binary");
         return Ok(());
     }
 
@@ -469,6 +469,14 @@ fn test_command_injection_pipe() -> Result<(), Box<dyn Error>> {
 const CHILD_MODE: &str = "PERL_LSP_SECURITY_CHILD";
 const CHILD_PROOF_MARKER: &str = "PERL_LSP_SECURITY_CHILD_RAN";
 
+/// Child re-execs print this marker so the parent can assert the child ran.
+/// This is the only sanctioned stdout write in the module; workspace
+/// `clippy::print_stdout` denial stays in force for every other test.
+#[expect(clippy::print_stdout, reason = "child re-exec marker asserted by the parent test")]
+fn emit_child_proof_marker(selector: &str) {
+    println!("{CHILD_PROOF_MARKER}={selector}");
+}
+
 fn child_mode(name: &str) -> bool {
     std::env::var_os(CHILD_MODE).is_some_and(|value| value.to_string_lossy() == name)
 }
@@ -547,7 +555,7 @@ fn run_file_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn Erro
         )?;
         let output = result["output"].as_str().ok_or("missing output")?;
         assert!(output.contains("UNSET"), "child inherited PERL5LIB: {output:?}");
-        println!("{CHILD_PROOF_MARKER}=run_file_strips_perl5lib_when_use_perl5lib_false");
+        emit_child_proof_marker("run_file_strips_perl5lib_when_use_perl5lib_false");
         return Ok(());
     }
     if config_with_perl5lib(false).is_none() {
@@ -594,7 +602,7 @@ fn run_file_passes_perl5lib_when_use_perl5lib_true() -> Result<(), Box<dyn Error
             output.contains(marker.to_string_lossy().as_ref()),
             "PERL5LIB was not passed: {output:?}"
         );
-        println!("{CHILD_PROOF_MARKER}=run_file_passes_perl5lib_when_use_perl5lib_true");
+        emit_child_proof_marker("run_file_passes_perl5lib_when_use_perl5lib_true");
         return Ok(());
     }
     if config_with_perl5lib(true).is_none() {
@@ -639,7 +647,7 @@ fn run_test_sub_strips_perl5lib_when_use_perl5lib_false() -> Result<(), Box<dyn 
         )?;
         let output = result["output"].as_str().ok_or("missing output")?;
         assert!(output.contains("UNSET"), "child inherited PERL5LIB: {output:?}");
-        println!("{CHILD_PROOF_MARKER}=run_test_sub_strips_perl5lib_when_use_perl5lib_false");
+        emit_child_proof_marker("run_test_sub_strips_perl5lib_when_use_perl5lib_false");
         return Ok(());
     }
     if config_with_perl5lib(false).is_none() {
