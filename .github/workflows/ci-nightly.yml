@@ -212,8 +212,16 @@ jobs:
         # | select(.kind == ["bench"])`) -- since this REPLACES the blanket
         # `cargo bench --workspace`, an omitted target here is silent
         # coverage loss the old command wouldn't have had. Verified against
-        # the current metadata (14 bench targets, all 14 listed below); if a
+        # the current metadata (15 bench targets, all 15 listed below); if a
         # new bench target is added to the workspace, add it here too.
+        export NATIVE_PIPELINE_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_SHA}"
+        RUSTC_VV="$(rustc -vV)"
+        RUSTC_RELEASE="$(printf '%s\n' "$RUSTC_VV" | sed -n 's/^release: //p')"
+        RUSTC_COMMIT_HASH="$(printf '%s\n' "$RUSTC_VV" | sed -n 's/^commit-hash: //p' | cut -c1-12)"
+        RUSTC_HOST="$(printf '%s\n' "$RUSTC_VV" | sed -n 's/^host: //p')"
+        RUSTC_ARCH="${RUSTC_HOST%%-*}"
+        RUSTC_OS="$(printf '%s\n' "$RUSTC_VV" | sed -n 's/^host: //p' | cut -d- -f3)"
+        export NATIVE_PIPELINE_TOOLCHAIN_TAG="rustc-${RUSTC_RELEASE}-${RUSTC_COMMIT_HASH}-${RUSTC_ARCH}-${RUSTC_OS}"
         declare -a BENCH_TARGETS=(
           "perl-workspace:workspace_index_benchmark:workspace"
           "perl-token:token_scorecard:"
@@ -226,6 +234,7 @@ jobs:
           "perl-parser:positions_bench:"
           "perl-parser:substitution_performance:"
           "perl-lsp-rs:rope_performance_benchmark:"
+          "perl-lsp-perltidy:native_pipeline_benchmark:"
           "perl-lexer:lexer_benchmarks:"
           "perl-dap:dap_benchmarks:"
           "perl-incremental-parsing:incremental_parsing_benchmarks:"
@@ -268,11 +277,33 @@ jobs:
           --expect-id "scope_analysis_many_vars" \
           --expect-id "cpan_moose_oo_class" \
           --expect-id "document_insertions/rope_insertion" \
+          --expect-id "native_pipeline_document/delimited_n32_lf_tabs" \
           --expect-id "simple_tokens" \
           --expect-id "configuration_validation/launch_config_validation" \
           --expect-id "offset_to_pos16_cached" \
           --expect-id "parse_basic_substitution" \
           --expect-id "undo_redo/edit_undo_redo"
+
+        expected_ids=()
+        for family in delimited statement opaque refusal no-change; do
+          for units in 8 32 128; do
+            expected_ids+=("native_pipeline_document/${family}_n${units}_lf_tabs")
+          done
+          for line_ending in crlf bare-cr; do
+            expected_ids+=("native_pipeline_document/${family}_n32_${line_ending}_tabs")
+          done
+          for indent in spaces width-boundary; do
+            expected_ids+=("native_pipeline_document/${family}_n32_lf_${indent}")
+          done
+        done
+        sidecar_args=()
+        for expected_id in "${expected_ids[@]}"; do
+          sidecar_args+=(--expect-id "$expected_id")
+        done
+        python3 ./benchmarks/scripts/validate-native-pipeline-sidecar.py \
+          --sidecar target/criterion/native-pipeline-measurements.v1.json \
+          --expected-run-id "$NATIVE_PIPELINE_RUN_ID" \
+          "${sidecar_args[@]}"
 
     - name: Real-repo first-diagnostics perf gate (Catalyst 5000+ lines)
       run: |
@@ -376,6 +407,15 @@ jobs:
           comparison.txt
           alert.md
         if-no-files-found: warn
+        retention-days: 30
+
+    - name: Upload native pipeline measurement sidecar
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: native-pipeline-measurements-${{ github.sha }}-${{ github.run_id }}
+        path: target/criterion/native-pipeline-measurements.v1.json
+        if-no-files-found: error
         retention-days: 30
 
   real-repo-latency:

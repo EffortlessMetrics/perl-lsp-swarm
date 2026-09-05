@@ -115,6 +115,8 @@ impl LspServer {
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
@@ -306,6 +308,8 @@ impl LspServer {
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
@@ -438,6 +442,8 @@ impl LspServer {
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),

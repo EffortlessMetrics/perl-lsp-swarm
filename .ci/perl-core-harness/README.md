@@ -197,6 +197,15 @@ rails are not_available, never zero or pass. The versioned schema is
 schemas/compiler_compatibility.v1.schema.json; rendering and freshness
 checks belong to #4749.
 
+An execution-like rail that offers evidence also names the mechanism that
+produced it, and a rail without evidence names none. The selected executor
+recognizes fixture shapes and generates the behavior it reports, so its rail
+reads `mechanism: fixture_replay` — read that field rather than the `reason`
+prose, which carries no contract. Each execution-like rail admits only its own
+mechanism, so replay evidence cannot reach the EIR or differential-oracle rail
+by relabeling, and neither rail can become available until the evidence behind
+it lands (#8254).
+
 Or run the smoke against a user-supplied prepared upstream Perl tree:
 
 ```bash
