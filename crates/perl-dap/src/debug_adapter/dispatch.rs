@@ -197,7 +197,7 @@ dap_request_table! {
     standard all_frontends StepOut "stepOut" => handle_step_out(arguments),
     standard all_frontends Pause "pause" => handle_pause(arguments),
     standard all_frontends Evaluate "evaluate" => handle_evaluate(arguments),
-    extension native_only InlineValues "inlineValues" => handle_inline_values(arguments),
+    extension all_frontends InlineValues "inlineValues" => handle_inline_values(arguments),
     standard all_frontends BreakpointLocations "breakpointLocations" => handle_breakpoint_locations(arguments),
     standard native_only Source "source" => handle_source(arguments),
     standard native_only LoadedSources "loadedSources" => handle_loaded_sources(arguments),
