@@ -18,7 +18,8 @@ pub use crate::providers::formatting_types::{
 use crate::tooling::perltidy::native::{
     FormatChangeSummary, FormatContext, FormatDisposition, FormatEngine, FormatEvidenceState,
     FormatIdentity, FormatLineEndingDisposition, FormatOutcome, FormatReasonCode,
-    FormatRequestTarget, FormatSafetyEvidence, TypedFormatResult,
+    FormatRequestTarget, FormatSafetyEvidence, NativePipelineCounters, TypedFormatResult,
+    inferred_line_ending,
 };
 use crate::tooling::perltidy::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatterMode, KeywordSpacing,
@@ -167,9 +168,34 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         options: &FormattingOptions,
         context: &FormatContext,
     ) -> Result<FormattingDecision, FormattingError> {
+        self.document_decision_with_counters(content, options, context, None)
+    }
+
+    /// Format the entire document through the same native decision path as the
+    /// ordinary request entry while collecting opt-in work counters. Ordinary
+    /// LSP handlers pass no collector and therefore record nothing; the counted
+    /// entry is exercised by the nightly benchmark, where one counted call
+    /// observes exactly one pipeline invocation (#10302 NPC-003).
+    pub fn format_document_decision_with_counters(
+        &self,
+        content: &str,
+        options: &FormattingOptions,
+        context: &FormatContext,
+        counters: &mut NativePipelineCounters,
+    ) -> Result<FormattingDecision, FormattingError> {
+        self.document_decision_with_counters(content, options, context, Some(counters))
+    }
+
+    fn document_decision_with_counters(
+        &self,
+        content: &str,
+        options: &FormattingOptions,
+        context: &FormatContext,
+        counters: Option<&mut NativePipelineCounters>,
+    ) -> Result<FormattingDecision, FormattingError> {
         match self.mode {
             FormatterMode::Native | FormatterMode::Compat => {
-                self.native_document_decision(content, options, context)
+                self.native_document_decision(content, options, context, counters)
             }
             FormatterMode::ExternalLegacy => self.external_document_decision(
                 content,
@@ -213,6 +239,33 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         options: &FormattingOptions,
         context: &FormatContext,
     ) -> Result<FormattingDecision, FormattingError> {
+        self.range_decision_with_counters(content, range, options, context, None)
+    }
+
+    /// Format a range through the same native decision path as the ordinary
+    /// request entry while collecting opt-in work counters. Ordinary LSP
+    /// handlers pass no collector and therefore record nothing; the counted
+    /// entry is exercised by the nightly benchmark, where one counted call
+    /// observes exactly one pipeline invocation (#10302 NPC-003).
+    pub fn format_range_decision_with_counters(
+        &self,
+        content: &str,
+        range: &FormatRange,
+        options: &FormattingOptions,
+        context: &FormatContext,
+        counters: &mut NativePipelineCounters,
+    ) -> Result<FormattingDecision, FormattingError> {
+        self.range_decision_with_counters(content, range, options, context, Some(counters))
+    }
+
+    fn range_decision_with_counters(
+        &self,
+        content: &str,
+        range: &FormatRange,
+        options: &FormattingOptions,
+        context: &FormatContext,
+        counters: Option<&mut NativePipelineCounters>,
+    ) -> Result<FormattingDecision, FormattingError> {
         let target = FormatRequestTarget::Range { range: to_native_range(range) };
         let geometry = SourceGeometry::new(content);
         let admitted = match admit_format_range(&geometry, content, range) {
@@ -232,7 +285,7 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
 
         match self.mode {
             FormatterMode::Native | FormatterMode::Compat => {
-                self.native_range_decision(content, &geometry, admitted, options, context)
+                self.native_range_decision(content, &geometry, admitted, options, context, counters)
             }
             FormatterMode::ExternalLegacy if is_whole_document_range(content, range) => {
                 self.external_document_decision(content, options, context, target)
@@ -263,10 +316,15 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         content: &str,
         options: &FormattingOptions,
         context: &FormatContext,
+        counters: Option<&mut NativePipelineCounters>,
     ) -> Result<FormattingDecision, FormattingError> {
         let mut config = native_format_config(options, self.perltidy_config.as_ref(), true);
         config.mode = self.mode;
-        let mut typed = NativeFormatter::new().format_document_typed(content, &config, context);
+        let mut typed = match counters {
+            Some(counters) => NativeFormatter::new()
+                .format_document_typed_with_counters(content, &config, context, counters),
+            None => NativeFormatter::new().format_document_typed(content, &config, context),
+        };
         bind_lsp_options(&mut typed.outcome.identity.config_fingerprint, options);
         project_native_document(content, options, typed)
     }
@@ -278,12 +336,23 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         admitted: AdmittedFormatRange,
         options: &FormattingOptions,
         context: &FormatContext,
+        counters: Option<&mut NativePipelineCounters>,
     ) -> Result<FormattingDecision, FormattingError> {
         let native_range = to_native_range(&admitted.requested);
         let mut config = native_format_config(options, self.perltidy_config.as_ref(), false);
         config.mode = self.mode;
-        let mut typed =
-            NativeFormatter::new().format_range_typed(content, native_range, &config, context);
+        let mut typed = match counters {
+            Some(counters) => NativeFormatter::new().format_range_typed_with_counters(
+                content,
+                native_range,
+                &config,
+                context,
+                counters,
+            ),
+            None => {
+                NativeFormatter::new().format_range_typed(content, native_range, &config, context)
+            }
+        };
         bind_lsp_options(&mut typed.outcome.identity.config_fingerprint, options);
         project_native_range(content, geometry, &admitted, options, typed)
     }
@@ -348,7 +417,7 @@ fn project_native_document(
         FormatDisposition::Applied | FormatDisposition::NoChange => {}
     }
 
-    let formatted = apply_lsp_whitespace_options(&result.formatted, options);
+    let formatted = apply_lsp_whitespace_options_from_source(&result.formatted, options, content);
     let edits = if formatted == content {
         Vec::new()
     } else if formatted == result.formatted {
@@ -528,7 +597,8 @@ fn projected_native_range(
         options,
         admitted.end_byte == content.len(),
         admitted_end_is_line_end(formatted, formatted_end),
-        formatted.get(..admitted.start_byte).is_some_and(|prefix| prefix.ends_with(['\r', '\n'])),
+        content.get(..admitted.start_byte).is_some_and(|prefix| prefix.ends_with(['\r', '\n'])),
+        content,
     );
     let mut updated = String::with_capacity(formatted.len() - native_slice.len() + projected.len());
     updated.push_str(&formatted[..admitted.start_byte]);
@@ -579,7 +649,7 @@ fn whitespace_within_admitted(
                     .is_some_and(|prefix| prefix.ends_with(['\r', '\n'])),
             )
         {
-            projected.push('\n');
+            projected.push_str(inferred_line_ending(content));
         }
     }
     if projected == slice {
@@ -750,7 +820,15 @@ fn native_edit_to_format_edit(edit: crate::tooling::perltidy::TextEdit) -> Forma
 }
 
 fn apply_lsp_whitespace_options(content: &str, options: &FormattingOptions) -> String {
-    apply_lsp_whitespace_options_with_eof(content, options, true, true, false)
+    apply_lsp_whitespace_options_with_eof(content, options, true, true, false, content)
+}
+
+fn apply_lsp_whitespace_options_from_source(
+    content: &str,
+    options: &FormattingOptions,
+    line_ending_source: &str,
+) -> String {
+    apply_lsp_whitespace_options_with_eof(content, options, true, true, false, line_ending_source)
 }
 
 fn apply_lsp_whitespace_options_with_eof(
@@ -759,8 +837,10 @@ fn apply_lsp_whitespace_options_with_eof(
     allow_final_newline: bool,
     trim_tail: bool,
     prefix_terminated: bool,
+    line_ending_source: &str,
 ) -> String {
     let mut output = content.to_string();
+    let document_line_ending = inferred_line_ending(line_ending_source);
 
     if options.trim_trailing_whitespace.unwrap_or(false) {
         output = trim_trailing_whitespace_in_slice(&output, trim_tail);
@@ -772,7 +852,7 @@ fn apply_lsp_whitespace_options_with_eof(
         && options.insert_final_newline.unwrap_or(false)
         && !projected_tail_is_terminated(&output, prefix_terminated)
     {
-        output.push('\n');
+        output.push_str(document_line_ending);
     }
 
     output
@@ -1342,6 +1422,27 @@ mod decision_projection_tests {
         .expect("projection must not error");
         assert_eq!(decision.outcome.disposition, FormatDisposition::NoChange);
         assert_eq!(decision.document.text, interior_source);
+    }
+
+    #[test]
+    fn no_change_true_eof_range_reinserts_the_source_crlf_terminator() {
+        let mut options = range_options();
+        options.trim_trailing_whitespace = Some(true);
+        options.insert_final_newline = Some(true);
+        options.trim_final_newlines = Some(true);
+        let source = "my $x = 1;  \r\n";
+        let geometry = SourceGeometry::new(source);
+        let admitted = admitted_fixture(source, 0, 0, 1, 0);
+
+        let decision =
+            project_native_range(source, &geometry, &admitted, &options, no_change_typed(source))
+                .expect("projection must not error");
+
+        assert_eq!(decision.outcome.disposition, FormatDisposition::Applied);
+        assert_eq!(decision.document.text, "my $x = 1;\r\n");
+        assert_eq!(decision.document.edits.len(), 1);
+        assert_eq!(decision.document.edits[0].new_text, "my $x = 1;\r\n");
+        assert!(!decision.document.edits[0].new_text.ends_with("\n\n"));
     }
 
     #[test]

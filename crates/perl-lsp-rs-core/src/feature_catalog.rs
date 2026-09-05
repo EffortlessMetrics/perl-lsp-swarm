@@ -11,8 +11,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Default DAP feature identifiers emitted when catalog processing fails.
-pub const DEFAULT_DAP_FEATURES: &[&str] =
-    &["dap.breakpoints.basic", "dap.core", "dap.inline_values"];
+///
+/// `dap.inline_values` is deliberately absent (#9089): the custom inlineValues
+/// extension is fail-closed, so a fallback that re-advertised it on catalog
+/// failure would contradict the single negotiation authority.
+pub const DEFAULT_DAP_FEATURES: &[&str] = &["dap.breakpoints.basic", "dap.core"];
 
 /// Source metadata for the catalog file.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
