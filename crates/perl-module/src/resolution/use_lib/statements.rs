@@ -1,6 +1,6 @@
 //! Statement splitting and `lib` pragma prefix recognition.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 /// Split Perl source into semicolon-terminated statements without treating
 /// semicolons inside simple quoted strings, line comments, POD, or heredoc
@@ -26,6 +26,8 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
     let mut has_content = false;
     let mut pending_heredocs = VecDeque::new();
     let mut scan_end = source.len();
+    // Built at most once, and only if a bareword opener is actually seen.
+    let mut terminator_lines: Option<HashSet<&str>> = None;
 
     let chars: Vec<(usize, char)> = source.char_indices().collect();
     let mut i = 0;
@@ -79,7 +81,10 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
             && let Some((heredoc_end, tag, strip_indent, requires_terminator)) =
                 parse_heredoc_opener(source, idx)
             && (!requires_terminator
-                || has_heredoc_terminator(source, heredoc_end, &tag, strip_indent))
+                || (terminator_lines
+                    .get_or_insert_with(|| trimmed_line_set(source))
+                    .contains(tag.as_str())
+                    && has_heredoc_terminator(source, heredoc_end, &tag, strip_indent)))
         {
             pending_heredocs.push_back((tag, strip_indent));
             has_content = true;
@@ -453,6 +458,21 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
 /// Only bareword delimiters need this confirmation: they are the one form
 /// indistinguishable from incidental text such as a regex body. Quoted,
 /// escaped and empty delimiters are honored on sight.
+/// Every line of `source`, `\r` stripped and leading whitespace trimmed.
+///
+/// Used only as a negative filter in front of [`has_heredoc_terminator`], which
+/// otherwise walks to end of file for each unconfirmed bareword opener. That is
+/// quadratic on valid Perl: `MASK<<SHIFT` is a tight bareword shift the parser
+/// must treat as a candidate, and a file full of them cost 193ms at 4,000
+/// occurrences versus 4.5ms for the spaced form.
+///
+/// The filter is exact rather than approximate. [`closes_heredoc`] compares a
+/// line to the tag either verbatim or after `trim_start`, and a bareword tag
+/// holds no whitespace, so a tag absent from this set cannot match either way.
+fn trimmed_line_set(source: &str) -> HashSet<&str> {
+    source.lines().map(|line| line.trim_end_matches('\r').trim_start()).collect()
+}
+
 fn has_heredoc_terminator(source: &str, start: usize, tag: &str, strip_indent: bool) -> bool {
     let Some(first_newline) = source[start..].find('\n') else {
         return false;

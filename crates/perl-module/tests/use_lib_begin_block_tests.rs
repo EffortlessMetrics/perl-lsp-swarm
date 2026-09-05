@@ -758,3 +758,45 @@ fn standalone_pod_terminator_opens_pod_like_perl_does() {
         }])]
     );
 }
+
+/// Bareword confirmation must not be quadratic in the number of candidates.
+///
+/// `MASK<<SHIFT` is a tight bareword shift that Perl accepts (`perl` prints
+/// `ok 8` for it), and the scanner must treat it as a heredoc candidate until
+/// a terminator search says otherwise. Searching from each candidate to end of
+/// file made that search quadratic: measured on this shape, 1,000 candidates
+/// took 12ms, 2,000 took 49ms, and 4,000 took 193ms — a stall in a path that
+/// runs on every keystroke. A set of the file's trimmed lines, built once,
+/// answers the hopeless cases without a scan and restores linear behaviour:
+/// the same 4,000 candidates take 2.9ms and 16,000 take 12ms.
+///
+/// The bound below is deliberately loose. It is ~170x the post-fix time here
+/// and still fails decisively against the pre-fix ~3s, so it discriminates on
+/// a slow CI runner without becoming a flaky timing assertion.
+#[test]
+fn bareword_confirmation_stays_linear_in_candidate_count() {
+    let candidates = 16_000;
+    let mut source = String::from("use lib 'real';\n");
+    for i in 0..candidates {
+        source.push_str(&format!("my $m{i} = MASK{i}<<SHIFT{i};\n"));
+    }
+    source.push_str("use lib 'tail';\n");
+
+    let started = std::time::Instant::now();
+    let operations = extract_use_lib_operations(&source);
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        operations,
+        vec![
+            UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }]),
+            UseLibAction::Add(vec![UseLibPath { path: "tail".to_string(), from_findbin: false }]),
+        ],
+        "unconfirmed bareword candidates changed the extracted paths"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "bareword confirmation took {elapsed:?} for {candidates} candidates, which is the \
+         quadratic scan returning"
+    );
+}
