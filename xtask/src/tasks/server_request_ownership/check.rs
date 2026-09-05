@@ -574,6 +574,32 @@ fn check_row(
         }
     }
 
+    // ── Advertised credit ────────────────────────────────────────────────
+    // `advertised_not_proven` asserts the method *is* advertised, so the
+    // catalog must record it as such — the same authority that governs
+    // `supported`, applied to the weaker claim that was going unchecked.
+    //
+    // Deliberately one-directional. `helper_only_unadvertised` claims *less*
+    // than the catalog records, and this gate exists to stop a row overstating
+    // its surface, not understating it. Requiring the mirror would also fail
+    // `srq-client-unregister-capability` today, where `features.toml` records
+    // the feature as advertised while the method is never emitted — a real
+    // disagreement between two sources about what `advertised` means for a
+    // dormant method, and not one this matrix can settle.
+    if row.disposition == "advertised_not_proven"
+        && let Some(catalog) = catalog_spec
+        && !catalog.advertised
+    {
+        violations.push(Violation::new(
+            "disposition-contradicts-catalog",
+            &row.id,
+            format!(
+                "disposition `advertised_not_proven` asserts `{}` is advertised, but `{}` records                  `{}` as not advertised",
+                row.method, meta.feature_catalog, row.feature_catalog_row
+            ),
+        ));
+    }
+
     // A method nothing emits cannot carry credit for being carried.
     if row.emission == "not_emitted" && CREDIT_BEARING.contains(&row.disposition.as_str()) {
         violations.push(Violation::new(

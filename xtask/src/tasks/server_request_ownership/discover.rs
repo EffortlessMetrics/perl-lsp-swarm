@@ -4,608 +4,400 @@
 //! shows up here without anyone remembering to extend a list. The direction
 //! registry stays the classification authority; this module only reads it.
 //!
-//! Every reader here is written to fail closed. A call it cannot parse, a
-//! forwarding site it cannot attribute to a declared forwarding signature, and
-//! a catalog it cannot deserialize are all findings — never silent skips.
+//! Rust source is read with `syn`, not with hand-written scanners. Four review
+//! rounds each found a fail-open in the scanners this replaced — a bounded line
+//! window, a first-`*/` comment skip, a literal `#[cfg(test)]` match, `fn ` and
+//! send sites read out of string literals — and the fifth round would have
+//! found the next one. A parser removes that whole class by construction: it
+//! never sees a comment, never mistakes a string for code, and reads a `cfg`
+//! predicate as a predicate. `syn` is already an `xtask` dependency with
+//! `full`/`parsing`/`visit`, used by four other tasks here.
+//!
+//! What remains a judgement rather than a fact is narrow and stated: which
+//! call names count as sending a request, and which helper counts as
+//! forwarding one. Both fail closed — a send this module cannot attribute to a
+//! resolvable method is a finding, never a silent skip, and a file it cannot
+//! parse is an instrument failure rather than an empty file.
 
 use super::model::{CatalogRow, Discovered, RegistryKind, Violation};
 use color_eyre::eyre::{Result, WrapErr};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use syn::visit::Visit;
 
 /// Method names whose call emits a server-initiated request.
 const REQUEST_SENDERS: &[&str] = &["send_request", "send_request_internal"];
 
-/// A function whose signature takes the method from its caller is the only
-/// admitted forwarding shape. Anything else that fails to resolve is a finding.
-///
-/// The parameter is matched by name and type, not as a substring: testing for
-/// `"method: &str"` inside the signature also matched `other_method: &str`,
-/// which forwards nothing of the kind.
+/// A helper that takes the method from its caller is the only admitted
+/// forwarding shape, and only when its own body reaches a sender.
 const FORWARDED_METHOD_PARAM: &str = "method";
 
-/// Return the top-level, comma-separated arguments that follow an already
-/// consumed `(`, stopping at its matching `)`.
-///
-/// Returns `None` when the matching `)` is not found. A truncated argument list
-/// must never be mistaken for a complete one: that is how a wrapped call
-/// silently leaves the denominator.
-fn top_level_args(after_open_paren: &str) -> Option<Vec<&str>> {
-    let mut args = Vec::new();
-    let mut depth = 0i32;
-    let mut start = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-
-    for (index, ch) in after_open_paren.char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match ch {
-            '"' => in_string = true,
-            '(' | '[' | '{' => depth += 1,
-            ')' if depth == 0 => {
-                args.push(&after_open_paren[start..index]);
-                return Some(args);
-            }
-            ')' | ']' | '}' => depth -= 1,
-            ',' if depth == 0 => {
-                args.push(&after_open_paren[start..index]);
-                start = index + 1;
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Extract the string literal an argument consists of, if it is one.
-fn string_literal(arg: &str) -> Option<String> {
-    let trimmed = arg.trim();
-    let inner = trimmed.strip_prefix('"')?.strip_suffix('"')?;
-    if inner.contains('"') { None } else { Some(inner.to_string()) }
-}
-
-/// The identifier starting at `from`, if any.
-fn identifier_at(source: &str, from: usize) -> &str {
-    let rest = &source[from..];
-    let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
-    &rest[..end]
-}
-
-/// Byte index just past the `(` that opens a call whose callee ends at `from`.
-///
-/// Rust permits whitespace and comments between a callee and its argument list.
-/// Both callers blank comments to spaces before this runs, so skipping
-/// whitespace covers both: `self.send_request ("m", p)` and
-/// `self.send_request /* why */ ("m", p)` reach the same `(`.
-fn call_open_paren(source: &str, from: usize) -> Option<usize> {
-    let rest = &source[from..];
-    let offset = rest.find(|c: char| !c.is_whitespace())?;
-    rest[offset..].starts_with('(').then_some(from + offset + 1)
-}
-
-/// Leading identifier of an argument, when the argument is exactly one.
-fn plain_identifier(arg: &str) -> Option<&str> {
-    let trimmed = arg.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        Some(trimmed)
-    } else {
-        None
-    }
-}
-
-/// Split a `cfg` predicate list on top-level commas.
-fn split_predicates(list: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut depth = 0i32;
-    let mut start = 0usize;
-    for (index, ch) in list.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => depth -= 1,
-            ',' if depth == 0 => {
-                out.push(&list[start..index]);
-                start = index + 1;
-            }
-            _ => {}
-        }
-    }
-    if !list[start..].trim().is_empty() {
-        out.push(&list[start..]);
-    }
-    out
-}
+// ── cfg predicates ───────────────────────────────────────────────────────
 
 /// Whether a `cfg` predicate can only hold under `cfg(test)`.
 ///
 /// `all(test, feature = "x")` is test-only — it cannot compile in production —
 /// so its items carry no production emission. `any(test, feature = "x")` can,
-/// so its items must stay in the denominator. Anything else, `not(..)` and bare
+/// so its items stay in the denominator. Anything else, `not(..)` and bare
 /// feature gates included, is treated as reachable: over-stripping would shrink
 /// the denominator silently, which is the failure direction to avoid.
-fn cfg_is_test_only(predicate: &str) -> bool {
-    let predicate = predicate.trim();
-    if predicate == "test" {
-        return true;
+fn meta_is_test_only(meta: &syn::Meta) -> bool {
+    match meta {
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::List(list) => {
+            let Ok(nested) = list.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            ) else {
+                return false;
+            };
+            if list.path.is_ident("all") {
+                nested.iter().any(meta_is_test_only)
+            } else if list.path.is_ident("any") {
+                !nested.is_empty() && nested.iter().all(meta_is_test_only)
+            } else {
+                false
+            }
+        }
+        syn::Meta::NameValue(_) => false,
     }
-    if let Some(inner) = predicate.strip_prefix("all(").and_then(|rest| rest.strip_suffix(')')) {
-        return split_predicates(inner).iter().any(|part| cfg_is_test_only(part));
-    }
-    if let Some(inner) = predicate.strip_prefix("any(").and_then(|rest| rest.strip_suffix(')')) {
-        let parts = split_predicates(inner);
-        return !parts.is_empty() && parts.iter().all(|part| cfg_is_test_only(part));
-    }
-    false
 }
 
-/// Remove every test-only `#[cfg(..)]`-gated item so test-only sends are never
-/// reported as production emission.
-///
-/// The contract is deliberately broader than modules: any item behind a
-/// test-only gate must not count, whether it is a `mod`, a helper `fn`, or an
-/// `impl`. Both the block form `#[cfg(test)] item { .. }` and the brace-less
-/// form `#[cfg(test)] mod name;` are handled — the brace-less one is the common
-/// case here, with 18 in the scan root, and jumping to the next `{` anywhere
-/// later in the file would delete unrelated production code with it.
-///
-/// Matching the literal `#[cfg(test)]` alone left `#[cfg(all(test, ..))]`
-/// contributing production emission, so the predicate is now read and judged.
-///
-/// This is a bounded reader, not a Rust parser: an attribute appearing inside a
-/// string literal would be treated as real. Comments and strings are blanked
-/// before this runs, and the failure direction is over-stripping, which shows
-/// up as a missing emitter rather than a silent pass.
-fn strip_test_gated_items(source: &str) -> String {
-    let mut out = String::with_capacity(source.len());
-    let mut rest = source;
-
-    while let Some(offset) = rest.find("#[cfg(") {
-        let tail = &rest[offset..];
-        let open = offset + "#[cfg(".len();
-
-        // The predicate runs to the `(`'s matching `)`.
-        let Some(predicate) = top_level_args(&rest[open..]).map(|args| args.join(",")) else {
-            out.push_str(rest);
-            return out;
-        };
-        if !cfg_is_test_only(&predicate) {
-            // Keep the attribute and resume after it, so a production gate is
-            // never mistaken for the start of a test region.
-            out.push_str(&rest[..open]);
-            rest = &rest[open..];
-            continue;
-        }
-        out.push_str(&rest[..offset]);
-
-        let brace = tail.find('{');
-        let semicolon = tail.find(';');
-
-        // `mod name;` — drop only the declaration itself.
-        if let Some(semicolon) = semicolon
-            && brace.is_none_or(|brace| semicolon < brace)
-        {
-            rest = &tail[semicolon + 1..];
-            continue;
-        }
-
-        let Some(brace) = brace else {
-            // Neither form: keep the remainder rather than discarding it.
-            out.push_str(tail);
-            return out;
-        };
-        let mut depth = 0i32;
-        let mut end = None;
-        for (index, ch) in tail[brace..].char_indices() {
-            match ch {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = Some(brace + index + 1);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        match end {
-            Some(end) => rest = &tail[end..],
-            None => {
-                // Unbalanced: keep the remainder rather than silently losing it.
-                out.push_str(tail);
-                return out;
-            }
-        }
-    }
-    out.push_str(rest);
-    out
+/// Whether an item's attributes gate it to `cfg(test)`.
+fn is_test_gated(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg")
+            && attr.parse_args::<syn::Meta>().is_ok_and(|meta| meta_is_test_only(&meta))
+    })
 }
 
-/// Length of a raw string literal starting at `at`, if one does.
-///
-/// Handles `r"…"`, `r#"…"#`, and the `b`-prefixed byte forms.
-fn raw_string_len(bytes: &[u8], at: usize) -> Option<usize> {
-    let mut cursor = at;
-    if bytes.get(cursor) == Some(&b'b') {
-        cursor += 1;
+// ── Expression shapes ────────────────────────────────────────────────────
+
+/// The string a literal expression is, if it is one.
+fn string_literal(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Lit(lit) => match &lit.lit {
+            syn::Lit::Str(value) => Some(value.value()),
+            _ => None,
+        },
+        // A borrowed or parenthesised literal is the same literal.
+        syn::Expr::Reference(inner) => string_literal(&inner.expr),
+        syn::Expr::Paren(inner) => string_literal(&inner.expr),
+        syn::Expr::Group(inner) => string_literal(&inner.expr),
+        _ => None,
     }
-    if bytes.get(cursor) != Some(&b'r') {
-        return None;
-    }
-    cursor += 1;
-    let hashes = bytes[cursor..].iter().take_while(|byte| **byte == b'#').count();
-    cursor += hashes;
-    if bytes.get(cursor) != Some(&b'"') {
-        return None;
-    }
-    cursor += 1;
-    // The terminator is `"` followed by exactly as many `#` as opened it.
-    while cursor < bytes.len() {
-        if bytes[cursor] == b'"'
-            && bytes[cursor + 1..].iter().take(hashes).filter(|byte| **byte == b'#').count()
-                == hashes
-        {
-            return Some(cursor + 1 + hashes - at);
-        }
-        cursor += 1;
-    }
-    // Unterminated: consume the remainder rather than resuming mid-literal.
-    Some(bytes.len() - at)
 }
 
-/// Length of a character literal starting at `at`, if one does.
-///
-/// A lone `'` is far more often a lifetime, so anything that does not close is
-/// left as code. The point of recognising the literal at all is `'"'`, which
-/// would otherwise open a phantom string.
-fn char_literal_len(bytes: &[u8], at: usize) -> Option<usize> {
-    if bytes.get(at) != Some(&b'\'') {
-        return None;
+/// The final path segment of a path expression, if it is one.
+fn path_tail(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Path(path) => path.path.segments.last().map(|segment| segment.ident.to_string()),
+        syn::Expr::Reference(inner) => path_tail(&inner.expr),
+        syn::Expr::Paren(inner) => path_tail(&inner.expr),
+        syn::Expr::Group(inner) => path_tail(&inner.expr),
+        _ => None,
     }
-    let escaped = bytes.get(at + 1) == Some(&b'\\');
-    let limit = if escaped { 12 } else { 4 };
-    let start = if escaped { at + 2 } else { at + 1 };
-    for cursor in start..(at + limit).min(bytes.len()) {
-        if bytes[cursor] == b'\n' {
-            return None;
-        }
-        if bytes[cursor] == b'\'' {
-            return Some(cursor + 1 - at);
-        }
-    }
-    None
 }
 
-/// Blank every comment, and report which byte offsets are code.
-///
-/// String and character literal *contents* are preserved, because the method a
-/// send site names is read back out of them — but they are marked non-code, so
-/// sender-shaped text quoted inside a string can never register as a call site.
-/// Comments are blanked outright and marked non-code too, nested block comments
-/// included.
-///
-/// Both directions matter. A doc comment naming a send helper would inflate the
-/// denominator; a *removed* request still quoted in a comment or a string would
-/// keep its ownership row alive and the gate green, which is the worse of the
-/// two. Byte offsets are preserved throughout so call positions stay valid.
-fn blank_comments(source: &str) -> (String, Vec<bool>) {
-    let bytes = source.as_bytes();
-    let mut out = bytes.to_vec();
-    let mut code = vec![true; bytes.len()];
-    let mut at = 0usize;
-
-    macro_rules! blank {
-        ($index:expr) => {{
-            let index = $index;
-            if out[index] != b'\n' {
-                out[index] = b' ';
-            }
-            code[index] = false;
-        }};
-    }
-
-    while at < bytes.len() {
-        // Line comment.
-        if bytes[at] == b'/' && bytes.get(at + 1) == Some(&b'/') {
-            while at < bytes.len() && bytes[at] != b'\n' {
-                blank!(at);
-                at += 1;
-            }
-            continue;
-        }
-        // Block comment, nesting as Rust does.
-        if bytes[at] == b'/' && bytes.get(at + 1) == Some(&b'*') {
-            let mut depth = 0usize;
-            while at < bytes.len() {
-                if bytes[at] == b'/' && bytes.get(at + 1) == Some(&b'*') {
-                    depth += 1;
-                    blank!(at);
-                    blank!(at + 1);
-                    at += 2;
-                } else if bytes[at] == b'*' && bytes.get(at + 1) == Some(&b'/') {
-                    blank!(at);
-                    blank!(at + 1);
-                    at += 2;
-                    if depth <= 1 {
-                        break;
-                    }
-                    depth -= 1;
-                } else {
-                    blank!(at);
-                    at += 1;
-                }
-            }
-            continue;
-        }
-        // Raw and byte-raw strings, which do not process escapes.
-        if let Some(len) = raw_string_len(bytes, at) {
-            for index in (at + 1)..(at + len).min(bytes.len()) {
-                code[index] = false;
-            }
-            at += len;
-            continue;
-        }
-        // Character literal, recognised only so `'"'` cannot open a string.
-        if let Some(len) = char_literal_len(bytes, at) {
-            for index in (at + 1)..(at + len).min(bytes.len()) {
-                code[index] = false;
-            }
-            at += len;
-            continue;
-        }
-        // Ordinary and byte strings.
-        let quote = bytes[at] == b'"' || (bytes[at] == b'b' && bytes.get(at + 1) == Some(&b'"'));
-        if quote {
-            at += usize::from(bytes[at] == b'b') + 1;
-            while at < bytes.len() {
-                if bytes[at] == b'\\' {
-                    code[at] = false;
-                    code[(at + 1).min(bytes.len() - 1)] = false;
-                    at += 2;
-                    continue;
-                }
-                if bytes[at] == b'"' {
-                    at += 1;
-                    break;
-                }
-                code[at] = false;
-                at += 1;
-            }
-            continue;
-        }
-        at += 1;
-    }
-
-    // Only ASCII comment bytes were replaced, each by one ASCII byte.
-    let blanked = String::from_utf8(out).unwrap_or_else(|_| source.to_string());
-    (blanked, code)
+/// Whether an expression is exactly the forwarded method parameter.
+fn is_forwarded_parameter(expr: &syn::Expr) -> bool {
+    matches!(expr, syn::Expr::Path(path) if path.path.is_ident(FORWARDED_METHOD_PARAM))
 }
 
-/// Whether one signature parameter is the forwarded method: named exactly
+/// Whether a signature declares the forwarded method parameter: named
 /// `method`, typed `&str`.
-fn declares_forwarded_method(parameter: &str) -> bool {
-    let Some((name, ty)) = parameter.split_once(':') else { return false };
-    let name = name.trim().strip_prefix("mut ").unwrap_or(name.trim()).trim();
-    name == FORWARDED_METHOD_PARAM && ty.trim() == "&str"
+///
+/// Matched structurally rather than as text. Testing the signature for
+/// `"method: &str"` also matched `other_method: &str`, which forwards nothing
+/// of the kind.
+fn declares_forwarded_method(signature: &syn::Signature) -> bool {
+    signature.inputs.iter().any(|input| {
+        let syn::FnArg::Typed(typed) = input else { return false };
+        let syn::Pat::Ident(ident) = &*typed.pat else { return false };
+        if ident.ident != FORWARDED_METHOD_PARAM {
+            return false;
+        }
+        let syn::Type::Reference(reference) = &*typed.ty else { return false };
+        matches!(&*reference.elem, syn::Type::Path(path) if path.path.is_ident("str"))
+    })
 }
 
-/// One `fn` declaration: where it starts, its name, and whether it takes the
-/// method from its caller.
-struct FnDecl {
-    offset: usize,
+// ── Function facts ───────────────────────────────────────────────────────
+
+/// One call site inside a function.
+struct CallSite {
+    /// The name being invoked: a method name, or a path's final segment.
+    callee: String,
+    /// The method the call names directly, if any argument is a string literal.
+    literal: Option<String>,
+    /// Final path segments of the call's arguments, for constant resolution.
+    paths: Vec<String>,
+    /// Whether an argument is exactly the forwarded method parameter.
+    forwards_parameter: bool,
+}
+
+/// One function's facts.
+struct FnFacts {
     name: String,
     forwards_method: bool,
+    sites: Vec<CallSite>,
 }
 
-/// Collect every `fn` declaration with its signature disposition.
-fn fn_declarations(source: &str) -> Vec<FnDecl> {
-    let mut decls = Vec::new();
-    let mut from = 0usize;
+/// Collect every production function in one parsed file, with its call sites.
+///
+/// Test-gated items are not descended into, so a test-only send is never
+/// production emission. Because this walks the parsed tree, a `fn` or a send
+/// written inside a string literal or a comment does not exist to be found.
+#[derive(Default)]
+struct FnCollector {
+    functions: Vec<FnFacts>,
+    stack: Vec<usize>,
+}
 
-    while let Some(found) = source[from..].find("fn ") {
-        let start = from + found;
-        let preceding = source[..start].chars().next_back();
-        // Skip a match inside a longer identifier (e.g. `into_fn `).
-        if preceding.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
-            from = start + 3;
-            continue;
-        }
-        let after = &source[start + 3..];
-        let name: String =
-            after.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
-        let forwards_method = after
-            .find('(')
-            .and_then(|open| top_level_args(&after[open + 1..]))
-            .is_some_and(|args| args.iter().any(|arg| declares_forwarded_method(arg)));
-
-        if !name.is_empty() {
-            decls.push(FnDecl { offset: start, name, forwards_method });
-        }
-        from = start + 3;
+impl FnCollector {
+    fn enter(&mut self, name: String, signature: &syn::Signature) {
+        self.functions.push(FnFacts {
+            name,
+            forwards_method: declares_forwarded_method(signature),
+            sites: Vec::new(),
+        });
+        self.stack.push(self.functions.len() - 1);
     }
-    decls
+
+    fn record(&mut self, site: CallSite) {
+        if let Some(index) = self.stack.last().copied() {
+            self.functions[index].sites.push(site);
+        }
+    }
 }
 
-/// The declaration a byte offset sits inside: the last one declared before it.
-fn enclosing_fn(decls: &[FnDecl], offset: usize) -> Option<&FnDecl> {
-    decls.iter().rev().find(|decl| decl.offset < offset)
+impl<'ast> Visit<'ast> for FnCollector {
+    fn visit_item(&mut self, node: &'ast syn::Item) {
+        let attrs: &[syn::Attribute] = match node {
+            syn::Item::Fn(item) => &item.attrs,
+            syn::Item::Mod(item) => &item.attrs,
+            syn::Item::Impl(item) => &item.attrs,
+            syn::Item::Trait(item) => &item.attrs,
+            syn::Item::Macro(item) => &item.attrs,
+            _ => &[],
+        };
+        if is_test_gated(attrs) {
+            return;
+        }
+        syn::visit::visit_item(self, node);
+    }
+
+    fn visit_impl_item(&mut self, node: &'ast syn::ImplItem) {
+        let attrs: &[syn::Attribute] = match node {
+            syn::ImplItem::Fn(item) => &item.attrs,
+            syn::ImplItem::Const(item) => &item.attrs,
+            _ => &[],
+        };
+        if is_test_gated(attrs) {
+            return;
+        }
+        syn::visit::visit_impl_item(self, node);
+    }
+
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        self.enter(node.sig.ident.to_string(), &node.sig);
+        syn::visit::visit_item_fn(self, node);
+        self.stack.pop();
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        self.enter(node.sig.ident.to_string(), &node.sig);
+        syn::visit::visit_impl_item_fn(self, node);
+        self.stack.pop();
+    }
+
+    fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
+        self.enter(node.sig.ident.to_string(), &node.sig);
+        syn::visit::visit_trait_item_fn(self, node);
+        self.stack.pop();
+    }
+
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        let mut literal = None;
+        let mut paths = Vec::new();
+        let mut forwards_parameter = false;
+        for arg in &node.args {
+            if literal.is_none() {
+                literal = string_literal(arg);
+            }
+            if let Some(tail) = path_tail(arg) {
+                paths.push(tail);
+            }
+            forwards_parameter |= is_forwarded_parameter(arg);
+        }
+        self.record(CallSite {
+            callee: node.method.to_string(),
+            literal,
+            paths,
+            forwards_parameter,
+        });
+        syn::visit::visit_expr_method_call(self, node);
+    }
+
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        // `Type::send_request(self, ..)` is the same emission as the method
+        // call form; matching only the latter let it leave discovery entirely.
+        if let Some(callee) = path_tail(&node.func) {
+            let mut literal = None;
+            let mut paths = Vec::new();
+            let mut forwards_parameter = false;
+            for arg in &node.args {
+                if literal.is_none() {
+                    literal = string_literal(arg);
+                }
+                if let Some(tail) = path_tail(arg) {
+                    paths.push(tail);
+                }
+                forwards_parameter |= is_forwarded_parameter(arg);
+            }
+            self.record(CallSite { callee, literal, paths, forwards_parameter });
+        }
+        syn::visit::visit_expr_call(self, node);
+    }
 }
+
+// ── Registry, constants, catalog ─────────────────────────────────────────
 
 /// Parse `pub const NAME: &str = "value";` declarations into a lookup table.
 fn method_constants(source: &str) -> BTreeMap<String, String> {
-    let mut constants = BTreeMap::new();
-    for line in source.lines() {
-        let trimmed = line.trim();
-        let Some(rest) = trimmed.strip_prefix("pub const ") else { continue };
-        let Some((name, value)) = rest.split_once(": &str = \"") else { continue };
-        let Some(value) = value.strip_suffix("\";") else { continue };
-        constants.insert(name.trim().to_string(), value.to_string());
-    }
-    constants
+    let Ok(file) = syn::parse_file(source) else { return BTreeMap::new() };
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Const(konst) => {
+                string_literal(&konst.expr).map(|value| (konst.ident.to_string(), value))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Read the `REGISTRY` table out of `method_direction.rs`.
 ///
 /// Entries are `c2s(..)`, `s2c(..)`, or `ext(..)` constructor calls; `s2c` is
 /// server-to-client by construction and `ext` names its direction explicitly.
-/// Parsing stops at the table's closing `];` so a later test fixture in the
-/// same file cannot inject phantom rows.
+/// Reading the parsed const item rather than the file's text means a fixture
+/// or a commented-out entry elsewhere in the file cannot inject phantom rows,
+/// and there is no table-literal boundary left to get wrong.
 pub(super) fn parse_direction_registry(
     source: &str,
     constants: &BTreeMap<String, String>,
 ) -> (BTreeMap<String, RegistryKind>, Vec<Violation>) {
     let mut out = BTreeMap::new();
     let mut violations = Vec::new();
-    // A commented-out or quoted `s2c(..)` is not a classification.
-    let (source, is_code) = blank_comments(source);
-    let source = source.as_str();
-    let Some(start) = source.find("REGISTRY: &[MethodDescriptor] = &[") else {
+
+    let Ok(file) = syn::parse_file(source) else {
+        violations.push(Violation::new(
+            "registry-source-unparsable",
+            "<registry>",
+            "the direction registry could not be parsed; its silence must not read as an empty \
+             classification surface",
+        ));
         return (out, violations);
     };
-    let open = start + "REGISTRY: &[MethodDescriptor] = &[".len();
-    // Bound the scan to the table literal itself.
-    let mut depth = 0i32;
-    let mut end = source.len();
-    for (index, ch) in source[open..].char_indices() {
-        match ch {
-            '[' | '(' => depth += 1,
-            ')' => depth -= 1,
-            ']' if depth == 0 => {
-                end = open + index;
-                break;
-            }
-            ']' => depth -= 1,
-            _ => {}
-        }
-    }
-    let body = &source[open..end];
 
-    for (name, implied) in [("s2c", Some(false)), ("c2s", Some(true)), ("ext", None)] {
-        let mut from = 0usize;
-        while let Some(offset) = body[from..].find(name) {
-            let start = from + offset;
-            let after_name = start + name.len();
-            from = after_name;
+    let registry = file.items.iter().find_map(|item| match item {
+        syn::Item::Const(konst) if konst.ident == "REGISTRY" => Some(&*konst.expr),
+        syn::Item::Static(statik) if statik.ident == "REGISTRY" => Some(&*statik.expr),
+        _ => None,
+    });
+    let Some(registry) = registry else { return (out, violations) };
 
-            // Reject a match inside a longer identifier in either direction,
-            // or one that is not code at all.
-            let preceding = body[..start].chars().next_back();
-            if preceding.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-                || !identifier_at(body, after_name).is_empty()
-                || !is_code.get(open + start).copied().unwrap_or(false)
-            {
-                continue;
-            }
-            let Some(call_open) = call_open_paren(body, after_name) else { continue };
-            let Some(args) = top_level_args(&body[call_open..]) else {
-                violations.push(Violation::new(
-                    "registry-entry-unresolved",
-                    "<registry>",
-                    format!("a `{name}(..)` registry entry has no matching `)`"),
-                ));
-                continue;
-            };
+    let mut entries = RegistryEntries { rows: Vec::new() };
+    entries.visit_expr(registry);
 
-            // A constant-named entry is resolved, not skipped: dropping it
-            // would quietly shrink the coverage denominator so a newly
-            // classified request would need no row.
-            let method = match args.first().and_then(|arg| {
-                string_literal(arg).or_else(|| {
-                    plain_identifier(arg).and_then(|ident| constants.get(ident).cloned())
-                })
-            }) {
-                Some(method) => method,
-                None => {
-                    violations.push(Violation::new(
-                        "registry-entry-unresolved",
-                        "<registry>",
-                        format!(
-                            "a `{name}(..)` registry entry names no resolvable method; the \
-                             classification denominator is incomplete"
-                        ),
-                    ));
-                    continue;
-                }
-            };
+    for (constructor, args) in entries.rows {
+        let implied = match constructor.as_str() {
+            "s2c" => Some(false),
+            "c2s" => Some(true),
+            "ext" => None,
+            _ => continue,
+        };
 
-            let notification = args.iter().any(|arg| arg.contains("EnvelopeKind::Notification"));
-            let client_to_server = match implied {
-                Some(is_c2s) => is_c2s,
-                None => args.iter().any(|arg| arg.contains("MethodDirection::ClientToServer")),
-            };
+        // A constant-named entry is resolved, not skipped: dropping it would
+        // quietly shrink the coverage denominator so a newly classified
+        // request would need no row.
+        let method = args.iter().find_map(|arg| {
+            string_literal(arg)
+                .or_else(|| path_tail(arg).and_then(|tail| constants.get(&tail).cloned()))
+        });
+        let Some(method) = method else {
+            violations.push(Violation::new(
+                "registry-entry-unresolved",
+                "<registry>",
+                format!(
+                    "a `{constructor}(..)` registry entry names no resolvable method; the \
+                     classification denominator is incomplete"
+                ),
+            ));
+            continue;
+        };
 
-            let kind = if client_to_server {
-                RegistryKind::ClientToServer
-            } else if notification {
-                RegistryKind::ServerToClientNotification
-            } else {
-                RegistryKind::ServerToClientRequest
-            };
-            out.insert(method, kind);
-        }
+        let mentions = |needle: &str| {
+            args.iter().any(|arg| {
+                let mut found = Mentions { needle: needle.to_string(), found: false };
+                found.visit_expr(arg);
+                found.found
+            })
+        };
+        let notification = mentions("Notification");
+        let client_to_server = implied.unwrap_or_else(|| mentions("ClientToServer"));
+
+        let kind = if client_to_server {
+            RegistryKind::ClientToServer
+        } else if notification {
+            RegistryKind::ServerToClientNotification
+        } else {
+            RegistryKind::ServerToClientRequest
+        };
+        out.insert(method, kind);
     }
     (out, violations)
 }
 
-/// The set of call names in one file whose invocation emits a server request:
-/// the sender primitives, plus every `method: &str` helper whose own body
-/// reaches one of them, closed transitively.
-fn forwarding_closure<'a>(source: &'a str, decls: &'a [FnDecl]) -> BTreeSet<&'a str> {
-    let mut senders: BTreeSet<&str> = REQUEST_SENDERS.iter().copied().collect();
-    let candidates: Vec<&FnDecl> = decls.iter().filter(|decl| decl.forwards_method).collect();
+/// Collect every `name(..)` call inside the registry table expression.
+struct RegistryEntries {
+    rows: Vec<(String, Vec<syn::Expr>)>,
+}
 
-    // A forwarder may call another forwarder declared later in the file, so
-    // repeat until no further name joins.
-    loop {
-        let mut grew = false;
-        for decl in &candidates {
-            if senders.contains(decl.name.as_str()) {
-                continue;
-            }
-            let body = fn_body(source, decls, decl);
-            if senders.iter().any(|sender| {
-                body.contains(&format!(".{sender}")) || body.contains(&format!("::{sender}"))
-            }) {
-                senders.insert(decl.name.as_str());
-                grew = true;
-            }
+impl<'ast> Visit<'ast> for RegistryEntries {
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if let Some(name) = path_tail(&node.func) {
+            self.rows.push((name, node.args.iter().cloned().collect()));
         }
-        if !grew {
-            break senders;
-        }
+        syn::visit::visit_expr_call(self, node);
     }
 }
 
-/// The source between a declaration and the next one. Over-inclusive for a
-/// nested `fn`, which can only keep a forwarder rather than drop one.
-fn fn_body<'a>(source: &'a str, decls: &[FnDecl], decl: &FnDecl) -> &'a str {
-    let end = decls
-        .iter()
-        .map(|other| other.offset)
-        .filter(|offset| *offset > decl.offset)
-        .min()
-        .unwrap_or(source.len());
-    &source[decl.offset..end]
+/// Whether a path expression anywhere in a subtree ends in `needle`.
+struct Mentions {
+    needle: String,
+    found: bool,
 }
+
+impl<'ast> Visit<'ast> for Mentions {
+    fn visit_path(&mut self, node: &'ast syn::Path) {
+        if node.segments.iter().any(|segment| segment.ident == self.needle) {
+            self.found = true;
+        }
+        syn::visit::visit_path(self, node);
+    }
+}
+
+// ── Emission scan ────────────────────────────────────────────────────────
 
 /// Scan production runtime sources for server-request emission call sites.
 ///
-/// Each discovered site is attributed to the function that contains it, so the
-/// matrix can be required to cite the exact emitting symbol. A call whose
-/// arguments cannot be parsed to their matching `)`, or whose method cannot be
-/// resolved outside a declared forwarding signature, is a finding.
+/// Two passes. The first parses every file and records its functions; the
+/// second resolves send sites once the set of forwarding helpers is known
+/// across the whole scan root, because a wrapper and its caller need not share
+/// a file. Each site is attributed to the function containing it, so the matrix
+/// can be required to cite the exact emitting symbol.
 pub(super) fn scan_emission(
     repo_root: &Path,
     scan_root: &str,
@@ -616,17 +408,37 @@ pub(super) fn scan_emission(
     let mut violations = Vec::new();
 
     let root = repo_root.join(scan_root);
-    let mut files: Vec<_> = walkdir::WalkDir::new(&root)
-        .sort_by_file_name()
-        .into_iter()
-        .filter_map(std::result::Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .map(walkdir::DirEntry::into_path)
-        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .collect();
-    files.sort();
+    let mut paths = Vec::new();
+    for entry in walkdir::WalkDir::new(&root).sort_by_file_name() {
+        // A directory the walker cannot enter is an instrument failure. Dropping
+        // the error would silently shrink the scan and read as absence.
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                violations.push(Violation::new(
+                    "emission-scan-incomplete",
+                    scan_root,
+                    format!(
+                        "the emission scan could not traverse the source tree ({error}); a \
+                         partial scan must not read as a complete one"
+                    ),
+                ));
+                continue;
+            }
+        };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.into_path();
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
 
-    for path in files {
+    // ── Pass one: parse and collect ──────────────────────────────────────
+    let mut files: Vec<(String, Vec<FnFacts>)> = Vec::new();
+    for path in paths {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         // Whole-file test modules carry no production emission.
         if name.ends_with("_tests.rs") {
@@ -637,100 +449,90 @@ pub(super) fn scan_emission(
             .map_or_else(|_| path.display().to_string(), |p| p.display().to_string());
         let source = std::fs::read_to_string(&path)
             .wrap_err_with(|| format!("reading emission source {relative}"))?;
-        // Blank first, strip second: an attribute or a `mod` brace quoted in a
-        // comment must not steer the test-gate stripper either.
-        let (blanked, _) = blank_comments(&source);
-        let (stripped, is_code) = blank_comments(&strip_test_gated_items(&blanked));
-        let decls = fn_declarations(&stripped);
 
-        // Record symbol names declared more than once in this file; attributing
-        // an emitter to such a name cannot express distinct ownership.
-        let mut seen_names: BTreeSet<&str> = BTreeSet::new();
-        for decl in &decls {
-            if !seen_names.insert(decl.name.as_str()) {
-                ambiguous.insert(format!("{relative}#{}", decl.name));
+        let parsed = match syn::parse_file(&source) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                violations.push(Violation::new(
+                    "emission-source-unparsable",
+                    relative.clone(),
+                    format!(
+                        "this source could not be parsed ({error}); a file the reader cannot \
+                         read is an instrument failure, not an empty one"
+                    ),
+                ));
+                continue;
+            }
+        };
+        let mut collector = FnCollector::default();
+        collector.visit_file(&parsed);
+
+        // `path#symbol` cannot distinguish two same-named functions in one
+        // file, so record the collision rather than letting one stand for both.
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for facts in &collector.functions {
+            if !seen.insert(facts.name.as_str()) {
+                ambiguous.insert(format!("{relative}#{}", facts.name));
             }
         }
+        files.push((relative, collector.functions));
+    }
 
-        // A helper that declares `method: &str` *and* reaches a sender forwards
-        // a caller-supplied method, so its own callers are send sites too.
-        // Requiring the body keeps a new wrapper from hiding a concrete method
-        // behind an exempt callee without promoting every helper that merely
-        // inspects a method name — `is_lifecycle_method`, `record_latency` — to
-        // a request emitter and inventing phantom requests from its callers.
-        let senders = forwarding_closure(&stripped, &decls);
-
-        // `self.send_request(..)` and `Type::send_request(..)` are the same
-        // emission; matching only the method-call form let the associated
-        // function form leave discovery entirely.
-        for (sender, separator) in senders.iter().flat_map(|sender| [(sender, "."), (sender, "::")])
-        {
-            let needle = format!("{separator}{sender}");
-            let mut from = 0usize;
-            while let Some(offset) = stripped[from..].find(&needle) {
-                let trigger = from + offset;
-                let at = trigger + separator.len();
-                let name = identifier_at(&stripped, at);
-                from = at + name.len().max(1);
-                if name != *sender {
+    // ── Forwarding closure, across the whole scan root ───────────────────
+    // A helper that takes the method from its caller *and* reaches a sender
+    // forwards a request, so its own callers are send sites too. Requiring the
+    // body keeps every helper that merely inspects a method name — such as
+    // `is_lifecycle_method` — from being read as a request emitter. Computing
+    // it per file left a wrapper and its caller in different files unconnected.
+    let mut senders: BTreeSet<String> =
+        REQUEST_SENDERS.iter().map(|name| (*name).to_string()).collect();
+    loop {
+        let mut grew = false;
+        for (_, functions) in &files {
+            for facts in functions {
+                if !facts.forwards_method || senders.contains(&facts.name) {
                     continue;
                 }
-                // Sender-shaped text inside a string literal is not a call.
-                if !is_code.get(trigger).copied().unwrap_or(false) {
-                    continue;
+                if facts.sites.iter().any(|site| senders.contains(&site.callee)) {
+                    senders.insert(facts.name.clone());
+                    grew = true;
                 }
-                let Some(open) = call_open_paren(&stripped, at + name.len()) else { continue };
-                from = open;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
 
-                // Parse to the matching `)` over the whole remaining source, so
-                // a call spread across any number of lines is still complete.
-                let Some(args) = top_level_args(&stripped[open..]) else {
-                    violations.push(Violation::new(
-                        "emission-unresolved",
-                        relative.clone(),
-                        "a server-request send site's argument list has no matching `)`; \
-                         emission discovery is incomplete and cannot be read as complete",
-                    ));
-                    continue;
-                };
-
-                // The method is the first argument that is a literal or a
-                // resolvable protocol constant; ids and params may precede it.
-                let resolved = args.iter().find_map(|arg| {
-                    string_literal(arg).or_else(|| {
-                        plain_identifier(arg)
-                            .filter(|ident| {
-                                ident.len() > 3
-                                    && ident.chars().all(|c| c.is_ascii_uppercase() || c == '_')
-                            })
-                            .and_then(|ident| constants.get(ident).cloned())
-                    })
-                });
-
-                let symbol = enclosing_fn(&decls, open);
+    // ── Pass two: resolve send sites ─────────────────────────────────────
+    for (relative, functions) in &files {
+        for facts in functions {
+            for site in facts.sites.iter().filter(|site| senders.contains(&site.callee)) {
+                let resolved = site
+                    .literal
+                    .clone()
+                    .or_else(|| site.paths.iter().find_map(|path| constants.get(path).cloned()));
                 match resolved {
                     Some(method) => {
-                        let owner = symbol.map_or("<unknown>", |decl| decl.name.as_str());
-                        let reference = format!("{relative}#{owner}");
+                        let reference = format!("{relative}#{}", facts.name);
                         let entry = emitted.entry(method).or_default();
                         if !entry.contains(&reference) {
                             entry.push(reference);
                         }
                     }
-                    // The only admitted unresolved shape is a forwarder
-                    // passing along its own caller-supplied parameter. Keying
-                    // the exemption on the signature alone let a forwarder send
-                    // any other expression — a computed or remapped method —
-                    // with no row and no finding.
-                    None if symbol.is_some_and(|decl| decl.forwards_method)
-                        && args.iter().any(|arg| arg.trim() == FORWARDED_METHOD_PARAM) => {}
+                    // The only admitted unresolved shape is a forwarder passing
+                    // along its own caller-supplied parameter. Keying this on
+                    // the signature alone let a forwarder send a computed or
+                    // remapped method with no row and no finding.
+                    None if facts.forwards_method && site.forwards_parameter => {}
                     None => violations.push(Violation::new(
                         "emission-unresolved",
                         relative.clone(),
                         format!(
                             "a server-request send site in `{}` names no resolvable method and \
-                             does not pass a declared `{FORWARDED_METHOD_PARAM}: &str` parameter",
-                            symbol.map_or("<unknown>", |decl| decl.name.as_str())
+                             does not pass its declared `{FORWARDED_METHOD_PARAM}: &str` \
+                             parameter",
+                            facts.name
                         ),
                     )),
                 }
@@ -744,6 +546,8 @@ pub(super) fn scan_emission(
     }
     Ok((emitted, ambiguous, violations))
 }
+
+// ── Feature catalog ──────────────────────────────────────────────────────
 
 /// Minimal typed view of `features.toml`. Unknown fields are ignored; the
 /// catalog carries many columns this join does not consume.

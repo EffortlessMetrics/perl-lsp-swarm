@@ -719,20 +719,29 @@ fn emission_discovery_resolves_constants_and_ignores_test_modules()
     Ok(())
 }
 
-/// Write a synthetic runtime tree and scan it.
-fn scan_synthetic(
-    source: &str,
+/// Write a synthetic runtime tree of named files and scan it.
+fn scan_synthetic_files(
+    files: &[(&str, &str)],
 ) -> Result<(BTreeMap<String, Vec<String>>, Vec<String>), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let runtime = dir.path().join("src").join("runtime");
     std::fs::create_dir_all(&runtime)?;
-    std::fs::write(runtime.join("synthetic.rs"), source)?;
+    for (name, source) in files {
+        std::fs::write(runtime.join(name), source)?;
+    }
 
     let mut constants = BTreeMap::new();
     constants.insert("WORKSPACE_APPLY_EDIT".to_string(), "workspace/applyEdit".to_string());
 
     let (emitted, _ambiguous, findings) = scan_emission(dir.path(), "src/runtime", &constants)?;
     Ok((emitted, findings.into_iter().map(|finding| finding.rule.to_string()).collect()))
+}
+
+/// Write one synthetic runtime file and scan it.
+fn scan_synthetic(
+    source: &str,
+) -> Result<(BTreeMap<String, Vec<String>>, Vec<String>), Box<dyn std::error::Error>> {
+    scan_synthetic_files(&[("synthetic.rs", source)])
 }
 
 /// The scanner parses to the matching `)`, not to a line budget. A normally
@@ -1224,4 +1233,117 @@ impl Server {
     assert!(emitted.is_empty(), "no comment or string may register as emission: {emitted:?}");
     assert!(findings.is_empty(), "{findings:?}");
     Ok(())
+}
+
+// ── Falsifiers for the fourth review round (pre-fix) ────────────────────
+
+/// A string containing `fn ` invented a declaration boundary, so a send was
+/// attributed to an owner that does not exist.
+#[test]
+fn a_string_containing_fn_does_not_invent_an_emitter_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r#"
+impl Server {
+    pub fn real_owner(&self) {
+        let doc = "fn fake_owner(&self)";
+        self.send_request("workspace/codeLens/refresh", p);
+    }
+}
+"#,
+    )?;
+
+    assert_eq!(
+        emitted.get("workspace/codeLens/refresh").map(Vec::as_slice),
+        Some(["src/runtime/synthetic.rs#real_owner".to_string()].as_slice()),
+        "attribution must stay with the real enclosing function"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
+/// A forwarding wrapper and its literal caller in different files: the
+/// per-file forwarder set could not connect them, so the request escaped.
+#[test]
+fn a_cross_file_forwarder_still_exposes_its_callers() -> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic_files(&[
+        (
+            "outbound.rs",
+            r"
+impl Server {
+    pub fn dispatch(&self, method: &str, params: Value) -> io::Result<()> {
+        self.send_request(method, params)
+    }
+}
+",
+        ),
+        (
+            "caller.rs",
+            r#"
+impl Server {
+    pub fn refresh(&self) {
+        self.dispatch("workspace/codeLens/refresh", p);
+    }
+}
+"#,
+        ),
+    ])?;
+
+    assert_eq!(
+        emitted.get("workspace/codeLens/refresh").map(Vec::as_slice),
+        Some(["src/runtime/caller.rs#refresh".to_string()].as_slice()),
+        "a wrapper in another file is still a send site for its callers"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
+/// A source file the reader cannot parse is an instrument failure, not an
+/// empty file. Silence from the scanner must never read as absence.
+#[test]
+fn an_unparsable_source_file_is_a_finding() -> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic("impl Server { pub fn broken(&self) { (( }")?;
+
+    assert!(emitted.is_empty(), "{emitted:?}");
+    assert_eq!(
+        findings,
+        vec!["emission-source-unparsable".to_string()],
+        "a file the reader cannot read is a finding, not a silent skip"
+    );
+    Ok(())
+}
+
+/// `advertised_not_proven` asserts the method is advertised. A catalog that
+/// records it as unadvertised contradicts the row, exactly as it would for
+/// `supported`.
+#[test]
+fn advertised_credit_contradicting_the_catalog_fails() {
+    let mut discovered = agreeing_discovery();
+    let mut unadvertised = catalog("LSP 3.16");
+    unadvertised.advertised = false;
+    discovered.catalog_rows.insert("lsp.code_lens_refresh".to_string(), unadvertised);
+
+    assert!(
+        rules(vec![passing_row()], &discovered).contains(&"disposition-contradicts-catalog"),
+        "a row may not claim advertised credit the catalog withholds"
+    );
+}
+
+/// The mirror is deliberately absent: `helper_only_unadvertised` claims less
+/// than the catalog records, and this gate stops a row overstating its surface,
+/// not understating it. This control pins that as a decision rather than an
+/// oversight — if the rule is added later, this test is the thing that fails.
+#[test]
+fn helper_only_credit_is_not_checked_against_catalog_advertisement() {
+    let mut row = passing_row();
+    row.disposition = "helper_only_unadvertised".to_string();
+    row.emission = "not_emitted".to_string();
+    row.emitters = Vec::new();
+    let mut discovered = agreeing_discovery();
+    discovered.emitted.clear();
+
+    assert!(
+        !rules(vec![row], &discovered).contains(&"disposition-contradicts-catalog"),
+        "understating a surface is not the failure this gate is for"
+    );
 }
