@@ -198,3 +198,31 @@ fn foreach_state_list_does_not_see_loop_variable_under_strict() {
         "`for state $x ($x)` under strict must report UndeclaredVariable for the list $x; got: {issues:?}"
     );
 }
+
+fn has_unused(issues: &[ScopeIssue], var_name: &str) -> bool {
+    issues.iter().any(|i| i.kind == IssueKind::UnusedVariable && i.variable_name == var_name)
+}
+
+/// `my $x; for $x (my $x = 1) { print $x; }` — perl aliases the iterator to
+/// the outer pad (`enteriter[$x:outer]`) even though the body reads the list
+/// lexical. The outer binding is therefore used.
+#[test]
+fn foreach_bare_iterator_keeps_outer_binding_used() {
+    let code = "use strict; my $x; for $x (my $x = 1) { print $x; }";
+    let issues = scope_issues(code);
+    assert!(
+        !has_unused(&issues, "$x") && !has_undeclared(&issues, "$x"),
+        "`my $x; for $x (my $x = 1)` must not report UnusedVariable or UndeclaredVariable for $x; got: {issues:?}"
+    );
+}
+
+/// Same outer-iterator use through the `foreach` keyword.
+#[test]
+fn foreach_keyword_bare_iterator_keeps_outer_binding_used() {
+    let code = "use strict; my $x; foreach $x (my $x = 1) { print $x; }";
+    let issues = scope_issues(code);
+    assert!(
+        !has_unused(&issues, "$x") && !has_undeclared(&issues, "$x"),
+        "`my $x; foreach $x (my $x = 1)` must not report UnusedVariable or UndeclaredVariable for $x; got: {issues:?}"
+    );
+}

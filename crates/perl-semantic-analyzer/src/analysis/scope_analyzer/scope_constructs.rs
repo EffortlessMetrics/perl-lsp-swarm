@@ -105,21 +105,23 @@ pub(super) fn handle_foreach<'a>(
     let is_implicit_topic = variable.location.start == variable.location.end
         && matches!(&variable.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "_");
 
-    // `our` is a compile-time alias to a package variable (perlfunc). Perl
-    // accepts `use strict; for our $x ($x) { }` and `use strict; our $x = $x;`,
-    // while a `my`/`state` list self-reference is undeclared. Register `our` in
-    // `loop_scope` before the list so list uses resolve; keep lexical iterators
-    // unavailable until after the list. The binding stays in `loop_scope`, so
-    // `print $x` after `for our $x (1)` remains undeclared.
-    //
-    // A `my` in the list is still a loop-scoped lexical: visible in the body,
-    // not after the loop (`for my $x (my $y = 1) { print $y; }` is legal).
+    // Record `our` and a bare iterator (`for $x (...)`) before the list:
+    // `our` is a compile-time package alias (`for our $x ($x)` is legal under
+    // strict), and a bare `$x` uses the outer binding even when the list
+    // declares `my $x` (perl Concise: enteriter on the outer pad; body print
+    // on the list pad). Lexical `my`/`state` and implicit `$_` stay hidden
+    // until after the list so `for my $x ($x)` remains undeclared. Bindings
+    // stay in `loop_scope`, so `print $x` after `for our $x (1)` is undeclared
+    // and a list-side `my` is visible in the body only.
     let iterator_is_our = matches!(
         &variable.kind,
         NodeKind::VariableDeclaration { declarator, .. } if declarator == "our"
     );
+    let iterator_is_declaration = matches!(&variable.kind, NodeKind::VariableDeclaration { .. });
+    let record_iterator_before_list =
+        iterator_is_our || (!iterator_is_declaration && !is_implicit_topic);
 
-    if iterator_is_our {
+    if record_iterator_before_list {
         declare_foreach_iterator(
             analyzer,
             variable,
@@ -131,7 +133,7 @@ pub(super) fn handle_foreach<'a>(
         );
     }
     analyzer.analyze_node(list, &loop_scope, ancestors, issues, context);
-    if !iterator_is_our {
+    if !record_iterator_before_list {
         declare_foreach_iterator(
             analyzer,
             variable,
