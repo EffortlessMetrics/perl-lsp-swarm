@@ -96,6 +96,7 @@ const REQUIREMENTS: &[(Match, &str, &[&str])] = &[
     (Match::Boundary, "the non-frontier boundary", &["tracked frontier"]),
 ];
 
+/// The repository root, derived from this crate's manifest directory.
 fn repo_root() -> io::Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -103,6 +104,11 @@ fn repo_root() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::other("xtask manifest directory has no repository parent"))
 }
 
+/// The body of the H2 section introduced by `heading`, up to the next H2.
+///
+/// The heading is matched byte-exactly after trimming: it is the machine-readable
+/// identity of one contract, not a fuzzy title search, so case and dash variants are
+/// deliberately not treated as the same authority.
 fn h2_section(text: &str, heading: &str) -> Option<String> {
     let mut in_section = false;
     let mut lines = Vec::new();
@@ -123,6 +129,11 @@ fn h2_section(text: &str, heading: &str) -> Option<String> {
     if in_section { Some(lines.join("\n")) } else { None }
 }
 
+/// `text` with fenced code blocks and HTML comments removed.
+///
+/// Obligations must be visible guidance. A closing fence is honoured only when the
+/// fence run is followed by whitespace alone, so an invalid closer cannot expose the
+/// decoys inside its block.
 fn visible_markdown(text: &str) -> String {
     let mut visible = Vec::new();
     let mut fence: Option<(char, usize)> = None;
@@ -175,6 +186,14 @@ fn visible_markdown(text: &str) -> String {
     visible.concat()
 }
 
+/// Whether the marker occurrence at `marker_start` sits under negation.
+///
+/// Polarity is judged within the marker's own sentence, from three overlapping
+/// signals: a negation token adjacent to the marker, a `not a ... but ...` contrast
+/// (which does *not* negate), and a modal negation governing the clause.
+///
+/// The analysis is deliberately bounded. Clause coordination and span-aware matching
+/// are owned by the shared reader in #13666, not expanded here.
 fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
     let sentence_start =
         line[..marker_start].rfind(['.', '!', '?', ';']).map_or(0, |index| index + 1);
@@ -253,6 +272,7 @@ fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
         || suffix.starts_with("can be omitted")
 }
 
+/// Whether `marker` appears at least once as positive guidance.
 fn has_unnegated_marker(text: &str, marker: &str) -> bool {
     text.match_indices(marker).any(|(start, _)| !is_negated_at(text, start, marker))
 }
@@ -282,6 +302,11 @@ fn sentence_around(text: &str, start: usize, length: usize) -> &str {
     &text[sentence_start..sentence_end]
 }
 
+/// Whether every occurrence of `marker` is negated *and* tied to the runtime-local
+/// boundary.
+///
+/// A bare "not a scheduler" elsewhere in the section does not establish the boundary;
+/// the disclaimer has to sit with the runtime-local/durable-state rule it qualifies.
 fn has_coordinated_boundary(text: &str, marker: &str) -> bool {
     text.match_indices(marker).next().is_some()
         && text.match_indices(marker).all(|(start, _)| {
@@ -303,6 +328,10 @@ fn has_coordinated_boundary(text: &str, marker: &str) -> bool {
         })
 }
 
+/// Every admission requirement `text` fails to encode, as human-readable errors.
+///
+/// An empty result means the section satisfies the contract. Each requirement is
+/// checked according to its declared [`Match`] kind.
 fn validate_claim_admission(text: &str) -> Vec<String> {
     let text = visible_markdown(text);
     let Some(section) = h2_section(&text, SECTION_HEADING) else {
@@ -314,10 +343,15 @@ fn validate_claim_admission(text: &str) -> Vec<String> {
     for &(kind, label, alternatives) in REQUIREMENTS {
         let present = match kind {
             Match::ConditionalRefusal => has_conditional_candidate_refusal(&section, alternatives),
-            // A prohibition carries its own negation, so polarity analysis is
-            // skipped -- but presence is still required, or the requirement
-            // would be vacuous.
-            Match::Prohibition => alternatives.iter().any(|&term| section.contains(term)),
+            // A prohibition carries its own negation, so polarity analysis
+            // would invert it. Presence alone is not enough either: the phrase
+            // the prohibition governs must not also appear as permission, or
+            // "do not infer ... you may infer ..." passes on substring
+            // presence while granting exactly what it forbids.
+            Match::Prohibition => alternatives.iter().any(|&term| {
+                let governed = term.strip_prefix("do not ").unwrap_or(term);
+                section.contains(term) && !has_unnegated_marker(&section, governed)
+            }),
             Match::Boundary => {
                 alternatives.iter().any(|&term| has_coordinated_boundary(&section, term))
             }
@@ -453,6 +487,35 @@ Later content.
     assert!(
         errors.iter().any(|error| error.contains("an anti-inference rule")),
         "expected the anti-inference requirement to fail closed: {errors:?}"
+    );
+}
+
+#[test]
+fn a_prohibition_followed_by_permission_fails_closed() {
+    // The prohibition is present verbatim, so a presence-only check passes --
+    // but the next sentence grants exactly what it forbids.
+    let text = r#"
+## Shift-left claim admission
+Before delegating a mutation or editing the candidate directly, retain a coherent claim
+and its semantic owner. Name the governing authority, current facts and contradictions,
+and observable seam. State the acceptance surface and choose the cheapest earliest
+falsifier, including a negative control. State the proof ceiling, what stays
+`NOT_PROVEN`, and which broader proof to defer. Name the mutation owner, one writer, the
+earliest missing judgment, and the named next or backward route. Read-only research may
+precede this boundary. When the earliest falsifier is unresolved, do not infer it or
+create a candidate. You may infer the acceptance surface when research is expensive.
+Route through `prepare-issue` or `prepare-proof`. Keep this runtime-local unless it
+changes durable claim, authority, or proof state. It is not a stage record, lease,
+scheduler, or tracked frontier.
+
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(
+        errors.iter().any(|error| error.contains("an anti-inference rule")),
+        "a granted permission must defeat the prohibition it contradicts: {errors:?}"
     );
 }
 
