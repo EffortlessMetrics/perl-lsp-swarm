@@ -128,6 +128,22 @@ pub enum ExtendedMode {
     },
 }
 
+impl ExtendedMode {
+    /// Stable machine token for receipts, protocol adapters, and conformance
+    /// matrix fixtures. The feature state remains part of the token so a
+    /// serialized fact cannot erase a meaningful semantic distinction.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Extended => "extended",
+            Self::ExtraExtended { enhanced: FeatureState::Enabled } => "extra_extended_enabled",
+            Self::ExtraExtended { enhanced: FeatureState::Disabled } => "extra_extended_disabled",
+            Self::ExtraExtended { enhanced: FeatureState::Unknown } => "extra_extended_unknown",
+        }
+    }
+}
+
 /// Effective character-set interpretation for regex escapes and classes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -148,6 +164,23 @@ pub enum CharacterSetMode {
     Conflict,
 }
 
+impl CharacterSetMode {
+    /// Stable machine token for receipts, protocol adapters, and conformance
+    /// matrix fixtures.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Ascii => "ascii",
+            Self::AsciiRestricted => "ascii_restricted",
+            Self::Depends => "depends",
+            Self::Locale => "locale",
+            Self::Unicode => "unicode",
+            Self::Conflict => "conflict",
+        }
+    }
+}
+
 /// Effective capture default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -156,6 +189,18 @@ pub enum CaptureMode {
     CapturingByDefault,
     /// `/n` makes ordinary unnamed groups non-capturing by default.
     NonCapturingByDefault,
+}
+
+impl CaptureMode {
+    /// Stable machine token for receipts, protocol adapters, and conformance
+    /// matrix fixtures.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CapturingByDefault => "capturing_by_default",
+            Self::NonCapturingByDefault => "non_capturing_by_default",
+        }
+    }
 }
 
 /// Transliteration-specific modifier semantics.

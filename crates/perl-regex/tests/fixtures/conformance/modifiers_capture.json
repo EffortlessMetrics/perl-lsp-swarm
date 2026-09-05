@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "programme": "perl_regex_modifier_conformance",
+  "family": "modifiers.capture",
+  "owner_issue": 7036,
+  "rows": [
+    {
+      "id": "modifiers.capture.default-capturing",
+      "family": "modifiers.capture",
+      "authority": "perlop(1) 'Modifiers': without /n all parenthesised groups capture by default",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "capture_mode": "capturing_by_default",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.capture.n-non-capturing",
+      "family": "modifiers.capture",
+      "authority": "perlop(1) 'Modifiers': /n makes unnamed (...) groups non-capturing; named groups and (?-n:...) still capture",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "n",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "capture_mode": "non_capturing_by_default",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.capture.qr-supports-n",
+      "family": "modifiers.capture",
+      "authority": "perlop(1): qr// supports /n",
+      "operator": "quote_regex",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "n",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "capture_mode": "non_capturing_by_default",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.capture.substitution-supports-n",
+      "family": "modifiers.capture",
+      "authority": "perlop(1): s/// supports /n",
+      "operator": "substitution",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "n",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "capture_mode": "non_capturing_by_default",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.capture.transliteration-rejects-n",
+      "family": "modifiers.capture",
+      "authority": "perlop(1) 'tr Operator': tr// does not accept /n",
+      "operator": "transliteration",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "n",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "diagnostic_codes": ["modifier_not_allowed_for_operator"]
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    }
+  ]
+}

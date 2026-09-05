@@ -2144,6 +2144,8 @@ version = "0.17.0"
 dependencies = [
  "perl-test-must",
  "proptest",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
