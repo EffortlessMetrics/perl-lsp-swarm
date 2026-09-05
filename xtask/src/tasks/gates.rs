@@ -1579,6 +1579,24 @@ fn run_gate_plan(
                 &selected_gates,
                 config.verbose,
             )?;
+            let resolved_base = config
+                .base_ref
+                .as_deref()
+                .map(|base_ref| {
+                    cmd!("git", "rev-parse", "--verify", format!("{base_ref}^{{commit}}"))
+                        .dir(&root)
+                        .read()
+                        .map(|sha| sha.trim().to_string())
+                        .map_err(|error| {
+                            eyre!("resolving --base {base_ref} to bind the route plan: {error}")
+                        })
+                })
+                .transpose()?;
+            routed_result_adapter::ensure_plan_authority_matches_invocation(
+                &compiled,
+                &config.tier,
+                resolved_base.as_deref(),
+            )?;
             let output_dir = root.join(routed_result_adapter::ROUTED_RESULTS_DIR);
             fs::create_dir_all(&output_dir).context("Failed to create routed-results directory")?;
             Ok((compiled, output_dir))
@@ -1636,6 +1654,7 @@ fn run_gate_plan(
                 compiled,
                 gate,
                 &result,
+                &root,
                 &root.join("target/receipts"),
                 output_dir,
                 routed_hosted_identity.clone(),
