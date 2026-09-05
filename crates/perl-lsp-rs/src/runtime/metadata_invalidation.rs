@@ -57,9 +57,7 @@ impl LspServer {
             let Some(root) = folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri)) else {
                 continue;
             };
-            if classify_project_metadata_path(&root, &path).is_some()
-                && !roots.iter().any(|existing| existing == &root)
-            {
+            if classify_project_metadata_path(&root, &path).is_some() && !roots.contains(&root) {
                 roots.push(root);
             }
         }
@@ -78,6 +76,17 @@ impl LspServer {
             return;
         }
 
+        // Snapshot open-document paths before taking the folder lock. No
+        // production path currently holds `documents` across a
+        // `workspace_folders` acquisition, but nesting them here would
+        // establish an order that any future `documents -> workspace_folders`
+        // caller would deadlock against. Hoisting also drops the per-folder
+        // re-lock this route would otherwise do inside the loop.
+        let open_document_paths: BTreeSet<PathBuf> = {
+            let documents = self.documents_guard();
+            documents.keys().filter_map(|uri| uri_to_fs_path(uri)).collect()
+        };
+
         let mut refreshed_any = false;
         let mut newly_stale: Vec<(String, RetainedReason)> = Vec::new();
         let mut now_current: Vec<String> = Vec::new();
@@ -92,7 +101,7 @@ impl LspServer {
                     continue;
                 }
 
-                if let Some(reason) = self.retained_snapshot_reason(&root) {
+                if let Some(reason) = Self::retained_snapshot_reason(&root, &open_document_paths) {
                     tracing::debug!(
                         folder = %folder.uri,
                         reason = ?reason,
@@ -142,33 +151,41 @@ impl LspServer {
     /// an unknown state is explicit rather than silently indistinguishable
     /// from "this project declares nothing".
     ///
-    /// A file that is simply absent is not a failure — that is a genuine
-    /// delete, and the refresh must run so its facts are downgraded.
-    fn retained_snapshot_reason(&self, root: &Path) -> Option<RetainedReason> {
+    /// A file that is simply absent, with no buffer behind it, is not a
+    /// failure — that is a genuine delete, and the refresh must run so its
+    /// facts are downgraded.
+    ///
+    /// `open_document_paths` is the caller's snapshot of currently open
+    /// documents. Open-buffer authority (#8041) applies to metadata documents
+    /// too: while the editor holds staged text, its buffer — not the disk
+    /// bytes — is authoritative, so a disk-derived refresh would record
+    /// provenance that contradicts what the user sees. That authority does
+    /// not depend on the backing file surviving, which is why openness is
+    /// tested before existence below.
+    fn retained_snapshot_reason(
+        root: &Path,
+        open_document_paths: &BTreeSet<PathBuf>,
+    ) -> Option<RetainedReason> {
         for source in DeclaredDependencySource::ALL {
             let path = root.join(source.file_name());
+            // Openness is checked before existence, matching
+            // `process_file_watcher_uri_immediate`. Buffer authority does not
+            // depend on the backing file still being present: an external
+            // delete of an open metadata document leaves the staged text
+            // authoritative until didSave/didClose completes the handoff, so
+            // probing existence first would let a delete race erase facts the
+            // open buffer still declares.
+            if open_document_paths.contains(&path) {
+                return Some(RetainedReason::OpenBufferAuthority);
+            }
             if !path.is_file() {
                 continue;
-            }
-            if self.metadata_document_is_open(&path) {
-                return Some(RetainedReason::OpenBufferAuthority);
             }
             if std::fs::read_to_string(&path).is_err() {
                 return Some(RetainedReason::UnreadableOnDisk);
             }
         }
         None
-    }
-
-    /// Whether an open editor buffer is the authority for `path`.
-    ///
-    /// Mirrors the source-index seam's open-buffer contract (#8041): while a
-    /// metadata document is open, its staged text — not the disk bytes — is
-    /// the authoritative content, so a disk-derived refresh would record
-    /// provenance that contradicts what the user sees.
-    fn metadata_document_is_open(&self, path: &Path) -> bool {
-        let documents = self.documents.lock();
-        documents.keys().any(|uri| uri_to_fs_path(uri).is_some_and(|open| open == path))
     }
 
     /// Current dependency/environment fact generation (#13640).

@@ -1540,7 +1540,7 @@ impl WorkspaceConfig {
         let retired: Vec<String> = self
             .detected_dependency_include_paths
             .iter()
-            .filter(|owned| !detected_normalized.iter().any(|current| current == *owned))
+            .filter(|&owned| !detected_normalized.contains(owned))
             .cloned()
             .collect();
         if !retired.is_empty() {

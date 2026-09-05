@@ -195,6 +195,53 @@ fn deleted_cpanfile_downgrades_declared_dependencies() {
     );
 }
 
+/// Open-buffer authority does not depend on the backing file still existing
+/// (#8041). An external delete of an open metadata document — a branch switch
+/// or a delete-and-rewrite save — must not erase facts the staged buffer still
+/// declares, and must not retire the include root that `cpanfile`'s presence
+/// gates.
+#[test]
+fn deleting_an_open_metadata_file_does_not_erase_buffer_owned_facts() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "cpanfile", "requires 'JSON::PP';\n");
+    write_file(&dir, "carton.lock", "snapshot\n");
+    let server = workspace_server(&dir);
+    let uri = file_uri(&dir, "cpanfile");
+    assert_eq!(declared_modules(&server), vec!["JSON::PP".to_string()]);
+
+    server
+        .handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "requires 'JSON::PP';\nrequires 'Staged::Only';\n"
+            }
+        })))
+        .expect("didOpen params are valid");
+
+    std::fs::remove_file(dir.path().join("cpanfile")).expect("remove cpanfile");
+    watched(&server, &[(&uri, DELETED)]);
+
+    assert_eq!(
+        declared_modules(&server),
+        vec!["JSON::PP".to_string()],
+        "an external delete must not erase facts an open metadata buffer still declares"
+    );
+    assert!(
+        server.dependency_facts_are_stale(&dir_uri(&dir)),
+        "the retained snapshot must be reported as stale"
+    );
+    assert!(
+        server.all_workspace_folders().first().is_some_and(|folder| folder
+            .effective_workspace_config
+            .include_paths
+            .iter()
+            .any(|path| path == "local/lib/perl5")),
+        "the Carton include root must survive a delete race on an open cpanfile"
+    );
+}
+
 /// Negative control: the detectors only ever read workspace-root metadata, so
 /// a nested file that merely shares the name is ordinary project content.
 #[test]
