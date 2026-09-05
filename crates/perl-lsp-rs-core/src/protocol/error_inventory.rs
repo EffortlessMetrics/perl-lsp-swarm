@@ -130,15 +130,14 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             // Wire-only (#7611): `JsonRpcError` owns transport facts and does
             // not implement `ErrorClass`. The Perl adapter in
             // `perl-lsp-rs::runtime::dispatch::response` projects finalized
-            // codes onto a category; its category varies by code, so no single
-            // representative sample is recorded. #7612 replaces the code-only
-            // mapping with originating classification and provenance.
+            // codes onto a category. The category varies by code, so the sample
+            // below is representative only (the adapter's parse-error arm).
+            // #7612 replaces the code-only mapping with originating
+            // classification and provenance.
             has_error_class: false,
-            classification_route: ClassificationRoute::AppAdapter(
-                JSONRPC_ERROR_ADAPTER,
-            ),
-            sample_category: None,
-            sample_disposition: None,
+            classification_route: ClassificationRoute::AppAdapter(JSONRPC_ERROR_ADAPTER),
+            sample_category: Some(ErrorCategory::Protocol),
+            sample_disposition: Some(disposition_for(ErrorCategory::Protocol)),
         },
         // ── perl-dap (DAP boundary) ──
         ErrorInventoryEntry {
@@ -318,8 +317,8 @@ mod tests {
                 ClassificationRoute::AppAdapter(JSONRPC_ERROR_ADAPTER)
             );
             assert!(
-                row.sample_category.is_none(),
-                "the adapter category varies by code; no single representative sample"
+                row.sample_category.is_some(),
+                "an adapter-classified row records a representative category"
             );
         }
         assert!(!unclassified_types().contains(&"JsonRpcError"));

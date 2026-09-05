@@ -300,7 +300,8 @@ checksum = "{}"
         "a changed direct dependency checksum must fail"
     );
 
-    let widened_root = valid.replacen(" \"serde_json\",\n", " \"serde_json\",\n \"perl-parser-core\",\n", 1);
+    let widened_root =
+        valid.replacen(" \"serde_json\",\n", " \"serde_json\",\n \"perl-parser-core\",\n", 1);
     assert_ne!(widened_root, valid);
     assert!(
         validate_probe_lock(&widened_root).is_err(),
