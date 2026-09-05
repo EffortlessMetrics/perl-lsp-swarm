@@ -552,6 +552,35 @@ class BinaryTargetRoutingTests(unittest.TestCase):
         )
 
 
+    def test_bare_main_path_bin_falls_back_to_package_name(self) -> None:
+        """A nameless `[[bin]]` at a bare `main.rs` must not derive an empty name.
+
+        `PurePosixPath("main.rs").parent.name` is `""`, which produced a
+        `--bin ` command with no target at all.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "bare-main-directory",
+                """
+                [package]
+                name = "bare-main"
+                version = "0.0.0"
+                edition = "2024"
+                autobins = false
+
+                [[bin]]
+                path = "main.rs"
+                """,
+                ["src/lib.rs", "main.rs", "src/changed.rs"],
+            )
+
+            targets = router.package_test_targets("bare-main-directory", root)
+
+        self.assertEqual(["bare-main"], [target.name for target in targets.binaries])
+
+
 class WorkspaceTargetOracleTests(unittest.TestCase):
     """Differential proof against Cargo's own view of the real workspace.
 
@@ -574,8 +603,14 @@ class WorkspaceTargetOracleTests(unittest.TestCase):
             )
         except (OSError, subprocess.SubprocessError) as error:
             self.skipTest(f"cargo metadata is unavailable: {error}")
-        if completed.returncode != 0:
-            self.skipTest(f"cargo metadata failed: {completed.stderr.strip()[-400:]}")
+        # Skip only when cargo is genuinely absent (handled above).  A cargo that
+        # runs and fails is a real workspace or manifest error, and this oracle is
+        # the control that should surface it rather than quietly pass.
+        self.assertEqual(
+            0,
+            completed.returncode,
+            f"cargo metadata failed: {completed.stderr.strip()[-400:]}",
+        )
 
         packages = json.loads(completed.stdout)["packages"]
         mismatches: list[str] = []

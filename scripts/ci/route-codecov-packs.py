@@ -127,7 +127,10 @@ def _target_features(target: dict[str, object]) -> tuple[str, ...]:
 def _target_name_from_path(path_value: str, package_name: str) -> str:
     path = PurePosixPath(path_value.replace("\\", "/"))
     if path.name == "main.rs":
-        return package_name if path.parent.name == "src" else path.parent.name
+        if path.parent.name == "src":
+            return package_name
+        # A bare "main.rs" has no parent directory to name the target after.
+        return path.parent.name or package_name
     return path.stem or package_name
 
 
