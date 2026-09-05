@@ -299,8 +299,11 @@ def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> Packag
     edition = _package_edition(crate_name, package, repo_root)
     # Cargo disables edition-2015 auto-discovery when the manifest defines ANY
     # target manually, not only a [[bin]]; an explicit [lib] counts.
-    manual_target_declared = bool(explicit_bins) or explicit_lib is not None
-    default_autobins = not (edition == "2015" and manual_target_declared)
+    # Cargo's 2015 auto-discovery rule is per target kind: only a manually
+    # declared `[[bin]]` disables binary auto-discovery.  An explicit `[lib]`
+    # does not -- verified against `cargo metadata` for an edition-2015 package
+    # declaring `[lib]` alongside `src/main.rs`, which still exposes the bin.
+    default_autobins = not (edition == "2015" and bool(explicit_bins))
     if package.get("autobins", default_autobins) is not False:
         src_root = crate_root / "src"
 
@@ -377,7 +380,17 @@ def augment_rust_focused_commands(
         targets = package_test_targets(crate_name, repo_root)
         if targets is None:
             continue
-        if targets.has_lib:
+        test_targets = test_targets_by_crate.get(crate_name, [])
+        # `cargo test --tests` selects every target with `test = true` -- the
+        # library and the ordinary binaries included, verified against
+        # `cargo test -p perl-ci-hygiene --tests --no-run`, which builds both
+        # `unittests src/lib.rs` and `unittests src/main.rs`.  So when the
+        # route falls back to `--tests`, a separate `--lib` or plain `--bin`
+        # command re-runs work that command already does.  Targets behind
+        # required features are the exception: `--tests` does not enable them,
+        # so they still need their own command (#13499).
+        covered_by_tests_fallback = not test_targets
+        if targets.has_lib and not covered_by_tests_fallback:
             lib_cmd = (
                 f"cargo llvm-cov test --no-report -p {targets.package_name} "
                 "--lib --profile agent --locked"
@@ -385,10 +398,11 @@ def augment_rust_focused_commands(
             if lib_cmd not in commands:
                 commands.append(lib_cmd)
         for binary in targets.binaries:
+            if covered_by_tests_fallback and not binary.required_features:
+                continue
             command = binary_target_command(targets.package_name, binary)
             if command not in commands:
                 commands.append(command)
-        test_targets = test_targets_by_crate.get(crate_name, [])
         if test_targets:
             integration_cmds = [
                 targeted_test_command(targets.package_name, target, features)
