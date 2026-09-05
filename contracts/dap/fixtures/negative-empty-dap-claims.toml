@@ -60,3 +60,9 @@ network_listener = false
 writable_paths_declared = true
 secrets_redacted_from_receipts = true
 adapter_selection_isolation = true
+
+[profile.adapter]
+binary_path = "/usr/local/bin/perl-dap"
+version = "0.17.0"
+hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+target = "x86_64-unknown-linux-gnu"

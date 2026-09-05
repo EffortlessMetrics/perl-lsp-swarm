@@ -98,3 +98,9 @@ evidence = ["crates/perl-dap/tests/dap_step_through_tests.rs"]
 cell_id = "termination_disconnect_cleanup"
 claimed_state = "evidence_backed"
 evidence = ["crates/perl-dap/tests/dap_session_cleanup_e2e.rs"]
+
+[profile.adapter]
+binary_path = "/usr/local/bin/perl-dap"
+version = "0.17.0"
+hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+target = "x86_64-unknown-linux-gnu"

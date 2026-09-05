@@ -1,11 +1,11 @@
 schema_version = "kubernetes_dap_workspace_profile_fixture.v1"
-fixture_id = "negative-unbound-injection-source"
+fixture_id = "negative-adapter-hash-not-exact"
 expectation = "reject"
-expected_rejection = "injection_source_unbound"
+expected_rejection = "adapter_identity_incomplete"
 
 [profile]
-profile_id = "acme-dev-injected-tool"
-install_mode = "injected_tool"
+profile_id = "acme-dev-project-image"
+install_mode = "project_image"
 deployment_mode = "workspace_container_process"
 sharing_mode = "dedicated_workspace"
 resource_profile = "dap-subject-medium"
@@ -42,14 +42,11 @@ dependency_authority = "carton.snapshot@sha256:ddddddddddddddddddddddddddddddddd
 authority = "#4841-launch-plan-v3"
 perl_identity = "/usr/local/bin/perl@5.38.2"
 
-[profile.artifact]
-source_identity = "docker.io/library/perl:5.38"
-artifact_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-copied_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-post_copy_verified = true
-exec_mode = "0555"
-tool_mount = "read_only"
-target_arch = "amd64"
+[profile.image]
+repository = "registry.example/acme/dev"
+digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+build_revision = "build-2026-08-25-a1b2c3"
+architecture = "amd64"
 libc = "glibc"
 
 [profile.security]
@@ -106,5 +103,5 @@ evidence = ["crates/perl-dap/tests/dap_session_cleanup_e2e.rs"]
 [profile.adapter]
 binary_path = "/usr/local/bin/perl-dap"
 version = "0.17.0"
-hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+hash = "v0.17.0"
 target = "x86_64-unknown-linux-gnu"

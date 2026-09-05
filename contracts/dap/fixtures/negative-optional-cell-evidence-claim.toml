@@ -105,3 +105,9 @@ evidence = ["crates/perl-dap/tests/dap_session_cleanup_e2e.rs"]
 cell_id = "evaluate_repl"
 claimed_state = "evidence_backed"
 evidence = ["static catalog row"]
+
+[profile.adapter]
+binary_path = "/usr/local/bin/perl-dap"
+version = "0.17.0"
+hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+target = "x86_64-unknown-linux-gnu"

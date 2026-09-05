@@ -1,5 +1,5 @@
 schema_version = "kubernetes_dap_workspace_profile_fixture.v1"
-fixture_id = "negative-unbound-injection-source"
+fixture_id = "negative-digest-only-injection-source"
 expectation = "reject"
 expected_rejection = "injection_source_unbound"
 
@@ -43,7 +43,7 @@ authority = "#4841-launch-plan-v3"
 perl_identity = "/usr/local/bin/perl@5.38.2"
 
 [profile.artifact]
-source_identity = "docker.io/library/perl:5.38"
+source_identity = "@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 artifact_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 copied_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 post_copy_verified = true

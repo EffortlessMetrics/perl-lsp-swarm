@@ -119,13 +119,25 @@
     "transport_boundary": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["transport", "stream_owner", "tty", "shell", "network_listener"],
+      "required": [
+        "transport",
+        "stream_owner",
+        "tty",
+        "shell",
+        "network_listener"
+      ],
       "properties": {
         "transport": {
-          "enum": ["stdio", "tcp"]
+          "enum": [
+            "stdio",
+            "tcp"
+          ]
         },
         "stream_owner": {
-          "enum": ["parent", "adapter"]
+          "enum": [
+            "parent",
+            "adapter"
+          ]
         },
         "tty": {
           "type": "boolean"
@@ -141,7 +153,11 @@
     "source_namespace": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["equality", "canonicalization_authority", "rewrite_authority"],
+      "required": [
+        "equality",
+        "canonicalization_authority",
+        "rewrite_authority"
+      ],
       "properties": {
         "equality": {
           "type": "string",
@@ -157,7 +173,10 @@
       }
     },
     "install_mode": {
-      "enum": ["project_image", "injected_tool"]
+      "enum": [
+        "project_image",
+        "injected_tool"
+      ]
     },
     "reason_code": {
       "enum": [
@@ -189,14 +208,22 @@
         "security_context_missing",
         "service_account_token_forbidden",
         "dap_cell_evidence_missing",
-        "install_mode_identity_conflict"
+        "install_mode_identity_conflict",
+        "adapter_identity_incomplete"
       ]
     },
     "cell_family": {
-      "enum": ["initial_admitted", "optional"]
+      "enum": [
+        "initial_admitted",
+        "optional"
+      ]
     },
     "cell_state": {
-      "enum": ["evidence_backed", "not_proven", "unsupported"]
+      "enum": [
+        "evidence_backed",
+        "not_proven",
+        "unsupported"
+      ]
     },
     "fact_key": {
       "type": "string",
@@ -205,10 +232,18 @@
     "admitted_profile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["profile_id", "install_mode", "summary", "required_facts"],
+      "required": [
+        "profile_id",
+        "install_mode",
+        "summary",
+        "required_facts"
+      ],
       "properties": {
         "profile_id": {
-          "enum": ["project_image", "injected_tool"]
+          "enum": [
+            "project_image",
+            "injected_tool"
+          ]
         },
         "install_mode": {
           "$ref": "#/$defs/install_mode"
@@ -230,7 +265,11 @@
     "rejected_topology": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["topology_id", "reason_code", "boundary"],
+      "required": [
+        "topology_id",
+        "reason_code",
+        "boundary"
+      ],
       "properties": {
         "topology_id": {
           "type": "string",
@@ -248,7 +287,12 @@
     "dap_cell": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cell_id", "family", "state", "evidence"],
+      "required": [
+        "cell_id",
+        "family",
+        "state",
+        "evidence"
+      ],
       "properties": {
         "cell_id": {
           "type": "string",
@@ -271,7 +315,10 @@
     "security_requirement": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["requirement_id", "statement"],
+      "required": [
+        "requirement_id",
+        "statement"
+      ],
       "properties": {
         "requirement_id": {
           "type": "string",
@@ -286,7 +333,9 @@
     "limitation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["statement"],
+      "required": [
+        "statement"
+      ],
       "properties": {
         "statement": {
           "type": "string",
