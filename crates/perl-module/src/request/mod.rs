@@ -322,6 +322,12 @@ impl ModuleRequest {
     /// [`Self::Dynamic`] rather than producing a variant whose name overstates
     /// what is behind it. No evidence is lost: both variants retain the source
     /// form and span.
+    ///
+    /// [`RequestBoundary::RuntimeString`] is defined as "no static fragment",
+    /// so it can never label a partial request: a caller that pairs it with
+    /// recovered text is contradicting itself, and the boundary wins. The
+    /// request normalizes to [`Self::Dynamic`] and the fragments are dropped,
+    /// because a runtime string has, by definition, none to keep.
     #[must_use]
     pub fn partially_static(
         source_form: impl Into<String>,
@@ -329,7 +335,9 @@ impl ModuleRequest {
         span: Option<ModuleTokenSpan>,
         boundary: RequestBoundary,
     ) -> Self {
-        if static_fragments.iter().all(String::is_empty) {
+        if boundary == RequestBoundary::RuntimeString
+            || static_fragments.iter().all(String::is_empty)
+        {
             return Self::dynamic(source_form, span, boundary);
         }
 
@@ -656,6 +664,47 @@ mod tests {
             RequestBoundary::VariableInterpolation,
         );
         assert_eq!(request.kind(), ModuleRequestKind::PartiallyStatic);
+    }
+
+    #[test]
+    fn runtime_string_boundary_never_labels_a_partial_request() {
+        // `RuntimeString` means "no static fragment"; recovered text cannot
+        // coexist with it, so the boundary wins and the request is dynamic.
+        for fragments in [vec!["Foo::".to_string()], vec!["Foo".to_string(), "Bar".to_string()]] {
+            let span = ModuleTokenSpan { start: 3, end: 9 };
+            let request = ModuleRequest::partially_static(
+                "$runtime",
+                fragments.clone(),
+                Some(span),
+                RequestBoundary::RuntimeString,
+            );
+            assert_eq!(
+                request.kind(),
+                ModuleRequestKind::Dynamic,
+                "{fragments:?} with a runtime-string boundary is a contradiction"
+            );
+            assert_eq!(request.boundary(), Some(RequestBoundary::RuntimeString));
+            let retained_span = match &request {
+                ModuleRequest::Dynamic(inner) => DynamicModuleRequest::span(inner),
+                _ => None,
+            };
+            assert_eq!(retained_span, Some(span), "the span survives the normalization");
+        }
+
+        // Every other boundary still admits genuinely recovered fragments.
+        for boundary in [
+            RequestBoundary::VariableInterpolation,
+            RequestBoundary::ComputedExpression,
+            RequestBoundary::UnmodeledConstruct,
+        ] {
+            let request = ModuleRequest::partially_static(
+                "\"Foo::$leaf\"",
+                vec!["Foo::".to_string()],
+                None,
+                boundary,
+            );
+            assert_eq!(request.kind(), ModuleRequestKind::PartiallyStatic, "{boundary:?}");
+        }
     }
 
     #[test]
