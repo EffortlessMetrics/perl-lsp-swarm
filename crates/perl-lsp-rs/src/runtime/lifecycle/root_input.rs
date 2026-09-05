@@ -1,18 +1,22 @@
-//! Typed classification of initialization root inputs (#8161).
+//! Typed classification of standard top-level initialization root inputs (#8161).
 //!
 //! One explicit disposition per `initialize` request distinguishes the
-//! provenance of the workspace root input, so downstream behavior never
-//! conflates "the client declared folders", "the client declared no folders",
-//! "the client declared nothing", and "the client used a legacy root".
+//! provenance of the standard top-level workspace root fields, so downstream
+//! behavior never conflates "the client declared folders", "the client declared
+//! no folders", "the client declared nothing in the standard root fields", and
+//! "the client used a legacy top-level root".
 //!
 //! The classification is a pure parse: it performs no indexing, watcher
-//! installation, configuration fetch, or provider work. #8945 owns what an
-//! explicit empty/rootless session does after initialization; #8995 owns
-//! later `workspace/didChangeWorkspaceFolders` transitions.
+//! installation, configuration fetch, or provider work. Non-standard roots in
+//! `initializationOptions` and process-CWD compatibility fallbacks may affect
+//! active roots separately; they do not rewrite this top-level provenance
+//! receipt. #8945 owns that rootless/runtime behavior, and #8995 owns later
+//! `workspace/didChangeWorkspaceFolders` transitions.
 
 use serde_json::Value;
 
-/// Where the initialize request's workspace root input came from.
+/// Where the initialize request's standard top-level workspace root input came
+/// from.
 ///
 /// The variants preserve input provenance as required by #8161: a present
 /// non-empty `workspaceFolders` array is authoritative; present empty/null
@@ -39,7 +43,10 @@ pub(crate) enum InitialRootInput {
     /// `workspaceFolders` omitted, `rootUri` absent or null, legacy
     /// `rootPath` supplied.
     LegacyRootPath,
-    /// No usable root input of any kind was declared by the client.
+    /// No usable top-level `workspaceFolders`, `rootUri`, or `rootPath` input
+    /// was declared by the client. Non-standard `initializationOptions` roots
+    /// and process-CWD compatibility are separate runtime behavior reflected by
+    /// active roots, not by this provenance receipt.
     NoWorkspaceRoot,
 }
 
@@ -70,7 +77,8 @@ impl InitialRootInput {
     }
 }
 
-/// Classify the initialize request's root inputs once, per #8161.
+/// Classify the initialize request's standard top-level root inputs once, per
+/// #8161.
 ///
 /// Rules:
 /// - a present non-empty `workspaceFolders` array is authoritative;
@@ -215,7 +223,7 @@ mod tests {
         assert_eq!(
             classified.as_str(),
             "no_workspace_root",
-            "the receipt must not name a client-declared root the client never sent"
+            "the receipt must not name a standard top-level root the client never sent"
         );
     }
 

@@ -5,15 +5,16 @@ body: >-
   The server now advertises `workspace.workspaceFolders.supported` from its own
   implementation truth instead of mirroring the client's advertised bit or the number of
   folders that happened to be open, so a client that omits or disables its own
-  workspace-folder capability no longer sees the server claim it lacks the feature.
-  Initialization root inputs are classified once into an explicit disposition, keeping
-  four separate facts apart: what the server implements, what the client advertises, which
-  folders are active, and where the root input came from. A present `workspaceFolders` of
-  `[]` or `null` is an explicit no-active-folder declaration and no longer silently adopts
-  `rootUri`, `rootPath`, or the server's working directory; the legacy `rootUri` then
-  `rootPath` fallback applies only when the field is genuinely omitted. Separately, a
-  client that sends `initializationOptions` carrying no recognized root stays rootless
-  rather than indexing the launcher's working directory.
+  workspace-folder capability no longer sees the server claim it lacks the feature. The
+  standard top-level `workspaceFolders`, `rootUri`, and `rootPath` inputs are classified
+  once into an explicit disposition, keeping four separate facts apart: what the server
+  implements, what the client advertises, which folders are active, and where the standard
+  root input came from. A present `workspaceFolders` of `[]` or `null` is an explicit
+  no-active-folder declaration and no longer silently adopts `rootUri`, `rootPath`, or the
+  server's working directory; the legacy `rootUri` then `rootPath` fallback applies only
+  when the field is genuinely omitted. Separately, a client that sends
+  `initializationOptions` carrying no recognized compatibility root stays rootless rather
+  than indexing the launcher's working directory.
 time: 2026-09-05T05:30:00Z
 custom:
   PR: "14181"
