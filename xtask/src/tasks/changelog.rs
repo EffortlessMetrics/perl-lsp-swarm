@@ -41,18 +41,21 @@
 //! naming the fragment(s): the renderer would crash on them repo-wide, which
 //! would bury the named findings under an exit-2 instrument failure that names
 //! nothing. "Fragment X is malformed" (above) and "render crashed" (exit 2)
-//! therefore never appear for the same run. Fragments deleted by the PR are
-//! excluded from the disposition itself before classification — an absent
-//! path cannot crash the renderer, owes no release note, and must not lend
-//! its Fragment disposition to unrelated changes in the same PR. Deletions
-//! of non-fragment files are NOT excluded: they remain disposition-bearing
-//! changes, so a deletion-only PR still owes a release note or exemption.
+//! therefore never appear for the same run. Fragments absent from the tree
+//! under check are excluded from the disposition itself before classification
+//! — an absent path cannot crash the renderer, owes no release note, and must
+//! not lend its Fragment disposition to unrelated changes in the same PR.
+//! Absence is read from the tree rather than from a `git diff` range, so the
+//! verdict does not depend on the changed-file list and `--base` having been
+//! produced from the same range. Deletions of non-fragment files are NOT
+//! excluded: they remain disposition-bearing changes, so a deletion-only PR
+//! still owes a release note or exemption.
 //!
 //! A malformed fragment is a *verdict-bearing* finding, symmetric with a
 //! missing disposition: past the blocking boundary it is a
 //! [`CheckOutcome::BlockingViolation`]; during the armed advisory soak it is
 //! an [`CheckOutcome::AdvisoryFinding`]; before any boundary it stays
-//! non-fatal (WARN only). Fragments deleted by the PR never escalate.
+//! non-fatal (WARN only). Fragments absent from the tree never escalate.
 //!
 //! Note on equivalence: this schema validation *approximates* renderer
 //! acceptance, it does not guarantee it. chrono's RFC 3339 parser (used here)
@@ -464,16 +467,22 @@ fn exempt_category_for_path(path: &str, changelog_paths: &[&str]) -> Option<&'st
 
 /// Detect the PR's disposition from its changed files and PR body.
 ///
-/// `deleted` carries the git-derived deletion status (paths the PR removes).
-/// A deleted disposition artifact must never *supply* the disposition it is
-/// removed by: a deleted `.changes/exemptions/*.md` cannot exempt the PR
-/// that deletes it, and deleted `.changes/` artifacts cannot satisfy the
-/// release-prep heuristic. Deleted paths still count as disposition-bearing
-/// changes (they stay in `changed`); only surviving files classify the PR
-/// (issue #13484 review round 3).
+/// `absent` carries the changed paths that are not present in the tree under
+/// check (see [`absent_paths`]). An absent disposition artifact must never
+/// *supply* the disposition it is removed by: a deleted
+/// `.changes/exemptions/*.md` cannot exempt the PR that deletes it, and
+/// deleted `.changes/` artifacts cannot satisfy the release-prep heuristic.
+/// Absent paths still count as disposition-bearing changes (they stay in
+/// `changed`); only present files classify the PR (issue #13484 review
+/// round 3).
+///
+/// Every lookup below keys `absent` by the caller's own path string, never by
+/// a re-spelled one, so a supplied list using foreign separators cannot miss
+/// the set and slip an absent artifact past as a live disposition (issue
+/// #13484 review round 4).
 fn detect_disposition(
     changed: &[String],
-    deleted: &std::collections::HashSet<String>,
+    absent: &std::collections::HashSet<String>,
     pr_body: &str,
     policy: &ChangelogPolicy,
 ) -> Disposition {
@@ -487,7 +496,7 @@ fn detect_disposition(
         return Disposition::Exemption(format!("{cat}: {reason}"));
     }
     if changed.iter().any(|f| {
-        if deleted.contains(f) {
+        if absent.contains(f) {
             return false;
         }
         let n = f.replace('\\', "/");
@@ -496,10 +505,9 @@ fn detect_disposition(
         return Disposition::Exemption("file-based (.changes/exemptions/)".to_string());
     }
     let changelog_paths = policy.changelog_paths();
-    // The release-prep heuristic is satisfied only by surviving
-    // (non-deleted) files; an all-deleted change set is not a release prep.
-    let surviving: Vec<String> =
-        changed.iter().filter(|f| !deleted.contains(*f)).cloned().collect();
+    // The release-prep heuristic is satisfied only by present files; an
+    // all-deleted change set is not a release prep.
+    let surviving: Vec<String> = changed.iter().filter(|f| !absent.contains(*f)).cloned().collect();
     if is_release_prep(&surviving, &changelog_paths) {
         return Disposition::ReleasePrep;
     }
@@ -589,9 +597,11 @@ fn read_changed_files(
 ) -> std::result::Result<Vec<String>, String> {
     if let Some(list) = changed_files {
         // Caller-supplied lists (e.g. the changelog-advisory workflow) carry
-        // bare paths with no status. Deleted fragments are tolerated by the
-        // Fragment disposition: [`deleted_paths`] re-derives deletion status
-        // from git so an absent path is never treated as a malformed fragment.
+        // bare paths with no status, and need not have been produced from the
+        // same base as `--base`. Deleted fragments are tolerated by the
+        // Fragment disposition: [`absent_paths`] reads the tree under check,
+        // so an absent path is never treated as a malformed fragment
+        // regardless of which range produced the list.
         return std::fs::read_to_string(list)
             .map(|content| {
                 content
@@ -606,7 +616,7 @@ fn read_changed_files(
     let out = Command::new("git")
         .current_dir(root)
         // Deletions are deliberately included: a deleted fragment is filtered
-        // downstream by the `deleted_paths` re-derivation in `check_inner`
+        // downstream by the `absent_paths` tree read in `check_inner`
         // (an absent path cannot crash the renderer), while a deleted
         // non-fragment file must stay a disposition-bearing change rather
         // than silently vanish from the gate — the default git-discovery
@@ -831,14 +841,15 @@ fn check_inner(
     // deleted file (production code, docs, tooling) stays a
     // disposition-bearing change, so a deletion-only PR cannot bypass the
     // policy. Deleted fragment paths stay in `changed` for category hints
-    // and direct-edit handling. Soft-degraded `deleted_paths` (empty set)
-    // preserves the pre-existing advisory behavior.
-    let deleted = deleted_paths(&root, &base);
+    // and direct-edit handling. [`absent_paths`] reads the tree under check,
+    // so the answer does not depend on the changed-file list and `--base`
+    // having been produced from the same diff range.
+    let absent = absent_paths(&root, &changed);
     let deleted_fragments: Vec<String> = changed
         .iter()
         .filter(|f| {
             let norm = f.replace('\\', "/");
-            deleted.contains(&norm)
+            absent.contains(*f)
                 && norm.starts_with(&format!("{UNRELEASED_DIR}/"))
                 && norm.ends_with(".yaml")
         })
@@ -860,7 +871,7 @@ fn check_inner(
         );
         return Ok((CheckOutcome::PolicySatisfied, report));
     }
-    let disposition = detect_disposition(&active, &deleted, &pr_body, &policy);
+    let disposition = detect_disposition(&active, &absent, &pr_body, &policy);
     let outcome = match &disposition {
         Disposition::Fragment(frags) => {
             report.ok(format!("disposition: {} Changie fragment(s) added", frags.len()));
@@ -1030,30 +1041,26 @@ fn is_ancestor(root: &Path, sha: &str, base: &str) -> Option<bool> {
     }
 }
 
-/// Paths deleted between `base` and `HEAD` in `root`'s git history. Empty on
-/// any git failure (unspawnable git, non-repo root) — a soft degrade, not an
-/// instrument failure: worst case a deleted fragment is validated as if it
-/// were present, which is the pre-existing advisory behavior. Caller-supplied
-/// changed-file lists carry bare paths with no status, so this re-derives
-/// deletion from git (issue #13484 review: a PR deleting a stale unreleased
-/// fragment must not count as a malformed-fragment finding).
-fn deleted_paths(root: &Path, base: &str) -> std::collections::HashSet<String> {
-    let Ok(out) = Command::new("git")
-        .current_dir(root)
-        .args(["diff", "--name-only", "--diff-filter=D", &format!("{base}...HEAD")])
-        .output()
-    else {
-        return Default::default();
-    };
-    if !out.status.success() {
-        return Default::default();
-    }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
-        .collect()
+/// The subset of `changed` that is not present in `root`'s working tree.
+///
+/// Absence is the operative property for every consumer, and it is a stronger
+/// predicate than a base-bound `git diff --diff-filter=D`: an absent fragment
+/// cannot crash the renderer and cannot be validated, and an absent
+/// disposition artifact cannot supply the disposition it is removed by.
+/// Reading it from the tree under check keeps the answer correct when a
+/// caller-supplied `--changed-files` list was produced against a different
+/// base than `--base` — the list's own base no longer has to be trusted,
+/// because the tree, not the diff range, decides what can be read (issue
+/// #13484 review round 4).
+///
+/// Keying the set by the caller's own path strings makes a separator mismatch
+/// between git output and a supplied list structurally impossible: every
+/// lookup uses the identical `String` that produced the entry. A path that
+/// cannot be resolved in the tree — including a foreign-separator spelling on
+/// this platform — is treated as absent, which is the fail-closed direction:
+/// it may not supply an exemption, a release-prep, or a Fragment disposition.
+fn absent_paths(root: &Path, changed: &[String]) -> std::collections::HashSet<String> {
+    changed.iter().filter(|f| !root.join(f.as_str()).exists()).cloned().collect()
 }
 
 /// Resolve which policy boundary (if any) applies to a PR whose diff base is
@@ -2423,6 +2430,110 @@ changelog = "vscode-extension/CHANGELOG.md"
             CheckOutcome::BlockingViolation,
             "a production change plus a deleted exemption file past the blocking boundary \
              must be a BlockingViolation"
+        );
+        Ok(())
+    }
+
+    /// A caller-supplied changed-file list that spells an absent exemption
+    /// file with foreign (Windows) separators must not slip that file past
+    /// as a live file-based exemption. The deletion set is keyed by the
+    /// caller's own path strings and read from the tree, so the spelling
+    /// that produced the entry is the spelling the lookup uses — a
+    /// git-derived, forward-slash-only set missed this and granted the
+    /// exemption (issue #13484 review round 4).
+    #[test]
+    fn check_foreign_separator_deleted_exemption_cannot_supply_exemption()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "advisory", Some(&armed), None)?;
+        write_valid_changie(dir)?;
+        let exemption_path = ".changes/exemptions/old-note.md";
+        std::fs::create_dir_all(dir.join(".changes/exemptions")).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(exemption_path), "stale exemption note")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "add exemption file"])?;
+        std::fs::remove_file(dir.join(exemption_path)).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("feature.txt"), "unrelated feature change")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "delete exemption, land feature"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        // The same deleted file, spelled the way a Windows-produced list
+        // spells it. Git reports `.changes/exemptions/old-note.md`.
+        let list = write_changed_files(dir, &[r".changes\exemptions\old-note.md", "feature.txt"])?;
+        let (outcome, _) =
+            check_inner(Some(base), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "an absent exemption file spelled with foreign separators must not supply the \
+             file-based exemption; the production change still owes a disposition"
+        );
+        Ok(())
+    }
+
+    /// A caller-supplied changed-file list produced against a different base
+    /// than `--base` must not yield a false malformed-fragment finding. Here
+    /// the fragment is deleted in `HEAD~1...HEAD` but `--base` names `HEAD`,
+    /// so no diff range reports the deletion; only the tree does. Deriving
+    /// absence from the tree makes the checker independent of the list's
+    /// provenance (issue #13484 review round 4).
+    #[test]
+    fn check_changed_file_list_from_a_foreign_base_yields_no_false_malformed_fragment()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        write_policy(dir)?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-stale-Added-111111.yaml";
+        std::fs::write(
+            dir.join(fragment_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"1\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("feature.txt"), "unrelated feature change")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "add stale fragment"])?;
+        std::fs::remove_file(dir.join(fragment_path)).map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "delete stale fragment"])?;
+        // `--base HEAD` describes an empty range: no `git diff --diff-filter=D`
+        // against it can see the deletion the supplied list carries.
+        let foreign_base = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        let list = write_changed_files(dir, &[fragment_path, "feature.txt"])?;
+        let (outcome, report) =
+            check_inner(Some(foreign_base), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        let rendered = report.lines.join("\n");
+        assert!(
+            !rendered.contains("malformed"),
+            "a fragment absent from the tree must never be reported malformed, whatever \
+             range produced the changed-file list; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("ignoring deleted fragment(s)"),
+            "the absent fragment must be named as excluded from the disposition; got:\n{rendered}"
+        );
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "no boundary is armed, so the surviving change is a non-fatal WARN"
         );
         Ok(())
     }
