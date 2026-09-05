@@ -545,6 +545,14 @@ fn has_cpanfile_statement_modifier(statement: &str) -> bool {
 /// `if` names a method, a subroutine, or a variable. A real postfix modifier
 /// is never written directly against one of these, so excluding them cannot
 /// let a genuine condition through.
+///
+/// This is deliberately a denylist of binding tokens rather than an allowlist
+/// of expression endings, because the two default in opposite directions.
+/// Unrecognized context here means "modifier", which suppresses the
+/// declaration — the fail-closed answer. An allowlist would default to
+/// publishing, and would leak on valid Perl such as
+/// `requires 'Foo', $x-- if $y;`, where `--` ends the expression but belongs
+/// to no plausible allowlist. Do not invert this.
 fn is_bound_name(chars: &[char], start: usize) -> bool {
     // Perl allows whitespace, newlines included, after a sigil or an arrow, so
     // `$object-> if()` binds exactly as `$object->if()` does. `::` is the
