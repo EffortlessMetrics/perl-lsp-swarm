@@ -9,7 +9,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use perl_lsp_ux_tests::{binary_available, resolve_binary};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
