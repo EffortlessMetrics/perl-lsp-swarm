@@ -94,10 +94,50 @@ def changed_integration_test_targets(
         if key in seen:
             continue
         seen.add(key)
-        result.setdefault(crate_name, []).append(
-            (target, tuple(required_features_for_test(path, repo_root)))
-        )
+        features = set(required_features_for_test(path, repo_root))
+        features.update(manifest_test_required_features(crate_name, repo_root).get(target, ()))
+        result.setdefault(crate_name, []).append((target, tuple(sorted(features))))
     return result
+
+
+def manifest_test_required_features(
+    crate_name: str, repo_root: Path = REPO_ROOT
+) -> dict[str, tuple[str, ...]]:
+    """Return `required-features` declared per `[[test]]` target in one manifest.
+
+    A test target's features can live in the manifest, in a crate-level
+    ``#![cfg(feature = ...)]``, or in both naming different features.  Scanning
+    only the source misses the manifest ones -- `perl-parser`'s
+    ``incremental_parse_snapshot`` requires ``incremental`` with no source cfg at
+    all -- and Cargo rejects a `--test` command that does not enable them, so the
+    changed test contributes no coverage.  Both sources are unioned.
+    """
+    manifest_path = repo_root / "crates" / crate_name / "Cargo.toml"
+    if not manifest_path.is_file():
+        # Same tolerance as package_test_targets: a non-package directory or a
+        # crate this PR deletes must not abort routing for its siblings.
+        return {}
+    try:
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise ValueError(f"cannot read Cargo manifest for changed crate {crate_name}: {error}") from error
+    except tomllib.TOMLDecodeError as error:
+        raise ValueError(f"invalid Cargo manifest for changed crate {crate_name}: {error}") from error
+
+    declared = manifest.get("test") or []
+    if not isinstance(declared, list):
+        raise ValueError(f"Cargo manifest for changed crate {crate_name} has invalid [[test]] entries")
+    features: dict[str, tuple[str, ...]] = {}
+    for target in declared:
+        if not isinstance(target, dict):
+            raise ValueError(f"Cargo manifest for changed crate {crate_name} has an invalid [[test]] row")
+        name = target.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        required = _target_features(target)
+        if required:
+            features[name] = required
+    return features
 
 
 def required_features_for_test(path: str, repo_root: Path = REPO_ROOT) -> list[str]:
