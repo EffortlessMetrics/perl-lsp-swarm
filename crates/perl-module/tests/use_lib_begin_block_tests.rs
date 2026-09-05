@@ -770,9 +770,12 @@ fn standalone_pod_terminator_opens_pod_like_perl_does() {
 /// answers the hopeless cases without a scan and restores linear behaviour:
 /// the same 4,000 candidates take 2.9ms and 16,000 take 12ms.
 ///
-/// The bound below is deliberately loose. It is ~170x the post-fix time here
-/// and still fails decisively against the pre-fix ~3s, so it discriminates on
-/// a slow CI runner without becoming a flaky timing assertion.
+/// The bound below is sized to sit between two measured numbers, both taken in
+/// a debug build: 11.57ms linear and 3.14s quadratic, a factor of 272 apart.
+/// At 2s it would take a ~170x slower runner to flake, and the regression stays
+/// detectable on a runner up to ~50x slower. Loosening it is not free — at a
+/// 10s bound a merely 2x slower runner takes 6.3s quadratic, under the bound,
+/// and the test silently stops catching the thing it exists for.
 #[test]
 fn bareword_confirmation_stays_linear_in_candidate_count() {
     let candidates = 16_000;
@@ -796,8 +799,10 @@ fn bareword_confirmation_stays_linear_in_candidate_count() {
     );
     assert!(
         elapsed < std::time::Duration::from_secs(2),
-        "bareword confirmation took {elapsed:?} for {candidates} candidates, which is the \
-         quadratic scan returning"
+        "bareword confirmation took {elapsed:?} for {candidates} candidates against a 2s bound. \
+         Measured in a debug build, the linear implementation takes ~12ms here and the quadratic \
+         one ~3.1s, so this is the quadratic scan returning unless the runner is roughly 170x \
+         slower than the machine this was sized on"
     );
 }
 
