@@ -1090,6 +1090,8 @@ jobs:
           # overwrite the failure status.
           rm -rf target/receipts/shards target/receipts/shard-summaries \
             target/receipts/logs target/receipts/artifacts \
+            target/policy/non-rust-inventory.md \
+            target/policy/non-rust-inventory.json \
             || { echo "::error::cannot clear cache-restored target/receipts surfaces (#12085); refusing to run the shard over possibly stale logs/artifacts"; exit 1; }
           mkdir -p target/receipts/shards target/receipts/shard-summaries
           timeout --signal=TERM --kill-after=30s 1200s \
@@ -1150,6 +1152,17 @@ jobs:
             target/receipts/shard-summaries/*.json
             target/receipts/logs/*.log
             target/receipts/artifacts/*
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload non-Rust inventory evidence
+        if: always() && matrix.name == 'policy'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: non-rust-inventory-${{ github.sha }}
+          path: |
+            target/policy/non-rust-inventory.md
+            target/policy/non-rust-inventory.json
           if-no-files-found: warn
           retention-days: 7
 
@@ -1535,9 +1548,13 @@ jobs:
       # whether what would actually land still compiles. Other jobs in this
       # workflow deliberately keep exact-head checkout for head-pinned receipts;
       # this one is a merge-surface gate and must not.
+      # Full history: the non-Rust file policy contract below runs the real
+      # `non-rust inventory --check`, whose newly-added-path ratchet needs
+      # `origin/main` (or `HEAD^`) to resolve and fails closed in CI otherwise.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
