@@ -126,13 +126,15 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
             continue;
         }
 
-        // A column-0 `__END__` or `__DATA__` ends the code region: everything
+        // A line-leading `__END__` or `__DATA__` ends the code region: everything
         // below it is data Perl never compiles, so scanning it can only invent
-        // include paths the program does not add.
+        // include paths the program does not add. Indentation does not save it —
+        // verified by running each form, `    __END__` and a tab-indented one
+        // both stop the program exactly like the column-zero spelling.
         if ch == '_'
             && !in_single
             && !in_double
-            && (idx == 0 || source.as_bytes().get(idx - 1) == Some(&b'\n'))
+            && only_horizontal_space_before(source, idx)
             && is_data_section_marker(&source[idx..])
         {
             scan_end = idx;
@@ -438,7 +440,12 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
         return Some((quote_end + quote.len_utf8(), tag, strip_indent, false));
     }
 
-    if spaced_tag_start != tag_start || !(first.is_ascii_alphabetic() || first == b'_') {
+    // A digit may open a bareword delimiter: `my $s = <<123;` terminated by a
+    // `123` line runs, and without that line Perl reports `Can't find string
+    // terminator "123"`. Rejecting it left the body to be scanned as code.
+    // Position has already ruled out the shift readings — `$x<<2` and `1<<2`
+    // end a term and never reach here.
+    if spaced_tag_start != tag_start || !(first.is_ascii_alphanumeric() || first == b'_') {
         return None;
     }
 
@@ -458,6 +465,18 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
 /// Only bareword delimiters need this confirmation: they are the one form
 /// indistinguishable from incidental text such as a regex body. Quoted,
 /// escaped and empty delimiters are honored on sight.
+/// Whether only spaces and tabs separate `idx` from the start of its line.
+///
+/// A data-section marker may be indented; Perl ends compilation at it either
+/// way. Restricting this to spaces and tabs keeps the check on one line.
+fn only_horizontal_space_before(source: &str, idx: usize) -> bool {
+    source[..idx]
+        .bytes()
+        .rev()
+        .take_while(|byte| *byte != b'\n')
+        .all(|byte| byte == b' ' || byte == b'\t')
+}
+
 /// Every line of `source`, `\r` stripped and leading whitespace trimmed.
 ///
 /// Used only as a negative filter in front of [`has_heredoc_terminator`], which

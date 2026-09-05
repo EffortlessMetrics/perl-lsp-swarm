@@ -800,3 +800,55 @@ fn bareword_confirmation_stays_linear_in_candidate_count() {
          quadratic scan returning"
     );
 }
+
+/// An indented `__END__` / `__DATA__` still ends the code region.
+///
+/// Verified by running each form: `    __END__` (spaces) and a tab-indented
+/// marker both print only the line above them, exactly like the column-zero
+/// spelling. Requiring column zero left the data payload to be scanned as
+/// code, which is the invention direction — text below the marker becomes an
+/// `@INC` root the program never adds.
+#[test]
+fn an_indented_data_marker_still_ends_the_scan() {
+    for marker in ["__END__", "__DATA__"] {
+        for indent in ["    ", "\t", " "] {
+            let source = format!("use lib 'real';\n{indent}{marker}\nprose; use lib 'phantom';\n");
+
+            assert_eq!(
+                extract_use_lib_operations(&source),
+                vec![UseLibAction::Add(vec![UseLibPath {
+                    path: "real".to_string(),
+                    from_findbin: false
+                }])],
+                "{indent:?}{marker} was scanned as code, inventing a path from data"
+            );
+        }
+    }
+}
+
+/// A bareword heredoc delimiter may open with a digit.
+///
+/// `my $s = <<123;` terminated by a `123` line runs and prints; without that
+/// line Perl reports `Can't find string terminator "123"`, so it is a heredoc
+/// rather than a shift. Rejecting digit-initial tags left the body to be
+/// scanned as code and invented a root from it. Position still rules out the
+/// shift readings — `$x<<2` and `1<<2` end a term and never reach this path.
+#[test]
+fn a_numeric_bareword_delimiter_opens_a_heredoc() {
+    let numeric = "use lib 'real';\nmy $s = <<123;\nuse lib 'phantom';\n123\nuse lib 'tail';\n";
+    assert_eq!(
+        extract_use_lib_operations(numeric),
+        vec![
+            UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }]),
+            UseLibAction::Add(vec![UseLibPath { path: "tail".to_string(), from_findbin: false }]),
+        ],
+        "a <<123 heredoc body reached the rail"
+    );
+
+    // The shift readings are unaffected: both operands end a term.
+    for shift in ["my $x = $y<<2;\nuse lib 'shift_var';\n", "my $x = 1<<2;\nuse lib 'shift_num';\n"]
+    {
+        let operations = extract_use_lib_operations(shift);
+        assert_eq!(operations.len(), 1, "a tight numeric shift was read as a heredoc: {shift:?}");
+    }
+}
