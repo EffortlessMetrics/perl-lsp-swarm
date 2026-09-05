@@ -386,10 +386,8 @@ mod doc_validation_helpers {
             }
         }
 
-        if !has_non_empty_text {
-            if let Some((line_num, _)) = block.first() {
-                empty_docs.push(format!("Empty documentation at line {}", line_num + 1));
-            }
+        if !has_non_empty_text && let Some((line_num, _)) = block.first() {
+            empty_docs.push(format!("Empty documentation at line {}", line_num + 1));
         }
     }
 
@@ -552,10 +550,10 @@ mod doc_validation_helpers {
             if let Ok(content) = fs::read_to_string(&module_path) {
                 let content_lower = content.to_lowercase();
                 for stage in &workflow_stages {
-                    if content_lower.contains(&stage.to_lowercase()) {
-                        if let Some(count) = coverage.get_mut(*stage) {
-                            *count += 1;
-                        }
+                    if content_lower.contains(&stage.to_lowercase())
+                        && let Some(count) = coverage.get_mut(*stage)
+                    {
+                        *count += 1;
                     }
                 }
             }
@@ -1784,10 +1782,10 @@ mod missing_docs_tests {
             for (_, content) in read_source_files(module, roots) {
                 let content_lower = content.to_lowercase();
                 for stage in &workflow_stages {
-                    if content_lower.contains(&stage.to_lowercase()) {
-                        if let Some(count) = coverage.get_mut(*stage) {
-                            *count += 1;
-                        }
+                    if content_lower.contains(&stage.to_lowercase())
+                        && let Some(count) = coverage.get_mut(*stage)
+                    {
+                        *count += 1;
                     }
                 }
             }
