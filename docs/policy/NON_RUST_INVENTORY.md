@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12800 |
+| Total tracked files | 12801 |
 | Rust-family files | 3983 |
-| Non-Rust files | 8817 |
-| Allowlisted | 6578 |
+| Non-Rust files | 8818 |
+| Allowlisted | 6579 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 564 |
+| config | 565 |
 | documentation | 2858 |
 | generated | 2 |
 | production | 357 |
@@ -3820,6 +3820,7 @@
 | `contracts/dap/fixtures/negative-tag-only-image.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-tool-volume-owner-unnamed.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-unbound-injection-source.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-unnamed-profile.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-unrelated-injection-source.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-writable-paths-undisclosed.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-writable-tool-mount.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |

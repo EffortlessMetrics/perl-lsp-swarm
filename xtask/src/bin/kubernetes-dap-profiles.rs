@@ -64,6 +64,18 @@ const REQUIRED_SECURITY_REQUIREMENTS: &[&str] = &[
     "workspace_data_cannot_select_adapter_or_cluster_target",
 ];
 
+/// The owning issues this v1 seed contract composes by reference. Checking them
+/// only for non-emptiness let any text stand in for an owner, so a regenerated
+/// status could publish a contract detached from the authorities it claims to
+/// defer to. A successor contract may name different owners; this one may not.
+const REQUIRED_AUTHORITIES: &[(&str, &str)] = &[
+    ("environment_subject_authority", "#9966"),
+    ("path_namespace_authority", "#7667"),
+    ("dap_core_authority", "#9415"),
+    ("launch_environment_authority", "#9051"),
+    ("support_registry_authority", "#7122"),
+];
+
 /// The initial admitted DAP family, by cell id. #10112 enumerates it
 /// explicitly, and — as with the security requirements — a count let a required
 /// cell be replaced rather than only removed.
@@ -578,14 +590,28 @@ impl ProfileContract {
             ("contract_id", self.contract_id.as_str()),
             ("coverage_scope", self.coverage_scope.as_str()),
             ("claim_boundary", self.claim_boundary.as_str()),
+        ] {
+            if !is_non_empty(value) {
+                bail!("profile contract field {name} must not be empty");
+            }
+        }
+        let declared_authorities = [
             ("environment_subject_authority", self.environment_subject_authority.as_str()),
             ("path_namespace_authority", self.path_namespace_authority.as_str()),
             ("dap_core_authority", self.dap_core_authority.as_str()),
             ("launch_environment_authority", self.launch_environment_authority.as_str()),
             ("support_registry_authority", self.support_registry_authority.as_str()),
-        ] {
-            if !is_non_empty(value) {
-                bail!("profile contract field {name} must not be empty");
+        ];
+        for ((name, declared), (expected_name, expected)) in
+            declared_authorities.iter().zip(REQUIRED_AUTHORITIES)
+        {
+            debug_assert_eq!(name, expected_name);
+            validate_issue_ref(name, declared)?;
+            if declared != expected {
+                bail!(
+                    "profile contract {name} is {declared:?} but this contract composes {expected:?}; \
+                     naming a different owner requires a successor contract"
+                );
             }
         }
         for (name, value) in [
@@ -615,12 +641,20 @@ impl ProfileContract {
         if self.source_namespace.equality != "client == adapter == debuggee" {
             bail!("source namespace equality must bind client, adapter, and debuggee paths");
         }
-        if !is_non_empty(&self.source_namespace.canonicalization_authority)
-            || self.source_namespace.rewrite_authority != "none"
-        {
+        // The contract states the path owner twice — once as
+        // `path_namespace_authority`, once nested here. Two statements of one
+        // fact that nothing compares can disagree, which is how a nested
+        // authority silently drifts from the declared one.
+        if self.source_namespace.canonicalization_authority != self.path_namespace_authority {
             bail!(
-                "source namespace rule must delegate canonicalization to its owning authority and admit no rewrite authority"
+                "source namespace canonicalization authority {:?} disagrees with the declared path \
+                 namespace authority {:?}; canonicalization has one owner",
+                self.source_namespace.canonicalization_authority,
+                self.path_namespace_authority
             );
+        }
+        if self.source_namespace.rewrite_authority != "none" {
+            bail!("source namespace rule must admit no rewrite authority");
         }
 
         let expected: [(&str, InstallMode); 2] = [
@@ -3193,6 +3227,40 @@ mod tests {
             contract.validate(repository_root()?).is_err(),
             "promoting an optional cell must require a contract revision, not a row edit"
         );
+        Ok(())
+    }
+
+    /// Authorities were checked only for non-emptiness, so any text could stand
+    /// in for an owner and the regenerated status would publish a contract
+    /// detached from what it defers to.
+    #[test]
+    fn each_composed_authority_is_pinned() -> Result<()> {
+        for (name, _) in REQUIRED_AUTHORITIES {
+            let mut contract = committed_contract()?;
+            let field = match *name {
+                "environment_subject_authority" => &mut contract.environment_subject_authority,
+                "path_namespace_authority" => &mut contract.path_namespace_authority,
+                "dap_core_authority" => &mut contract.dap_core_authority,
+                "launch_environment_authority" => &mut contract.launch_environment_authority,
+                "support_registry_authority" => &mut contract.support_registry_authority,
+                other => bail!("unmapped authority {other}"),
+            };
+            *field = "#1".into();
+            assert!(
+                contract.validate(repository_root()?).is_err(),
+                "{name} may not be repointed without a successor contract"
+            );
+        }
+        Ok(())
+    }
+
+    /// The path owner is stated twice; two statements of one fact that nothing
+    /// compares can disagree.
+    #[test]
+    fn the_nested_canonicalization_authority_cannot_drift() -> Result<()> {
+        let mut contract = committed_contract()?;
+        contract.source_namespace.canonicalization_authority = "#9999".into();
+        assert!(contract.validate(repository_root()?).is_err());
         Ok(())
     }
 }
