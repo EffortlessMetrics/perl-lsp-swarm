@@ -7,12 +7,21 @@
 //! oracle while removing only facts anchored inside its active DBIx::Class DSL
 //! calls from the canonical path.
 //!
+//! The activation vocabulary (`is_dbix_class_module`,
+//! `use_args_include_dbix_class`), the emitting method set
+//! (`is_dbix_class_member_method`), and the package-target rule
+//! (`package_target_matches`) are imported from the legacy module rather than
+//! restated here, so the quarantine denominator is the producer's own.
+//!
 //! Remove this quarantine only through #13979 after #9736/#9739/#9741 publish
 //! the equivalent admitted facts and the matching provider surfaces prove
 //! same-request parity.
 
-use super::legacy_generated_member_extractor;
 pub(crate) use super::legacy_generated_member_extractor::GeneratedMemberFact;
+use super::legacy_generated_member_extractor::{
+    self, is_dbix_class_member_method, is_dbix_class_module, package_target_matches,
+    use_args_include_dbix_class,
+};
 use crate::{Node, NodeKind};
 use perl_semantic_facts::FileId;
 
@@ -51,6 +60,9 @@ pub(crate) fn extract_generated_member_facts(
     facts
 }
 
+/// Mirror the legacy walk's package and DBIx::Class activation boundaries so
+/// every statement from which the legacy extractor can emit a DBIx::Class fact
+/// is recorded as a quarantined source range.
 fn collect_quarantined_dbix_ranges(
     node: &Node,
     ctx: &mut WalkCtx,
@@ -85,11 +97,10 @@ fn collect_quarantined_dbix_ranges(
         NodeKind::No { module, .. } if is_dbix_class_module(module) => {
             ctx.dbix_class_active = false;
         }
+        // Terminal arm, like the legacy walk: nested package-shaped children
+        // inside an expression must not mutate this walk's package context.
         NodeKind::ExpressionStatement { expression } => {
-            if ctx.dbix_class_active
-                && is_dbix_class_member_method(expression)
-                && is_current_package_method_call(expression, ctx)
-            {
+            if ctx.dbix_class_active && is_dbix_class_emission_site(expression, ctx) {
                 out.push(QuarantinedRange {
                     start: expression.location.start,
                     end: expression.location.end,
@@ -105,75 +116,12 @@ fn collect_quarantined_dbix_ranges(
     }
 }
 
-fn is_dbix_class_member_method(expression: &Node) -> bool {
-    let NodeKind::MethodCall { method, .. } = &expression.kind else {
-        return false;
-    };
-    matches!(method.as_str(), "add_columns" | "has_many" | "belongs_to" | "has_one" | "might_have")
-}
-
-fn is_current_package_method_call(expression: &Node, ctx: &WalkCtx) -> bool {
-    let NodeKind::MethodCall { object, .. } = &expression.kind else {
+fn is_dbix_class_emission_site(expression: &Node, ctx: &WalkCtx) -> bool {
+    let NodeKind::MethodCall { object, method, .. } = &expression.kind else {
         return false;
     };
     let current_package = ctx.current_package.as_deref().unwrap_or("main");
-    match &object.kind {
-        NodeKind::Identifier { name } => name == "__PACKAGE__" || name == current_package,
-        NodeKind::String { value, .. } => {
-            normalize_symbol_name(value).is_some_and(|name| name == current_package)
-        }
-        NodeKind::Variable { sigil, name } if sigil == "$" => name == current_package,
-        _ => false,
-    }
-}
-
-fn use_args_include_dbix_class(args: &[String]) -> bool {
-    args.iter()
-        .flat_map(|arg| expand_symbol_list(arg.trim()))
-        .any(|name| is_dbix_class_module(&name))
-}
-
-fn expand_symbol_list(raw: &str) -> Vec<String> {
-    let raw = raw.trim();
-
-    if raw.starts_with("qw(") && raw.ends_with(')') {
-        return raw[3..raw.len() - 1]
-            .split_whitespace()
-            .filter(|name| !name.is_empty())
-            .map(str::to_string)
-            .collect();
-    }
-
-    if raw.starts_with("qw") && raw.len() > 2 {
-        let open = raw.chars().nth(2).unwrap_or(' ');
-        let close = match open {
-            '(' => ')',
-            '{' => '}',
-            '[' => ']',
-            '<' => '>',
-            delimiter => delimiter,
-        };
-        if let (Some(start), Some(end)) = (raw.find(open), raw.rfind(close))
-            && start < end
-        {
-            return raw[start + 1..end]
-                .split_whitespace()
-                .filter(|name| !name.is_empty())
-                .map(str::to_string)
-                .collect();
-        }
-    }
-
-    normalize_symbol_name(raw).into_iter().collect()
-}
-
-fn normalize_symbol_name(raw: &str) -> Option<String> {
-    let trimmed = raw.trim().trim_matches('\'').trim_matches('"').trim();
-    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
-}
-
-fn is_dbix_class_module(module: &str) -> bool {
-    matches!(module, "DBIx::Class" | "DBIx::Class::Core")
+    is_dbix_class_member_method(method) && package_target_matches(object, current_package)
 }
 
 #[cfg(test)]
@@ -323,5 +271,35 @@ __PACKAGE__->has_many('children', 'Plain::Child', 'parent_id');
         );
 
         assert!(extract_generated_member_facts(&ast, FileId(1)).is_empty());
+    }
+
+    #[test]
+    fn every_legacy_dbix_emission_method_is_quarantined() {
+        // Each method the shared classifier admits must both emit through the
+        // legacy oracle and be removed by the canonical gate. Adding a method to
+        // the producer without this list failing here would be a drift signal.
+        for (method, call) in [
+            ("add_columns", "__PACKAGE__->add_columns(qw/member/);"),
+            ("has_many", "__PACKAGE__->has_many('member', 'Other::Class', 'fk');"),
+            ("belongs_to", "__PACKAGE__->belongs_to('member', 'Other::Class', 'fk');"),
+            ("has_one", "__PACKAGE__->has_one('member', 'Other::Class', 'fk');"),
+            ("might_have", "__PACKAGE__->might_have('member', 'Other::Class', 'fk');"),
+        ] {
+            assert!(is_dbix_class_member_method(method));
+            let ast =
+                parse(&format!("package Coupled::Result;\nuse DBIx::Class::Core;\n{call}\n1;\n"));
+            let legacy =
+                legacy_generated_member_extractor::extract_generated_member_facts(&ast, FileId(1));
+            assert!(
+                names(&legacy).contains(&"Coupled::Result::member"),
+                "{method}: legacy oracle must still emit the compatibility row"
+            );
+            assert!(
+                extract_generated_member_facts(&ast, FileId(1)).is_empty(),
+                "{method}: canonical gate must quarantine the legacy row"
+            );
+        }
+        assert!(!is_dbix_class_member_method("table"));
+        assert!(!is_dbix_class_member_method("has"));
     }
 }

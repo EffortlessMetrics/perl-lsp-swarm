@@ -178,11 +178,13 @@ fn extract_dbix_class_call(
     let NodeKind::MethodCall { object, method, args } = &expression.kind else {
         return;
     };
-    if !package_target_matches_current_package(object, ctx) {
+    let package = ctx.current_package.as_deref().unwrap_or("main");
+    // `is_dbix_class_member_method` is the single denominator shared with the
+    // canonical publication gate; a method it does not name can never emit here.
+    if !is_dbix_class_member_method(method) || !package_target_matches(object, package) {
         return;
     }
 
-    let package = ctx.current_package.as_deref().unwrap_or("main");
     match method.as_str() {
         "add_columns" => {
             let mut arg_idx = 0;
@@ -426,7 +428,7 @@ fn dbix_column_pair_shape(key: &Node, value: &Node) -> bool {
         && matches!(value.kind, NodeKind::HashLiteral { .. })
 }
 
-fn use_args_include_dbix_class(args: &[String]) -> bool {
+pub(crate) fn use_args_include_dbix_class(args: &[String]) -> bool {
     args.iter()
         .flat_map(|arg| expand_symbol_list(arg.trim()))
         .any(|name| is_dbix_class_module(&name))
@@ -631,7 +633,7 @@ fn is_accessor_framework_module(module: &str) -> bool {
     )
 }
 
-fn is_dbix_class_module(module: &str) -> bool {
+pub(crate) fn is_dbix_class_module(module: &str) -> bool {
     matches!(module, "DBIx::Class" | "DBIx::Class::Core")
 }
 
@@ -644,8 +646,17 @@ fn is_dbix_relationship_name(name: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
-fn package_target_matches_current_package(object: &Node, ctx: &WalkCtx) -> bool {
-    let current_package = ctx.current_package.as_deref().unwrap_or("main");
+/// DBIx::Class DSL methods from which this extractor can emit a generated member.
+///
+/// Shared with the canonical publication gate so the quarantine denominator
+/// cannot drift behind the producer.
+pub(crate) fn is_dbix_class_member_method(method: &str) -> bool {
+    matches!(method, "add_columns" | "has_many" | "belongs_to" | "has_one" | "might_have")
+}
+
+/// Whether a method-call target names `current_package` (`__PACKAGE__`, bareword,
+/// quoted string, or a same-named scalar).
+pub(crate) fn package_target_matches(object: &Node, current_package: &str) -> bool {
     match &object.kind {
         NodeKind::Identifier { name } => name == "__PACKAGE__" || name == current_package,
         NodeKind::String { value, .. } => {
