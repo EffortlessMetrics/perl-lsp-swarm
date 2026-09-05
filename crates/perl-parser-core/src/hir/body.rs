@@ -499,6 +499,13 @@ pub enum DeclStorageClass {
     /// `field $x = 1` with the same shape as a variable declaration. Keeping
     /// that distinction explicit prevents body PIR from inventing a lexical
     /// binding for the call.
+    ///
+    /// This is the catch-all arm: *every* unrecognized declarator lands here,
+    /// not only `field`. Declining to invent a binding is right for all of
+    /// them, but PIR labels the boundary `LegacyFieldCall`, which is accurate
+    /// only because `field` is the sole such keyword the parser produces
+    /// today. A second one would need that label generalized — the receipt
+    /// would be misleading, though the lowering would stay correct.
     Unknown,
 }
 
