@@ -1098,6 +1098,65 @@ fn signature_contract_changes_that_keep_the_name_still_move_the_shape() -> Resul
 }
 
 #[test]
+fn trait_impl_contract_changes_that_keep_the_names_still_move_the_shape() -> Result<()> {
+    // `impl Trait for S` was the whole recorded shape, so every property that
+    // decides *when* the impl is available collided into it. Adding a bound
+    // narrows availability for every downstream consumer, and `impl !Send for S`
+    // is the opposite claim from `impl Send for S`; both landed under an
+    // unmoved row.
+    let shape_of = |src: &str| -> Result<String> {
+        derive_public_items(src)?
+            .iter()
+            .find(|item| item.kind == "trait_impl")
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no trait impl derived from {src}"))
+    };
+    let plain = shape_of("pub struct S;\nimpl Clone for S { }")?;
+    for (label, src) in [
+        ("generic parameter", "pub struct S<T>(T);\nimpl<T> Clone for S<T> { }"),
+        ("bound on the parameter", "pub struct S<T>(T);\nimpl<T: Clone> Clone for S<T> { }"),
+        ("where predicate", "pub struct S<T>(T);\nimpl<T> Clone for S<T> where T: Clone { }"),
+        ("unsafe", "pub struct S;\nunsafe impl Send for S { }"),
+        ("a different self type", "pub struct S;\nimpl Clone for T { }"),
+    ] {
+        assert_ne!(plain, shape_of(src)?, "{label} collided with a plain trait impl");
+    }
+
+    // The generic and the bounded generic must also differ from each other, not
+    // merely from the unparameterised form.
+    assert_ne!(
+        shape_of("pub struct S<T>(T);\nimpl<T> Clone for S<T> { }")?,
+        shape_of("pub struct S<T>(T);\nimpl<T: Clone> Clone for S<T> { }")?,
+        "adding a bound must move the shape"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_symlink_hiding_a_grouped_import_is_not_called_harmless() -> Result<()> {
+    // The symlink guard checked the token scan alone while the file branch
+    // beside it used the union, so a link whose target reached the package
+    // through `use perl_ast::{v2, Node};` named none of the four tokens, was
+    // called harmless, and was then skipped as a non-file — the exact silent
+    // loss the guard exists to prevent. Both branches now share one classifier.
+    let grouped = "use perl_ast::{v2, Node};\npub fn f() {}\n";
+    assert!(!mentions_audited_package(grouped), "the token scan alone cannot see this form");
+    assert!(
+        reaches_audited_package(grouped, "crates/a/src/lib.rs"),
+        "the shared classifier must see a grouped canonical import"
+    );
+
+    // A non-Rust path is not parsed, so the prefilter cannot be turned into a
+    // second guess at the answer by a TOML file that happens to contain braces.
+    assert!(!reaches_audited_package(grouped, "crates/a/Cargo.toml"));
+
+    // And an unparseable file naming the package nowhere is still not a
+    // consumer: discovery keeps its open default.
+    assert!(!reaches_audited_package("this is not rust at all {{{", "crates/a/src/lib.rs"));
+    Ok(())
+}
+
+#[test]
 fn a_below_threshold_row_cannot_authorize_a_retain_ruling() -> Result<()> {
     // The law was only a non-emptiness check, so any row placed in
     // `independent_lifecycle_evidence_ids` authorized `retain` — including
@@ -1109,12 +1168,56 @@ fn a_below_threshold_row_cannot_authorize_a_retain_ruling() -> Result<()> {
         Value::Array(vec![Value::String("ev:registry-publication".to_string())]);
     assert_rejected(&value, "does not meet the threshold")?;
 
-    // And a row cannot simply declare itself qualifying: only a reverse
-    // dependency can carry the flag.
+    // And a row cannot simply declare itself qualifying: the flag is available
+    // only to the classes the reversal condition names.
     let mut value = real_value()?;
     row_mut(&mut value, "external_evidence", "evidence_id", "ev:registry-publication")?["meets_independent_lifecycle_threshold"] =
         Value::Bool(true);
-    assert_rejected(&value, "only a reverse dependency can carry it")
+    assert_rejected(&value, "can carry it")
+}
+
+#[test]
+fn the_qualifying_evidence_classes_are_the_recorded_reversal_clauses() -> Result<()> {
+    // The executable threshold and the ruling's own reversal condition have to
+    // describe the same three grounds. Restricting the flag to
+    // `reverse_dependency` made the law narrower than the ruling it enforces:
+    // an observed divergence in release cadence, or a public proposition
+    // reachable only under the package's own path, is a stated ground for
+    // `retain` that no evidence row could then express — so two of the three
+    // promised reversals were unreachable.
+    let qualifying: BTreeSet<&str> = QUALIFYING_EVIDENCE_CLASSES.into_iter().collect();
+    assert_eq!(
+        qualifying,
+        BTreeSet::from(["reverse_dependency", "release_cadence", "package_only_proposition"]),
+        "one qualifying class per reversal clause"
+    );
+
+    // Each qualifying class is representable and can carry the flag.
+    for class in QUALIFYING_EVIDENCE_CLASSES {
+        let mut value = real_value()?;
+        let row =
+            row_mut(&mut value, "external_evidence", "evidence_id", "ev:registry-publication")?;
+        row["class"] = Value::String(class.to_string());
+        row["meets_independent_lifecycle_threshold"] = Value::Bool(true);
+        value["ruling"]["ruling"] = Value::String("retain".to_string());
+        value["ruling"]["independent_lifecycle_evidence_ids"] =
+            Value::Array(vec![Value::String("ev:registry-publication".to_string())]);
+        validate(&value).with_context(|| {
+            format!("`{class}` is a recorded reversal ground and must be able to authorize retain")
+        })?;
+    }
+
+    // Everything else stays below the bar, each for its own recorded reason.
+    for class in ["registry_publication", "not_consumer_evidence", "unavailable"] {
+        let mut value = real_value()?;
+        let row =
+            row_mut(&mut value, "external_evidence", "evidence_id", "ev:registry-publication")?;
+        row["class"] = Value::String(class.to_string());
+        row["meets_independent_lifecycle_threshold"] = Value::Bool(true);
+        assert_rejected(&value, "can carry it")
+            .with_context(|| format!("`{class}` must not be able to carry the threshold"))?;
+    }
+    Ok(())
 }
 
 #[test]

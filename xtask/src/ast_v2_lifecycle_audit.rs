@@ -144,8 +144,31 @@ const V1_PACKAGE_SURFACES: [&str; 6] = [
 
 /// External-evidence classes. `not_consumer_evidence` exists so download volume
 /// can be recorded honestly without being promoted into adoption.
-const V1_EXTERNAL_EVIDENCE_CLASSES: [&str; 4] =
-    ["registry_publication", "reverse_dependency", "not_consumer_evidence", "unavailable"];
+///
+/// `release_cadence` and `package_only_proposition` exist because the ruling's
+/// own reversal condition names three ways the package could earn an
+/// independent lifecycle, and an evidence model carrying only the first would
+/// make two of them unrepresentable: a real divergence in release cadence could
+/// be observed and still have nowhere to be recorded, let alone authorize the
+/// `retain` the reversal condition promises.
+const V1_EXTERNAL_EVIDENCE_CLASSES: [&str; 6] = [
+    "registry_publication",
+    "reverse_dependency",
+    "release_cadence",
+    "package_only_proposition",
+    "not_consumer_evidence",
+    "unavailable",
+];
+
+/// The evidence classes that can carry the independent-lifecycle threshold, one
+/// per clause of the recorded reversal condition.
+///
+/// Every other class is explicitly below the bar: package existence and
+/// publication say only that the package was released, download volume is
+/// consistent with CI and mirror traffic, and an unavailable instrument is an
+/// unknown rather than a finding.
+const QUALIFYING_EVIDENCE_CLASSES: [&str; 3] =
+    ["reverse_dependency", "release_cadence", "package_only_proposition"];
 
 /// The only two rulings `v1` may carry.
 const V1_RULINGS: [&str; 2] = ["absorb", "retain"];
@@ -406,10 +429,51 @@ fn collect_public_items(
                 match &item_impl.trait_ {
                     Some((trait_path, _)) => {
                         let trait_name = render_path(trait_path)?;
+                        // `impl Trait for X` and `impl<T: Clone> Trait for X<T>`
+                        // are different propositions about when the trait is
+                        // available, and a `where` bound added later narrows
+                        // that availability for every downstream consumer. The
+                        // first version rendered neither, so those changes moved
+                        // no shape. Safety, polarity and defaultness are the
+                        // same kind of contract: `impl !Send for X` is the
+                        // opposite claim from `impl Send for X`.
+                        let modifiers = &item_impl.modifiers;
+                        // `ImplModifiers` is `#[non_exhaustive]`, so a future
+                        // syn could carry a modifier this render has never seen.
+                        // The crate's own emptiness check is the hook that makes
+                        // that fail closed rather than vanish: when neither
+                        // modelled modifier is present it must agree the set is
+                        // empty, and if it does not, something unmodelled is.
+                        if modifiers.defaultness.is_none()
+                            && modifiers.polarity.is_none()
+                            && modifiers.require_empty().is_err()
+                        {
+                            bail!(
+                                "`impl {trait_name} for {self_name}` carries an impl modifier this \
+                                 derivation does not model. It must be rendered explicitly rather \
+                                 than dropped from the recorded shape."
+                            );
+                        }
+                        let mut shape = String::new();
+                        if modifiers.defaultness.is_some() {
+                            shape.push_str("default ");
+                        }
+                        if item_impl.unsafety.is_some() {
+                            shape.push_str("unsafe ");
+                        }
+                        shape.push_str("impl");
+                        shape.push_str(&render_generics(&item_impl.generics)?);
+                        shape.push(' ');
+                        if modifiers.polarity.is_some() {
+                            shape.push('!');
+                        }
+                        shape.push_str(&trait_name);
+                        shape.push_str(" for ");
+                        shape.push_str(&render_type(item_impl.self_ty.as_ref())?);
                         derived.push(DerivedItem {
                             path: format!("{module_path}::{self_name} as {trait_name}"),
                             kind: "trait_impl".to_string(),
-                            shape: format!("impl {trait_name} for {self_name}"),
+                            shape,
                         });
                     }
                     None => {
@@ -1218,6 +1282,41 @@ const GATING_SCAN_ROOTS: [&str; 4] = ["crates", "xtask", "policy", "Cargo.toml"]
 /// Directory names never descended into during the scan.
 const GATING_SCAN_EXCLUDES: [&str; 4] = ["target", ".git", "archive", "node_modules"];
 
+/// Whether one file's contents reach the audited package, by either route.
+///
+/// The single discovery classifier, owned here so the symlink guard and the
+/// ordinary file branch cannot drift apart. They did: the link branch checked
+/// the token scan alone, so a link whose target reached the package through a
+/// grouped `use perl_ast::{v2, Node};` named none of the four tokens, was
+/// called harmless, and was then skipped as a non-file — precisely the silent
+/// loss the guard exists to prevent.
+///
+/// The text scan alone is not a sufficient filter for Rust: a grouped canonical
+/// import contains none of the tokens, so a file reaching the package the
+/// documented way would be decided irrelevant before the syntax-aware visitor
+/// ever saw it. Rust files are judged by the union — the token scan catches
+/// crate-name strings, the parser catches real imports.
+///
+/// Discovery takes the opposite default from classification on a parse failure:
+/// an unparseable file that names the package nowhere is not a consumer.
+/// Failing closed here flagged a 590-line Perl fixture with zero mentions of the
+/// package, which would have forced a meaningless inventory row.
+///
+/// Parsing is only needed for the forms the token scan cannot see, and any such
+/// import must open a brace directly after one of two crate names, so the
+/// substring prefilter is a sound narrowing rather than a second guess at the
+/// answer. It matters: parsing every Rust file under the scan roots took this
+/// suite from ~1.2s to ~40s, a cost the whole repository's
+/// `cargo test -p xtask --lib` lane would have paid.
+pub fn reaches_audited_package(text: &str, relative_path: &str) -> bool {
+    if mentions_audited_package(text) {
+        return true;
+    }
+    let worth_parsing = relative_path.ends_with(".rs")
+        && (text.contains("perl_ast::{") || text.contains("perl_parser_core::{"));
+    worth_parsing && parsed_api_use(text).unwrap_or(false)
+}
+
 /// Scan the gating roots for files that reference the audited package.
 ///
 /// Returns repository-relative paths with `/` separators so the output does not
@@ -1259,8 +1358,14 @@ pub fn derive_reference_files(repo_root: &Path) -> Result<BTreeSet<String>> {
             // its real one and one file must not occupy two rows.
             if entry.path_is_symlink() && is_scannable(path) {
                 let relative = relative_slash_path(repo_root, path)?;
+                // The same union the ordinary file branch uses. Checking only
+                // the token scan here left the link branch weaker than the path
+                // beside it: a target reaching the package through a grouped
+                // `use perl_ast::{v2, Node};` names none of the four tokens, so
+                // the link was called harmless and then skipped as a non-file —
+                // the exact hole this guard exists to close.
                 match std::fs::read_to_string(path) {
-                    Ok(text) if mentions_audited_package(&text) => bail!(
+                    Ok(text) if reaches_audited_package(&text, &relative) => bail!(
                         "`{relative}` is a symbolic link whose target references the audited \
                          package. It would be skipped silently, so the denominator cannot account \
                          for it: replace the link with the file, or exclude it deliberately."
@@ -1288,29 +1393,7 @@ pub fn derive_reference_files(repo_root: &Path) -> Result<BTreeSet<String>> {
                 // dependency or import; skipping it is not a silent loss.
                 continue;
             };
-            // The text scan alone is not a sufficient filter for Rust. A grouped
-            // canonical import — `use perl_ast::{v2, Node};` — contains none of
-            // the tokens, so a file reaching the package the documented way was
-            // decided irrelevant before the syntax-aware visitor ever saw it.
-            // Rust files are therefore judged by the union: the token scan
-            // catches crate-name strings, the parser catches real imports.
-            // Discovery takes the opposite default from classification on a
-            // parse failure: an unparseable file that names the package nowhere
-            // is not a consumer. Failing closed here flagged a 590-line Perl
-            // fixture with zero mentions of the package, which would have forced
-            // a meaningless inventory row.
-            // Parsing is only needed for the forms the token scan cannot see —
-            // a grouped import such as `use perl_ast::{v2, Node};`. Any such
-            // import must open a brace directly after one of these two crate
-            // names, so this substring test is a sound prefilter rather than a
-            // second guess at the answer. It matters: parsing every Rust file
-            // under the scan roots took this suite from ~1.2s to ~40s, a cost
-            // the whole repository's `cargo test -p xtask --lib` lane would have
-            // paid. The narrower filter keeps it near the original.
-            let worth_parsing = relative.ends_with(".rs")
-                && (text.contains("perl_ast::{") || text.contains("perl_parser_core::{"));
-            let parsed_use = if worth_parsing { parsed_api_use(&text) } else { None };
-            if mentions_audited_package(&text) || parsed_use.unwrap_or(false) {
+            if reaches_audited_package(&text, &relative) {
                 found.insert(relative);
             }
         }
@@ -1829,17 +1912,23 @@ fn validate_ruling(m: &Manifest) -> Result<()> {
     // The issue's threshold, executable. A non-empty list was not enough: any
     // row could be made to authorize `retain` merely by being placed in the
     // array, including `ev:registry-publication`, which the ruling's own text
-    // calls below the threshold. Qualification is now a property of the
-    // evidence, and only a reverse dependency can carry it — publication,
-    // download volume and an unavailable instrument are all explicitly below
-    // the bar the issue set.
+    // calls below the threshold. Qualification is a property of the evidence,
+    // and only the classes the reversal condition actually names can carry it.
+    //
+    // That set is the three reversal clauses, not one of them. Restricting it
+    // to `reverse_dependency` made the executable law narrower than the ruling
+    // it enforces: an observed divergence in release cadence, or a public
+    // proposition reachable only under the package's own path, is a stated
+    // ground for `retain` that no evidence row could then express.
     for row in &m.external_evidence {
-        if row.meets_independent_lifecycle_threshold && row.class != "reverse_dependency" {
+        if row.meets_independent_lifecycle_threshold
+            && !QUALIFYING_EVIDENCE_CLASSES.contains(&row.class.as_str())
+        {
             bail!(
                 "external evidence {} claims to meet the independent-lifecycle threshold, but its \
                  class is `{}`. Package existence, publication, download volume and an \
-                 unavailable instrument are all below that threshold; only a reverse dependency \
-                 can carry it.",
+                 unavailable instrument are all below that threshold; only \
+                 {QUALIFYING_EVIDENCE_CLASSES:?} can carry it.",
                 row.evidence_id,
                 row.class
             );
