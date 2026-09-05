@@ -8,7 +8,8 @@ import json
 import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import NamedTuple
 
 try:
     import tomllib
@@ -28,6 +29,27 @@ TEST_SUPPORT_CRATE_PREFIXES = (
 )
 FEATURE_CFG_RE = re.compile(r'feature\s*=\s*"([^"]+)"')
 
+# Cargo's manifest default when [package] declares no edition.
+DEFAULT_EDITION = "2015"
+
+# Manifest and source lookups must not depend on the caller's working directory.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+class BinaryTestTarget(NamedTuple):
+    """One Cargo binary target that participates in `cargo test`."""
+
+    name: str
+    required_features: tuple[str, ...] = ()
+
+
+class PackageTestTargets(NamedTuple):
+    """Local test targets needed to instrument one changed package."""
+
+    package_name: str
+    has_lib: bool
+    binaries: tuple[BinaryTestTarget, ...]
+
 
 def crate_name_from_source_path(path: str) -> str | None:
     """Extract the crate directory name from a `crates/<name>/src/...` path."""
@@ -41,7 +63,7 @@ def crate_name_from_source_path(path: str) -> str | None:
 
 
 def changed_crates(paths: list[str]) -> list[str]:
-    """Return unique crate names owning changed LCOV source files, in order."""
+    """Return unique crate directory names owning changed LCOV source files."""
     seen: set[str] = set()
     result: list[str] = []
     for path in paths:
@@ -54,7 +76,7 @@ def changed_crates(paths: list[str]) -> list[str]:
 
 
 def changed_integration_test_targets(paths: list[str]) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
-    """Return changed top-level integration test targets by crate name."""
+    """Return changed top-level integration test targets by crate directory."""
     result: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
     seen: set[tuple[str, str]] = set()
     for path in paths:
@@ -92,36 +114,247 @@ def required_features_for_test(path: str) -> list[str]:
     return sorted(features)
 
 
-def augment_rust_focused_commands(base_commands: list[str], paths: list[str]) -> list[str]:
-    """Append per-crate integration-test commands to the rust-focused pack.
+def _target_features(target: dict[str, object]) -> tuple[str, ...]:
+    raw_features = target.get("required-features") or []
+    if not isinstance(raw_features, list) or not all(
+        isinstance(feature, str) and feature for feature in raw_features
+    ):
+        raise ValueError("Cargo target required-features must be a list of non-empty strings")
+    return tuple(sorted(set(raw_features)))
 
-    The fallback pack is intentionally crate-scoped.  Workspace-wide coverage
-    is too expensive for Patch 95 and can turn a focused Rust change into a
-    timeout before a coverage receipt is produced.  DAP-style crates (e.g.
-    ``perl-dap``) prove patch coverage through integration tests in ``tests/``,
-    while ordinary library paths need a registered ``--lib`` binary.
 
-    Root cause (#1282): plain ``cargo test`` does NOT register the binary with
-    cargo-llvm-cov's tracking file.  When ``cargo llvm-cov report`` runs it
-    only symbolises registered binaries, so integration-test profdata is
-    silently dropped and those source lines appear uncovered (false-low patch
-    %).  Using ``cargo llvm-cov test --no-report`` registers the binary while
-    deferring LCOV generation to the single ``cargo llvm-cov report`` call.
+def _target_name_from_path(path_value: str, package_name: str) -> str:
+    path = _normalized_target_path(path_value)
+    if path.name == "main.rs":
+        return package_name if path.parent.name == "src" else path.parent.name
+    return path.stem or package_name
 
-    ``-- --test-threads=1`` forces serial execution within the test binary.
-    Integration tests in this workspace mutate global/process state (env vars,
-    auto-ID counters, plenv PATH) without ``#[serial]`` guards.  Coverage does
-    not benefit from parallelism -- deterministic instrumentation is more
-    important.
+
+def _normalized_target_path(path_value: str) -> PurePosixPath:
+    """Normalize a manifest-relative target path for stable occupancy identity."""
+    parts: list[str] = []
+    for part in PurePosixPath(path_value.replace("\\", "/")).parts:
+        if part in ("", "."):
+            continue
+        if part == ".." and parts and parts[-1] != "..":
+            parts.pop()
+            continue
+        parts.append(part)
+    return PurePosixPath(*parts)
+
+
+def _inferred_bin_paths(name: str, package_name: str) -> tuple[PurePosixPath, ...]:
+    """Return the paths Cargo infers for a pathless explicit ``[[bin]]`` target.
+
+    Cargo resolves a named binary without an explicit ``path`` against
+    ``src/bin/<name>.rs``, ``src/bin/<name>/main.rs``, and -- only when the
+    target name equals the package name -- ``src/main.rs``.  All candidates are
+    reserved so autobin discovery cannot re-register the same source under its
+    file-derived name.
+    """
+    candidates = [
+        _normalized_target_path(f"src/bin/{name}.rs"),
+        _normalized_target_path(f"src/bin/{name}/main.rs"),
+    ]
+    if name == package_name:
+        candidates.append(_normalized_target_path("src/main.rs"))
+    return tuple(candidates)
+
+
+def _package_edition(crate_name: str, package: dict[str, object], repo_root: Path) -> str:
+    """Resolve the package edition, following ``edition.workspace = true``.
+
+    The edition is load-bearing here: Cargo's ``autobins`` default is ``false``
+    in edition 2015 whenever the manifest declares a ``[[bin]]`` manually.
+    """
+    edition = package.get("edition")
+    if isinstance(edition, str) and edition:
+        return edition
+    if isinstance(edition, dict) and edition.get("workspace") is True:
+        workspace_manifest_path = repo_root / "Cargo.toml"
+        try:
+            workspace_manifest = tomllib.loads(
+                workspace_manifest_path.read_text(encoding="utf-8")
+            )
+        except OSError as error:
+            raise ValueError(
+                f"cannot read workspace manifest for inherited edition of {crate_name}: {error}"
+            ) from error
+        except tomllib.TOMLDecodeError as error:
+            raise ValueError(
+                f"invalid workspace manifest for inherited edition of {crate_name}: {error}"
+            ) from error
+        workspace_table = workspace_manifest.get("workspace")
+        workspace_package = (
+            workspace_table.get("package") if isinstance(workspace_table, dict) else None
+        )
+        inherited = (
+            workspace_package.get("edition") if isinstance(workspace_package, dict) else None
+        )
+        if isinstance(inherited, str) and inherited:
+            return inherited
+        raise ValueError(
+            f"changed crate {crate_name} inherits its edition but the workspace declares none"
+        )
+    if edition is None:
+        return DEFAULT_EDITION
+    raise ValueError(f"Cargo manifest for changed crate {crate_name} has an invalid edition")
+
+
+def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> PackageTestTargets | None:
+    """Derive testable lib/bin targets for one local Cargo package.
+
+    Cargo's fallback route used to assume every changed package had a library
+    and no ordinary binary unit tests.  Read the local manifest and source
+    layout instead, including explicit targets, source-path occupancy, and
+    Cargo's edition-aware autobin conventions.
+
+    Returns ``None`` when the changed directory is not a Cargo package.
+    """
+    crate_root = repo_root / "crates" / crate_name
+    manifest_path = crate_root / "Cargo.toml"
+    if not manifest_path.is_file():
+        # Not every `crates/<dir>` is a Cargo package -- the vendored
+        # `tree-sitter-perl` grammar is not -- and a PR that deletes a crate
+        # still reports its sources as changed.  Neither owns coverage targets,
+        # and neither should abort the whole route for the other changed
+        # packages in the same pack.
+        return None
+    try:
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise ValueError(f"cannot read Cargo manifest for changed crate {crate_name}: {error}") from error
+    except tomllib.TOMLDecodeError as error:
+        raise ValueError(f"invalid Cargo manifest for changed crate {crate_name}: {error}") from error
+
+    package = manifest.get("package")
+    if not isinstance(package, dict):
+        raise ValueError(f"Cargo manifest for changed crate {crate_name} has no [package] table")
+    package_name = package.get("name")
+    if not isinstance(package_name, str) or not package_name:
+        raise ValueError(f"Cargo manifest for changed crate {crate_name} has no package name")
+
+    explicit_lib = manifest.get("lib")
+    if explicit_lib is not None and not isinstance(explicit_lib, dict):
+        raise ValueError(f"Cargo manifest for changed crate {crate_name} has an invalid [lib] table")
+    if isinstance(explicit_lib, dict):
+        has_lib = explicit_lib.get("test") is not False
+    else:
+        autolib = package.get("autolib", True) is not False
+        has_lib = autolib and (crate_root / "src" / "lib.rs").is_file()
+
+    binaries: dict[str, BinaryTestTarget] = {}
+    declared_names: set[str] = set()
+    occupied_paths: set[PurePosixPath] = set()
+    explicit_bins = manifest.get("bin") or []
+    if not isinstance(explicit_bins, list):
+        raise ValueError(f"Cargo manifest for changed crate {crate_name} has invalid [[bin]] entries")
+    for target in explicit_bins:
+        if not isinstance(target, dict):
+            raise ValueError(f"Cargo manifest for changed crate {crate_name} has an invalid [[bin]] row")
+        raw_path = target.get("path")
+        if raw_path is not None and (not isinstance(raw_path, str) or not raw_path):
+            raise ValueError(f"Cargo bin path for changed crate {crate_name} must be a non-empty string")
+        raw_name = target.get("name")
+        if raw_name is None:
+            name = _target_name_from_path(raw_path or "src/main.rs", package_name)
+        elif isinstance(raw_name, str) and raw_name:
+            name = raw_name
+        else:
+            raise ValueError(f"Cargo bin name for changed crate {crate_name} must be non-empty")
+        # A declared target reserves its source path and name even when it is
+        # not testable, so autobin discovery cannot re-register the same file.
+        if raw_path is not None:
+            occupied_paths.add(_normalized_target_path(raw_path))
+        else:
+            occupied_paths.update(_inferred_bin_paths(name, package_name))
+        if name in declared_names:
+            raise ValueError(f"Cargo manifest for changed crate {crate_name} repeats bin target {name}")
+        declared_names.add(name)
+        if target.get("test") is False:
+            continue
+        # A declared target whose source is absent cannot be instrumented, so
+        # emitting `--bin <name>` for it could only fail the coverage command.
+        if raw_path is not None:
+            source_present = (crate_root / raw_path).is_file()
+        else:
+            source_present = any(
+                (crate_root / candidate).is_file()
+                for candidate in _inferred_bin_paths(name, package_name)
+            )
+        if not source_present:
+            continue
+        binaries[name] = BinaryTestTarget(name, _target_features(target))
+
+    edition = _package_edition(crate_name, package, repo_root)
+    # Cargo disables edition-2015 auto-discovery when the manifest defines ANY
+    # target manually, not only a [[bin]]; an explicit [lib] counts.
+    manual_target_declared = bool(explicit_bins) or explicit_lib is not None
+    default_autobins = not (edition == "2015" and manual_target_declared)
+    if package.get("autobins", default_autobins) is not False:
+        src_root = crate_root / "src"
+
+        def register_implicit(name: str, relative_path: str) -> None:
+            if _normalized_target_path(relative_path) in occupied_paths:
+                return
+            if name in declared_names:
+                return
+            declared_names.add(name)
+            binaries[name] = BinaryTestTarget(name)
+
+        if (src_root / "main.rs").is_file():
+            register_implicit(package_name, "src/main.rs")
+        bin_root = src_root / "bin"
+        if bin_root.is_dir():
+            for entry in sorted(bin_root.iterdir(), key=lambda path: path.name):
+                if entry.is_file() and entry.suffix == ".rs":
+                    register_implicit(entry.stem, f"src/bin/{entry.name}")
+                elif entry.is_dir() and (entry / "main.rs").is_file():
+                    register_implicit(entry.name, f"src/bin/{entry.name}/main.rs")
+
+    return PackageTestTargets(
+        package_name=package_name,
+        has_lib=has_lib,
+        binaries=tuple(sorted(binaries.values(), key=lambda target: target.name)),
+    )
+
+
+def binary_target_command(package_name: str, target: BinaryTestTarget) -> str:
+    feature_arg = (
+        f" --features {','.join(target.required_features)}" if target.required_features else ""
+    )
+    return (
+        f"cargo llvm-cov test --no-report -p {package_name}{feature_arg} "
+        f"--bin {target.name} --profile agent --locked"
+    )
+
+
+def augment_rust_focused_commands(
+    base_commands: list[str],
+    paths: list[str],
+    repo_root: Path = REPO_ROOT,
+) -> list[str]:
+    """Append per-package unit/integration coverage commands to the fallback pack.
+
+    The fallback pack is intentionally changed-package scoped.  Workspace-wide
+    coverage is too expensive for Patch 95 and can turn a focused Rust change
+    into a timeout before a coverage receipt is produced.  Package targets are
+    derived from Cargo manifests so library-only, binary-only, and dual-target
+    packages register the unit-test binaries that actually own changed source.
+
+    DAP-style crates prove patch coverage through integration tests in
+    ``tests/``.  Root cause (#1282): plain ``cargo test`` does not register the
+    binary with cargo-llvm-cov's tracking file.  Every selected target therefore
+    uses ``cargo llvm-cov test --no-report`` and defers LCOV generation to the
+    single ``cargo llvm-cov report`` call.
+
+    ``-- --test-threads=1`` forces serial execution within integration-test
+    binaries because several workspace tests mutate global/process state.
 
     IMPORTANT: these commands are executed NON-FATALLY by
-    ``generate-coverage-pack-commands.py`` (invoked from the
-    ``coverage-proof-routed`` justfile recipe).  Assertion failures in
-    integration tests do NOT abort the coverage lane -- the instrumented binary
-    still writes LLVM coverage data before exiting, so ``cargo-llvm-cov``
-    collects coverage regardless.  The quality-gate verdict is the patch
-    coverage NUMBER, not test pass/fail.  Pre-existing test-debt (tracked in
-    #1269) can no longer block PRs by surfacing in this lane.
+    ``generate-coverage-pack-commands.py``.  Assertion failures do not abort the
+    coverage lane; the instrumented binary still writes LLVM coverage data.  The
+    quality-gate verdict is the patch coverage number, not test pass/fail.
     """
     commands: list[str] = []
     for cmd in base_commands:
@@ -131,18 +364,30 @@ def augment_rust_focused_commands(base_commands: list[str], paths: list[str]) ->
             commands.append(cmd)
     test_targets_by_crate = changed_integration_test_targets(paths)
     for crate_name in changed_crates(paths):
-        lib_cmd = f"cargo llvm-cov test --no-report -p {crate_name} --lib --profile agent --locked"
-        if lib_cmd not in commands:
-            commands.append(lib_cmd)
+        targets = package_test_targets(crate_name, repo_root)
+        if targets is None:
+            continue
+        if targets.has_lib:
+            lib_cmd = (
+                f"cargo llvm-cov test --no-report -p {targets.package_name} "
+                "--lib --profile agent --locked"
+            )
+            if lib_cmd not in commands:
+                commands.append(lib_cmd)
+        for binary in targets.binaries:
+            command = binary_target_command(targets.package_name, binary)
+            if command not in commands:
+                commands.append(command)
         test_targets = test_targets_by_crate.get(crate_name, [])
         if test_targets:
             integration_cmds = [
-                targeted_test_command(crate_name, target, features)
+                targeted_test_command(targets.package_name, target, features)
                 for target, features in test_targets
             ]
         else:
             integration_cmds = [
-                f"cargo llvm-cov test --no-report -p {crate_name} --tests --profile agent --locked -- --test-threads=1"
+                f"cargo llvm-cov test --no-report -p {targets.package_name} "
+                "--tests --profile agent --locked -- --test-threads=1"
             ]
         for cmd in integration_cmds:
             if cmd not in commands:
@@ -296,11 +541,13 @@ def selected_packs(packs: list[dict[str, object]], paths: list[str]) -> list[dic
 
 
 def normalize_pack(
-    pack: dict[str, object], paths: list[str] | None = None
+    pack: dict[str, object],
+    paths: list[str] | None = None,
+    repo_root: Path = REPO_ROOT,
 ) -> dict[str, object]:
     commands: list[str] = list(pack.get("commands") or [])
     if pack.get("id") == FALLBACK_PACK_ID and paths is not None:
-        commands = augment_rust_focused_commands(commands, paths)
+        commands = augment_rust_focused_commands(commands, paths, repo_root)
     return {
         "id": str(pack.get("id", "")),
         "files": list(pack.get("files") or []),
@@ -335,7 +582,9 @@ def main() -> int:
     manifest = tomllib.loads(Path(args.manifest).read_text(encoding="utf-8"))
     packs = [pack for pack in manifest.get("pack", []) if isinstance(pack, dict)]
     paths = changed_files(args.base, args.head)
-    coverage_packs = [normalize_pack(pack, paths) for pack in selected_packs(packs, paths)]
+    coverage_packs = [
+        normalize_pack(pack, paths, REPO_ROOT) for pack in selected_packs(packs, paths)
+    ]
     coverage_pack_ids = [pack["id"] for pack in coverage_packs]
     skipped_by_policy = {
         str(pack.get("id", "")): NON_LCOV_SKIP_REASON for pack in non_lcov_matches(packs, paths)
