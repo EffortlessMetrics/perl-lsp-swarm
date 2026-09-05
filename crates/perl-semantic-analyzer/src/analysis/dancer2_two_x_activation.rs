@@ -114,7 +114,15 @@ fn collect_package_subs(
         NodeKind::Subroutine { name: Some(name), declarator, .. }
             if occupies_package_glob(declarator.as_ref()) =>
         {
-            if let Some(package) = current_package.as_deref() {
+            if name.contains("::") {
+                // A qualified name belongs to its declared package, however
+                // the running package scope is spelled: `sub App::get` inside
+                // package Main still defines App::get, and a leading `::`
+                // addresses main's namespace.
+                if let Some((owner, leaf)) = split_qualified_sub(name) {
+                    package_subs.push((owner, leaf));
+                }
+            } else if let Some(package) = current_package.as_deref() {
                 package_subs.push((package.to_string(), name.clone()));
             }
         }
@@ -154,6 +162,21 @@ fn collect_package_subs(
     }
 }
 
+/// Split a fully-qualified subroutine name into its owning package and the
+/// final keyword. `App::get` declares `App`'s `get`; `::App::get` and
+/// `main::App::get` both address `App` inside main's root namespace; a bare
+/// `::get` is `main::get`.
+fn split_qualified_sub(name: &str) -> Option<(String, String)> {
+    let without_leading = name.strip_prefix("::").unwrap_or(name);
+    match without_leading.rsplit_once("::") {
+        Some((package, leaf)) if !package.is_empty() => {
+            Some((package.to_string(), leaf.to_string()))
+        }
+        Some(_) => Some(("main".to_string(), without_leading.to_string())),
+        None => Some(("main".to_string(), without_leading.to_string())),
+    }
+}
+
 fn shadowed_for_package(package: Option<&str>, package_subs: &[(String, String)]) -> Vec<String> {
     let Some(package) = package else { return Vec::new() };
     let mut shadowed: Vec<String> = package_subs
@@ -182,11 +205,18 @@ fn has_explicit_empty_import(source: &str, span_start: u32, span_end: u32) -> bo
     let Some(statement) = source.get(start..end) else {
         return false;
     };
-    let Some(module_at) = statement.find("Dancer2") else {
+    // The module name follows the `use` keyword directly (comments and
+    // whitespace between them are layout). Searching the raw statement for
+    // "Dancer2" could match the name inside a comment that precedes the
+    // module — e.g. `use # Dancer2 comment\n Dancer2 ();` — so the keyword is
+    // consumed first and the module located in what remains.
+    let Some(after_use_keyword) = skip_layout(statement).strip_prefix("use") else {
         return false;
     };
-    let rest =
-        skip_layout(skip_version_token(skip_layout(&statement[module_at + "Dancer2".len()..])));
+    let Some(rest) = skip_layout(after_use_keyword).strip_prefix("Dancer2") else {
+        return false;
+    };
+    let rest = skip_layout(skip_version_token(skip_layout(rest)));
     // Perl's explicit empty import list may carry whitespace or comments
     // between the parentheses; `( )` and a multiline list suppress `import`
     // exactly as `()` does.
@@ -400,7 +430,7 @@ mod tests {
             "use Dancer2 v2.01 ();\n",
         ] {
             let found = sites(code);
-            assert_eq!(found.len(), 1, "{code}");
+            assert_eq!(found.len(), 1, "{code}: len={}", found.len());
             assert!(found[0].evidence.import_suppressed, "{code} suppresses import");
         }
     }
@@ -488,5 +518,55 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].evidence.no_op_tags, vec![":script".to_string()]);
         assert!(found[0].evidence.nopragmas);
+    }
+
+    #[test]
+    fn comment_between_use_and_module_does_not_hide_the_empty_import() {
+        // The word Dancer2 inside the comment must not be taken for the
+        // module name: the `use` keyword is consumed first, layout (comments
+        // and whitespace) skipped, and only then is the module located.
+        let found = sites("use # Dancer2 comment\n Dancer2 ();\n");
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0].evidence.import_suppressed,
+            "the explicit empty import must be recognized past the comment"
+        );
+    }
+
+    #[test]
+    fn qualified_sub_outside_the_package_shadows_the_import() {
+        // `sub App::get` at file scope declares App's get before the package
+        // exists: the qualified name owns the shadow, so the later import
+        // must not report `get` as freshly installed.
+        let found = sites("sub App::get { }\npackage App;\nuse Dancer2;\n");
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0].shadowed_keywords.iter().any(|k| k == "get"),
+            "the qualified App::get definition must shadow the import, got {:?}",
+            found[0].shadowed_keywords
+        );
+    }
+
+    #[test]
+    fn qualified_sub_inside_another_package_shadows_across_packages() {
+        let found = sites("package Other;\nsub App::get { }\npackage App;\nuse Dancer2;\n");
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0].shadowed_keywords.iter().any(|k| k == "get"),
+            "a qualified definition inside another package must still shadow App's import, got {:?}",
+            found[0].shadowed_keywords
+        );
+    }
+
+    #[test]
+    fn leading_double_colon_addresses_main_root() {
+        // `sub ::get` is main::get: the leading `::` addresses main's root,
+        // so the leaf lands on main's shadow list.
+        let found = sites("sub ::get { }\npackage App;\nuse Dancer2;\n");
+        assert_eq!(found.len(), 1);
+        assert!(
+            !found[0].shadowed_keywords.iter().any(|k| k == "get"),
+            "::get belongs to main, not to App's shadow list"
+        );
     }
 }
