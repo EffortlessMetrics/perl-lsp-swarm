@@ -707,10 +707,40 @@ fn successor_wake_conditions_bind_removal_behind_the_window() -> Result<()> {
 }
 
 #[test]
-fn a_ruling_with_no_successor_wake_condition_is_rejected() -> Result<()> {
-    let mut value = real_value()?;
-    value["successor_wake_conditions"] = Value::Array(vec![]);
-    assert_rejected(&value, "defines no successor wake condition")
+fn every_successor_the_ruling_binds_must_carry_its_wake_condition() -> Result<()> {
+    // Non-emptiness was the wrong property. The ruling sets a gate on each of
+    // #8844, #8845 and #8847, and `wake_event` answers `None` for a successor
+    // with no row — so a revision that dropped one, or swapped all three for an
+    // unrelated issue, silently un-gated migration or the compatibility window
+    // while the array stayed non-empty and the audit stayed green.
+    let mut emptied = real_value()?;
+    emptied["successor_wake_conditions"] = Value::Array(vec![]);
+    assert_rejected(&emptied, "has no wake condition")?;
+
+    // Dropping any single required successor is rejected, naming that one.
+    for required in [8844u64, 8845, 8847] {
+        let mut value = real_value()?;
+        let rows = value["successor_wake_conditions"]
+            .as_array()
+            .ok_or_else(|| color_eyre::eyre::eyre!("successor_wake_conditions is not an array"))?
+            .iter()
+            .filter(|row| row["successor_issue"].as_u64() != Some(required))
+            .cloned()
+            .collect::<Vec<_>>();
+        value["successor_wake_conditions"] = Value::Array(rows);
+        assert_rejected(&value, &format!("#{required} has no wake condition"))?;
+    }
+
+    // The substitution the old law allowed: a non-empty array carrying none of
+    // the bound successors.
+    let mut substituted = real_value()?;
+    let mut unrelated = substituted["successor_wake_conditions"]
+        .as_array()
+        .and_then(|rows| rows.first().cloned())
+        .ok_or_else(|| color_eyre::eyre::eyre!("no successor row to base a substitution on"))?;
+    unrelated["successor_issue"] = Value::from(99999u64);
+    substituted["successor_wake_conditions"] = Value::Array(vec![unrelated]);
+    assert_rejected(&substituted, "has no wake condition")
 }
 
 // ---------------------------------------------------------------------------
@@ -1919,6 +1949,129 @@ fn a_reexport_row_must_name_the_crate_that_owns_its_site() -> Result<()> {
 }
 
 #[test]
+fn a_reexport_row_must_name_the_module_that_actually_publishes_it() -> Result<()> {
+    // Anchoring the crate root was not enough. A row could still name any module
+    // inside that crate, because the tail was matched as a suffix: `c::b::ast_v2`
+    // was satisfied by the binding derived in `crates/c/src/a.rs`. The
+    // compatibility inventory could therefore attach an obligation to a path
+    // nobody can write. The whole path is now compared against the file's own
+    // module path.
+    let live = sources(&[("crates/c/src/a.rs", "pub use perl_ast_v2 as ast_v2;")]);
+
+    let correct = reexport_rows(&[("rx:a", "c::a::ast_v2", "crates/c/src/a.rs:1")])?;
+    reconcile_reexport_inventory(&correct, &live)?;
+
+    // Right crate, right alias, wrong module.
+    let wrong = reexport_rows(&[("rx:b", "c::b::ast_v2", "crates/c/src/a.rs:1")])?;
+    let Err(err) = reconcile_reexport_inventory(&wrong, &live) else {
+        bail!("a row naming a module that does not publish the alias must not reconcile");
+    };
+    // The row does not cover the binding, so the real public path is reported as
+    // uninventoried. That is the distinction: under suffix matching this row
+    // *did* cover it and the reconciliation passed.
+    let rendered = format!("{err:?}");
+    assert!(
+        rendered.contains("crates/c/src/a.rs") && rendered.contains("ast_v2"),
+        "the rejection must name the file and alias the row failed to cover: {rendered}"
+    );
+
+    // The layout cases the derivation has to get right for the real rows.
+    for (file, expected) in [
+        ("crates/perl-ast/src/lib.rs", "perl_ast"),
+        ("crates/perl-parser/src/compat.rs", "perl_parser::compat"),
+        ("crates/perl-parser-core/src/engine/mod.rs", "perl_parser_core::engine"),
+        ("crates/perl-parser-core/src/tokens/trivia.rs", "perl_parser_core::tokens::trivia"),
+        ("crates/crate-a/src/shim.rs", "crate_a::shim"),
+    ] {
+        assert_eq!(
+            module_path_of(file).as_deref(),
+            Some(expected),
+            "module path derived from {file}"
+        );
+    }
+
+    // Outside the crate source layout the answer is unknown, and unknown must
+    // not read as "matches" — a `#[path]` attribute can put a file anywhere.
+    assert!(module_path_of("xtask/src/lib.rs").is_none());
+    assert!(module_path_of("Cargo.toml").is_none());
+
+    // An inline module still composes: the file supplies the outer namespace
+    // and the derivation supplies the inner one.
+    let inline = sources(&[(
+        "crates/perl-parser/src/lib.rs",
+        "pub mod compat { pub use perl_ast_v2 as ast_v2; }",
+    )]);
+    let nested = reexport_rows(&[(
+        "rx:compat",
+        "perl_parser::compat::ast_v2",
+        "crates/perl-parser/src/lib.rs:1",
+    )])?;
+    reconcile_reexport_inventory(&nested, &inline)?;
+    Ok(())
+}
+
+#[test]
+fn a_conditional_layout_attribute_still_makes_field_order_contract() -> Result<()> {
+    // `render_contract_attrs` already carried `cfg_attr`; `field_order_is_contract`
+    // looked only at a bare `repr`. So `#[cfg_attr(unix, repr(C))]` had its fields
+    // sorted, and reordering them — an ABI break for every unix consumer — moved
+    // no row. The same rule, syntax-aware in one place and blind in its sibling.
+    let shape_of = |src: &str| -> Result<String> {
+        derive_public_items(src)?
+            .iter()
+            .find(|item| item.kind == "struct")
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no struct derived from {src}"))
+    };
+    for attr in ["#[cfg_attr(unix, repr(C))]", "#[cfg_attr(feature = \"x\", repr(packed))]"] {
+        assert_ne!(
+            shape_of(&format!("{attr}\npub struct S {{ pub a: u8, pub b: u16 }}"))?,
+            shape_of(&format!("{attr}\npub struct S {{ pub b: u16, pub a: u8 }}"))?,
+            "under `{attr}` the field order can be the ABI and must move the shape"
+        );
+    }
+
+    // A `cfg_attr` that applies no layout-fixing representation must not switch
+    // ordering on, or every conditional attribute would start firing on cosmetic
+    // reorderings. The `feature = "c"` predicate is the trap: it contains a `C`.
+    for attr in
+        ["#[cfg_attr(feature = \"c\", derive(Debug))]", "#[cfg_attr(unix, repr(transparent))]"]
+    {
+        assert_eq!(
+            shape_of(&format!("{attr}\npub struct S {{ pub a: u8, pub b: u16 }}"))?,
+            shape_of(&format!("{attr}\npub struct S {{ pub b: u16, pub a: u8 }}"))?,
+            "`{attr}` fixes no field order and must not make a reordering fire"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_qualified_public_impl_is_not_mistaken_for_a_private_local_type() -> Result<()> {
+    // The private-type filter matched on the self type's *last* segment, so a
+    // module holding a private `Helper` swallowed `impl exported::Helper` too —
+    // a public type's methods vanishing from the inventory with no error. The
+    // audit losing public API is the failure it is least permitted, and this one
+    // was silent.
+    let source = "struct Helper;\n\
+                  impl Helper { pub fn hidden(&self) {} }\n\
+                  pub mod exported { pub struct Helper; }\n\
+                  impl exported::Helper { pub fn surfaced(&self) {} }";
+    let derived = derive_public_items(source)?;
+    let shapes: Vec<&str> = derived.iter().map(|item| item.shape.as_str()).collect();
+
+    assert!(
+        shapes.iter().any(|shape| shape.contains("surfaced")),
+        "the impl on the qualified public type must be derived: {shapes:?}"
+    );
+    assert!(
+        !shapes.iter().any(|shape| shape.contains("hidden")),
+        "the impl on the private local type must still be skipped: {shapes:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_public_reexport_inside_a_public_module_is_a_public_path() -> Result<()> {
     // `pub mod compat { pub use perl_ast_v2 as ast_v2; }` publishes the package
     // exactly as a top-level `pub use` does. A top-level-only walk called such a
@@ -2037,14 +2190,14 @@ fn a_forwarding_target_does_not_resolve_through_another_crate() -> Result<()> {
         (
             "rx:core-engine",
             "perl_parser_core::engine::ast_v2",
-            "crates/perl-parser-core/src/e.rs:1",
+            "crates/perl-parser-core/src/engine/mod.rs:1",
         ),
         // An unrelated local `ast_v2` in a different crate, forwarding to
         // nothing of its own.
         ("rx:other", "other_crate::ast_v2", "crates/other-crate/src/lib.rs:1"),
     ])?;
     let across = sources(&[
-        ("crates/perl-parser-core/src/e.rs", "pub use perl_ast_v2 as ast_v2;"),
+        ("crates/perl-parser-core/src/engine/mod.rs", "pub use perl_ast_v2 as ast_v2;"),
         ("crates/other-crate/src/lib.rs", "pub use local::ast_v2;"),
     ]);
     let Err(err) = reconcile_reexport_inventory(&rows, &across) else {
@@ -2062,12 +2215,12 @@ fn a_forwarding_target_does_not_resolve_through_another_crate() -> Result<()> {
         (
             "rx:core-engine",
             "perl_parser_core::engine::ast_v2",
-            "crates/perl-parser-core/src/e.rs:1",
+            "crates/perl-parser-core/src/engine/mod.rs:1",
         ),
         ("rx:core-root", "perl_parser_core::ast_v2", "crates/perl-parser-core/src/lib.rs:1"),
     ])?;
     let within = sources(&[
-        ("crates/perl-parser-core/src/e.rs", "pub use perl_ast_v2 as ast_v2;"),
+        ("crates/perl-parser-core/src/engine/mod.rs", "pub use perl_ast_v2 as ast_v2;"),
         ("crates/perl-parser-core/src/lib.rs", "pub use engine::ast_v2;"),
     ]);
     reconcile_reexport_inventory(&same_crate, &within)?;

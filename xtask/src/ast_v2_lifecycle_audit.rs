@@ -207,6 +207,12 @@ const V1_RULINGS: [&str; 2] = ["absorb", "retain"];
 /// migration authority fails closed here.
 const REQUIRED_CLAIM_CEILING: &str = "inventory_and_ruling_only";
 
+/// The successors this ruling binds, and which must therefore each carry a wake
+/// condition: #8844 (move under `perl_ast::v2`), #8845 (cut consumers over) and
+/// #8847 (close the compatibility window). Each is a gate the ruling sets; a
+/// manifest that drops one silently un-gates that successor.
+const REQUIRED_SUCCESSORS: [u64; 3] = [8844, 8845, 8847];
+
 // ---------------------------------------------------------------------------
 // Strict schema. Every struct denies unknown fields, so a field added to the
 // artifact without a model change fails closed rather than being ignored.
@@ -421,11 +427,21 @@ fn collect_public_items(
             continue;
         }
 
-        // An impl inherits the reachability of the type it is on.
+        // An impl inherits the reachability of the type it is on — but only an
+        // *unqualified, single-segment* path can name one of this module's own
+        // private declarations. Matching on the last segment alone meant that
+        // `impl exported::Helper`, where the module also holds a private
+        // `Helper`, was skipped: a public type's methods and trait impls
+        // vanished from the inventory with no error. That is the audit losing
+        // public API, the failure this instrument is least permitted, and it is
+        // silent — so the match is narrowed rather than the skip removed.
         if let syn::Item::Impl(item_impl) = item
             && let syn::Type::Path(path) = item_impl.self_ty.as_ref()
-            && let Some(last) = path.path.segments.last()
-            && private_types.contains(&last.ident.to_string())
+            && path.qself.is_none()
+            && path.path.leading_colon.is_none()
+            && path.path.segments.len() == 1
+            && let Some(only) = path.path.segments.first()
+            && private_types.contains(&only.ident.to_string())
         {
             continue;
         }
@@ -1014,6 +1030,50 @@ fn crate_root_of(file: &str) -> Option<String> {
     Some(parts.next()?.replace('-', "_"))
 }
 
+/// The module path at which a source file's top-level items live, derived from
+/// the standard Cargo layout.
+///
+/// ```text
+/// crates/perl-ast/src/lib.rs                 -> perl_ast
+/// crates/perl-parser/src/compat.rs           -> perl_parser::compat
+/// crates/perl-parser-core/src/engine/mod.rs  -> perl_parser_core::engine
+/// crates/perl-parser-core/src/tokens/trivia.rs
+///                                            -> perl_parser_core::tokens::trivia
+/// ```
+///
+/// This is what lets a re-export row be compared as a whole path rather than a
+/// suffix. Anchoring only the crate root still let a row name any module it
+/// liked — `c::b::ast_v2` was satisfied by a binding derived in
+/// `crates/c/src/a.rs` — so the inventory could attach a compatibility
+/// obligation to a path that does not exist.
+///
+/// `None` for anything outside `crates/<name>/src/`. A `#[path]` attribute can
+/// also put a file somewhere this does not describe; the caller fails closed on
+/// `None` rather than guessing a namespace, which is the conservative direction
+/// for an instrument whose rows are compatibility promises.
+fn module_path_of(file: &str) -> Option<String> {
+    let root = crate_root_of(file)?;
+    let mut parts = file.split('/');
+    parts.next()?; // "crates"
+    parts.next()?; // the crate directory
+    if parts.next()? != "src" {
+        return None;
+    }
+    let rest: Vec<&str> = parts.collect();
+    let (file_name, directories) = rest.split_last()?;
+    let mut segments = vec![root];
+    for directory in directories {
+        segments.push(directory.replace('-', "_"));
+    }
+    let stem = file_name.strip_suffix(".rs")?;
+    // `lib.rs`, `main.rs` and `mod.rs` *are* the module their location names;
+    // any other stem adds a segment.
+    if !matches!(stem, "lib" | "main" | "mod") {
+        segments.push(stem.replace('-', "_"));
+    }
+    Some(segments.join("::"))
+}
+
 /// Resolve one candidate module path to the inventoried path it lands on.
 ///
 /// Fixed order, because a bare `ast_v2` is a suffix of several inventoried
@@ -1297,18 +1357,44 @@ enum FieldContext {
 /// it is the opposite: order *is* the ABI, and a reordering is a breaking
 /// change no name or type would record. The attribute decides which rule
 /// applies.
+/// A `cfg_attr` is read as *possibly* applying its representation, because this
+/// audit spans every configuration the source can be built in rather than one
+/// host's. `#[cfg_attr(unix, repr(C))]` fixes the layout on unix, so sorting the
+/// fields away would hide an ABI reordering from every unix consumer. Taking the
+/// conservative branch costs only that a reordering under such a type moves a
+/// row; missing it loses a breaking change entirely.
+///
+/// `render_contract_attrs` already carries `cfg_attr` for exactly this reason.
+/// This function looked only at a bare `repr`, so the same rule was syntax-aware
+/// in one place and blind in its sibling — the defect class this candidate has
+/// hit repeatedly.
 fn field_order_is_contract(attrs: &[syn::Attribute]) -> bool {
+    fn fixes_layout(spelled: &str) -> bool {
+        // `transparent` and the primitive representations do not fix an order
+        // over several fields; `C` and `packed` do.
+        spelled.contains('C') || spelled.contains("packed")
+    }
     attrs.iter().any(|attr| {
-        if !attr.path().is_ident("repr") {
+        let is_repr = attr.path().is_ident("repr");
+        let is_cfg_attr = attr.path().is_ident("cfg_attr");
+        if !is_repr && !is_cfg_attr {
             return false;
         }
         let syn::Meta::List(list) = &attr.meta else {
             return false;
         };
         let spelled = list.tokens.to_string();
-        // `transparent` and the primitive representations do not fix an order
-        // over several fields; `C` and `packed` do.
-        spelled.contains('C') || spelled.contains("packed")
+        if is_repr {
+            return fixes_layout(&spelled);
+        }
+        // Inside a `cfg_attr` the predicate comes first and the attributes
+        // follow, so only the part after the first comma can carry a `repr`.
+        // Requiring the word `repr` there keeps `#[cfg_attr(feature = "c", ...)]`
+        // — a predicate that merely contains a `C` — from reading as layout.
+        match spelled.split_once(',') {
+            Some((_, applied)) => applied.contains("repr") && fixes_layout(applied),
+            None => false,
+        }
     })
 }
 
@@ -2036,10 +2122,25 @@ pub fn derive_reference_files(repo_root: &Path) -> Result<BTreeSet<String>> {
             if INSTRUMENT_SELF_FILES.contains(&relative.as_str()) {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(path) else {
-                // A non-UTF-8 file under these roots cannot declare a Rust
-                // dependency or import; skipping it is not a silent loss.
-                continue;
+            // Only invalid UTF-8 is skipped. A non-UTF-8 file under these roots
+            // cannot declare a Rust dependency or import, so skipping it loses
+            // nothing. Every other read failure — a permission denial, a file
+            // that vanished mid-walk, a transient I/O error — is a file whose
+            // contents are *unknown*, and treating unknown as "does not
+            // reference the package" is exactly the silent fail-open this
+            // denominator exists to prevent. Those propagate.
+            let text = match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(err) if err.kind() == std::io::ErrorKind::InvalidData => continue,
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!(
+                            "failed to read `{relative}` while scanning for consumers of the \
+                             audited package; the denominator cannot skip a file it could not \
+                             read"
+                        )
+                    });
+                }
             };
             if reaches_audited_package(&text, &relative) {
                 found.insert(relative);
@@ -2632,8 +2733,23 @@ fn validate_ruling(m: &Manifest) -> Result<()> {
         }
     }
 
-    if m.successor_wake_conditions.is_empty() {
-        bail!("the ruling defines no successor wake condition; #8844/#8845/#8847 would not know");
+    // Non-emptiness was not the property that matters. A revision could replace
+    // all three successors with one unrelated row and stay green, and
+    // `wake_event` would then answer `None` for #8844, #8845 and #8847 —
+    // silently removing the migration and compatibility gates this ruling
+    // exists to set. The three the ruling actually binds must each be present.
+    //
+    // Presence, not exact equality: a later revision may legitimately bind a
+    // fourth successor, and a check that forbade that would have to be edited
+    // to permit ordinary work. Requiring these three refuses the substitution
+    // without freezing the set.
+    for required in REQUIRED_SUCCESSORS {
+        if !m.successor_wake_conditions.iter().any(|row| row.successor_issue == required) {
+            bail!(
+                "the ruling binds successors {REQUIRED_SUCCESSORS:?}, but #{required} has no wake \
+                 condition; that successor would not know when it may start"
+            );
+        }
     }
     for row in &m.successor_wake_conditions {
         if row.wake_event.trim().is_empty() {
@@ -3178,32 +3294,21 @@ fn reconcile_reexport_inventory(
     }
 
     // Whether one claimed row path is the public path of one derived binding in
-    // one file. Both halves are load-bearing:
+    // one file, compared as a whole path.
     //
-    // * The row records the whole path from its crate root
-    //   (`perl_parser::compat::ast_v2`), while the derivation sees only inside
-    //   one file — rendering `ast_v2` at file top level, and `compat::ast_v2`
-    //   inside `pub mod compat`. A file that *is* module `engine` therefore
-    //   yields `ast_v2` for the row `perl_parser_core::engine::ast_v2`. The
-    //   `::`-segment suffix bridges that, and keeps two same-named bindings in
-    //   one file distinct: `a::ast_v2` does not satisfy a row for `b::ast_v2`.
+    // The row records the path from the crate root
+    // (`perl_parser::compat::ast_v2`) while the derivation sees only inside one
+    // file, rendering `ast_v2` at file top level and `compat::ast_v2` inside
+    // `pub mod compat`. `module_path_of` supplies the missing middle from the
+    // file's own location, so the two can be compared exactly.
     //
-    // * The suffix alone accepted **any** crate prefix, so a row could name a
-    //   crate that publishes nothing and still be validated by a real binding
-    //   in another crate's file — the inventory recording a public path that
-    //   does not exist. The path must therefore also start at the crate that
-    //   actually contains the site.
-    //
-    // This anchors both ends against the file. It still does not resolve the
-    // module graph in between, which stays the recorded limitation.
+    // Suffix matching was tried twice and was wrong twice, in widening ways: a
+    // bare `::`-segment suffix accepted any crate at all, and anchoring only the
+    // crate root still accepted any module within it — `c::b::ast_v2` satisfied
+    // by a binding in `crates/c/src/a.rs`. Either way the inventory could attach
+    // a compatibility obligation to a path nobody can write.
     let binds = |file: &str, path: &str, binding: &str| -> bool {
-        let Some(root) = crate_root_of(file) else {
-            return false;
-        };
-        let Some(rest) = path.strip_prefix(&format!("{root}::")) else {
-            return false;
-        };
-        rest == binding || rest.ends_with(&format!("::{binding}"))
+        module_path_of(file).is_some_and(|module| path == format!("{module}::{binding}"))
     };
     let claims = |file: &str, claimed: &BTreeSet<String>, binding: &str| -> bool {
         claimed.iter().any(|path| binds(file, path, binding))
