@@ -1352,19 +1352,18 @@ mod tests {
     /// observation identity.
     #[test]
     fn unscoped_client_cannot_self_declare_trust() {
+        let identity = must_with(
+            ConfigurationSourceIdentity::new(
+                "perl-lsp-rs-core/test",
+                OBSERVATION_SCHEMA_GENERATION,
+                ConfigurationProvenanceClass::GenericUnscopedClient,
+                ObservationTransport::InitializeSession { session_id: "s-1".to_string() },
+            ),
+            "valid identity",
+        );
         let labeled = must_with(
-            must_with(
-                ConfigurationSourceIdentity::new(
-                    "perl-lsp-rs-core/test",
-                    OBSERVATION_SCHEMA_GENERATION,
-                    ConfigurationProvenanceClass::GenericUnscopedClient,
-                    ObservationTransport::InitializeSession { session_id: "s-1".to_string() },
-                )
-                .expect("valid identity")
-                .with_client_label("scope", "global"),
-                "bounded label",
-            )
-            .with_client_label("trusted", "true"),
+            must_with(identity.with_client_label("scope", "global"), "bounded label")
+                .with_client_label("trusted", "true"),
             "bounded label",
         );
         let mut draft =
@@ -2078,12 +2077,13 @@ mod tests {
                 );
             },
         );
-        let left_digest =
-            match with_digest.observed_field("PERL5LIB").and_then(|field| field.normalized_value())
-            {
-                Some(NormalizedValue::DigestOnly(digest)) => digest.clone(),
-                other => panic!("expected digest-only evidence, got {other:?}"),
-            };
+        let left_value =
+            with_digest.observed_field("PERL5LIB").and_then(|field| field.normalized_value());
+        let left_message = format!("expected digest-only evidence, got {left_value:?}");
+        let left_digest = match left_value {
+            Some(NormalizedValue::DigestOnly(digest)) => digest,
+            _ => must_some_with(None, left_message),
+        };
 
         let distinct = finish(
             ConfigurationProvenanceClass::ProcessEnvironment,
@@ -2100,11 +2100,13 @@ mod tests {
                 );
             },
         );
-        let right_digest =
-            match distinct.observed_field("PERL5LIB").and_then(|field| field.normalized_value()) {
-                Some(NormalizedValue::DigestOnly(digest)) => digest.clone(),
-                other => panic!("expected digest-only evidence, got {other:?}"),
-            };
+        let right_value =
+            distinct.observed_field("PERL5LIB").and_then(|field| field.normalized_value());
+        let right_message = format!("expected digest-only evidence, got {right_value:?}");
+        let right_digest = match right_value {
+            Some(NormalizedValue::DigestOnly(digest)) => digest,
+            _ => must_some_with(None, right_message),
+        };
         assert_ne!(left_digest, right_digest);
         assert!(left_digest.starts_with("sha256:"));
     }

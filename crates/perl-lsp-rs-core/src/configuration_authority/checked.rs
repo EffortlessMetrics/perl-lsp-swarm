@@ -112,7 +112,7 @@ mod tests {
         for id in
             ["workspace.perl5lib_precedence", "workspace.use_perl5lib", "workspace.use_system_inc"]
         {
-            let field = authority_by_id(id).unwrap_or_else(|| panic!("missing authority row {id}"));
+            let field = must_some_with(authority_by_id(id), format!("missing authority row {id}"));
             assert!(
                 !field.sources.contains(&ConfigSource::Environment)
                     && !field.sources.contains(&ConfigSource::SystemProbe),

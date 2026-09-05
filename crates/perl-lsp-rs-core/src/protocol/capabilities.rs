@@ -488,23 +488,24 @@ mod tests {
     #[test]
     fn text_document_sync_advertises_full_sync_and_open_close() {
         let caps = capabilities_for(BuildFlags::default());
-        match caps.text_document_sync.as_ref() {
-            Some(TextDocumentSyncCapability::Options(opts)) => {
-                assert_eq!(
-                    opts.change,
-                    Some(TextDocumentSyncKind::FULL),
-                    "textDocumentSync.change must be FULL (1) — the server reparses the whole \
-                     document on every didChange; INCREMENTAL would be inaccurate"
-                );
-                assert_eq!(
-                    opts.open_close,
-                    Some(true),
-                    "textDocumentSync.openClose must be true — didOpen/didClose are required \
-                     for workspace tracking"
-                );
-            }
-            other => panic!("expected TextDocumentSyncCapability::Options, got {other:?}"),
-        }
+        let sync = caps.text_document_sync.as_ref();
+        let message = format!("expected TextDocumentSyncCapability::Options, got {sync:?}");
+        let opts = match sync {
+            Some(TextDocumentSyncCapability::Options(opts)) => opts,
+            _ => must_some_with(None, message),
+        };
+        assert_eq!(
+            opts.change,
+            Some(TextDocumentSyncKind::FULL),
+            "textDocumentSync.change must be FULL (1) — the server reparses the whole \
+             document on every didChange; INCREMENTAL would be inaccurate"
+        );
+        assert_eq!(
+            opts.open_close,
+            Some(true),
+            "textDocumentSync.openClose must be true — didOpen/didClose are required \
+             for workspace tracking"
+        );
     }
 
     /// Pin the exact set of `codeActionProvider.codeActionKinds` advertised to
@@ -526,7 +527,9 @@ mod tests {
         let flags = BuildFlags { code_actions: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        let kinds: Vec<String> = match caps.code_action_provider.as_ref() {
+        let provider = caps.code_action_provider.as_ref();
+        let message = format!("expected CodeActionProviderCapability::Options, got {provider:?}");
+        let kinds: Vec<String> = match provider {
             Some(CodeActionProviderCapability::Options(opts)) => must_some_with(
                 opts.code_action_kinds.as_ref(),
                 "code_action_kinds must be Some when code_actions is enabled",
@@ -534,7 +537,7 @@ mod tests {
             .iter()
             .map(|k| k.as_str().to_string())
             .collect(),
-            other => panic!("expected CodeActionProviderCapability::Options, got {other:?}"),
+            _ => must_some_with(None, message),
         };
 
         // Duplicate the full ordered list from sections.rs::code_action_kinds().

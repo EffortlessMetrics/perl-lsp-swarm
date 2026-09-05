@@ -276,8 +276,8 @@ mod tests {
 
     fn public_fields(source: &str, struct_name: &str) -> BTreeSet<String> {
         let marker = format!("pub struct {struct_name} {{");
-        let body = source.split_once(&marker).unwrap_or_else(|| panic!("missing {struct_name}")).1;
-        let body = body.split_once("\n}").unwrap_or_else(|| panic!("unterminated {struct_name}")).0;
+        let body = must_some_with(source.split_once(&marker), format!("missing {struct_name}")).1;
+        let body = must_some_with(body.split_once("\n}"), format!("unterminated {struct_name}")).0;
 
         body.lines()
             .filter_map(|line| {
@@ -461,7 +461,7 @@ mod tests {
         ];
 
         for id in restricted {
-            let field = authority_by_id(id).unwrap_or_else(|| panic!("missing {id}"));
+            let field = must_some_with(authority_by_id(id), format!("missing {id}"));
             assert!(
                 !field.sources.iter().any(|source| matches!(
                     source,
@@ -492,7 +492,7 @@ mod tests {
         ];
 
         for id in ARM_SELECT_ROWS {
-            let field = authority_by_id(id).unwrap_or_else(|| panic!("missing {id}"));
+            let field = must_some_with(authority_by_id(id), format!("missing {id}"));
             for source in field.sources {
                 assert!(
                     matches!(
@@ -506,8 +506,8 @@ mod tests {
 
         // The derived effective flag may additionally be reduced by the
         // project file, but still cannot be armed by any client channel.
-        let effective = authority_by_id("ai.effective_enabled")
-            .unwrap_or_else(|| panic!("missing ai.effective_enabled"));
+        let effective =
+            must_some_with(authority_by_id("ai.effective_enabled"), "missing ai.effective_enabled");
         for source in effective.sources {
             assert!(
                 matches!(
