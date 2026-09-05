@@ -189,11 +189,18 @@ impl<'source> RetainedRegexSession<'source> {
     /// the pending geometry keeps the finding, which is the whole point of the seam.
     ///
     /// The one thing this path cannot supply is the compile-time pragma environment,
-    /// which is built from the tree. Records retained here are therefore analyzed under
-    /// the default profile rather than the file's own pragma state, so a finding that
-    /// depends on `use utf8` or a feature pragma may differ from what a successful
-    /// parse would have produced. That is a narrower inaccuracy than silence, and it is
-    /// confined to documents that failed to parse at all.
+    /// which is built from the tree. Records retained here therefore carry an *unknown*
+    /// language profile rather than a default one, and the analyzer withholds the
+    /// findings whose truth depends on it — capture-name validity under `use utf8`,
+    /// say — while still producing the ones that do not, such as backtracking risk and
+    /// embedded code.
+    ///
+    /// Unknown rather than default, because the difference is a correctness one: a
+    /// default environment does not mean "no pragmas were seen", it asserts `utf8` is
+    /// off. Measured under that earlier reading, a valid non-ASCII named capture under
+    /// `use utf8;` published `PL1006` purely because of an unrelated fatal construct
+    /// elsewhere in the file. Retaining a finding that was really there is the point of
+    /// this path; inventing one is worse than the silence it replaced.
     ///
     /// A session finished out of order — while a session begun after it is still
     /// active — retains nothing rather than consuming the other session's geometry.
