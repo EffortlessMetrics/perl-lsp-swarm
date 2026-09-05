@@ -4,6 +4,12 @@
 //! higher layers to describe which project, interpreter, include-root, build,
 //! and tool inputs are active. It performs no discovery, probing, filesystem
 //! access, process execution, or provider work.
+//!
+//! The [`builder`] submodule compiles hand-fed environment declarations from
+//! the sources that already exist on main into these snapshots, with
+//! selected-and-rejected receipts (#4833, #2981 plan slice S1).
+
+pub mod builder;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1937,8 +1943,13 @@ mod tests {
                 .build()?;
         let mut value = serde_json::to_value(&snapshot)?;
         value["schema_version"] = serde_json::Value::from(1_u32);
-        let error = serde_json::from_value::<ProjectEnvironmentSnapshot>(value)
-            .expect_err("v1 snapshots must not gain v2 authority implicitly");
+        let Err(error) = serde_json::from_value::<ProjectEnvironmentSnapshot>(value.clone()) else {
+            return Err(format!(
+                "v1 snapshots must not gain v2 authority implicitly: \
+                 deserialization unexpectedly succeeded for value: {value:?}"
+            )
+            .into());
+        };
         assert!(error.to_string().contains("unsupported project environment schema version"));
         Ok(())
     }

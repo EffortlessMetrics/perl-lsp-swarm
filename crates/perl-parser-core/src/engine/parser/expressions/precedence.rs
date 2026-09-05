@@ -108,31 +108,9 @@ impl<'a> Parser<'a> {
     /// an `Identifier("x")` followed by `Assign`. Exact source adjacency is required:
     /// Perl accepts `$value x= 3` but not `$value x = 3`.
     fn consume_assignment_operator(&mut self) -> ParseResult<Option<(&'static str, usize)>> {
-        if let Some(kind) = self.peek_kind() {
-            let op = match kind {
-                TokenKind::Assign => Some("="),
-                TokenKind::PlusAssign => Some("+="),
-                TokenKind::MinusAssign => Some("-="),
-                TokenKind::StarAssign => Some("*="),
-                TokenKind::SlashAssign => Some("/="),
-                TokenKind::PercentAssign => Some("%="),
-                TokenKind::DotAssign => Some(".="),
-                TokenKind::AndAssign => Some("&="),
-                TokenKind::OrAssign => Some("|="),
-                TokenKind::XorAssign => Some("^="),
-                TokenKind::PowerAssign => Some("**="),
-                TokenKind::LeftShiftAssign => Some("<<="),
-                TokenKind::RightShiftAssign => Some(">>="),
-                TokenKind::LogicalAndAssign => Some("&&="),
-                TokenKind::LogicalOrAssign => Some("||="),
-                TokenKind::DefinedOrAssign => Some("//="),
-                _ => None,
-            };
-
-            if let Some(op) = op {
-                let token = self.tokens.next()?;
-                return Ok(Some((op, token.start())));
-            }
+        if let Some(op) = self.peek_kind().and_then(Self::assignment_operator_text) {
+            let token = self.tokens.next()?;
+            return Ok(Some((op, token.start())));
         }
 
         if self.peek_kind() == Some(TokenKind::Identifier) {
@@ -1061,9 +1039,13 @@ impl<'a> Parser<'a> {
                             | TokenKind::HashSigil
                             | TokenKind::LeftParen
                             | TokenKind::LeftBracket
+                            | TokenKind::LeftBrace
                             | TokenKind::String
                             | TokenKind::QuoteSingle
                             | TokenKind::QuoteDouble
+                            | TokenKind::Undef
+                            | TokenKind::Do
+                            | TokenKind::Sub
                             | TokenKind::Not
                             | TokenKind::Minus
                             | TokenKind::Plus
