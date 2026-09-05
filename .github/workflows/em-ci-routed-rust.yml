@@ -652,14 +652,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Structural + producer tests for #9127 residual: a silent revert of
-          # the #12320 cargo fmt --all insertions, reintroduced changed-file
-          # narrowing, or verbose-header misclassification must fail this
-          # required check. Draft-skip stays in the evaluate step (#10006).
+          # Structural + producer tests for #9127 residual and #9959
+          # meta-fmt retirement: a silent revert of the #12320 cargo fmt
+          # --all insertions, reintroduced changed-file narrowing, verbose-header
+          # misclassification, or a second unowned hosted formatter producer
+          # must fail this required check. Draft-skip stays in the evaluate
+          # step (#10006).
           python3 -m unittest \
             scripts/ci/test_rustfmt_check.py \
             scripts/ci/test_rustfmt_required_workflow.py \
             scripts/ci/test_rust_small_route_contract.py \
+            scripts/ci/test_hosted_formatter_producers.py \
             scripts/ci/test_rust_small_probe_gate.py \
             scripts/ci/test_main_red_refusal.py
 
