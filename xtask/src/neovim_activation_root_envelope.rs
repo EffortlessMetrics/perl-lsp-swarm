@@ -406,6 +406,17 @@ fn validate_file_families(root: &Map<String, Value>, config: &RecordedConfig) ->
                     "{path}: disposition `{disposition}` cannot attach through the canonical config"
                 )));
             }
+            // These dispositions state that the canonical config deliberately
+            // does not activate this family. If the config does list its
+            // filetype, that policy claim is false whatever the row observed,
+            // and `attached=false` is then an unexplained result rather than
+            // the intended one.
+            if eligible {
+                return Err(EnvelopeValidationError::new(format!(
+                    "{path}: disposition `{disposition}` says the canonical config does not \
+                     activate this family, but config_eligible=true"
+                )));
+            }
         }
 
         if REASONED_DISPOSITIONS.contains(&disposition) {

@@ -436,6 +436,26 @@ fn broadening_the_canonical_filetypes_breaks_the_adjacent_rows() -> Result<(), B
     Ok(())
 }
 
+/// Widening the config so an adjacent family becomes activating contradicts a
+/// disposition that says the config leaves that family alone — whether or not
+/// the row happened to attach.
+#[test]
+fn an_adjacent_family_cannot_stay_adjacent_once_the_config_activates_it()
+-> Result<(), Box<dyn Error>> {
+    let mut envelope = valid_envelope()?;
+    envelope["config"]["filetypes"] = json!(["perl", "mason"]);
+    for family in ["template.ep", "template.mason"] {
+        envelope["file_families"][family]["config_eligible"] = json!(true);
+    }
+
+    assert_eq!(
+        rejection(validate_envelope(&envelope))?,
+        "envelope.file_families.template.ep: disposition `intentionally_adjacent_or_mixed` says \
+         the canonical config does not activate this family, but config_eligible=true"
+    );
+    Ok(())
+}
+
 #[test]
 fn attaching_without_eligibility_is_a_contradiction() -> Result<(), Box<dyn Error>> {
     let mut envelope = valid_envelope()?;
