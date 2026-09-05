@@ -114,7 +114,13 @@ fn run_peer(listener: TcpListener, caps: PeerReportedCapabilities, steps: Vec<Pe
                             let mut resp = tmpl.clone();
                             resp.seq = seq;
                             resp.request_seq = req.seq;
-                            resp.command = req.command.clone();
+                            // A template that names its own command keeps it, so
+                            // a test can script a peer that echoes the *wrong*
+                            // command. An empty template command echoes the
+                            // request, which is what a conforming peer does.
+                            if resp.command.is_empty() {
+                                resp.command = req.command.clone();
+                            }
                             send(&mut write, &PeerMessage::Response(resp));
                         }
                         if req.command == command::GOODBYE {
@@ -155,6 +161,7 @@ fn ok_resp(body: Option<serde_json::Value>) -> PeerResponse {
         success: true,
         command: String::new(),
         message: None,
+        cause: None,
         body,
     }
 }
@@ -981,6 +988,215 @@ fn overload_racing_peer_eof_yields_one_ordered_terminal_transition() {
         1,
         "overload racing EOF must expose exactly one terminal transition: {events:?}"
     );
+
+    drop(backend);
+    let _ = peer.handle.join();
+}
+
+/// A live peer answering `success: false` to `evaluate` is the #8758 case: an
+/// ordinary debuggee failure reported through the negotiated protocol.
+///
+/// This exercises the reachable layer — `ExternalDebuggerPeerBackend::evaluate`
+/// → `request()` → [`BackendError::PeerReported`] — rather than constructing
+/// the error directly, so it would have caught the original defect where every
+/// such reply classified as `ErrorCategory::Bug` and was routed for adapter-bug
+/// repair.
+#[test]
+fn peer_reported_debuggee_failure_is_not_an_adapter_bug() {
+    use perl_dap::backend::BackendError;
+    use perl_parser_core::{ErrorCategory, ErrorClass};
+
+    const DIE: &str = "Undefined subroutine &main::foo called at t/x.pl line 3.";
+
+    let peer = FakePeer::start(
+        full_caps(),
+        vec![PeerStep::Answer(
+            command::EVALUATE,
+            PeerResponse {
+                seq: 0,
+                request_seq: 0,
+                success: false,
+                command: String::new(),
+                message: Some(DIE.to_string()),
+                cause: None,
+                body: None,
+            },
+        )],
+    );
+    let mut backend = connect(&peer);
+    must(backend.initialize(InitializeBackendParams::default()));
+
+    let err = must_err(backend.evaluate(EvaluateParams {
+        expression: "foo()".to_string(),
+        frame_id: Some(FrameId(1)),
+        context: EvaluateContext::Watch,
+    }));
+
+    match &err {
+        BackendError::PeerReported { command, message, cause } => {
+            assert_eq!(command, command::EVALUATE);
+            assert_eq!(message, DIE);
+            // `full_caps()` does not advertise the cause vocabulary and this
+            // reply carries none, so the causeless classification stands (#14582).
+            assert_eq!(*cause, None);
+        }
+        other => {
+            must(Err::<(), _>(format!(
+                "expected PeerReported from a peer success:false, got {other:?}"
+            )));
+        }
+    }
+
+    assert_ne!(
+        err.error_class(),
+        ErrorCategory::Bug,
+        "a debuggee die reported by a peer is not this adapter's invariant violation"
+    );
+    assert_eq!(err.error_class(), ErrorCategory::Advisory);
+
+    // The editor-visible text is unchanged by the added structure.
+    assert_eq!(err.to_string(), format!("debug backend reported an error: {DIE}"));
+
+    drop(backend);
+    let _ = peer.handle.join();
+}
+
+/// Responses are correlated by `request_seq` alone, so the echoed command is the
+/// only evidence that a reply answers the request we actually sent.
+///
+/// A peer that answers an `evaluate` sequence with a response echoing
+/// `stackTrace` has broken correlation. That is a protocol violation, not an
+/// outcome of the evaluate — and it must not be recorded as a `PeerReported`
+/// carrying the command we asked for, which would assert an identity the peer
+/// never confirmed and classify a correlation failure as an ordinary advisory
+/// debuggee outcome (#8758 review).
+#[test]
+fn peer_response_echoing_a_different_command_is_a_protocol_violation() {
+    use perl_dap::backend::BackendError;
+    use perl_parser_core::{ErrorCategory, ErrorClass};
+
+    let peer = FakePeer::start(
+        full_caps(),
+        vec![PeerStep::Answer(
+            command::EVALUATE,
+            PeerResponse {
+                seq: 0,
+                request_seq: 0,
+                success: false,
+                // Crossed: this reply claims to answer a different command.
+                command: command::STACK_TRACE.to_string(),
+                message: Some("no active suspension".to_string()),
+                cause: None,
+                body: None,
+            },
+        )],
+    );
+    let mut backend = connect(&peer);
+    must(backend.initialize(InitializeBackendParams::default()));
+
+    let err = must_err(backend.evaluate(EvaluateParams {
+        expression: "$x".to_string(),
+        frame_id: Some(FrameId(1)),
+        context: EvaluateContext::Watch,
+    }));
+
+    match &err {
+        BackendError::Protocol(detail) => {
+            assert!(
+                detail.contains(command::EVALUATE) && detail.contains(command::STACK_TRACE),
+                "the protocol error names both the request and the echoed command: {detail}"
+            );
+        }
+        other => {
+            must(Err::<(), _>(format!(
+                "a crossed command must not be reported as an outcome, got {other:?}"
+            )));
+        }
+    }
+
+    assert_eq!(err.error_class(), ErrorCategory::Protocol);
+    assert_ne!(
+        err.error_class(),
+        ErrorCategory::Advisory,
+        "a correlation failure is not an ordinary debuggee outcome"
+    );
+
+    drop(backend);
+    let _ = peer.handle.join();
+}
+
+/// A rejected crossed reply must not poison the session.
+///
+/// The guard returns `Protocol` for the offending request, but the stream is
+/// still parseable and `next_host_seq` hands every later request its own
+/// correlation key, so the session stays usable. This proves that directly
+/// rather than assuming it: the same connection answers a following
+/// `stackTrace` correctly after the violation.
+///
+/// The contrast is deliberate — `mark_closed_with_error` is reserved for
+/// conditions that make the stream itself unusable (resource limits), and one
+/// mislabeled reply is not that. Closing a live debug session over it would be
+/// a heavier, user-visible action than the violation warrants.
+#[test]
+fn a_rejected_crossed_reply_leaves_the_session_correctly_correlated() {
+    use perl_dap::backend::BackendError;
+
+    let stack_body = StackTraceResponseBody {
+        stack_frames: vec![WireStackFrame {
+            id: 7,
+            name: "main::after_violation".to_string(),
+            source: WireSource {
+                path: "/work/script.pl".to_string(),
+                name: Some("script.pl".to_string()),
+                source_reference: None,
+            },
+            line: 21,
+            column: 1,
+        }],
+    };
+
+    let peer = FakePeer::start(
+        full_caps(),
+        vec![
+            // Crossed: answers `evaluate` while echoing `stackTrace`.
+            PeerStep::Answer(
+                command::EVALUATE,
+                PeerResponse {
+                    seq: 0,
+                    request_seq: 0,
+                    success: false,
+                    command: command::STACK_TRACE.to_string(),
+                    message: Some("no active suspension".to_string()),
+                    cause: None,
+                    body: None,
+                },
+            ),
+            // Conforming: echoes the request, as an empty template command does.
+            PeerStep::Answer(command::STACK_TRACE, ok_resp(serde_json::to_value(stack_body).ok())),
+        ],
+    );
+    let mut backend = connect(&peer);
+    must(backend.initialize(InitializeBackendParams::default()));
+
+    let err = must_err(backend.evaluate(EvaluateParams {
+        expression: "$x".to_string(),
+        frame_id: Some(FrameId(1)),
+        context: EvaluateContext::Watch,
+    }));
+    assert!(
+        matches!(err, BackendError::Protocol(_)),
+        "the crossed reply is rejected as a protocol violation, got {err:?}"
+    );
+
+    // The session survives, and the next request is answered on its own key.
+    let frames = must(backend.stack_trace(StackTraceParams {
+        thread_id: ThreadId(1),
+        start_frame: None,
+        levels: None,
+    }));
+    assert_eq!(frames.len(), 1, "the session still serves requests after the violation");
+    assert_eq!(frames[0].name, "main::after_violation");
+    assert_eq!(frames[0].line, 21);
 
     drop(backend);
     let _ = peer.handle.join();
