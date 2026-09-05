@@ -1,4 +1,5 @@
 use super::config::FormatConfig;
+use super::counters;
 
 const MAX_LINE_WIDTH: usize = 1_000;
 const MAX_INDENT_WIDTH: usize = 16;
@@ -100,6 +101,7 @@ struct DocRenderer {
     line_width: usize,
     indent_width: usize,
     use_tabs: bool,
+    depth: usize,
 }
 
 impl DocRenderer {
@@ -115,6 +117,7 @@ impl DocRenderer {
             line_width,
             indent_width,
             use_tabs: config.use_tabs,
+            depth: 0,
         }
     }
 
@@ -130,15 +133,28 @@ impl DocRenderer {
                     .flat_width()
                     .and_then(|width| self.column.checked_add(width))
                     .is_some_and(|end_column| end_column <= self.line_width);
+                self.depth = self.depth.saturating_add(1);
+                let depth = u64::try_from(self.depth).unwrap_or(u64::MAX);
+                counters::record_with(|counters| {
+                    counters.observe_render_depth(depth);
+                    if fits {
+                        counters.observe_group_fit(depth);
+                    }
+                });
                 for part in parts {
                     self.render_doc(part, indent_level, fits, !fits);
                 }
+                self.depth = self.depth.saturating_sub(1);
             }
             FormatDoc::Indent(parts) => {
                 let nested_indent = indent_level.saturating_add(1);
+                self.depth = self.depth.saturating_add(1);
+                let depth = u64::try_from(self.depth).unwrap_or(u64::MAX);
+                counters::record_with(|counters| counters.observe_render_depth(depth));
                 for part in parts {
                     self.render_doc(part, nested_indent, flat, broken);
                 }
+                self.depth = self.depth.saturating_sub(1);
             }
             FormatDoc::IfBreak { broken: broken_doc, flat: flat_doc } => {
                 let selected = if broken { broken_doc } else { flat_doc };
