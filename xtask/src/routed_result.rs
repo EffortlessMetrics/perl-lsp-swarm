@@ -695,7 +695,7 @@ pub fn build_routed_result(
             &row.native_tier,
             gate_id,
             &plan.selection.base,
-        ),
+        )?,
         result_fingerprint: String::new(),
     };
     result.result_fingerprint = result.semantic_fingerprint_of()?;
@@ -775,18 +775,79 @@ fn check_timing(timing: &ObservationTiming) -> Result<(), String> {
 /// `gates` CLI spells them kebab-case, so the command is emitted in the CLI
 /// spelling; `cargo xtask gates --tier <tier> --gate <gate>` re-runs exactly
 /// this row's gate.
-fn build_reproduce_command(native_tier: &str, gate_id: &str, base: &str) -> String {
+fn build_reproduce_command(native_tier: &str, gate_id: &str, base: &str) -> Result<String, String> {
+    // This command is published for a person or tool to run, so nothing
+    // interpolated into it may carry shell metacharacters. The plan schema
+    // constrains `gate_id` to `^[a-z0-9_.-]+$`, but a plan's native tier and
+    // selection base are only checked non-empty upstream, so they are
+    // checked here rather than quoted: a plan carrying either is malformed,
+    // and minting a result for it would publish a command that must not be
+    // run.
+    ensure_shell_safe("native tier", native_tier)?;
+    ensure_shell_safe("selection base", base)?;
     let tier = native_tier.replace('_', "-");
     let staged = if tier == "commit" { " --staged" } else { "" };
     // `base` is the plan's own selection base (a git ref). The plan schema
     // already refuses an empty base before execution, so it is rendered
     // unconditionally.
-    format!("cargo xtask gates --tier {tier} --base {base} --gate {gate_id}{staged}")
+    Ok(format!("cargo xtask gates --tier {tier} --base {base} --gate {gate_id}{staged}"))
+}
+
+/// Conservative allowlist covering git refs, SHAs, and tier spellings. An
+/// allowlist is used deliberately: a metacharacter denylist has to be right
+/// about every shell.
+fn ensure_shell_safe(subject: &str, value: &str) -> Result<(), String> {
+    let safe = |byte: u8| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/' | b'@' | b'+')
+    };
+    if value.is_empty() || !value.bytes().all(safe) {
+        return Err(format!(
+            "{subject} {value:?} is not safe to interpolate into the published \
+             reproduce command (allowed: ASCII alphanumerics and _-./@+)"
+        ));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
+
+/// The validator also runs on bytes read back from disk, where nothing
+/// upstream vouches for the embedded authority block. Check its own shape
+/// rather than trusting a resealed fingerprint over it.
+fn validate_plan_authority(authority: &PlanAuthorityIdentity) -> Result<(), String> {
+    if authority.schema != CI_ROUTE_PLAN_SCHEMA {
+        return Err(format!(
+            "plan authority claims schema {:?}, expected {CI_ROUTE_PLAN_SCHEMA:?}",
+            authority.schema
+        ));
+    }
+    for (name, digest) in [
+        ("semantic_fingerprint", &authority.semantic_fingerprint),
+        ("expansion_fingerprint", &authority.expansion_fingerprint),
+        ("policy_digest", &authority.policy_digest),
+        ("disposition_digest", &authority.disposition_digest),
+        ("workflow_digest", &authority.workflow_digest),
+        ("selector_digest", &authority.selector_digest),
+    ] {
+        if !is_hex_sha256(digest) {
+            return Err(format!(
+                "plan authority {name} {digest:?} is not a sha256 digest spelling"
+            ));
+        }
+    }
+    if authority.requested_profile.is_empty() {
+        return Err("plan authority carries an empty requested_profile".to_string());
+    }
+    if authority.included_native_tiers.is_empty() {
+        return Err("plan authority includes no native tiers".to_string());
+    }
+    if authority.denominator.is_empty() {
+        return Err("plan authority carries an empty denominator".to_string());
+    }
+    Ok(())
+}
 
 fn validate_result(result: &RoutedGateResultV1) -> Result<(), String> {
     if result.schema != ROUTED_GATE_RESULT_SCHEMA {
@@ -797,6 +858,16 @@ fn validate_result(result: &RoutedGateResultV1) -> Result<(), String> {
     }
     if result.route_plan_fingerprint != result.plan_authority.semantic_fingerprint {
         return Err("route_plan_fingerprint disagrees with plan_authority identity".to_string());
+    }
+    validate_plan_authority(&result.plan_authority)?;
+    // The row's profile is copied from the same plan as the authority
+    // block; a record claiming one profile in the row and another in its
+    // authority is contradictory whatever its fingerprint reseals to.
+    if result.row.requested_profile != result.plan_authority.requested_profile {
+        return Err(format!(
+            "row requested_profile {:?} disagrees with plan authority {:?}",
+            result.row.requested_profile, result.plan_authority.requested_profile
+        ));
     }
     for sha in [&result.subject.head_sha, &result.subject.subject_digest] {
         if sha.is_empty() {

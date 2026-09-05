@@ -1574,7 +1574,11 @@ fn run_gate_plan(
             routed_result_adapter::ensure_execution_tree_is_clean(&tracked_status)?;
             let selected_gates: Vec<&GateDefinition> =
                 plan.selected.iter().map(|planned| &planned.gate).collect();
-            routed_result_adapter::ensure_plan_covers_selection(&compiled, &selected_gates)?;
+            routed_result_adapter::ensure_plan_covers_selection(
+                &compiled,
+                &selected_gates,
+                config.verbose,
+            )?;
             let output_dir = root.join(routed_result_adapter::ROUTED_RESULTS_DIR);
             fs::create_dir_all(&output_dir).context("Failed to create routed-results directory")?;
             Ok((compiled, output_dir))
@@ -1623,7 +1627,11 @@ fn run_gate_plan(
         emit_gate_end(gate, &result);
 
         // One executed planned `run` row -> one normalized result (#9156).
-        if let Some((compiled, output_dir)) = &routed_gate_plan {
+        // A quarantined gate is selected but never executes, so it has no
+        // planned run row and no result to attribute.
+        if let Some((compiled, output_dir)) = &routed_gate_plan
+            && !routed_result_adapter::is_quarantine_skipped(gate, config.verbose)
+        {
             routed_result_adapter::emit_planned_run_row_result(
                 compiled,
                 gate,

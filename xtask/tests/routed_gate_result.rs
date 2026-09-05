@@ -619,6 +619,81 @@ fn focused_reproduce_command_is_invocable_cli() {
 }
 
 #[test]
+fn resealed_contradictory_plan_authority_still_fails_validation() {
+    // `validate()` also runs on bytes read back from disk, where nothing
+    // vouches for the embedded authority block. Each mutation below is
+    // re-sealed, so only the authority checks themselves can catch it.
+    let plan = compiled_plan();
+
+    let mutations: Vec<(&str, Box<dyn Fn(&mut RoutedGateResultV1)>)> = vec![
+        (
+            "foreign plan schema",
+            Box::new(|r: &mut RoutedGateResultV1| {
+                r.plan_authority.schema = "ci_route_plan.v2".to_string();
+            }),
+        ),
+        (
+            "non-digest policy_digest",
+            Box::new(|r: &mut RoutedGateResultV1| {
+                r.plan_authority.policy_digest = "not-a-digest".to_string();
+            }),
+        ),
+        (
+            "empty denominator",
+            Box::new(|r: &mut RoutedGateResultV1| {
+                r.plan_authority.denominator.clear();
+            }),
+        ),
+        (
+            "row/authority profile disagreement",
+            Box::new(|r: &mut RoutedGateResultV1| {
+                r.row.requested_profile = "some_other_profile".to_string();
+            }),
+        ),
+    ];
+
+    for (name, mutate) in mutations {
+        let mut result = build_success(&plan);
+        mutate(&mut result);
+        result.result_fingerprint = result.semantic_fingerprint_of().expect("re-seal");
+        assert!(
+            result.validate().is_err(),
+            "a re-sealed record carrying {name} must still fail validation"
+        );
+    }
+}
+
+#[test]
+fn reproduce_command_refuses_shell_metacharacters_from_the_plan() {
+    // The plan constrains gate ids, but a native tier and a selection base
+    // are only checked non-empty upstream, and both are interpolated into a
+    // command published for a person to run. A plan carrying either must
+    // not mint a result at all.
+    let mut plan = compiled_plan();
+    plan.selection.base = "main; rm -rf /".to_string();
+    let refused = build_routed_result(&plan, "fmt_gate", success_observation());
+    assert!(
+        refused.is_err(),
+        "a selection base carrying shell metacharacters must refuse, got {refused:?}"
+    );
+
+    let mut plan = compiled_plan();
+    for row in &mut plan.rows {
+        row.native_tier = "pr_fast $(id)".to_string();
+    }
+    let refused = build_routed_result(&plan, "fmt_gate", success_observation());
+    assert!(
+        refused.is_err(),
+        "a native tier carrying a command substitution must refuse, got {refused:?}"
+    );
+
+    // A base that is a plain git ref or SHA stays acceptable.
+    let plan = compiled_plan();
+    let ok = build_routed_result(&plan, "fmt_gate", success_observation());
+    assert!(ok.is_ok(), "an ordinary base must still build, got {ok:?}");
+}
+
+#[test]
 fn validation_rejects_success_with_timeout_or_cancellation_flags() {
     let plan = compiled_plan();
     for (timed_out, cancelled) in [(true, false), (false, true)] {
