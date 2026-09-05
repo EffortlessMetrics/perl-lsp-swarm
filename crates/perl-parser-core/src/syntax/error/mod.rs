@@ -1607,10 +1607,8 @@ mod tests {
             let _ = format!("{k:?}");
             let _ = k.clone();
         }
-        // PartialEq works.
-        assert_eq!(RecoverySite::ArgList, RecoverySite::ArgList);
+        // PartialEq distinguishes sites and kinds.
         assert_ne!(RecoverySite::ArgList, RecoverySite::PostfixChain);
-        assert_eq!(RecoveryKind::InsertedCloser, RecoveryKind::InsertedCloser);
         assert_ne!(RecoveryKind::InsertedCloser, RecoveryKind::MissingOperand);
     }
 

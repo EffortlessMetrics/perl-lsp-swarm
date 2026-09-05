@@ -323,13 +323,12 @@ fn test_initialize_contract_3_17() -> TestResult {
         }
     }
 
-    // The initialize result MUST advertise a protocolVersion string (LSP 3.17+).
-    // Regression guard for issue #5277.
+    // LSP does not define a top-level InitializeResult.protocolVersion field.
+    // Method and capability rows carry the selected protocol-version evidence.
     assert!(
-        result.get("protocolVersion").is_some(),
-        "initialize result must include protocolVersion"
+        result.get("protocolVersion").is_none(),
+        "initialize result must not emit the nonstandard protocolVersion field"
     );
-    assert!(result["protocolVersion"].is_string(), "protocolVersion must be a string");
     Ok(())
 }
 
