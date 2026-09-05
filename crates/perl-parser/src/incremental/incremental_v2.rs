@@ -89,20 +89,34 @@ fn is_variable_sigil_byte(byte: u8) -> bool {
     matches!(byte, b'$' | b'@' | b'%' | b'&' | b'*')
 }
 
-/// Shift `node`'s span and every descendant span by `shift` in place.
-fn shift_positions_in_place(node: &mut Node, shift: isize) {
-    let location = if shift >= 0 {
+/// Shift one span by `shift`, saturating at the source origin.
+fn shift_location(location: SourceLocation, shift: isize) -> SourceLocation {
+    if shift >= 0 {
         SourceLocation {
-            start: node.location.start.saturating_add(shift as usize),
-            end: node.location.end.saturating_add(shift as usize),
+            start: location.start.saturating_add(shift as usize),
+            end: location.end.saturating_add(shift as usize),
         }
     } else {
         SourceLocation {
-            start: node.location.start.saturating_sub((-shift) as usize),
-            end: node.location.end.saturating_sub((-shift) as usize),
+            start: location.start.saturating_sub((-shift) as usize),
+            end: location.end.saturating_sub((-shift) as usize),
         }
-    };
-    node.location = location;
+    }
+}
+
+/// Shift `node`'s span, every payload sub-span, and every descendant span by
+/// `shift` in place.
+///
+/// Payload sub-spans (`name_span`, `body_span`, `phase_span`, catch-variable
+/// locations, recovery tokens) are remapped state: the clone path maps them
+/// through `Node::clone_with_mapped_locations`, so this path shares the same
+/// authority via `NodeKind::map_payload_locations_in_place` rather than
+/// leaving them at pre-shift offsets. A payload that cannot be remapped keeps
+/// its old span; callers that consume shifted nodes must compare them against
+/// a freshly parsed counterpart and skip the candidate on mismatch.
+fn shift_positions_in_place(node: &mut Node, shift: isize) {
+    node.location = shift_location(node.location, shift);
+    node.kind.map_payload_locations_in_place(|location| shift_location(location, shift));
     node.for_each_child_mut(|child| shift_positions_in_place(child, shift));
 }
 
@@ -846,6 +860,23 @@ impl IncrementalParserV2 {
             let new_end = isize_to_usize_clamped(
                 original_end as isize + self.calculate_shift_at(original_end),
             );
+            // Payload sub-spans ride the same mapping as the span they
+            // anchor: start counts edits ending strictly before it, end
+            // counts edits ending at or before it. The whitespace reuse path
+            // remaps them through `Node::clone_with_mapped_locations`;
+            // leaving them at pre-shift offsets here would make the two
+            // remapping paths disagree. A recovery token that cannot keep
+            // its validated byte width declines the edit into a full parse.
+            if !node.kind.map_payload_locations_in_place(|location| SourceLocation {
+                start: isize_to_usize_clamped(
+                    location.start as isize + self.calculate_shift_exclusive(location.start),
+                ),
+                end: isize_to_usize_clamped(
+                    location.end as isize + self.calculate_shift_at(location.end),
+                ),
+            }) {
+                return false;
+            }
             (new_start, new_end)
         };
 
@@ -917,7 +948,7 @@ impl IncrementalParserV2 {
                         TokenType::StringLiteral
                             | TokenType::InterpolatedString(_)
                             | TokenType::QuoteSingle
-                            | TokenType::QuoteDouble
+                            | TokenType::QuoteDouble(_)
                     )
                 }) {
                     return None;
@@ -2520,6 +2551,94 @@ if ($condition) {
         let fresh = Parser::new(source2).parse()?;
         assert_eq!(incremental, fresh, "renamed identifier payload must match a fresh parse");
         Ok(())
+    }
+
+    /// Rename the name of the first `Variable` leaf and require the accepted
+    /// incremental tree to equal a fresh parse of the edited source.
+    ///
+    /// A replacement strictly inside the admitted value leaf keeps the simple
+    /// path selected while shifting every later node, so a full-tree equality
+    /// check against the fresh parse is the honest oracle for payload
+    /// sub-spans: `name_span`, `body_span`, `phase_span`, and catch-variable
+    /// locations are remapped state that must move with the shift, and an
+    /// absent sub-span (`None`, for example an anonymous `sub`) must stay
+    /// absent. The rename length may grow or shrink so both shift directions
+    /// are exercised.
+    fn rename_first_variable_and_compare_with_fresh_parse(
+        source1: &str,
+        old_name: &str,
+        new_name: &str,
+    ) -> ParseResult<()> {
+        let sigil_start = source1
+            .find(&format!("${old_name}"))
+            .ok_or(perl_parser_core::error::ParseError::UnexpectedEof)?;
+        let name_start = sigil_start + 1;
+        let name_end = name_start + old_name.len();
+        let new_name_end =
+            (name_end as isize + (new_name.len() as isize - old_name.len() as isize)) as usize;
+        let source2 = format!("{}{new_name}{}", &source1[..name_start], &source1[name_end..]);
+
+        let mut parser = strict_fallback_parser();
+        parser.parse(source1)?;
+        let column = |byte: usize| u32::try_from(byte + 1).unwrap_or(u32::MAX);
+        parser.edit(Edit::new(
+            name_start,
+            name_end,
+            new_name_end,
+            Position::new(name_start, 1, column(name_start)),
+            Position::new(name_end, 1, column(name_end)),
+            Position::new(new_name_end, 1, column(new_name_end)),
+        ));
+        let incremental = parser.parse(&source2)?;
+        assert!(
+            parser.used_incremental_path(),
+            "a rename inside an admitted Variable leaf must stay incremental for {source1:?}"
+        );
+        let fresh = Parser::new(&source2).parse()?;
+        assert_eq!(
+            incremental, fresh,
+            "incremental result must equal a fresh parse after renaming ${old_name} in {source1:?}"
+        );
+        Ok(())
+    }
+
+    /// An insertion-lengthening rename before declared constructs must shift
+    /// `Package::name_span`, `Subroutine::name_span`, `PhaseBlock::phase_span`,
+    /// `Heredoc::body_span`, and the `Try` catch-variable location together
+    /// with the node spans they anchor. The incremental path used to shift
+    /// only `location` and leave every payload sub-span at its pre-edit
+    /// offsets while the tree was still accepted.
+    #[test]
+    fn value_edit_growth_shifts_later_payload_sub_spans_like_a_fresh_parse() -> ParseResult<()> {
+        rename_first_variable_and_compare_with_fresh_parse(
+            "my $v = 1;\npackage Local::Sample;\nsub greeting { return $v; }\nBEGIN { $v; }\nmy $text = <<'EOS';\nbody\nEOS\ntry { $v; } catch ($err) { $v; }\n",
+            "v",
+            "value",
+        )
+    }
+
+    /// A shrinking rename (negative shift) before a `Format` must keep
+    /// `Format::name_span` coherent with a fresh parse in the other shift
+    /// direction as well.
+    #[test]
+    fn value_edit_shrink_shifts_later_payload_sub_spans_like_a_fresh_parse() -> ParseResult<()> {
+        rename_first_variable_and_compare_with_fresh_parse(
+            "my $probe = 1;\nformat Sample =\n@\n$probe\n.\n",
+            "probe",
+            "p",
+        )
+    }
+
+    /// `Class` and `Method` name spans must shift like any other payload
+    /// sub-span, and an anonymous `sub` (negative control) must keep its
+    /// absent `name_span` absent rather than gaining a shifted `Some`.
+    #[test]
+    fn value_edit_shifts_class_method_name_spans_and_preserves_absent_ones() -> ParseResult<()> {
+        rename_first_variable_and_compare_with_fresh_parse(
+            "use feature 'class';\nmy $probe = 1;\nclass Sample { method greet { $probe } }\nmy $code = sub { $probe; };\n",
+            "probe",
+            "p",
+        )
     }
 
     /// Braced variable forms (`${foo}`, `${Foo::Bar}`) span the braces while

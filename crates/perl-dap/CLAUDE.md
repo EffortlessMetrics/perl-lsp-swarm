@@ -92,6 +92,32 @@ request. Changes normally touch:
 
 Do not advertise a capability merely because a request type exists.
 
+### Capabilities pinned false pending proof
+
+Some capabilities are gated on a proof that does not exist yet. They are pinned
+by a single named authority in `backend/capabilities.rs`, and no catalog row,
+backend flag, or handler presence may widen them:
+
+| Capability                    | Authority                       | Gate |
+|---|---|---|
+| `supportsEvaluateForHovers`   | `PURE_HOVER_INSPECTION_PROVEN`  | #9573 |
+
+`supportsEvaluateForHovers` promises a *pure inspection of the selected frame*.
+`handle_evaluate` runs a raw perl5db command against the debugger's **current**
+frame and `allowSideEffects` can widen the screened subset, so hover stays
+`false` and every mode refuses `evaluate` with `context: "hover"` up front —
+before screening, frame lookup, reference allocation, or debugger I/O.
+
+Admission is bound to the same authority: every mode refuses hover **exactly
+when it does not advertise hover** (`refuse_hover_evaluation`). So flipping the
+constant promotes advertisement and admission together — it cannot leave the
+capability advertised true while handlers still reject the request. Peer modes
+pass their own advertised value, so promoting the native gate does not silently
+open an external-peer path that has no pure inspection of its own.
+
+If you are about to change one of these back to a catalog flag: don't. Land the
+named issue's re-enable gate first, then flip the one constant.
+
 ## Important Runtime Rules
 
 - The output reader in `debug_adapter/process.rs` is the sole consumer of the debugger control stream.
