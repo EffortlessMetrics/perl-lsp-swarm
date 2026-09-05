@@ -318,3 +318,33 @@ fn rename_workspace_edit_stays_minimal_and_deterministic() -> TestResult {
     let _ = BTreeMap::<String, String>::new();
     Ok(())
 }
+
+/// A heredoc opener between deprecated apostrophe package separators is still
+/// tokenized by the real lexer, so its body classifies `Heredoc` and must not
+/// be edited, while a later real call is renamed. Pins the reviewed
+/// line-scanner boundary (`package_separator_apostrophes_remain_unmodelled`)
+/// as unreachable through the token-backed region index.
+#[test]
+fn rename_leaves_heredoc_between_apostrophe_separators_unedited() -> TestResult {
+    let app_doc = concat!(
+        "package B;\n",
+        "use A;\n",
+        "my $a = $main'v; print <<EOF if $main'w;\n",
+        "A::target_name in heredoc\n",
+        "EOF\n",
+        "sub run {\n",
+        "    return A::target_name();\n",
+        "}\n",
+    );
+    let changes = rename_target_name(app_doc)?;
+    let renamed = apply_edits(app_doc, &edits_for(&changes, APP_URI))?;
+    assert!(
+        renamed.contains("return A::renamed_target();"),
+        "the real code call must be renamed: {renamed}"
+    );
+    assert!(
+        renamed.contains("A::target_name in heredoc"),
+        "heredoc body must not be edited even around apostrophe separators: {renamed}"
+    );
+    Ok(())
+}
