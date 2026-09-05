@@ -1,14 +1,14 @@
 ---
 name: merge-reconcile
-description: Require current substantive review and live integration before squash merge, then reconcile the landed or deliberately closed claim without exact-head ceremony.
+description: Require current substantive review and live integration before squash merge, then reconcile the landed or deliberately closed root-held claim without exact-head ceremony.
 user-invocable: false
 ---
 
 # Merge and reconcile
 
-This is the irreversible edge for one claim. It may be invoked directly, so it must
-reconstruct or consume both predecessor judgments rather than assuming another skill
-already ran.
+This is the irreversible edge for one root-held claim frame. It may be invoked directly,
+so it must reconstruct or consume both predecessor judgments rather than assuming another
+skill already ran.
 
 No tracked review receipt, state file, claim digest, private task record, or agent
 identity is authority. Use current GitHub reviews, inline threads and dispositions,
@@ -30,13 +30,12 @@ Inspect the live PR state first.
 For an open PR, establish the current Claude-native substantive result before reading
 integration green as permission to merge.
 
-Read:
-
-- cumulative submitted reviews and useful clean conclusions;
-- localized inline findings;
-- evidence-backed `fixed`, `refuted`, `superseded`, or `post-merge-follow-up` dispositions (terminal), plus non-terminal `current-blocker` / `blocked-by-prerequisite` / `not-proven` dispositions whose threads stay open;
-- current candidate claim, production route, proof, limitations, and material changes;
-- whether later commits changed a reviewed semantic dimension.
+Read cumulative submitted reviews and useful clean conclusions, localized findings and
+evidence-backed dispositions (terminal `fixed`, `refuted`, `superseded`, and
+`post-merge-follow-up`; non-terminal `current-blocker`, `blocked-by-prerequisite`, and
+`not-proven` whose threads stay open), the current candidate
+claim/production route/proof/limitations, and any material changes since the useful
+review.
 
 Classify:
 
@@ -72,6 +71,9 @@ Routes:
 - `BLOCKED_BY_PREREQUISITE` → preserve the exact prerequisite and wake event;
 - `SUPERSEDED_OR_CLOSE` → reconcile the evidence-backed disposition;
 - only `REVIEW_CURRENT` may continue to live integration.
+
+The main Claude thread owns this cumulative judgment for the claim frame. A bounded
+review context does not acquire merge authority.
 
 ## Integration predecessor
 
@@ -117,8 +119,24 @@ Use the current head SHA only as compare-and-swap protection at the instant of m
 gh pr merge <n> --squash --match-head-commit <current-head-sha>
 ```
 
-That prevents racing a moving branch. It does not make review currentness depend on the
-SHA.
+When the required union is still pending, arm auto-merge with the current head SHA:
+
+```text
+gh pr merge <n> --auto --squash --match-head-commit <current-head-sha>
+```
+
+The command request is not evidence that GitHub persisted the transition. Immediately
+re-read the live PR. Return `PR_IN_FLIGHT` only after a fresh GitHub read confirms a
+non-null `autoMergeRequest` for the same PR, the unchanged current head, and the squash
+method. If the request is absent, the head moved, or the method differs, return
+`MERGE_BLOCKED` or `NOT_PROVEN` with the observed state; do not report auto-merge as
+armed.
+
+A confirmed auto-merge request leaves `REVIEW_CURRENT` intact and returns
+`PR_IN_FLIGHT`. The read-back and current-head compare-and-swap prevent a command success
+or stale branch observation from stranding the claim behind a transition GitHub never
+accepted. That prevents racing a moving branch. It does not make review currentness
+depend on the SHA.
 
 If the head moves before merge, re-read the candidate. Refresh only proof, review, and
 integration dimensions affected by the new commit. Never use administrative bypass to
@@ -126,77 +144,68 @@ discover what is failing or to outrun unresolved review/integration evidence.
 
 If an armed auto-merge has not fired, one manual probe merge through the REST endpoint
 (`gh api -X PUT repos/{owner}/{repo}/pulls/<n>/merge -f merge_method=squash -f
-sha=<current-head-sha>`, the compare-and-swap equivalent of `--match-head-commit`) is
-the sanctioned next step, not polling churn — but it is the same administrator bypass
-of legacy branch-protection checks and merges past a still-pending required context:
-probe ONLY once the required union is green on the head SHA — `ripr+ New Gap Gate` is
-its last reporter — or an explicit waiver is recorded on the PR or issue naming every
-unmet requirement (#12289's probe merged 42 minutes before the required check failed;
-#12565 confirmed the mechanism).
+sha=<current-head-sha>`) is the sanctioned no-polling probe only after the required
+union is green on the head SHA, or after an explicit evidence-backed waiver is recorded
+on the PR/issue naming the head SHA it was issued against and every unmet requirement.
+A waiver authorizes a probe of that head only; after any head movement the waiver is
+void until re-issued for the new head. A waiver recorded merely to save wall-clock is
+not a waiver.
+
+The **main/accountable root** records any such waiver, owns the compare-and-swap
+transition, and either merges or arms auto-merge. A bounded writer/reviewer/subagent does
+not inherit this authority merely because it handled the claim's candidate.
+
+For automation-authored PRs whose `pull_request` runs remain `action_required`, green
+`workflow_dispatch` runs on the same head do not substitute for required PR contexts.
+Use an actual trusted approval/identity path or preserve integration as `NOT_PROVEN`.
 
 ## Reconciliation
 
 After merge or evidence-backed deliberate closure:
 
-1. verify the landed/current-main effect where applicable — during multi-landing
-   sessions, after every 2-3 landings run one non-green query over main's head
-   check-runs (`gh api repos/{owner}/{repo}/commits/main/check-runs`); the
-   2026-08-24/25 waves shipped fmt drift (#12278), dead-code clippy reds
-   (#12311/#12374-class), and a stale test expectation (#12274/#12357) that
-   cross-lane pain found late;
+1. verify the landed/current-main effect where applicable;
 2. update or close the controlling issue accurately;
 3. keep umbrella goals open when only one predicate landed;
 4. update durable contracts, proof, support claims, and changelog only within the
    proven boundary;
 5. preserve partial or residual work explicitly;
-6. release the claim's worktree;
-7. expose the next coherent claim to `deliver-goal`.
+6. release the claim's worktree through the allocator/main thread that owns it;
+7. update the root-held claim frame and expose the next coherent claim to `deliver-goal`.
 
-Release on **every** terminal outcome — merged, superseded, deliberately closed,
-or **abandoned** — not only the merge path. For an abandoned lane, return the
-typed `ABANDONED`/`EXTERNAL_BLOCKER` result to the campaign root and release the
-worktree from the allocator or campaign root on that return, same as merge closeout. A cap bounds how many worktrees exist at once;
-nothing bounds residue, and most accumulation is finished work whose content already
-lives on the remote, each copy still holding a multi-gigabyte `target/`.
+Release local mutation resources on every terminal outcome—merged, superseded,
+deliberately closed, or abandoned—not only the merge path. An abandoned claim reports
+its typed `ABANDONED`/`EXTERNAL_BLOCKER`/`NOT_PROVEN` result to the main thread; there is
+no subordinate orchestrator that must remain alive to represent it.
 
-Release belongs to whoever allocated the worktree, not to whoever finished the work in
-it. A writer cannot remove the directory it is standing in, so a lane that ends inside
-its own worktree leaves it behind by construction. The lane root or campaign root
-releases on the typed return.
+Release belongs to whoever allocated/controls the worktree, not to the writer standing
+inside it. Keep a worktree only when it holds state that exists nowhere else:
+uncommitted changes, unpushed commits, or detached useful state outside the base. A
+fully pushed open PR is reconstructable with `git worktree add`.
 
-Keep a worktree only when it holds state that exists nowhere else — uncommitted changes,
-unpushed commits, or a detached HEAD outside the base. An open PR is not such a state: a
-fully pushed branch is restored with one `git worktree add`, and the branch, PR, and
-review all survive removal. `bash scripts/cleanup-completed-worktrees.sh --dry-run`
-applies that predicate across every worktree.
-
-Post a closeout only when the landed effect, residual claim, support boundary, or next
-route is useful. Do not persist runtime topology, task state, or merge-check polling.
+Use `bash scripts/cleanup-completed-worktrees.sh --dry-run` to classify safe residue
+before applying cleanup. Do not persist runtime topology, task state, or merge-check
+polling as closeout evidence.
 
 ## Supersession carries its corrections
 
 When one candidate replaces another, the replacement inherits the superseded candidate's
-findings, dispositions, and corrections. Carry them forward before closing:
+findings, dispositions, and corrections. Carry forward:
 
-- corrections to claims the replacement still makes, including anything the superseded
-  body stated inaccurately and later fixed;
-- accepted findings not yet repaired, and the evidence behind each disposition;
-- limitations and `NOT_PROVEN` boundaries that still apply to the replacement.
-- revalidate every carried finding against the replacement head before preserving a `fixed`, `accepted`, or `NOT_PROVEN` disposition.
+- corrections to claims the replacement still makes;
+- accepted findings not yet repaired, with the evidence behind each disposition;
+- limitations and `NOT_PROVEN` boundaries still applying to the replacement;
+- revalidated dispositions against the replacement candidate.
 
-A correction that dies with a superseded PR is worse than one never made. The inaccurate
-claim reaches `main` through the replacement, and the record now shows a reviewed
-candidate, so nothing downstream has reason to look again. Where the replacement's claim
-differs, say which corrections no longer apply and why, rather than dropping them
-silently.
+Where the replacement's claim differs, state which corrections no longer apply and why
+rather than dropping them silently.
 
 ## Results and routes
 
 - `RECONCILED` → `deliver-pr` or `deliver-goal`
-- `PARTIAL` → preserve remaining acceptance
+- `PARTIAL` → preserve remaining acceptance in the root-held claim frame
 - `SUPERSEDED` / `DELIBERATELY_CLOSED` → preserve the durable disposition
 - `REVIEW_REQUIRED` → `finish-pr` / `review-pr`
 - `CHANGES_REQUIRED` → `address-review-comments`
-- `PR_IN_FLIGHT` → return to `deliver-goal` with the wake event
+- `PR_IN_FLIGHT` → update the claim frame with the wake event and return to `deliver-goal`
 - `CANDIDATE_MOVED` → refresh only affected proof/review/integration
 - `MERGE_BLOCKED` / `NOT_PROVEN` → preserve the exact blocker or missing evidence

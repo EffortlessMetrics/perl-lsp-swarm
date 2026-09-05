@@ -4,7 +4,8 @@
 //! and emitting [`UxScenarioRunReceipt`] JSON documents to disk.
 
 use crate::taxonomy::{
-    UxCiTier, UxComponent, UxFailureClass, UxRoute, UxScenarioResult, route_for_failure_class,
+    UxCiTier, UxComponent, UxEvidenceClass, UxFailureClass, UxRoute, UxScenarioResult,
+    route_for_failure_class,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -144,6 +145,12 @@ pub struct UxScenarioRunReceipt {
     /// Subsystem component exercised by this scenario.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub component: Option<UxComponent>,
+    /// Evidence class of this row: what a passing receipt may prove.
+    ///
+    /// Defaults to [`UxEvidenceClass::SemanticProof`] so receipts written
+    /// before the field existed keep deserializing as full proof rows.
+    #[serde(default)]
+    pub evidence_class: UxEvidenceClass,
     /// CI execution tier.
     pub ci_tier: UxCiTier,
     /// Scenario execution result.
@@ -200,6 +207,7 @@ pub struct UxRunRecorder {
     test_name: String,
     ci_tier: UxCiTier,
     component: Option<UxComponent>,
+    evidence_class: UxEvidenceClass,
     start: Instant,
     /// Per-operation timing state, keyed by operation name.
     operation_timings: BTreeMap<String, TimingState>,
@@ -232,6 +240,7 @@ impl UxRunRecorder {
             test_name: test_name.into(),
             ci_tier,
             component,
+            evidence_class: UxEvidenceClass::SemanticProof,
             start: Instant::now(),
             operation_timings: BTreeMap::new(),
             operation_order: Vec::new(),
@@ -240,6 +249,22 @@ impl UxRunRecorder {
             failed_check_names: Vec::new(),
             instrumented: false,
         }
+    }
+
+    /// Declare the evidence class this scenario's receipts carry.
+    ///
+    /// Characterization rows (`UxEvidenceClass::TransportCharacterization`)
+    /// are mechanically barred from semantic/provider projections by
+    /// `ensure_evidence_supports_projection` and excluded from semantic
+    /// scorecard percentages, even when their results are `Ok` and non-empty.
+    pub fn with_evidence_class(mut self, evidence_class: UxEvidenceClass) -> Self {
+        self.evidence_class = evidence_class;
+        self
+    }
+
+    /// The evidence class this recorder stamps onto receipts.
+    pub fn evidence_class(&self) -> UxEvidenceClass {
+        self.evidence_class
     }
 
     /// Record a named assertion check.
@@ -408,6 +433,7 @@ impl UxRunRecorder {
             scenario_file: self.scenario_file.clone(),
             test_name: self.test_name.clone(),
             component: self.component,
+            evidence_class: self.evidence_class,
             ci_tier: self.ci_tier,
             result,
             duration_ms,
@@ -522,6 +548,37 @@ pub fn run_ux_scenario<F>(
         component,
         None,
         body,
+    );
+}
+
+/// Panic-safe scenario wrapper that stamps an explicit evidence class.
+///
+/// Use this for transport-responsiveness characterization rows: the emitted
+/// receipts carry [`UxEvidenceClass::TransportCharacterization`], which the
+/// scorecard projection and `ensure_evidence_supports_projection` treat as
+/// ineligible for semantic/provider proof regardless of the observed result.
+pub fn run_ux_scenario_with_evidence_class<F>(
+    workflow_id: &str,
+    scenario_file: &str,
+    test_name: &str,
+    ci_tier: UxCiTier,
+    component: Option<UxComponent>,
+    evidence_class: UxEvidenceClass,
+    body: F,
+) where
+    F: FnOnce(&mut UxRunRecorder) -> anyhow::Result<()>,
+{
+    run_ux_scenario_with_receipt_dir(
+        workflow_id,
+        scenario_file,
+        test_name,
+        ci_tier,
+        component,
+        None,
+        move |recorder: &mut UxRunRecorder| {
+            recorder.evidence_class = evidence_class;
+            body(recorder)
+        },
     );
 }
 
@@ -909,6 +966,56 @@ mod tests {
         assert_eq!(parsed["assertions"]["basis"], "instrumented");
         assert_eq!(parsed["assertions"]["passed"], 1);
         assert_eq!(parsed["assertions"]["failed"], 0);
+        // Default receipts are full semantic-proof rows; the field must be
+        // present so schema validation keeps locking it.
+        assert_eq!(parsed["evidence_class"], "semantic_proof");
+        Ok(())
+    }
+
+    #[test]
+    fn transport_characterization_receipt_carries_its_class()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let recorder = UxRunRecorder::new(
+            "wf_transport",
+            "ux_scenario_transport.rs",
+            "transport_test",
+            UxCiTier::Pr,
+            Some(UxComponent::GotoDefinition),
+        )
+        .with_evidence_class(UxEvidenceClass::TransportCharacterization);
+
+        assert_eq!(recorder.evidence_class(), UxEvidenceClass::TransportCharacterization);
+
+        let receipt = recorder.finish_pass();
+        assert_eq!(receipt.evidence_class, UxEvidenceClass::TransportCharacterization);
+
+        let json = serde_json::to_string(&receipt)?;
+        let parsed: serde_json::Value = serde_json::from_str(&json)?;
+        assert_eq!(parsed["evidence_class"], "transport_characterization");
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_receipt_without_evidence_class_defaults_to_semantic_proof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Hand-built minimal receipt JSON in the pre-evidence-class shape.
+        let legacy_json = serde_json::json!({
+            "kind": "ux_scenario_run",
+            "schema_version": 1,
+            "measured_at": "2026-08-31T00:00:00Z",
+            "run_identity": {},
+            "workflow_id": "wf_legacy",
+            "scenario_file": "ux_scenario_legacy.rs",
+            "test_name": "legacy_test",
+            "ci_tier": "pr",
+            "result": "pass",
+            "duration_ms": 1.0,
+            "assertions": { "passed": 1, "failed": 0, "basis": "instrumented" },
+            "canonical_repro": "cargo test",
+            "friendly_repro": "just ux-tests legacy_test"
+        });
+        let receipt: UxScenarioRunReceipt = serde_json::from_value(legacy_json)?;
+        assert_eq!(receipt.evidence_class, UxEvidenceClass::SemanticProof);
         Ok(())
     }
 
