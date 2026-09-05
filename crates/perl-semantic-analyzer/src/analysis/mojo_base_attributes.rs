@@ -42,9 +42,10 @@
 //! `Attribute "NAME" invalid` for anything outside `/^[a-zA-Z_]\w*$/`, so a
 //! rejected spelling (`'0'`, `'9lives'`, `'has-dash'`) becomes a typed
 //! malformed selection rather than an accessor that cannot exist at runtime.
-//! That pattern is asymmetric: the first character is the literal ASCII class
-//! `[a-zA-Z_]`, while later characters are `\w`, which Perl evaluates with
-//! Unicode semantics — so `'aé'` is a valid name and `'éleading'` is not.
+//! That pattern is applied verbatim, so it is exact rather than approximated:
+//! it is asymmetric (the first character is the literal ASCII class
+//! `[a-zA-Z_]`, later characters are `\w`), which makes `'aé'` valid and
+//! `'éleading'` not.
 //!
 //! Package scoping mirrors the #9681 activation walk: an unqualified file
 //! defaults to `main`, bare `package X;` switches the current package for
@@ -71,6 +72,8 @@ use perl_semantic_facts::framework_adapters::mojo_base_facts::{
     MojoBaseExplicitMethodState,
 };
 use perl_semantic_facts::{AnchorId, FileId, SourceAnchor, SourceGeneration};
+use regex::Regex;
+use std::sync::OnceLock;
 
 /// The `Mojo::Base` attribute-declaration keyword.
 const HAS_KEYWORD: &str = "has";
@@ -163,35 +166,29 @@ fn owns_runtime_control_flow(node: &Node) -> bool {
 /// Unicode semantics, so `'aé'`, `'naïve_name'` and `'café2'` are all names
 /// `Mojo::Base` accepts and this must not refuse.
 ///
-/// Approximating `\w` without a Unicode property table means choosing which
-/// way to be wrong, and every remaining inaccuracy here is deliberately an
-/// under-report — a name refused that Perl would accept — because publishing a
-/// member that cannot exist at runtime is the worse error for a fact producer.
+/// The check is the upstream pattern itself rather than a hand-rolled
+/// character predicate. `regex`'s `\w` is
+/// `[\p{Alphabetic}\p{M}\p{Nd}\p{Pc}\p{Join_Control}]` — the same class Perl
+/// uses — so applying `^[a-zA-Z_]\w*$` verbatim is exact rather than an
+/// approximation, and stays correct without a second definition of `\w` to
+/// keep in sync.
 ///
-/// Perl's `\w` is `[\p{Alphabetic}\p{Mark}\p{Decimal_Number}`
-/// `\p{Connector_Punctuation}\p{Join_Control}]`. This admits
-/// [`char::is_alphabetic`] and ASCII digits, which means:
+/// Two earlier hand-rolled attempts were each wrong in a different direction:
+/// `is_ascii_alphanumeric` refused `'aé'`, and `char::is_alphanumeric` accepted
+/// `'a²'` (Unicode `\p{No}`, which `\w` excludes). The pattern accepts `'aé'`,
+/// `'a٣'` (non-ASCII `\p{Nd}`), a combining mark, connector punctuation and a
+/// join control, and refuses `'0'`, `'9lives'`, `'has-dash'`, `'éleading'`,
+/// `'a²'` and `'a¼'` — all pinned below.
 ///
-/// - Unicode **letters** are accepted (`'aé'`, `'café2'`) — the common case;
-/// - Unicode **marks**, **connector punctuation** and **join controls** are
-///   refused, though `\w` admits them;
-/// - **non-ASCII decimal digits** (`\p{Nd}` outside ASCII, e.g. `'٣'`) are
-///   refused, though `\w` admits them.
-///
-/// [`char::is_alphanumeric`] is deliberately **not** used, despite reading as
-/// the closer match. It reports every Unicode numeric category, including
-/// `\p{No}` — superscripts and fractions like `'²'` and `'¼'` — which Perl's
-/// `\w` excludes. Accepting those would publish an accessor for a name
-/// `Mojo::Base` refuses, an over-report in the unsafe direction.
+/// If the pattern somehow fails to compile the name is refused. That is an
+/// instrument failure, and refusing errs toward omitting a real accessor
+/// rather than publishing one that cannot exist.
 fn is_valid_attribute_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return false;
-    }
-    chars.all(|c| c.is_alphabetic() || c.is_ascii_digit() || c == '_')
+    static ATTRIBUTE_NAME_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+    ATTRIBUTE_NAME_RE
+        .get_or_init(|| Regex::new(r"^[a-zA-Z_]\w*$"))
+        .as_ref()
+        .is_ok_and(|pattern| pattern.is_match(name))
 }
 
 impl WalkState<'_> {
@@ -720,7 +717,17 @@ mod tests {
         // Perl evaluates `\w` with Unicode semantics, so these are names
         // `Mojo::Base` installs accessors for — refusing them would omit a real
         // accessor.
-        for accepted in ["'aé'", "'naïve_name'", "'café2'"] {
+        for accepted in [
+            "'aé'",
+            "'naïve_name'",
+            "'café2'",
+            // Non-ASCII decimal digit (U+0663, `\p{Nd}`) — in Perl's `\w`.
+            "'a\u{663}'",
+            // Combining mark (U+0301, `\p{M}`) — in Perl's `\w`.
+            "'a\u{301}'",
+            // Connector punctuation (U+203F, `\p{Pc}`) — in Perl's `\w`.
+            "'a\u{203F}'",
+        ] {
             let code = format!("package App;\nhas {accepted};\n");
             assert!(
                 declarations(&code)[0].name.literal().is_some(),
