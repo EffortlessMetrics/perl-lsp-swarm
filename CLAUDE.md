@@ -266,6 +266,15 @@ Otherwise detect, explain, repair, and continue.
 - never use `git stash` in worktrees; use scoped restore or a WIP commit;
 - stage intended paths explicitly;
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
+- regenerate generated projections (for example `docs/policy/NON_RUST_INVENTORY.md`)
+  from their authority with the repository's writer; never hand-merge or hand-edit them
+  (#14688; #14805 retires feature-branch snapshot authority);
+- never add temporary workflows that fetch, execute, or push on behalf of a branch
+  (`contents: write` self-repair jobs); apply the edit locally and remove such files
+  when found on a branch;
+- before treating an older branch as an unrelated-history port, check its merge base
+  with current `main`; a branch that shares history is a live duplicate to compare at
+  claim level, not a port;
 - run focused proof, then affected package proof, then broader proof only when risk or
   the merge gate selects it;
 - do not run repository-wide Clippy or tests after every edit;
