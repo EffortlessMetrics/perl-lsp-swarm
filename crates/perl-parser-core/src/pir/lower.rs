@@ -993,17 +993,22 @@ impl BodyLowerer {
                     };
                     self.push_body_node(anchor, op, PirContext::Lvalue, None, file);
                 }
-                // Lower the RHS of the initialiser. The init expr in the HIR body
-                // is an HirExpr::Assign { lhs: Variable(Write), rhs, mode: Simple }.
-                // We skip the Assign wrapper and lower only the rhs to avoid
-                // re-emitting the LHS Variable as a second Write.
+                // Lower the initialiser. A simple initialiser is
+                // HirExpr::Assign { lhs: Variable(Write), rhs, mode: Simple }; the
+                // declaration write above already covers its LHS, so lower only
+                // the rhs to avoid re-emitting the LHS Variable as a second Write.
+                // A read-modify-write initialiser (`local $x += EXPR`, `.=`, `x=`)
+                // is a real modification of the slot on top of the localization,
+                // so lower the whole Assign: the RMW arm emits one Modify node for
+                // the place plus the RHS read, never a second plain Write.
                 if let Some(init_id) = init {
-                    if let Some(HirExpr::Assign { rhs, .. }) = body.expr(*init_id) {
-                        self.lower_expr(body, *rhs, file);
-                    } else {
-                        // Not an Assign node (shouldn't happen in well-formed HIR,
-                        // but handle defensively — lower the init as-is).
-                        self.lower_expr(body, *init_id, file);
+                    match body.expr(*init_id) {
+                        Some(HirExpr::Assign { rhs, mode: AssignMode::Simple, .. }) => {
+                            self.lower_expr(body, *rhs, file);
+                        }
+                        // ReadModifyWrite, or not an Assign node (shouldn't happen
+                        // in well-formed HIR): lower the init as-is.
+                        _ => self.lower_expr(body, *init_id, file),
                     }
                 }
             }

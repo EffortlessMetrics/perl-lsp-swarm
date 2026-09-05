@@ -9,7 +9,7 @@ use perl_parser_core::Parser;
 use perl_parser_core::hir::{HirFile, lower_ast};
 use perl_parser_core::pir::{
     PIR_RECEIPT_VERSION, PirCallee, PirContext, PirDynamicBoundaryKind, PirEdgeKind, PirGraph,
-    PirLoweringMode, PirMethod, PirOperation, lower_hir, lower_hir_with_identity,
+    PirLoweringMode, PirMethod, PirOperation, lower_hir, lower_hir_bodies, lower_hir_with_identity,
 };
 use perl_tdd_support::must_some;
 
@@ -725,5 +725,95 @@ fn multiple_statement_modifiers_each_counted() {
         graph.receipt.unsupported_construct_counts.get("StatementModifierShell"),
         Some(&3),
         "expected three postfix modifiers"
+    );
+}
+
+#[test]
+fn local_initializer_literal_is_attached_to_its_assignment() {
+    // `local $x = 1` stores the assignment inside the declaration target, so
+    // flat HIR previously reported no initializer range and the literal had no
+    // parent to fall back to. The RHS range now bounds the fallback exactly as
+    // it does for `my $x = 1`, and a following bare literal stays detached.
+    let graph = lower("local $x = 1; 42;");
+    let assignment_id = must_some(
+        graph
+            .nodes
+            .iter()
+            .find(|node| matches!(node.operation, PirOperation::Assign))
+            .map(|node| node.id),
+    );
+    let literal_ids: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|node| matches!(node.operation, PirOperation::Literal { .. }))
+        .map(|node| node.id)
+        .collect();
+    assert_eq!(literal_ids.len(), 2);
+    assert!(graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == literal_ids[0]
+            && edge.to == Some(assignment_id)
+    }));
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == literal_ids[1]
+            && edge.to == Some(assignment_id)
+    }));
+}
+
+#[test]
+fn local_compound_initializer_keeps_localization_and_one_modify() {
+    // `local $x OP= EXPR` localizes the slot and then modifies it. The body
+    // (PIR-A) path must carry both: the declaration's StashWrite and exactly
+    // one modify of the same package symbol. It must not emit a second plain
+    // write or a simple Assign for the LHS. The body lowerer currently records
+    // every compound operator as the `compound` placeholder (see
+    // `compound_op_for_rmw_assign`), so only the modify's identity is pinned.
+    for source in ["local $x += 1;", "local $x .= 'q';", "local $x x= 3;"] {
+        let mut parser = Parser::new(source);
+        let output = parser.parse_with_recovery();
+        let graph = lower_hir_bodies(&lower_ast(&output.ast));
+        let names = op_names(&graph);
+        let stash_writes = graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                matches!(&node.operation, PirOperation::StashWrite { symbol } if symbol.name == "x")
+            })
+            .count();
+        assert_eq!(stash_writes, 1, "{source}: expected one localization write, got {names:?}");
+        let modifies = graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                matches!(&node.operation, PirOperation::StashModify { symbol, .. } if symbol.name == "x")
+            })
+            .count();
+        assert_eq!(
+            modifies, 1,
+            "{source}: expected one modify of the localized slot, got {names:?}"
+        );
+        assert!(
+            !graph.nodes.iter().any(|node| matches!(node.operation, PirOperation::Assign)),
+            "{source}: compound local must not emit a plain Assign: {names:?}"
+        );
+    }
+}
+
+#[test]
+fn local_simple_initializer_body_path_is_unchanged() {
+    // The simple form keeps the pre-existing shape: one localization write and
+    // no modify, with the RHS lowered as before.
+    let mut parser = Parser::new("local $x = 1;");
+    let output = parser.parse_with_recovery();
+    let graph = lower_hir_bodies(&lower_ast(&output.ast));
+    let names = op_names(&graph);
+    assert!(
+        graph.nodes.iter().any(|node| matches!(node.operation, PirOperation::StashWrite { .. })),
+        "{names:?}"
+    );
+    assert!(
+        !graph.nodes.iter().any(|node| matches!(node.operation, PirOperation::StashModify { .. })),
+        "{names:?}"
     );
 }

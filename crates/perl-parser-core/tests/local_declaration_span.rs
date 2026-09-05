@@ -41,6 +41,9 @@ fn local_statement_spans_embedded_assignment() -> Result<(), String> {
         ("local $main::z = 'a';", "local $main::z = 'a'"),
         ("local $main::z .= 'q';", "local $main::z .= 'q'"),
         ("local $ENV{PATH} = '/bin';", "local $ENV{PATH} = '/bin'"),
+        // A statement modifier is parsed by the outer statement layer; the
+        // declaration must stop at the RHS, not swallow the modifier.
+        ("local $main::z = 1 if $c;", "local $main::z = 1"),
     ] {
         assert_declaration_spans(source, "local", expected)?;
     }

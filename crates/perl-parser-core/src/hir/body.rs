@@ -823,6 +823,24 @@ pub(super) fn glob_expr(pattern: &str) -> HirExpr {
     HirExpr::Glob { pattern: pattern.to_string(), interpolated: glob_pattern_interpolates(pattern) }
 }
 
+/// Lower an assignment target. A plain variable becomes a place with the
+/// requested access mode; anything else falls back to ordinary expression
+/// lowering, as this mirror does not model subscript places.
+fn lower_place(builder: &mut BodyBuilder, node: &Node, access: AccessMode) -> HirExprId {
+    match &node.kind {
+        NodeKind::Variable { sigil, name } => {
+            let var = HirVariable {
+                sigil: Sigil::from_str(sigil),
+                name: name.clone(),
+                kind: VariableKind::Lexical,
+                access,
+            };
+            builder.alloc_expr(HirExpr::Variable(var), node.location)
+        }
+        _ => lower_expr(builder, node),
+    }
+}
+
 fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
     let range = node.location;
 
@@ -845,16 +863,16 @@ fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
         }
 
         NodeKind::Assignment { lhs, rhs, op } => {
-            let lhs_id = lower_expr(builder, lhs);
+            // Mirror the canonical builder: `=` writes its target, every
+            // compound operator reads then writes it.
+            let (mode, access) = if op == "=" {
+                (AssignMode::Simple, AccessMode::Write)
+            } else {
+                (AssignMode::ReadModifyWrite, AccessMode::ReadModifyWrite)
+            };
+            let lhs_id = lower_place(builder, lhs, access);
             let rhs_id = lower_expr(builder, rhs);
-            builder.alloc_expr(
-                HirExpr::Assign {
-                    lhs: lhs_id,
-                    rhs: rhs_id,
-                    mode: if op == "=" { AssignMode::Simple } else { AssignMode::ReadModifyWrite },
-                },
-                range,
-            )
+            builder.alloc_expr(HirExpr::Assign { lhs: lhs_id, rhs: rhs_id, mode }, range)
         }
 
         NodeKind::Heredoc { delimiter, interpolated, indented, command, body_span, .. } => builder
