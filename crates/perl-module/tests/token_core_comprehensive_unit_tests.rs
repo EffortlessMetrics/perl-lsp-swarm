@@ -395,6 +395,20 @@ fn standalone_rejects_end_beyond_line_length() {
 }
 
 #[test]
+fn standalone_rejects_reversed_span() {
+    // #2372 contract: a reversed span is rejected, not normalised into 1..2.
+    assert!(!has_standalone_module_token_boundaries("Foo", 2, 1));
+}
+
+#[test]
+fn standalone_rejects_mid_codepoint_span() {
+    // #2372 contract: a span that splits a multi-byte scalar is rejected
+    // before any byte-indexed neighbour inspection can slice mid-codepoint.
+    assert!(!has_standalone_module_token_boundaries("é", 0, 1));
+    assert!(has_standalone_module_token_boundaries("é", 0, 2));
+}
+
+#[test]
 fn standalone_after_semicolon() {
     assert!(has_standalone_module_token_boundaries(";Foo;", 1, 4));
 }
