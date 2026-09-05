@@ -1,4 +1,4 @@
-//! Regression contract for PLSP-SPEC-0006 and review-wave convergence.
+//! Regression contract for PLSP-SPEC-0006, review waves, and status production.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -317,6 +317,135 @@ fn validate_review_wave(address: &str, finish: &str) -> Result<(), String> {
     Ok(())
 }
 
+const STATUS_ACTIONS: [&str; 7] = [
+    "A current-subject run is queued or active.",
+    "The current run is `action_required` or needs trusted approval/identity.",
+    "No current-subject run exists and exact-subject dispatch is admissible.",
+    "A completed transient or instrument failure can be rerun against the same relevant subject.",
+    "Material base movement changed a merge-tree subject and the old attempt cannot answer it.",
+    "No admissible exact-subject route can evaluate the required changed merge tree",
+    "No action can be proven admissible or persisted.",
+];
+
+fn unique_position(body: &str, marker: &str) -> Result<usize, String> {
+    let mut matches = body.match_indices(marker).map(|(position, _)| position);
+    let first = matches
+        .next()
+        .ok_or_else(|| format!("missing ordered action {marker:?}"))?;
+    if matches.next().is_some() {
+        return Err(format!("ordered action {marker:?} occurs more than once"));
+    }
+    Ok(first)
+}
+
+fn ordered_positions(body: &str, markers: &[&str]) -> Result<Vec<usize>, String> {
+    markers
+        .iter()
+        .map(|marker| unique_position(body, marker))
+        .collect()
+}
+
+fn yaml_frontmatter(document: &str) -> Result<&str, String> {
+    let body = document
+        .strip_prefix("---\n")
+        .ok_or("missing opening YAML front matter")?;
+    let end = body
+        .find("\n---\n")
+        .ok_or("missing closing YAML front matter")?;
+    Ok(&body[..end])
+}
+
+fn validate_claude_internal_skill(document: &str, label: &str) -> Result<(), String> {
+    let frontmatter = yaml_frontmatter(document)?;
+    let internal = frontmatter
+        .lines()
+        .filter(|line| *line == "user-invocable: false")
+        .count();
+    if internal != 1 {
+        return Err(format!(
+            "{label} must contain exactly one user-invocable: false field"
+        ));
+    }
+    if frontmatter.lines().any(|line| line.starts_with("argument-hint:")) {
+        return Err(format!("{label} exposes an argument hint for an internal skill"));
+    }
+    Ok(())
+}
+
+fn validate_status_production(triage: &str, verify: &str) -> Result<(), String> {
+    let triage = neutral(triage);
+    let verify = neutral(verify);
+    let packet = collapsed(section(&triage, "## Classification packet")?);
+    require_all(
+        &packet,
+        &[
+            "evaluated_subject",
+            "required_subject",
+            "same_run_sufficient: true | false",
+            "status_production_gap: fresh_integration_subject | missing_context | none",
+            "This is classification consumed by `verify-live-ci`; it is not a lifecycle result and is not terminal `NOT_PROVEN` while an admissible status-production action may still exist.",
+            "`verify-live-ci` alone selects, performs, or routes the next status-production action",
+        ],
+        "triage classification packet",
+    )?;
+    for forbidden in ["dispatch a workflow", "request a rerun", "push an empty commit"] {
+        if packet.contains(forbidden) {
+            return Err(format!("triage owns remote action {forbidden:?}"));
+        }
+    }
+
+    let order = collapsed(section(&verify, "## Required-status production order")?);
+    let positions = ordered_positions(&order, &STATUS_ACTIONS)?;
+    if !positions.windows(2).all(|window| window[0] < window[1]) {
+        return Err("status-production action precedence changed".into());
+    }
+    require_all(
+        &order,
+        &[
+            "single status-production action owner",
+            "established candidate writer alone performs it",
+            "can publish the missing required context or a trusted receipt live policy admits",
+            "An exact advisory-only run is not a substitute.",
+            "a queued or active advisory-only run does not satisfy this action",
+            "Rerun only a run whose workflow and reporting identity can publish the missing required context",
+            "a transient failure of an advisory-only run falls through to action 3 or 5",
+            "Request one bounded rerun, then re-read a new attempt",
+            "this skill does not mutate the branch directly",
+            "Return terminal `NOT_PROVEN`",
+        ],
+        "status-production order",
+    )?;
+
+    let persistence = collapsed(section(&verify, "### Remote-action persistence law")?);
+    require_all(
+        &persistence,
+        &[
+            "A command invocation, API 2xx, or requested transition is not itself evidence",
+            "Return `PR_IN_FLIGHT` after approval, dispatch, rerun, or writer handoff only when a fresh GitHub read confirms",
+            "expected PR/head or merge subject",
+            "expected context/workflow/run identity",
+            "expected new state or attempt",
+            "exact terminal wake event",
+            "Do not take a second status-production action from the same snapshot",
+        ],
+        "remote-action persistence",
+    )?;
+
+    for forbidden in [
+        "FRESH_INTEGRATION_SUBJECT_REQUIRED",
+        "GENERATED_PROJECTION_PREDECESSOR_PENDING",
+        "Shared generated-projection landing cohorts",
+        "Generated-projection predecessor",
+    ] {
+        if triage.contains(forbidden) || verify.contains(forbidden) {
+            return Err(format!(
+                "status-production claim retained foreign surface {forbidden}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn accepted_spec_has_closed_semantic_model() -> Result<(), DynError> {
     let root = root()?;
@@ -503,6 +632,129 @@ fn provider_review_repair_convergence_is_bounded() -> Result<(), DynError> {
         );
         assert_ne!(thaw, finish);
         assert!(validate_review_wave(&address, &thaw).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn claude_status_production_skills_remain_internal() -> Result<(), DynError> {
+    let root = root()?;
+    for (label, path) in [
+        (
+            "Claude ci-failure-triage",
+            ".claude/skills/ci-failure-triage/SKILL.md",
+        ),
+        (
+            "Claude verify-live-ci",
+            ".claude/skills/verify-live-ci/SKILL.md",
+        ),
+    ] {
+        let skill = read(&root, path)?;
+        validate_claude_internal_skill(&skill, label)
+            .map_err(|error| format!("{label}: {error}"))?;
+
+        let exposed = skill.replacen("user-invocable: false\n", "", 1);
+        assert_ne!(exposed, skill);
+        assert!(validate_claude_internal_skill(&exposed, label).is_err());
+    }
+
+    let verify = read(&root, ".claude/skills/verify-live-ci/SKILL.md")?;
+    let hinted = verify.replacen(
+        "user-invocable: false\n",
+        "user-invocable: false\nargument-hint: \"[PR number]\"\n",
+        1,
+    );
+    assert_ne!(hinted, verify);
+    assert!(validate_claude_internal_skill(&hinted, "Claude verify-live-ci").is_err());
+    Ok(())
+}
+
+#[test]
+fn provider_status_production_is_single_sourced_and_persistent() -> Result<(), DynError> {
+    let root = root()?;
+    for (provider, prefix) in [("Codex", ".agents"), ("Claude", ".claude")] {
+        let triage = read(
+            &root,
+            &format!("{prefix}/skills/ci-failure-triage/SKILL.md"),
+        )?;
+        let verify = read(&root, &format!("{prefix}/skills/verify-live-ci/SKILL.md"))?;
+        validate_status_production(&triage, &verify)
+            .map_err(|error| format!("{provider}: {error}"))?;
+
+        let terminal_triage = triage.replacen(
+            "is not terminal `NOT_PROVEN`",
+            "is terminal `NOT_PROVEN`",
+            1,
+        );
+        assert_ne!(terminal_triage, triage);
+        assert!(validate_status_production(&terminal_triage, &verify).is_err());
+
+        let bypass_approval = verify.replacen(
+            "The current run is `action_required` or needs trusted approval/identity.",
+            "Approval is considered after dispatch and rerun.",
+            1,
+        );
+        assert_ne!(bypass_approval, verify);
+        assert!(validate_status_production(&triage, &bypass_approval).is_err());
+
+        let advisory_dispatch = verify.replacen(
+            "trusted receipt live policy admits",
+            "advisory workflow is enough",
+            1,
+        );
+        assert_ne!(advisory_dispatch, verify);
+        assert!(validate_status_production(&triage, &advisory_dispatch).is_err());
+
+        let advisory_wait = verify.replacen(
+            "a queued or active advisory-only run does not satisfy this action",
+            "any queued or active run for the head satisfies this action",
+            1,
+        );
+        assert_ne!(advisory_wait, verify);
+        assert!(validate_status_production(&triage, &advisory_wait).is_err());
+
+        let advisory_rerun = verify.replacen(
+            "a transient failure of an advisory-only run falls through",
+            "a transient failure of an advisory-only run is rerun here",
+            1,
+        );
+        assert_ne!(advisory_rerun, verify);
+        assert!(validate_status_production(&triage, &advisory_rerun).is_err());
+
+        let direct_mutation = verify.replacen(
+            "the established candidate writer alone performs it",
+            "this integration observer performs it directly",
+            1,
+        );
+        assert_ne!(direct_mutation, verify);
+        assert!(validate_status_production(&triage, &direct_mutation).is_err());
+
+        let no_readback = verify.replacen(
+            "only when a fresh GitHub read confirms",
+            "immediately after the command succeeds",
+            1,
+        );
+        assert_ne!(no_readback, verify);
+        assert!(validate_status_production(&triage, &no_readback).is_err());
+
+        let repeated = verify.replacen(
+            "Do not take a second status-production action",
+            "Take another status-production action",
+            1,
+        );
+        assert_ne!(repeated, verify);
+        assert!(validate_status_production(&triage, &repeated).is_err());
+
+        let duplicate_action = verify.replacen(
+            "### Remote-action persistence law",
+            "1. **A current-subject run is queued or active.** Conflicting duplicate action.\n\n### Remote-action persistence law",
+            1,
+        );
+        assert_ne!(duplicate_action, verify);
+        assert!(validate_status_production(&triage, &duplicate_action).is_err());
+
+        let minted = format!("{verify}\nFRESH_INTEGRATION_SUBJECT_REQUIRED\n");
+        assert!(validate_status_production(&triage, &minted).is_err());
     }
     Ok(())
 }
