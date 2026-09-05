@@ -42,9 +42,14 @@ fn has_undeclared(issues: &[ScopeIssue], var_name: &str) -> bool {
 fn foreach_list_does_not_see_loop_variable_under_strict() {
     let code = "use strict; for my $x ($x) { }";
     let issues = scope_issues(code);
+    let list_x = code.rfind("$x");
     assert!(
-        has_undeclared(&issues, "$x"),
-        "`use strict; for my $x ($x) {{ }}` must report UndeclaredVariable for $x; got: {issues:?}"
+        issues.iter().any(|i| {
+            i.kind == IssueKind::UndeclaredVariable
+                && i.variable_name == "$x"
+                && list_x.is_some_and(|offset| i.range.0 == offset)
+        }),
+        "`use strict; for my $x ($x) {{ }}` must report UndeclaredVariable for the list $x, not the loop variable; got: {issues:?}"
     );
 }
 
