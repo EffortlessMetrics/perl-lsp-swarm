@@ -896,8 +896,13 @@ class BinaryTargetRoutingTests(unittest.TestCase):
         self.assertFalse(any(" --bin " in command for command in commands))
 
 
-    def test_edition_2015_explicit_lib_alone_disables_autodiscovery(self) -> None:
-        """An explicit [lib] is a manual target and suppresses 2015 autobins."""
+    def test_edition_2015_explicit_lib_alone_keeps_bin_autodiscovery(self) -> None:
+        """Cargo's 2015 rule is per target kind: only `[[bin]]` disables autobins.
+
+        Verified against `cargo metadata` for an edition-2015 package declaring
+        `[lib]` alongside `src/main.rs` -- the implicit bin is still exposed, so
+        suppressing it here would drop real coverage.
+        """
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             self._write_package(
@@ -921,7 +926,10 @@ class BinaryTargetRoutingTests(unittest.TestCase):
             "cargo llvm-cov test --no-report -p lib-only-2015 --lib --profile agent --locked",
             commands,
         )
-        self.assertFalse(any(" --bin " in command for command in commands))
+        self.assertIn(
+            "cargo llvm-cov test --no-report -p lib-only-2015 --bin lib-only-2015 --profile agent --locked",
+            commands,
+        )
 
 
 class PackageTestTargetsUnitTests(unittest.TestCase):
