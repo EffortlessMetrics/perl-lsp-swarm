@@ -6,8 +6,8 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12729 |
-| Rust-family files | 3978 |
+| Total tracked files | 12731 |
+| Rust-family files | 3980 |
 | Non-Rust files | 8751 |
 | Allowlisted | 6512 |
 | Unclassified | 2239 |
