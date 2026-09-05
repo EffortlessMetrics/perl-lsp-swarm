@@ -141,33 +141,49 @@ fn advance_char_index(chars: &[(usize, char)], mut index: usize, byte_end: usize
     index
 }
 
+/// Walk the lines starting at `from`, yielding each line without its `\r\n`
+/// terminator together with the offset just past that terminator.
+///
+/// A final line with no trailing newline yields `source.len()`, so callers can
+/// use the yielded offset as a resume point without re-deriving line ends.
+fn lines_from(source: &str, from: usize) -> impl Iterator<Item = (&str, usize)> {
+    let mut line_start = from;
+    std::iter::from_fn(move || {
+        if line_start >= source.len() {
+            return None;
+        }
+        let newline = source[line_start..].find('\n');
+        let line_end = newline.map_or(source.len(), |offset| line_start + offset);
+        let raw = &source[line_start..line_end];
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let next = newline.map_or(source.len(), |_| line_end + 1);
+        line_start = next;
+        Some((line, next))
+    })
+}
+
+/// Whether `line` is the `=cut` that ends a POD section.
+///
+/// `=cutlery` is ordinary POD prose, so the terminator must be the whole line
+/// or be followed by whitespace.
+fn is_pod_terminator(line: &str) -> bool {
+    line.strip_prefix("=cut")
+        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with(char::is_whitespace))
+}
+
+/// Whether `line` is the terminator for a heredoc opened with `tag`.
+fn closes_heredoc(line: &str, tag: &str, strip_indent: bool) -> bool {
+    if strip_indent { line.trim_start() == tag } else { line == tag }
+}
+
 fn skip_pod_section(source: &str, start: usize) -> usize {
     let Some(first_newline) = source[start..].find('\n') else {
         return source.len();
     };
 
-    let mut line_start = start + first_newline + 1;
-    while line_start < source.len() {
-        let newline = source[line_start..].find('\n');
-        let line_end = newline.map_or(source.len(), |offset| line_start + offset);
-        let mut line = &source[line_start..line_end];
-        if line.ends_with('\r') {
-            line = &line[..line.len() - 1];
-        }
-        if line == "=cut"
-            || line
-                .strip_prefix("=cut")
-                .is_some_and(|suffix| suffix.chars().next().is_some_and(char::is_whitespace))
-        {
-            return newline.map_or(source.len(), |_| line_end + 1);
-        }
-        let Some(_offset) = newline else {
-            return source.len();
-        };
-        line_start = line_end + 1;
-    }
-
-    source.len()
+    lines_from(source, start + first_newline + 1)
+        .find(|(line, _)| is_pod_terminator(line))
+        .map_or(source.len(), |(_, next)| next)
 }
 
 /// Recognize a heredoc opener at `start`, returning
@@ -239,26 +255,8 @@ fn has_heredoc_terminator(source: &str, start: usize, tag: &str, strip_indent: b
         return false;
     };
 
-    let mut line_start = start + first_newline + 1;
-    while line_start < source.len() {
-        let newline = source[line_start..].find('\n');
-        let line_end = newline.map_or(source.len(), |offset| line_start + offset);
-        let mut line = &source[line_start..line_end];
-        if line.ends_with('\r') {
-            line = &line[..line.len() - 1];
-        }
-        let content = if strip_indent { line.trim_start() } else { line };
-        if content == tag {
-            return true;
-        }
-
-        let Some(_offset) = newline else {
-            return false;
-        };
-        line_start = line_end + 1;
-    }
-
-    false
+    lines_from(source, start + first_newline + 1)
+        .any(|(line, _)| closes_heredoc(line, tag, strip_indent))
 }
 
 fn skip_heredoc_bodies(
@@ -266,25 +264,21 @@ fn skip_heredoc_bodies(
     mut line_start: usize,
     pending: &mut VecDeque<(String, bool)>,
 ) -> usize {
-    while !pending.is_empty() && line_start < source.len() {
-        let newline = source[line_start..].find('\n');
-        let line_end = newline.map_or(source.len(), |offset| line_start + offset);
-        let mut line = &source[line_start..line_end];
-        if line.ends_with('\r') {
-            line = &line[..line.len() - 1];
-        }
-        let closes_front = pending.front().is_some_and(|(tag, strip_indent)| {
-            let content = if *strip_indent { line.trim_start() } else { line };
-            content == tag
-        });
+    if pending.is_empty() {
+        return line_start;
+    }
+
+    for (line, next) in lines_from(source, line_start) {
+        line_start = next;
+        let closes_front = pending
+            .front()
+            .is_some_and(|(tag, strip_indent)| closes_heredoc(line, tag, *strip_indent));
         if closes_front {
             pending.pop_front();
+            if pending.is_empty() {
+                break;
+            }
         }
-
-        let Some(_offset) = newline else {
-            return source.len();
-        };
-        line_start = line_end + 1;
     }
 
     line_start
