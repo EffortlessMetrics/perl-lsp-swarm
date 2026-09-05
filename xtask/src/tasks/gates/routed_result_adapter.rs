@@ -45,7 +45,7 @@ use xtask::ci_route_plan::{Applicability, CiRoutePlanV1, PlannedOutcome};
 use xtask::routed_result::{
     ArtifactRef, ChildObservation, HostedIdentity, ObservationTiming, PrerequisiteEvidence,
     PrerequisiteState, RoutedGateResultV1, RoutedReaderGateStatus, RunObservation,
-    build_routed_result, publish_routed_receipt,
+    build_routed_result, hex, publish_routed_receipt,
 };
 
 use super::{GateDefinition, GateResult};
@@ -437,16 +437,6 @@ pub(super) fn emit_planned_run_row_result(
 fn unix_millis_now() -> Option<i64> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?;
     i64::try_from(now.as_millis()).ok()
-}
-
-fn hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for &byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
 }
 
 #[cfg(test)]

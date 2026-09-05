@@ -608,9 +608,12 @@ fn focused_reproduce_command_is_invocable_cli() {
     // snake_case; the CLI spelling is kebab-case.
     let plan = compiled_plan();
     let result = build_success(&plan);
+    // `--base` carries the plan's own selection base (a git ref), not a
+    // profile or tier name; binding the expectation to the fixture's base
+    // keeps the two from drifting apart again.
     assert_eq!(
         result.focused_reproduce_command,
-        "cargo xtask gates --tier pr-fast --base merge_gate --gate fmt_gate",
+        format!("cargo xtask gates --tier pr-fast --base {SHA_B} --gate fmt_gate"),
         "reproduce command must match the real gates CLI syntax"
     );
 }

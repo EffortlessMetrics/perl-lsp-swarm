@@ -778,6 +778,9 @@ fn check_timing(timing: &ObservationTiming) -> Result<(), String> {
 fn build_reproduce_command(native_tier: &str, gate_id: &str, base: &str) -> String {
     let tier = native_tier.replace('_', "-");
     let staged = if tier == "commit" { " --staged" } else { "" };
+    // `base` is the plan's own selection base (a git ref). The plan schema
+    // already refuses an empty base before execution, so it is rendered
+    // unconditionally.
     format!("cargo xtask gates --tier {tier} --base {base} --gate {gate_id}{staged}")
 }
 
@@ -1021,7 +1024,8 @@ fn sanitize_component(value: &str) -> String {
 }
 
 /// Lowercase hex encoding (mirrors the #10179 encoder's fallback spelling).
-fn hex(bytes: &[u8]) -> String {
+/// One authority: the gate adapter encodes its artifact digests through this.
+pub fn hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for &byte in bytes {

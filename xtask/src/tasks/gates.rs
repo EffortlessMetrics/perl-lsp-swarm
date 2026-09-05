@@ -1567,10 +1567,8 @@ fn run_gate_plan(
                 subject_path,
                 &root,
             )?;
-            let tracked_status = cmd!("git", "status", "--porcelain=v1")
-                .dir(&root)
-                .read()
-                .map_err(|error| {
+            let tracked_status =
+                cmd!("git", "status", "--porcelain=v1").dir(&root).read().map_err(|error| {
                     eyre!("checking the execution tree for route-plan binding: {error}")
                 })?;
             routed_result_adapter::ensure_execution_tree_is_clean(&tracked_status)?;
@@ -1608,10 +1606,10 @@ fn run_gate_plan(
     for (idx, planned_gate) in plan.selected.iter().enumerate() {
         let gate = &planned_gate.gate;
         if routed_gate_plan.is_some() {
-            let status = cmd!("git", "status", "--porcelain=v1")
-                .dir(&root)
-                .read()
-                .map_err(|error| eyre!("checking the execution tree before the next route-plan gate: {error}"))?;
+            let status =
+                cmd!("git", "status", "--porcelain=v1").dir(&root).read().map_err(|error| {
+                    eyre!("checking the execution tree before the next route-plan gate: {error}")
+                })?;
             routed_result_adapter::ensure_execution_tree_is_clean(&status)?;
         }
         emit_gate_begin(gate);
