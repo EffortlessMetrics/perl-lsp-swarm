@@ -524,3 +524,21 @@ fn data_section_marker_lookalikes_do_not_end_the_scan() {
         ]
     );
 }
+
+/// `::` is the one punctuation that does not end the marker token.
+///
+/// `__END__::foo()` is a package-qualified call, not a data-section marker:
+/// perl compiles and runs it, reaching the statements below. Treating it as a
+/// marker would drop every pragma that follows.
+#[test]
+fn package_qualified_marker_lookalikes_do_not_end_the_scan() {
+    let source = "use lib 'first';\n__END__::foo();\nuse lib 'second';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![
+            UseLibAction::Add(vec![UseLibPath { path: "first".to_string(), from_findbin: false }]),
+            UseLibAction::Add(vec![UseLibPath { path: "second".to_string(), from_findbin: false }]),
+        ]
+    );
+}

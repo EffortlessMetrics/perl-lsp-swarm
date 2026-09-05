@@ -159,10 +159,15 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
 /// `__END__;` and `__END__ trailing words` alike and treats the rest of the file
 /// as data, while `__ENDS__ = 1;` is still compiled as code — so requiring
 /// whitespace would leave a punctuated marker's payload scanned as code.
+///
+/// `::` is the one punctuation that does not end the token: `__END__::foo()` is
+/// a package-qualified call that Perl compiles and runs, so treating it as a
+/// marker would drop every pragma below it.
 fn is_data_section_marker(rest: &str) -> bool {
     ["__END__", "__DATA__"].iter().any(|marker| {
         rest.strip_prefix(marker).is_some_and(|tail| {
-            tail.chars().next().is_none_or(|ch| !(ch.is_ascii_alphanumeric() || ch == '_'))
+            !tail.starts_with("::")
+                && tail.chars().next().is_none_or(|ch| !(ch.is_ascii_alphanumeric() || ch == '_'))
         })
     })
 }
