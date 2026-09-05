@@ -456,6 +456,23 @@ fn an_adjacent_family_cannot_stay_adjacent_once_the_config_activates_it()
     Ok(())
 }
 
+/// `unsupported` is a statement about the host, not about the configuration,
+/// so a family whose filetype the config does match may still be unsupported.
+#[test]
+fn unsupported_stays_orthogonal_to_configured_eligibility() -> Result<(), Box<dyn Error>> {
+    let mut envelope = valid_envelope()?;
+    envelope["config"]["filetypes"] = json!(["perl", "mason"]);
+    for family in ["template.ep", "template.mason"] {
+        let row = &mut envelope["file_families"][family];
+        row["config_eligible"] = json!(true);
+        row["disposition"] = json!("unsupported");
+        row["reason"] = json!("this host cannot establish the family");
+    }
+
+    validate_envelope(&envelope)?;
+    Ok(())
+}
+
 #[test]
 fn attaching_without_eligibility_is_a_contradiction() -> Result<(), Box<dyn Error>> {
     let mut envelope = valid_envelope()?;

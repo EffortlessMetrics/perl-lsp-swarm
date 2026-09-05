@@ -101,6 +101,12 @@ const SEMANTIC_FIELDS: &[&str] = &[
 /// Dispositions that assert the canonical configuration activated natively.
 const ATTACHING_DISPOSITIONS: &[&str] = &["native_perl_and_attached"];
 
+/// Dispositions that assert the canonical config deliberately leaves a family
+/// inactive. Unlike `unsupported`, these are claims about the configuration
+/// rather than about what the host can do.
+const NON_ACTIVATING_POLICY_DISPOSITIONS: &[&str] =
+    &["intentionally_adjacent_or_mixed", "native_nonperl_override_possible"];
+
 /// Dispositions that require an explicit recorded reason.
 const REASONED_DISPOSITIONS: &[&str] = &[
     "instrument_failed",
@@ -406,12 +412,11 @@ fn validate_file_families(root: &Map<String, Value>, config: &RecordedConfig) ->
                     "{path}: disposition `{disposition}` cannot attach through the canonical config"
                 )));
             }
-            // These dispositions state that the canonical config deliberately
-            // does not activate this family. If the config does list its
-            // filetype, that policy claim is false whatever the row observed,
-            // and `attached=false` is then an unexplained result rather than
-            // the intended one.
-            if eligible {
+            // Only the dispositions that actually claim the canonical config
+            // leaves the family inactive. `unsupported` is about what the host
+            // can do, which is orthogonal: an opened filetype can match the
+            // config on a host that still cannot establish the family.
+            if eligible && NON_ACTIVATING_POLICY_DISPOSITIONS.contains(&disposition) {
                 return Err(EnvelopeValidationError::new(format!(
                     "{path}: disposition `{disposition}` says the canonical config does not \
                      activate this family, but config_eligible=true"
