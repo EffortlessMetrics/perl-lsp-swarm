@@ -418,9 +418,10 @@ impl WorkspaceEnvironmentDeclaration {
                 ));
             }
             Perl5LibDeclaration::Enabled { entries } => {
-                if entries.is_empty() {
-                    return;
-                }
+                // An explicitly enabled activation that resolved to zero entries is a
+                // different fact from `NotSupplied`, and the declared slot owes a receipt
+                // either way. Emit the input unconditionally; only the include entries
+                // are conditional on there being entries to contribute.
                 let fingerprints: Vec<String> =
                     entries.iter().map(|root| root.normalized.clone()).collect();
                 let input = EnvironmentInput::new(
@@ -429,7 +430,11 @@ impl WorkspaceEnvironmentDeclaration {
                     EnvironmentInputState::Accepted,
                     "client_settings",
                     Some(list_fingerprint("perl5lib_entries", &fingerprints)),
-                    "perl5lib_activation_enabled",
+                    if entries.is_empty() {
+                        "perl5lib_activation_enabled_without_entries"
+                    } else {
+                        "perl5lib_activation_enabled"
+                    },
                 );
                 push_include_entries(
                     include_entries,
@@ -481,9 +486,10 @@ impl WorkspaceEnvironmentDeclaration {
                 ));
             }
             SystemIncDeclaration::Available { paths } => {
-                if paths.is_empty() {
-                    return;
-                }
+                // A probe that ran and returned nothing is a different fact from a probe
+                // that was never fed (`NotSupplied`) or that failed (`ProbeUnavailable`).
+                // It is available, not unavailable, so it stays `Accepted` and carries its
+                // own explanation code rather than vanishing from the receipts.
                 let fingerprints: Vec<String> =
                     paths.iter().map(|root| root.normalized.clone()).collect();
                 let input = EnvironmentInput::new(
@@ -492,7 +498,11 @@ impl WorkspaceEnvironmentDeclaration {
                     EnvironmentInputState::Accepted,
                     "system_inc_probe",
                     Some(list_fingerprint("system_inc_paths", &fingerprints)),
-                    "system_inc_available",
+                    if paths.is_empty() {
+                        "system_inc_available_without_paths"
+                    } else {
+                        "system_inc_available"
+                    },
                 );
                 push_include_entries(
                     include_entries,
@@ -886,6 +896,17 @@ mod tests {
         super::IncludeRootDeclaration::new(normalized, public_id)
     }
 
+    /// Every unordered pair from a slice, for mutual-distinctness assertions.
+    fn pairs<T>(items: &[T]) -> Vec<(&T, &T)> {
+        let mut out = Vec::new();
+        for (index, left) in items.iter().enumerate() {
+            for right in &items[index + 1..] {
+                out.push((left, right));
+            }
+        }
+        out
+    }
+
     fn limitation(code: &str, detail: &str) -> EnvironmentLimitation {
         EnvironmentLimitation { code: code.to_string(), detail: detail.to_string(), input_id: None }
     }
@@ -1148,6 +1169,151 @@ mod tests {
         assert!(codes.contains(&"interpreter_unavailable"));
         assert!(codes.contains(&"system_inc_unavailable"));
         snapshot.validate()?;
+        Ok(())
+    }
+
+    /// Every distinct declared state of the PERL5LIB slot must reach the receipts
+    /// as its own fact. The interesting one is `Enabled { entries: [] }`: an
+    /// activation that was explicitly switched on and resolved to nothing is not
+    /// the same claim as "no activation was supplied", and it must not compile to
+    /// silence.
+    #[test]
+    fn every_declared_perl5lib_state_produces_its_own_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let declare = |state: Perl5LibDeclaration| {
+            WorkspaceEnvironmentDeclaration::new("workspace:s1", 3, WorkspaceTrust::Trusted)
+                .with_perl5lib(state)
+        };
+
+        let enabled_empty =
+            declare(Perl5LibDeclaration::Enabled { entries: Vec::new() }).compile()?;
+        let receipts = EnvironmentSnapshotReceipts::of(&enabled_empty);
+        let selected: Vec<_> = receipts
+            .selected()
+            .iter()
+            .map(|receipt| (receipt.semantic_key.as_str(), receipt.explanation_code.as_str()))
+            .collect();
+        assert_eq!(
+            selected,
+            vec![("include.perl5lib", "perl5lib_activation_enabled_without_entries")],
+            "an explicitly enabled but empty PERL5LIB owes exactly one selected receipt"
+        );
+        // It is an accepted authority that contributes no search path — the receipt
+        // exists precisely so that "enabled and empty" is readable, not inferred.
+        assert_eq!(enabled_empty.active_include_entries().count(), 0);
+
+        let not_supplied = declare(Perl5LibDeclaration::NotSupplied).compile()?;
+        let disabled = declare(Perl5LibDeclaration::Disabled {
+            observed_value_fingerprint: Some(Digest::of("/ambient/perl5lib")),
+        })
+        .compile()?;
+        let enabled_populated =
+            declare(Perl5LibDeclaration::Enabled { entries: vec![root("lib", "path:lib")] })
+                .compile()?;
+
+        // All four declared states are mutually distinguishable in the fingerprint,
+        // so none of them can be silently substituted for another.
+        let fingerprints = [
+            enabled_empty.fingerprint.clone(),
+            not_supplied.fingerprint.clone(),
+            disabled.fingerprint.clone(),
+            enabled_populated.fingerprint.clone(),
+        ];
+        for (left, right) in pairs(&fingerprints) {
+            assert_ne!(left, right, "two distinct PERL5LIB states share a fingerprint");
+        }
+
+        // The regression this pins: before the fix, the empty activation compiled to
+        // the same zero-input shape as a declaration that fed the slot nothing at all.
+        let unfed =
+            WorkspaceEnvironmentDeclaration::new("workspace:s1", 3, WorkspaceTrust::Trusted)
+                .with_system_inc(SystemIncDeclaration::NotSupplied)
+                .compile()?;
+        assert_ne!(enabled_empty.fingerprint, unfed.fingerprint);
+        Ok(())
+    }
+
+    /// The same law for the system `@INC` probe. A probe that ran and returned no
+    /// paths is available-and-empty; it is neither "never fed" nor "failed", and
+    /// conflating it with either would misreport why the search path is short.
+    #[test]
+    fn every_declared_system_inc_state_produces_its_own_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let declare = |state: SystemIncDeclaration| {
+            WorkspaceEnvironmentDeclaration::new("workspace:s1", 5, WorkspaceTrust::Trusted)
+                .with_system_inc(state)
+        };
+
+        let available_empty =
+            declare(SystemIncDeclaration::Available { paths: Vec::new() }).compile()?;
+        let receipts = EnvironmentSnapshotReceipts::of(&available_empty);
+        let selected: Vec<_> = receipts
+            .selected()
+            .iter()
+            .map(|receipt| (receipt.semantic_key.as_str(), receipt.explanation_code.as_str()))
+            .collect();
+        assert_eq!(
+            selected,
+            vec![("include.system_inc", "system_inc_available_without_paths")],
+            "a probe that ran and returned nothing owes exactly one selected receipt"
+        );
+        assert_eq!(available_empty.active_include_entries().count(), 0);
+        // A successful-but-empty probe is not a degraded surface, so it must not
+        // manufacture a limitation the way `ProbeUnavailable` legitimately does.
+        assert!(
+            !available_empty.limitations.iter().any(|item| item.code == "system_inc_unavailable"),
+            "an available probe must not report itself unavailable"
+        );
+
+        let not_supplied = declare(SystemIncDeclaration::NotSupplied).compile()?;
+        let disabled = declare(SystemIncDeclaration::Disabled).compile()?;
+        let probe_failed = declare(SystemIncDeclaration::ProbeUnavailable {
+            reason_code: "system_inc_probe_timed_out".to_string(),
+        })
+        .compile()?;
+        let available_populated =
+            declare(SystemIncDeclaration::Available { paths: vec![root("inc", "path:inc")] })
+                .compile()?;
+
+        let fingerprints = [
+            available_empty.fingerprint.clone(),
+            not_supplied.fingerprint.clone(),
+            disabled.fingerprint.clone(),
+            probe_failed.fingerprint.clone(),
+            available_populated.fingerprint.clone(),
+        ];
+        for (left, right) in pairs(&fingerprints) {
+            assert_ne!(left, right, "two distinct system @INC states share a fingerprint");
+        }
+        Ok(())
+    }
+
+    /// Counter-control for the two tests above, and the reason they are not simply
+    /// "every empty collection must emit". The plain-`Vec` slots carry no declared
+    /// state: an empty `user_include_roots` means nothing was configured, and there
+    /// is no explicit fact to preserve. Emitting a receipt there would invent one.
+    /// This pins the asymmetry so a later consistency sweep cannot erase it in
+    /// either direction.
+    #[test]
+    fn unfed_plain_collection_slots_stay_silent() -> Result<(), Box<dyn std::error::Error>> {
+        let empty_collections =
+            WorkspaceEnvironmentDeclaration::new("workspace:s1", 7, WorkspaceTrust::Trusted)
+                .with_user_include_roots([])
+                .with_external_include_roots([])
+                .compile()?;
+        let untouched =
+            WorkspaceEnvironmentDeclaration::new("workspace:s1", 7, WorkspaceTrust::Trusted)
+                .compile()?;
+
+        // Feeding an empty collection is indistinguishable from not feeding it,
+        // because in both cases the producer declared no root.
+        assert_eq!(empty_collections, untouched);
+        let keys: Vec<_> =
+            empty_collections.inputs.iter().map(|input| input.semantic_key.as_str()).collect();
+        assert!(
+            !keys.contains(&"include.configured") && !keys.contains(&"include.external"),
+            "an unconfigured include slot must not claim a receipt"
+        );
         Ok(())
     }
 
