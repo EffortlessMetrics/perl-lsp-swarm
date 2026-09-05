@@ -145,6 +145,8 @@ pub fn keyword_completion_rank_penalty(candidate: &Dancer2CompletionCandidate) -
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::{must_some_with, must_with};
+
     use super::*;
     use crate::providers::dancer2::activation::RuntimeDancer2Module;
     use crate::providers::dancer2::activation::file_activations;
@@ -154,7 +156,7 @@ mod tests {
 
     fn setup(source: &'static str) -> (Dancer2FileActivations, CanonicalDancer2FileFacts) {
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("fixture must parse");
+        let ast = must_with(parser.parse(), "fixture must parse");
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
         let activations =
             file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
@@ -192,7 +194,7 @@ mod tests {
     fn inside_handler_offers_handler_only_keywords() {
         let source = "use Dancer2;\nget '/x' => sub { params; };\n";
         let (activations, facts) = setup(source);
-        let handler_offset = source.find("params").expect("handler body offset");
+        let handler_offset = must_some_with(source.find("params"), "handler body offset");
         let candidates = keyword_completion_candidates(
             &activations,
             &facts,
@@ -212,7 +214,7 @@ mod tests {
         // offers inside a route handler.
         let source = "use Dancer2;\nhook before => sub { my $r = request; };\n";
         let (activations, facts) = setup(source);
-        let inside = source.find("request").expect("hook body offset");
+        let inside = must_some_with(source.find("request"), "hook body offset");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
         let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
@@ -230,13 +232,13 @@ mod tests {
         // inside a hook handler cannot describe itself as route-handler-only.
         let hook_source = "use Dancer2;\nhook before => sub { my $r = request; };\n";
         let (activations, facts) = setup(hook_source);
-        let inside = hook_source.find("request").expect("hook body offset");
+        let inside = must_some_with(hook_source.find("request"), "hook body offset");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
-        let request = candidates
-            .iter()
-            .find(|candidate| candidate.label == "request")
-            .expect("request offered inside an admitted hook handler");
+        let request = must_some_with(
+            candidates.iter().find(|candidate| candidate.label == "request"),
+            "request offered inside an admitted hook handler",
+        );
         assert!(request.detail.contains("hook handler"), "{}", request.detail);
         assert!(
             !request.detail.contains("route handler only"),
@@ -265,13 +267,13 @@ mod tests {
         // context rather than being blanket-renamed.
         let route_source = "use Dancer2;\nget '/x' => sub { my $p = params; };\n";
         let (activations, facts) = setup(route_source);
-        let inside = route_source.find("params").expect("route body offset");
+        let inside = must_some_with(route_source.find("params"), "route body offset");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
-        let params = candidates
-            .iter()
-            .find(|candidate| candidate.label == "params")
-            .expect("params offered inside a route handler");
+        let params = must_some_with(
+            candidates.iter().find(|candidate| candidate.label == "params"),
+            "params offered inside a route handler",
+        );
         assert!(params.detail.contains("route handler"), "{}", params.detail);
     }
 
@@ -279,7 +281,7 @@ mod tests {
     fn nested_blocks_inside_a_hook_handler_stay_in_request_context() {
         let source = "use Dancer2;\nhook before => sub { if (1) { my $r = request; } };\n";
         let (activations, facts) = setup(source);
-        let inside = source.find("request").expect("nested body offset");
+        let inside = must_some_with(source.find("request"), "nested body offset");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
         let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
@@ -293,10 +295,11 @@ mod tests {
         // availability must not be claimed.
         let source = "use Dancer2;\nhook before_template_render => sub { my $r = request; };\n";
         let (activations, facts) = setup(source);
-        let inside = source.find("my $r").expect("hook body offset");
+        let inside = must_some_with(source.find("my $r"), "hook body offset");
         // Guard against a vacuous pass: the interval must really exist and
         // really be unadmitted, not be missing because the hook never minted.
-        let context = facts.request_context_at(inside).expect("hook handler interval exists");
+        let context =
+            must_some_with(facts.request_context_at(inside), "hook handler interval exists");
         assert_eq!(context.handler_kind, HandlerContextKind::Hook);
         assert!(!context.establishes_request_context());
         let candidates =
@@ -316,10 +319,10 @@ mod tests {
         // about its shape may mint availability.
         let source = "hook before => sub { my $r = request; };\n";
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("fixture must parse");
+        let ast = must_with(parser.parse(), "fixture must parse");
         let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
-        let inside = source.find("request").expect("body offset");
+        let inside = must_some_with(source.find("request"), "body offset");
         assert!(
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared)
                 .is_empty(),
@@ -334,7 +337,7 @@ mod tests {
         // would silently withhold the helpers here.
         let source = "use Dancer2;\nhook before # a note\n    => sub { my $r = request; };\n";
         let (activations, facts) = setup(source);
-        let inside = source.find("my $r").expect("hook body offset");
+        let inside = must_some_with(source.find("my $r"), "hook body offset");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
         let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
@@ -351,9 +354,11 @@ mod tests {
         // the admitted position's request context.
         let source = "use Dancer2;\nhook(before, sub { my $r = request; });\n";
         let (activations, facts) = setup(source);
-        let inside = source.find("my $r").expect("hook body offset");
-        let context =
-            facts.request_context_at(inside).expect("an inline body still owns an interval");
+        let inside = must_some_with(source.find("my $r"), "hook body offset");
+        let context = must_some_with(
+            facts.request_context_at(inside),
+            "an inline body still owns an interval",
+        );
         assert!(
             !context.establishes_request_context(),
             "an unproven hook name must not establish request context"
@@ -371,7 +376,7 @@ mod tests {
     fn an_exclusion_still_wins_inside_an_admitted_hook_handler() {
         let source = "use Dancer2 '!request';\nhook before => sub { my $r = request; };\n";
         let (activations, facts) = setup(source);
-        let inside = source.find("my $r").expect("hook body offset");
+        let inside = must_some_with(source.find("my $r"), "hook body offset");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
         let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
@@ -386,7 +391,7 @@ mod tests {
     fn an_adjacent_ordinary_sub_is_not_a_request_context() {
         let source = "use Dancer2;\nhook before => sub { 1 };\nsub helper { my $r = request; }\n";
         let (activations, facts) = setup(source);
-        let inside = source.find("my $r").expect("adjacent sub offset");
+        let inside = must_some_with(source.find("my $r"), "adjacent sub offset");
         let candidates =
             keyword_completion_candidates(&activations, &facts, "main", inside, &none_declared);
         let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
@@ -426,7 +431,7 @@ mod tests {
     fn without_activation_there_are_zero_keyword_candidates() {
         let source = "use Dancer2::Core;\nget '/x' => sub { 1 };\n";
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("fixture must parse");
+        let ast = must_with(parser.parse(), "fixture must parse");
         let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         assert!(

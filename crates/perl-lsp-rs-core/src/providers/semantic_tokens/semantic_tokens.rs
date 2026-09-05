@@ -1696,6 +1696,8 @@ fn mark_readonly_declaration_operand(
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::{must_some_with, must_with};
+
     use super::*;
     use perl_parser_core::Parser;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2982,13 +2984,14 @@ print "ok" foreach @ys;
     /// Helper: collect the modifier bits for the first `$name` variable token.
     fn first_var_mods(source: &str, name: &str) -> u32 {
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("parse");
+        let ast = must_with(parser.parse(), "parse");
         let tokens = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
         let lines: Vec<&str> = source.split('\n').collect();
         let mut line = 0u32;
         let mut col = 0u32;
-        let variable_idx = *legend().map.get("variable").expect("variable in legend");
+        let variable_idx = *must_some_with(legend().map.get("variable"), "variable in legend");
         let target = format!("${name}");
+        let mut found = None;
         for [delta_line, delta_start, length, token_type, mods] in tokens {
             if delta_line == 0 {
                 col = col.saturating_add(delta_start);
@@ -2997,15 +3000,16 @@ print "ok" foreach @ys;
                 col = delta_start;
             }
             if token_type == variable_idx {
-                let src_line = lines.get(line as usize).expect("line in range");
+                let src_line = must_some_with(lines.get(line as usize), "line in range");
                 let painted: String =
                     src_line.chars().skip(col as usize).take(length as usize).collect();
                 if painted == target {
-                    return mods;
+                    found = Some(mods);
+                    break;
                 }
             }
         }
-        panic!("no `${name}` variable token found in source: {source:?}");
+        must_some_with(found, format!("no `${name}` variable token found in source: {source:?}"))
     }
 
     const DECLARATION_BIT: u32 = 1; // bit 0

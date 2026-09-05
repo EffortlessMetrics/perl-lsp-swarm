@@ -1229,7 +1229,7 @@ mod tests {
     /// `for_dap_test_fixture` uses the deny-all-ambient fixture contract.
     #[test]
     fn for_dap_test_fixture_denies_ambient_perl_env() -> TestResult {
-        let Some(mut oracle) = PerlOracleEnv::for_dap_test_fixture() else {
+        let Some(oracle) = PerlOracleEnv::for_dap_test_fixture() else {
             return Ok(());
         };
 

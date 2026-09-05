@@ -274,6 +274,7 @@ pub fn unclassified_types() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::must_some_with;
 
     #[test]
     fn inventory_has_entries() {
@@ -326,6 +327,13 @@ mod tests {
     /// `T: ErrorClass`, and the blanket trait impl answers otherwise.
     struct ErrorClassProbe<T>(core::marker::PhantomData<T>);
 
+    #[expect(
+        dead_code,
+        reason = "Fallback arm of an inherent-vs-blanket specialization emulation: its \
+                  associated const is observed through trait resolution when the more \
+                  specific `impl<T: ErrorClass> ErrorClassProbe<T>` does not apply, never \
+                  through a direct call the dead-code pass can see."
+    )]
     trait ErrorClassProbeFallback {
         const IMPLEMENTS_ERROR_CLASS: bool = false;
     }
@@ -340,9 +348,10 @@ mod tests {
     fn origin_ambiguous_parse_enums_stay_unclassified_beside_classified_projections() {
         let inv = error_type_inventory();
         let by_name = |name: &str| {
-            inv.iter()
-                .find(|entry| entry.type_name == name)
-                .unwrap_or_else(|| panic!("{name} must remain inventoried"))
+            must_some_with(
+                inv.iter().find(|entry| entry.type_name == name),
+                format!("{name} must remain inventoried"),
+            )
         };
 
         let stack = by_name("StackParseError");

@@ -2,7 +2,7 @@ use super::*;
 use crate::providers::file_completion::CWD_LOCK as FILE_COMPLETION_CWD_LOCK;
 use perl_parser_core::Parser;
 use perl_semantic_analyzer::analysis::symbol::{ScopeKind, SymbolExtractor};
-use perl_tdd_support::{must, must_some};
+use perl_test_must::{must, must_some, must_some_with};
 use perl_workspace::workspace_index::WorkspaceIndex;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -3124,7 +3124,7 @@ Tools->import(qw(alpha));
     let provider = CompletionProvider::new_with_index_and_source(&ast, before, Some(index.clone()));
     let before_completions = provider.get_completions_with_path(
         before,
-        before.find("al\n").unwrap() + 2,
+        must_some(before.find("al\n")) + 2,
         Some(importer_uri.as_str()),
     );
     assert!(
@@ -8287,7 +8287,7 @@ sub helper { }
     );
 
     // Constants should have Constant kind
-    let pi = completions.iter().find(|c| c.label == "PI").unwrap();
+    let pi = must_some(completions.iter().find(|c| c.label == "PI"));
     assert_eq!(
         pi.kind,
         crate::providers::completion_item::CompletionItemKind::Constant,
@@ -8834,13 +8834,15 @@ fn block_form_package_at_scope_end_is_main() {
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let table = SymbolExtractor::new().extract(&ast);
-    let scope_end = table
-        .scopes
-        .values()
-        .filter(|scope| scope.kind == ScopeKind::Package)
-        .map(|scope| scope.location.end)
-        .max()
-        .expect("block-form package scope");
+    let scope_end = must_some_with(
+        table
+            .scopes
+            .values()
+            .filter(|scope| scope.kind == ScopeKind::Package)
+            .map(|scope| scope.location.end)
+            .max(),
+        "block-form package scope",
+    );
     assert_eq!(
         CompletionContext::detect_current_package(&table, scope_end),
         "main",
@@ -9316,7 +9318,7 @@ fn test_foreach_iterator_scoped_to_loop() {
     // The analyzer genuinely lacks the binding: confirm the producer gap
     // rather than an admission rejection, so #7423/#7424 own the fix.
     assert!(
-        provider.symbol_table.symbols.get("loop_item").is_none(),
+        !provider.symbol_table.symbols.contains_key("loop_item"),
         "analyzer now records foreach iterators — revisit this seam for real admission coverage"
     );
 

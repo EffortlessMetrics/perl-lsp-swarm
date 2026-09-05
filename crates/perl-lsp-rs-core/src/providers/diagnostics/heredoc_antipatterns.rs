@@ -69,6 +69,8 @@ fn antipattern_code(pattern: &AntiPattern) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::must_some_with;
+
     use super::super::diagnostics::DiagnosticsProvider;
     use perl_parser::Parser;
     use std::sync::Arc;
@@ -81,10 +83,10 @@ mod tests {
         let diagnostics =
             DiagnosticsProvider::new().get_diagnostics(&ast, &output.diagnostics, source, None);
 
-        let diagnostic = diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.code.as_deref() == Some("PL800"))
-            .expect("format heredoc must be reported by the provider as PL800");
+        let diagnostic = must_some_with(
+            diagnostics.iter().find(|diagnostic| diagnostic.code.as_deref() == Some("PL800")),
+            "format heredoc must be reported by the provider as PL800",
+        );
         assert_eq!(diagnostic.code.as_deref(), Some("PL800"));
         assert!(!diagnostic.fixable);
     }

@@ -17,8 +17,9 @@ use super::{
     SuppressionReason, SurfaceInputs, WatcherPlanDecision, WatcherWithholdReason,
 };
 use crate::features::policy::FeatureProfile;
-use crate::protocol::capabilities::{BuildFlags, capabilities_json, get_supported_commands};
+use crate::protocol::capabilities::{capabilities_json, get_supported_commands};
 use crate::protocol::final_surface_inventory::{census_profiles, flatten_surface_pointers};
+use perl_test_must::{must_err_with, must_some_with, must_with};
 
 /// Minimal client evidence: no declarations at all.
 fn bare_client() -> ClientSurfaceEvidence {
@@ -39,10 +40,7 @@ fn bare_inputs(profile: FeatureProfile) -> SurfaceInputs {
 }
 
 fn build_ok(inputs: &SurfaceInputs) -> EffectiveLspSurface {
-    match EffectiveLspSurface::build(inputs) {
-        Ok(surface) => surface,
-        Err(error) => panic!("surface construction refused: {error}"),
-    }
+    must_with(EffectiveLspSurface::build(inputs), "surface construction refused")
 }
 
 // ---------------------------------------------------------------------------
@@ -94,8 +92,10 @@ fn raw_flag_divergence_from_profile_is_refused() {
     // instead of silently widening the profile.
     assert!(!tampered.build_flags.notebook_document_sync, "precondition: ga-lock excludes it");
     tampered.build_flags.notebook_document_sync = true;
-    let error = EffectiveLspSurface::build(&tampered)
-        .expect_err("raw flags must not inject a capability the profile does not admit");
+    let error = must_err_with(
+        EffectiveLspSurface::build(&tampered),
+        "raw flags must not inject a capability the profile does not admit",
+    );
     assert!(
         error.problems.iter().any(|problem| problem.contains("profile.build_flags")),
         "refusal must name provenance: {:?}",
@@ -107,8 +107,10 @@ fn raw_flag_divergence_from_profile_is_refused() {
 fn duplicate_command_descriptors_are_refused() {
     let mut duplicated = bare_inputs(FeatureProfile::Production);
     duplicated.command_ids.push("perl.runTests".to_string());
-    let error = EffectiveLspSurface::build(&duplicated)
-        .expect_err("duplicate descriptors must be rejected deterministically");
+    let error = must_err_with(
+        EffectiveLspSurface::build(&duplicated),
+        "duplicate descriptors must be rejected deterministically",
+    );
     assert!(
         error.problems.iter().any(|problem| problem.contains("duplicate command")),
         "refusal must name the duplicate: {:?}",
@@ -238,18 +240,27 @@ fn inline_completion_selector_cannot_be_static_and_planned_simultaneously() {
     inputs.client = client;
     let surface = build_ok(&inputs);
 
-    let outcome = surface.families.get(&CapabilityFamily::InlineCompletion).unwrap();
-    match outcome {
-        FamilyOutcome::Downgraded(
-            DowngradeReason::DynamicRegistrationPreferred { selector: "inlineCompletionProvider" },
-            inner,
-        ) => {
-            assert!(
-                matches!(inner.as_ref(), FamilyOutcome::PlannedDynamic(_)),
-                "retained variant is the plan, not a second static copy: {outcome:?}"
-            );
-        }
-        other => panic!("expected downgraded-to-planned-dynamic, got {other:?}"),
+    let outcome = must_some_with(
+        surface.families.get(&CapabilityFamily::InlineCompletion),
+        "InlineCompletion family must be present",
+    );
+    assert!(
+        matches!(
+            outcome,
+            FamilyOutcome::Downgraded(
+                DowngradeReason::DynamicRegistrationPreferred {
+                    selector: "inlineCompletionProvider"
+                },
+                _
+            )
+        ),
+        "expected downgraded-to-planned-dynamic, got {outcome:?}"
+    );
+    if let FamilyOutcome::Downgraded(_, inner) = outcome {
+        assert!(
+            matches!(inner.as_ref(), FamilyOutcome::PlannedDynamic(_)),
+            "retained variant is the plan, not a second static copy: {outcome:?}"
+        );
     }
     assert!(
         surface.server_capabilities.get("inlineCompletionProvider").is_none(),
@@ -292,16 +303,18 @@ fn watcher_registration_requires_claimed_support_active_symbol_and_no_jetbrains_
     };
 
     let admitted = build_ok(&base());
-    match admitted.registration_plan.registrations.as_slice() {
-        [
-            PlannedDynamic {
+    let registrations = admitted.registration_plan.registrations.as_slice();
+    assert!(
+        matches!(
+            registrations,
+            [PlannedDynamic {
                 registration_id: "perl-didChangeWatchedFiles",
                 method: "workspace/didChangeWatchedFiles",
                 options_shape: RegistrationOptionsShape::Watchers { relative_pattern: true },
-            },
-        ] => {}
-        other => panic!("expected watcher registration with relative patterns, got {other:?}"),
-    }
+            }]
+        ),
+        "expected watcher registration with relative patterns, got {registrations:?}"
+    );
     assert_eq!(
         admitted.watcher_registration_decision,
         WatcherPlanDecision::Planned,
@@ -691,7 +704,7 @@ fn model_matches_static_builder_except_runtime_authority_deltas() {
         // Exact retained disagreement: static advertises save:true while the
         // final authority replaces it with willSave/willSaveWaitUntil/save
         // includeText (row CAP_TEXT_DOCUMENT_SYNC_SAVE).
-        let sync = sync_delta.expect("both surfaces carry textDocumentSync");
+        let sync = must_some_with(sync_delta, "both surfaces carry textDocumentSync");
         assert_eq!(sync["static"]["save"], serde_json::json!(true));
         assert_eq!(sync["final"]["save"], serde_json::json!({"includeText": true}));
         assert_eq!(sync["final"]["willSave"], serde_json::json!(true));
@@ -798,11 +811,13 @@ fn file_operation_intersection_follows_normalized_facts() {
     inputs.client = client;
     let surface = build_ok(&inputs);
 
-    let operations = surface
-        .server_capabilities
-        .pointer("/workspace/fileOperations")
-        .and_then(serde_json::Value::as_object)
-        .expect("fileOperations object present when any operation supported");
+    let operations = must_some_with(
+        surface
+            .server_capabilities
+            .pointer("/workspace/fileOperations")
+            .and_then(serde_json::Value::as_object),
+        "fileOperations object present when any operation supported",
+    );
     assert_eq!(operations.len(), 2, "only supported operations advertise: {operations:?}");
     assert!(operations.contains_key("willRename"));
     assert!(operations.contains_key("didDelete"));

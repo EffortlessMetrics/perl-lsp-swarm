@@ -545,7 +545,7 @@ mod tests {
     const SOURCE_KEY: [u8; 16] = [9; 16];
 
     fn range_at(line: u32) -> Range {
-        let line_byte = u32::from(line) * 10;
+        let line_byte = line * 10;
         Range {
             start: Position { byte: usize::try_from(line_byte).unwrap_or(0), line, column: 0 },
             end: Position { byte: usize::try_from(line_byte + 4).unwrap_or(4), line, column: 4 },

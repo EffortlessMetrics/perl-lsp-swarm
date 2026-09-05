@@ -358,6 +358,8 @@ fn embedded_ipv4_from_v6(v6: Ipv6Addr) -> Option<Ipv4Addr> {
 
 #[cfg(test)]
 mod unit_tests {
+    use perl_test_must::{must_err, must_with};
+
     use super::{
         ApprovedDestination, DestinationError, credential_may_attach, default_resolver,
         embedded_ipv4_from_v6, is_disallowed_address, normalize_ip,
@@ -373,115 +375,117 @@ mod unit_tests {
 
     #[test]
     fn rejects_remote_http() {
-        let err = validate_endpoint_with_resolver(
+        let err = must_err(validate_endpoint_with_resolver(
             "http://api.example.com/v1/chat/completions",
             false,
             &resolver_with(vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]),
-        )
-        .unwrap_err();
+        ));
         assert_eq!(err, DestinationError::HttpsRequired);
     }
 
     #[test]
     fn accepts_loopback_https_without_local_model_mode() {
-        let approved = validate_endpoint_with_resolver(
-            "https://127.0.0.1:11434/v1/chat/completions",
-            false,
-            &resolver_with(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]),
-        )
-        .expect("loopback https should be accepted");
+        let approved = must_with(
+            validate_endpoint_with_resolver(
+                "https://127.0.0.1:11434/v1/chat/completions",
+                false,
+                &resolver_with(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]),
+            ),
+            "loopback https should be accepted",
+        );
         assert_eq!(approved.host, "127.0.0.1");
         assert_eq!(approved.port, 11434);
     }
 
     #[test]
     fn accepts_loopback_http_with_local_model_mode() {
-        let approved = validate_endpoint_with_resolver(
-            "http://127.0.0.1:11434/v1/chat/completions",
-            true,
-            &resolver_with(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]),
-        )
-        .expect("local http loopback should be accepted");
+        let approved = must_with(
+            validate_endpoint_with_resolver(
+                "http://127.0.0.1:11434/v1/chat/completions",
+                true,
+                &resolver_with(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]),
+            ),
+            "local http loopback should be accepted",
+        );
         assert_eq!(approved.scheme, "http");
     }
 
     #[test]
     fn rejects_loopback_http_without_local_model_mode() {
-        let err = validate_endpoint_with_resolver(
+        let err = must_err(validate_endpoint_with_resolver(
             "http://127.0.0.1:11434/v1/chat/completions",
             false,
             &resolver_with(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]),
-        )
-        .unwrap_err();
+        ));
         assert_eq!(err, DestinationError::LocalHttpDisabled);
     }
 
     #[test]
     fn rejects_localhost_resolving_to_private_address() {
-        let err = validate_endpoint_with_resolver(
+        let err = must_err(validate_endpoint_with_resolver(
             "http://localhost:8080/v1",
             true,
             &resolver_with(vec![IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))]),
-        )
-        .unwrap_err();
+        ));
         assert_eq!(err, DestinationError::LocalhostNotLoopback);
     }
 
     #[test]
     fn rejects_private_ipv4_targets() {
-        let err = validate_endpoint_with_resolver(
+        let err = must_err(validate_endpoint_with_resolver(
             "https://10.0.0.5/v1",
             false,
             &resolver_with(vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5))]),
-        )
-        .unwrap_err();
+        ));
         assert_eq!(err, DestinationError::DisallowedAddress);
     }
 
     #[test]
     fn rejects_metadata_address() {
-        let err = validate_endpoint_with_resolver(
+        let err = must_err(validate_endpoint_with_resolver(
             "https://metadata.internal/v1",
             false,
             &resolver_with(vec![IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))]),
-        )
-        .unwrap_err();
+        ));
         assert_eq!(err, DestinationError::DisallowedAddress);
     }
 
     #[test]
     fn rejects_non_loopback_ipv6_ula() {
-        let err = validate_endpoint_with_resolver(
+        let err = must_err(validate_endpoint_with_resolver(
             "https://[fd12:3456:789a:1::1]/v1",
             false,
             &resolver_with(vec![IpAddr::V6(Ipv6Addr::new(
                 0xfd12, 0x3456, 0x789a, 0x0001, 0, 0, 0, 1,
             ))]),
-        )
-        .unwrap_err();
+        ));
         assert_eq!(err, DestinationError::DisallowedAddress);
     }
 
     #[test]
     fn accepts_bracketed_ipv6_loopback_with_explicit_port() {
-        let approved = validate_endpoint_with_resolver(
-            "https://[::1]:11434/v1",
-            false,
-            &resolver_with(vec![IpAddr::V6(Ipv6Addr::LOCALHOST)]),
-        )
-        .expect("ipv6 loopback should be accepted");
+        let approved = must_with(
+            validate_endpoint_with_resolver(
+                "https://[::1]:11434/v1",
+                false,
+                &resolver_with(vec![IpAddr::V6(Ipv6Addr::LOCALHOST)]),
+            ),
+            "ipv6 loopback should be accepted",
+        );
         assert_eq!(approved.host, "::1");
         assert_eq!(approved.port, 11434);
     }
 
     #[test]
     fn accepts_punycode_hostname_for_public_https() {
-        let approved = validate_endpoint_with_resolver(
-            "https://xn--bcher-kva.example/v1",
-            false,
-            &resolver_with(vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]),
-        )
-        .expect("punycode host should be accepted");
+        let approved = must_with(
+            validate_endpoint_with_resolver(
+                "https://xn--bcher-kva.example/v1",
+                false,
+                &resolver_with(vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]),
+            ),
+            "punycode host should be accepted",
+        );
         assert_eq!(approved.host, "xn--bcher-kva.example");
     }
 
@@ -514,13 +518,13 @@ mod unit_tests {
 
     #[test]
     fn default_resolver_rejects_empty_host() {
-        let err = default_resolver("", 443).unwrap_err();
+        let err = must_err(default_resolver("", 443));
         assert_eq!(err, DestinationError::UnresolvedHost);
     }
 
     #[test]
     fn default_resolver_accepts_ipv6_literal_without_brackets() {
-        let addrs = default_resolver("::1", 11434).expect("ipv6 literal must resolve");
+        let addrs = must_with(default_resolver("::1", 11434), "ipv6 literal must resolve");
         assert_eq!(addrs, vec![IpAddr::V6(Ipv6Addr::LOCALHOST)]);
     }
 
@@ -533,23 +537,21 @@ mod unit_tests {
     #[test]
     fn rejects_ipv4_mapped_private_via_normalization() {
         let mapped = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x0a00, 0x0005));
-        let err = validate_endpoint_with_resolver(
+        let err = must_err(validate_endpoint_with_resolver(
             "https://evil.example/v1",
             false,
             &resolver_with(vec![mapped]),
-        )
-        .unwrap_err();
+        ));
         assert_eq!(err, DestinationError::DisallowedAddress);
     }
 
     #[test]
     fn rejects_cgnat_shared_address_space() {
-        let err = validate_endpoint_with_resolver(
+        let err = must_err(validate_endpoint_with_resolver(
             "https://cgnat.example/v1",
             false,
             &resolver_with(vec![IpAddr::V4(Ipv4Addr::new(100, 64, 1, 2))]),
-        )
-        .unwrap_err();
+        ));
         assert_eq!(err, DestinationError::DisallowedAddress);
     }
 
@@ -558,12 +560,11 @@ mod unit_tests {
         // 2002:0a00:0001:: embeds 10.0.0.1
         let sixto4 = IpAddr::V6(Ipv6Addr::new(0x2002, 0x0a00, 0x0001, 0, 0, 0, 0, 0));
         assert!(is_disallowed_address(sixto4));
-        let err = validate_endpoint_with_resolver(
+        let err = must_err(validate_endpoint_with_resolver(
             "https://sixto4.example/v1",
             false,
             &resolver_with(vec![sixto4]),
-        )
-        .unwrap_err();
+        ));
         assert_eq!(err, DestinationError::DisallowedAddress);
     }
 
@@ -579,12 +580,11 @@ mod unit_tests {
             .into());
         };
         assert_eq!(embedded_ipv4_from_v6(nat64_v6), Some(Ipv4Addr::new(10, 0, 0, 1)));
-        let err = validate_endpoint_with_resolver(
+        let err = must_err(validate_endpoint_with_resolver(
             "https://nat64.example/v1",
             false,
             &resolver_with(vec![nat64]),
-        )
-        .unwrap_err();
+        ));
         assert_eq!(err, DestinationError::DisallowedAddress);
         Ok(())
     }
@@ -613,64 +613,64 @@ mod unit_tests {
 
     #[test]
     fn tcp_attach_accepts_loopback() {
-        let ips = validate_tcp_attach_host_with_resolver(
-            "127.0.0.1",
-            13603,
-            &resolver_with(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]),
-        )
-        .expect("loopback must be allowed for DAP attach");
+        let ips = must_with(
+            validate_tcp_attach_host_with_resolver(
+                "127.0.0.1",
+                13603,
+                &resolver_with(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]),
+            ),
+            "loopback must be allowed for DAP attach",
+        );
         assert_eq!(ips, vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
     }
 
     #[test]
     fn tcp_attach_accepts_localhost_resolving_to_loopback() {
-        validate_tcp_attach_host_with_resolver(
-            "localhost",
-            13603,
-            &resolver_with(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]),
-        )
-        .expect("localhost → loopback must be accepted");
+        must_with(
+            validate_tcp_attach_host_with_resolver(
+                "localhost",
+                13603,
+                &resolver_with(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]),
+            ),
+            "localhost → loopback must be accepted",
+        );
     }
 
     #[test]
     fn tcp_attach_rejects_cloud_metadata_ip() {
         // 169.254.169.254 is the AWS/GCP/Azure cloud metadata endpoint — the
         // canonical SSRF target. Must be rejected (#5257).
-        let err = validate_tcp_attach_host_with_resolver(
+        let err = must_err(validate_tcp_attach_host_with_resolver(
             "169.254.169.254",
             80,
             &resolver_with(vec![IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))]),
-        )
-        .unwrap_err();
+        ));
         assert_eq!(err, DestinationError::DisallowedAddress);
     }
 
     #[test]
     fn tcp_attach_rejects_private_ip() {
-        let err = validate_tcp_attach_host_with_resolver(
+        let err = must_err(validate_tcp_attach_host_with_resolver(
             "10.0.0.1",
             80,
             &resolver_with(vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))]),
-        )
-        .unwrap_err();
+        ));
         assert_eq!(err, DestinationError::DisallowedAddress);
     }
 
     #[test]
     fn tcp_attach_rejects_localhost_resolving_to_non_loopback() {
-        let err = validate_tcp_attach_host_with_resolver(
+        let err = must_err(validate_tcp_attach_host_with_resolver(
             "localhost",
             80,
             &resolver_with(vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]),
-        )
-        .unwrap_err();
+        ));
         assert_eq!(err, DestinationError::LocalhostNotLoopback);
     }
 
     #[test]
     fn tcp_attach_rejects_empty_host() {
-        let err =
-            validate_tcp_attach_host_with_resolver("", 80, &resolver_with(vec![])).unwrap_err();
+        let err = must_err(validate_tcp_attach_host_with_resolver("", 80, &resolver_with(vec![])));
         assert_eq!(err, DestinationError::MissingHost);
     }
 }
