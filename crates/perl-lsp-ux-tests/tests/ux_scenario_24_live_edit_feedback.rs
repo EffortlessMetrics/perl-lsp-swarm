@@ -25,6 +25,13 @@ use perl_lsp_ux_tests::{
 };
 use std::time::Duration;
 
+/// Canonical fixture-matrix workflow id for this scenario.
+///
+/// Receipts emitted under any other id are rejected as matrix drift by the
+/// guarded scorecard (`validate_scorecard_inputs`), so the id is named once
+/// here and pinned to the matrix by `scenario_24_workflow_id_matches_matrix`.
+const SCENARIO_24_WORKFLOW_ID: &str = "live_edit_feedback_loop";
+
 const UNDECLARED_SOURCE: &str = r#"use strict;
 use warnings;
 
@@ -78,7 +85,7 @@ fn given_undeclared_variable_when_opened_then_strict_diagnostic_is_published() -
 #[test]
 fn given_live_edit_when_variable_is_declared_then_navigation_stays_transport_responsive() {
     run_ux_scenario_with_evidence_class(
-        "live_edit_feedback",
+        SCENARIO_24_WORKFLOW_ID,
         "ux_scenario_24_live_edit_feedback.rs",
         "given_live_edit_when_variable_is_declared_then_navigation_stays_transport_responsive",
         UxCiTier::Pr,
@@ -129,6 +136,32 @@ fn given_live_edit_when_variable_is_declared_then_navigation_stays_transport_res
             Ok(())
         },
     );
+}
+
+/// Pins the receipt workflow id to the canonical fixture-matrix entry so the
+/// guarded scorecard admits this scenario's receipts instead of rejecting
+/// them as matrix drift (`unknown_workflow_fails_as_matrix_drift` locks the
+/// rejection side in `lsp_stats_guarded`).
+#[test]
+fn scenario_24_workflow_id_matches_matrix() -> Result<()> {
+    let matrix_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures/editor_ux_fixture_matrix.json");
+    let raw = std::fs::read_to_string(&matrix_path)
+        .with_context(|| format!("reading {}", matrix_path.display()))?;
+    let matrix: serde_json::Value = serde_json::from_str(&raw)?;
+    let workflows =
+        matrix["workflows"].as_array().context("fixture matrix `workflows` must be an array")?;
+
+    let entry = workflows
+        .iter()
+        .find(|workflow| workflow["id"] == SCENARIO_24_WORKFLOW_ID)
+        .with_context(|| format!("fixture matrix has no workflow `{SCENARIO_24_WORKFLOW_ID}`"))?;
+    assert_eq!(
+        entry["scenario_file"], "ux_scenario_24_live_edit_feedback.rs",
+        "matrix entry `{SCENARIO_24_WORKFLOW_ID}` must point at this scenario file"
+    );
+
+    Ok(())
 }
 
 /// Mechanical classification contract for the row above (#13570).

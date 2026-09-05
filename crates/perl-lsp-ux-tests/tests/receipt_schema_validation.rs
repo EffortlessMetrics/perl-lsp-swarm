@@ -549,7 +549,7 @@ fn receipt_skipped_conforms_to_schema() -> Result<(), Box<dyn std::error::Error>
 fn receipt_transport_characterization_conforms_to_schema() -> Result<(), Box<dyn std::error::Error>>
 {
     let recorder = UxRunRecorder::new(
-        "live_edit_feedback",
+        "live_edit_feedback_loop",
         "ux_scenario_24_live_edit_feedback.rs",
         "post_edit_navigation_transport",
         UxCiTier::Pr,
