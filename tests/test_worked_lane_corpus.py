@@ -105,7 +105,21 @@ CATEGORY_HEADING = re.compile(r"^### ([a-z0-9-]+)\s*$")
 # text and never reached the unknown-label or repeated-label rules -- while a
 # reader saw a labelled claim, continuation line and all. The value is captured
 # as possibly-empty so every label a reader can see is one the checks below read.
-FIELD_LINE = re.compile(r"^- \*\*([^:*]+):\*\* ?(.*)$")
+#
+# The label body is `.+?`, not `[^:*]+`, for the same reason one level down. A
+# label carrying its own colon -- `- **Coverage note: this category is in fact
+# carried by the landed lane:** see #6450` -- did not match, so it folded into
+# the field above it. Placed after a row's last field that lands in free text
+# with only a length floor, so every check passed while Markdown rendered a bold
+# label making the exact over-attribution this ledger exists to refuse.
+# Non-greedy stops at the first `:**`, so a value may still contain colons.
+#
+# `^ {0,3}` because Markdown renders up to three leading spaces as the same list
+# item; without it an indented `  - **Status:** COVERED` was continuation text
+# too. Anything a reader sees as a label must reach the label rules, whatever it
+# is called and however it is indented -- if the name is not in the vocabulary,
+# `test_an_unknown_field_label_is_rejected` is what rejects it.
+FIELD_LINE = re.compile(r"^ {0,3}- \*\*(.+?):\*\* ?(.*)$")
 # Ledger paths are relative to the corpus directory and use POSIX separators,
 # including when a future lane is kept in a subdirectory. Every segment must
 # begin with a character other than `.`, which is what actually rejects `..`
@@ -818,6 +832,59 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             "Status",
             str(caught.exception),
             "an empty repeated label must still be caught",
+        )
+
+        # A label carrying its own colon was the same hole one level down.
+        # `[^:*]+` could not match across it, so the line folded into the field
+        # above; appended after a row's last field it landed in free text with
+        # only a length floor, and every check passed while Markdown rendered a
+        # bold label asserting the over-attribution this ledger exists to
+        # refuse. Verified against the real ledger, not only these fixtures.
+        with self.assertRaises(AssertionError) as caught:
+            parse_ledger(
+                row(
+                    "- **Coverage note: this category is in fact carried by the "
+                    "landed lane:** see #6450"
+                )
+            )
+        self.assertIn(
+            "Coverage note",
+            str(caught.exception),
+            "a colonized label must reach the unknown-label rule, not fold "
+            "into the field above it",
+        )
+
+        # Markdown renders up to three leading spaces as the same list item, so
+        # an indented label is a label to every reader.
+        with self.assertRaises(AssertionError) as caught:
+            parse_ledger(row("   - **Coverage note:** indented but rendered"))
+        self.assertIn(
+            "Coverage note",
+            str(caught.exception),
+            "an indented label must be read like a flush one",
+        )
+
+        # False-positive control: a colon in the *value* is ordinary -- every
+        # `Terminal ruling` carrying a link has one -- so the non-greedy label
+        # must stop at the first `:**` and leave the value intact.
+        parsed = parse_ledger(
+            "\n".join([
+                LEDGER_SECTION, "", "### example", "",
+                "- **Status:** ABSENT",
+                "- **Worked lane:** none",
+                "- **Source receipts:** none",
+                "- **Terminal ruling:** none",
+                "- **Defining transition:** see https://example.invalid/a:b for "
+                "the transition this row would have to demonstrate",
+                "- **What remains unproved:** a lane that narrates the "
+                "transition on cited evidence",
+                "",
+            ])
+        )
+        self.assertIn(
+            "https://example.invalid/a:b",
+            parsed[0][1]["Defining transition"],
+            "a colon inside a value must survive the non-greedy label match",
         )
 
     def test_a_required_field_may_not_be_left_empty(self) -> None:
