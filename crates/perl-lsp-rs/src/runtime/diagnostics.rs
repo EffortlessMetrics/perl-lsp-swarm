@@ -1803,10 +1803,7 @@ impl LspServer {
                 cfg.native_critic_exclude.clone(),
             )
         };
-        let position_encoding = match self.position_encoding_for_coordinates() {
-            Ok(encoding) => encoding,
-            Err(error) => return Err(error),
-        };
+        let position_encoding = self.position_encoding_for_coordinates()?;
         let identity_projection = DiagnosticProjectionFragment {
             position_encoding: match position_encoding {
                 perl_position_tracking::PositionEncoding::Utf8 => PullPositionEncoding::Utf8,

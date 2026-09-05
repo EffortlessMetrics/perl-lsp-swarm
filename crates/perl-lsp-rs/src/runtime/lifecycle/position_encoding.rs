@@ -10,6 +10,11 @@
 use super::super::LspServer;
 use perl_position_tracking::PositionEncoding;
 
+// Representable, deliberately not yet consumed in production: this candidate
+// establishes the identity, and #1690 is the activation that reads it. The
+// module's own tests prove support stays distinct from activation, so the
+// surface is exercised rather than merely parked.
+#[allow(dead_code, reason = "production consumer arrives with #1690 activation")]
 const SERVER_SUPPORTED_POSITION_ENCODINGS: [PositionEncoding; 2] =
     [PositionEncoding::Utf8, PositionEncoding::Utf16];
 
@@ -45,6 +50,7 @@ impl ActivePositionEncoding {
     }
 
     /// Typed reason the encoding was selected.
+    #[allow(dead_code, reason = "production consumer arrives with #1690 activation")]
     #[must_use]
     pub(crate) const fn selection_reason(self) -> ActivePositionEncodingSelectionReason {
         self.selection_reason
@@ -65,6 +71,7 @@ impl PositionEncodingSessionContext {
     ///
     /// Support is not activation: the active value remains independently pinned
     /// until the end-to-end cutover owned by #1690.
+    #[allow(dead_code, reason = "production consumer arrives with #1690 activation")]
     #[must_use]
     pub(crate) const fn server_supported(self) -> &'static [PositionEncoding] {
         &SERVER_SUPPORTED_POSITION_ENCODINGS
@@ -105,7 +112,6 @@ impl LspServer {
     /// Coordinate production is not valid until initialize has published the
     /// session context. Do not silently fall back to the legacy client record
     /// or to UTF-16: doing so would hide a lifecycle violation.
-    #[must_use]
     pub(crate) fn position_encoding_for_coordinates(
         &self,
     ) -> Result<PositionEncoding, crate::protocol::JsonRpcError> {
@@ -142,18 +148,39 @@ mod tests {
     }
 
     #[test]
-    fn coordinate_encoding_is_rejected_before_initialize() {
+    fn coordinate_encoding_is_rejected_outside_an_initialized_session() -> TestResult {
+        // One refusal message covers both lifecycle states, so asserting that
+        // it contains "before initialize" and then that it contains "after
+        // shutdown" would assert the same string twice and discriminate
+        // nothing. What is worth proving is that each state refuses, and that
+        // the post-shutdown refusal follows a context that was genuinely
+        // published - otherwise "cleared" is indistinguishable from an
+        // always-empty slot.
         let server = LspServer::new();
-        let error = server.position_encoding_for_coordinates().unwrap_err();
-
-        assert_eq!(error.code, crate::protocol::INVALID_REQUEST);
-        assert!(error.message.contains("before initialize"));
+        let before = expect_refusal(&server)?;
+        assert_eq!(before.code, crate::protocol::INVALID_REQUEST);
 
         server.publish_position_encoding_session_context();
+        assert_eq!(
+            server.position_encoding_for_coordinates().ok(),
+            Some(PositionEncoding::Utf16),
+            "the negative control requires a value that was really present"
+        );
+
         server.clear_position_encoding_session_context();
-        let error = server.position_encoding_for_coordinates().unwrap_err();
-        assert_eq!(error.code, crate::protocol::INVALID_REQUEST);
-        assert!(error.message.contains("after shutdown"));
+        let after = expect_refusal(&server)?;
+        assert_eq!(after.code, crate::protocol::INVALID_REQUEST);
+        assert_eq!(after.message, before.message);
+        Ok(())
+    }
+
+    fn expect_refusal(server: &LspServer) -> Result<crate::protocol::JsonRpcError, String> {
+        match server.position_encoding_for_coordinates() {
+            Err(error) => Ok(error),
+            Ok(encoding) => {
+                Err(format!("coordinate access outside a session returned {encoding:?}"))
+            }
+        }
     }
 
     #[test]
