@@ -443,8 +443,14 @@ fn flush_cpanfile_statement(buf: &str, block_stack: &[CpanfileBlock], out: &mut 
 /// `$versions{if}` and `$h->{unless}` are expressions whose braces must not
 /// change block scope. `sub {` and `if (...) {` stay blocks and keep their
 /// fail-closed treatment, so a conditional declaration is never promoted.
+///
+/// Perl allows whitespace before a subscript, so `$versions {base}` is the same
+/// expression as `$versions{base}`. It is the sigil requirement below, not
+/// adjacency, that keeps `sub {` a block: `sub` ends in identifier characters
+/// but carries no sigil. Trimming here also accepts a block whose brace opens
+/// on the following line.
 fn opens_hash_subscript(buf: &str) -> bool {
-    let chars: Vec<char> = buf.chars().collect();
+    let chars: Vec<char> = buf.trim_end().chars().collect();
     match chars.last() {
         // A chained subscript: `$h{a}{b}`, `$h->[0]{b}`.
         Some('}' | ']') => true,
@@ -920,6 +926,56 @@ mod tests {
         assert!(
             facts.prereqs.iter().any(|p| p.module == "After::Comment"),
             "a brace in a comment must not open a block: {:?}",
+            facts.prereqs
+        );
+    }
+
+    #[test]
+    fn cpanfile_spaced_subscripts_keep_their_declaration() {
+        // Perl allows whitespace before a subscript, and a version expression
+        // written that way must still yield its module fact.
+        for expression in
+            ["$versions {base}", "$versions -> {base}", "$versions\n            {base}"]
+        {
+            let content = format!("requires 'Foo', {expression};\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+            assert!(
+                facts.prereqs.iter().any(|p| p.module == "Foo"),
+                "{expression} is a subscript, not a block: {:?}",
+                facts.prereqs
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_blocks_opening_on_the_next_line_stay_suppressed() {
+        // Trimming trailing whitespace must not turn a block header into a
+        // subscript. `sub` and `)` carry no sigil, so both stay blocks.
+        let content = concat!(
+            "feature 'SQLite' => sub\n{\n    requires 'DBD::SQLite';\n};\n",
+            "if ($^O eq 'MSWin32')\n{\n    requires 'Win32';\n}\n",
+            "requires 'Moo';\n",
+        );
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        for suppressed in ["DBD::SQLite", "Win32"] {
+            assert!(
+                !facts.prereqs.iter().any(|p| p.module == suppressed),
+                "{suppressed} sits in an unsupported block: {:?}",
+                facts.prereqs
+            );
+        }
+        assert!(facts.prereqs.iter().any(|p| p.module == "Moo"));
+    }
+
+    #[test]
+    fn cpanfile_on_phase_block_opening_on_the_next_line_is_recognized() {
+        let content = "on 'test' =>\n    sub\n{\n    requires 'Test::More';\n};\n";
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        assert!(
+            facts.prereqs.iter().any(|p| p.module == "Test::More" && p.phase == "test"),
+            "a canonical phase survives a next-line brace: {:?}",
             facts.prereqs
         );
     }
