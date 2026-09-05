@@ -1104,3 +1104,124 @@ impl Server {
     assert!(findings.is_empty(), "{findings:?}");
     Ok(())
 }
+
+// ── Falsifiers for the third review round (pre-fix) ─────────────────────
+
+/// Only the exact `#[cfg(test)]` spelling was stripped, so a send behind a
+/// compound test-only gate counted as production emission.
+#[test]
+fn a_compound_test_only_gate_is_still_stripped() -> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r#"
+#[cfg(all(test, feature = "expose_lsp_test_api"))]
+mod harness {
+    impl Server {
+        pub fn emit_in_test(&self) {
+            self.send_request("workspace/codeLens/refresh", p);
+        }
+    }
+}
+"#,
+    )?;
+
+    assert!(emitted.is_empty(), "a test-only send is not production emission: {emitted:?}");
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
+/// `any(test, feature = "x")` compiles in production, so its sends must count.
+/// The fix must not over-strip into a silently smaller denominator.
+#[test]
+fn a_gate_that_compiles_in_production_is_not_stripped() -> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r#"
+impl Server {
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub fn emit_maybe(&self) {
+        self.send_request("workspace/codeLens/refresh", p);
+    }
+}
+"#,
+    )?;
+
+    assert_eq!(
+        emitted.get("workspace/codeLens/refresh").map(Vec::as_slice),
+        Some(["src/runtime/synthetic.rs#emit_maybe".to_string()].as_slice()),
+        "a gate that can compile in production must keep its send in the denominator"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
+/// The unresolved-send exemption keyed on the enclosing signature alone, so a
+/// forwarder that sent some *other* expression shipped a request with no row
+/// and no finding.
+#[test]
+fn a_forwarder_sending_a_different_expression_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r"
+impl Server {
+    fn dispatch(&self, method: &str, params: Value) -> io::Result<()> {
+        let computed_method = rewrite(method);
+        self.send_request(computed_method, params)
+    }
+}
+",
+    )?;
+
+    assert!(emitted.is_empty(), "{emitted:?}");
+    assert_eq!(
+        findings,
+        vec!["emission-unresolved".to_string()],
+        "only the declared forwarding parameter is exempt; any other expression is a finding"
+    );
+    Ok(())
+}
+
+/// `other_method: &str` contains `method: &str`, so a helper that forwards
+/// nothing of the kind was read as a forwarder.
+#[test]
+fn a_similarly_named_parameter_is_not_the_forwarding_parameter()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_emitted, findings) = scan_synthetic(
+        r"
+impl Server {
+    fn relay(&self, other_method: &str, params: Value) -> io::Result<()> {
+        self.send_request(other_method, params)
+    }
+}
+",
+    )?;
+
+    assert_eq!(
+        findings,
+        vec!["emission-unresolved".to_string()],
+        "`other_method: &str` is not `method: &str`; the send must fail closed"
+    );
+    Ok(())
+}
+
+/// A send quoted in a trailing comment, a block comment, or a string literal is
+/// not evidence a request is still emitted — but it kept a stale row alive.
+#[test]
+fn sender_shaped_text_outside_code_is_not_an_emission() -> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r####"
+impl Server {
+    pub fn documented(&self) {
+        let removed = "self.send_request(\"workspace/codeLens/refresh\", p)";
+        let raw = r#"self.send_request("workspace/inlayHint/refresh", p)"#;
+        let quote = '"';
+        // self.send_request("workspace/diagnostic/refresh", p)
+        let live = 1; // self.send_request("workspace/foldingRange/refresh", p)
+        /* self.send_request("workspace/semanticTokens/refresh", p) */
+    }
+}
+"####,
+    )?;
+
+    assert!(emitted.is_empty(), "no comment or string may register as emission: {emitted:?}");
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
