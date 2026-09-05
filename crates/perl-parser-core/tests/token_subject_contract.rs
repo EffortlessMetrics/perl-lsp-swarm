@@ -52,6 +52,30 @@ fn flipped_lexer_config() -> LexerConfig {
     }
 }
 
+/// A parser configuration that differs from the production default.
+///
+/// An earlier revision of this suite excused the untested parser-configuration
+/// rule by asserting a second `ParserConfigIdentity` could not be built. That
+/// was simply wrong: `with_budget` is public, and its own documentation states
+/// that two parsers with different budgets *are* different configurations. The
+/// budget is derived from the production one rather than `ParseBudget::default`
+/// so this stays a perturbation of the real value.
+fn flipped_parser_config() -> ParserConfigIdentity {
+    let production = ParserConfigIdentity::production_default();
+    let mut budget = production.budget();
+    budget.max_errors = budget.max_errors.saturating_add(1);
+    production.with_budget(budget)
+}
+
+/// A parser configuration differing only in the one budget field the
+/// fingerprint used to omit.
+fn parser_config_with_other_heredoc_scan_bound() -> ParserConfigIdentity {
+    let production = ParserConfigIdentity::production_default();
+    let mut budget = production.budget();
+    budget.max_heredoc_scan_bytes = budget.max_heredoc_scan_bytes.saturating_add(1);
+    production.with_budget(budget)
+}
+
 fn complete(source: &str) -> TerminalState {
     TerminalState::CompleteEof { at: source.len() }
 }
@@ -369,6 +393,40 @@ fn fingerprint_separates_every_identity_field() -> R {
         ParserConfigIdentity::production_default(),
     );
     assert_ne!(base, reconfigured.fingerprint());
+
+    // Same bytes, logical source, generation and lexer configuration, different
+    // *parser* configuration. This case is why the test's name was previously
+    // untrue: the field was encoded but never perturbed here.
+    let reparsed = TokenSubjectIdentity::new(
+        ContentRevision::new(
+            logical_source("lib/Demo.pm"),
+            ContentDigest::of_bytes(source.as_bytes()),
+        ),
+        SourceGeneration::known("1"),
+        LexerConfigIdentity::production_default(),
+        flipped_parser_config(),
+    );
+    assert_ne!(base, reparsed.fingerprint());
+
+    // The heredoc scan bound is a real `ParseBudget` field, so two identities
+    // differing only in it are unequal under `ParserConfigIdentity`'s derived
+    // `PartialEq` — which is what `verify_against` compares. The fingerprint
+    // omitted it, so it separated *less* than equality did: a genuine collision
+    // in a function whose whole purpose is to separate distinct identities.
+    let rescanned = TokenSubjectIdentity::new(
+        ContentRevision::new(
+            logical_source("lib/Demo.pm"),
+            ContentDigest::of_bytes(source.as_bytes()),
+        ),
+        SourceGeneration::known("1"),
+        LexerConfigIdentity::production_default(),
+        parser_config_with_other_heredoc_scan_bound(),
+    );
+    assert_ne!(
+        base,
+        rescanned.fingerprint(),
+        "the fingerprint must separate every field that `ParserConfigIdentity` equality separates"
+    );
 
     Ok(())
 }
@@ -761,6 +819,33 @@ fn a_stale_lexer_configuration_fails_consumer_verification() -> R {
     let error = err_of(subject.verify_against(&expected))?;
 
     assert_rule(&error, "wrong_configuration", "lexer configuration identity")?;
+    Ok(())
+}
+
+/// The parser half of the configuration rule, which had gone unexercised.
+///
+/// The lexer half above and this one are separate `if` arms returning distinct
+/// details, so without this case the parser arm could be deleted outright and
+/// the whole suite would stay green — the exact shape of vacuity this file
+/// exists to prevent.
+#[test]
+fn a_different_parser_configuration_fails_consumer_verification() -> R {
+    let source = "my $x = 1;";
+    let subject = fresh_subject(source)?;
+
+    let expected = TokenSubjectIdentity::new(
+        ContentRevision::new(
+            logical_source("lib/Demo.pm"),
+            ContentDigest::of_bytes(source.as_bytes()),
+        ),
+        SourceGeneration::known("1"),
+        LexerConfigIdentity::production_default(),
+        flipped_parser_config(),
+    );
+
+    let error = err_of(subject.verify_against(&expected))?;
+
+    assert_rule(&error, "wrong_configuration", "parser configuration identity")?;
     Ok(())
 }
 

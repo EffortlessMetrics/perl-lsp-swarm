@@ -483,7 +483,8 @@ impl TokenSubjectIdentity {
              parser.budget.max_errors={max_errors}\n\
              parser.budget.max_depth={max_depth}\n\
              parser.budget.max_tokens_skipped={max_tokens_skipped}\n\
-             parser.budget.max_recoveries={max_recoveries}\n",
+             parser.budget.max_recoveries={max_recoveries}\n\
+             parser.budget.max_heredoc_scan_bytes={max_heredoc_scan_bytes}\n",
             schema = self.schema_version,
             logical_source = self.content_revision.logical_source_id.as_wire(),
             digest = self.content_revision.content_digest.as_wire(),
@@ -497,6 +498,7 @@ impl TokenSubjectIdentity {
             max_depth = budget.max_depth,
             max_tokens_skipped = budget.max_tokens_skipped,
             max_recoveries = budget.max_recoveries,
+            max_heredoc_scan_bytes = budget.max_heredoc_scan_bytes,
         );
         ContentDigest::of_bytes(encoded.as_bytes())
     }
