@@ -887,6 +887,40 @@ class BinaryTargetRoutingTests(unittest.TestCase):
         self.assertFalse(any(" --bin " in command for command in commands))
 
 
+    def test_integration_test_features_resolve_against_the_repository_root(self) -> None:
+        """Feature discovery must be anchored the same way target derivation is.
+
+        A cwd-relative read returns no features from any other working
+        directory, and the router then emits a `--test` command without the
+        `--features` Cargo needs to build that target.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            tests_root = root / "crates" / "gated-directory" / "tests"
+            tests_root.mkdir(parents=True)
+            (tests_root / "gated.rs").write_text(
+                '#![cfg(feature = "slow")]\n', encoding="utf-8"
+            )
+
+            previous = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                from_cwd = router.changed_integration_test_targets(
+                    ["crates/gated-directory/tests/gated.rs"]
+                )
+            finally:
+                os.chdir(previous)
+
+            from_root = router.changed_integration_test_targets(
+                ["crates/gated-directory/tests/gated.rs"], root
+            )
+
+        self.assertEqual({"gated-directory": [("gated", ("slow",))]}, from_root)
+        # The default root is the repository, not the process cwd, so the
+        # temporary package is invisible even while it is the cwd.
+        self.assertEqual({"gated-directory": [("gated", ())]}, from_cwd)
+
+
 class PackageTestTargetsUnitTests(unittest.TestCase):
     """Direct assertions on the derived data structure.
 

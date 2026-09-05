@@ -75,7 +75,9 @@ def changed_crates(paths: list[str]) -> list[str]:
     return result
 
 
-def changed_integration_test_targets(paths: list[str]) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
+def changed_integration_test_targets(
+    paths: list[str], repo_root: Path = REPO_ROOT
+) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
     """Return changed top-level integration test targets by crate directory."""
     result: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
     seen: set[tuple[str, str]] = set()
@@ -92,13 +94,21 @@ def changed_integration_test_targets(paths: list[str]) -> dict[str, list[tuple[s
         if key in seen:
             continue
         seen.add(key)
-        result.setdefault(crate_name, []).append((target, tuple(required_features_for_test(path))))
+        result.setdefault(crate_name, []).append(
+            (target, tuple(required_features_for_test(path, repo_root)))
+        )
     return result
 
 
-def required_features_for_test(path: str) -> list[str]:
-    """Return crate features gated by a changed integration test target."""
-    test_path = Path(path)
+def required_features_for_test(path: str, repo_root: Path = REPO_ROOT) -> list[str]:
+    """Return crate features gated by a changed integration test target.
+
+    ``path`` is repository-relative, so it resolves against ``repo_root`` for
+    the same reason target derivation does: a router run from any other working
+    directory would otherwise read no source and silently drop the feature
+    gate, emitting a `--test` command Cargo rejects for want of its features.
+    """
+    test_path = repo_root / path
     if not test_path.exists():
         return []
     try:
@@ -362,7 +372,7 @@ def augment_rust_focused_commands(
             continue
         if cmd not in commands:
             commands.append(cmd)
-    test_targets_by_crate = changed_integration_test_targets(paths)
+    test_targets_by_crate = changed_integration_test_targets(paths, repo_root)
     for crate_name in changed_crates(paths):
         targets = package_test_targets(crate_name, repo_root)
         if targets is None:

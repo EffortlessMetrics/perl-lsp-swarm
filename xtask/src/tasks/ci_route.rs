@@ -231,6 +231,7 @@ const CI_ROUTE_PACK: ProofPack = ProofPack {
     id: "ci-route-receipt",
     commands: &[
         "python -m unittest scripts/ci/test_route_codecov_packs.py",
+        "python -m unittest scripts/ci/test_route_codecov_binary_targets.py",
         "cargo test -p xtask --bin xtask --profile agent --locked ci_route -- --nocapture",
         "cargo test -p xtask --test ci_route_cli --profile agent --locked -- --nocapture",
         "cargo run -p xtask --profile agent --locked -- ci route --base origin/main --head HEAD --receipt target/receipts/ci-route.json",
@@ -778,6 +779,7 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
 
     if file == "scripts/ci/route-codecov-packs.py"
         || file == "scripts/ci/test_route_codecov_packs.py"
+        || file == "scripts/ci/test_route_codecov_binary_targets.py"
         || file == "scripts/ci/generate-coverage-pack-commands.py"
         || file == "scripts/ci/test_generate_coverage_pack_commands.py"
         || file == "xtask/src/tasks/ci_route.rs"
@@ -1818,6 +1820,27 @@ mod tests {
             receipt.skipped_by_policy.get("patch-coverage-ci-route").map(String::as_str),
             Some(NON_LCOV_COVERAGE_SKIP_REASON)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn route_receipt_maps_binary_target_router_proof_to_the_route_pack() -> Result<()> {
+        // The binary-target proof only guards the router if changing that file
+        // selects a pack, and if the selected pack actually runs it.
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/ci/test_route_codecov_binary_targets.py".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["ci-routing"]);
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "ci-route-receipt"
+                && pack.commands.iter().any(|command| {
+                    command == "python -m unittest scripts/ci/test_route_codecov_binary_targets.py"
+                })
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
         Ok(())
     }
 
