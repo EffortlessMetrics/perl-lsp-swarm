@@ -1,0 +1,3311 @@
+//! Pure operation execution authorization for the project environment model.
+//!
+//! [`super`] answers *which project inputs are active*. This module answers the
+//! separate operation question:
+//!
+//! ```text
+//! May this exact user-/CI-requested operation execute now,
+//! with these inputs, under this scope and authority?
+//! ```
+//!
+//! The vocabulary is deliberately transport-neutral and side-effect free. It
+//! performs no configuration read, trust transition, filesystem access, process
+//! spawn, cancellation, or provider work, and it introduces no LSP, DAP, or
+//! editor types. It compiles
+//!
+//! ```text
+//! ExecutionIntent
+//! + OperationTrustRequirement
+//! + environment/input authority facts
+//! + trust/policy evidence
+//! → ExecutionAuthorizationDecision
+//! ```
+//!
+//! # What an authorization decision is not
+//!
+//! A decision states that an operation's *authority* requirements are met. It
+//! never asserts that a resulting process plan is safe, that the selected
+//! interpreter is benign, or that project code under execution is trustworthy.
+//! Those remain separate obligations for the process-plan layer.
+//!
+//! # Separate facts
+//!
+//! Workspace source trust, environment input authority, input risk
+//! classification, user intent, operation capability requirement, policy
+//! denial, and execution authorization are distinct facts. No `bool` and no
+//! enum ordinal stands in for the complete decision: [`authorize`] is the only
+//! producer of an [`ExecutionAuthorizationDecision`], and the decision's
+//! granted capabilities are not publicly constructible or widenable.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::{Deserialize, Deserializer, Serialize};
+
+use super::{
+    EnvironmentFingerprint, EnvironmentInputAuthority, WorkspaceTrust, push_field, stable_id,
+};
+use crate::Digest;
+
+/// Schema version carried on the wire by [`ExecutionAuthorizationDecision`].
+///
+/// Bump whenever the meaning of an existing field, reason code, capability, or
+/// registry entry changes. Adding a reviewed operation profile that no existing
+/// caller can observe is additive; changing what a profile requires is not.
+///
+/// [`ExecutionIntent`] and [`AuthorizationEvidence`] do **not** carry this
+/// version on the wire. They are producer-constructed inputs evaluated in the
+/// same process version that built them, so a producer must re-derive them
+/// rather than persist and replay them across a version change; only the
+/// decision is versioned for transport, which is what #11095 requires of a
+/// published identity.
+pub const EXECUTION_AUTHORIZATION_SCHEMA_VERSION: u32 = 1;
+
+/// Version of the reviewed operation registry in [`OperationTrustRequirement`].
+pub const OPERATION_REGISTRY_VERSION: u32 = 1;
+
+const INTENT_ID_DOMAIN: &str = "execution_authorization.intent.v1";
+const EVIDENCE_ID_DOMAIN: &str = "execution_authorization.evidence.v1";
+const REQUIREMENT_ID_DOMAIN: &str = "execution_authorization.requirement.v1";
+const CLASSIFIED_INPUT_ID_DOMAIN: &str = "execution_authorization.input.v1";
+
+/// Maximum length of a caller-supplied identifier carried by this contract.
+///
+/// #11095 requires public identities and explanations to be *bounded*. Every
+/// caller-authored string that can reach an identity, a receipt, or the public
+/// explanation is length-checked so an unbounded value cannot be injected into
+/// an authorization record.
+pub const MAX_IDENTIFIER_LEN: usize = 256;
+
+/// Maximum length of an intent's claim boundary, which is prose rather than an
+/// identifier and is allowed more room.
+pub const MAX_CLAIM_BOUNDARY_LEN: usize = 1024;
+
+fn check_bounded(value: &str, field: &'static str, limit: usize) -> Result<(), AuthorizationError> {
+    if value.len() > limit {
+        return Err(AuthorizationError::UnboundedField { field, limit, actual: value.len() });
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Capabilities
+// ---------------------------------------------------------------------------
+
+/// One authority axis an operation may require and a decision may grant.
+///
+/// These are the nine authority classes an [`OperationTrustRequirement`] is
+/// expressed in. Variant order is not policy; it exists only so capability sets
+/// have a deterministic encoding. [`Self::identity_tag`] is the stable form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionCapability {
+    /// Read and analyze workspace source without executing anything.
+    SourceAnalysis,
+    /// Read files outside the workspace for module resolution.
+    ExternalRead,
+    /// Treat project-controlled configuration as authority.
+    ProjectConfiguration,
+    /// Invoke an external executable or tool.
+    ExecutableTool,
+    /// Let environment state influence Perl code loading.
+    EnvironmentCodeLoading,
+    /// Execute project-controlled Perl code.
+    ProjectCodeExecution,
+    /// Use a path outside the workspace root or a private/system path.
+    OutsideRootPath,
+    /// Run repeatedly on a persistent cadence rather than once on request.
+    PersistentCadence,
+    /// Hold an interactive or long-lived external session.
+    InteractiveSession,
+}
+
+impl ExecutionCapability {
+    /// Every capability in deterministic order.
+    pub const ALL: [Self; 9] = [
+        Self::SourceAnalysis,
+        Self::ExternalRead,
+        Self::ProjectConfiguration,
+        Self::ExecutableTool,
+        Self::EnvironmentCodeLoading,
+        Self::ProjectCodeExecution,
+        Self::OutsideRootPath,
+        Self::PersistentCadence,
+        Self::InteractiveSession,
+    ];
+
+    /// Stable machine-readable tag.
+    #[must_use]
+    pub const fn identity_tag(self) -> &'static str {
+        match self {
+            Self::SourceAnalysis => "source_analysis",
+            Self::ExternalRead => "external_read",
+            Self::ProjectConfiguration => "project_configuration",
+            Self::ExecutableTool => "executable_tool",
+            Self::EnvironmentCodeLoading => "environment_code_loading",
+            Self::ProjectCodeExecution => "project_code_execution",
+            Self::OutsideRootPath => "outside_root_path",
+            Self::PersistentCadence => "persistent_cadence",
+            Self::InteractiveSession => "interactive_session",
+        }
+    }
+
+    /// Whether this capability permits running code or an external binary.
+    ///
+    /// [`Self::SourceAnalysis`] and [`Self::ExternalRead`] are read-only; every
+    /// other axis is execution-bearing and is never granted implicitly.
+    #[must_use]
+    pub const fn is_execution_bearing(self) -> bool {
+        !matches!(self, Self::SourceAnalysis | Self::ExternalRead)
+    }
+}
+
+/// A set of capabilities, with no in-place mutation.
+///
+/// Anyone may *construct* an arbitrary set — [`Self::new`] and deserialization
+/// both allow it, and callers need that to declare what an intent requests. The
+/// property this buys is narrower and worth stating precisely: because there is
+/// no insert, extend, or union-in-place operation, and because
+/// [`ExecutionAuthorizationDecision`] keeps its granted set private behind a
+/// read-only accessor, a consumer holding a decision cannot widen the set that
+/// decision granted. Substituting a different decision is caught by
+/// [`ExecutionAuthorizationDecision::validate`], not by this type.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CapabilitySet(BTreeSet<ExecutionCapability>);
+
+impl CapabilitySet {
+    /// Build a set from any capability iterator.
+    #[must_use]
+    pub fn new(capabilities: impl IntoIterator<Item = ExecutionCapability>) -> Self {
+        Self(capabilities.into_iter().collect())
+    }
+
+    /// The empty set.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self(BTreeSet::new())
+    }
+
+    /// Whether the set contains `capability`.
+    #[must_use]
+    pub fn contains(&self, capability: ExecutionCapability) -> bool {
+        self.0.contains(&capability)
+    }
+
+    /// Whether the set is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Number of capabilities in the set.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Capabilities in deterministic order.
+    pub fn iter(&self) -> impl Iterator<Item = ExecutionCapability> + '_ {
+        self.0.iter().copied()
+    }
+
+    /// Whether every capability in `other` is present in this set.
+    #[must_use]
+    pub fn contains_all(&self, other: &Self) -> bool {
+        other.0.is_subset(&self.0)
+    }
+
+    /// Capabilities present here but absent from `other`.
+    #[must_use]
+    pub fn difference(&self, other: &Self) -> Self {
+        Self(self.0.difference(&other.0).copied().collect())
+    }
+
+    /// Stable tags in deterministic order.
+    #[must_use]
+    pub fn tags(&self) -> Vec<&'static str> {
+        self.0.iter().map(|capability| capability.identity_tag()).collect()
+    }
+}
+
+impl FromIterator<ExecutionCapability> for CapabilitySet {
+    fn from_iter<I: IntoIterator<Item = ExecutionCapability>>(iter: I) -> Self {
+        Self::new(iter)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scope
+// ---------------------------------------------------------------------------
+
+/// Which authority world a scope belongs to.
+///
+/// CI/hermetic authority is a separate class. It is never synthesized from
+/// editor workspace trust, and editor authority is never synthesized from a CI
+/// identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustScopeKind {
+    /// An interactive editor workspace governed by workspace trust.
+    EditorWorkspace,
+    /// A hermetic CI or batch context governed by a CI identity.
+    CiHermetic,
+}
+
+impl TrustScopeKind {
+    const fn identity_tag(self) -> &'static str {
+        match self {
+            Self::EditorWorkspace => "editor_workspace",
+            Self::CiHermetic => "ci_hermetic",
+        }
+    }
+}
+
+/// The exact scope an intent, evidence record, or decision is bound to.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrustScope {
+    /// Authority world.
+    pub kind: TrustScopeKind,
+    /// Stable workspace/root-set identity.
+    pub workspace_id: String,
+    /// Stable root identity within the workspace, when the operation is
+    /// root-scoped. Distinct roots may carry distinct trust generations.
+    ///
+    /// `Some("")` is rejected by validation: an empty identifier would encode
+    /// identically to `None` and let two distinct scopes share one identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root_id: Option<String>,
+    /// Stable client/session identity, when one exists. `Some("")` is rejected
+    /// for the same reason as [`Self::root_id`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+impl TrustScope {
+    /// Construct an editor workspace scope.
+    #[must_use]
+    pub fn editor_workspace(workspace_id: impl Into<String>) -> Self {
+        Self {
+            kind: TrustScopeKind::EditorWorkspace,
+            workspace_id: workspace_id.into(),
+            root_id: None,
+            session_id: None,
+        }
+    }
+
+    /// Construct a CI/hermetic scope.
+    #[must_use]
+    pub fn ci_hermetic(workspace_id: impl Into<String>) -> Self {
+        Self {
+            kind: TrustScopeKind::CiHermetic,
+            workspace_id: workspace_id.into(),
+            root_id: None,
+            session_id: None,
+        }
+    }
+
+    /// Return this scope bound to a specific root.
+    #[must_use]
+    pub fn with_root(mut self, root_id: impl Into<String>) -> Self {
+        self.root_id = Some(root_id.into());
+        self
+    }
+
+    /// Return this scope bound to a specific session.
+    #[must_use]
+    pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Check that no optional component is present-but-empty.
+    ///
+    /// The identity encoding writes an absent component as the empty string, so
+    /// `Some("")` would alias `None` and let two distinct scopes share one
+    /// intent, evidence, and decision identity. Rejecting the empty case keeps
+    /// the encoding injective without widening it.
+    fn validate(&self) -> Result<(), AuthorizationError> {
+        if self.workspace_id.is_empty() {
+            return Err(AuthorizationError::EmptyScopeWorkspaceId);
+        }
+        check_bounded(&self.workspace_id, "scope.workspace_id", MAX_IDENTIFIER_LEN)?;
+        if let Some(root) = self.root_id.as_deref() {
+            check_bounded(root, "scope.root_id", MAX_IDENTIFIER_LEN)?;
+        }
+        if let Some(session) = self.session_id.as_deref() {
+            check_bounded(session, "scope.session_id", MAX_IDENTIFIER_LEN)?;
+        }
+        if self.root_id.as_deref().is_some_and(str::is_empty) {
+            return Err(AuthorizationError::EmptyScopeComponent { field: "root_id" });
+        }
+        if self.session_id.as_deref().is_some_and(str::is_empty) {
+            return Err(AuthorizationError::EmptyScopeComponent { field: "session_id" });
+        }
+        Ok(())
+    }
+
+    fn push_identity(&self, material: &mut String, prefix: &str) {
+        push_field(material, &format!("{prefix}.kind"), self.kind.identity_tag());
+        push_field(material, &format!("{prefix}.workspace"), self.workspace_id.as_str());
+        push_field(material, &format!("{prefix}.root"), self.root_id.as_deref().unwrap_or(""));
+        push_field(
+            material,
+            &format!("{prefix}.session"),
+            self.session_id.as_deref().unwrap_or(""),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Generations
+// ---------------------------------------------------------------------------
+
+/// Every generation an authorization is bound to.
+///
+/// Any load-bearing movement in these values makes a prior decision stale.
+/// [`ExecutionAuthorizationDecision::is_current_for`] is the executable form of
+/// that rule.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundGenerations {
+    /// Configuration generation the decision was compiled against.
+    pub configuration_generation: u64,
+    /// Trust/policy generation the decision was compiled against.
+    pub policy_generation: u64,
+    /// Source/document generation the decision was compiled against.
+    pub source_generation: u64,
+    /// Exact environment snapshot identity the decision was compiled against.
+    pub environment_fingerprint: EnvironmentFingerprint,
+}
+
+impl BoundGenerations {
+    /// Construct a generation binding.
+    #[must_use]
+    pub fn new(
+        configuration_generation: u64,
+        policy_generation: u64,
+        source_generation: u64,
+        environment_fingerprint: EnvironmentFingerprint,
+    ) -> Self {
+        Self {
+            configuration_generation,
+            policy_generation,
+            source_generation,
+            environment_fingerprint,
+        }
+    }
+
+    fn push_identity(&self, material: &mut String, prefix: &str) {
+        push_field(
+            material,
+            &format!("{prefix}.configuration"),
+            &self.configuration_generation.to_string(),
+        );
+        push_field(material, &format!("{prefix}.policy"), &self.policy_generation.to_string());
+        push_field(material, &format!("{prefix}.source"), &self.source_generation.to_string());
+        push_field(
+            material,
+            &format!("{prefix}.environment"),
+            self.environment_fingerprint.as_str(),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Operation registry
+// ---------------------------------------------------------------------------
+
+/// A reviewed operation profile.
+///
+/// Callers select a registered profile; they cannot invent a free-form
+/// operation name, and they cannot declare a profile that asks for less
+/// authority than the registry says it uses. New product domains extend the
+/// registry through review, not at a call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationProfile {
+    /// Parse and index workspace source only.
+    SourceAnalysisOnly,
+    /// Resolve modules, reading roots outside the workspace.
+    ModuleResolutionExternalRead,
+    /// Run the current saved file.
+    RunCurrentSavedFile,
+    /// Run the project's test suite.
+    RunTests,
+    /// Run a project-defined command.
+    RunProjectCommand,
+    /// Validate a debug configuration before launch.
+    DapPrelaunchCheck,
+    /// Launch a debuggee or debug helper process.
+    DapDebuggeeOrHelper,
+    /// Run an external formatter.
+    ExternalFormatter,
+    /// Run an external linter or critic.
+    ExternalLinterOrCritic,
+    /// Compile-check the current saved file with a real interpreter.
+    PerlCompileCurrentSavedFile,
+    /// Compile-check on every save, on a persistent cadence.
+    TrustedCompileOnSave,
+    /// Probe an interpreter or module for identity facts.
+    InterpreterOrModuleProbe,
+    /// Run an oracle or corpus harness.
+    OracleOrCorpusHarness,
+    /// Run a hermetic CI process.
+    CiHermeticProcess,
+    /// Hold an interactive external session.
+    InteractiveExternalSession,
+}
+
+impl OperationProfile {
+    /// Every reviewed profile in deterministic order.
+    pub const ALL: [Self; 15] = [
+        Self::SourceAnalysisOnly,
+        Self::ModuleResolutionExternalRead,
+        Self::RunCurrentSavedFile,
+        Self::RunTests,
+        Self::RunProjectCommand,
+        Self::DapPrelaunchCheck,
+        Self::DapDebuggeeOrHelper,
+        Self::ExternalFormatter,
+        Self::ExternalLinterOrCritic,
+        Self::PerlCompileCurrentSavedFile,
+        Self::TrustedCompileOnSave,
+        Self::InterpreterOrModuleProbe,
+        Self::OracleOrCorpusHarness,
+        Self::CiHermeticProcess,
+        Self::InteractiveExternalSession,
+    ];
+
+    /// Stable machine-readable tag.
+    #[must_use]
+    pub const fn identity_tag(self) -> &'static str {
+        match self {
+            Self::SourceAnalysisOnly => "source_analysis_only",
+            Self::ModuleResolutionExternalRead => "module_resolution_external_read",
+            Self::RunCurrentSavedFile => "run_current_saved_file",
+            Self::RunTests => "run_tests",
+            Self::RunProjectCommand => "run_project_command",
+            Self::DapPrelaunchCheck => "dap_prelaunch_check",
+            Self::DapDebuggeeOrHelper => "dap_debuggee_or_helper",
+            Self::ExternalFormatter => "external_formatter",
+            Self::ExternalLinterOrCritic => "external_linter_or_critic",
+            Self::PerlCompileCurrentSavedFile => "perl_compile_current_saved_file",
+            Self::TrustedCompileOnSave => "trusted_compile_on_save",
+            Self::InterpreterOrModuleProbe => "interpreter_or_module_probe",
+            Self::OracleOrCorpusHarness => "oracle_or_corpus_harness",
+            Self::CiHermeticProcess => "ci_hermetic_process",
+            Self::InteractiveExternalSession => "interactive_external_session",
+        }
+    }
+}
+
+/// Which scope kinds a profile may run under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequiredScope {
+    /// Only an editor workspace scope.
+    EditorWorkspaceOnly,
+    /// Only a CI/hermetic scope.
+    CiHermeticOnly,
+    /// Either scope kind, evaluated under that scope's own authority class.
+    EitherScope,
+}
+
+impl RequiredScope {
+    const fn identity_tag(self) -> &'static str {
+        match self {
+            Self::EditorWorkspaceOnly => "editor_workspace_only",
+            Self::CiHermeticOnly => "ci_hermetic_only",
+            Self::EitherScope => "either_scope",
+        }
+    }
+
+    const fn admits(self, kind: TrustScopeKind) -> bool {
+        matches!(
+            (self, kind),
+            (Self::EitherScope, _)
+                | (Self::EditorWorkspaceOnly, TrustScopeKind::EditorWorkspace)
+                | (Self::CiHermeticOnly, TrustScopeKind::CiHermetic)
+        )
+    }
+}
+
+/// The reviewed authority a profile requires.
+///
+/// This is registry data, not caller input: obtain it with
+/// [`OperationTrustRequirement::for_profile`]. It states required capabilities
+/// and explicit non-claims. It deliberately encodes no domain output semantics
+/// and no process budget.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperationTrustRequirement {
+    /// Registry version this entry was compiled from.
+    pub registry_version: u32,
+    /// The profile this requirement describes.
+    pub profile: OperationProfile,
+    /// Capabilities that must all be granted for the operation to proceed.
+    pub required: CapabilitySet,
+    /// Scope kinds this profile may run under.
+    pub scope: RequiredScope,
+    /// Stable codes for what authorizing this profile does not prove.
+    pub non_claims: Vec<String>,
+}
+
+impl OperationTrustRequirement {
+    /// The reviewed requirement for one profile.
+    #[must_use]
+    pub fn for_profile(profile: OperationProfile) -> Self {
+        use ExecutionCapability as Cap;
+
+        let (required, scope): (&[Cap], RequiredScope) = match profile {
+            OperationProfile::SourceAnalysisOnly => {
+                (&[Cap::SourceAnalysis], RequiredScope::EitherScope)
+            }
+            // Reading roots outside the workspace is, by definition, using a
+            // path outside the root: the two travel together.
+            OperationProfile::ModuleResolutionExternalRead => (
+                &[Cap::SourceAnalysis, Cap::ExternalRead, Cap::OutsideRootPath],
+                RequiredScope::EitherScope,
+            ),
+            // Running a file is at least as much execution as compile-checking
+            // one, so it carries the same environment authority.
+            OperationProfile::RunCurrentSavedFile => (
+                &[
+                    Cap::SourceAnalysis,
+                    Cap::ExecutableTool,
+                    Cap::EnvironmentCodeLoading,
+                    Cap::ProjectCodeExecution,
+                ],
+                RequiredScope::EditorWorkspaceOnly,
+            ),
+            OperationProfile::RunTests => (
+                &[
+                    Cap::SourceAnalysis,
+                    Cap::ProjectConfiguration,
+                    Cap::ExecutableTool,
+                    Cap::EnvironmentCodeLoading,
+                    Cap::ProjectCodeExecution,
+                ],
+                RequiredScope::EitherScope,
+            ),
+            OperationProfile::RunProjectCommand => (
+                &[
+                    Cap::ProjectConfiguration,
+                    Cap::ExecutableTool,
+                    Cap::EnvironmentCodeLoading,
+                    Cap::ProjectCodeExecution,
+                ],
+                RequiredScope::EitherScope,
+            ),
+            // Prelaunch validation inspects a configuration and the tool it
+            // names. It does not itself run project code.
+            OperationProfile::DapPrelaunchCheck => (
+                &[Cap::SourceAnalysis, Cap::ProjectConfiguration, Cap::ExecutableTool],
+                RequiredScope::EditorWorkspaceOnly,
+            ),
+            OperationProfile::DapDebuggeeOrHelper => (
+                &[
+                    Cap::ExecutableTool,
+                    Cap::EnvironmentCodeLoading,
+                    Cap::ProjectCodeExecution,
+                    Cap::InteractiveSession,
+                ],
+                RequiredScope::EditorWorkspaceOnly,
+            ),
+            OperationProfile::ExternalFormatter | OperationProfile::ExternalLinterOrCritic => {
+                (&[Cap::ExecutableTool], RequiredScope::EitherScope)
+            }
+            // `perl -c` runs BEGIN blocks and loads modules, so a compile check
+            // is project-code execution, not a read-only analysis.
+            OperationProfile::PerlCompileCurrentSavedFile => (
+                &[
+                    Cap::SourceAnalysis,
+                    Cap::ExecutableTool,
+                    Cap::EnvironmentCodeLoading,
+                    Cap::ProjectCodeExecution,
+                ],
+                RequiredScope::EditorWorkspaceOnly,
+            ),
+            // Identical to a manual compile plus the cadence authority that
+            // makes it repeat without a fresh user action.
+            OperationProfile::TrustedCompileOnSave => (
+                &[
+                    Cap::SourceAnalysis,
+                    Cap::ExecutableTool,
+                    Cap::EnvironmentCodeLoading,
+                    Cap::ProjectCodeExecution,
+                    Cap::PersistentCadence,
+                ],
+                RequiredScope::EditorWorkspaceOnly,
+            ),
+            OperationProfile::InterpreterOrModuleProbe => {
+                (&[Cap::ExecutableTool, Cap::EnvironmentCodeLoading], RequiredScope::EitherScope)
+            }
+            OperationProfile::OracleOrCorpusHarness => (
+                &[
+                    Cap::ExternalRead,
+                    Cap::OutsideRootPath,
+                    Cap::ExecutableTool,
+                    Cap::EnvironmentCodeLoading,
+                    Cap::ProjectCodeExecution,
+                ],
+                RequiredScope::EitherScope,
+            ),
+            OperationProfile::CiHermeticProcess => (
+                &[
+                    Cap::ProjectConfiguration,
+                    Cap::ExecutableTool,
+                    Cap::EnvironmentCodeLoading,
+                    Cap::ProjectCodeExecution,
+                ],
+                RequiredScope::CiHermeticOnly,
+            ),
+            OperationProfile::InteractiveExternalSession => (
+                &[
+                    Cap::ExecutableTool,
+                    Cap::EnvironmentCodeLoading,
+                    Cap::ProjectCodeExecution,
+                    Cap::InteractiveSession,
+                ],
+                RequiredScope::EditorWorkspaceOnly,
+            ),
+        };
+
+        Self {
+            registry_version: OPERATION_REGISTRY_VERSION,
+            profile,
+            required: CapabilitySet::new(required.iter().copied()),
+            scope,
+            non_claims: vec![
+                NON_CLAIM_PROCESS_PLAN_SAFETY.to_string(),
+                NON_CLAIM_PROJECT_CODE_BENIGN.to_string(),
+                NON_CLAIM_NO_SANDBOX.to_string(),
+            ],
+        }
+    }
+
+    /// Stable identity of this registry entry.
+    #[must_use]
+    pub fn identity(&self) -> String {
+        stable_id(
+            REQUIREMENT_ID_DOMAIN,
+            &[
+                &self.registry_version.to_string(),
+                self.profile.identity_tag(),
+                &self.required.tags().join(","),
+                self.scope.identity_tag(),
+            ],
+        )
+    }
+}
+
+/// Authorizing an operation does not prove its process plan safe.
+pub const NON_CLAIM_PROCESS_PLAN_SAFETY: &str = "non_claim.process_plan_safety";
+/// Authorizing an operation does not prove project code benign.
+pub const NON_CLAIM_PROJECT_CODE_BENIGN: &str = "non_claim.project_code_benign";
+/// Authorization is not a sandbox and provides no containment.
+pub const NON_CLAIM_NO_SANDBOX: &str = "non_claim.no_sandbox";
+
+// ---------------------------------------------------------------------------
+// Input risk vocabulary
+// ---------------------------------------------------------------------------
+
+/// Stable class of one execution-bearing input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputRiskClass {
+    /// A path contained within the workspace root.
+    WorkspaceContainedPath,
+    /// An absolute, private, or system path outside the workspace.
+    ExternalAbsolutePath,
+    /// A symlinked or traversal path escaping the workspace root.
+    SymlinkOrTraversalPath,
+    /// A user- or machine-scoped setting.
+    UserScopedSetting,
+    /// A workspace- or resource-scoped setting.
+    WorkspaceScopedSetting,
+    /// Ambient `PATH` or working directory.
+    ///
+    /// The two are deliberately one class. Both make the operation's
+    /// *resolution* ambient rather than selected — `PATH` decides which
+    /// executable a bare tool name reaches, and the working directory decides
+    /// where a relative script path, a relative `@INC` entry, and a `PATH`
+    /// entry of `.` resolve. Neither is authority the workspace or the user
+    /// chose for this operation, so both require confirmation rather than
+    /// being granted, and both are inescapable
+    /// ([`ClassifiedInput::applies_regardless_of_intent`]).
+    ///
+    /// Splitting them would let a consumer report the two facts separately,
+    /// but it would not change any decision: no rule grants one and withholds
+    /// the other. It is therefore left as a schema change for the first
+    /// consumer that needs the distinction, not made speculatively here.
+    AmbientPathOrCwd,
+    /// Ambient Perl environment such as `PERL5LIB`, `PERL5OPT`, `PERLLIB`,
+    /// `local::lib`, `perlbrew`, or `plenv`.
+    AmbientPerlEnvironment,
+    /// A project-controlled executable, command, argv, profile, or config file.
+    ProjectExecutableOrCommand,
+    /// An explicitly selected and verified tool or interpreter.
+    SelectedVerifiedTool,
+    /// An environment value that may carry a secret.
+    SecretBearingValue,
+    /// Provenance is unknown or unavailable.
+    UnknownProvenance,
+}
+
+impl InputRiskClass {
+    /// Stable machine-readable tag.
+    #[must_use]
+    pub const fn identity_tag(self) -> &'static str {
+        match self {
+            Self::WorkspaceContainedPath => "workspace_contained_path",
+            Self::ExternalAbsolutePath => "external_absolute_path",
+            Self::SymlinkOrTraversalPath => "symlink_or_traversal_path",
+            Self::UserScopedSetting => "user_scoped_setting",
+            Self::WorkspaceScopedSetting => "workspace_scoped_setting",
+            Self::AmbientPathOrCwd => "ambient_path_or_cwd",
+            Self::AmbientPerlEnvironment => "ambient_perl_environment",
+            Self::ProjectExecutableOrCommand => "project_executable_or_command",
+            Self::SelectedVerifiedTool => "selected_verified_tool",
+            Self::SecretBearingValue => "secret_bearing_value",
+            Self::UnknownProvenance => "unknown_provenance",
+        }
+    }
+
+    /// Whether a value of this class may carry a secret and must never reach a
+    /// public explanation even in redacted-value form.
+    #[must_use]
+    pub const fn is_secret_bearing(self) -> bool {
+        matches!(self, Self::SecretBearingValue)
+    }
+}
+
+/// Disposition of one classified input under review.
+///
+/// "Suspicious" is not automatically malicious, and an accepted workspace trust
+/// does not automatically accept every input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputDisposition {
+    /// The input is accepted as authority for its class.
+    Accepted,
+    /// The input needs a separate, stronger authority before it counts.
+    RequiresSeparateAuthority,
+    /// The input needs an explicit confirmation before it counts.
+    ConfirmationRequired,
+    /// The input is accepted, with capabilities withheld.
+    ///
+    /// The withheld capabilities are named by [`EvidenceLimitation`] entries on
+    /// the surrounding [`AuthorizationEvidence`], one per capability this input
+    /// cannot support. This disposition on its own says only "accepted, but not
+    /// for everything"; without the matching limitation rows it is
+    /// indistinguishable from [`Self::Accepted`] and grants just as much.
+    AcceptedLimited,
+    /// The input is denied.
+    Denied,
+    /// The input's provenance or value could not be established.
+    UnknownNotProven,
+}
+
+impl InputDisposition {
+    /// Stable machine-readable tag.
+    #[must_use]
+    pub const fn identity_tag(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::RequiresSeparateAuthority => "requires_separate_authority",
+            Self::ConfirmationRequired => "confirmation_required",
+            Self::AcceptedLimited => "accepted_limited",
+            Self::Denied => "denied",
+            Self::UnknownNotProven => "unknown_not_proven",
+        }
+    }
+
+    /// Whether this disposition makes the input active authority.
+    #[must_use]
+    pub const fn is_accepted(self) -> bool {
+        matches!(self, Self::Accepted | Self::AcceptedLimited)
+    }
+}
+
+/// Stable identity of one classified input.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ClassifiedInputId(String);
+
+impl ClassifiedInputId {
+    /// String form of the identity.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ClassifiedInputId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// One execution-bearing input, classified and dispositioned.
+///
+/// The raw value never appears here: only a class, an authority, a stable
+/// source identifier, and an optional value fingerprint.
+///
+/// [`Self::id`] is *derived* from the other fields, so deserialization
+/// recomputes it and rejects a mismatch: a transported record cannot keep an
+/// already-approved identity while swapping its risk class, authority, or
+/// disposition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClassifiedInput {
+    /// Stable identity derived from the classification evidence.
+    pub id: ClassifiedInputId,
+    /// Logical slot this input supplies, such as `tool.formatter`.
+    pub semantic_key: String,
+    /// Risk class.
+    pub risk_class: InputRiskClass,
+    /// Authority class carried over from the environment model.
+    pub authority: EnvironmentInputAuthority,
+    /// Reviewed disposition.
+    pub disposition: InputDisposition,
+    /// Fingerprint of the behavior-bearing value, when one exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_fingerprint: Option<Digest>,
+    /// Stable explanation code for the disposition.
+    pub explanation_code: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClassifiedInputWire {
+    id: ClassifiedInputId,
+    semantic_key: String,
+    risk_class: InputRiskClass,
+    authority: EnvironmentInputAuthority,
+    disposition: InputDisposition,
+    #[serde(default)]
+    value_fingerprint: Option<Digest>,
+    explanation_code: String,
+}
+
+impl<'de> Deserialize<'de> for ClassifiedInput {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = ClassifiedInputWire::deserialize(deserializer)?;
+        let rebuilt = Self::new(
+            wire.semantic_key,
+            wire.risk_class,
+            wire.authority,
+            wire.disposition,
+            wire.value_fingerprint,
+            wire.explanation_code,
+        );
+        if rebuilt.id != wire.id {
+            return Err(serde::de::Error::custom(AuthorizationError::ForgedInputIdentity {
+                input_id: wire.id,
+            }));
+        }
+        Ok(rebuilt)
+    }
+}
+
+impl ClassifiedInput {
+    /// Classify one execution-bearing input.
+    #[must_use]
+    pub fn new(
+        semantic_key: impl Into<String>,
+        risk_class: InputRiskClass,
+        authority: EnvironmentInputAuthority,
+        disposition: InputDisposition,
+        value_fingerprint: Option<Digest>,
+        explanation_code: impl Into<String>,
+    ) -> Self {
+        let semantic_key = semantic_key.into();
+        let explanation_code = explanation_code.into();
+        let fingerprint = value_fingerprint.as_ref().map_or("", Digest::as_str);
+        let id = ClassifiedInputId(stable_id(
+            CLASSIFIED_INPUT_ID_DOMAIN,
+            &[
+                semantic_key.as_str(),
+                risk_class.identity_tag(),
+                authority.identity_tag(),
+                disposition.identity_tag(),
+                fingerprint,
+                explanation_code.as_str(),
+            ],
+        ));
+        Self {
+            id,
+            semantic_key,
+            risk_class,
+            authority,
+            disposition,
+            value_fingerprint,
+            explanation_code,
+        }
+    }
+
+    /// Whether this input's identity still matches the fields it derives from.
+    ///
+    /// The fields are public for ergonomics, so this is the check that keeps a
+    /// relabelled input from carrying an identity it no longer earns.
+    #[must_use]
+    pub fn identity_matches_fields(&self) -> bool {
+        let rebuilt = Self::new(
+            self.semantic_key.clone(),
+            self.risk_class,
+            self.authority,
+            self.disposition,
+            self.value_fingerprint.clone(),
+            self.explanation_code.clone(),
+        );
+        rebuilt.id == self.id
+    }
+
+    /// Whether this input is evaluated even when an intent does not name it.
+    ///
+    /// Some inputs are scope-level facts rather than per-operation choices, so
+    /// an intent cannot narrow its declaration to escape their classification:
+    ///
+    /// - ambient process state is not opt-in. An ambient `PERL5LIB`,
+    ///   `PERL5OPT`, `PATH`, or working directory reaches the interpreter
+    ///   regardless of what the operation declared it would consume.
+    /// - a path that escapes the workspace root is a hazard for the whole
+    ///   scope. [`ExecutionCapability::OutsideRootPath`] is blanket authority
+    ///   to leave the root, so granting it while a known traversal path sits in
+    ///   the evidence would hand a consumer exactly the path that was denied.
+    ///
+    /// Slot-specific inputs are deliberately *not* inescapable: a denied
+    /// formatter is not a reason to refuse an unrelated test run.
+    #[must_use]
+    pub const fn applies_regardless_of_intent(&self) -> bool {
+        matches!(
+            self.risk_class,
+            InputRiskClass::AmbientPathOrCwd
+                | InputRiskClass::AmbientPerlEnvironment
+                | InputRiskClass::SymlinkOrTraversalPath
+        )
+    }
+
+    fn push_identity(&self, material: &mut String) {
+        push_field(material, "input.id", self.id.as_str());
+        push_field(material, "input.key", self.semantic_key.as_str());
+        push_field(material, "input.risk", self.risk_class.identity_tag());
+        push_field(material, "input.authority", self.authority.identity_tag());
+        push_field(material, "input.disposition", self.disposition.identity_tag());
+        push_field(
+            material,
+            "input.value",
+            self.value_fingerprint.as_ref().map_or("", Digest::as_str),
+        );
+        push_field(material, "input.explanation", self.explanation_code.as_str());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Evidence
+// ---------------------------------------------------------------------------
+
+/// Who requested the operation.
+///
+/// A user action is an input to authorization, never a substitute for it: an
+/// explicit action does not override denied executable, environment, or path
+/// authority.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AuthorizationActor {
+    /// No actor: the operation was not explicitly requested by anyone.
+    None,
+    /// An explicit, attributable user action.
+    ExplicitUserAction {
+        /// Stable identity of the action.
+        action_id: String,
+    },
+    /// A CI identity in a hermetic scope.
+    CiIdentity {
+        /// Stable identity of the CI principal.
+        identity_id: String,
+    },
+}
+
+impl AuthorizationActor {
+    const fn identity_tag(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ExplicitUserAction { .. } => "explicit_user_action",
+            Self::CiIdentity { .. } => "ci_identity",
+        }
+    }
+
+    fn actor_id(&self) -> &str {
+        match self {
+            Self::None => "",
+            Self::ExplicitUserAction { action_id } => action_id.as_str(),
+            Self::CiIdentity { identity_id } => identity_id.as_str(),
+        }
+    }
+
+    /// Whether this actor is an explicit user action.
+    #[must_use]
+    pub const fn is_explicit_user_action(&self) -> bool {
+        matches!(self, Self::ExplicitUserAction { .. })
+    }
+
+    /// Whether this actor is a CI identity.
+    #[must_use]
+    pub const fn is_ci_identity(&self) -> bool {
+        matches!(self, Self::CiIdentity { .. })
+    }
+}
+
+/// A scoped, expiring capability grant.
+///
+/// An override is explicit, bound to one scope, bound to the policy generation
+/// that issued it, and expirable. It can never defeat a policy denial, and it
+/// never overrules a denied input — it supplies only what was left
+/// unestablished.
+///
+/// # Binding a grant to the inputs it was granted for
+///
+/// A capability is coarser than the thing a user actually confirmed. Approving
+/// one ambient `PATH` executable should not silently authorize a *different*
+/// ambient executable for the rest of the generation window. Set
+/// [`Self::bound_input_ids`] to the inputs the grant was issued for and the
+/// override applies only while the operation consumes those inputs.
+///
+/// Leaving it empty is a deliberate scope-wide capability grant, which is
+/// coarser and should be reserved for cases where that is genuinely intended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionOverride {
+    /// Stable identity of the grant.
+    pub override_id: String,
+    /// Exact scope the grant applies to.
+    pub scope: TrustScope,
+    /// Policy generation at which the grant was issued.
+    pub granted_policy_generation: u64,
+    /// Last policy generation at which the grant remains valid.
+    pub expires_after_policy_generation: u64,
+    /// Capabilities the grant supplies.
+    pub capabilities: CapabilitySet,
+    /// Inputs this grant was issued for.
+    ///
+    /// When non-empty, the override applies only if every input the operation
+    /// consumes is listed here, so a grant cannot be reused for an input the
+    /// user never saw. Empty means a scope-wide capability grant.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bound_input_ids: Vec<ClassifiedInputId>,
+}
+
+impl SessionOverride {
+    /// Whether the grant is current for `scope` at `policy_generation`.
+    #[must_use]
+    pub fn is_current_for(&self, scope: &TrustScope, policy_generation: u64) -> bool {
+        self.scope == *scope
+            && policy_generation >= self.granted_policy_generation
+            && policy_generation <= self.expires_after_policy_generation
+    }
+
+    /// Whether this grant covers the inputs an operation actually consumes.
+    ///
+    /// An unbound grant covers everything in its scope. A bound grant covers an
+    /// operation only when it consumes at least one input and every input it
+    /// consumes was part of the grant, so confirming one ambient executable
+    /// cannot authorize another.
+    ///
+    /// The non-empty requirement is load-bearing rather than defensive: `all`
+    /// over an empty slice is vacuously true, so without it a grant bound to
+    /// one specific input would authorize an operation that declares no inputs
+    /// at all — the opposite of what binding a grant is for.
+    #[must_use]
+    pub fn covers_inputs(&self, inputs: &[&ClassifiedInput]) -> bool {
+        if self.bound_input_ids.is_empty() {
+            return true;
+        }
+        if inputs.is_empty() {
+            return false;
+        }
+        let bound: BTreeSet<&ClassifiedInputId> = self.bound_input_ids.iter().collect();
+        inputs.iter().all(|input| bound.contains(&input.id))
+    }
+
+    fn push_identity(&self, material: &mut String) {
+        push_field(material, "override.id", self.override_id.as_str());
+        self.scope.push_identity(material, "override.scope");
+        push_field(material, "override.granted", &self.granted_policy_generation.to_string());
+        push_field(material, "override.expires", &self.expires_after_policy_generation.to_string());
+        push_field(material, "override.capabilities", &self.capabilities.tags().join(","));
+        let mut bound: Vec<&ClassifiedInputId> = self.bound_input_ids.iter().collect();
+        bound.sort();
+        for input_id in bound {
+            push_field(material, "override.bound_input", input_id.as_str());
+        }
+    }
+}
+
+/// An administrator or policy denial of specific capabilities.
+///
+/// Policy denial dominates every local grant, including a current session
+/// override and an explicit user action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyDenial {
+    /// Stable identity of the denying policy.
+    pub policy_id: String,
+    /// Capabilities the policy denies.
+    pub denied: CapabilitySet,
+    /// Stable explanation code.
+    pub reason_code: String,
+}
+
+impl PolicyDenial {
+    /// Construct a policy denial.
+    #[must_use]
+    pub fn new(
+        policy_id: impl Into<String>,
+        denied: CapabilitySet,
+        reason_code: impl Into<String>,
+    ) -> Self {
+        Self { policy_id: policy_id.into(), denied, reason_code: reason_code.into() }
+    }
+
+    fn push_identity(&self, material: &mut String) {
+        push_field(material, "policy.id", self.policy_id.as_str());
+        push_field(material, "policy.denied", &self.denied.tags().join(","));
+        push_field(material, "policy.reason", self.reason_code.as_str());
+    }
+}
+
+/// Stable identity of one evidence record.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AuthorizationEvidenceId(String);
+
+impl AuthorizationEvidenceId {
+    /// String form of the identity.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for AuthorizationEvidenceId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// The authority facts an authorization is evaluated against.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorizationEvidence {
+    /// Scope these facts belong to.
+    pub scope: TrustScope,
+    /// Workspace trust for an editor scope. Not consulted under a CI scope.
+    pub trust: WorkspaceTrust,
+    /// Who requested the operation.
+    pub actor: AuthorizationActor,
+    /// Generations these facts were observed at.
+    pub generations: BoundGenerations,
+    /// Classified execution-bearing inputs.
+    pub inputs: Vec<ClassifiedInput>,
+    /// A scoped capability grant, when one is active.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_override: Option<SessionOverride>,
+    /// Policy denials in force.
+    pub policy_denials: Vec<PolicyDenial>,
+    /// Authority facts this evidence could not establish.
+    pub limitations: Vec<EvidenceLimitation>,
+}
+
+/// One authority fact a producer could not establish.
+///
+/// A limitation is load-bearing, not cosmetic: it names the capability it
+/// prevents establishing, and [`authorize`] fails closed on it rather than
+/// letting otherwise-trusted evidence grant that capability. A producer that
+/// cannot verify a tool's identity says so here instead of staying silent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceLimitation {
+    /// Stable machine-readable code.
+    pub code: String,
+    /// The capability this limitation prevents establishing.
+    pub capability: ExecutionCapability,
+}
+
+impl EvidenceLimitation {
+    /// Record one unestablished authority fact.
+    #[must_use]
+    pub fn new(code: impl Into<String>, capability: ExecutionCapability) -> Self {
+        Self { code: code.into(), capability }
+    }
+}
+
+impl AuthorizationEvidence {
+    /// Stable identity of this evidence record.
+    ///
+    /// Identity is independent of the order inputs, policy denials, and
+    /// limitation codes were supplied in: the same facts always yield the same
+    /// identity.
+    #[must_use]
+    pub fn identity(&self) -> AuthorizationEvidenceId {
+        let mut material = String::new();
+        self.scope.push_identity(&mut material, "scope");
+        push_field(&mut material, "trust", self.trust.identity_tag());
+        push_field(&mut material, "actor.kind", self.actor.identity_tag());
+        push_field(&mut material, "actor.id", self.actor.actor_id());
+        self.generations.push_identity(&mut material, "generation");
+
+        let mut inputs: Vec<&ClassifiedInput> = self.inputs.iter().collect();
+        inputs.sort_by(|left, right| left.id.cmp(&right.id));
+        for input in inputs {
+            input.push_identity(&mut material);
+        }
+
+        if let Some(session_override) = &self.session_override {
+            session_override.push_identity(&mut material);
+        }
+
+        let mut denials: Vec<&PolicyDenial> = self.policy_denials.iter().collect();
+        denials.sort_by(|left, right| {
+            // The denied capability set is part of a denial's identity: two
+            // rows sharing a policy id and reason code but denying different
+            // capabilities are different facts, and leaving them out here made
+            // identity depend on the order they were supplied in.
+            (left.policy_id.as_str(), left.reason_code.as_str(), left.denied.tags()).cmp(&(
+                right.policy_id.as_str(),
+                right.reason_code.as_str(),
+                right.denied.tags(),
+            ))
+        });
+        for denial in denials {
+            denial.push_identity(&mut material);
+        }
+
+        let mut limitations: Vec<&EvidenceLimitation> = self.limitations.iter().collect();
+        limitations.sort_by(|left, right| {
+            (left.code.as_str(), left.capability).cmp(&(right.code.as_str(), right.capability))
+        });
+        for limitation in limitations {
+            push_field(&mut material, "limitation.code", limitation.code.as_str());
+            push_field(
+                &mut material,
+                "limitation.capability",
+                limitation.capability.identity_tag(),
+            );
+        }
+        AuthorizationEvidenceId(stable_id(EVIDENCE_ID_DOMAIN, &[material.as_str()]))
+    }
+
+    /// Check structural invariants that must hold before evaluation.
+    ///
+    /// A failure here is not a denial: it means the evidence cannot be
+    /// evaluated at all. [`authorize`] converts a failure into
+    /// [`AuthorizationOutcome::NotProven`] rather than an allow.
+    pub fn validate(&self) -> Result<(), AuthorizationError> {
+        self.scope.validate()?;
+        match &self.actor {
+            AuthorizationActor::None => {}
+            AuthorizationActor::ExplicitUserAction { action_id } => {
+                if action_id.is_empty() {
+                    return Err(AuthorizationError::EmptyActorId);
+                }
+                if self.scope.kind == TrustScopeKind::CiHermetic {
+                    return Err(AuthorizationError::ActorScopeMismatch {
+                        actor: "explicit_user_action",
+                        scope: TrustScopeKind::CiHermetic,
+                    });
+                }
+            }
+            AuthorizationActor::CiIdentity { identity_id } => {
+                if identity_id.is_empty() {
+                    return Err(AuthorizationError::EmptyActorId);
+                }
+                if self.scope.kind == TrustScopeKind::EditorWorkspace {
+                    return Err(AuthorizationError::ActorScopeMismatch {
+                        actor: "ci_identity",
+                        scope: TrustScopeKind::EditorWorkspace,
+                    });
+                }
+            }
+        }
+        let mut seen: BTreeSet<&ClassifiedInputId> = BTreeSet::new();
+        for input in &self.inputs {
+            if input.semantic_key.is_empty() || input.explanation_code.is_empty() {
+                return Err(AuthorizationError::EmptyInputField { input_id: input.id.clone() });
+            }
+            // The fields are public, so a caller can relabel an input in place
+            // after construction and keep its already-approved identity.
+            // Recomputing here catches that before any capability is evaluated,
+            // not only on the deserialization path.
+            check_bounded(&input.semantic_key, "input.semantic_key", MAX_IDENTIFIER_LEN)?;
+            check_bounded(&input.explanation_code, "input.explanation_code", MAX_IDENTIFIER_LEN)?;
+            if !input.identity_matches_fields() {
+                return Err(AuthorizationError::ForgedInputIdentity { input_id: input.id.clone() });
+            }
+            if !seen.insert(&input.id) {
+                return Err(AuthorizationError::DuplicateInputId { input_id: input.id.clone() });
+            }
+        }
+        if let Some(session_override) = &self.session_override {
+            // The override carries a caller-authored scope like any other, and
+            // its fields are public. Validating it keeps every identifier that
+            // reaches `stable_id` bounded. It is defence in depth rather than
+            // the load-bearing check: `is_current_for` already requires this
+            // scope to equal the validated evidence scope, so a malformed one
+            // falls out as not-current instead of granting.
+            session_override.scope.validate()?;
+            if session_override.override_id.is_empty() {
+                return Err(AuthorizationError::EmptyOverrideId);
+            }
+            check_bounded(
+                &session_override.override_id,
+                "override.override_id",
+                MAX_IDENTIFIER_LEN,
+            )?;
+            if session_override.expires_after_policy_generation
+                < session_override.granted_policy_generation
+            {
+                return Err(AuthorizationError::OverrideExpiryBeforeGrant);
+            }
+        }
+        for denial in &self.policy_denials {
+            if denial.policy_id.is_empty() || denial.reason_code.is_empty() {
+                return Err(AuthorizationError::EmptyPolicyField);
+            }
+            check_bounded(&denial.policy_id, "policy.policy_id", MAX_IDENTIFIER_LEN)?;
+            check_bounded(&denial.reason_code, "policy.reason_code", MAX_IDENTIFIER_LEN)?;
+        }
+        for limitation in &self.limitations {
+            check_bounded(&limitation.code, "limitation.code", MAX_IDENTIFIER_LEN)?;
+        }
+        check_bounded(self.actor.actor_id(), "actor.id", MAX_IDENTIFIER_LEN)?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Intent
+// ---------------------------------------------------------------------------
+
+/// Why the operation was requested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionReasonClass {
+    /// A direct, explicit user action.
+    ExplicitUserAction,
+    /// An automatic action after a save in a trusted workspace.
+    TrustedPostSave,
+    /// Debug-adapter prelaunch validation.
+    DapPrelaunch,
+    /// A test run.
+    TestRun,
+    /// An external tool invocation.
+    ExternalTool,
+    /// A project-defined runner.
+    ProjectRunner,
+    /// An identity or capability probe.
+    Probe,
+    /// An oracle or corpus harness job.
+    OracleHarness,
+    /// A hermetic CI job.
+    CiHermetic,
+}
+
+impl ExecutionReasonClass {
+    /// Stable machine-readable tag.
+    #[must_use]
+    pub const fn identity_tag(self) -> &'static str {
+        match self {
+            Self::ExplicitUserAction => "explicit_user_action",
+            Self::TrustedPostSave => "trusted_post_save",
+            Self::DapPrelaunch => "dap_prelaunch",
+            Self::TestRun => "test_run",
+            Self::ExternalTool => "external_tool",
+            Self::ProjectRunner => "project_runner",
+            Self::Probe => "probe",
+            Self::OracleHarness => "oracle_harness",
+            Self::CiHermetic => "ci_hermetic",
+        }
+    }
+}
+
+/// Stable identity of one execution intent.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ExecutionIntentId(String);
+
+impl ExecutionIntentId {
+    /// String form of the identity.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ExecutionIntentId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// One exact operation an actor wants to execute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionIntent {
+    /// Reviewed operation profile.
+    pub profile: OperationProfile,
+    /// Why the operation was requested.
+    ///
+    /// Descriptive only. The evaluator never derives authority from it and
+    /// never cross-checks it against the profile, the actor, or the scope, so a
+    /// consumer must not treat it as a verified fact — the authority-bearing
+    /// inputs are the profile, the scope, the actor, and the classified inputs.
+    /// It is carried for provenance and is part of the intent's identity.
+    pub reason_class: ExecutionReasonClass,
+    /// Scope the operation runs in.
+    pub scope: TrustScope,
+    /// Generations the request was formed against.
+    pub generations: BoundGenerations,
+    /// Capabilities the caller declares it will use.
+    ///
+    /// This must cover everything the registry requires for the profile; a
+    /// caller cannot ask for less authority than the operation uses.
+    pub requested: CapabilitySet,
+    /// Identities of the execution-bearing inputs this operation will consume.
+    pub input_ids: Vec<ClassifiedInputId>,
+    /// Stable statement of what this request does and does not cover.
+    ///
+    /// Free-form provenance. The evaluator never reads it beyond requiring it
+    /// to be non-empty, so it carries no authority — but it *is* folded into
+    /// the intent identity, which binds a decision to the boundary its caller
+    /// declared. The trade is deliberate and worth knowing: two operations that
+    /// are identical in authority but worded differently get different
+    /// identities, so callers that correlate or cache on identity should keep
+    /// this text stable per operation rather than composing it per request.
+    pub claim_boundary: String,
+}
+
+impl ExecutionIntent {
+    /// Stable identity of this intent.
+    #[must_use]
+    pub fn identity(&self) -> ExecutionIntentId {
+        let mut material = String::new();
+        push_field(&mut material, "profile", self.profile.identity_tag());
+        push_field(&mut material, "reason", self.reason_class.identity_tag());
+        self.scope.push_identity(&mut material, "scope");
+        self.generations.push_identity(&mut material, "generation");
+        push_field(&mut material, "requested", &self.requested.tags().join(","));
+        let mut input_ids: Vec<&ClassifiedInputId> = self.input_ids.iter().collect();
+        input_ids.sort();
+        for input_id in input_ids {
+            push_field(&mut material, "input", input_id.as_str());
+        }
+        push_field(&mut material, "claim", self.claim_boundary.as_str());
+        ExecutionIntentId(stable_id(INTENT_ID_DOMAIN, &[material.as_str()]))
+    }
+
+    /// Check structural invariants that must hold before evaluation.
+    pub fn validate(&self) -> Result<(), AuthorizationError> {
+        self.scope.validate()?;
+        if self.claim_boundary.is_empty() {
+            return Err(AuthorizationError::EmptyClaimBoundary);
+        }
+        check_bounded(&self.claim_boundary, "intent.claim_boundary", MAX_CLAIM_BOUNDARY_LEN)?;
+        let requirement = OperationTrustRequirement::for_profile(self.profile);
+        if !self.requested.contains_all(&requirement.required) {
+            return Err(AuthorizationError::UnderDeclaredCapabilities {
+                missing: requirement.required.difference(&self.requested),
+            });
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Decision
+// ---------------------------------------------------------------------------
+
+/// The outcome class of an authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorizationOutcome {
+    /// Every required capability is granted.
+    Allowed,
+    /// Every required capability is granted; named requested extras are not.
+    AllowedLimited,
+    /// A required capability needs explicit confirmation first.
+    ConfirmationRequired,
+    /// A required capability is denied.
+    Denied,
+    /// The operation is not supported in this scope or as declared.
+    Unsupported,
+    /// The evidence no longer matches the intent's generations.
+    Stale,
+    /// A required capability could not be established either way.
+    NotProven,
+}
+
+impl AuthorizationOutcome {
+    /// Stable machine-readable tag.
+    #[must_use]
+    pub const fn identity_tag(self) -> &'static str {
+        match self {
+            Self::Allowed => "allowed",
+            Self::AllowedLimited => "allowed_limited",
+            Self::ConfirmationRequired => "confirmation_required",
+            Self::Denied => "denied",
+            Self::Unsupported => "unsupported",
+            Self::Stale => "stale",
+            Self::NotProven => "not_proven",
+        }
+    }
+
+    /// Whether the operation may proceed at all.
+    ///
+    /// Only [`Self::Allowed`] and [`Self::AllowedLimited`] permit execution,
+    /// and [`Self::AllowedLimited`] permits it only within the exact granted
+    /// capability set.
+    #[must_use]
+    pub const fn permits_execution(self) -> bool {
+        matches!(self, Self::Allowed | Self::AllowedLimited)
+    }
+}
+
+/// The authority a user or administrator must change to alter an outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionableAuthority {
+    /// Workspace trust must be granted.
+    WorkspaceTrust,
+    /// A user- or machine-scoped setting must select the input explicitly.
+    UserConfiguration,
+    /// An administrator policy must be changed.
+    PolicyAdministrator,
+    /// A scoped session grant is required.
+    SessionOverride,
+    /// A CI identity is required.
+    CiIdentity,
+    /// The input's provenance must be established.
+    InputProvenance,
+    /// An explicit user action is required.
+    ExplicitUserAction,
+    /// Nothing is actionable; the operation is unsupported here.
+    NotActionable,
+}
+
+impl ActionableAuthority {
+    /// Stable machine-readable tag.
+    #[must_use]
+    pub const fn identity_tag(self) -> &'static str {
+        match self {
+            Self::WorkspaceTrust => "workspace_trust",
+            Self::UserConfiguration => "user_configuration",
+            Self::PolicyAdministrator => "policy_administrator",
+            Self::SessionOverride => "session_override",
+            Self::CiIdentity => "ci_identity",
+            Self::InputProvenance => "input_provenance",
+            Self::ExplicitUserAction => "explicit_user_action",
+            Self::NotActionable => "not_actionable",
+        }
+    }
+}
+
+/// One typed reason contributing to an outcome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorizationReason {
+    /// Stable reason code.
+    pub code: String,
+    /// Capability the reason concerns, when it is capability-specific.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability: Option<ExecutionCapability>,
+    /// Input the reason concerns, when it is input-specific.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_id: Option<ClassifiedInputId>,
+    /// What must change for the outcome to change.
+    pub actionable_authority: ActionableAuthority,
+}
+
+/// What movement invalidates a decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevalidationRequirement {
+    /// Generations the decision is valid at.
+    pub bound: BoundGenerations,
+    /// Policy generation after which a supplying session override lapses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub override_expires_after_policy_generation: Option<u64>,
+    /// Stable codes naming what must be re-derived on movement.
+    pub revalidate_on: Vec<String>,
+}
+
+/// Stable identity of one decision.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AuthorizationFingerprint(Digest);
+
+impl AuthorizationFingerprint {
+    /// Fingerprint string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl std::fmt::Display for AuthorizationFingerprint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// The compiled authorization decision for one intent.
+///
+/// Fields are private and there is no public constructor: [`authorize`] is the
+/// only producer. A downstream consumer can read the granted set but cannot
+/// widen it, and cannot assemble a decision from a client-supplied boolean.
+///
+/// The fingerprint detects staleness and transport corruption. It is not an
+/// unforgeable token: authority comes from the evaluator that produced the
+/// decision, not from the fingerprint alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionAuthorizationDecision {
+    schema_version: u32,
+    outcome: AuthorizationOutcome,
+    granted: CapabilitySet,
+    omitted: CapabilitySet,
+    reasons: Vec<AuthorizationReason>,
+    intent_id: ExecutionIntentId,
+    requirement_id: String,
+    evidence_id: AuthorizationEvidenceId,
+    scope: TrustScope,
+    revalidation: RevalidationRequirement,
+    non_claims: Vec<String>,
+    fingerprint: AuthorizationFingerprint,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionAuthorizationDecisionWire {
+    schema_version: u32,
+    outcome: AuthorizationOutcome,
+    granted: CapabilitySet,
+    omitted: CapabilitySet,
+    reasons: Vec<AuthorizationReason>,
+    intent_id: ExecutionIntentId,
+    requirement_id: String,
+    evidence_id: AuthorizationEvidenceId,
+    scope: TrustScope,
+    revalidation: RevalidationRequirement,
+    non_claims: Vec<String>,
+    fingerprint: AuthorizationFingerprint,
+}
+
+impl<'de> Deserialize<'de> for ExecutionAuthorizationDecision {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = ExecutionAuthorizationDecisionWire::deserialize(deserializer)?;
+        let decision = Self {
+            schema_version: wire.schema_version,
+            outcome: wire.outcome,
+            granted: wire.granted,
+            omitted: wire.omitted,
+            reasons: wire.reasons,
+            intent_id: wire.intent_id,
+            requirement_id: wire.requirement_id,
+            evidence_id: wire.evidence_id,
+            scope: wire.scope,
+            revalidation: wire.revalidation,
+            non_claims: wire.non_claims,
+            fingerprint: wire.fingerprint,
+        };
+        decision.validate().map_err(serde::de::Error::custom)?;
+        Ok(decision)
+    }
+}
+
+impl ExecutionAuthorizationDecision {
+    /// Schema version of this decision.
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// Outcome class.
+    #[must_use]
+    pub const fn outcome(&self) -> AuthorizationOutcome {
+        self.outcome
+    }
+
+    /// Exactly the capabilities granted.
+    ///
+    /// Empty for every outcome that does not permit execution.
+    #[must_use]
+    pub const fn granted(&self) -> &CapabilitySet {
+        &self.granted
+    }
+
+    /// Requested capabilities deliberately withheld under
+    /// [`AuthorizationOutcome::AllowedLimited`].
+    #[must_use]
+    pub const fn omitted(&self) -> &CapabilitySet {
+        &self.omitted
+    }
+
+    /// Typed reasons contributing to the outcome.
+    #[must_use]
+    pub fn reasons(&self) -> &[AuthorizationReason] {
+        &self.reasons
+    }
+
+    /// Identity of the evaluated intent.
+    #[must_use]
+    pub const fn intent_id(&self) -> &ExecutionIntentId {
+        &self.intent_id
+    }
+
+    /// Identity of the registry requirement applied.
+    #[must_use]
+    pub fn requirement_id(&self) -> &str {
+        &self.requirement_id
+    }
+
+    /// Identity of the evidence evaluated.
+    #[must_use]
+    pub const fn evidence_id(&self) -> &AuthorizationEvidenceId {
+        &self.evidence_id
+    }
+
+    /// Scope this decision is bound to.
+    #[must_use]
+    pub const fn scope(&self) -> &TrustScope {
+        &self.scope
+    }
+
+    /// What movement invalidates this decision.
+    #[must_use]
+    pub const fn revalidation(&self) -> &RevalidationRequirement {
+        &self.revalidation
+    }
+
+    /// What this decision does not prove.
+    #[must_use]
+    pub fn non_claims(&self) -> &[String] {
+        &self.non_claims
+    }
+
+    /// Deterministic identity of this decision.
+    #[must_use]
+    pub const fn fingerprint(&self) -> &AuthorizationFingerprint {
+        &self.fingerprint
+    }
+
+    /// Whether this decision still applies at `scope` and `generations`.
+    ///
+    /// Any load-bearing movement makes a prior decision stale.
+    #[must_use]
+    pub fn is_current_for(&self, scope: &TrustScope, generations: &BoundGenerations) -> bool {
+        self.scope == *scope && self.revalidation.bound == *generations
+    }
+
+    /// Whether the operation may use `capability` under this decision.
+    #[must_use]
+    pub fn permits(&self, capability: ExecutionCapability) -> bool {
+        self.outcome.permits_execution() && self.granted.contains(capability)
+    }
+
+    /// Re-check invariants for a deserialized or reconstructed decision.
+    ///
+    /// Treat a failure as non-authoritative: do not consult [`Self::granted`]
+    /// on an invalid value.
+    ///
+    /// # What this does not prove
+    ///
+    /// This is an **integrity** check, not an **authentication** one. The
+    /// fingerprint is an unkeyed digest, so it detects a decision that was
+    /// altered or corrupted without its identity being recomputed — it cannot
+    /// detect one that was rebuilt wholesale by a party who also recomputed the
+    /// fingerprint. Anyone able to edit a decision in transit can do that.
+    ///
+    /// A caller passing decisions across a trust boundary therefore must not
+    /// treat a successful `validate` as evidence of origin, and needs its own
+    /// authentication over the transport. That is deliberately not solved here:
+    /// keying this digest would require a key-management design, and #11095
+    /// admits no transport, no consumer, and no such mechanism.
+    pub fn validate(&self) -> Result<(), AuthorizationError> {
+        // A decision that carries an unusable scope can never be authoritative,
+        // and must not round-trip one into a public record.
+        self.scope.validate()?;
+        if self.schema_version != EXECUTION_AUTHORIZATION_SCHEMA_VERSION {
+            return Err(AuthorizationError::UnsupportedSchemaVersion {
+                schema_version: self.schema_version,
+            });
+        }
+        if !self.outcome.permits_execution() && !self.granted.is_empty() {
+            return Err(AuthorizationError::GrantWithoutPermittingOutcome {
+                outcome: self.outcome,
+            });
+        }
+        if self.outcome != AuthorizationOutcome::AllowedLimited && !self.omitted.is_empty() {
+            return Err(AuthorizationError::OmittedWithoutLimitedOutcome { outcome: self.outcome });
+        }
+        if self.outcome == AuthorizationOutcome::AllowedLimited && self.omitted.is_empty() {
+            return Err(AuthorizationError::LimitedWithoutOmittedCapabilities);
+        }
+        let expected = compute_decision_fingerprint(
+            self.outcome,
+            &self.granted,
+            &self.omitted,
+            &self.reasons,
+            &self.intent_id,
+            self.requirement_id.as_str(),
+            &self.evidence_id,
+            &self.scope,
+            &self.revalidation,
+            &self.non_claims,
+        );
+        if self.fingerprint != expected {
+            return Err(AuthorizationError::StaleFingerprint);
+        }
+        Ok(())
+    }
+
+    /// Redacted public explanation.
+    ///
+    /// Every value derived from an *input* is a stable class, digest,
+    /// generation, or reason code. No executable path, environment value,
+    /// secret, source text, configuration prose, caller explanation code,
+    /// semantic key, or `Debug` output crosses this boundary.
+    ///
+    /// No caller-authored string crosses this boundary either.
+    /// [`TrustScope::workspace_id`] is published as a [`Digest`], not verbatim:
+    /// it is the caller's own scope identity rather than anything derived from
+    /// project inputs, but it is very often a filesystem path, and a producer
+    /// obligation to "keep it opaque" is not something this projection could
+    /// enforce. Hashing keeps the attribution the field exists for — equal
+    /// workspaces give equal digests — without publishing the value.
+    ///
+    /// The digest is unkeyed, so it resists disclosure, not a determined
+    /// guesser holding a candidate list of workspace paths.
+    #[must_use]
+    pub fn public_explanation(&self) -> PublicAuthorizationExplanation {
+        let blocked: Vec<&'static str> = self
+            .reasons
+            .iter()
+            .filter_map(|reason| reason.capability)
+            .filter(|&capability| !self.granted.contains(capability))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(ExecutionCapability::identity_tag)
+            .collect();
+        let actionable: Vec<&'static str> = self
+            .reasons
+            .iter()
+            .map(|reason| reason.actionable_authority)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(ActionableAuthority::identity_tag)
+            .collect();
+        PublicAuthorizationExplanation {
+            schema_version: self.schema_version,
+            outcome: self.outcome,
+            scope_kind: self.scope.kind,
+            workspace: Digest::of(&self.scope.workspace_id),
+            granted: self.granted.tags().into_iter().map(str::to_string).collect(),
+            blocked_capabilities: blocked.into_iter().map(str::to_string).collect(),
+            omitted_capabilities: self.omitted.tags().into_iter().map(str::to_string).collect(),
+            reason_codes: self
+                .reasons
+                .iter()
+                .map(|reason| reason.code.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            actionable_authorities: actionable.into_iter().map(str::to_string).collect(),
+            configuration_generation: self.revalidation.bound.configuration_generation,
+            policy_generation: self.revalidation.bound.policy_generation,
+            source_generation: self.revalidation.bound.source_generation,
+            environment_fingerprint: self.revalidation.bound.environment_fingerprint.clone(),
+            non_claims: self.non_claims.clone(),
+            fingerprint: self.fingerprint.clone(),
+        }
+    }
+}
+
+/// Redacted public authorization explanation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicAuthorizationExplanation {
+    /// Schema version.
+    pub schema_version: u32,
+    /// Outcome class.
+    pub outcome: AuthorizationOutcome,
+    /// Scope kind.
+    pub scope_kind: TrustScopeKind,
+    /// Stable workspace identity, as a digest rather than the caller's string.
+    ///
+    /// `TrustScope::workspace_id` is caller-authored and is very often a
+    /// filesystem path, so publishing it verbatim would put a raw path in the
+    /// public record — which #11095 forbids and its negative control 11 exists
+    /// to catch. Hashing keeps what the field is *for* (attributing an
+    /// explanation to its workspace: equal workspaces give equal digests,
+    /// different ones differ) while removing what it must not carry. The digest
+    /// is unkeyed, so this resists disclosure, not a determined guesser with a
+    /// candidate list of paths.
+    pub workspace: Digest,
+    /// Granted capability tags.
+    pub granted: Vec<String>,
+    /// Capability tags named by a reason but not granted.
+    pub blocked_capabilities: Vec<String>,
+    /// Capability tags deliberately withheld under a limited allow.
+    pub omitted_capabilities: Vec<String>,
+    /// Stable reason codes in deterministic order.
+    pub reason_codes: Vec<String>,
+    /// Authorities a user or administrator can act on.
+    pub actionable_authorities: Vec<String>,
+    /// Configuration generation.
+    pub configuration_generation: u64,
+    /// Policy generation.
+    pub policy_generation: u64,
+    /// Source generation.
+    pub source_generation: u64,
+    /// Environment snapshot identity.
+    pub environment_fingerprint: EnvironmentFingerprint,
+    /// What the decision does not prove.
+    pub non_claims: Vec<String>,
+    /// Decision identity.
+    pub fingerprint: AuthorizationFingerprint,
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/// Error raised while validating authorization inputs or a decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthorizationError {
+    /// A caller-supplied string exceeds the bound this contract publishes.
+    UnboundedField {
+        /// Offending field name.
+        field: &'static str,
+        /// Maximum accepted length.
+        limit: usize,
+        /// Observed length.
+        actual: usize,
+    },
+    /// A scope carries an empty workspace identity.
+    EmptyScopeWorkspaceId,
+    /// An optional scope component is present but empty, which would alias the
+    /// absent case in the identity encoding.
+    EmptyScopeComponent {
+        /// Offending field name.
+        field: &'static str,
+    },
+    /// An intent carries an empty claim boundary.
+    EmptyClaimBoundary,
+    /// An actor identity is empty.
+    EmptyActorId,
+    /// An actor class cannot appear in this scope kind.
+    ActorScopeMismatch {
+        /// Actor tag.
+        actor: &'static str,
+        /// Scope kind that rejected it.
+        scope: TrustScopeKind,
+    },
+    /// A classified input's identity does not match its own fields.
+    ForgedInputIdentity {
+        /// Advertised identity.
+        input_id: ClassifiedInputId,
+    },
+    /// A classified input has an empty required field.
+    EmptyInputField {
+        /// Input identity.
+        input_id: ClassifiedInputId,
+    },
+    /// Two classified inputs share one identity.
+    DuplicateInputId {
+        /// Repeated identity.
+        input_id: ClassifiedInputId,
+    },
+    /// A session override identity is empty.
+    EmptyOverrideId,
+    /// A session override expires before it is granted.
+    OverrideExpiryBeforeGrant,
+    /// A policy denial has an empty required field.
+    EmptyPolicyField,
+    /// The intent declares less authority than its profile requires.
+    UnderDeclaredCapabilities {
+        /// Required capabilities the intent failed to declare.
+        missing: CapabilitySet,
+    },
+    /// A decision schema version is not supported by this crate.
+    UnsupportedSchemaVersion {
+        /// Observed schema version.
+        schema_version: u32,
+    },
+    /// A non-permitting outcome carries granted capabilities.
+    GrantWithoutPermittingOutcome {
+        /// Observed outcome.
+        outcome: AuthorizationOutcome,
+    },
+    /// Omitted capabilities appear on an outcome that is not a limited allow.
+    OmittedWithoutLimitedOutcome {
+        /// Observed outcome.
+        outcome: AuthorizationOutcome,
+    },
+    /// A limited allow names no omitted capability.
+    LimitedWithoutOmittedCapabilities,
+    /// Advertised fingerprint does not match decision fields.
+    StaleFingerprint,
+}
+
+impl std::fmt::Display for AuthorizationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnboundedField { field, limit, actual } => {
+                write!(formatter, "{field} is {actual} bytes, exceeding the {limit}-byte bound")
+            }
+            Self::EmptyScopeWorkspaceId => formatter.write_str("trust scope workspace ID is empty"),
+            Self::EmptyScopeComponent { field } => {
+                write!(formatter, "trust scope {field} is present but empty")
+            }
+            Self::EmptyClaimBoundary => {
+                formatter.write_str("execution intent claim boundary is empty")
+            }
+            Self::EmptyActorId => formatter.write_str("authorization actor identity is empty"),
+            Self::ActorScopeMismatch { actor, scope } => {
+                write!(
+                    formatter,
+                    "actor {actor} cannot supply authority in scope {}",
+                    scope.identity_tag()
+                )
+            }
+            Self::ForgedInputIdentity { input_id } => {
+                write!(
+                    formatter,
+                    "classified input {input_id} does not match the identity its own fields derive"
+                )
+            }
+            Self::EmptyInputField { input_id } => {
+                write!(formatter, "classified input {input_id} has an empty required field")
+            }
+            Self::DuplicateInputId { input_id } => {
+                write!(formatter, "classified input {input_id} appears more than once")
+            }
+            Self::EmptyOverrideId => formatter.write_str("session override identity is empty"),
+            Self::OverrideExpiryBeforeGrant => formatter
+                .write_str("session override expires before the generation that granted it"),
+            Self::EmptyPolicyField => {
+                formatter.write_str("policy denial has an empty required field")
+            }
+            Self::UnderDeclaredCapabilities { missing } => {
+                write!(
+                    formatter,
+                    "execution intent omits required capabilities: {}",
+                    missing.tags().join(",")
+                )
+            }
+            Self::UnsupportedSchemaVersion { schema_version } => {
+                write!(
+                    formatter,
+                    "unsupported execution authorization schema version {schema_version}; expected {EXECUTION_AUTHORIZATION_SCHEMA_VERSION}"
+                )
+            }
+            Self::GrantWithoutPermittingOutcome { outcome } => {
+                write!(
+                    formatter,
+                    "outcome {} must not carry granted capabilities",
+                    outcome.identity_tag()
+                )
+            }
+            Self::OmittedWithoutLimitedOutcome { outcome } => {
+                write!(
+                    formatter,
+                    "outcome {} must not carry omitted capabilities",
+                    outcome.identity_tag()
+                )
+            }
+            Self::LimitedWithoutOmittedCapabilities => {
+                formatter.write_str("allowed_limited must name at least one omitted capability")
+            }
+            Self::StaleFingerprint => {
+                formatter.write_str("authorization fingerprint does not match decision fields")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AuthorizationError {}
+
+// ---------------------------------------------------------------------------
+// Reason codes
+// ---------------------------------------------------------------------------
+
+/// Reason: the intent and evidence disagree about scope.
+pub const REASON_SCOPE_MISMATCH: &str = "scope_mismatch";
+/// Reason: evidence generations no longer match the intent's.
+pub const REASON_GENERATION_MOVED: &str = "generation_moved";
+/// Reason: the profile cannot run under this scope kind.
+pub const REASON_SCOPE_NOT_ADMITTED: &str = "scope_not_admitted";
+/// Reason: CI authority cannot be synthesized from editor workspace trust.
+pub const REASON_CI_AUTHORITY_NOT_SYNTHESIZABLE: &str = "ci_authority_not_synthesizable";
+/// Reason: the intent declares less authority than the profile requires.
+pub const REASON_UNDER_DECLARED_CAPABILITIES: &str = "under_declared_capabilities";
+/// Reason: the supplied intent or evidence failed structural validation.
+pub const REASON_INVALID_REQUEST: &str = "invalid_request";
+/// Reason: an administrator policy denies the capability.
+pub const REASON_POLICY_DENIED: &str = "policy_denied";
+/// Reason: workspace trust has not been granted.
+pub const REASON_WORKSPACE_UNTRUSTED: &str = "workspace_untrusted";
+/// Reason: a hermetic scope carries no CI identity.
+pub const REASON_NO_CI_IDENTITY: &str = "no_ci_identity";
+/// Reason: workspace trust has not been decided.
+pub const REASON_WORKSPACE_TRUST_UNKNOWN: &str = "workspace_trust_unknown";
+/// Reason: the operation needs an explicit actor and has none.
+pub const REASON_NO_EXPLICIT_ACTOR: &str = "no_explicit_actor";
+/// Reason: no input supplies a verified executable or interpreter.
+pub const REASON_NO_VERIFIED_TOOL: &str = "no_verified_tool";
+/// Reason: the only tool-bearing input is project-controlled.
+pub const REASON_PROJECT_SUPPLIED_EXECUTABLE: &str = "project_supplied_executable";
+/// Reason: the only tool-bearing input comes from ambient `PATH` or cwd.
+pub const REASON_AMBIENT_TOOL_SELECTION: &str = "ambient_tool_selection";
+/// Reason: an ambient `PATH`/cwd tool was refused by its own disposition.
+///
+/// Distinct from [`REASON_AMBIENT_TOOL_SELECTION`]: that one says the selection
+/// is merely ambient and can be confirmed, this one says it was refused.
+pub const REASON_AMBIENT_TOOL_NOT_ACCEPTED: &str = "ambient_tool_not_accepted";
+/// Reason: the operation requires leaving the root but classified no path.
+pub const REASON_NO_CLASSIFIED_EXTERNAL_PATH: &str = "no_classified_external_path";
+/// Reason: a verified tool selected for this operation was not accepted.
+///
+/// Distinct from [`REASON_NO_VERIFIED_TOOL`]: a tool was selected and its
+/// disposition refused it, rather than no tool being offered at all.
+pub const REASON_VERIFIED_TOOL_NOT_ACCEPTED: &str = "verified_tool_not_accepted";
+/// Reason: ambient Perl environment cannot supply code-loading authority.
+pub const REASON_AMBIENT_ENVIRONMENT_DENIED: &str = "ambient_environment_denied";
+/// Reason: a reviewed environment activation exists but was not accepted.
+pub const REASON_ENVIRONMENT_NOT_ACCEPTED: &str = "environment_not_accepted";
+/// Reason: an intent named an input the supplied evidence does not carry.
+pub const REASON_UNRESOLVED_INTENT_INPUT: &str = "unresolved_intent_input";
+/// Reason: the evidence could not establish this authority fact.
+pub const REASON_EVIDENCE_LIMITATION: &str = "evidence_limitation";
+/// Reason: a symlink or traversal path escapes the workspace root.
+pub const REASON_PATH_ESCAPES_ROOT: &str = "path_escapes_root";
+/// Reason: an external absolute path needs explicit confirmation.
+pub const REASON_EXTERNAL_PATH_UNCONFIRMED: &str = "external_path_unconfirmed";
+/// Reason: an external absolute path was refused outright.
+pub const REASON_EXTERNAL_PATH_DENIED: &str = "external_path_denied";
+/// Reason: a workspace-scoped setting cannot supply user or machine authority.
+pub const REASON_WORKSPACE_SETTING_CANNOT_GRANT_USER_AUTHORITY: &str =
+    "workspace_setting_cannot_grant_user_authority";
+/// Reason: a persistent cadence needs its own explicit user opt-in.
+pub const REASON_CADENCE_NOT_AUTHORIZED: &str = "cadence_not_authorized";
+/// Reason: a user-scoped cadence setting refused the cadence.
+///
+/// Distinct from [`REASON_CADENCE_NOT_AUTHORIZED`]: the user expressed a
+/// setting and it withholds the cadence, rather than never having opted in.
+pub const REASON_CADENCE_SETTING_NOT_ACCEPTED: &str = "cadence_setting_not_accepted";
+/// Reason: an interactive session needs an explicit user action.
+pub const REASON_INTERACTIVE_SESSION_NOT_AUTHORIZED: &str = "interactive_session_not_authorized";
+/// Reason: an input's provenance could not be established.
+pub const REASON_UNKNOWN_PROVENANCE: &str = "unknown_provenance";
+/// Reason: a scoped session override supplied the capability.
+pub const REASON_GRANTED_BY_SESSION_OVERRIDE: &str = "granted_by_session_override";
+/// Reason: a session override exists but has lapsed or does not match scope.
+pub const REASON_SESSION_OVERRIDE_NOT_CURRENT: &str = "session_override_not_current";
+/// Reason: a requested capability beyond the profile requirement was withheld.
+pub const REASON_REQUESTED_CAPABILITY_WITHHELD: &str = "requested_capability_withheld";
+
+/// Revalidate when configuration generation moves.
+pub const REVALIDATE_ON_CONFIGURATION_GENERATION: &str = "configuration_generation";
+/// Revalidate when policy or trust generation moves.
+pub const REVALIDATE_ON_POLICY_GENERATION: &str = "policy_generation";
+/// Revalidate when source generation moves.
+pub const REVALIDATE_ON_SOURCE_GENERATION: &str = "source_generation";
+/// Revalidate when the environment snapshot fingerprint moves.
+pub const REVALIDATE_ON_ENVIRONMENT_FINGERPRINT: &str = "environment_fingerprint";
+/// Revalidate when the supplying session override expires.
+pub const REVALIDATE_ON_OVERRIDE_EXPIRY: &str = "session_override_expiry";
+
+// ---------------------------------------------------------------------------
+// Evaluator
+// ---------------------------------------------------------------------------
+
+/// Per-capability finding produced while evaluating one requirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapabilityFinding {
+    Granted,
+    Denied,
+    ConfirmationRequired,
+    NotProven,
+}
+
+impl CapabilityFinding {
+    /// How restrictive this finding is; higher wins when several inputs back
+    /// one capability. A denial outranks an unproven fact, which outranks a
+    /// prompt, which outranks a grant.
+    const fn restriction_rank(self) -> u8 {
+        match self {
+            Self::Granted => 0,
+            Self::ConfirmationRequired => 1,
+            Self::NotProven => 2,
+            Self::Denied => 3,
+        }
+    }
+}
+
+/// Compile an [`ExecutionAuthorizationDecision`] from an intent and evidence.
+///
+/// This is the only producer of a decision. It is pure: it reads no
+/// configuration, touches no filesystem, and spawns no process.
+///
+/// Evaluation fails closed. Structural problems, scope mismatches, generation
+/// movement, unknown provenance, and missing evidence never produce an allow.
+#[must_use]
+pub fn authorize(
+    intent: &ExecutionIntent,
+    evidence: &AuthorizationEvidence,
+) -> ExecutionAuthorizationDecision {
+    let requirement = OperationTrustRequirement::for_profile(intent.profile);
+    let intent_id = intent.identity();
+    let evidence_id = evidence.identity();
+
+    // Structural validation first: an unevaluable request is never an allow.
+    if let Err(error) = intent.validate() {
+        let code = if matches!(error, AuthorizationError::UnderDeclaredCapabilities { .. }) {
+            REASON_UNDER_DECLARED_CAPABILITIES
+        } else {
+            REASON_INVALID_REQUEST
+        };
+        let outcome = if matches!(error, AuthorizationError::UnderDeclaredCapabilities { .. }) {
+            AuthorizationOutcome::Unsupported
+        } else {
+            AuthorizationOutcome::NotProven
+        };
+        return finish(
+            outcome,
+            CapabilitySet::empty(),
+            CapabilitySet::empty(),
+            vec![reason(code, None, None, ActionableAuthority::NotActionable)],
+            &intent_id,
+            &requirement,
+            &evidence_id,
+            intent,
+            evidence,
+        );
+    }
+    if evidence.validate().is_err() {
+        return finish(
+            AuthorizationOutcome::NotProven,
+            CapabilitySet::empty(),
+            CapabilitySet::empty(),
+            vec![reason(REASON_INVALID_REQUEST, None, None, ActionableAuthority::NotActionable)],
+            &intent_id,
+            &requirement,
+            &evidence_id,
+            intent,
+            evidence,
+        );
+    }
+
+    // The intent and its evidence must describe the same subject.
+    if intent.scope != evidence.scope {
+        return finish(
+            AuthorizationOutcome::NotProven,
+            CapabilitySet::empty(),
+            CapabilitySet::empty(),
+            vec![reason(REASON_SCOPE_MISMATCH, None, None, ActionableAuthority::NotActionable)],
+            &intent_id,
+            &requirement,
+            &evidence_id,
+            intent,
+            evidence,
+        );
+    }
+    if intent.generations != evidence.generations {
+        return finish(
+            AuthorizationOutcome::Stale,
+            CapabilitySet::empty(),
+            CapabilitySet::empty(),
+            vec![reason(REASON_GENERATION_MOVED, None, None, ActionableAuthority::NotActionable)],
+            &intent_id,
+            &requirement,
+            &evidence_id,
+            intent,
+            evidence,
+        );
+    }
+
+    // CI/hermetic authority is a separate class from editor workspace trust.
+    if !requirement.scope.admits(intent.scope.kind) {
+        let code = if requirement.scope == RequiredScope::CiHermeticOnly {
+            REASON_CI_AUTHORITY_NOT_SYNTHESIZABLE
+        } else {
+            REASON_SCOPE_NOT_ADMITTED
+        };
+        let actionable = if requirement.scope == RequiredScope::CiHermeticOnly {
+            ActionableAuthority::CiIdentity
+        } else {
+            ActionableAuthority::NotActionable
+        };
+        // Not a refusal of authority — the operation cannot run in this scope
+        // at all. `Unsupported` is what this module documents for that, and
+        // saying `Denied` would invite a remedy that cannot work here.
+        return finish(
+            AuthorizationOutcome::Unsupported,
+            CapabilitySet::empty(),
+            CapabilitySet::empty(),
+            vec![reason(code, None, None, actionable)],
+            &intent_id,
+            &requirement,
+            &evidence_id,
+            intent,
+            evidence,
+        );
+    }
+
+    // Every input the intent declares must resolve in this evidence. An
+    // unresolved id means the intent was formed against different or older
+    // evidence, and silently dropping it would evaluate a strict subset of what
+    // the operation actually consumes — the decision claims to cover the
+    // intent's exact inputs.
+    let present: BTreeSet<&ClassifiedInputId> =
+        evidence.inputs.iter().map(|input| &input.id).collect();
+    if let Some(missing) = intent.input_ids.iter().find(|id| !present.contains(id)) {
+        return finish(
+            AuthorizationOutcome::NotProven,
+            CapabilitySet::empty(),
+            CapabilitySet::empty(),
+            vec![reason(
+                REASON_UNRESOLVED_INTENT_INPUT,
+                None,
+                Some(missing.clone()),
+                ActionableAuthority::InputProvenance,
+            )],
+            &intent_id,
+            &requirement,
+            &evidence_id,
+            intent,
+            evidence,
+        );
+    }
+
+    let inputs = relevant_inputs(intent, evidence);
+    let mut reasons: Vec<AuthorizationReason> = Vec::new();
+    let mut granted: Vec<ExecutionCapability> = Vec::new();
+    let mut denied = false;
+    let mut not_proven = false;
+    let mut confirmation = false;
+
+    for capability in requirement.required.iter() {
+        let finding = evaluate_capability(capability, evidence, &inputs, &mut reasons);
+        match finding {
+            CapabilityFinding::Granted => granted.push(capability),
+            CapabilityFinding::Denied => denied = true,
+            CapabilityFinding::NotProven => not_proven = true,
+            CapabilityFinding::ConfirmationRequired => confirmation = true,
+        }
+    }
+
+    // Outcome precedence: a denial dominates every weaker signal, and an
+    // unproven capability never degrades into a confirmation prompt.
+    if denied {
+        return finish(
+            AuthorizationOutcome::Denied,
+            CapabilitySet::empty(),
+            CapabilitySet::empty(),
+            reasons,
+            &intent_id,
+            &requirement,
+            &evidence_id,
+            intent,
+            evidence,
+        );
+    }
+    if not_proven {
+        return finish(
+            AuthorizationOutcome::NotProven,
+            CapabilitySet::empty(),
+            CapabilitySet::empty(),
+            reasons,
+            &intent_id,
+            &requirement,
+            &evidence_id,
+            intent,
+            evidence,
+        );
+    }
+    if confirmation {
+        return finish(
+            AuthorizationOutcome::ConfirmationRequired,
+            CapabilitySet::empty(),
+            CapabilitySet::empty(),
+            reasons,
+            &intent_id,
+            &requirement,
+            &evidence_id,
+            intent,
+            evidence,
+        );
+    }
+
+    // Every required capability is granted. Requested extras beyond the
+    // registry requirement are evaluated too, and named when withheld.
+    let extras = intent.requested.difference(&requirement.required);
+    let mut omitted: Vec<ExecutionCapability> = Vec::new();
+    for capability in extras.iter() {
+        match evaluate_capability(capability, evidence, &inputs, &mut reasons) {
+            CapabilityFinding::Granted => granted.push(capability),
+            _ => {
+                omitted.push(capability);
+                reasons.push(reason(
+                    REASON_REQUESTED_CAPABILITY_WITHHELD,
+                    Some(capability),
+                    None,
+                    ActionableAuthority::UserConfiguration,
+                ));
+            }
+        }
+    }
+
+    if omitted.is_empty() {
+        finish(
+            AuthorizationOutcome::Allowed,
+            CapabilitySet::new(granted),
+            CapabilitySet::empty(),
+            reasons,
+            &intent_id,
+            &requirement,
+            &evidence_id,
+            intent,
+            evidence,
+        )
+    } else {
+        finish(
+            AuthorizationOutcome::AllowedLimited,
+            CapabilitySet::new(granted),
+            CapabilitySet::new(omitted),
+            reasons,
+            &intent_id,
+            &requirement,
+            &evidence_id,
+            intent,
+            evidence,
+        )
+    }
+}
+
+/// The classified inputs an operation is evaluated against, in deterministic
+/// order.
+///
+/// This is the intent's declared inputs *plus* every ambient input in the
+/// evidence. Ambient state is process-wide: an ambient `PERL5LIB` or an ambient
+/// `PATH` reaches the interpreter whether or not the intent named it, so
+/// leaving one out of the declaration must never buy more authority than
+/// declaring it would. See [`ClassifiedInput::applies_regardless_of_intent`].
+///
+/// Sorting here makes evaluation independent of the order a producer happened
+/// to collect inputs in, so the same facts always cite the same input.
+fn relevant_inputs<'a>(
+    intent: &ExecutionIntent,
+    evidence: &'a AuthorizationEvidence,
+) -> Vec<&'a ClassifiedInput> {
+    let wanted: BTreeSet<&ClassifiedInputId> = intent.input_ids.iter().collect();
+    let mut inputs: Vec<&'a ClassifiedInput> = evidence
+        .inputs
+        .iter()
+        .filter(|&input| wanted.contains(&input.id) || input.applies_regardless_of_intent())
+        .collect();
+    inputs.sort_by(|left, right| left.id.cmp(&right.id));
+    inputs
+}
+
+fn evaluate_capability(
+    capability: ExecutionCapability,
+    evidence: &AuthorizationEvidence,
+    inputs: &[&ClassifiedInput],
+    reasons: &mut Vec<AuthorizationReason>,
+) -> CapabilityFinding {
+    // Policy denial dominates every local grant, including a current override.
+    for denial in &evidence.policy_denials {
+        if denial.denied.contains(capability) {
+            reasons.push(reason(
+                REASON_POLICY_DENIED,
+                Some(capability),
+                None,
+                ActionableAuthority::PolicyAdministrator,
+            ));
+            return CapabilityFinding::Denied;
+        }
+    }
+
+    // A declared limitation means the producer could not establish this fact.
+    // Unestablished is not-proven, and no override cures it: an override grants
+    // authority, it does not supply the missing observation.
+    if evidence.limitations.iter().any(|limitation| limitation.capability == capability) {
+        reasons.push(reason(
+            REASON_EVIDENCE_LIMITATION,
+            Some(capability),
+            None,
+            ActionableAuthority::InputProvenance,
+        ));
+        return CapabilityFinding::NotProven;
+    }
+
+    let base = evaluate_capability_from_facts(capability, evidence, inputs, reasons);
+    if base == CapabilityFinding::Granted {
+        return base;
+    }
+
+    // A denial is an active refusal grounded in a classified input — a
+    // project-supplied executable, an ambient Perl environment, a path that
+    // escapes the root. An override grants authority that was merely missing;
+    // it does not overrule a refusal. This is the same law that stops an
+    // explicit user action from upgrading those inputs, and it keeps a scoped
+    // grant from becoming a way to click past every input classification.
+    if base == CapabilityFinding::Denied {
+        return base;
+    }
+
+    // A scoped, unexpired override may supply what the base facts left
+    // unestablished. It can never supply a policy-denied capability: that
+    // returned above.
+    if let Some(session_override) = &evidence.session_override
+        && session_override.capabilities.contains(capability)
+    {
+        if session_override.is_current_for(&evidence.scope, evidence.generations.policy_generation)
+            && session_override.covers_inputs(inputs)
+        {
+            reasons.push(reason(
+                REASON_GRANTED_BY_SESSION_OVERRIDE,
+                Some(capability),
+                None,
+                ActionableAuthority::SessionOverride,
+            ));
+            return CapabilityFinding::Granted;
+        }
+        reasons.push(reason(
+            REASON_SESSION_OVERRIDE_NOT_CURRENT,
+            Some(capability),
+            None,
+            ActionableAuthority::SessionOverride,
+        ));
+    }
+
+    base
+}
+
+fn evaluate_capability_from_facts(
+    capability: ExecutionCapability,
+    evidence: &AuthorizationEvidence,
+    inputs: &[&ClassifiedInput],
+    reasons: &mut Vec<AuthorizationReason>,
+) -> CapabilityFinding {
+    // An input whose provenance is unknown blocks whatever it would support.
+    if let Some(input) =
+        inputs.iter().copied().find(|&input| input.risk_class == InputRiskClass::UnknownProvenance)
+        && capability.is_execution_bearing()
+    {
+        reasons.push(reason(
+            REASON_UNKNOWN_PROVENANCE,
+            Some(capability),
+            Some(input.id.clone()),
+            ActionableAuthority::InputProvenance,
+        ));
+        return CapabilityFinding::NotProven;
+    }
+
+    match capability {
+        // Source analysis never needs execution authority. A restricted
+        // workspace can still be parsed and indexed.
+        ExecutionCapability::SourceAnalysis => CapabilityFinding::Granted,
+
+        ExecutionCapability::ExternalRead => match execution_authority(evidence) {
+            ExecutionAuthority::Established => CapabilityFinding::Granted,
+            ExecutionAuthority::Absent => {
+                // Reading is weaker than executing: an explicit action is
+                // enough even without full project-execution authority.
+                if evidence.actor.is_explicit_user_action() {
+                    CapabilityFinding::Granted
+                } else {
+                    let (code, actionable) = absent_authority_reason(evidence);
+                    reasons.push(reason(code, Some(capability), None, actionable));
+                    CapabilityFinding::Denied
+                }
+            }
+            ExecutionAuthority::Undecided => {
+                reasons.push(reason(
+                    REASON_WORKSPACE_TRUST_UNKNOWN,
+                    Some(capability),
+                    None,
+                    ActionableAuthority::WorkspaceTrust,
+                ));
+                CapabilityFinding::NotProven
+            }
+        },
+
+        // Treating project-controlled configuration as authority requires
+        // workspace trust, or a CI identity in a hermetic scope.
+        ExecutionCapability::ProjectConfiguration => match execution_authority(evidence) {
+            ExecutionAuthority::Established => CapabilityFinding::Granted,
+            ExecutionAuthority::Absent => {
+                let (code, actionable) = absent_authority_reason(evidence);
+                reasons.push(reason(code, Some(capability), None, actionable));
+                CapabilityFinding::Denied
+            }
+            ExecutionAuthority::Undecided => {
+                reasons.push(reason(
+                    REASON_WORKSPACE_TRUST_UNKNOWN,
+                    Some(capability),
+                    None,
+                    ActionableAuthority::WorkspaceTrust,
+                ));
+                CapabilityFinding::NotProven
+            }
+        },
+
+        ExecutionCapability::ExecutableTool => evaluate_executable_tool(inputs, reasons),
+
+        ExecutionCapability::EnvironmentCodeLoading => {
+            evaluate_environment_code_loading(evidence, inputs, reasons)
+        }
+
+        // Trusted source configuration is weaker than trusted project
+        // execution: trust alone is not enough, an explicit actor is required.
+        ExecutionCapability::ProjectCodeExecution => match execution_authority(evidence) {
+            ExecutionAuthority::Established => {
+                if matches!(evidence.actor, AuthorizationActor::None) {
+                    reasons.push(reason(
+                        REASON_NO_EXPLICIT_ACTOR,
+                        Some(capability),
+                        None,
+                        ActionableAuthority::ExplicitUserAction,
+                    ));
+                    CapabilityFinding::ConfirmationRequired
+                } else {
+                    CapabilityFinding::Granted
+                }
+            }
+            ExecutionAuthority::Absent => {
+                let (code, actionable) = absent_authority_reason(evidence);
+                reasons.push(reason(code, Some(capability), None, actionable));
+                CapabilityFinding::Denied
+            }
+            ExecutionAuthority::Undecided => {
+                reasons.push(reason(
+                    REASON_WORKSPACE_TRUST_UNKNOWN,
+                    Some(capability),
+                    None,
+                    ActionableAuthority::WorkspaceTrust,
+                ));
+                CapabilityFinding::NotProven
+            }
+        },
+
+        ExecutionCapability::OutsideRootPath => evaluate_outside_root_path(inputs, reasons),
+
+        ExecutionCapability::PersistentCadence => evaluate_persistent_cadence(inputs, reasons),
+
+        ExecutionCapability::InteractiveSession => {
+            if evidence.actor.is_explicit_user_action()
+                && execution_authority(evidence) == ExecutionAuthority::Established
+            {
+                CapabilityFinding::Granted
+            } else {
+                reasons.push(reason(
+                    REASON_INTERACTIVE_SESSION_NOT_AUTHORIZED,
+                    Some(capability),
+                    None,
+                    ActionableAuthority::ExplicitUserAction,
+                ));
+                CapabilityFinding::ConfirmationRequired
+            }
+        }
+    }
+}
+
+/// Whether the scope's own authority class is established.
+///
+/// Editor scopes read workspace trust; hermetic scopes read the CI identity.
+/// Neither is ever synthesized from the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutionAuthority {
+    Established,
+    Absent,
+    Undecided,
+}
+
+/// The reason and remedy for absent authority, named for the scope that is
+/// actually consulted.
+///
+/// Telling an operator to grant workspace trust in a hermetic scope is
+/// misleading: trust is deliberately ignored there, so following the advice
+/// would leave the denial in place. The missing authority is a CI identity.
+fn absent_authority_reason(
+    evidence: &AuthorizationEvidence,
+) -> (&'static str, ActionableAuthority) {
+    match evidence.scope.kind {
+        TrustScopeKind::EditorWorkspace => {
+            (REASON_WORKSPACE_UNTRUSTED, ActionableAuthority::WorkspaceTrust)
+        }
+        TrustScopeKind::CiHermetic => (REASON_NO_CI_IDENTITY, ActionableAuthority::CiIdentity),
+    }
+}
+
+fn execution_authority(evidence: &AuthorizationEvidence) -> ExecutionAuthority {
+    match evidence.scope.kind {
+        TrustScopeKind::EditorWorkspace => match evidence.trust {
+            WorkspaceTrust::Trusted => ExecutionAuthority::Established,
+            WorkspaceTrust::Untrusted => ExecutionAuthority::Absent,
+            WorkspaceTrust::Unknown => ExecutionAuthority::Undecided,
+        },
+        TrustScopeKind::CiHermetic => {
+            if evidence.actor.is_ci_identity() {
+                ExecutionAuthority::Established
+            } else {
+                ExecutionAuthority::Absent
+            }
+        }
+    }
+}
+
+fn evaluate_executable_tool(
+    inputs: &[&ClassifiedInput],
+    reasons: &mut Vec<AuthorizationReason>,
+) -> CapabilityFinding {
+    let capability = ExecutionCapability::ExecutableTool;
+
+    // Most restrictive wins. An operation may invoke several tool-shaped
+    // inputs, and the capability covers all of them, so a disqualifying input
+    // must be found before an enabling one — otherwise a legitimately selected
+    // interpreter would mask a project-supplied wrapper script declared
+    // alongside it.
+
+    // A project-supplied executable is project-controlled authority. Neither an
+    // explicit user action nor a verified tool elsewhere in the operation
+    // upgrades it.
+    if let Some(input) = inputs
+        .iter()
+        .copied()
+        .find(|&input| input.risk_class == InputRiskClass::ProjectExecutableOrCommand)
+    {
+        reasons.push(reason(
+            REASON_PROJECT_SUPPLIED_EXECUTABLE,
+            Some(capability),
+            Some(input.id.clone()),
+            ActionableAuthority::UserConfiguration,
+        ));
+        return CapabilityFinding::Denied;
+    }
+
+    if let Some(input) =
+        inputs.iter().copied().find(|&input| input.risk_class == InputRiskClass::AmbientPathOrCwd)
+    {
+        // Being ambient caps this at a prompt, and only a disposition that
+        // actually refuses may push past that cap. Answering
+        // `ConfirmationRequired` for a *refused* ambient tool would turn a
+        // denial into something a session override is allowed to satisfy,
+        // quietly undoing the rule that an override can never cure a denial.
+        //
+        // `RequiresSeparateAuthority` deliberately stays a prompt rather than
+        // routing through `finding_for_disposition`, which maps it to `Denied`
+        // for external paths. On an ambient tool it means what it says — this
+        // needs a stronger authority before it counts — and the confirmation or
+        // scoped override *is* that authority. Treating it as a refusal would
+        // make every ambient tool unusable rather than confirmable.
+        let (finding, code) = match input.disposition {
+            InputDisposition::Denied => {
+                (CapabilityFinding::Denied, REASON_AMBIENT_TOOL_NOT_ACCEPTED)
+            }
+            InputDisposition::UnknownNotProven => {
+                (CapabilityFinding::NotProven, REASON_AMBIENT_TOOL_NOT_ACCEPTED)
+            }
+            InputDisposition::Accepted
+            | InputDisposition::AcceptedLimited
+            | InputDisposition::ConfirmationRequired
+            | InputDisposition::RequiresSeparateAuthority => {
+                (CapabilityFinding::ConfirmationRequired, REASON_AMBIENT_TOOL_SELECTION)
+            }
+        };
+        reasons.push(reason(
+            code,
+            Some(capability),
+            Some(input.id.clone()),
+            ActionableAuthority::UserConfiguration,
+        ));
+        return finding;
+    }
+
+    // A selected tool that is offered but refused is a different fact from no
+    // tool being offered, so the two are separated before either can answer.
+    let verified: Vec<&ClassifiedInput> = inputs
+        .iter()
+        .copied()
+        .filter(|&input| input.risk_class == InputRiskClass::SelectedVerifiedTool)
+        .collect();
+
+    if verified.iter().any(|&input| input.disposition.is_accepted()) {
+        // Most restrictive wins within the class too: an accepted interpreter
+        // does not carry a refused or unconfirmed tool selected alongside it.
+        let (worst, blocking) = most_restrictive_disposition(&verified);
+        if worst == CapabilityFinding::Granted {
+            return worst;
+        }
+        reasons.push(reason(
+            REASON_VERIFIED_TOOL_NOT_ACCEPTED,
+            Some(capability),
+            blocking,
+            ActionableAuthority::UserConfiguration,
+        ));
+        return worst;
+    }
+
+    reasons.push(reason(
+        REASON_NO_VERIFIED_TOOL,
+        Some(capability),
+        None,
+        ActionableAuthority::UserConfiguration,
+    ));
+    CapabilityFinding::NotProven
+}
+
+fn evaluate_environment_code_loading(
+    evidence: &AuthorizationEvidence,
+    inputs: &[&ClassifiedInput],
+    reasons: &mut Vec<AuthorizationReason>,
+) -> CapabilityFinding {
+    let capability = ExecutionCapability::EnvironmentCodeLoading;
+
+    // Ambient PERL5LIB/PERL5OPT and friends never supply code-loading
+    // authority. An explicitly reviewed activation is a different input.
+    if let Some(input) = inputs.iter().copied().find(|&input| {
+        input.risk_class == InputRiskClass::AmbientPerlEnvironment
+            && input.authority == EnvironmentInputAuthority::Ambient
+    }) {
+        reasons.push(reason(
+            REASON_AMBIENT_ENVIRONMENT_DENIED,
+            Some(capability),
+            Some(input.id.clone()),
+            ActionableAuthority::UserConfiguration,
+        ));
+        return CapabilityFinding::Denied;
+    }
+
+    // An explicitly reviewed activation supplies the authority when it is
+    // accepted. When it exists but was NOT accepted, its own disposition is the
+    // answer: falling through to the no-environment branch below would grant
+    // code loading from workspace trust alone, which is the very thing the
+    // producer declined to accept.
+    // Several reviewed activations may be in play. The most restrictive
+    // decides: accepting the first match would let an accepted activation mask
+    // a denied peer and load exactly the environment that was refused.
+    let mut worst = CapabilityFinding::Granted;
+    let mut blocking: Option<ClassifiedInputId> = None;
+    let mut saw_explicit = false;
+    for input in inputs.iter().copied().filter(|&input| {
+        input.risk_class == InputRiskClass::AmbientPerlEnvironment
+            && input.authority == EnvironmentInputAuthority::ExplicitEnvironment
+    }) {
+        saw_explicit = true;
+        let finding = finding_for_disposition(input.disposition);
+        if finding.restriction_rank() > worst.restriction_rank() {
+            worst = finding;
+            blocking = Some(input.id.clone());
+        }
+    }
+    if saw_explicit {
+        if worst != CapabilityFinding::Granted {
+            let (code, actionable) = if worst == CapabilityFinding::NotProven {
+                (REASON_UNKNOWN_PROVENANCE, ActionableAuthority::InputProvenance)
+            } else {
+                (REASON_ENVIRONMENT_NOT_ACCEPTED, ActionableAuthority::UserConfiguration)
+            };
+            reasons.push(reason(code, Some(capability), blocking, actionable));
+        }
+        return worst;
+    }
+
+    // No environment input at all: loading uses the verified interpreter's own
+    // defaults, which the scope's execution authority already covers.
+    match execution_authority(evidence) {
+        ExecutionAuthority::Established => CapabilityFinding::Granted,
+        ExecutionAuthority::Absent => {
+            let (code, actionable) = absent_authority_reason(evidence);
+            reasons.push(reason(code, Some(capability), None, actionable));
+            CapabilityFinding::Denied
+        }
+        ExecutionAuthority::Undecided => {
+            reasons.push(reason(
+                REASON_WORKSPACE_TRUST_UNKNOWN,
+                Some(capability),
+                None,
+                ActionableAuthority::WorkspaceTrust,
+            ));
+            CapabilityFinding::NotProven
+        }
+    }
+}
+
+fn evaluate_outside_root_path(
+    inputs: &[&ClassifiedInput],
+    reasons: &mut Vec<AuthorizationReason>,
+) -> CapabilityFinding {
+    let capability = ExecutionCapability::OutsideRootPath;
+
+    if let Some(input) = inputs
+        .iter()
+        .copied()
+        .find(|&input| input.risk_class == InputRiskClass::SymlinkOrTraversalPath)
+    {
+        reasons.push(reason(
+            REASON_PATH_ESCAPES_ROOT,
+            Some(capability),
+            Some(input.id.clone()),
+            ActionableAuthority::NotActionable,
+        ));
+        return CapabilityFinding::Denied;
+    }
+
+    let external: Vec<&ClassifiedInput> = inputs
+        .iter()
+        .copied()
+        .filter(|&input| input.risk_class == InputRiskClass::ExternalAbsolutePath)
+        .collect();
+    if external.is_empty() {
+        // This capability is only evaluated because the profile requires it,
+        // and it is blanket authority to leave the root. With no external path
+        // classified there is nothing to judge, so granting would hand a
+        // consumer that blanket authority on an empty evidence set — the same
+        // vacuous-truth shape `covers_inputs` already had to close.
+        reasons.push(reason(
+            REASON_NO_CLASSIFIED_EXTERNAL_PATH,
+            Some(capability),
+            None,
+            ActionableAuthority::InputProvenance,
+        ));
+        return CapabilityFinding::NotProven;
+    }
+
+    // The most restrictive external path decides. Collapsing every unaccepted
+    // path into a prompt would turn an explicit denial into a misleading
+    // actionable confirmation, and would let unknown provenance read as merely
+    // unconfirmed.
+    let mut worst = CapabilityFinding::Granted;
+    let mut blocking: Option<ClassifiedInputId> = None;
+    for input in external {
+        let finding = if input.authority == EnvironmentInputAuthority::UserConfiguration {
+            finding_for_disposition(input.disposition)
+        } else if input.disposition.is_accepted() {
+            // Accepted, but by an authority weaker than an explicit user or
+            // machine selection: leaving the root still needs confirmation.
+            CapabilityFinding::ConfirmationRequired
+        } else {
+            finding_for_disposition(input.disposition)
+        };
+        if finding.restriction_rank() > worst.restriction_rank() {
+            worst = finding;
+            blocking = Some(input.id.clone());
+        }
+    }
+
+    if worst == CapabilityFinding::Granted {
+        return worst;
+    }
+    // The remedy has to match the finding: an unproven path needs its
+    // provenance established, which no amount of configuration will do.
+    let (code, actionable) = match worst {
+        CapabilityFinding::Denied => {
+            (REASON_EXTERNAL_PATH_DENIED, ActionableAuthority::UserConfiguration)
+        }
+        CapabilityFinding::NotProven => {
+            (REASON_UNKNOWN_PROVENANCE, ActionableAuthority::InputProvenance)
+        }
+        _ => (REASON_EXTERNAL_PATH_UNCONFIRMED, ActionableAuthority::UserConfiguration),
+    };
+    reasons.push(reason(code, Some(capability), blocking, actionable));
+    worst
+}
+
+fn evaluate_persistent_cadence(
+    inputs: &[&ClassifiedInput],
+    reasons: &mut Vec<AuthorizationReason>,
+) -> CapabilityFinding {
+    let capability = ExecutionCapability::PersistentCadence;
+
+    // Every user-scoped setting in play is folded, not just an enabling one.
+    // A user who enables a cadence in one setting and disables it in another
+    // has not authorized it; reading only for the enabling setting would turn
+    // an explicit refusal into repeated execution.
+    let settings: Vec<&ClassifiedInput> = inputs
+        .iter()
+        .copied()
+        .filter(|&input| input.risk_class == InputRiskClass::UserScopedSetting)
+        .collect();
+
+    if settings.iter().any(|&input| {
+        input.authority == EnvironmentInputAuthority::UserConfiguration
+            && input.disposition.is_accepted()
+    }) {
+        let (worst, blocking) = most_restrictive_disposition(&settings);
+        if worst == CapabilityFinding::Granted {
+            return worst;
+        }
+        reasons.push(reason(
+            REASON_CADENCE_SETTING_NOT_ACCEPTED,
+            Some(capability),
+            blocking,
+            ActionableAuthority::UserConfiguration,
+        ));
+        return worst;
+    }
+
+    // A workspace- or resource-scoped setting cannot manufacture user or
+    // machine authority merely by claiming provenance.
+    if let Some(input) = inputs
+        .iter()
+        .copied()
+        .find(|&input| input.risk_class == InputRiskClass::WorkspaceScopedSetting)
+    {
+        reasons.push(reason(
+            REASON_WORKSPACE_SETTING_CANNOT_GRANT_USER_AUTHORITY,
+            Some(capability),
+            Some(input.id.clone()),
+            ActionableAuthority::UserConfiguration,
+        ));
+        return CapabilityFinding::Denied;
+    }
+
+    reasons.push(reason(
+        REASON_CADENCE_NOT_AUTHORIZED,
+        Some(capability),
+        None,
+        ActionableAuthority::UserConfiguration,
+    ));
+    CapabilityFinding::ConfirmationRequired
+}
+
+/// The finding a non-accepting disposition implies.
+///
+/// Fail closed: anything that is not an acceptance withholds the capability,
+/// and the disposition decides whether that is a denial, a prompt, or simply
+/// unestablished.
+const fn finding_for_disposition(disposition: InputDisposition) -> CapabilityFinding {
+    match disposition {
+        InputDisposition::Accepted | InputDisposition::AcceptedLimited => {
+            CapabilityFinding::Granted
+        }
+        InputDisposition::ConfirmationRequired => CapabilityFinding::ConfirmationRequired,
+        InputDisposition::UnknownNotProven => CapabilityFinding::NotProven,
+        InputDisposition::Denied | InputDisposition::RequiresSeparateAuthority => {
+            CapabilityFinding::Denied
+        }
+    }
+}
+
+/// The most restrictive finding implied by a set of inputs' own dispositions,
+/// with the input that decided it.
+///
+/// Most-restrictive-wins has to hold *within* a risk class, not only across
+/// classes. Several inputs of the same class can back one capability — two
+/// selected interpreters, an enabling and a disabling cadence setting — and a
+/// capability is granted to the operation as a whole, not per input. Asking
+/// only whether some input is accepted therefore lets an accepted peer carry a
+/// refused one into execution, which is the same "is there a good input?"
+/// before "is there a bad one?" ordering error that the cross-class guards
+/// above already exist to prevent.
+///
+/// Returns [`CapabilityFinding::Granted`] with no blocking input when every
+/// input accepts, including when `inputs` is empty; callers decide separately
+/// whether an empty set may grant at all.
+fn most_restrictive_disposition(
+    inputs: &[&ClassifiedInput],
+) -> (CapabilityFinding, Option<ClassifiedInputId>) {
+    let mut worst = CapabilityFinding::Granted;
+    let mut blocking: Option<ClassifiedInputId> = None;
+    for input in inputs {
+        let finding = finding_for_disposition(input.disposition);
+        if finding.restriction_rank() > worst.restriction_rank() {
+            worst = finding;
+            blocking = Some(input.id.clone());
+        }
+    }
+    (worst, blocking)
+}
+
+/// Workspace identity substituted when a request's own scope is unusable.
+///
+/// A structurally invalid request must still produce a decision, but it must
+/// not carry the caller's rejected material into a public record — otherwise
+/// the bound that rejected an oversized identifier is defeated by the very
+/// decision that rejects it.
+pub const UNEVALUABLE_WORKSPACE_ID: &str = "unevaluable";
+
+/// A scope safe to publish for a request that could not be evaluated.
+fn publishable_scope(scope: &TrustScope) -> TrustScope {
+    if scope.validate().is_ok() {
+        return scope.clone();
+    }
+    TrustScope {
+        kind: scope.kind,
+        workspace_id: UNEVALUABLE_WORKSPACE_ID.to_string(),
+        root_id: None,
+        session_id: None,
+    }
+}
+
+fn reason(
+    code: &str,
+    capability: Option<ExecutionCapability>,
+    input_id: Option<ClassifiedInputId>,
+    actionable_authority: ActionableAuthority,
+) -> AuthorizationReason {
+    AuthorizationReason { code: code.to_string(), capability, input_id, actionable_authority }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish(
+    outcome: AuthorizationOutcome,
+    granted: CapabilitySet,
+    omitted: CapabilitySet,
+    mut reasons: Vec<AuthorizationReason>,
+    intent_id: &ExecutionIntentId,
+    requirement: &OperationTrustRequirement,
+    evidence_id: &AuthorizationEvidenceId,
+    intent: &ExecutionIntent,
+    evidence: &AuthorizationEvidence,
+) -> ExecutionAuthorizationDecision {
+    reasons.sort_by(|left, right| {
+        (left.code.as_str(), left.capability, left.input_id.as_ref()).cmp(&(
+            right.code.as_str(),
+            right.capability,
+            right.input_id.as_ref(),
+        ))
+    });
+    reasons.dedup();
+
+    // Only an override that actually supplied a capability dates this decision.
+    // Attaching the expiry because an override was merely present in the
+    // evidence made a base-granted decision publish an expiry that is not its
+    // own — fail-safe, since consumers would revalidate too often rather than
+    // too rarely, but still a decision record overstating what binds it. The
+    // grant leaves a reason behind, so that is what decides.
+    let granted_by_override =
+        reasons.iter().any(|item| item.code == REASON_GRANTED_BY_SESSION_OVERRIDE);
+    let override_expiry = evidence
+        .session_override
+        .as_ref()
+        .filter(|_| granted_by_override)
+        .map(|item| item.expires_after_policy_generation);
+    let mut revalidate_on = vec![
+        REVALIDATE_ON_CONFIGURATION_GENERATION.to_string(),
+        REVALIDATE_ON_POLICY_GENERATION.to_string(),
+        REVALIDATE_ON_SOURCE_GENERATION.to_string(),
+        REVALIDATE_ON_ENVIRONMENT_FINGERPRINT.to_string(),
+    ];
+    if override_expiry.is_some() {
+        revalidate_on.push(REVALIDATE_ON_OVERRIDE_EXPIRY.to_string());
+    }
+
+    let revalidation = RevalidationRequirement {
+        bound: intent.generations.clone(),
+        override_expires_after_policy_generation: override_expiry,
+        revalidate_on,
+    };
+    // Sanitize before fingerprinting, not after: the identity has to cover the
+    // scope the decision actually carries, or a rejected request produces a
+    // decision that cannot revalidate.
+    let scope = publishable_scope(&intent.scope);
+    let requirement_id = requirement.identity();
+    let non_claims = requirement.non_claims.clone();
+    let fingerprint = compute_decision_fingerprint(
+        outcome,
+        &granted,
+        &omitted,
+        &reasons,
+        intent_id,
+        requirement_id.as_str(),
+        evidence_id,
+        &scope,
+        &revalidation,
+        &non_claims,
+    );
+
+    ExecutionAuthorizationDecision {
+        schema_version: EXECUTION_AUTHORIZATION_SCHEMA_VERSION,
+        outcome,
+        granted,
+        omitted,
+        reasons,
+        intent_id: intent_id.clone(),
+        requirement_id,
+        evidence_id: evidence_id.clone(),
+        scope,
+        revalidation,
+        non_claims,
+        fingerprint,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_decision_fingerprint(
+    outcome: AuthorizationOutcome,
+    granted: &CapabilitySet,
+    omitted: &CapabilitySet,
+    reasons: &[AuthorizationReason],
+    intent_id: &ExecutionIntentId,
+    requirement_id: &str,
+    evidence_id: &AuthorizationEvidenceId,
+    scope: &TrustScope,
+    revalidation: &RevalidationRequirement,
+    non_claims: &[String],
+) -> AuthorizationFingerprint {
+    let mut material = String::new();
+    push_field(&mut material, "schema", &EXECUTION_AUTHORIZATION_SCHEMA_VERSION.to_string());
+    push_field(&mut material, "outcome", outcome.identity_tag());
+    push_field(&mut material, "granted", &granted.tags().join(","));
+    push_field(&mut material, "omitted", &omitted.tags().join(","));
+    for item in reasons {
+        push_field(&mut material, "reason.code", item.code.as_str());
+        push_field(
+            &mut material,
+            "reason.capability",
+            item.capability.map_or("", ExecutionCapability::identity_tag),
+        );
+        push_field(
+            &mut material,
+            "reason.input",
+            item.input_id.as_ref().map_or("", ClassifiedInputId::as_str),
+        );
+        push_field(&mut material, "reason.actionable", item.actionable_authority.identity_tag());
+    }
+    push_field(&mut material, "intent", intent_id.as_str());
+    push_field(&mut material, "requirement", requirement_id);
+    push_field(&mut material, "evidence", evidence_id.as_str());
+    scope.push_identity(&mut material, "scope");
+    revalidation.bound.push_identity(&mut material, "revalidation.bound");
+    push_field(
+        &mut material,
+        "revalidation.override_expiry",
+        &revalidation
+            .override_expires_after_policy_generation
+            .map_or_else(String::new, |value| value.to_string()),
+    );
+    for code in &revalidation.revalidate_on {
+        push_field(&mut material, "revalidation.on", code.as_str());
+    }
+    for claim in non_claims {
+        push_field(&mut material, "non_claim", claim.as_str());
+    }
+    AuthorizationFingerprint(Digest::of(&material))
+}
+
+/// The reviewed registry as a deterministic map, for contract tests and
+/// generated documentation.
+#[must_use]
+pub fn operation_registry() -> BTreeMap<&'static str, OperationTrustRequirement> {
+    OperationProfile::ALL
+        .iter()
+        .map(|profile| (profile.identity_tag(), OperationTrustRequirement::for_profile(*profile)))
+        .collect()
+}
