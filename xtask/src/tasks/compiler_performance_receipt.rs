@@ -1373,6 +1373,42 @@ mod tests {
         assert!(check(&receipt).is_err(), "an identity slot accepts only its own v1 constant");
     }
 
+    /// The schema must carry the identity pin on its own.
+    ///
+    /// `rejects_an_unpinned_artifact_schema_identity` goes through the typed
+    /// model too, whose one-variant enum rejects `source.legacy` regardless of
+    /// the schema — so deleting the schema-side `const` left every test green.
+    /// A transport-neutral consumer has only the schema, so the pin needs a
+    /// control that sees only the schema.
+    #[test]
+    fn schema_alone_rejects_an_unpinned_artifact_schema_identity() {
+        let mut receipt = measured();
+        receipt["subject"]["identities"]["source"]["schema"] = json!("source.legacy");
+        assert!(
+            !schema_violations(&receipt).is_empty(),
+            "the schema itself must pin each identity slot to its v1 constant"
+        );
+    }
+
+    /// Same reasoning for the timing rule: `check_timing` on the typed path
+    /// masked a deleted schema conditional.
+    #[test]
+    fn schema_alone_rejects_measured_timing_without_a_value() {
+        let mut receipt = measured();
+        receipt["stages"][1]["timing"] = json!({"status": "measured"});
+        assert!(
+            !schema_violations(&receipt).is_empty(),
+            "the schema itself must require wall_ns under measured timing"
+        );
+
+        let mut smuggled = measured();
+        smuggled["stages"][1]["timing"] = json!({"status": "not_proven", "wall_ns": 0});
+        assert!(
+            !schema_violations(&smuggled).is_empty(),
+            "and must forbid a value under a non-measured timing"
+        );
+    }
+
     #[test]
     fn rejects_a_tree_that_is_not_an_object_name() {
         for spelling in ["HEAD", "1234", "F530D2F1221C516484A3654F01A3AD694AB56969"] {
