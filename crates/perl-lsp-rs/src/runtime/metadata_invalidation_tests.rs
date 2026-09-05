@@ -73,6 +73,14 @@ fn declared_modules(server: &LspServer) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn include_paths(server: &LspServer) -> Vec<String> {
+    server
+        .all_workspace_folders()
+        .first()
+        .map(|folder| folder.effective_workspace_config.include_paths.clone())
+        .unwrap_or_default()
+}
+
 fn index_symbols(server: &LspServer, query: &str) -> usize {
     server
         .coordinator()
@@ -225,12 +233,8 @@ fn deleting_an_open_metadata_file_does_not_erase_buffer_owned_facts() {
 
     assert_eq!(
         declared_modules(&server),
-        vec!["JSON::PP".to_string()],
+        vec!["JSON::PP".to_string(), "Staged::Only".to_string()],
         "an external delete must not erase facts an open metadata buffer still declares"
-    );
-    assert!(
-        server.dependency_facts_are_stale(&dir_uri(&dir)),
-        "the retained snapshot must be reported as stale"
     );
     assert!(
         server.all_workspace_folders().first().is_some_and(|folder| folder
@@ -342,31 +346,79 @@ fn a_readable_refresh_clears_the_stale_marker() {
     assert_eq!(declared_modules(&server), vec!["YAML::XS".to_string()]);
 }
 
-/// The retained-snapshot path must not silently stop advancing facts for
-/// unrelated folders, and must not advance the generation when nothing
-/// refreshed.
+/// Retention is per source, not per folder: an unreadable `META.yml` keeps only
+/// its own entries and must not block a readable `cpanfile` from refreshing.
 #[test]
-fn a_retained_snapshot_does_not_advance_the_fact_generation() {
+fn an_unreadable_source_does_not_freeze_the_readable_ones() {
     let dir = TempDir::new().expect("tempdir");
     write_file(&dir, "cpanfile", "requires 'JSON::PP';\n");
+    write_file(&dir, "META.yml", "requires:\n  Meta::Declared: 0\n");
     let server = workspace_server(&dir);
-    write_unreadable_cpanfile(&dir);
-    let before = server.dependency_facts_generation();
+    assert!(
+        declared_modules(&server).contains(&"Meta::Declared".to_string()),
+        "META.yml declarations are part of the baseline"
+    );
 
+    std::fs::write(dir.path().join("META.yml"), [0xff_u8, 0xfe, 0xfd])
+        .expect("write invalid UTF-8 META.yml");
+    write_file(&dir, "cpanfile", "requires 'YAML::XS';\n");
     watched(&server, &[(&file_uri(&dir, "cpanfile"), CHANGED)]);
 
-    assert_eq!(
-        server.dependency_facts_generation(),
-        before,
-        "retaining a snapshot is not a refresh and must not advance the generation"
+    let modules = declared_modules(&server);
+    assert!(
+        modules.contains(&"YAML::XS".to_string()),
+        "a readable cpanfile must still refresh while META.yml is unreadable"
+    );
+    assert!(
+        modules.contains(&"Meta::Declared".to_string()),
+        "the unreadable META.yml must retain its own previous entries"
+    );
+    assert!(
+        !modules.contains(&"JSON::PP".to_string()),
+        "the readable source must not retain its superseded declaration"
+    );
+    assert!(
+        server.dependency_facts_are_stale(&dir_uri(&dir)),
+        "any unreadable source leaves the folder snapshot stale"
+    );
+}
+
+/// An unreadable declaration source must not block dependency-manager
+/// include-root reconciliation, which is driven by existence probes alone.
+#[test]
+fn an_unreadable_source_does_not_block_include_root_retirement() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "cpanfile", "requires 'JSON::PP';\n");
+    write_file(&dir, "carton.lock", "snapshot\n");
+    let server = LspServer::new();
+    let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+    config.include_paths = vec!["lib".to_string(), ".".to_string()];
+    let mut folder = WorkspaceFolderState::new(dir_uri(&dir))
+        .with_path(dir.path().to_path_buf())
+        .with_effective_workspace_config(config);
+    folder.refresh_workspace_metadata();
+    server.workspace_folders.lock().push(folder);
+    assert!(
+        include_paths(&server).contains(&"local/lib/perl5".to_string()),
+        "the detected root is contributed while carton.lock exists"
+    );
+
+    std::fs::write(dir.path().join("META.yml"), [0xff_u8, 0xfe, 0xfd])
+        .expect("write invalid UTF-8 META.yml");
+    std::fs::remove_file(dir.path().join("carton.lock")).expect("remove carton.lock");
+    watched(&server, &[(&file_uri(&dir, "carton.lock"), DELETED)]);
+
+    assert!(
+        !include_paths(&server).contains(&"local/lib/perl5".to_string()),
+        "an unreadable META.yml must not stop a deleted carton.lock from retiring its root"
     );
 }
 
 /// Open-buffer authority (#8041) extends to metadata documents: while the
-/// editor holds staged text, a disk-derived refresh would record provenance
-/// that contradicts what the user sees.
+/// editor holds staged text, that text is the authority, so facts follow what
+/// the user actually sees rather than freezing until the buffer closes.
 #[test]
-fn open_metadata_buffer_retains_the_disk_snapshot_and_marks_it_stale() {
+fn open_metadata_buffer_supplies_declared_dependencies_from_staged_text() {
     let dir = TempDir::new().expect("tempdir");
     write_file(&dir, "cpanfile", "requires 'JSON::PP';\n");
     let server = workspace_server(&dir);
@@ -383,16 +435,55 @@ fn open_metadata_buffer_retains_the_disk_snapshot_and_marks_it_stale() {
         })))
         .expect("didOpen params are valid");
 
+    // The disk bytes disagree with the buffer; the buffer wins.
     write_file(&dir, "cpanfile", "requires 'YAML::XS';\n");
     watched(&server, &[(&uri, CHANGED)]);
 
     assert_eq!(
         declared_modules(&server),
-        vec!["JSON::PP".to_string()],
-        "disk bytes behind an authoritative open metadata buffer must not be adopted"
+        vec!["Staged::Only".to_string()],
+        "an open metadata buffer is the authority over disagreeing disk bytes"
     );
     assert!(
-        server.dependency_facts_are_stale(&dir_uri(&dir)),
-        "a buffer-owned metadata document leaves the disk snapshot stale"
+        !server.dependency_facts_are_stale(&dir_uri(&dir)),
+        "buffer-derived facts are current, not stale"
+    );
+}
+
+/// Regression for the "open metadata never becomes current" hazard: with a
+/// metadata document held open, successive edits keep updating facts instead of
+/// freezing them until the buffer closes.
+#[test]
+fn an_open_metadata_buffer_keeps_becoming_current_as_it_is_edited() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "cpanfile", "requires 'JSON::PP';\n");
+    let server = workspace_server(&dir);
+    let uri = file_uri(&dir, "cpanfile");
+
+    server
+        .handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "requires 'First::Staged';\n"
+            }
+        })))
+        .expect("didOpen params are valid");
+    watched(&server, &[(&uri, CHANGED)]);
+    assert_eq!(declared_modules(&server), vec!["First::Staged".to_string()]);
+
+    server
+        .handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": "requires 'Second::Staged';\n" }]
+        })))
+        .expect("didChange params are valid");
+    watched(&server, &[(&uri, CHANGED)]);
+
+    assert_eq!(
+        declared_modules(&server),
+        vec!["Second::Staged".to_string()],
+        "facts must keep tracking the open buffer, not freeze at the first read"
     );
 }

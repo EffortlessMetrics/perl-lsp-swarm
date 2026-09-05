@@ -153,6 +153,59 @@ const BUILD_PL_KEYS: &[&str] =
 const META_RELATION_KEYS: &[&str] =
     &["requires", "recommends", "build_requires", "test_requires", "configure_requires"];
 
+/// Authoritative text captured for one declared-dependency metadata source.
+///
+/// The watcher route (#13640) resolves each source exactly once per refresh and
+/// passes the outcome here, so detection consumes the same bytes the caller
+/// already observed. That removes the read-twice window in which a source could
+/// succeed during a readability probe and then fail when the detector reopened
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetadataSourceRead {
+    /// Authoritative text: the file's bytes, or an open buffer's staged text.
+    Text(String),
+    /// The source does not exist and declares nothing.
+    Absent,
+    /// The source exists but could not be read as text.
+    Unreadable,
+}
+
+/// Compose declared dependencies from per-source captured reads.
+///
+/// Sources are consumed in [`DeclaredDependencySource::ALL`] order and the
+/// first declaration of a module wins, matching
+/// [`detect_declared_dependencies`].
+///
+/// Retention is per source, not per folder: an [`MetadataSourceRead::Unreadable`]
+/// source contributes its entries from `previous`, so an unreadable `META.yml`
+/// cannot erase what a readable `cpanfile` declares, and an unknown source is
+/// never silently downgraded to "declares nothing". An
+/// [`MetadataSourceRead::Absent`] source contributes nothing, which is how a
+/// genuine delete drops its declarations.
+#[must_use]
+pub fn declared_dependencies_from_reads(
+    reads: &[(DeclaredDependencySource, MetadataSourceRead)],
+    previous: &[DeclaredDependency],
+) -> Vec<DeclaredDependency> {
+    let mut dependencies = Vec::new();
+    for (source, read) in reads {
+        match read {
+            MetadataSourceRead::Text(text) => {
+                for dependency in source.extractor()(text) {
+                    push_unique(&mut dependencies, dependency);
+                }
+            }
+            MetadataSourceRead::Absent => {}
+            MetadataSourceRead::Unreadable => {
+                for dependency in previous.iter().filter(|entry| entry.source == *source) {
+                    push_unique(&mut dependencies, dependency.clone());
+                }
+            }
+        }
+    }
+    dependencies
+}
+
 /// Detect declared dependencies from common workspace-root metadata files.
 #[must_use]
 pub fn detect_declared_dependencies(workspace_root: &Path) -> Vec<DeclaredDependency> {

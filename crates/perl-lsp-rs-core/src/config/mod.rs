@@ -31,10 +31,10 @@ pub(crate) use critic_state::CriticSettingsCandidate;
 pub use critic_state::{EffectiveCriticState, EffectiveNativeCriticConfig};
 pub use dependency_detection::detect_dependency_include_paths;
 pub use metadata_dependencies::{
-    DeclaredDependency, DeclaredDependencySource, detect_declared_dependencies,
-    extract_build_pl_requirements, extract_cpanfile_requirements, extract_dist_ini_requirements,
-    extract_makefile_pl_requirements, extract_meta_json_requirements,
-    extract_meta_yml_requirements,
+    DeclaredDependency, DeclaredDependencySource, MetadataSourceRead,
+    declared_dependencies_from_reads, detect_declared_dependencies, extract_build_pl_requirements,
+    extract_cpanfile_requirements, extract_dist_ini_requirements, extract_makefile_pl_requirements,
+    extract_meta_json_requirements, extract_meta_yml_requirements,
 };
 pub use native_build_hints::{
     NativeBuildHintDiagnostic, NativeBuildHintParseReason, NativeBuildHints, NativeBuildScript,
@@ -1516,6 +1516,19 @@ impl WorkspaceConfig {
     /// module-resolution include paths.
     pub fn refresh_declared_dependencies(&mut self, workspace_root: &Path) {
         self.declared_dependencies = detect_declared_dependencies(workspace_root);
+    }
+
+    /// Apply per-source captured metadata reads to declared-dependency facts.
+    ///
+    /// Used by the watcher invalidation route (#13640), which resolves each
+    /// source once — preferring an open buffer's staged text — and retains the
+    /// previous entries of any source it could not read.
+    pub fn apply_declared_dependency_reads(
+        &mut self,
+        reads: &[(DeclaredDependencySource, MetadataSourceRead)],
+    ) {
+        self.declared_dependencies =
+            declared_dependencies_from_reads(reads, &self.declared_dependencies);
     }
 
     /// Reconcile marker-detected Carton/Carmel roots into module-resolution paths.

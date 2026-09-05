@@ -86,6 +86,27 @@ impl WorkspaceFolderState {
         }
     }
 
+    /// Refresh metadata-derived facts from per-source captured reads (#13640).
+    ///
+    /// Declared dependencies come from `reads`, so an open metadata buffer's
+    /// staged text is authoritative and an unreadable source keeps only its own
+    /// previous entries. Dependency-manager include roots are reconciled from
+    /// the filesystem regardless: those markers are existence probes, so an
+    /// unreadable declaration file must not stop a deleted `carton.lock` from
+    /// retiring its root.
+    pub fn refresh_workspace_metadata_from_reads(
+        &mut self,
+        reads: &[(
+            perl_lsp_rs_core::config::DeclaredDependencySource,
+            perl_lsp_rs_core::config::MetadataSourceRead,
+        )],
+    ) {
+        self.effective_workspace_config.apply_declared_dependency_reads(reads);
+        if let Some(path) = self.path.as_deref() {
+            self.effective_workspace_config.refresh_dependency_include_paths(path);
+        }
+    }
+
     /// Get the URI as a string reference.
     #[must_use]
     pub fn uri(&self) -> &str {

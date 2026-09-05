@@ -24,22 +24,15 @@
 //! advances [`LspServer::dependency_facts_generation`] a single time when any
 //! folder actually refreshed.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use perl_lsp_rs_core::config::{DeclaredDependencySource, classify_project_metadata_path};
+use perl_lsp_rs_core::config::{
+    DeclaredDependencySource, MetadataSourceRead, classify_project_metadata_path,
+};
 use perl_uri::uri_to_fs_path;
 
 use super::LspServer;
-
-/// Why a folder's metadata snapshot was retained instead of refreshed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RetainedReason {
-    /// A metadata file exists but could not be read right now.
-    UnreadableOnDisk,
-    /// An open editor buffer holds the metadata document's authoritative text.
-    OpenBufferAuthority,
-}
 
 impl LspServer {
     /// Workspace-folder roots whose metadata facts `uri` affects.
@@ -66,29 +59,38 @@ impl LspServer {
 
     /// Refresh dependency and environment facts for `roots`, at most once each.
     ///
-    /// Advances [`Self::dependency_facts_generation`] exactly once when at
-    /// least one folder refreshed, so a coalesced burst of metadata writes is
-    /// one observable generation step. A folder whose metadata cannot be read
-    /// from disk right now keeps its previous snapshot and is recorded as
-    /// stale instead of being erased.
+    /// Advances [`Self::dependency_facts_generation`] exactly once per batch in
+    /// which at least one folder refreshed, so a coalesced burst of metadata
+    /// writes is one observable generation step.
+    ///
+    /// Each declared-dependency source is resolved exactly once, preferring an
+    /// open buffer's staged text over disk bytes. A source that cannot be read
+    /// keeps its own previous entries and marks the folder stale; it does not
+    /// block the sources that could be read, and it never blocks
+    /// dependency-manager include-root reconciliation.
     pub(crate) fn refresh_project_metadata_facts(&self, roots: &BTreeSet<PathBuf>) {
         if roots.is_empty() {
             return;
         }
 
-        // Snapshot open-document paths before taking the folder lock. No
+        // Snapshot open-document text before taking the folder lock. No
         // production path currently holds `documents` across a
         // `workspace_folders` acquisition, but nesting them here would
         // establish an order that any future `documents -> workspace_folders`
         // caller would deadlock against. Hoisting also drops the per-folder
         // re-lock this route would otherwise do inside the loop.
-        let open_document_paths: BTreeSet<PathBuf> = {
+        let open_document_text: BTreeMap<PathBuf, String> = {
             let documents = self.documents_guard();
-            documents.keys().filter_map(|uri| uri_to_fs_path(uri)).collect()
+            documents
+                .iter()
+                .filter_map(|(uri, document)| {
+                    uri_to_fs_path(uri).map(|path| (path, document.text_str().to_string()))
+                })
+                .collect()
         };
 
         let mut refreshed_any = false;
-        let mut newly_stale: Vec<(String, RetainedReason)> = Vec::new();
+        let mut newly_stale: Vec<String> = Vec::new();
         let mut now_current: Vec<String> = Vec::new();
 
         {
@@ -101,19 +103,22 @@ impl LspServer {
                     continue;
                 }
 
-                if let Some(reason) = Self::retained_snapshot_reason(&root, &open_document_paths) {
+                let reads = Self::capture_metadata_reads(&root, &open_document_text);
+                let unreadable =
+                    reads.iter().any(|(_, read)| matches!(read, MetadataSourceRead::Unreadable));
+
+                folder.refresh_workspace_metadata_from_reads(&reads);
+                refreshed_any = true;
+
+                if unreadable {
                     tracing::debug!(
                         folder = %folder.uri,
-                        reason = ?reason,
-                        "Retaining dependency/environment snapshot; metadata not readable from disk (#13640)"
+                        "Retained facts for unreadable metadata sources; snapshot is stale (#13640)"
                     );
-                    newly_stale.push((folder.uri.clone(), reason));
-                    continue;
+                    newly_stale.push(folder.uri.clone());
+                } else {
+                    now_current.push(folder.uri.clone());
                 }
-
-                folder.refresh_workspace_metadata();
-                now_current.push(folder.uri.clone());
-                refreshed_any = true;
                 tracing::debug!(
                     folder = %folder.uri,
                     "Refreshed dependency/environment facts from project metadata (#13640)"
@@ -126,7 +131,7 @@ impl LspServer {
             for uri in now_current {
                 stale.remove(&uri);
             }
-            for (uri, _reason) in newly_stale {
+            for uri in newly_stale {
                 stale.insert(uri);
             }
         }
@@ -136,56 +141,44 @@ impl LspServer {
         }
     }
 
-    /// Reason to retain `root`'s current snapshot rather than recompute it.
+    /// Resolve each declared-dependency source under `root` exactly once.
     ///
-    /// Only the declared-dependency sources are consulted: they are the paths
-    /// the detector actually reads, so they are the ones whose unreadability
-    /// would silently erase facts. The marker paths behind include-root
-    /// detection are probed by existence alone and cannot fail this way.
+    /// Open-buffer authority (#8041) applies to metadata documents: while the
+    /// editor holds staged text, that text — not the disk bytes — is the
+    /// authoritative content, so facts follow what the user actually sees and
+    /// stay current as they edit. The buffer is consulted before the existence
+    /// probe, matching `process_file_watcher_uri_immediate`, because that
+    /// authority does not depend on the backing file surviving: an external
+    /// delete of an open document must not erase what its buffer still
+    /// declares.
     ///
-    /// The probe is the detector's own operation (`read_to_string`), so it
-    /// observes exactly the failures that would otherwise yield zero
-    /// dependencies: a permission or sharing error mid-save, and content that
-    /// is not valid UTF-8. The two cannot be told apart from here, and both
-    /// are handled the same way — retain the snapshot and mark it stale — so
-    /// an unknown state is explicit rather than silently indistinguishable
-    /// from "this project declares nothing".
-    ///
-    /// A file that is simply absent, with no buffer behind it, is not a
-    /// failure — that is a genuine delete, and the refresh must run so its
-    /// facts are downgraded.
-    ///
-    /// `open_document_paths` is the caller's snapshot of currently open
-    /// documents. Open-buffer authority (#8041) applies to metadata documents
-    /// too: while the editor holds staged text, its buffer — not the disk
-    /// bytes — is authoritative, so a disk-derived refresh would record
-    /// provenance that contradicts what the user sees. That authority does
-    /// not depend on the backing file surviving, which is why openness is
-    /// tested before existence below.
-    fn retained_snapshot_reason(
+    /// A source with no buffer is read once and that exact text is what
+    /// detection consumes, so there is no window in which a source passes a
+    /// readability probe and then fails a second read. Absence is a definite
+    /// answer (a genuine delete downgrades its declarations); a read error is
+    /// not, and is reported as [`MetadataSourceRead::Unreadable`] so the
+    /// caller retains that source's prior facts rather than recording "this
+    /// project declares nothing".
+    fn capture_metadata_reads(
         root: &Path,
-        open_document_paths: &BTreeSet<PathBuf>,
-    ) -> Option<RetainedReason> {
-        for source in DeclaredDependencySource::ALL {
-            let path = root.join(source.file_name());
-            // Openness is checked before existence, matching
-            // `process_file_watcher_uri_immediate`. Buffer authority does not
-            // depend on the backing file still being present: an external
-            // delete of an open metadata document leaves the staged text
-            // authoritative until didSave/didClose completes the handoff, so
-            // probing existence first would let a delete race erase facts the
-            // open buffer still declares.
-            if open_document_paths.contains(&path) {
-                return Some(RetainedReason::OpenBufferAuthority);
-            }
-            if !path.is_file() {
-                continue;
-            }
-            if std::fs::read_to_string(&path).is_err() {
-                return Some(RetainedReason::UnreadableOnDisk);
-            }
-        }
-        None
+        open_document_text: &BTreeMap<PathBuf, String>,
+    ) -> Vec<(DeclaredDependencySource, MetadataSourceRead)> {
+        DeclaredDependencySource::ALL
+            .into_iter()
+            .map(|source| {
+                let path = root.join(source.file_name());
+                if let Some(text) = open_document_text.get(&path) {
+                    return (source, MetadataSourceRead::Text(text.clone()));
+                }
+                if !path.is_file() {
+                    return (source, MetadataSourceRead::Absent);
+                }
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => (source, MetadataSourceRead::Text(text)),
+                    Err(_) => (source, MetadataSourceRead::Unreadable),
+                }
+            })
+            .collect()
     }
 
     /// Current dependency/environment fact generation (#13640).
