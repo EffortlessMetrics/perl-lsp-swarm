@@ -256,7 +256,11 @@ Otherwise detect, explain, repair, and continue.
   context-preserving `must_with`/`must_some_with`/`must_err_with`; the bare
   `must`/`must_some`/`must_err` are only correct when the call site carried no
   explanation (`cargo xtask ci-hygiene check-must-context` reports the drop);
-- never use `git stash` in worktrees; use scoped restore or a WIP commit;
+- do not use `git stash` for shared multi-worktree agent work; the stash ref is
+  repository-global; use scoped restore or a branch-local WIP commit;
+- rewrite published candidate history only with established sole mutation ownership and
+  an explicit expected remote SHA; if exclusivity is unknown, preserve the observed
+  remote head and use a non-rewriting integration or stop;
 - stage intended paths explicitly;
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
 - run focused proof, then affected package proof, then broader proof only when risk or
