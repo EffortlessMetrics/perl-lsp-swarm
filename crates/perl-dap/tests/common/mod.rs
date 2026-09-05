@@ -2513,8 +2513,6 @@ fn probe_pipe_has_data<T>(pipe: &T) -> Option<bool>
 where
     T: std::os::fd::AsRawFd,
 {
-    use std::os::fd::AsRawFd;
-
     let mut descriptor = libc::pollfd { fd: pipe.as_raw_fd(), events: libc::POLLIN, revents: 0 };
     let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
     if result < 0 { None } else { Some(result > 0) }
