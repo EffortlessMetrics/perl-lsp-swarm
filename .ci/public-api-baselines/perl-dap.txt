@@ -402,6 +402,9 @@ pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::eq(&self, oth
 pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const perl_dap::backend::capabilities::SET_EXPRESSION_PROMOTION_PROVEN: bool
+pub const perl_dap::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE: &str
+pub const fn perl_dap::backend::capabilities::advertises_set_expression() -> bool
 pub fn perl_dap::backend::capabilities::intersect_dap_capabilities(catalog: &perl_dap::backend::capabilities::CatalogDapFlags, backend: &perl_dap::backend::capabilities::DebugBackendCapabilities) -> perl_dap::backend::capabilities::NegotiatedDapCapabilities
 pub mod perl_dap::backend::external_peer
 pub enum perl_dap::backend::external_peer::ExternalPeerMode
@@ -3399,7 +3402,7 @@ pub fn perl_dap::tcp_attach::TcpAttachSession::disconnect(&mut self) -> anyhow::
 pub fn perl_dap::tcp_attach::TcpAttachSession::is_connected(&self) -> bool
 pub fn perl_dap::tcp_attach::TcpAttachSession::new() -> Self
 pub fn perl_dap::tcp_attach::TcpAttachSession::send_message(&mut self, message: &str) -> anyhow::Result<()>
-pub fn perl_dap::tcp_attach::TcpAttachSession::set_event_sender(&mut self, sender: std::sync::mpsc::Sender<perl_dap::tcp_attach::DapEvent>)
+pub fn perl_dap::tcp_attach::TcpAttachSession::set_event_sender(&mut self, sender: std::sync::mpsc::SyncSender<perl_dap::tcp_attach::DapEvent>)
 pub fn perl_dap::tcp_attach::TcpAttachSession::start_reader(&mut self) -> anyhow::Result<()>
 pub fn perl_dap::tcp_attach::TcpAttachSession::default() -> Self
 pub fn perl_dap::tcp_attach::TcpAttachSession::drop(&mut self)
@@ -3525,6 +3528,79 @@ pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &
 pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub mod perl_dap::variables
+pub mod perl_dap::variables::lexical_snapshot
+pub enum perl_dap::variables::lexical_snapshot::NodeOutcome
+pub perl_dap::variables::lexical_snapshot::NodeOutcome::Complete
+pub perl_dap::variables::lexical_snapshot::NodeOutcome::Truncated(perl_dap::variables::lexical_snapshot::TruncationReason)
+pub perl_dap::variables::lexical_snapshot::NodeOutcome::Unavailable(perl_dap::variables::lexical_snapshot::UnavailableReason)
+pub fn perl_dap::variables::lexical_snapshot::NodeOutcome::clone(&self) -> perl_dap::variables::lexical_snapshot::NodeOutcome
+pub fn perl_dap::variables::lexical_snapshot::NodeOutcome::eq(&self, other: &perl_dap::variables::lexical_snapshot::NodeOutcome) -> bool
+pub fn perl_dap::variables::lexical_snapshot::NodeOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::variables::lexical_snapshot::TruncationReason
+pub perl_dap::variables::lexical_snapshot::TruncationReason::ContainerItemLimit
+pub perl_dap::variables::lexical_snapshot::TruncationReason::DepthLimit
+pub perl_dap::variables::lexical_snapshot::TruncationReason::NodeBudgetExhausted
+pub perl_dap::variables::lexical_snapshot::TruncationReason::ScalarByteLimit
+pub perl_dap::variables::lexical_snapshot::TruncationReason::TotalByteLimit
+pub fn perl_dap::variables::lexical_snapshot::TruncationReason::clone(&self) -> perl_dap::variables::lexical_snapshot::TruncationReason
+pub fn perl_dap::variables::lexical_snapshot::TruncationReason::eq(&self, other: &perl_dap::variables::lexical_snapshot::TruncationReason) -> bool
+pub fn perl_dap::variables::lexical_snapshot::TruncationReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::variables::lexical_snapshot::UnavailableReason
+pub perl_dap::variables::lexical_snapshot::UnavailableReason::InspectionFailed
+pub perl_dap::variables::lexical_snapshot::UnavailableReason::Magical
+pub perl_dap::variables::lexical_snapshot::UnavailableReason::OverloadedStringify
+pub perl_dap::variables::lexical_snapshot::UnavailableReason::Tied
+pub fn perl_dap::variables::lexical_snapshot::UnavailableReason::clone(&self) -> perl_dap::variables::lexical_snapshot::UnavailableReason
+pub fn perl_dap::variables::lexical_snapshot::UnavailableReason::eq(&self, other: &perl_dap::variables::lexical_snapshot::UnavailableReason) -> bool
+pub fn perl_dap::variables::lexical_snapshot::UnavailableReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::variables::lexical_snapshot::CollectionSnapshot
+pub perl_dap::variables::lexical_snapshot::CollectionSnapshot::root: perl_dap::variables::lexical_snapshot::SnapshotNode
+pub perl_dap::variables::lexical_snapshot::CollectionSnapshot::total_nodes_visited: usize
+pub perl_dap::variables::lexical_snapshot::CollectionSnapshot::total_retained_bytes: usize
+pub perl_dap::variables::lexical_snapshot::CollectionSnapshot::truncation: core::option::Option<perl_dap::variables::lexical_snapshot::TruncationReason>
+pub fn perl_dap::variables::lexical_snapshot::CollectionSnapshot::clone(&self) -> perl_dap::variables::lexical_snapshot::CollectionSnapshot
+pub fn perl_dap::variables::lexical_snapshot::CollectionSnapshot::eq(&self, other: &perl_dap::variables::lexical_snapshot::CollectionSnapshot) -> bool
+pub fn perl_dap::variables::lexical_snapshot::CollectionSnapshot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::variables::lexical_snapshot::SnapshotBudget
+pub perl_dap::variables::lexical_snapshot::SnapshotBudget::max_depth: usize
+pub perl_dap::variables::lexical_snapshot::SnapshotBudget::max_items_per_container: usize
+pub perl_dap::variables::lexical_snapshot::SnapshotBudget::max_scalar_bytes: usize
+pub perl_dap::variables::lexical_snapshot::SnapshotBudget::max_total_bytes: usize
+pub perl_dap::variables::lexical_snapshot::SnapshotBudget::max_total_nodes: usize
+pub const fn perl_dap::variables::lexical_snapshot::SnapshotBudget::defaults() -> Self
+pub fn perl_dap::variables::lexical_snapshot::SnapshotBudget::clone(&self) -> perl_dap::variables::lexical_snapshot::SnapshotBudget
+pub fn perl_dap::variables::lexical_snapshot::SnapshotBudget::eq(&self, other: &perl_dap::variables::lexical_snapshot::SnapshotBudget) -> bool
+pub fn perl_dap::variables::lexical_snapshot::SnapshotBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::variables::lexical_snapshot::SnapshotNode
+pub perl_dap::variables::lexical_snapshot::SnapshotNode::children: alloc::vec::Vec<perl_dap::variables::lexical_snapshot::SnapshotNode>
+pub perl_dap::variables::lexical_snapshot::SnapshotNode::kind_label: alloc::string::String
+pub perl_dap::variables::lexical_snapshot::SnapshotNode::name: alloc::string::String
+pub perl_dap::variables::lexical_snapshot::SnapshotNode::outcome: perl_dap::variables::lexical_snapshot::NodeOutcome
+pub perl_dap::variables::lexical_snapshot::SnapshotNode::rendered: core::option::Option<alloc::string::String>
+pub fn perl_dap::variables::lexical_snapshot::SnapshotNode::clone(&self) -> perl_dap::variables::lexical_snapshot::SnapshotNode
+pub fn perl_dap::variables::lexical_snapshot::SnapshotNode::eq(&self, other: &perl_dap::variables::lexical_snapshot::SnapshotNode) -> bool
+pub fn perl_dap::variables::lexical_snapshot::SnapshotNode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::variables::lexical_snapshot::SourceFlags
+pub perl_dap::variables::lexical_snapshot::SourceFlags::magical: bool
+pub perl_dap::variables::lexical_snapshot::SourceFlags::overloaded_stringify: bool
+pub perl_dap::variables::lexical_snapshot::SourceFlags::tied: bool
+pub const perl_dap::variables::lexical_snapshot::SourceFlags::PLAIN: Self
+pub const fn perl_dap::variables::lexical_snapshot::SourceFlags::forbids_enumeration(self) -> bool
+pub const fn perl_dap::variables::lexical_snapshot::SourceFlags::forbids_rendering(self) -> bool
+pub fn perl_dap::variables::lexical_snapshot::SourceFlags::clone(&self) -> perl_dap::variables::lexical_snapshot::SourceFlags
+pub fn perl_dap::variables::lexical_snapshot::SourceFlags::eq(&self, other: &perl_dap::variables::lexical_snapshot::SourceFlags) -> bool
+pub fn perl_dap::variables::lexical_snapshot::SourceFlags::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::variables::lexical_snapshot::SourceValue<'a>
+pub perl_dap::variables::lexical_snapshot::SourceValue::children: core::option::Option<&'a [perl_dap::variables::lexical_snapshot::SourceValue<'a>]>
+pub perl_dap::variables::lexical_snapshot::SourceValue::flags: perl_dap::variables::lexical_snapshot::SourceFlags
+pub perl_dap::variables::lexical_snapshot::SourceValue::kind_label: &'a str
+pub perl_dap::variables::lexical_snapshot::SourceValue::name: &'a str
+pub perl_dap::variables::lexical_snapshot::SourceValue::scalar_text: core::option::Option<&'a str>
+pub fn perl_dap::variables::lexical_snapshot::SourceValue<'a>::container(name: &'a str, kind_label: &'a str, children: &'a [perl_dap::variables::lexical_snapshot::SourceValue<'a>]) -> Self
+pub fn perl_dap::variables::lexical_snapshot::SourceValue<'a>::scalar(name: &'a str, text: &'a str) -> Self
+pub fn perl_dap::variables::lexical_snapshot::SourceValue<'a>::clone(&self) -> perl_dap::variables::lexical_snapshot::SourceValue<'a>
+pub fn perl_dap::variables::lexical_snapshot::SourceValue<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::variables::lexical_snapshot::capture_snapshot(root: perl_dap::variables::lexical_snapshot::SourceValue<'_>, budget: perl_dap::variables::lexical_snapshot::SnapshotBudget) -> perl_dap::variables::lexical_snapshot::CollectionSnapshot
 pub enum perl_dap::variables::FixedOriginVariableParseError<'a>
 pub perl_dap::variables::FixedOriginVariableParseError::MaxDepthExceeded(usize)
 pub perl_dap::variables::FixedOriginVariableParseError::RegexError(&'a regex::error::Error)

@@ -49,6 +49,7 @@ import {
   _setLanguageClientLifecycleForTest,
   _handleLifecycleClientStateChangeForTest,
   _languageClientConnectionOptionsForTest,
+  _restartServerForTest,
 } from '../extension';
 
 // vscode-languageclient State numeric values (Stopped=1, Running=2, Starting=3).
@@ -162,6 +163,27 @@ function makeStartupFailingLifecycle(failuresBeforeSuccess: number): {
     lifecycle: new ExtensionLanguageClientLifecycle(hooks),
     createdClients: () => created,
   };
+}
+
+/**
+ * #14448 harness: a live lifecycle whose client fails `stop()`, so cleanup
+ * stays incomplete and the lifecycle blocks replacement startup until reload.
+ */
+class StopFailingLifecycleClient extends FakeLifecycleClient {
+  override async stop(): Promise<void> {
+    throw new Error('simulated client cleanup failure');
+  }
+}
+
+function makeCleanupBlockingLifecycle(): ExtensionLanguageClientLifecycle<
+  FakeLifecycleClient,
+  FakeLifecycleEvent
+> {
+  const hooks: LifecycleHooks<FakeLifecycleClient, FakeLifecycleEvent> = {
+    resolveServerPath: async () => '/server/perllsp',
+    createClient: () => new StopFailingLifecycleClient(Promise.resolve()),
+  };
+  return new ExtensionLanguageClientLifecycle(hooks);
 }
 
 function makeFinalizationFailingLifecycle(finalizationDelayMs: number): {
@@ -608,5 +630,53 @@ describe('mid-session silent server crash recovery (#4625)', () => {
       jest.clearAllTimers();
       jest.useRealTimers();
     }
+  });
+
+  // ------------------------------------------------------------------
+  // #14448: a client whose stop() fails leaves cleanup incomplete; the
+  // lifecycle then refuses replacement construction until the window
+  // reloads. Automatic recovery must surface the reload remediation once
+  // and must not re-arm a permanently blocked lifecycle through the
+  // remaining retry budget, and an explicit restart must offer the same
+  // reload remediation instead of a generic failure.
+  // ------------------------------------------------------------------
+
+  test('auto-recovery against a cleanup-blocked lifecycle presents reload remediation without re-arming (#14448)', async () => {
+    const lifecycle = makeCleanupBlockingLifecycle();
+    _setLanguageClientLifecycleForTest(injectedLifecycle(lifecycle));
+    await lifecycle.start();
+    expect(lifecycle.snapshot.state).toBe('running');
+
+    handleClientStateChange(crashEvent() as never);
+    await drain();
+
+    expect(lifecycle.snapshot.state).toBe('failed');
+    // One observation consumed exactly one budget slot; the blocked
+    // lifecycle was not re-arbitrated through the remaining budget.
+    expect(_autoRestartAttemptsForTest()).toBe(1);
+    const reloadToasts = showErrorMessage.mock.calls.filter(
+      (call) => /did not finish cleaning up/i.test(String(call[0])) && call.includes('Reload Window'),
+    );
+    expect(reloadToasts).toHaveLength(1);
+  });
+
+  test('explicit restart blocked by incomplete cleanup offers window reload instead of a generic failure (#14448)', async () => {
+    const lifecycle = makeCleanupBlockingLifecycle();
+    _setLanguageClientLifecycleForTest(injectedLifecycle(lifecycle));
+    await lifecycle.start();
+    expect(lifecycle.snapshot.state).toBe('running');
+
+    const blocked = await _restartServerForTest(makeContext());
+
+    expect(blocked).toBe(true);
+    expect(lifecycle.snapshot.state).toBe('failed');
+    const reloadToasts = showErrorMessage.mock.calls.filter(
+      (call) => /did not finish cleaning up/i.test(String(call[0])) && call.includes('Reload Window'),
+    );
+    expect(reloadToasts).toHaveLength(1);
+    const genericFailures = showErrorMessage.mock.calls.filter((call) =>
+      /^Failed to restart Perl Language Server/i.test(String(call[0])),
+    );
+    expect(genericFailures).toHaveLength(0);
   });
 });

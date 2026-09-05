@@ -1704,7 +1704,7 @@ impl<'a> PerlLexer<'a> {
         loop {
             let mut saw_whitespace = false;
             while let Some(ch) = self.input.get(offset..).and_then(|suffix| suffix.chars().next()) {
-                if ch.is_whitespace() {
+                if ch.is_ascii_whitespace() {
                     offset += ch.len_utf8();
                     saw_whitespace = true;
                 } else {
@@ -3357,7 +3357,7 @@ impl<'a> PerlLexer<'a> {
 
         let pattern_is_paired = quote_handler::paired_close(delimiter).is_some();
         if pattern_is_paired {
-            self.skip_paired_substitution_replacement_gap();
+            self.skip_two_body_quote_like_gap();
 
             if let Some(repl_delim) = self.current_char()
                 && Self::is_quote_delim(repl_delim)
@@ -3397,12 +3397,12 @@ impl<'a> PerlLexer<'a> {
         Some(Token { token_type, text: Arc::from(text), start, end: self.position })
     }
 
-    fn skip_paired_substitution_replacement_gap(&mut self) {
+    fn skip_two_body_quote_like_gap(&mut self) {
         self.skip_comment_gap_after_whitespace();
     }
 
     fn skip_quote_operator_delimiter_gap(&mut self) {
-        if self.current_char().is_some_and(char::is_whitespace) {
+        if self.current_char().is_some_and(|ch| ch.is_ascii_whitespace()) {
             self.skip_comment_gap_after_whitespace();
         }
     }
@@ -3411,7 +3411,7 @@ impl<'a> PerlLexer<'a> {
         let mut comment_eligible = false;
         loop {
             let mut saw_whitespace = false;
-            while self.current_char().is_some_and(char::is_whitespace) {
+            while self.current_char().is_some_and(|ch| ch.is_ascii_whitespace()) {
                 self.advance();
                 saw_whitespace = true;
             }
@@ -3434,7 +3434,7 @@ impl<'a> PerlLexer<'a> {
 
     fn peek_quote_operator_gap_and_following(&self) -> (Option<char>, Option<char>, bool) {
         let (candidate, following) = self.peek_nonspace_and_following();
-        let saw_gap = self.current_char().is_some_and(char::is_whitespace);
+        let saw_gap = self.current_char().is_some_and(|ch| ch.is_ascii_whitespace());
         (candidate, following, saw_gap)
     }
 
@@ -3598,9 +3598,7 @@ impl<'a> PerlLexer<'a> {
 
     fn parse_transliteration(&mut self, start: usize) -> Option<Token> {
         // We've already consumed 'tr' or 'y'
-        while self.current_char().is_some_and(char::is_whitespace) {
-            self.advance();
-        }
+        self.skip_quote_operator_delimiter_gap();
 
         let delimiter = self.current_char()?;
         self.advance(); // Skip delimiter
@@ -3617,9 +3615,7 @@ impl<'a> PerlLexer<'a> {
 
         let search_is_paired = quote_handler::paired_close(delimiter).is_some();
         if search_is_paired {
-            while self.current_char().is_some_and(char::is_whitespace) {
-                self.advance();
-            }
+            self.skip_two_body_quote_like_gap();
 
             if let Some(repl_delim) = self.current_char()
                 && Self::is_quote_delim(repl_delim)
