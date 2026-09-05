@@ -1022,7 +1022,62 @@ class BinaryTargetRoutingTests(unittest.TestCase):
         """A deleted or non-package directory must not abort sibling routing."""
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            self.assertEqual({}, router.manifest_test_required_features("absent", root))
+            self.assertEqual({}, router.manifest_test_targets("absent", root))
+
+    def test_renamed_test_target_keeps_its_declared_name_and_features(self) -> None:
+        """Cargo binds a target to its source file, not to the file's stem.
+
+        Selecting `--test <stem>` for a renamed target names a target Cargo does
+        not have, and drops its required features with it.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "renamed-test-directory",
+                """
+                [package]
+                name = "renamed-test-package"
+                version = "0.0.0"
+                edition = "2024"
+
+                [[test]]
+                name = "declared_name"
+                path = "tests/source_stem.rs"
+                required-features = ["gated"]
+                """,
+                ["tests/source_stem.rs"],
+            )
+
+            targets = router.changed_integration_test_targets(
+                ["crates/renamed-test-directory/tests/source_stem.rs"], root
+            )
+
+        self.assertEqual(
+            {"renamed-test-directory": [("declared_name", ("gated",))]}, targets
+        )
+
+    def test_undeclared_test_file_still_falls_back_to_its_stem(self) -> None:
+        """Most test targets are auto-discovered and have no `[[test]]` row."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "auto-test-directory",
+                """
+                [package]
+                name = "auto-test-package"
+                version = "0.0.0"
+                edition = "2024"
+                """,
+                ["tests/discovered.rs"],
+            )
+
+            targets = router.changed_integration_test_targets(
+                ["crates/auto-test-directory/tests/discovered.rs"], root
+            )
+
+        self.assertEqual({"auto-test-directory": [("discovered", ())]}, targets)
 
     def test_every_declared_test_target_feature_set_is_recovered(self) -> None:
         """Parity oracle: the router must agree with every manifest in the tree.

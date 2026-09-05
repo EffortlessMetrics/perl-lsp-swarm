@@ -89,28 +89,41 @@ def changed_integration_test_targets(
         if not filename.endswith(".rs"):
             continue
         crate_name = parts[1]
-        target = Path(filename).stem
+        # Cargo associates a manifest target with its source file, not with the
+        # file's stem, so resolve the declared target by path.  A renamed
+        # `[[test]]` would otherwise be selected as `--test <stem>`, a target
+        # Cargo does not have, and without its required features.
+        declared = manifest_test_targets(crate_name, repo_root).get(f"{parts[2]}/{filename}")
+        if declared is None:
+            target, manifest_features = Path(filename).stem, ()
+        else:
+            target, manifest_features = declared
         key = (crate_name, target)
         if key in seen:
             continue
         seen.add(key)
         features = set(required_features_for_test(path, repo_root))
-        features.update(manifest_test_required_features(crate_name, repo_root).get(target, ()))
+        features.update(manifest_features)
         result.setdefault(crate_name, []).append((target, tuple(sorted(features))))
     return result
 
 
-def manifest_test_required_features(
+def manifest_test_targets(
     crate_name: str, repo_root: Path = REPO_ROOT
-) -> dict[str, tuple[str, ...]]:
-    """Return `required-features` declared per `[[test]]` target in one manifest.
+) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Map each declared `[[test]]` source path to its target name and features.
 
-    A test target's features can live in the manifest, in a crate-level
-    ``#![cfg(feature = ...)]``, or in both naming different features.  Scanning
-    only the source misses the manifest ones -- `perl-parser`'s
+    Keyed by source path because that is what Cargo binds a target to.  Keying
+    by name would make the router depend on every test target being named after
+    its file, and a renamed target would then be selected under a name Cargo
+    does not have.
+
+    Required features matter for the same reason: they can live in the manifest,
+    in a crate-level ``#![cfg(feature = ...)]``, or in both naming different
+    features.  Reading only the source misses the manifest ones -- `perl-parser`'s
     ``incremental_parse_snapshot`` requires ``incremental`` with no source cfg at
     all -- and Cargo rejects a `--test` command that does not enable them, so the
-    changed test contributes no coverage.  Both sources are unioned.
+    changed test contributes no coverage.  The caller unions both sources.
     """
     manifest_path = repo_root / "crates" / crate_name / "Cargo.toml"
     if not manifest_path.is_file():
@@ -127,17 +140,19 @@ def manifest_test_required_features(
     declared = manifest.get("test") or []
     if not isinstance(declared, list):
         raise ValueError(f"Cargo manifest for changed crate {crate_name} has invalid [[test]] entries")
-    features: dict[str, tuple[str, ...]] = {}
+    targets: dict[str, tuple[str, tuple[str, ...]]] = {}
     for target in declared:
         if not isinstance(target, dict):
             raise ValueError(f"Cargo manifest for changed crate {crate_name} has an invalid [[test]] row")
         name = target.get("name")
         if not isinstance(name, str) or not name:
             continue
-        required = _target_features(target)
-        if required:
-            features[name] = required
-    return features
+        raw_path = target.get("path")
+        if raw_path is not None and (not isinstance(raw_path, str) or not raw_path):
+            raise ValueError(f"Cargo test path for changed crate {crate_name} must be a non-empty string")
+        source = _normalized_target_path(raw_path or f"tests/{name}.rs").as_posix()
+        targets[source] = (name, _target_features(target))
+    return targets
 
 
 def required_features_for_test(path: str, repo_root: Path = REPO_ROOT) -> list[str]:
