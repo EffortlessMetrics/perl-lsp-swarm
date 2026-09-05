@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12735 |
-| Rust-family files | 3982 |
-| Non-Rust files | 8753 |
-| Allowlisted | 6514 |
+| Total tracked files | 12739 |
+| Rust-family files | 3983 |
+| Non-Rust files | 8756 |
+| Allowlisted | 6517 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 502 |
+| config | 503 |
 | documentation | 2856 |
 | generated | 2 |
 | production | 357 |
-| test | 2111 |
+| test | 2113 |
 | tooling | 686 |
 | unclassified | 2239 |
 
@@ -6487,6 +6487,7 @@
 | `schemas/binary_identity_protocol.v1.schema.json` | config | `non-rust-binary-identity-schema` | identity |
 | `schemas/blocker_closeout.v1.schema.json` | config | `non-rust-blocker-closeout-schema` | release/ci |
 | `schemas/compiler_lexical_cutline_cases.v1.schema.json` | config | `non-rust-compiler-lexical-cutline-schema` | compiler |
+| `schemas/compiler_performance_receipt.v1.schema.json` | config | `non-rust-compiler-performance-receipt-schema` | compiler |
 | `schemas/critic_rule_proof.v1.schema.json` | config | `non-rust-critic-rule-proof-schema` | native-critic |
 | `schemas/import_cleanup_train.v1.schema.json` | config | `non-rust-import-cleanup-train-schema` | tooling/train-graph |
 | `schemas/install_identity_verification.v1.schema.json` | documentation | `non-rust-install-identity-verification-schema` | release/ci |
@@ -8754,6 +8755,8 @@
 | `vscode-extension/tsconfig.scripts.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/tsconfig.test.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `xtask/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `xtask/fixtures/compiler_performance_receipt.v1.json` | test | `non-rust-compiler-performance-receipt-fixture-measured` | compiler |
+| `xtask/fixtures/compiler_performance_receipt.v1.uninstrumented.json` | test | `non-rust-compiler-performance-receipt-fixture-uninstrumented` | compiler |
 | `xtask/impacted-evidence/latest.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `xtask/lsp_test/MyPackage.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `xtask/lsp_test/advanced_features.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |

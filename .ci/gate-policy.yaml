@@ -1557,6 +1557,48 @@ gates:
       - docs
       - build
 
+  # The compiler performance receipt (#9311) is a fail-closed contract in the
+  # same family as compiler_concept_ledger below: it rejects counters published
+  # without measurement, a cache hit without validated currentness, contradictory
+  # stage states, and unpinned artifact identities. Nothing executed it until this
+  # gate existed, so its enforcement claim was inert — and the non-Rust allowlist
+  # rows for the schema and both fixtures name this command as their coverage,
+  # which is only true if something runs it. Runs in the `policy` shard.
+  - name: compiler_performance_receipt_contract
+    tier: merge_gate
+    description: "Prove the compiler performance receipt contract discriminates — the falsifiers for every schema, typed, and cross-field rule — then validate the committed schema and every receipt fixture against it"
+    required: true
+    # The falsifiers run here, not only the validator. Review found that deleting
+    # a schema-only rule — the cache reuse conditional, say — left the validator
+    # green, because both committed fixtures are positive receipts that satisfy
+    # the schema either way. A gate that only runs the validator therefore proves
+    # the fixtures conform, not that the contract still forbids what it claims to.
+    # The controls are what discriminate, so the gate carries them.
+    # A cargo name filter that matches nothing exits 0 having run zero tests, so
+    # this command alone could pass with the control suite renamed away. The floor
+    # that stops that lives in the validator (`validate_control_suite`), not here:
+    # the gate-policy shell vocabulary deliberately admits no variable assignment,
+    # command substitution, grouping, brace or bracket expansion, so the count
+    # cannot be asserted in this string. `check-...` runs second and fails if the
+    # suite is gone or gutted. What the pair proves is narrower than "the controls
+    # ran": the source declares a floor of them and whatever the filter matched
+    # passed. Neither half counts executed tests, so a control excluded by `cfg`
+    # on some platform still counts toward the floor.
+    command: cargo test -p xtask --bin xtask compiler_performance_receipt --locked && cargo xtask check-compiler-performance-receipt
+    # 600s/540000ms matches unit_scoped and parser_behavior_proof, the sibling
+    # required gates that compile a test harness. Measured at 350s from a clean
+    # xtask (both the test harness and the bin built from scratch, deps cached);
+    # the validator and the 55 controls themselves run in well under a second.
+    timeout_seconds: 600
+    retry_count: 0
+    budgets:
+      max_duration_ms: 540000
+    quarantine: false
+    tags:
+      - policy
+      - compiler
+      - contract
+
   - name: non_rust_inventory_check
     tier: merge_gate
     description: "Scan and classify tracked non-Rust files and require the normalized committed snapshot to match"

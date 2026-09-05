@@ -1667,6 +1667,51 @@ covered_by = [
 created = "2026-08-16"
 review_after = "2026-11-16"
 
+[[allow]]
+id = "non-rust-compiler-performance-receipt-schema"
+path = "schemas/compiler_performance_receipt.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "JSON Schema for the compiler_performance_receipt.v1 work and timing contract (#9311). It is the structural authority for the rule that missing instrumentation is not zero, and it is applied rather than merely stored: the validator evaluates every committed fixture against it."
+covered_by = [
+  "cargo xtask check-compiler-performance-receipt",
+]
+created = "2026-09-05"
+review_after = "2026-12-05"
+
+[[allow]]
+id = "non-rust-compiler-performance-receipt-fixture-measured"
+path = "xtask/fixtures/compiler_performance_receipt.v1.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "compiler"
+reason = "Fully instrumented compiler_performance_receipt.v1 fixture: the positive control that a measured run with a validated cache hit conforms to schema, typed model, and cross-field rules."
+covered_by = [
+  "cargo xtask check-compiler-performance-receipt",
+]
+created = "2026-09-05"
+review_after = "2026-12-05"
+
+[[allow]]
+id = "non-rust-compiler-performance-receipt-fixture-uninstrumented"
+path = "xtask/fixtures/compiler_performance_receipt.v1.uninstrumented.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "compiler"
+reason = "Uninstrumented compiler_performance_receipt.v1 fixture: the control for the contract's headline claim, carrying not_proven work with no counters at all, an explicit required_missing stage, and an unproven cache outcome. Without it the receipt would never demonstrate that missing evidence is distinct from zero."
+covered_by = [
+  "cargo xtask check-compiler-performance-receipt",
+]
+created = "2026-09-05"
+review_after = "2026-12-05"
+
 # =============================================================================
 # Binary identity protocol (perl_lsp.binary_identity.v1)
 # =============================================================================
