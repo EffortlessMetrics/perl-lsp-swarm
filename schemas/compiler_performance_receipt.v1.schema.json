@@ -26,6 +26,12 @@
     "limitations": {"type": "array", "items": {"$ref": "#/$defs/required_text"}}
   },
   "$defs": {
+    "git_object_name": {
+      "description": "An exact git object name: forty lowercase hex digits. Used for the identities consumers key attribution, caches, and receipt dedup on, so a symbolic ref, branch name, short hash, or upper-case spelling is rejected.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+
     "required_text": {
       "description": "A value the contract requires. Whitespace-only is not a value, so at least one non-whitespace character is required.",
       "type": "string",
@@ -87,12 +93,8 @@
       ],
       "properties": {
         "repository": {"$ref": "#/$defs/required_text"},
-        "candidate": {"$ref": "#/$defs/required_text"},
-        "tree": {
-          "description": "Exact git object name of the measured tree. Load-bearing identity, so it is pinned to a real 40-hex object name.",
-          "type": "string",
-          "pattern": "^[0-9a-f]{40}$"
-        },
+        "candidate": {"$ref": "#/$defs/git_object_name"},
+        "tree": {"$ref": "#/$defs/git_object_name"},
         "dirty_tree": {"type": "boolean"},
         "toolchain": {"$ref": "#/$defs/required_text"},
         "runner": {"$ref": "#/$defs/required_text"},

@@ -10,10 +10,12 @@
 //!    Schema engine, so the conditional rules (counters only when measured,
 //!    no contradictory stage states, no cache hit without validated
 //!    currentness) are actually applied rather than merely written down;
-//! 3. every fixture is then **deserialized into the typed model** and run
-//!    through [`validate_receipt`], which enforces the cross-field rules a
-//!    JSON Schema cannot express — duplicate stage names, and reconciling the
-//!    declared required-stage denominator against the rows actually present.
+//! 3. every fixture is then **deserialized into the typed model**, which runs
+//!    [`validate_receipt`] inside decoding and so enforces the cross-field
+//!    rules a JSON Schema cannot express — duplicate stage names, and
+//!    reconciling the declared required-stage denominator against the rows
+//!    actually present. Decoding is the enforcement point, not a step a
+//!    consumer has to remember.
 //!
 //! The property the whole receipt exists to protect is that *missing
 //! instrumentation is not zero*. It is enforced twice: the schema forbids a
@@ -226,19 +228,20 @@ impl<'de> Deserialize<'de> for RequiredText {
 
 /// A git object name: exactly forty lowercase hex digits.
 ///
-/// `subject.tree` is load-bearing identity — consumers key caches and receipt
-/// dedup on it — so `"HEAD"`, a short SHA, or an upper-case spelling must fail
-/// to decode rather than reach a cache key.
+/// `subject.candidate` and `subject.tree` are both load-bearing identity —
+/// consumers key caches, receipt dedup, and attribution on them — so `"HEAD"`,
+/// a branch name, a short SHA, or an upper-case spelling must fail to decode
+/// rather than reach a cache key or attribute a measurement to nothing exact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TreeSha(String);
+pub struct GitObjectName(String);
 
-impl TreeSha {
+impl GitObjectName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
-impl<'de> Deserialize<'de> for TreeSha {
+impl<'de> Deserialize<'de> for GitObjectName {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = String::deserialize(deserializer)?;
         let well_formed = raw.len() == 40
@@ -279,8 +282,15 @@ pinned_schema!(InterfacesSchema, "interfaces.v1");
 // Typed receipt
 // ---------------------------------------------------------------------------
 
+/// A receipt that has passed every rule in [`validate_receipt`].
+///
+/// Deserialization is fail-closed: the cross-field rules run *inside* decoding
+/// via `try_from`, so `serde_json::from_str::<CompilerPerformanceReceipt>` can
+/// only produce a receipt that already satisfies them. A consumer cannot hold
+/// an invalid value of this type by forgetting a second call — which it
+/// otherwise would, since nothing in the type system compels one.
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "ReceiptFields")]
 pub struct CompilerPerformanceReceipt {
     pub schema_version: SchemaVersion,
     pub receipt_id: RequiredText,
@@ -290,6 +300,43 @@ pub struct CompilerPerformanceReceipt {
     pub stages: Vec<Stage>,
     pub provider: Provider,
     pub limitations: Vec<RequiredText>,
+}
+
+/// The wire shape, before the cross-field rules are applied.
+///
+/// Private on purpose: it exists only so `try_from` has something to decode
+/// into, and holding one is exactly the unchecked state the public type is
+/// meant to make unrepresentable.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReceiptFields {
+    schema_version: SchemaVersion,
+    receipt_id: RequiredText,
+    subject: Subject,
+    workload: Workload,
+    cache: Cache,
+    stages: Vec<Stage>,
+    provider: Provider,
+    limitations: Vec<RequiredText>,
+}
+
+impl TryFrom<ReceiptFields> for CompilerPerformanceReceipt {
+    type Error = String;
+
+    fn try_from(raw: ReceiptFields) -> std::result::Result<Self, Self::Error> {
+        let receipt = Self {
+            schema_version: raw.schema_version,
+            receipt_id: raw.receipt_id,
+            subject: raw.subject,
+            workload: raw.workload,
+            cache: raw.cache,
+            stages: raw.stages,
+            provider: raw.provider,
+            limitations: raw.limitations,
+        };
+        validate_receipt(&receipt).map_err(|error| format!("{error:#}"))?;
+        Ok(receipt)
+    }
 }
 
 /// The receipt version constant. An unknown version fails to decode.
@@ -303,8 +350,8 @@ pub enum SchemaVersion {
 #[serde(deny_unknown_fields)]
 pub struct Subject {
     pub repository: RequiredText,
-    pub candidate: RequiredText,
-    pub tree: TreeSha,
+    pub candidate: GitObjectName,
+    pub tree: GitObjectName,
     pub dirty_tree: bool,
     pub toolchain: RequiredText,
     pub runner: RequiredText,
@@ -777,9 +824,10 @@ fn validate_fixture(
         bail!("{label}: schema violations: {}", violations.join("; "));
     }
 
+    // Decoding applies the typed vocabulary *and* the cross-field rules: the
+    // public receipt type can only be constructed through `validate_receipt`.
     let receipt: CompilerPerformanceReceipt = serde_json::from_value(value)
         .with_context(|| format!("{label}: fixture does not satisfy the typed contract"))?;
-    validate_receipt(&receipt).with_context(|| format!("{label}: semantic violation"))?;
     Ok(receipt)
 }
 
@@ -797,6 +845,13 @@ fn validate_schema_document(schema: &Value) -> Result<()> {
     // schema would accept an integer the typed model cannot hold.
     if lookup(schema, &["$defs", "count", "maximum"]).and_then(Value::as_u64) != Some(u64::MAX) {
         errors.push("$defs.count.maximum must bound counters to u64::MAX".to_owned());
+    }
+    // Both exact identities share one pattern; losing it would let a receipt
+    // attribute measurements to a branch name or a symbolic ref.
+    if lookup(schema, &["$defs", "git_object_name", "pattern"]).and_then(Value::as_str)
+        != Some("^[0-9a-f]{40}$")
+    {
+        errors.push("$defs.git_object_name.pattern must pin exact 40-hex object names".to_owned());
     }
 
     for (path, expected) in [
@@ -979,6 +1034,19 @@ mod tests {
         validator().iter_errors(value).map(|error| error.to_string()).collect()
     }
 
+    /// Decode a candidate through the typed boundary *only* and return the
+    /// rejection message.
+    ///
+    /// Deserialization is the enforcement point, so a control for a typed rule
+    /// asserts that decoding fails — no separate `validate_receipt` call, which
+    /// is exactly the call a real consumer would forget.
+    fn decode_error(value: Value) -> String {
+        match serde_json::from_value::<CompilerPerformanceReceipt>(value) {
+            Ok(_) => panic!("the typed boundary accepted a receipt it must reject"),
+            Err(error) => error.to_string(),
+        }
+    }
+
     fn measured() -> Value {
         serde_json::from_str(MEASURED).expect("fixture must be valid JSON")
     }
@@ -1092,11 +1160,7 @@ mod tests {
             "status": "not_proven",
             "units": 0, "objects": 0, "bytes": 0, "reused": 0, "recomputed": 0
         });
-        let receipt: CompilerPerformanceReceipt =
-            serde_json::from_value(value).expect("the shape still deserializes");
-        let rejected = validate_receipt(&receipt);
-        assert!(rejected.is_err(), "the typed boundary must reject zero-from-missing");
-        let rendered = format!("{:?}", rejected.err());
+        let rendered = decode_error(value);
         assert!(
             rendered.contains("missing instrumentation is not zero"),
             "the failure must name the rule it enforces, got {rendered}"
@@ -1113,12 +1177,8 @@ mod tests {
     fn typed_model_alone_rejects_a_cache_hit_without_validated_currentness() {
         let mut value = measured();
         value["cache"]["currentness"] = json!("unvalidated");
-        let receipt: CompilerPerformanceReceipt =
-            serde_json::from_value(value).expect("the shape still deserializes");
-        let rejected = validate_receipt(&receipt);
-        assert!(rejected.is_err(), "cache presence is not a hit at the typed boundary either");
         assert!(
-            format!("{:?}", rejected.err()).contains("cache presence is not a hit"),
+            decode_error(value).contains("cache presence is not a hit"),
             "the failure must name the rule it enforces"
         );
     }
@@ -1128,13 +1188,8 @@ mod tests {
     fn typed_model_alone_rejects_measured_latency_without_correctness() {
         let mut value = measured();
         value["provider"]["correctness"] = json!({"status": "not_proven"});
-        let receipt: CompilerPerformanceReceipt =
-            serde_json::from_value(value).expect("the shape still deserializes");
-        let rejected = validate_receipt(&receipt);
-        assert!(rejected.is_err(), "a measured latency claim needs measured correctness");
         assert!(
-            format!("{:?}", rejected.err())
-                .contains("measured latency claim cannot omit measured correctness"),
+            decode_error(value).contains("measured latency claim cannot omit measured correctness"),
             "the failure must name the rule it enforces"
         );
     }
@@ -1309,9 +1364,10 @@ mod tests {
             "status": "measured", "units": 1, "objects": 1, "bytes": 1, "reused": 0, "recomputed": 1
         });
         value["stages"][0]["timing"] = json!({"status": "measured", "wall_ns": 1});
-        let receipt: CompilerPerformanceReceipt =
-            serde_json::from_value(value).expect("the shape still deserializes");
-        assert!(validate_receipt(&receipt).is_err());
+        assert!(
+            decode_error(value).contains("missing instrumentation cannot report measured"),
+            "the failure must name the rule it enforces"
+        );
     }
 
     /// `result` is deliberately independent of measurement: a stage can be
@@ -1336,12 +1392,8 @@ mod tests {
         let mut value = uninstrumented();
         value["stages"] = json!([]);
         value["workload"]["required_stages"] = json!(["lex_parse"]);
-        let receipt: CompilerPerformanceReceipt =
-            serde_json::from_value(value).expect("the shape still deserializes");
-        let rejected = validate_receipt(&receipt);
-        assert!(rejected.is_err(), "a receipt with no rows proves nothing");
         assert!(
-            format!("{:?}", rejected.err()).contains("no stage rows proves nothing"),
+            decode_error(value).contains("no stage rows proves nothing"),
             "the empty-list rule itself must fire, not only the denominator reconciliation"
         );
     }
@@ -1350,18 +1402,17 @@ mod tests {
     fn typed_model_alone_rejects_an_empty_required_stage_denominator() {
         let mut value = uninstrumented();
         value["workload"]["required_stages"] = json!([]);
-        let receipt: CompilerPerformanceReceipt =
-            serde_json::from_value(value).expect("the shape still deserializes");
-        assert!(validate_receipt(&receipt).is_err(), "the denominator cannot be empty");
+        assert!(decode_error(value).contains("cannot be empty"), "the denominator cannot be empty");
     }
 
     #[test]
     fn typed_model_alone_rejects_a_duplicated_required_stage() {
         let mut value = uninstrumented();
         value["workload"]["required_stages"] = json!(["lex_parse", "hir", "module_graph", "hir"]);
-        let receipt: CompilerPerformanceReceipt =
-            serde_json::from_value(value).expect("the shape still deserializes");
-        assert!(validate_receipt(&receipt).is_err(), "a denominator cannot count a stage twice");
+        assert!(
+            decode_error(value).contains("declared twice"),
+            "a denominator cannot count a stage twice"
+        );
     }
 
     // -- load-bearing identity ----------------------------------------------------
@@ -1416,6 +1467,59 @@ mod tests {
             receipt["subject"]["tree"] = json!(spelling);
             assert!(check(&receipt).is_err(), "{spelling:?} must not decode as a tree identity");
         }
+    }
+
+    /// `subject.candidate` is load-bearing identity too, not free text.
+    ///
+    /// Review found it typed as `RequiredText`, so `HEAD`, a branch name, or
+    /// arbitrary text decoded fine and a receipt could attribute its
+    /// measurements to nothing exact. It is now the same pinned git object name
+    /// as `tree`, on both surfaces.
+    #[test]
+    fn rejects_a_candidate_that_is_not_an_object_name() {
+        for spelling in ["HEAD", "main", "a05f482", "A05F4820AB9385B261A2993EA9687CF9D7BEEDFC"] {
+            let mut receipt = measured();
+            receipt["subject"]["candidate"] = json!(spelling);
+            assert!(
+                !schema_violations(&receipt).is_empty(),
+                "{spelling:?}: the schema must reject an inexact candidate identity"
+            );
+            assert!(check(&receipt).is_err(), "{spelling:?} must not decode either");
+        }
+    }
+
+    /// Both exact identities need a control that cannot be satisfied by the
+    /// schema.
+    ///
+    /// Mutation testing caught this: reverting `candidate` to free text failed
+    /// no test, because the control above reaches the rule through the schema's
+    /// pattern first. The typed boundary needs its own falsifier, exactly as
+    /// the cache and counter rules did.
+    #[test]
+    fn typed_model_alone_rejects_inexact_git_identities() {
+        for field in ["candidate", "tree"] {
+            for spelling in
+                ["HEAD", "main", "a05f482", "A05F4820AB9385B261A2993EA9687CF9D7BEEDFC", ""]
+            {
+                let mut value = measured();
+                value["subject"][field] = json!(spelling);
+                let rendered = decode_error(value);
+                assert!(
+                    rendered.contains("40 lowercase hex digits"),
+                    "{field} = {spelling:?} must fail to decode as an object name, got {rendered}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_an_unpinned_git_object_pattern() {
+        let mut schema = schema_value();
+        schema["$defs"]["git_object_name"]["pattern"] = json!("^.+$");
+        assert!(
+            validate_schema_document(&schema).is_err(),
+            "relaxing the object-name pattern is a contract change"
+        );
     }
 
     #[test]
