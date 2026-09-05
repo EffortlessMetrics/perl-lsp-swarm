@@ -2043,6 +2043,22 @@ const GATING_SCAN_EXCLUDES: [&str; 4] = ["target", ".git", "archive", "node_modu
 /// suite from ~1.2s to ~40s, a cost the whole repository's
 /// `cargo test -p xtask --lib` lane would have paid.
 pub fn reaches_audited_package(text: &str, relative_path: &str) -> bool {
+    // This module's own two files name the package in every token form because
+    // describing it is their whole job, so the token scan cannot classify them.
+    // The caller used to skip them entirely, which made those two the one place
+    // in the repository a real consumer could hide: an actual
+    // `use perl_ast_v2::Node;` here would never enter the denominator and #8845
+    // would migrate without it.
+    //
+    // They are classified by the parser branch instead, which reads *declared
+    // paths* rather than text, so the strings, fixtures and prose that name the
+    // package do not register while a genuine import does. The decision lives
+    // here rather than at the walk so that one function owns "does this file
+    // reach the package" for every file, and a control can exercise it directly
+    // instead of testing a helper the walk might not even call.
+    if INSTRUMENT_SELF_FILES.contains(&relative_path) {
+        return parsed_api_use(text).unwrap_or(false);
+    }
     if mentions_audited_package(text) {
         return true;
     }
@@ -2119,9 +2135,6 @@ pub fn derive_reference_files(repo_root: &Path) -> Result<BTreeSet<String>> {
                 continue;
             }
             let relative = relative_slash_path(repo_root, path)?;
-            if INSTRUMENT_SELF_FILES.contains(&relative.as_str()) {
-                continue;
-            }
             // Only invalid UTF-8 is skipped. A non-UTF-8 file under these roots
             // cannot declare a Rust dependency or import, so skipping it loses
             // nothing. Every other read failure — a permission denial, a file

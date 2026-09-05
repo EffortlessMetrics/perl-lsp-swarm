@@ -840,21 +840,95 @@ fn whole_word_matching_does_not_confuse_the_audit_module_with_a_consumer() -> Re
 }
 
 #[test]
-fn instrument_self_exclusion_is_exactly_two_named_files() -> Result<()> {
-    // The self-exclusion is the one place the scan is allowed to look away, so
-    // it is pinned. If it ever grows, that is a way to hide a real consumer.
+fn the_instruments_own_files_are_classified_by_parser_not_exempted() -> Result<()> {
+    // These two files name the package in every token form because describing it
+    // is their job, so the token scan cannot classify them. They were skipped
+    // outright, which made them the one place in the repository a real consumer
+    // could hide: an actual `use perl_ast_v2::Node;` here would never enter the
+    // denominator and #8845 would migrate without it.
+    //
+    // They are now classified by the parser branch instead, which reads declared
+    // paths rather than text. The list stays pinned at two, because a growing
+    // list of parser-only files would be a way to weaken the token scan.
     assert_eq!(INSTRUMENT_SELF_FILES.len(), 2);
     assert_eq!(
         INSTRUMENT_SELF_FILES,
         ["xtask/src/ast_v2_lifecycle_audit.rs", "xtask/src/ast_v2_lifecycle_audit_tests.rs"]
     );
+
+    // As they actually stand, neither declares a path into the package, so
+    // neither enters the denominator — the exclusion was not load-bearing.
     let scanned = derive_reference_files(&repo_root_for_tests()?)?;
-    for excluded in INSTRUMENT_SELF_FILES {
+    for instrument_file in INSTRUMENT_SELF_FILES {
         assert!(
-            !scanned.contains(excluded),
-            "{excluded} must be excluded as instrument self-reference"
+            !scanned.contains(instrument_file),
+            "{instrument_file} declares no path into the package and must not be a consumer"
+        );
+        let text = std::fs::read_to_string(repo_root_for_tests()?.join(instrument_file))?;
+        assert_eq!(
+            parsed_api_use(&text),
+            Some(false),
+            "{instrument_file} must parse, and declare no real API use of the package"
+        );
+        // And the reason the token scan cannot be used on them is real: it does
+        // fire on their prose. Asserted against the token scan itself, since
+        // `reaches_audited_package` now routes these two paths to the parser —
+        // asking it here would only restate the branch above.
+        assert!(
+            mentions_audited_package(&text),
+            "{instrument_file} names the package textually, which is why it needs the parser"
         );
     }
+
+    // The property the whole-file skip could not give, asserted through the
+    // classifier the walk actually calls rather than through a helper beside it.
+    // An earlier version of this control tested `parsed_api_use` directly and so
+    // passed with the skip still in place — a control that reported success
+    // without proving its constraint.
+    for instrument_file in INSTRUMENT_SELF_FILES {
+        assert!(
+            reaches_audited_package("use perl_ast_v2::Node;\nfn f(_: Node) {}", instrument_file),
+            "a genuine import in {instrument_file} must reach the denominator"
+        );
+        assert!(
+            !reaches_audited_package(
+                "const P: &str = \"crates/perl-ast-v2/src/lib.rs\";",
+                instrument_file
+            ),
+            "a string naming the package in {instrument_file} must not"
+        );
+    }
+    // And the branch is keyed on the path: the same prose in any other file is
+    // still a textual reference, so this narrows nothing outside these two.
+    assert!(
+        reaches_audited_package(
+            "const P: &str = \"crates/perl-ast-v2/src/lib.rs\";",
+            "crates/perl-parser/src/lib.rs"
+        ),
+        "outside the instrument's own files the token scan still applies"
+    );
+
+    assert_eq!(
+        parsed_api_use("use perl_ast_v2::Node;\nfn f(_: Node) {}"),
+        Some(true),
+        "a real import in an instrument file must be discovered"
+    );
+    assert_eq!(
+        parsed_api_use("fn f() -> perl_ast::v2::Node { unimplemented!() }"),
+        Some(true),
+        "a real canonical-path use in an instrument file must be discovered"
+    );
+    // While the shapes these files are actually full of stay invisible to it.
+    assert_eq!(
+        parsed_api_use("const P: &str = \"crates/perl-ast-v2/src/lib.rs\";"),
+        Some(false),
+        "a string naming the package is not an import"
+    );
+    assert_eq!(
+        parsed_api_use("/// Describes `perl_ast_v2::Node` for the reader.\npub fn f() {}"),
+        Some(false),
+        "a doc comment naming the package is not an import"
+    );
     Ok(())
 }
 
