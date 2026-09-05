@@ -42,13 +42,12 @@ use std::{
 const FACADE_CRATE_PREFIX: &str = "crates/perl-parser/";
 const FACADE_HEAD: &str = "perl_parser";
 
-/// Scan roots for governed consumer sources: whole workspace members, not
-/// hand-picked subdirectories. Naming `xtask` and `fuzz` at member granularity
-/// keeps `xtask/tests`, `xtask/examples`, and any directory a member grows
-/// later inside the guard automatically (#14300 wave 2); the sibling TDD guard
-/// still carries the narrow literal until the shared discovery primitive lands
-/// under that issue.
-const SCAN_ROOTS: &[&str] = &["crates", "xtask", "fuzz"];
+/// The fuzz tree is its own Cargo workspace, so it never appears in the root
+/// manifest's member list and has to be named. It is a governed consumer all
+/// the same: `fuzz/fuzz_targets` imports semantic authority directly. Every
+/// other governed root is derived from workspace membership — see
+/// `scan_roots`.
+const EXTERNAL_WORKSPACE_ROOTS: &[&str] = &["fuzz"];
 
 /// Directory names never scanned: build output is generated, not governed
 /// source, and can contain vendored copies of facade consumers.
@@ -383,14 +382,85 @@ fn collect_rs_files(
     }
 }
 
-fn unregistered_facade_imports() -> (Vec<(String, String)>, Vec<String>) {
-    let root = repo_root();
+/// Read `[workspace] members` out of a root manifest's text.
+///
+/// Fails closed rather than guessing: a member carrying a glob is refused,
+/// because an expansion computed here that disagreed with Cargo's own would
+/// present as coverage.
+fn declared_workspace_members(manifest: &str) -> Result<Vec<String>, String> {
+    let document: toml::Table =
+        manifest.parse().map_err(|error| format!("root manifest is not valid TOML: {error}"))?;
+    let members = document
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| "root manifest declares no [workspace] members array".to_string())?;
+
+    let mut declared = Vec::with_capacity(members.len());
+    for member in members {
+        let member = member
+            .as_str()
+            .ok_or_else(|| format!("workspace member is not a string: {member:?}"))?;
+        if member.contains('*') {
+            return Err(format!(
+                "workspace member {member:?} is a glob; this guard derives its governed \
+                 surface from literal member paths and will not guess an expansion (#14300)"
+            ));
+        }
+        declared.push(member.to_string());
+    }
+    Ok(declared)
+}
+
+/// The governed surface: every declared workspace member plus the separately
+/// rooted fuzz workspace.
+///
+/// Derived, not hand-listed. A literal root set — even one widened to whole
+/// members — closes today's hole and reopens it at the first member declared
+/// outside the listed prefixes, which is the recurrence #14300 asks to close
+/// at the discovery primitive rather than per site.
+fn scan_roots_from_manifest(manifest: &str) -> Result<Vec<String>, String> {
+    let mut roots: Vec<String> = declared_workspace_members(manifest)?
+        .into_iter()
+        .chain(EXTERNAL_WORKSPACE_ROOTS.iter().map(|root| (*root).to_string()))
+        .collect();
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
+}
+
+fn scan_roots(root: &Path) -> Result<Vec<String>, String> {
+    let manifest_path = root.join("Cargo.toml");
+    let manifest = fs::read_to_string(&manifest_path)
+        .map_err(|error| format!("read {}: {error}", manifest_path.display()))?;
+    scan_roots_from_manifest(&manifest)
+}
+
+/// Whether a governed root reaches `path`: the root itself, or anything
+/// beneath it.
+fn root_covers(root: &str, path: &str) -> bool {
+    path == root || path.starts_with(&format!("{root}/"))
+}
+
+/// Every governed `.rs` file, relative to the repository root.
+fn governed_files(root: &Path, failures: &mut Vec<String>) -> Vec<String> {
     let mut files = Vec::new();
-    let mut failures = Vec::new();
-    for scan_root in SCAN_ROOTS {
-        collect_rs_files(&root.join(scan_root), scan_root, &mut files, &mut failures);
+    match scan_roots(root) {
+        Ok(roots) => {
+            for scan_root in roots {
+                collect_rs_files(&root.join(&scan_root), &scan_root, &mut files, failures);
+            }
+        }
+        Err(error) => failures.push(error),
     }
     files.sort();
+    files
+}
+
+fn unregistered_facade_imports() -> (Vec<(String, String)>, Vec<String>) {
+    let root = repo_root();
+    let mut failures = Vec::new();
+    let files = governed_files(&root, &mut failures);
 
     let mut violations = Vec::new();
     for relative in files {
@@ -554,25 +624,22 @@ use crate::perl_parser_wrapper::analysis::Also;
     assert!(hits.is_empty(), "unexpected boundary hits: {hits:?}");
 }
 
-/// #14300 wave 2: the guard's coverage hole was `SCAN_ROOTS` naming
-/// hand-picked subdirectories, so a facade consumer landing in
-/// `xtask/tests/**` or `xtask/examples/**` merged unseen. Roots are now whole
-/// workspace members. This proves the collector actually reaches those
-/// directories rather than trusting the constant's shape.
+/// #14300 wave 2: the guard's coverage hole was a hand-picked root list, so a
+/// facade consumer landing in `xtask/tests/**` or `xtask/examples/**` merged
+/// unseen. Roots are now derived from workspace membership. This proves the
+/// collector actually reaches those directories rather than trusting the
+/// derivation's shape.
 #[test]
 fn scan_reaches_every_directory_of_each_governed_member() {
     let root = repo_root();
-    let mut files = Vec::new();
     let mut failures = Vec::new();
-    for scan_root in SCAN_ROOTS {
-        collect_rs_files(&root.join(scan_root), scan_root, &mut files, &mut failures);
-    }
+    let files = governed_files(&root, &mut failures);
     assert!(failures.is_empty(), "scan roots must all be readable: {failures:?}");
 
     for required in ["crates/", "xtask/src/", "xtask/tests/", "fuzz/fuzz_targets/"] {
         assert!(
             files.iter().any(|file| file.starts_with(required)),
-            "no source collected under {required}; SCAN_ROOTS no longer covers it"
+            "no source collected under {required}; the derived roots no longer cover it"
         );
     }
 
@@ -700,4 +767,88 @@ fn a_chain_reports_its_module_once_not_every_semantic_name_in_it() {
 fn a_bare_crate_reference_without_a_path_is_not_a_violation() {
     let source = "let name = perl_parser;\nextern crate perl_parser;\n";
     assert!(forbidden_facade_references(&code_without_comments(source)).is_empty());
+}
+
+#[test]
+fn every_declared_workspace_member_is_governed() -> Result<(), String> {
+    let root = repo_root();
+    let manifest = fs::read_to_string(root.join("Cargo.toml"))
+        .map_err(|error| format!("root manifest must be readable: {error}"))?;
+    let declared = declared_workspace_members(&manifest)?;
+    assert!(!declared.is_empty(), "root manifest must declare workspace members");
+
+    let roots = scan_roots(&root)?;
+    for member in &declared {
+        assert!(
+            roots.iter().any(|root| root_covers(root, member)),
+            "workspace member {member} is declared but ungoverned (#14300); \
+             derived roots: {roots:?}"
+        );
+    }
+    Ok(())
+}
+
+/// The derivation's own falsifier, and the reason the roots are derived
+/// rather than merely widened.
+///
+/// A literal root set passes every coverage assertion above — `crates`,
+/// `xtask`, and `fuzz` do reach today's members — and still ungoverns the
+/// first member declared outside those three prefixes. Only a set read from
+/// the manifest reaches one. Stated over manifest text, because the defect
+/// cannot be observed against this repository without adding such a member.
+#[test]
+fn a_member_outside_the_familiar_prefixes_is_still_governed() -> Result<(), String> {
+    let manifest = "\
+[workspace]
+members = [\"crates/perl-ast\", \"tools/analyzer\", \"xtask\"]
+";
+    let derived = scan_roots_from_manifest(manifest)?;
+    assert!(
+        derived.iter().any(|root| root_covers(root, "tools/analyzer")),
+        "a member outside crates/xtask/fuzz must be governed; derived: {derived:?}"
+    );
+
+    assert!(
+        !["crates", "xtask", "fuzz"].iter().any(|root| root_covers(root, "tools/analyzer")),
+        "control: the literal root set this replaced must genuinely miss that member"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_glob_member_fails_closed_rather_than_being_guessed() {
+    let manifest = "[workspace]\nmembers = [\"crates/*\", \"xtask\"]\n";
+    let outcome = declared_workspace_members(manifest);
+    assert!(
+        outcome.as_ref().is_err_and(|error| error.contains("glob")),
+        "a glob member must be refused, not expanded: {outcome:?}"
+    );
+}
+
+#[test]
+fn a_manifest_without_workspace_members_fails_closed() {
+    let manifest = "[package]\nname = \"solo\"\n";
+    let outcome = declared_workspace_members(manifest);
+    assert!(
+        outcome.as_ref().is_err_and(|error| error.contains("members")),
+        "a manifest declaring no members must be refused: {outcome:?}"
+    );
+}
+
+#[test]
+fn declared_members_are_read_verbatim_and_completely() {
+    let manifest = "\
+[workspace]
+resolver = \"2\"
+members = [
+    \"crates/alpha\",
+    # a comment between members must not drop the one after it
+    \"crates/beta\",
+    \"xtask\",
+]
+";
+    assert_eq!(
+        declared_workspace_members(manifest),
+        Ok(vec!["crates/alpha".to_string(), "crates/beta".to_string(), "xtask".to_string()])
+    );
 }
