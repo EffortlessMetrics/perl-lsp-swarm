@@ -119,9 +119,16 @@ fn workspace_capabilities(
     server_workspace_folder_support: bool,
     file_operations: FileOperationSupport,
 ) -> Value {
-    let perl_globs = ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
-    let filters: Vec<Value> =
-        perl_globs.iter().map(|glob| json!({ "pattern": { "glob": glob } })).collect();
+    // Advertised file-operation filters share the watcher pattern authority
+    // so both registrations stay honest about what the handlers classify
+    // (#13308). The catch-all delivers non-Perl events by design; the
+    // willRename preflight classifies each renamed subject through the same
+    // discovery admission authority as the startup and watcher seams and
+    // plans no module edits for non-Perl subjects (#14186).
+    let filters: Vec<Value> = super::watchers::PERL_WATCH_PATTERNS
+        .iter()
+        .map(|glob| json!({ "pattern": { "glob": glob } }))
+        .collect();
     let mut file_operation_capabilities = serde_json::Map::new();
     file_operations.insert_capabilities(&mut file_operation_capabilities, &filters);
 
@@ -143,13 +150,6 @@ fn workspace_capabilities(
     }
     workspace
 }
-
-/// The LSP protocol version this server implements.
-///
-/// Advertised in the `initialize` result's `protocolVersion` field (LSP 3.17+).
-/// The server uses 3.18 extensions (e.g. `inlineCompletionProvider`), so the
-/// advertised version reflects the highest spec whose features are surfaced.
-const LSP_PROTOCOL_VERSION: &str = "3.18";
 
 fn is_opencode_client(params: &Value) -> bool {
     params
@@ -882,7 +882,6 @@ impl LspServer {
 
         Ok(Some(json!({
             "capabilities": capabilities,
-            "protocolVersion": LSP_PROTOCOL_VERSION,
             "serverInfo": {
                 "name": "perl-lsp",
                 "version": env!("CARGO_PKG_VERSION")

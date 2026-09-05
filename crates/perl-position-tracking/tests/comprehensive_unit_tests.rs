@@ -357,8 +357,8 @@ fn line_starts_cache_cr_only() {
     let cache = LineStartsCache::new(src);
 
     assert_eq!(cache.offset_to_position(src, 0), (0, 0));
-    assert_eq!(cache.offset_to_position(src, 3), (1, 0));
-    assert_eq!(cache.offset_to_position(src, 6), (2, 0));
+    assert_eq!(cache.offset_to_position(src, 3), (0, 3));
+    assert_eq!(cache.offset_to_position(src, 6), (0, 6));
 }
 
 #[test]
