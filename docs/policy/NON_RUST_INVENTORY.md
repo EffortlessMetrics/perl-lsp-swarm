@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12724 |
-| Rust-family files | 3974 |
-| Non-Rust files | 8750 |
-| Allowlisted | 6511 |
+| Total tracked files | 12730 |
+| Rust-family files | 3978 |
+| Non-Rust files | 8752 |
+| Allowlisted | 6513 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 502 |
-| documentation | 2854 |
+| documentation | 2855 |
 | generated | 2 |
 | production | 357 |
 | test | 2111 |
-| tooling | 685 |
+| tooling | 686 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -2345,6 +2345,7 @@
 | `.changes/unreleased/product-12815-Fixed-221500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13073-Fixed-020212.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13094-Fixed-022731.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13100-Fixed-021009.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13123-Fixed-021700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13125-Fixed-021800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13157-Fixed-023317.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3569,6 +3570,7 @@
 | `benchmarks/scripts/test_benchmark_targets.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_extract_criterion.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_regression.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/validate-native-pipeline-sidecar.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `book/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `book/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `book/src/SUMMARY.md` | documentation | `non-rust-root-governance-docs` | docs |
