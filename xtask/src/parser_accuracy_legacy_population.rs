@@ -170,6 +170,21 @@ impl LegacyPopulation {
     }
 }
 
+/// Every legacy metamorphic observation the contract holds as investigation-only.
+///
+/// Only the whitespace row is bound to a projected population, so an artifact
+/// that declared a *partial* `quarantined_metrics` set would let the other two
+/// reappear as `measured` and be counted as trusted accuracy. Both validators
+/// require the declaration to cover this set, so under-declaring is refused
+/// rather than obeyed.
+///
+/// This is not the `is_legacy_untrusted_metric` name classifier this contract
+/// retired. That downgraded *any* row whose name resembled a legacy metric;
+/// this only checks that the artifact's own declaration is complete. A metric
+/// named `whitespace_invariance_rate_v2` is still ordinary trusted accuracy.
+pub const LEGACY_QUARANTINED_METRICS: [&str; 3] =
+    ["whitespace_invariance_rate", "comment_invariance_rate", "newline_style_invariance_rate"];
+
 /// The single runtime authority for the canonical population-identity format.
 ///
 /// `perl_lsp_rs_core::hashing::sha256_hex` — the only producer of these

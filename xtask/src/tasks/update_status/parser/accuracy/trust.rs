@@ -6,7 +6,9 @@
 //! refuses is a contract split that only surfaces after publication.
 
 use super::{FORBIDDEN_TRUST_FIELDS, ParserAccuracyArtifactSummary, ParserAccuracyMetricSummary};
-use xtask::parser_accuracy_legacy_population::is_canonical_population_identity;
+use xtask::parser_accuracy_legacy_population::{
+    LEGACY_QUARANTINED_METRICS, is_canonical_population_identity,
+};
 
 /// Fail-closed consumption of the typed trust and disposition contract.
 ///
@@ -49,6 +51,15 @@ pub(super) fn trust_disposition_is_fail_closed(artifact: &ParserAccuracyArtifact
     if population.quarantined_metrics.iter().any(String::is_empty) {
         return false;
     }
+    // A *partial* declaration would otherwise obey the artifact into letting a
+    // quarantined observation back through as `measured`. The declaration must
+    // cover the contract's set; under-declaring is refused, not honoured.
+    if !LEGACY_QUARANTINED_METRICS
+        .iter()
+        .all(|known| population.quarantined_metrics.iter().any(|m| m == known))
+    {
+        return false;
+    }
 
     let expects_observation = population.population_applied_count > 0;
     let mut aggregate_investigation_rows = 0_usize;
@@ -89,6 +100,11 @@ pub(super) fn trust_disposition_is_fail_closed(artifact: &ParserAccuracyArtifact
                     || transformation_profile.is_empty()
                     || *sample_count == 0
                 {
+                    return false;
+                }
+                // A row typed investigation-only that the population does not
+                // declare is a quarantine the artifact contradicts itself about.
+                if !population.quarantined_metrics.contains(metric) {
                     return false;
                 }
                 if metric == &population.aggregate_metric {

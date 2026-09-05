@@ -13,6 +13,7 @@ use super::{
     ParserAccuracyArtifactSummary, ParserAccuracyLegacyPopulation, ParserAccuracyMetricSummary,
     trust_disposition_is_fail_closed,
 };
+use xtask::parser_accuracy_legacy_population::LEGACY_QUARANTINED_METRICS;
 
 #[test]
 fn fail_closed_reader_rejects_untyped_aggregates_and_stale_counts() {
@@ -141,7 +142,7 @@ fn projected_rows_and_failure_packets_cannot_carry_investigation_claims() {
                 "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
                 "population_identity": format!("sha256:{}", "a".repeat(64)),
                 "aggregate_metric": "whitespace_invariance_rate",
-                "quarantined_metrics": ["whitespace_invariance_rate"],
+                "quarantined_metrics": ["whitespace_invariance_rate", "comment_invariance_rate", "newline_style_invariance_rate"],
                 "population_total_count": 4,
                 "population_applied_count": 2,
                 "population_unclassified_count": 2,
@@ -279,7 +280,7 @@ fn quarantined_legacy_metrics_cannot_reappear_as_measured() {
                 "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
                 "population_identity": format!("sha256:{}", "a".repeat(64)),
                 "aggregate_metric": "whitespace_invariance_rate",
-                "quarantined_metrics": ["whitespace_invariance_rate"],
+                "quarantined_metrics": ["whitespace_invariance_rate", "comment_invariance_rate", "newline_style_invariance_rate"],
                 "quarantined_metrics": [
                     "whitespace_invariance_rate",
                     "comment_invariance_rate",
@@ -313,9 +314,43 @@ fn quarantined_legacy_metrics_cannot_reappear_as_measured() {
         );
     }
 
+    // A *partial* declaration must be refused rather than obeyed. Otherwise the
+    // fix above is only as good as the artifact's honesty: dropping a name from
+    // `quarantined_metrics` would restore exactly the trust it removes.
+    for omitted in ["comment_invariance_rate", "newline_style_invariance_rate"] {
+        let declared: Vec<&str> =
+            LEGACY_QUARANTINED_METRICS.iter().copied().filter(|m| *m != omitted).collect();
+        let raw = artifact(serde_json::json!({
+            "state": "measured",
+            "metric": omitted,
+            "value": 1.0,
+            "sample_count": 47,
+        }))
+        .replace(
+            &serde_json::to_string(&LEGACY_QUARANTINED_METRICS).unwrap_or_default(),
+            &serde_json::to_string(&declared).unwrap_or_default(),
+        );
+        assert!(
+            !trust_disposition_is_fail_closed(&parse(&raw)),
+            "a declaration omitting {omitted} must be refused, not honoured"
+        );
+    }
+
     // Positive control: a metric outside the quarantine is ordinary trusted
     // accuracy and must still pass, so this is a declaration check rather than
-    // the name classifier this contract retired.
+    // the name classifier this contract retired. A near-miss name is the point:
+    // resemblance must not downgrade anything.
+    let near_miss = artifact(serde_json::json!({
+        "state": "measured",
+        "metric": "whitespace_invariance_rate_v2",
+        "value": 1.0,
+        "sample_count": 47,
+    }));
+    assert!(
+        trust_disposition_is_fail_closed(&parse(&near_miss)),
+        "a name merely resembling a quarantined metric must stay trusted"
+    );
+
     let trusted = artifact(serde_json::json!({
         "state": "measured",
         "metric": "line_construct_f1",

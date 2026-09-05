@@ -47,8 +47,8 @@ use crate::tasks::metrics::parser_accuracy_metamorphic_registry;
 use crate::tasks::metrics::ratchet::MetricReceipt;
 use crate::utils::project_root;
 use xtask::parser_accuracy_legacy_population::{
-    LegacyFixtureInput, build_legacy_whitespace_population, is_canonical_population_identity,
-    legacy_whitespace_case_applies,
+    LEGACY_QUARANTINED_METRICS, LegacyFixtureInput, build_legacy_whitespace_population,
+    is_canonical_population_identity, legacy_whitespace_case_applies,
 };
 
 mod failure_packet;
@@ -70,19 +70,6 @@ const SAFETY_FLOOR_METRICS: &[(&str, f64)] =
 /// Aggregate metric name bound to the retained legacy whitespace population.
 const LEGACY_WHITESPACE_AGGREGATE_METRIC: &str = "whitespace_invariance_rate";
 /// Transformation profile for the quarantined legacy EOF-comment observation.
-/// Every legacy metamorphic observation held as investigation-only evidence.
-///
-/// `LEGACY_WHITESPACE_AGGREGATE_METRIC` is the only one bound to a projected
-/// population, so a contract keyed on it alone left the other two able to
-/// reappear as `measured` and be counted as trusted accuracy. The artifact
-/// declares this set and both validators enforce the declaration, which keeps
-/// the retired name classifier retired.
-const LEGACY_QUARANTINED_METRICS: [&str; 3] = [
-    LEGACY_WHITESPACE_AGGREGATE_METRIC,
-    "comment_invariance_rate",
-    "newline_style_invariance_rate",
-];
-
 const LEGACY_COMMENT_PROFILE: &str = "eof_comment.legacy.v1";
 /// Transformation profile for the quarantined legacy LF-to-CRLF observation.
 const LEGACY_NEWLINE_STYLE_PROFILE: &str = "newline_style.legacy.v1";
@@ -6361,6 +6348,15 @@ fn validate_legacy_population_evidence(artifact: &ParserAccuracyArtifact) -> Res
             population.aggregate_metric
         );
     }
+    // A partial declaration would let a quarantined observation back through as
+    // `measured`, so the declaration must cover the contract's set.
+    for known in LEGACY_QUARANTINED_METRICS {
+        if !population.quarantined_metrics.iter().any(|m| m == known) {
+            bail!(
+                "legacy population omits quarantined metric {known} from its declaration; a partial quarantine cannot be honoured"
+            );
+        }
+    }
 
     let expects_observation = population.population_applied_count > 0;
     let mut aggregate_investigation_rows: Vec<&MetricRow> = Vec::new();
@@ -10149,6 +10145,21 @@ sub dynamic_boundary_case {
                 ))
                 .is_err(),
                 "a measured {metric} must be refused: it is quarantined evidence"
+            );
+        }
+
+        // A partial declaration must be refused rather than obeyed, or the rule
+        // above is only as good as the artifact's honesty.
+        for omitted in LEGACY_QUARANTINED_METRICS {
+            let mut partial = test_legacy_population();
+            partial.quarantined_metrics.retain(|m| m != omitted);
+            assert!(
+                validate_legacy_population_evidence(&artifact(
+                    partial,
+                    vec![aggregate_row(2, 0.5)]
+                ))
+                .is_err(),
+                "a declaration omitting {omitted} must be refused"
             );
         }
 
