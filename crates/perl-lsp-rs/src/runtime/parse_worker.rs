@@ -1039,12 +1039,12 @@ impl ParseWorker {
         generation_handle: Arc<AtomicU32>,
         text: Arc<str>,
     ) -> bool {
-        match self.try_enqueue(uri, normalized_uri, generation, generation_handle, text) {
-            Ok(newly_active) => newly_active,
-            Err(()) => {
-                panic!("test enqueue refused: the pool must be operational and not shut down here")
-            }
-        }
+        let admitted = self.try_enqueue(uri, normalized_uri, generation, generation_handle, text);
+        assert!(
+            admitted.is_ok(),
+            "test enqueue refused: the pool must be operational and not shut down here"
+        );
+        admitted.unwrap_or(false)
     }
 
     /// Try to enqueue a job, rejecting it when shutdown has already won the
