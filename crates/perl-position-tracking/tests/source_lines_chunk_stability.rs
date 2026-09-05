@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Contract, chunk-partition stability, and negative-control proof for the
 //! LF source-line scanner and immutable line-record table (#10574).
 //!
@@ -191,6 +193,29 @@ fn consecutive_lf_rows_are_exact() {
             ],
         ),
     );
+}
+
+#[test]
+fn lf_row_after_crlf_row_pins_exact_seam_geometry() {
+    // Call-observation for the scanner's LF separator construction: the Lf
+    // record is built from record_start 4, content_end 8, and separator_end
+    // 9 — three distinct values reached only after a prior CRLF row and
+    // multibyte content. Any drift in the LF branch's byte positions (swapped
+    // or re-offset arguments) fails this literal expectation or one of the
+    // record ordering laws exercised by the partition sweep.
+    let source = "α\r\nββ\nγ";
+    let table = assert_single_fixture(
+        source,
+        &[
+            (0, 2, 4, SeparatorKind::CrLf),
+            (4, 8, 9, SeparatorKind::Lf),
+            (9, 11, 11, SeparatorKind::None),
+        ],
+    );
+    // The LF row's content is exactly the two β scalars.
+    assert_eq!(table.record(1).map(|r| r.content_str(source)), Some(Some("ββ")));
+    // The byte after the LF separator already belongs to the terminal row.
+    assert_eq!(table.line_index_at_byte(9), Some(2));
 }
 
 #[test]

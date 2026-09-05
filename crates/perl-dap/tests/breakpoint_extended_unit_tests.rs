@@ -361,7 +361,6 @@ fn search_direction_clone_copy() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn search_direction_eq_ne() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(SearchDirection::Forward, SearchDirection::Forward);
     assert_ne!(SearchDirection::Forward, SearchDirection::Backward);
     assert_ne!(SearchDirection::Backward, SearchDirection::Both);
     assert_ne!(SearchDirection::Both, SearchDirection::Forward);

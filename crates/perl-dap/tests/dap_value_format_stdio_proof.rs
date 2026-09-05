@@ -6,8 +6,10 @@
 //! `PERL_DAP_TEST_BINARY` for an explicitly extracted candidate), drives one
 //! real `perl -d` session over `Content-Length` framed stdio with a real Perl
 //! fixture, and asserts the formatted behavior of every advertised
-//! `ValueFormat` request family: `variables`, `setVariable`, `evaluate`, and
-//! `setExpression`.
+//! `ValueFormat` request family: `variables`, `setVariable`, and `evaluate`
+//! — plus the `setExpression` floor (#9568): the same session advertises it
+//! false, refuses it with the deterministic authority message, and the
+//! refusal performs no mutation.
 //!
 //! Handler-level and seeded-cache unit tests cannot satisfy #9590; none are
 //! used here. Every row is driven through framed stdio requests against the
@@ -31,10 +33,10 @@
 //!   evaluation or mutation (side-effect canary stays empty);
 //! - correlated-literal `evaluate`/read-back results are never reparsed as
 //!   numeric authority: `0  255` stays `0  255` under `hex: true`;
-//! - mutation admission stays client-value-bound: `setVariable`/
-//!   `setExpression` with `format: { "hex": true }` assigns the admitted
-//!   client value (read-back proves `66`/`77` decimal), never the formatted
-//!   display text;
+//! - mutation admission stays client-value-bound: `setVariable` with
+//!   `format: { "hex": true }` assigns the admitted client value (read-back
+//!   proves `66` decimal), never the formatted display text; the
+//!   `setExpression` refusal must not mutate at all (#9568);
 //! - formatting and inspection execute no user callbacks: tied `FETCH`/
 //!   `STORE`, overload stringification, and object-method canaries stay
 //!   empty for the whole session, including failed unsupported-option
@@ -89,6 +91,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod common;
+
 type ProofResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 const EXPLICIT_DAP_BINARY_ENV: &str = "PERL_DAP_TEST_BINARY";
@@ -129,6 +133,7 @@ struct SubjectIdentity {
     binary_path: String,
     binary_len: u64,
     binary_sha256: String,
+    requested_perl_path: String,
     perl_path: String,
     perl_version: String,
     /// Digest of the interpreter binary when its self-reported path is
@@ -143,20 +148,36 @@ struct SubjectIdentity {
 }
 
 impl SubjectIdentity {
-    fn capture(binary: &OsString, fixture: &Path) -> ProofResult<Self> {
-        let perl_path_out = Command::new("perl").arg("-e").arg("print $^X").output()?;
+    fn capture(binary: &OsString, perl_path: &Path, fixture: &Path) -> ProofResult<Self> {
+        let perl_path_out = Command::new(perl_path).arg("-e").arg("print $^X").output()?;
         if !perl_path_out.status.success() {
-            return Err("perl -e 'print $^X' failed while binding subject identity".into());
+            return Err(format!(
+                "{} -e 'print $^X' failed while binding subject identity",
+                perl_path.display()
+            )
+            .into());
         }
-        let perl_path = String::from_utf8_lossy(&perl_path_out.stdout).trim().to_string();
+        let reported_perl_path = String::from_utf8_lossy(&perl_path_out.stdout).trim().to_string();
+        if reported_perl_path.is_empty() {
+            return Err(format!(
+                "{} reported an empty $^X while binding subject identity",
+                perl_path.display()
+            )
+            .into());
+        }
+        let reported_perl_path_buf = PathBuf::from(&reported_perl_path);
 
-        let perl_version_out = Command::new("perl").arg("-e").arg("print $^V").output()?;
+        let perl_version_out = Command::new(perl_path).arg("-e").arg("print $^V").output()?;
         if !perl_version_out.status.success() {
-            return Err("perl -e 'print $^V' failed while binding subject identity".into());
+            return Err(format!(
+                "{} -e 'print $^V' failed while binding subject identity",
+                perl_path.display()
+            )
+            .into());
         }
         let perl_version = String::from_utf8_lossy(&perl_version_out.stdout).trim().to_string();
 
-        let perl_sha256 = match fs::read(Path::new(&perl_path)) {
+        let perl_sha256 = match fs::read(&reported_perl_path_buf) {
             Ok(bytes) => digest_bytes(&bytes),
             Err(error) => format!("unavailable:{error}"),
         };
@@ -165,8 +186,9 @@ impl SubjectIdentity {
             binary_len: fs::metadata(&binary_path)?.len(),
             binary_sha256: sha256_file(&binary_path)?,
             binary_path: binary_path.to_string_lossy().to_string(),
+            requested_perl_path: perl_path.to_string_lossy().to_string(),
             perl_sha256,
-            perl_path,
+            perl_path: reported_perl_path,
             perl_version,
             fixture_len: fs::metadata(fixture)?.len(),
             fixture_sha256: sha256_file(fixture)?,
@@ -292,7 +314,12 @@ enum ResponseOutcome {
 }
 
 impl StdioSession {
-    fn spawn(binary: &OsString, script: &str, canary_path: &str) -> ProofResult<Self> {
+    fn spawn(
+        binary: &OsString,
+        script: &str,
+        canary_path: &str,
+        perl_path: &Path,
+    ) -> ProofResult<Self> {
         let mut child = Command::new(binary)
             .arg("--stdio")
             .arg("--log-level")
@@ -343,12 +370,9 @@ impl StdioSession {
         else {
             return Err("initialize over framed stdio failed".into());
         };
-        for capability in [
-            "supportsValueFormattingOptions",
-            "supportsSetVariable",
-            "supportsSetExpression",
-            "supportsCancelRequest",
-        ] {
+        for capability in
+            ["supportsValueFormattingOptions", "supportsSetVariable", "supportsCancelRequest"]
+        {
             if body.get(capability).and_then(Value::as_bool) != Some(true) {
                 return Err(format!(
                     "capability-set identity: `{capability}` must be advertised true in the \
@@ -357,15 +381,21 @@ impl StdioSession {
                 .into());
             }
         }
+        // #9568: the same session must advertise the setExpression floor —
+        // the field no longer rides on dap.core, and the ValueFormat proof
+        // must observe the floored value, not the superseded true.
+        if body.get("supportsSetExpression").and_then(Value::as_bool) != Some(false) {
+            return Err(
+                "capability-set identity: `supportsSetExpression` must be advertised false \
+                 (#9568 floor) in the same session that serves the ValueFormat rows"
+                    .into(),
+            );
+        }
         session.wait_event("initialized")?;
 
         // Bind the debuggee to the exact interpreter whose identity the
-        // receipt records. `perlPath` is passed only when the PATH-probed
-        // interpreter's path is directly usable from this host (POSIX hosts
-        // and native Windows installs); a cygwin-style `/usr/bin/perl`
-        // self-reported path is recorded but not forced on the launch,
-        // leaving the adapter's normal resolution in charge on that host
-        // class.
+        // resolver proved. A configured pin is never allowed to fall back to
+        // the ambient PATH at this public adapter boundary.
         let mut launch_arguments = json!({
             "program": script,
             "args": [canary_path],
@@ -377,9 +407,7 @@ impl StdioSession {
                 "TZ": "UTC"
             }
         });
-        if let Some(perl_path) = spawnable_perl_path() {
-            launch_arguments["perlPath"] = Value::String(perl_path);
-        }
+        launch_arguments["perlPath"] = Value::String(perl_path.to_string_lossy().into_owned());
         let ResponseOutcome::Success(_) = session.request("launch", Some(launch_arguments))? else {
             return Err("launch of the real perl -d fixture failed".into());
         };
@@ -569,30 +597,12 @@ fn note_to_stderr(text: &str) {
     let _ = writeln!(stderr, "{text}");
 }
 
-/// Absolute path of the PATH-resolved interpreter when that path is directly
-/// usable as a `perlPath` launch value from this host; `None` when only a
-/// POSIX-style self-reported path exists (cygwin hosts).
-fn spawnable_perl_path() -> Option<String> {
-    let output = Command::new("perl").arg("-e").arg("print $^X").output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() || !Path::new(&path).is_file() {
-        return None;
-    }
-    Some(path)
-}
-
 fn perl_available() -> bool {
-    Command::new("perl").arg("-e").arg("1").output().is_ok()
+    common::debuggee_perl_or_typed_skip("dap_value_format_stdio_proof").is_some()
 }
 
 fn require_perl_env() -> bool {
-    match std::env::var_os("PERL_LSP_DAP_REQUIRE_PERL") {
-        Some(_) => true,
-        None => perl_available(),
-    }
+    perl_available()
 }
 
 fn fixture_path() -> ProofResult<PathBuf> {
@@ -791,6 +801,7 @@ fn write_receipt_to(
             },
             "perl": {
                 "path": identity.perl_path,
+                "requested_path": identity.requested_perl_path,
                 "version": identity.perl_version,
                 "sha256": identity.perl_sha256,
             },
@@ -802,7 +813,7 @@ fn write_receipt_to(
             "capabilities": {
                 "supportsValueFormattingOptions": true,
                 "supportsSetVariable": true,
-                "supportsSetExpression": true,
+                "supportsSetExpression": false,
                 "supportsCancelRequest": true,
             },
         },
@@ -835,7 +846,10 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
 
     let binary = configured_dap_binary();
     let fixture = fixture_path()?;
-    let identity = SubjectIdentity::capture(&binary, &fixture)?;
+    let perl_path = common::resolve_launch_perl_path()
+        .map_err(std::io::Error::other)?
+        .ok_or("the availability gate resolved no pipe-capable launch interpreter")?;
+    let identity = SubjectIdentity::capture(&binary, &perl_path, &fixture)?;
     let stop1_line = fixture_line("$VF::stop1 = 1;")?;
     let stop2_line = fixture_line("$VF::stop2 = 1;")?;
     assert!(stop2_line > stop1_line, "fixture must define STOP2 after STOP1");
@@ -863,7 +877,7 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
     }
 
     let mut matrix = Matrix::new();
-    let mut dap = StdioSession::spawn(&binary, &script_str, &canary_str)?;
+    let mut dap = StdioSession::spawn(&binary, &script_str, &canary_str, &perl_path)?;
 
     // Breakpoints on both proof stops, verified by the adapter.
     let bp_body = dap.expect_success(
@@ -1104,7 +1118,7 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
 
     // --- unsupported options: one documented behavior in all four families -
     {
-        let cells: [(&str, Value); 4] = [
+        let cells: [(&str, Value); 3] = [
             ("variables", json!({ "variablesReference": locals_ref, "format": { "radix": 16 } })),
             (
                 "setVariable",
@@ -1113,10 +1127,6 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
             (
                 "evaluate",
                 json!({ "expression": "$pos", "frameId": frame_id, "format": { "radix": 16 } }),
-            ),
-            (
-                "setExpression",
-                json!({ "expression": "$pos", "value": "5", "frameId": frame_id, "format": { "radix": 16 } }),
             ),
         ];
         for (command, arguments) in cells {
@@ -1128,12 +1138,29 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
                 .into());
             }
         }
+        // #9568: setExpression with a *malformed* format still fails at the
+        // envelope layer (typed format deserialization precedes the gate —
+        // the same ordering the floor suite pins). The floor refusal is
+        // covered by the dedicated leg below. Fail-closed either way.
+        {
+            let message = dap.expect_failure(
+                "setExpression",
+                Some(json!({ "expression": "$pos", "value": "5", "frameId": frame_id, "format": { "radix": 16 } })),
+            )?;
+            if !message.contains("Invalid arguments") || !message.contains("radix") {
+                return Err(format!(
+                    "`setExpression` with an unknown format option must fail at the envelope \
+                     layer naming it: {message}"
+                )
+                .into());
+            }
+        }
         assert_canary_empty(&canary_path, "after unsupported-option failures")?;
         matrix.pass(
             "unsupported-option-fails-all-families",
             "variables|setVariable|evaluate|setExpression",
             "unknown",
-            "Invalid arguments naming `radix`; no hidden evaluation or mutation",
+            "Invalid arguments naming `radix` in every family (setExpression envelope-first); no hidden evaluation or mutation",
         );
 
         let malformed = dap.expect_failure(
@@ -1155,6 +1182,10 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
 
     // --- setVariable: response rendering only; assignment stays client-bound
     let mutation_ref: i64;
+    // Exact read-back baseline captured after the setVariable assignment: the
+    // refused setExpression leg below must reproduce this string byte-for-byte
+    // (a `contains("66")` check would also pass a wrong mutation like `166`).
+    let assigned_read_back: String;
     {
         let body = dap.expect_success(
             "setVariable",
@@ -1180,10 +1211,11 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
             "evaluate",
             Some(json!({ "expression": "$pos", "frameId": frame_id })),
         )?;
-        let read_back_result = read_back.get("result").and_then(Value::as_str).unwrap_or("");
-        if !read_back_result.contains("66") {
+        assigned_read_back =
+            read_back.get("result").and_then(Value::as_str).unwrap_or("").to_string();
+        if !assigned_read_back.contains("66") {
             return Err(format!(
-                "assigned data must be the admitted client value 66, read-back `{read_back_result}`"
+                "assigned data must be the admitted client value 66, read-back `{assigned_read_back}`"
             )
             .into());
         }
@@ -1196,9 +1228,14 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
         assert_canary_empty(&canary_path, "after setVariable rows")?;
     }
 
-    // --- setExpression: same response-only contract ------------------------
+    // --- setExpression: floored refusal, no mutation ------------------------
     {
-        let body = dap.expect_success(
+        // #9568 floors setExpression: the request is refused with the
+        // deterministic authority message and the admitted value is never
+        // written. The read-back proves the floor performed no hidden
+        // mutation — the same client-value-binding guarantee the superseded
+        // success leg pinned, now proven in the refused direction.
+        let message = dap.expect_failure(
             "setExpression",
             Some(json!({
                 "expression": "$pos",
@@ -1207,10 +1244,9 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
                 "format": { "hex": true }
             })),
         )?;
-        let response_value = body.get("value").and_then(Value::as_str).unwrap_or("");
-        if response_value != "77" {
+        if message != perl_dap::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE {
             return Err(format!(
-                "setExpression response must render the read-back value, got `{response_value}`"
+                "`setExpression` must receive the deterministic #9568 floor refusal: {message}"
             )
             .into());
         }
@@ -1219,17 +1255,18 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
             Some(json!({ "expression": "$pos", "frameId": frame_id })),
         )?;
         let read_back_result = read_back.get("result").and_then(Value::as_str).unwrap_or("");
-        if !read_back_result.contains("77") {
+        if read_back_result != assigned_read_back {
             return Err(format!(
-                "setExpression assigned data must be 77, read-back `{read_back_result}`"
+                "refused setExpression must not mutate: read-back `{read_back_result}` \
+                 must exactly equal the setVariable-assigned read-back `{assigned_read_back}`"
             )
             .into());
         }
         matrix.pass(
-            "setExpression-formatted-text-not-mutation-input",
+            "setExpression-floor-refuses-without-mutation",
             "setExpression",
             "hex",
-            "assigned 77 (not 0x4d); read-back proves client-value binding",
+            "#9568 deterministic refusal; read-back proves no hidden mutation of $pos",
         );
         // Restore for the later-stop rows.
         let restore = dap.expect_success(
@@ -1411,6 +1448,7 @@ fn receipt_binds_subject_identity_and_row_verdicts() -> ProofResult<()> {
         binary_path: binary.to_string_lossy().to_string(),
         binary_len: 16,
         binary_sha256: digest_bytes(b"fake-binary-bytes"),
+        requested_perl_path: "C:\\perl\\bin\\wrapper.exe".to_string(),
         perl_path: "C:\\perl\\bin\\perl.exe".to_string(),
         perl_version: "v5.42.2".to_string(),
         perl_sha256: digest_bytes(b"perl"),
@@ -1432,6 +1470,13 @@ fn receipt_binds_subject_identity_and_row_verdicts() -> ProofResult<()> {
         != Some(&Value::String(digest_bytes(b"fake-binary-bytes")))
     {
         return Err("receipt must bind the exact binary digest".into());
+    }
+    if receipt.pointer("/subject/perl/path")
+        != Some(&Value::String("C:\\perl\\bin\\perl.exe".to_string()))
+        || receipt.pointer("/subject/perl/requested_path")
+            != Some(&Value::String("C:\\perl\\bin\\wrapper.exe".to_string()))
+    {
+        return Err("receipt must distinguish observed and requested Perl paths".into());
     }
     if receipt.pointer("/subject/capabilities/supportsValueFormattingOptions")
         != Some(&Value::Bool(true))

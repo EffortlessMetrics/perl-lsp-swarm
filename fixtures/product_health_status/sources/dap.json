@@ -1,0 +1,14 @@
+{
+  "schema": "fixture.v1",
+  "packet_id": "dap",
+  "selector": "fixture.subject",
+  "rail_id": "fixture.dap",
+  "subject": "dap@fixture-tree",
+  "source_result": "pass",
+  "state": "stale",
+  "supersedes": null,
+  "digest": "sha256:0c3e936f141ebefebdeb224afc623abbeed04a1d7e7113514267a0c341b44d8a",
+  "limitations": [],
+  "nonclaims": [],
+  "detail": {}
+}

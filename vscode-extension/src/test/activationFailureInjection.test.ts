@@ -69,6 +69,8 @@ const RETAINED_LABELS = [
   'cmd:perl-lsp.openConfigurationGuide',
   'cmd:perl-lsp.checkForUpdate',
   'cmd:perl-lsp.reportIssue',
+  // Coexistence status works without a server and never mutates state (#7214).
+  'cmd:perl-lsp.showCoexistenceStatus',
   'output-channel',
 ];
 
