@@ -289,8 +289,11 @@ def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> Packag
     edition = _package_edition(crate_name, package, repo_root)
     # Cargo disables edition-2015 auto-discovery when the manifest defines ANY
     # target manually, not only a [[bin]]; an explicit [lib] counts.
-    manual_target_declared = bool(explicit_bins) or explicit_lib is not None
-    default_autobins = not (edition == "2015" and manual_target_declared)
+    # Cargo's 2015 auto-discovery rule is per target kind: only a manually
+    # declared `[[bin]]` disables binary auto-discovery.  An explicit `[lib]`
+    # does not -- verified against `cargo metadata` for an edition-2015 package
+    # declaring `[lib]` alongside `src/main.rs`, which still exposes the bin.
+    default_autobins = not (edition == "2015" and bool(explicit_bins))
     if package.get("autobins", default_autobins) is not False:
         src_root = crate_root / "src"
 
