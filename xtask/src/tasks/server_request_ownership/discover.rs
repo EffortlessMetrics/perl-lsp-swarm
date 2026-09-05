@@ -71,6 +71,25 @@ fn is_test_gated(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
+/// The file a `#[path = ".."]` attribute names, relative to the declaring
+/// file's own directory, which is where Rust resolves it for a module that is
+/// not inside an inline block.
+///
+/// `Some(Err(()))` means the attribute is present but not a string literal --
+/// `#[path = concat!(..)]` is legal and appears in this repository's fixtures.
+/// Its target cannot be known without expanding macros, so the caller reports
+/// it rather than assuming the file is production.
+type PathAttr = Option<Result<PathBuf, ()>>;
+
+fn declared_path(parent: &Path, attrs: &[syn::Attribute]) -> PathAttr {
+    let attr = attrs.iter().find(|attr| attr.path().is_ident("path"))?;
+    let syn::Meta::NameValue(meta) = &attr.meta else { return Some(Err(())) };
+    let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(literal), .. }) = &meta.value else {
+        return Some(Err(()));
+    };
+    Some(parent.parent().map_or(Err(()), |dir| Ok(dir.join(literal.value()))))
+}
+
 /// The files a `mod name;` declaration inside `parent` can resolve to.
 ///
 /// `dir/mod.rs` declares siblings in `dir`; `dir/foo.rs` declares children in
@@ -469,6 +488,7 @@ pub(super) fn scan_emission(
     // alike -- so the declarations are resolved to the paths they name. What a
     // gated file itself declares is gated too, hence the fixpoint.
     let mut test_gated: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut unresolvable: BTreeSet<PathBuf> = BTreeSet::new();
     loop {
         let mut grew = false;
         for path in &paths {
@@ -481,7 +501,15 @@ pub(super) fn scan_emission(
                 if item.content.is_some() || !(inherited || is_test_gated(&item.attrs)) {
                     continue;
                 }
-                for candidate in module_paths(path, &item.ident.to_string()) {
+                let candidates = match declared_path(path, &item.attrs) {
+                    Some(Ok(declared)) => vec![declared],
+                    Some(Err(())) => {
+                        unresolvable.insert(path.clone());
+                        continue;
+                    }
+                    None => module_paths(path, &item.ident.to_string()),
+                };
+                for candidate in candidates {
                     if candidate.is_file() && test_gated.insert(candidate) {
                         grew = true;
                     }
@@ -491,6 +519,22 @@ pub(super) fn scan_emission(
         if !grew {
             break;
         }
+    }
+    // A `#[path]` the reader cannot evaluate hides which file a test module
+    // occupies, so any send in it would read as production. Report it instead.
+    for path in &unresolvable {
+        let relative = path
+            .strip_prefix(repo_root)
+            .map_or_else(|_| path.display().to_string(), |p| p.display().to_string());
+        violations.push(Violation::new(
+            "emission-module-path-unresolvable",
+            relative.clone(),
+            format!(
+                "{relative} declares a test module with a computed `#[path]`; the file it \
+                 occupies cannot be known without expanding macros, so a send there could \
+                 not be told from production"
+            ),
+        ));
     }
 
     // ── Pass one: parse and collect ──────────────────────────────────────

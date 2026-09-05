@@ -815,6 +815,74 @@ impl Unrelated {
     Ok(())
 }
 
+/// `#[path = ".."]` moves a module's file somewhere the naming convention would
+/// never look. `runtime/dispatch/request_lifecycle.rs` does exactly this for its
+/// test module, and `method_direction.rs` already documents the shape as live.
+/// Resolving only conventional locations left that file read as production.
+#[test]
+fn a_path_attributed_test_module_is_not_production() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let runtime = dir.path().join("src").join("runtime");
+    std::fs::create_dir_all(runtime.join("tests"))?;
+    std::fs::write(
+        runtime.join("owner.rs"),
+        r#"
+#[cfg(test)]
+#[path = "tests/moved_elsewhere.rs"]
+mod moved_elsewhere;
+"#,
+    )?;
+    std::fs::write(
+        runtime.join("tests").join("moved_elsewhere.rs"),
+        r#"
+impl Server {
+    fn exercise(&self) -> io::Result<()> {
+        self.send_request(id, "test-only/never-sent", params)
+    }
+}
+"#,
+    )?;
+
+    let constants = BTreeMap::new();
+    let (emitted, _ambiguous, findings) = scan_emission(dir.path(), "src", &constants)?;
+
+    assert!(
+        !emitted.contains_key("test-only/never-sent"),
+        "the attributed file is the test module's, wherever it sits: {emitted:?}"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
+/// `#[path = concat!(..)]` is legal, and this repository's own fixtures carry
+/// it. Its target cannot be known without expanding macros, so the reader must
+/// say so rather than treat whatever file it names as production.
+#[test]
+fn a_computed_module_path_is_reported_rather_than_assumed() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    let runtime = dir.path().join("src").join("runtime");
+    std::fs::create_dir_all(&runtime)?;
+    std::fs::write(
+        runtime.join("owner.rs"),
+        r#"
+#[cfg(test)]
+#[path = concat!("tests/", "computed.rs")]
+mod computed;
+"#,
+    )?;
+
+    let constants = BTreeMap::new();
+    let (_emitted, _ambiguous, findings) = scan_emission(dir.path(), "src", &constants)?;
+
+    assert_eq!(
+        findings.iter().map(|finding| finding.rule).collect::<Vec<_>>(),
+        vec!["emission-module-path-unresolvable"],
+        "an unevaluable path is an instrument limit, not an absence: {findings:?}"
+    );
+    Ok(())
+}
+
 /// A trait that declares a method and implements it in the same file is the
 /// ordinary shape here -- `OutboundSink` is exactly that. Counting the bodyless
 /// declaration as a second definition made `path#symbol` ambiguous, so a row
