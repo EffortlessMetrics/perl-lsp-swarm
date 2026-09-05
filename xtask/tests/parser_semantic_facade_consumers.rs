@@ -167,17 +167,23 @@ fn code_without_comments(source: &str) -> String {
 /// the unsafe direction for a recurrence guard. No forbidden token fits in a
 /// character literal, so nothing else needs tracking here.
 fn char_literal_end(chars: &[char], index: usize) -> Option<usize> {
-    if chars[index] != '\'' {
-        return None;
-    }
+    // `b'x'` is a byte character literal; the quote to close is the one after
+    // the prefix. Without this, `b'"'` leaves its double quote to open a
+    // phantom string and elide every import until the next `"` in the file.
+    let quote = match chars[index] {
+        '\'' => index,
+        'b' if chars.get(index + 1) == Some(&'\'') => index + 1,
+        _ => return None,
+    };
     // A `'` immediately after an identifier character is a label or a lifetime
-    // bound, never a literal opener.
+    // bound, never a literal opener. The prefix itself must also start cleanly,
+    // so `ab'x'` is not read as a byte literal.
     if index > 0 && (chars[index - 1].is_ascii_alphanumeric() || chars[index - 1] == '_') {
         return None;
     }
-    let body_end = match chars.get(index + 1) {
-        Some('\\') => index + 3,
-        Some(_) => index + 2,
+    let body_end = match chars.get(quote + 1) {
+        Some('\\') => quote + 3,
+        Some(_) => quote + 2,
         None => return None,
     };
     (chars.get(body_end) == Some(&'\'')).then_some(body_end + 1)
@@ -381,18 +387,69 @@ fn facade_heads(code: &str) -> Vec<String> {
         }
         let after_head = index + head.len();
         index = after_head;
-        let as_start = skip_whitespace(&chars, after_head);
-        let (keyword, keyword_end) = read_identifier(&chars, as_start, chars.len());
-        if keyword != "as" {
+        let cursor = skip_whitespace(&chars, after_head);
+        let (keyword, keyword_end) = read_identifier(&chars, cursor, chars.len());
+        if keyword == "as" {
+            record_alias(&chars, keyword_end, &mut heads);
             continue;
         }
-        let alias_start = skip_whitespace(&chars, keyword_end);
-        let (alias, _) = read_identifier(&chars, alias_start, chars.len());
-        if !alias.is_empty() && alias != "_" && !heads.contains(&alias) {
-            heads.push(alias);
+        // `use perl_parser::{self as pp};` binds the crate itself under an
+        // alias just as `as` does, so the brace form must register too.
+        if let Some(brace) = skip_path_separator(&chars, cursor) {
+            let brace = skip_whitespace(&chars, brace);
+            if chars.get(brace) == Some(&'{') {
+                record_self_aliases(&chars, brace + 1, &mut heads);
+            }
         }
     }
     heads
+}
+
+/// Register the identifier at `start` as an alias head, if it is a usable one.
+fn record_alias(chars: &[char], start: usize, heads: &mut Vec<String>) {
+    let alias_start = skip_whitespace(chars, start);
+    let (alias, _) = read_identifier(chars, alias_start, chars.len());
+    if !alias.is_empty() && alias != "_" && !heads.contains(&alias) {
+        heads.push(alias);
+    }
+}
+
+/// Scan a brace group opened just past `start` for `self as alias` members,
+/// which alias the crate root itself. Only the top level of the group is
+/// examined: `self` is only meaningful as a direct member.
+fn record_self_aliases(chars: &[char], start: usize, heads: &mut Vec<String>) {
+    let mut depth = 1usize;
+    let mut member_start = start;
+    let mut index = start;
+    let mut close_member = |from: usize, to: usize, heads: &mut Vec<String>| {
+        let member = skip_whitespace(chars, from);
+        let (name, name_end) = read_identifier(chars, member, to);
+        if name != "self" {
+            return;
+        }
+        let (keyword, keyword_end) = read_identifier(chars, skip_whitespace(chars, name_end), to);
+        if keyword == "as" {
+            record_alias(chars, keyword_end, heads);
+        }
+    };
+    while index < chars.len() {
+        match chars[index] {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close_member(member_start, index, heads);
+                    return;
+                }
+            }
+            ',' if depth == 1 => {
+                close_member(member_start, index, heads);
+                member_start = index + 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
 }
 
 /// Scan one source for chains rooted at `head_name`. Hits are always recorded
@@ -870,4 +927,51 @@ fn a_crate_rename_split_across_lines_is_still_resolved() {
     // lines to the same short name must still not be reported.
     let unrelated = "use perl_semantic_analyzer\n    as\n    pp;\nuse pp::semantic::X;\n";
     assert!(forbidden_facade_references(&code_without_comments(unrelated)).is_empty());
+}
+
+/// Devin finding r3941643602: `b'"'` is a byte character literal, but its
+/// quote opened a phantom string that elided every import until the next `"`.
+/// The fixture deliberately contains no further double quote, so the import
+/// below it is only visible if the literal was consumed whole.
+#[test]
+fn a_byte_quote_character_literal_does_not_hide_a_later_import() {
+    let source = "let quote = b'\"';\nuse perl_parser::declaration::ParentMap;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(source)),
+        vec!["perl_parser::declaration".to_string()]
+    );
+
+    // The escaped form, and a lifetime that must still be left alone.
+    let escaped = "let nl = b'\\n';\nfn f<'a>(x: &'a str) {}\nuse perl_parser::symbol::Symbol;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(escaped)),
+        vec!["perl_parser::symbol".to_string()]
+    );
+}
+
+/// Devin finding r3941638226: `use perl_parser::{self as pp};` binds the crate
+/// root under an alias exactly as `as` does, so paths through it are governed.
+#[test]
+fn a_braced_self_alias_registers_the_crate_head() {
+    let braced = "use perl_parser::{self as pp};\nuse pp::semantic::SemanticAnalyzer;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(braced)),
+        vec!["perl_parser::semantic".to_string()]
+    );
+
+    // Mixed with ordinary members, and split across lines.
+    let mixed =
+        "use perl_parser::{\n    self as pp,\n    Parser,\n};\nuse pp::type_inference::X;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(mixed)),
+        vec!["perl_parser::type_inference".to_string()]
+    );
+
+    // Negative control: `self as pp` under an unrelated crate binds nothing here.
+    let unrelated = "use perl_semantic_analyzer::{self as pp};\nuse pp::semantic::X;\n";
+    assert!(forbidden_facade_references(&code_without_comments(unrelated)).is_empty());
+
+    // Parser authority through the aliased head still passes.
+    let allowed = "use perl_parser::{self as pp};\nuse pp::ast::Node;\n";
+    assert!(forbidden_facade_references(&code_without_comments(allowed)).is_empty());
 }
