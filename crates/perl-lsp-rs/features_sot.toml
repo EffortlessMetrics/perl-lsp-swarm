@@ -1169,7 +1169,7 @@ evidence = [
 limitations = [
   "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
 ]
-description = "Core VS Code debug loop: initialize/launch/configurationDone, break/step, stack/scopes/variables, evaluate/setVariable, disconnect/terminate"
+description = "Core VS Code debug loop: initialize/launch/configurationDone, break/step, stack/scopes/variables, evaluate, disconnect/terminate. setVariable is excluded (#8354): its exact mutation proof is absent and the capability stays advertised false."
 
 [[feature]]
 id = "dap.breakpoints.basic"

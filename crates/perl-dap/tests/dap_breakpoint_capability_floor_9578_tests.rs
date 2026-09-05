@@ -141,11 +141,19 @@ fn optional_floor_does_not_widen_or_flatten_neighboring_capability_rows() -> Res
     let mut adapter = adapter();
     let body = initialize_body(&mut adapter)?;
 
-    // `supportsSetVariable` is still `dap.core`-derived and advertised.
+    // `supportsValueFormattingOptions` is still `dap.core`-derived and advertised.
+    assert_eq!(
+        body.get("supportsValueFormattingOptions").and_then(Value::as_bool),
+        Some(true),
+        "supportsValueFormattingOptions is the surviving dap.core sibling and must stay true"
+    );
+    // `supportsSetVariable` was `dap.core`-derived when #9578 landed; #8354
+    // later floored it on the exact-mutation authority, so it must now read
+    // false — pin the floor here so a later accidental widening is visible.
     assert_eq!(
         body.get("supportsSetVariable").and_then(Value::as_bool),
-        Some(true),
-        "supportsSetVariable is the surviving dap.core sibling and must stay true"
+        Some(false),
+        "supportsSetVariable carries the #8354 floor"
     );
     // `supportsBreakpointLocationsRequest` is still `dap.breakpoints.basic`-derived.
     assert_eq!(
