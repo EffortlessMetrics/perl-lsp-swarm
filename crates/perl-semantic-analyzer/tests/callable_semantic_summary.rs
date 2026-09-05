@@ -651,3 +651,40 @@ fn callable_semantic_summary_invalid_packet_is_a_blocker_not_a_summary() -> Test
     );
     Ok(())
 }
+
+/// A declaration-shaped legacy call (`field $x`) parses as a declaration but
+/// invokes an arbitrary subroutine whose behaviour PIR does not model. PIR
+/// records the callee as unsupported, but `lower_single_body` returns nodes
+/// only, so that receipt never reached the facet ledger and the body could
+/// report every facet `Complete` over a call it had not modelled at all.
+///
+/// The two sources are a minimal pair — identical but for the legacy call —
+/// so the control proves the assertion discriminates rather than naming a
+/// facet that is never `Complete` anyway. Note the shape matters: a body such
+/// as `sub f { field $x = 1; }` is already `Limited` for an unrelated reason,
+/// so it cannot witness this gap.
+#[test]
+fn legacy_field_call_body_cannot_report_complete_facets() -> TestResult {
+    let control = assemble("sub f { my $x; $x; }", "gen-control")?;
+    let control = only_summary(&control)?;
+    for facet in [SummaryFacetKind::Place, SummaryFacetKind::Effect] {
+        assert_eq!(
+            facet_status(control, facet)?,
+            SummaryFacetStatus::Complete,
+            "control: {facet:?} must reach Complete for a fully modelled body, \
+             otherwise the legacy-call assertion below proves nothing"
+        );
+    }
+
+    let legacy = assemble("sub f { my $x; field $x; }", "gen-legacy")?;
+    let legacy = only_summary(&legacy)?;
+    for facet in [SummaryFacetKind::Place, SummaryFacetKind::Effect] {
+        assert_ne!(
+            facet_status(legacy, facet)?,
+            SummaryFacetStatus::Complete,
+            "{facet:?} must not report Complete for a body holding an \
+             unmodelled legacy call"
+        );
+    }
+    Ok(())
+}

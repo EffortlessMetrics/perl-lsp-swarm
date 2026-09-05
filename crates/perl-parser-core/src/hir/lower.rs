@@ -916,13 +916,19 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.record_declaration_bindings(declarator, &variables, item_id);
-                self.record_variable_stash_effects(
-                    declarator,
-                    &variables,
-                    initializer.as_deref(),
-                    item_id,
-                );
+                // `field` is declaration-shaped syntax that can also be a
+                // legacy subroutine call. It must not manufacture a package
+                // binding or stash declaration; body lowering records the
+                // argument's actual read/write effects instead.
+                if declarator != "field" {
+                    self.record_declaration_bindings(declarator, &variables, item_id);
+                    self.record_variable_stash_effects(
+                        declarator,
+                        &variables,
+                        initializer.as_deref(),
+                        item_id,
+                    );
+                }
                 if let Some(initializer) = initializer {
                     self.visit(initializer, confidence);
                 } else if has_embedded_initializer {
@@ -3279,6 +3285,24 @@ impl<'a> BodyBuilder2<'a> {
         VariableKind::Package
     }
 
+    /// Whether `expr_id` is already an assignment whose target is the same
+    /// variable a declaration-shaped node names.
+    ///
+    /// Distinguishes `field $x += 1` — where the lowered initializer is the
+    /// complete operation over `$x` — from `field $x = ($y += 1)`, where the
+    /// inner assignment targets a different variable and the outer write to
+    /// `$x` is real.
+    fn assign_targets_same_variable(&self, expr_id: HirExprId, sigil: &str, name: &str) -> bool {
+        let Some(HirExpr::Assign { lhs, .. }) = self.exprs.get(expr_id.0) else {
+            return false;
+        };
+        let wanted = sigil_from_str(sigil);
+        matches!(
+            self.exprs.get(lhs.0),
+            Some(HirExpr::Variable(var)) if var.name == name && var.sigil == wanted
+        )
+    }
+
     fn lower_statement(&mut self, node: &Node) -> HirStmtId {
         let range = node.location;
 
@@ -3328,12 +3352,27 @@ impl<'a> BodyBuilder2<'a> {
                 let sigil = sigil_from_str(sigil_str);
                 let storage = storage_class_for_decl(declarator);
 
+                // For a declaration-shaped legacy call (`field $x`), `storage`
+                // is `Unknown` and this slot carries the call's *argument*
+                // expression rather than a declaration initializer: the
+                // assignment for `field $x = 1`, the resolved read for the
+                // bare `field $x`. Both resolve their target against the
+                // visible scope, so PIR never has to assume a storage class.
+                let is_legacy_call = storage == DeclStorageClass::Unknown;
                 let init_expr_id = initializer.as_ref().map(|init_node| {
                     // Allocate the write-place for the declared variable.
-                    // Always Lexical regardless of declarator — the place IS the
-                    // declaration site, not a resolved binding.
+                    // Declaration-shaped legacy calls (such as `field $x = 1`)
+                    // are not lexical declarations. Preserve their package
+                    // assignment effects while keeping real declarations tied
+                    // to their declaration storage class.
                     let place_kind = match declarator.as_str() {
                         "our" => VariableKind::Package,
+                        // `field` is also accepted as a declaration-shaped
+                        // legacy call. Resolve its argument like any other
+                        // variable expression; this preserves an existing
+                        // lexical target without creating a new binding, and
+                        // falls back to package storage when unbound.
+                        "field" => self.resolve_variable_kind(sigil_str, &var_name),
                         _ => VariableKind::Lexical,
                     };
                     let place_expr = HirExpr::Variable(HirVariable {
@@ -3347,6 +3386,27 @@ impl<'a> BodyBuilder2<'a> {
                     // Lower the RHS.
                     let rhs_id = self.lower_expr(init_node);
 
+                    // A compound legacy call (`field $x += 1`) already lowered
+                    // to a complete read-modify-write over the same target.
+                    // Wrapping it in a second simple assignment would publish
+                    // `x = (x += 1)` — one spurious write on top of the modify
+                    // it already performs.
+                    //
+                    // Source provenance is what separates that from a nested
+                    // assignment the author actually wrote. When the parser
+                    // folds a compound operator into the initializer, the
+                    // initializer *begins at the argument token*; in
+                    // `field $x = ($x = 1)` it begins after the `=`, and both
+                    // its write and the outer one are real. Matching on the
+                    // target name alone would collapse those two writes into
+                    // one.
+                    if is_legacy_call
+                        && init_node.location.start == variable.location.start
+                        && self.assign_targets_same_variable(rhs_id, sigil_str, &var_name)
+                    {
+                        return rhs_id;
+                    }
+
                     // Assign node spanning from variable to end of initializer.
                     let assign_range = SourceLocation {
                         start: variable.location.start,
@@ -3355,6 +3415,25 @@ impl<'a> BodyBuilder2<'a> {
                     let assign_expr =
                         HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
                     self.alloc_expr(assign_expr, assign_range)
+                });
+
+                // A bare legacy call still reads its argument before invoking
+                // the callee: `my $x; field $x;` reads that lexical. Resolve it
+                // like any other variable expression so the read lands on the
+                // visible binding. Without this the argument fell through to an
+                // unconditional package read, which `extract_lexical_facts`
+                // discards — losing the call-site reference entirely.
+                let init_expr_id = init_expr_id.or_else(|| {
+                    if !is_legacy_call {
+                        return None;
+                    }
+                    let read_expr = HirExpr::Variable(HirVariable {
+                        sigil: sigil_from_str(sigil_str),
+                        name: var_name.clone(),
+                        kind: self.resolve_variable_kind(sigil_str, &var_name),
+                        access: AccessMode::Read,
+                    });
+                    Some(self.alloc_expr(read_expr, binding_node.location))
                 });
 
                 self.alloc_stmt(
@@ -4237,7 +4316,7 @@ fn storage_class_for_decl(declarator: &str) -> DeclStorageClass {
         "our" => DeclStorageClass::Our,
         "local" => DeclStorageClass::Local,
         "state" => DeclStorageClass::State,
-        _ => DeclStorageClass::My,
+        _ => DeclStorageClass::Unknown,
     }
 }
 

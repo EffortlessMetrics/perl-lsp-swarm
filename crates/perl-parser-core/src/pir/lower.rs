@@ -205,7 +205,21 @@ impl Lowerer {
     }
 
     fn lower_variable_decl(&mut self, item: &HirItem, decl: &crate::hir::VariableDecl) {
+        // A declaration-shaped legacy call (`field $x = 1`) reaches flat
+        // lowering as a `VariableDecl` too, but it declares nothing. Emitting
+        // the write below would publish a lexical binding the program never
+        // creates — the same false fact body PIR stopped publishing. Flat
+        // lowering carries no scope cursor, so it cannot resolve the argument's
+        // real storage; declaring the omission is honest where guessing is not.
+        let is_legacy_call =
+            DeclStorageClass::from_str(&decl.declarator) == DeclStorageClass::Unknown;
+        if is_legacy_call {
+            *self.unsupported.entry("LegacyFieldCall").or_insert(0) += 1;
+        }
         for variable in &decl.variables {
+            if is_legacy_call {
+                continue;
+            }
             let anchor = PirSourceAnchor::explicit(variable.range, item.id);
             let operation = if is_stash_declarator(&decl.declarator) {
                 PirOperation::StashWrite {
@@ -955,6 +969,24 @@ impl BodyLowerer {
         };
         match stmt {
             HirStmt::Let { name, sigil, storage, init, binding_range } => {
+                if *storage == DeclStorageClass::Unknown {
+                    // Parser-shaped legacy calls (for example `field $x = 1`)
+                    // do not bind a lexical declaration. For `Unknown` storage
+                    // the `init` slot carries the call's argument expression —
+                    // the assignment for `field $x = 1`, the read for the bare
+                    // `field $x` — and HIR has already resolved that target
+                    // against the visible scope. Lower it plainly; assuming a
+                    // package slot here would drop a preceding lexical's
+                    // call-site reference, which `extract_lexical_facts` only
+                    // sees as a `LexicalRead`/`LexicalWrite`.
+                    // Keep the call boundary visible to completeness consumers:
+                    // the callee's runtime behavior remains unmodeled.
+                    *self.unsupported.entry("LegacyFieldCall").or_insert(0) += 1;
+                    if let Some(arg_id) = init {
+                        self.lower_expr(body, *arg_id, file);
+                    }
+                    return;
+                }
                 // Emit exactly ONE Write op for the declaration target.
                 // `storage` determines whether this is a lexical (my/state) or
                 // package (our) slot. Ignoring `storage` was the root cause of
@@ -978,20 +1010,27 @@ impl BodyLowerer {
                         // `our` binds a package/stash symbol; `local` dynamically
                         // scopes a package/global slot. Both are stash writes.
                         DeclStorageClass::Our | DeclStorageClass::Local => {
-                            PirOperation::StashWrite {
+                            Some(PirOperation::StashWrite {
                                 symbol: SymbolName {
                                     sigil: sigil_str(sigil),
                                     name: name.clone(),
                                     package: None, // package context not yet threaded into body arena
                                 },
-                            }
+                            })
                         }
-                        // my / state / any other declarator → lexical write
-                        _ => PirOperation::LexicalWrite {
-                            name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
-                        },
+                        // `my` and `state` are lexical writes. An unknown
+                        // parser-shaped declarator is a legacy call, not a
+                        // declaration, and must not publish a binding.
+                        DeclStorageClass::My | DeclStorageClass::State => {
+                            Some(PirOperation::LexicalWrite {
+                                name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
+                            })
+                        }
+                        DeclStorageClass::Unknown => None,
                     };
-                    self.push_body_node(anchor, op, PirContext::Lvalue, None, file);
+                    if let Some(op) = op {
+                        self.push_body_node(anchor, op, PirContext::Lvalue, None, file);
+                    }
                 }
                 // Lower the RHS of the initialiser. The init expr in the HIR body
                 // is an HirExpr::Assign { lhs: Variable(Write), rhs, mode: Simple }.
