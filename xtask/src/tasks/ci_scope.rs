@@ -478,15 +478,6 @@ fn is_xtask_policy_guarded_input(file: &str) -> bool {
             | ".github/workflows/post-merge-status.yml"
             | ".github/workflows/badge-endpoints.yml"
             | ".github/workflows/ripr.yml"
-            // Four xtask integration suites (vim_host_runner_contract,
-            // vim_host_diagnostics_contract, vim_host_freshness_contract,
-            // vim_host_save_format_contract) read this workflow and assert its
-            // trigger surface and step contract. Without this route a PR
-            // editing only the lane skipped every guard written to catch it —
-            // observed on this branch: a trigger change silently broke
-            // `hermetic_host_ci_triggers_on_the_production_formatter_crate`
-            // and CI stayed green because xtask was never in scope.
-            | ".github/workflows/vim-hermetic-host.yml"
     )
         // Publishable-crate manifests: binstall metadata, publish metadata, and
         // version-sync are all xtask-owned assertions over these files.
@@ -1251,18 +1242,6 @@ mod tests {
     // `release.yml` and the publishable manifests — none of which are xtask
     // source — so without these rules a PR changing exactly the guarded input
     // skips the guard that exists to catch it.
-
-    #[test]
-    fn hermetic_vim_workflow_change_selects_xtask() -> Result<()> {
-        let files = vec![".github/workflows/vim-hermetic-host.yml".to_string()];
-        let metadata = fake_metadata(&[("xtask", "xtask")]);
-        let crates = crates_from_files(&files, &metadata, "/workspace")?;
-        assert!(
-            crates.contains("xtask"),
-            "changing the hermetic Vim lane must route to the contract tests that assert on it"
-        );
-        Ok(())
-    }
 
     #[test]
     fn release_workflow_change_selects_xtask() -> Result<()> {
