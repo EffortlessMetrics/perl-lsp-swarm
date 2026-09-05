@@ -33,6 +33,7 @@ cargo doc -p perl-ast --open         # View documentation
 | `lib.rs` | Re-exports `Node`, `NodeKind`, `SourceLocation` |
 | `ast.rs` | Primary AST: `Node` struct (kind + location), `NodeKind` enum (50+ variants) |
 | `kind_schema/` | Structural `NodeKind` registry: production `FieldId` membership, field-aware child traversal, schema identity, and freshness-gated NodeKind inventory; not rendering or parser behavior |
+| `geometry_policy.rs` | Field-level registry of independent source-geometry payload fields (spans and recovery tokens carrying their own byte offsets), their shape, and the mapping rule a coordinate-remapping consumer must apply; not a second child traversal |
 | `ast/node_clone.rs` | Iterative `Node` clone over canonical child fields |
 | `ast/node_debug.rs` | Iterative bounded `Node`/`NodeKind` `Debug` |
 | `ast/node_eq.rs` | Iterative `Node` equality over canonical child fields |
@@ -97,6 +98,22 @@ match &node.kind {
 - `NodeKind::grammar_kind_name_static()` is the allocation-free canonical grammar-kind table; `grammar_kind_name()` handles only runtime-derived names
 - Adding a new `NodeKind` variant also requires deliberate classification in `grammar_kind_name_static()`; its exhaustive match is part of the metadata drift guard
 - `Node::for_each_child_with_field()` / `try_for_each_child_mut_with_field()` share one visit table owned by `kind_schema`; keep `FieldId` names stable when extending the AST
+- Adding a **field** to an existing `NodeKind` variant that carries its own byte
+  offsets (a `SourceLocation`, an optional/repeated span, a nested span record, or
+  a `Token`) requires classifying it in `geometry_policy.rs`. Its
+  `observe_geometry_fields` match names every field of every variant and uses no
+  `..` arm, so the addition fails to compile until it is handled, and
+  `tests/ast_geometry_field_registry.rs` fails if `..` is used to silence that.
+  Adding a *variant* is not the only mutation that matters here: a new geometry
+  field on an existing variant is what would otherwise stay in an old source
+  generation during a coordinate remap
+- A geometry row also names the `AstPayloadPolicy` role it realizes, and that
+  role must be one the owning variant declares in `invariant_policy.rs`. The
+  disposition is derived from the role with the variant's classification as a
+  floor, so a declaration name stays `SourceExact` even on a boundary-classified
+  node such as `Format`, whose `body` is what makes the *node* a boundary. Do not
+  re-derive disposition from the classification alone: that collapses fields with
+  genuinely different relationships to source
 - Adding a new `NodeKind` variant also requires adding a representative instance to every all-variant test fixture: `classification.rs`'s `all_variants()`/`all_variants_maximal()`, `tests/helpers.rs`'s `all_nodekind_instances()`, `tests/nodekind_coverage_tests.rs`'s `build_cases()`, and `ast.rs`'s `all_node_kinds()`. Each is guarded by a name-set comparison against `ALL_KIND_NAMES`, so an omission fails a test rather than silently narrowing coverage
 - Adding new `NodeKind` variants require updating `to_sexp()` payload disposition,
   `kind_name()`, and the structural registry row in `kind_schema/registry.rs`. Child
