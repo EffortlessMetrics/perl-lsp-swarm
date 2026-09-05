@@ -1662,3 +1662,74 @@ fn test_arrow_receiver_does_not_rename_the_method() -> TestResult {
 
     Ok(())
 }
+
+/// A malformed rename request is invalid params, not an unrenameable position.
+///
+/// Raised in review of #9827. The refusal contract this issue establishes makes
+/// `null` mean exactly one thing — "this position cannot be renamed" — so a
+/// malformed request must not borrow that answer. `prepareRename` already
+/// answered `-32602` for the same input shapes; `rename` did not.
+#[test]
+fn test_malformed_rename_requests_are_invalid_params_not_refusals() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let uri = "file:///Malformed.pm";
+    harness.open(uri, "package Malformed;\nsub go { return 1; }\n1;\n")?;
+
+    let malformed = [
+        (json!({ "position": { "line": 1, "character": 5 }, "newName": "x" }), "no textDocument"),
+        (json!({ "textDocument": { "uri": uri }, "newName": "x" }), "no position"),
+        (
+            json!({ "textDocument": { "uri": uri }, "position": { "line": 1, "character": 5 } }),
+            "no newName",
+        ),
+        (
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": "one", "character": 5 },
+                "newName": "x"
+            }),
+            "a non-numeric position.line",
+        ),
+    ];
+
+    for (params, what) in malformed {
+        let envelope = harness.request_raw(json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "textDocument/rename",
+            "params": params
+        }));
+        let error = envelope
+            .get("error")
+            .filter(|error| !error.is_null())
+            .ok_or_else(|| format!("rename with {what} must be an error; got: {envelope}"))?;
+        assert_eq!(
+            error.get("code").and_then(Value::as_i64),
+            Some(-32602),
+            "rename with {what} must be invalid params, not a refusal; got: {envelope}"
+        );
+    }
+
+    // Negative control: a well-formed request at a position with nothing to
+    // rename still refuses with `null` rather than erroring — the two answers
+    // stay distinguishable in both directions.
+    let refused = harness.request_raw(json!({
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "textDocument/rename",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 9 },
+            "newName": "Renamed"
+        }
+    }));
+    assert_eq!(
+        answered_result(&refused, "rename on a package name")?,
+        Value::Null,
+        "a well-formed but unrenameable position must still refuse with null; got: {refused}"
+    );
+
+    Ok(())
+}

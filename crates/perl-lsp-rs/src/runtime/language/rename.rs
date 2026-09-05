@@ -1434,6 +1434,21 @@ impl LspServer {
         params: Option<Value>,
         package_local_live_pilot_enabled: bool,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // A malformed request is invalid params, not an unrenameable position.
+        // The destructuring below is permissive, so a missing `newName` or a
+        // non-numeric `position.line` would fall through to the refusal at the
+        // end and answer `null` — telling the client "this position cannot be
+        // renamed" about a request that never named a position.
+        // `handle_prepare_rename` already answers `-32602` here, through these
+        // same two helpers; this makes `rename` agree with its sibling.
+        if let Some(p) = params.as_ref() {
+            let _ = req_uri(p)?;
+            let _ = req_position(p)?;
+            if p.get("newName").and_then(Value::as_str).is_none() {
+                return Err(crate::protocol::invalid_params("Missing required parameter: newName"));
+            }
+        }
+
         if let Some(p) = params
             && let (Some(uri), Some(line), Some(ch), Some(new_name)) = (
                 p.get("textDocument").and_then(|t| t.get("uri")).and_then(|s| s.as_str()),
