@@ -546,12 +546,21 @@ fn has_cpanfile_statement_modifier(statement: &str) -> bool {
 /// is never written directly against one of these, so excluding them cannot
 /// let a genuine condition through.
 fn is_bound_name(chars: &[char], start: usize) -> bool {
-    let Some(previous) = start.checked_sub(1).and_then(|index| chars.get(index)) else {
+    // Perl allows whitespace, newlines included, after a sigil or an arrow, so
+    // `$object-> if()` binds exactly as `$object->if()` does. `::` is the
+    // exception: `Package:: if()` is a syntax error, so a package separator
+    // only binds when it sits against the name.
+    let mut cursor = start;
+    while cursor > 0 && chars[cursor - 1].is_whitespace() {
+        cursor -= 1;
+    }
+    let Some(previous) = cursor.checked_sub(1).and_then(|index| chars.get(index)) else {
         return false;
     };
     match previous {
-        '$' | '@' | '%' | '&' | ':' => true,
-        '>' => start >= 2 && chars[start - 2] == '-',
+        '$' | '@' | '%' | '&' => true,
+        ':' => cursor == start && cursor >= 2 && chars[cursor - 2] == ':',
+        '>' => cursor >= 2 && chars[cursor - 2] == '-',
         _ => false,
     }
 }
@@ -1315,6 +1324,59 @@ mod tests {
             let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), statement);
             assert!(facts.prereqs.is_empty(), "{statement} is conditional: {:?}", facts.prereqs);
         }
+    }
+
+    #[test]
+    fn cpanfile_spaced_bound_names_keep_their_declaration() {
+        // Perl permits whitespace after a sigil or arrow. `perl -c` (v5.40.1)
+        // accepts every form below, so none of them is a postfix condition.
+        for version in ["$object-> if()", "$object->\n            if()", "$ if", "$object ->if()"] {
+            let content = format!("requires 'Foo', {version};\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+
+            assert_eq!(
+                facts.prereqs,
+                vec![Prereq {
+                    module: "Foo".to_string(),
+                    version: None,
+                    phase: "runtime".to_string(),
+                    relation: "requires".to_string(),
+                }],
+                "{version} names something; it is not a condition"
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_spaced_binding_does_not_admit_real_conditions() {
+        // Skipping whitespace before the binding token must not let a genuine
+        // modifier through. Each statement is valid Perl in which the operator
+        // preceding the condition is a binary operator, not a binding token.
+        for statement in [
+            "requires 'Foo', $a & $b if $c;",
+            "requires 'Foo', 100 % 7 if $enabled;",
+            "requires 'Win32' if $a > 0;",
+            "requires 'Foo', $object->enabled if $x;",
+            "requires 'Foo' => 1 if $x;",
+        ] {
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), statement);
+            assert!(facts.prereqs.is_empty(), "{statement} is conditional: {:?}", facts.prereqs);
+        }
+    }
+
+    #[test]
+    fn cpanfile_spaced_package_separator_is_not_a_bound_name() {
+        // `Package:: if()` is a Perl syntax error, so the scanner must not
+        // widen for it: with `::` detached, the word is read as a modifier and
+        // the declaration is suppressed.
+        let content = "requires 'Foo', Package:: if();\n";
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        assert!(
+            facts.prereqs.is_empty(),
+            "unparsable source publishes nothing: {:?}",
+            facts.prereqs
+        );
     }
 
     #[test]
