@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12735 |
+| Total tracked files | 12739 |
 | Rust-family files | 3982 |
-| Non-Rust files | 8753 |
-| Allowlisted | 6514 |
+| Non-Rust files | 8757 |
+| Allowlisted | 6518 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 502 |
-| documentation | 2856 |
+| documentation | 2859 |
 | generated | 2 |
 | production | 357 |
 | test | 2111 |
-| tooling | 686 |
+| tooling | 687 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -3175,6 +3175,10 @@
 | `.spec/10918-emacs-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10918-emacs-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10918-emacs-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/10976-dap-reliability-contracts/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10976-dap-reliability-contracts/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10976-dap-reliability-contracts/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10976-dap-reliability-contracts/reliability.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11036-lsp-runtime-train-schema/lsp_runtime_train.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11076-process-domain-contract/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11076-process-domain-contract/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |

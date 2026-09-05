@@ -1,0 +1,2317 @@
+{
+  "schema": "dap_reliability_contracts.v1",
+  "schema_version": 1,
+  "programme": {
+    "home_programme": "dap-reliability",
+    "programme_controller_issue": 9415,
+    "compilation_issue": 10976,
+    "compilation_bundle": ".spec/10976-dap-reliability-contracts",
+    "stable_train_consumer_issue": 10558,
+    "static_validator_issue": 10982,
+    "method_authority_issue": 3983,
+    "linked_spec_graph_issue": 3586,
+    "scope_statement": "Compiles accepted cross-PR DAP reliability-programme decisions into linked contract invariants, per-decision dispositions, and this deterministic stable index. Adds no product, CI-routing, support, release, or validator behavior."
+  },
+  "role_vocabulary": [
+    "controller",
+    "implementation_leaf",
+    "evidence_leaf",
+    "integration_leaf",
+    "cutover_leaf",
+    "external_action",
+    "fan_in"
+  ],
+  "disposition_vocabulary": [
+    "SPEC_COMPILED",
+    "SPEC_UPDATED",
+    "EXISTING_CONTRACT_SUFFICIENT",
+    "ISSUE_PLAN_SUFFICIENT",
+    "NO_SPEC_DELTA",
+    "RETURN_TO_ISSUE",
+    "NOT_PROVEN"
+  ],
+  "consumer_vocabulary": [
+    "10558",
+    "10982",
+    "7278",
+    "4346",
+    "6056"
+  ],
+  "index_law": [
+    "stable_semantic_id equals DAPREL-<issue> and is unique",
+    "mutable GitHub state such as open/closed, labels, PR numbers, checks, or SHAs is forbidden anywhere in this document",
+    "controllers and fan-ins carry behavioural authority summaries but are never builder leaves",
+    "each concrete decision carries exactly one disposition from disposition_vocabulary",
+    "covered_invariants reference existing compiled_invariants of any family view",
+    "hard_dependency_issues are integers referencing distinct decisions of the programme"
+  ],
+  "family_views": [
+    {
+      "view_id": "FAM-LIFECYCLE",
+      "title": "Lifecycle, generation, broker, and command authority",
+      "compiled_invariants": [
+        {
+          "invariant_id": "INV-LC-01",
+          "statement": "exactly one typed lifecycle/request-admission authority exists; requests failing admission never reach backend action"
+        },
+        {
+          "invariant_id": "INV-LC-02",
+          "statement": "session and suspension generations thread through retained state and async producers; stale-generation references are rejected"
+        },
+        {
+          "invariant_id": "INV-LC-03",
+          "statement": "perl5db reads and mutations serialize through the one typed broker; a submitted write is not an acknowledgement"
+        },
+        {
+          "invariant_id": "INV-LC-04",
+          "statement": "direct perl5db writes stay removed/quarantined under sole-writer recurrence enforcement"
+        },
+        {
+          "invariant_id": "INV-LC-05",
+          "statement": "execution control and cancellation correlate with lifecycle transitions and resolve to one request-scoped operation"
+        },
+        {
+          "invariant_id": "INV-LC-06",
+          "statement": "terminal outcomes emit at most one terminal event per generation; repeated terminate is idempotent"
+        }
+      ],
+      "first_falsifier": "a second lifecycle/generation/command authority being accepted anywhere in the adapter",
+      "compilation_boundary_note": "Implementation and query/mutation/control routing behavior owned by #8691/#8703/#8564/#8581/#8591-child controllers. This compilation adds no readiness, probes, or validation commands.",
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "view_id": "FAM-SOURCE",
+      "title": "Launch, path, source identity, and source geometry",
+      "compiled_invariants": [
+        {
+          "invariant_id": "INV-SR-01",
+          "statement": "launch mode is always explicit: workspace-bound or user-owned unbounded; implicit None modes do not exist"
+        },
+        {
+          "invariant_id": "INV-SR-02",
+          "statement": "the selected launch authority governs every filesystem/path-reading surface including restart and loaded-source"
+        },
+        {
+          "invariant_id": "INV-SR-03",
+          "statement": "spawns project through one validated launch plan"
+        },
+        {
+          "invariant_id": "INV-SR-04",
+          "statement": "client paths/lines/columns normalize through session-bound conversion with dirty-source currentness"
+        },
+        {
+          "invariant_id": "INV-SR-05",
+          "statement": "canonical newline/LF geometry and BOM relations precede any line-index consumption"
+        }
+      ],
+      "first_falsifier": "any surface reading program/source/breakpoint/goto/loaded-source/restart paths outside the selected launch authority",
+      "compilation_boundary_note": "Position-family controllers own storage semantics; this view owns only their DAP-facing binding.",
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "view_id": "FAM-BREAKPOINT",
+      "title": "Breakpoint truth",
+      "compiled_invariants": [
+        {
+          "invariant_id": "INV-BP-01",
+          "statement": "verified status requires exact engine acknowledgement"
+        },
+        {
+          "invariant_id": "INV-BP-02",
+          "statement": "replacement/removal/idempotence are engine-backed with generation-safe changed events"
+        },
+        {
+          "invariant_id": "INV-BP-03",
+          "statement": "desired breakpoint sets reapply across launch, configurationDone, and restart without stale verification"
+        },
+        {
+          "invariant_id": "INV-BP-04",
+          "statement": "stops attribute to exact installed breakpoints and the implicit entry stop is classified"
+        },
+        {
+          "invariant_id": "INV-BP-05",
+          "statement": "runtime-loaded module breakpoints traverse pending->loaded->installed->changed-event->exact hit"
+        },
+        {
+          "invariant_id": "INV-BP-06",
+          "statement": "optional breakpoint families stay capability-false until engine-backed runtime proof exists"
+        }
+      ],
+      "first_falsifier": "generic success or UI presence standing in for engine-confirmed install/hit evidence",
+      "compilation_boundary_note": "No external controller statement applies: the INV-BP invariants are owned inside this family by the breakpoint nodes compiled here.",
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "view_id": "FAM-INSPECTION",
+      "title": "Inspection, values, and mutation",
+      "compiled_invariants": [
+        {
+          "invariant_id": "INV-IN-01",
+          "statement": "variable identities come from the opaque single-context registry bound to session/suspension generations"
+        },
+        {
+          "invariant_id": "INV-IN-02",
+          "statement": "retained inspection state is stop-owned, bounded, and mutation-aware"
+        },
+        {
+          "invariant_id": "INV-IN-03",
+          "statement": "only the exact current executable frame and its real scopes are exposed"
+        },
+        {
+          "invariant_id": "INV-IN-04",
+          "statement": "inspected values form an immutable graph preserving runtime referent identity with exact paging/counts"
+        },
+        {
+          "invariant_id": "INV-IN-05",
+          "statement": "evaluateName and package/global access exist only where addressability/frame-package identity is proven"
+        },
+        {
+          "invariant_id": "INV-IN-06",
+          "statement": "Watch/hover evaluate purely over snapshots; side effects only via the explicit trusted REPL boundary"
+        },
+        {
+          "invariant_id": "INV-IN-07",
+          "statement": "scalar mutations use canonical target/value/operation/outcome contracts, acknowledged transactions, and atomic promotion while capabilities stay false until proved"
+        }
+      ],
+      "first_falsifier": "fabricated/unframed/stale inspection success or unacknowledged mutation reporting success",
+      "compilation_boundary_note": "Inspection identity subcontrollers remain integrated under #2301.",
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "view_id": "FAM-CAPABILITY",
+      "title": "Capability and protocol truth",
+      "compiled_invariants": [
+        {
+          "invariant_id": "INV-CP-01",
+          "statement": "advertised initialize capabilities derive from accepted backend-evidence intersection; unknowns stay conservative"
+        },
+        {
+          "invariant_id": "INV-CP-02",
+          "statement": "every capability row carries frontend/backend/mode/prerequisite/proof owners"
+        },
+        {
+          "invariant_id": "INV-CP-03",
+          "statement": "advertised true/false sets bind to same-session public behavior on the exact binary"
+        },
+        {
+          "invariant_id": "INV-CP-04",
+          "statement": "standard methods behave with standard semantics (goto targets, stepIn targeting, exception proof from real suspensions) or stay false"
+        },
+        {
+          "invariant_id": "INV-CP-05",
+          "statement": "secondary/optional capabilities stay false until exact semantics are proven"
+        },
+        {
+          "invariant_id": "INV-CP-06",
+          "statement": "production request/event/capability inventories derive from executable syntax and bind to candidate receipts against drift"
+        }
+      ],
+      "first_falsifier": "protocol-inventory claims sourced from prose or stale receipts instead of executable/current evidence",
+      "compilation_boundary_note": "#10982 owns the static validator command; #10558 owns DAG/consumer semantics. Range anomalies are recorded in scope_corrections.",
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "view_id": "FAM-TRANSPORT",
+      "title": "Transport, peer, package, and backend convergence",
+      "compiled_invariants": [
+        {
+          "invariant_id": "INV-TR-01",
+          "statement": "editor transport is stdio-only canonical; ambient listeners retire with zero-listener proof"
+        },
+        {
+          "invariant_id": "INV-TR-02",
+          "statement": "external peers authenticate with CSPRNG-minted tokens; no unauthenticated listen paths"
+        },
+        {
+          "invariant_id": "INV-TR-03",
+          "statement": "peer/stdio event buffering stays bounded with explicit slow-consumer failure"
+        },
+        {
+          "invariant_id": "INV-TR-04",
+          "statement": "experimental external peers (ptkdb) stay behind validated experimental claim boundaries"
+        },
+        {
+          "invariant_id": "INV-TR-05",
+          "statement": "packaging feature catalogs sync vendored snapshots under drift enforcement"
+        },
+        {
+          "invariant_id": "INV-TR-06",
+          "statement": "backend-neutral convergence lands as harness/shadow work; production traffic switches only after full supported-core parity and zero trust counts"
+        },
+        {
+          "invariant_id": "INV-TR-07",
+          "statement": "duplicate dispatch and peer-bridge frontends retire after cutover, leaving exactly one production frontend"
+        }
+      ],
+      "first_falsifier": "an ambient listener, unauthenticated peer, or unbounded queue surviving alongside the canonical stdio path",
+      "compilation_boundary_note": "Backend-neutral convergence production cutover/retirement sequencing remains controlled by #9415 stage I and #7278 deferral rulings; this view freezes the transport/package truth planes only.",
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "view_id": "FAM-EVIDENCE",
+      "title": "Exact evidence and installed/release consumption",
+      "compiled_invariants": [
+        {
+          "invariant_id": "INV-EV-01",
+          "statement": "exact-binary real-session matrices cover initialize/launch/stops, inspection cells, and continue/step/cancel/timeout/restart/zero-leak rows"
+        },
+        {
+          "invariant_id": "INV-EV-02",
+          "statement": "one command/current receipt executes every mandatory native core row"
+        },
+        {
+          "invariant_id": "INV-EV-03",
+          "statement": "scorecards are required same-SHA receipts; skipped/missing/stale evidence cannot pass"
+        },
+        {
+          "invariant_id": "INV-EV-04",
+          "statement": "installed journeys drive the exact packaged binary with artifact identity and cleanup proof"
+        },
+        {
+          "invariant_id": "INV-EV-05",
+          "statement": "release-cut rulings depend only on earned exact receipts and record deferrals explicitly"
+        }
+      ],
+      "first_falsifier": "cross-SHA evidence, repaired-in-place matrix rows, or green checks standing in for receipts",
+      "compilation_boundary_note": "No external controller statement applies: the INV-EV invariants are owned inside this family; exact-evidence consumption semantics remain with consumer #10558.",
+      "consumers": [
+        "10558"
+      ]
+    }
+  ],
+  "contract_nodes": [
+    {
+      "stable_semantic_id": "DAPREL-1742",
+      "family_view": "FAM-BREAKPOINT",
+      "issue": 1742,
+      "train_slot": "D06",
+      "role": "implementation_leaf",
+      "semantic_authority": "runtime-loaded module breakpoints traverse pending->loaded->installed->changed-event->exact hit",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8981,
+        8581,
+        8591,
+        8668
+      ],
+      "covered_invariants": [
+        "INV-BP-05"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-4346",
+      "family_view": "FAM-EVIDENCE",
+      "issue": 4346,
+      "train_slot": "J04",
+      "role": "evidence_leaf",
+      "semantic_authority": "exact public-beta daily-driver installed behavior proof consumes the DAP receipt",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        6694
+      ],
+      "covered_invariants": [
+        "INV-EV-05"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-4786",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 4786,
+      "train_slot": null,
+      "role": "integration_leaf",
+      "semantic_authority": "real Devel::ptkdb peer remains deliberately unsupported breadth behind its claim boundary",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-TR-04"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-4973",
+      "family_view": "FAM-SOURCE",
+      "issue": 4973,
+      "train_slot": null,
+      "role": "controller",
+      "semantic_authority": "one newline/BOM contract with constructor parity before line-index change",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-SR-05"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-6056",
+      "family_view": "FAM-EVIDENCE",
+      "issue": 6056,
+      "train_slot": "J04",
+      "role": "evidence_leaf",
+      "semantic_authority": "pre-freeze packaged public-beta acceptance produces blocker packets",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        6694
+      ],
+      "covered_invariants": [
+        "INV-EV-05"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-6680",
+      "family_view": "FAM-EVIDENCE",
+      "issue": 6680,
+      "train_slot": "G07",
+      "role": "evidence_leaf",
+      "semantic_authority": "required Linux same-SHA/binary/runtime scorecard; skipped/missing/stale cannot pass",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        6684
+      ],
+      "covered_invariants": [
+        "INV-EV-03"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-6684",
+      "family_view": "FAM-EVIDENCE",
+      "issue": 6684,
+      "train_slot": "G06",
+      "role": "fan_in",
+      "semantic_authority": "one command/current receipt executes every mandatory native core row",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        7566,
+        7567,
+        7568
+      ],
+      "covered_invariants": [
+        "INV-EV-02"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-6688",
+      "family_view": "FAM-EVIDENCE",
+      "issue": 6688,
+      "train_slot": null,
+      "role": "fan_in",
+      "semantic_authority": "initialize capabilities derive from accepted backend evidence",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        7364
+      ],
+      "covered_invariants": [
+        "INV-CP-01",
+        "INV-CP-03"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-6694",
+      "family_view": "FAM-EVIDENCE",
+      "issue": 6694,
+      "train_slot": "J01",
+      "role": "integration_leaf",
+      "semantic_authority": "exact VSIX drives exact packaged perl-dap journey with artifact identity, remediation, cleanup",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        6684,
+        7366
+      ],
+      "covered_invariants": [
+        "INV-EV-04"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-6949",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 6949,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "unauthenticated external-peer listen paths eliminated; peer tokens minted from a CSPRNG",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-TR-02"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-6952",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 6952,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "external-peer event buffering bounded and prioritized",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-TR-03"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-6991",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 6991,
+      "train_slot": null,
+      "role": "fan_in",
+      "semantic_authority": "unresolvable reference; family placement follows the #10976 citation only",
+      "disposition": "NOT_PROVEN",
+      "disposition_basis": "#10976 cites this number for package/product truth but it does not resolve to a repository issue; reference provenance unverified",
+      "hard_dependency_issues": [],
+      "covered_invariants": [],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7187",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7187,
+      "train_slot": null,
+      "role": "evidence_leaf",
+      "semantic_authority": "vendored feature catalogs synced with drift enforcement for packaging truth",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-TR-05"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7206",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7206,
+      "train_slot": null,
+      "role": "fan_in",
+      "semantic_authority": "unresolvable reference; family placement follows the #10976 citation only",
+      "disposition": "NOT_PROVEN",
+      "disposition_basis": "#10976 cites this number for peer buffering/bounds but it does not resolve to a repository issue; reference provenance unverified",
+      "hard_dependency_issues": [],
+      "covered_invariants": [],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7276",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7276,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "external peer modes validated; ptkdb claims stay experimental",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-TR-04"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7278",
+      "family_view": "FAM-EVIDENCE",
+      "issue": 7278,
+      "train_slot": "J03",
+      "role": "controller",
+      "semantic_authority": "bounded v0.18 native preview cut-line ruling closes the debugger release line",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        6694
+      ],
+      "covered_invariants": [
+        "INV-EV-05"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7310",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7310,
+      "train_slot": null,
+      "role": "fan_in",
+      "semantic_authority": "unresolvable reference; family placement follows the #10976 citation only",
+      "disposition": "NOT_PROVEN",
+      "disposition_basis": "#10976 cites this number for package/product truth but it does not resolve to a repository issue; reference provenance unverified",
+      "hard_dependency_issues": [],
+      "covered_invariants": [],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7337",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7337,
+      "train_slot": "I01",
+      "role": "evidence_leaf",
+      "semantic_authority": "direct-native/backend-neutral semantic transcript plus migration dispositions without any production switch",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        7565
+      ],
+      "covered_invariants": [
+        "INV-TR-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7338",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7338,
+      "train_slot": "I02",
+      "role": "implementation_leaf",
+      "semantic_authority": "one DAP-model frontend runs in shadow mode while direct native stays authoritative",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        7337
+      ],
+      "covered_invariants": [
+        "INV-TR-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7339",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 7339,
+      "train_slot": "A05",
+      "role": "implementation_leaf",
+      "semantic_authority": "a partial native backend cannot advertise unimplemented or unproven methods",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-CP-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7340",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7340,
+      "train_slot": "I03",
+      "role": "implementation_leaf",
+      "semantic_authority": "typed backend operations cover every backend-owned request family with explicit Unsupported defaults",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        7337,
+        7338
+      ],
+      "covered_invariants": [
+        "INV-TR-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7341",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7341,
+      "train_slot": "I04",
+      "role": "implementation_leaf",
+      "semantic_authority": "native threads/stack/scopes flow through model types with generation-bound identity",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        7340,
+        9045,
+        9046
+      ],
+      "covered_invariants": [
+        "INV-TR-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7342",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7342,
+      "train_slot": "I05",
+      "role": "implementation_leaf",
+      "semantic_authority": "native variables/paging/source flow through model types consuming truthful inspection mechanisms",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        7341
+      ],
+      "covered_invariants": [
+        "INV-TR-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7343",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7343,
+      "train_slot": null,
+      "role": "fan_in",
+      "semantic_authority": "unresolvable reference; family placement follows the #10976 citation only",
+      "disposition": "NOT_PROVEN",
+      "disposition_basis": "#10976 cites this number inside #7337-#7348 but it does not resolve to a repository issue; reference provenance unverified",
+      "hard_dependency_issues": [],
+      "covered_invariants": [],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7344",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7344,
+      "train_slot": null,
+      "role": "evidence_leaf",
+      "semantic_authority": "parser-incremental edit transaction model outside the backend-convergence decision family",
+      "disposition": "RETURN_TO_ISSUE",
+      "disposition_basis": "swept-range member is a parser-incremental ticket, not backend-neutral convergence; range assertion on #10976 needs correction",
+      "hard_dependency_issues": [],
+      "covered_invariants": [],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7345",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7345,
+      "train_slot": "I06",
+      "role": "implementation_leaf",
+      "semantic_authority": "backend-neutral evaluate/mutation cutover does not recreate evaluator/frame/cache semantics",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        7342
+      ],
+      "covered_invariants": [
+        "INV-TR-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7346",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7346,
+      "train_slot": "I07",
+      "role": "cutover_leaf",
+      "semantic_authority": "native production traffic routes through the canonical frontend only after full supported-core parity and zero trust counts",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        7337,
+        7338,
+        7340,
+        7341,
+        7342,
+        7345,
+        7364,
+        7366,
+        6684,
+        6680
+      ],
+      "covered_invariants": [
+        "INV-TR-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7347",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7347,
+      "train_slot": null,
+      "role": "evidence_leaf",
+      "semantic_authority": "parser-incremental fresh/incremental comparison ticket outside the backend-convergence family",
+      "disposition": "RETURN_TO_ISSUE",
+      "disposition_basis": "swept-range member is a parser-incremental ticket, not backend-neutral convergence; range assertion on #10976 needs correction",
+      "hard_dependency_issues": [],
+      "covered_invariants": [],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7348",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7348,
+      "train_slot": "I08",
+      "role": "integration_leaf",
+      "semantic_authority": "duplicate dispatch and peer-bridge frontends removed after cutover; recurrence guards leave one production frontend",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        7346,
+        6694
+      ],
+      "covered_invariants": [
+        "INV-TR-07"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7363",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 7363,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "frontend/backend/mode/prerequisite/proof ownership attaches to every capability row",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-CP-02"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7364",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 7364,
+      "train_slot": "H03",
+      "role": "implementation_leaf",
+      "semantic_authority": "production initialize and dispatch consume accepted backend-evidence intersection; unknowns conservative",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        7363
+      ],
+      "covered_invariants": [
+        "INV-CP-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7366",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 7366,
+      "train_slot": "H04",
+      "role": "evidence_leaf",
+      "semantic_authority": "advertised true/false capability sets bind to same-session public behavior receipts",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        7364
+      ],
+      "covered_invariants": [
+        "INV-CP-03"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7486",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 7486,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "ambient editor-facing TCP retires; editor authority stays parent-bound",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-TR-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7565",
+      "family_view": "FAM-EVIDENCE",
+      "issue": 7565,
+      "train_slot": "A01",
+      "role": "evidence_leaf",
+      "semantic_authority": "exact-binary real-session harness with typed rows/receipt and bounded cleanup observation",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-EV-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7566",
+      "family_view": "FAM-EVIDENCE",
+      "issue": 7566,
+      "train_slot": "G03",
+      "role": "evidence_leaf",
+      "semantic_authority": "initialize/launch/configuration/breakpoint-stop cells including unsupported PID attach and module hit",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        7565,
+        8668,
+        9021,
+        8624,
+        1742,
+        8691
+      ],
+      "covered_invariants": [
+        "INV-EV-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7567",
+      "family_view": "FAM-EVIDENCE",
+      "issue": 7567,
+      "train_slot": "G04",
+      "role": "evidence_leaf",
+      "semantic_authority": "stack/scopes/variables/evaluate/suspended-object-lifetime cells with honest unavailable/truncated rows",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        7565
+      ],
+      "covered_invariants": [
+        "INV-EV-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-7568",
+      "family_view": "FAM-EVIDENCE",
+      "issue": 7568,
+      "train_slot": "G05",
+      "role": "evidence_leaf",
+      "semantic_authority": "continue/step/cancel/timeout/restart/terminal/zero-leak cleanup rows",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        7565,
+        8602
+      ],
+      "covered_invariants": [
+        "INV-EV-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8045",
+      "family_view": "FAM-INSPECTION",
+      "issue": 8045,
+      "train_slot": "E06",
+      "role": "controller",
+      "semantic_authority": "retained value/page state is suspension-owned, bounded, mutation-aware, late-work-safe",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        9042
+      ],
+      "covered_invariants": [
+        "INV-IN-02"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8172",
+      "family_view": "FAM-SOURCE",
+      "issue": 8172,
+      "train_slot": null,
+      "role": "evidence_leaf",
+      "semantic_authority": "raw-byte source-geometry and coordinate conformance fixtures",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-SR-05"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8354",
+      "family_view": "FAM-INSPECTION",
+      "issue": 8354,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "setVariable stays false and side-effect-free until exact proof-and-promotion",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8368",
+      "family_view": "FAM-INSPECTION",
+      "issue": 8368,
+      "train_slot": null,
+      "role": "evidence_leaf",
+      "semantic_authority": "proves then atomically promotes exact native setVariable scalar cells",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8354
+      ],
+      "covered_invariants": [
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8564",
+      "family_view": "FAM-LIFECYCLE",
+      "issue": 8564,
+      "train_slot": "B02",
+      "role": "implementation_leaf",
+      "semantic_authority": "typed serialized perl5db operation broker over the framed-query path; a submitted write is not an acknowledgement",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8703
+      ],
+      "covered_invariants": [
+        "INV-LC-03"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8581",
+      "family_view": "FAM-LIFECYCLE",
+      "issue": 8581,
+      "train_slot": "B03",
+      "role": "implementation_leaf",
+      "semantic_authority": "stack/variables/evaluate/modules/loaded-source queries own exact broker-correlated output",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8564
+      ],
+      "covered_invariants": [
+        "INV-LC-03"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8591",
+      "family_view": "FAM-LIFECYCLE",
+      "issue": 8591,
+      "train_slot": "B04",
+      "role": "controller",
+      "semantic_authority": "mutation-family controller: engine-acknowledged breakpoint/watchpoint/value mutations route through broker children",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8564
+      ],
+      "covered_invariants": [
+        "INV-LC-03",
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8602",
+      "family_view": "FAM-LIFECYCLE",
+      "issue": 8602,
+      "train_slot": "B05",
+      "role": "implementation_leaf",
+      "semantic_authority": "continue/step/pause correlate with lifecycle transitions; cancel maps to one request-scoped operation",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8564,
+        8691
+      ],
+      "covered_invariants": [
+        "INV-LC-05"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8615",
+      "family_view": "FAM-LIFECYCLE",
+      "issue": 8615,
+      "train_slot": "B06",
+      "role": "implementation_leaf",
+      "semantic_authority": "direct perl5db writes removed/quarantined with sole-writer recurrence enforcement",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8581,
+        8591,
+        8602
+      ],
+      "covered_invariants": [
+        "INV-LC-04"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8624",
+      "family_view": "FAM-BREAKPOINT",
+      "issue": 8624,
+      "train_slot": "D02",
+      "role": "implementation_leaf",
+      "semantic_authority": "verified requires exact engine acknowledgement across source-valid/pending/installed/rejected states",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8591,
+        9021,
+        8668
+      ],
+      "covered_invariants": [
+        "INV-BP-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8635",
+      "family_view": "FAM-BREAKPOINT",
+      "issue": 8635,
+      "train_slot": "D03",
+      "role": "implementation_leaf",
+      "semantic_authority": "engine-backed replacement/removal/idempotence with generation-safe changed events",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8624
+      ],
+      "covered_invariants": [
+        "INV-BP-02"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8656",
+      "family_view": "FAM-SOURCE",
+      "issue": 8656,
+      "train_slot": "A03",
+      "role": "implementation_leaf",
+      "semantic_authority": "every session is workspace-bound or explicitly user-owned unbounded; no implicit None mode",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-SR-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8668",
+      "family_view": "FAM-SOURCE",
+      "issue": 8668,
+      "train_slot": "C01",
+      "role": "implementation_leaf",
+      "semantic_authority": "selected launch authority governs program/source/breakpoint/goto/loaded-source/restart path reads",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8656
+      ],
+      "covered_invariants": [
+        "INV-SR-02"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8687",
+      "family_view": "FAM-SOURCE",
+      "issue": 8687,
+      "train_slot": null,
+      "role": "controller",
+      "semantic_authority": "canonical LF source geometry across storage constructors",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-SR-05"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8691",
+      "family_view": "FAM-LIFECYCLE",
+      "issue": 8691,
+      "train_slot": "A02",
+      "role": "implementation_leaf",
+      "semantic_authority": "one typed session lifecycle/request-admission authority rejects invalid requests before backend action",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-LC-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8703",
+      "family_view": "FAM-LIFECYCLE",
+      "issue": 8703,
+      "train_slot": "B01",
+      "role": "implementation_leaf",
+      "semantic_authority": "explicit session and suspension generations thread through retained state and async producers",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8691
+      ],
+      "covered_invariants": [
+        "INV-LC-02"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8707",
+      "family_view": "FAM-SOURCE",
+      "issue": 8707,
+      "train_slot": null,
+      "role": "controller",
+      "semantic_authority": "explicit BOM source relations across ingress paths",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-SR-05"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8974",
+      "family_view": "FAM-BREAKPOINT",
+      "issue": 8974,
+      "train_slot": "D04",
+      "role": "implementation_leaf",
+      "semantic_authority": "pre-launch desired set applies when command-ready; restart reinstalls without stale verification",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8635,
+        8691,
+        8581
+      ],
+      "covered_invariants": [
+        "INV-BP-03"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-8981",
+      "family_view": "FAM-BREAKPOINT",
+      "issue": 8981,
+      "train_slot": "D05",
+      "role": "implementation_leaf",
+      "semantic_authority": "stops attribute to exact installed breakpoints and the implicit entry stop is classified",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8974,
+        8602
+      ],
+      "covered_invariants": [
+        "INV-BP-04"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9021",
+      "family_view": "FAM-SOURCE",
+      "issue": 9021,
+      "train_slot": "D01",
+      "role": "implementation_leaf",
+      "semantic_authority": "session-bound client path format, zero/one-based coordinate conversion, dirty-source identity",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8691
+      ],
+      "covered_invariants": [
+        "INV-SR-04"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9035",
+      "family_view": "FAM-INSPECTION",
+      "issue": 9035,
+      "train_slot": "E04",
+      "role": "implementation_leaf",
+      "semantic_authority": "opaque single-context variablesReference registry over session/suspension generations",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8703
+      ],
+      "covered_invariants": [
+        "INV-IN-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9042",
+      "family_view": "FAM-INSPECTION",
+      "issue": 9042,
+      "train_slot": "E05",
+      "role": "implementation_leaf",
+      "semantic_authority": "scopes/children/evaluate roots/paging/mutation lookup migrate off arithmetic packed IDs",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        9035
+      ],
+      "covered_invariants": [
+        "INV-IN-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9045",
+      "family_view": "FAM-INSPECTION",
+      "issue": 9045,
+      "train_slot": "E08",
+      "role": "implementation_leaf",
+      "semantic_authority": "FrameSnapshot supports only the exact current executable frame; others fail closed",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8691,
+        8703
+      ],
+      "covered_invariants": [
+        "INV-IN-03"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9046",
+      "family_view": "FAM-INSPECTION",
+      "issue": 9046,
+      "train_slot": "E09",
+      "role": "implementation_leaf",
+      "semantic_authority": "exact ordinary Perl main/named-sub/recursion/package frame acquisition",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        9045,
+        8581
+      ],
+      "covered_invariants": [
+        "INV-IN-03"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9048",
+      "family_view": "FAM-INSPECTION",
+      "issue": 9048,
+      "train_slot": "E02",
+      "role": "implementation_leaf",
+      "semantic_authority": "runtime referent identity and known-vs-opaque container state preserved over display strings",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8581,
+        8703
+      ],
+      "covered_invariants": [
+        "INV-IN-04"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9050",
+      "family_view": "FAM-INSPECTION",
+      "issue": 9050,
+      "train_slot": "E11",
+      "role": "implementation_leaf",
+      "semantic_authority": "immutable inspected-value graph with exact paging/counts/shared/cyclic identity",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        9048,
+        8045,
+        9046
+      ],
+      "covered_invariants": [
+        "INV-IN-04"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9051",
+      "family_view": "FAM-SOURCE",
+      "issue": 9051,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "one validated launch plan projects into the native perl -d spawn",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8656
+      ],
+      "covered_invariants": [
+        "INV-SR-03"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9054",
+      "family_view": "FAM-INSPECTION",
+      "issue": 9054,
+      "train_slot": "E12",
+      "role": "implementation_leaf",
+      "semantic_authority": "evaluateName emitted only with proven frame-bound addressability",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        9050,
+        9046
+      ],
+      "covered_invariants": [
+        "INV-IN-05"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9057",
+      "family_view": "FAM-INSPECTION",
+      "issue": 9057,
+      "train_slot": "E10",
+      "role": "implementation_leaf",
+      "semantic_authority": "package/global inspection binds observed stopped-frame package identity, never frame IDs",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        9046,
+        8581,
+        9035
+      ],
+      "covered_invariants": [
+        "INV-IN-05"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9059",
+      "family_view": "FAM-INSPECTION",
+      "issue": 9059,
+      "train_slot": "E13",
+      "role": "implementation_leaf",
+      "semantic_authority": "canonical Perl AST lowers into bounded context-specific inspection IR without execution",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        9050,
+        9054
+      ],
+      "covered_invariants": [
+        "INV-IN-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9064",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9064,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "run-to-line is not advertised as standard goto",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8981
+      ],
+      "covered_invariants": [
+        "INV-CP-04"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9065",
+      "family_view": "FAM-INSPECTION",
+      "issue": 9065,
+      "train_slot": "E14",
+      "role": "implementation_leaf",
+      "semantic_authority": "Watch/hover evaluate purely over FrameSnapshot/value graph; tied/overloaded/opaque refused",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        9059
+      ],
+      "covered_invariants": [
+        "INV-IN-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9069",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9069,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "stepInTargets identity affects the next stepIn",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-CP-04"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9074",
+      "family_view": "FAM-LIFECYCLE",
+      "issue": 9074,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "cancel requests resolve to one request-scoped broker operation",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        8564,
+        8691
+      ],
+      "covered_invariants": [
+        "INV-LC-05"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9081",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9081,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "exception breakpoints prove from real Perl suspension, not output classification",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-CP-04"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9522",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 9522,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "external-peer stdio frame queues bounded; slow-consumer sessions fail explicitly",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        6952
+      ],
+      "covered_invariants": [
+        "INV-TR-03"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9527",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9527,
+      "train_slot": null,
+      "role": "evidence_leaf",
+      "semantic_authority": "production request inventory derived from executable Rust syntax",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-CP-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9528",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9528,
+      "train_slot": null,
+      "role": "evidence_leaf",
+      "semantic_authority": "clippy-gate repair ticket outside the inventory/ownership/currentness decision family",
+      "disposition": "RETURN_TO_ISSUE",
+      "disposition_basis": "swept-range member is a tooling repair ticket, not a DAP capability decision; range assertion on #10976 needs correction",
+      "hard_dependency_issues": [],
+      "covered_invariants": [],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9529",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9529,
+      "train_slot": null,
+      "role": "evidence_leaf",
+      "semantic_authority": "metrics scorer disagreement ticket outside the inventory/ownership/currentness decision family",
+      "disposition": "RETURN_TO_ISSUE",
+      "disposition_basis": "swept-range member is a metrics repair ticket, not a DAP capability decision; range assertion on #10976 needs correction",
+      "hard_dependency_issues": [],
+      "covered_invariants": [],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9530",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9530,
+      "train_slot": null,
+      "role": "evidence_leaf",
+      "semantic_authority": "production emitted-event inventory derived from executable Rust syntax",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-CP-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9531",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9531,
+      "train_slot": null,
+      "role": "fan_in",
+      "semantic_authority": "unresolvable reference; family placement follows the #10976 citation only",
+      "disposition": "NOT_PROVEN",
+      "disposition_basis": "#10976 cites this number inside #9527-#9538 but it does not resolve to a repository issue; reference provenance unverified",
+      "hard_dependency_issues": [],
+      "covered_invariants": [],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9532",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9532,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "executable wire inventory binds to exact candidate receipts and drift checks",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        9527,
+        9530
+      ],
+      "covered_invariants": [
+        "INV-CP-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9533",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9533,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "tree-sitter-perl-rs mandatory parser input, cancellation, and reuse contract",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-CP-06"
+      ],
+      "consumers": [
+        "10558",
+        "10982"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9534",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9534,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "standard initialize capability schema extracted from the pinned DAP revision",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-CP-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9535",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9535,
+      "train_slot": null,
+      "role": "evidence_leaf",
+      "semantic_authority": "production initialize capability fields and serialization paths inventoried",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        9534
+      ],
+      "covered_invariants": [
+        "INV-CP-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9536",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9536,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "initialize fields map to catalog/frontend/backend/proof owners",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        9535
+      ],
+      "covered_invariants": [
+        "INV-CP-02"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9537",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9537,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "tree-sitter-perl-rs compatibility API transition executed and public baseline frozen",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        9533
+      ],
+      "covered_invariants": [
+        "INV-CP-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9538",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9538,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "candidate-bound initialize capability inventory receipts emitted and enforced",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        9536
+      ],
+      "covered_invariants": [
+        "INV-CP-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9568",
+      "family_view": "FAM-INSPECTION",
+      "issue": 9568,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "setExpression stays false and side-effect-free until exact proof-and-promotion",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9570",
+      "family_view": "FAM-INSPECTION",
+      "issue": 9570,
+      "train_slot": null,
+      "role": "evidence_leaf",
+      "semantic_authority": "proves then atomically promotes exact native setExpression scalar cells",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        9568
+      ],
+      "covered_invariants": [
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9578",
+      "family_view": "FAM-BREAKPOINT",
+      "issue": 9578,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "optional breakpoint families remain capability-false until engine-backed runtime proof exists",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-BP-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9581",
+      "family_view": "FAM-CAPABILITY",
+      "issue": 9581,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "secondary optional capabilities stay false until exact semantics are proven",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-CP-05"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-9765",
+      "family_view": "FAM-LIFECYCLE",
+      "issue": 9765,
+      "train_slot": null,
+      "role": "evidence_leaf",
+      "semantic_authority": "repeated terminate is idempotent with exactly one terminal event per generation",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-LC-06"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10524",
+      "family_view": "FAM-SOURCE",
+      "issue": 10524,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "breakpoint and symbol lines derive from canonical source geometry",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-SR-04",
+        "INV-SR-05"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10563",
+      "family_view": "FAM-INSPECTION",
+      "issue": 10563,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "only exact current-frame scopes are exposed; unproven Package/Globals omitted",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-IN-03"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10564",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 10564,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "stdio-only editor transport boundary frozen with socket-retirement inventory",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-TR-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10565",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 10565,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "native editor-facing --socket transport retired; stdio canonical",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-TR-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10566",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 10566,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "editor socket wrappers removed from external-peer modes; peer-only TCP preserved",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        10564
+      ],
+      "covered_invariants": [
+        "INV-TR-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10567",
+      "family_view": "FAM-TRANSPORT",
+      "issue": 10567,
+      "train_slot": null,
+      "role": "evidence_leaf",
+      "semantic_authority": "stdio-only editor authority proven with zero ambient DAP listeners",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [
+        10565,
+        10566
+      ],
+      "covered_invariants": [
+        "INV-TR-01"
+      ],
+      "consumers": [
+        "10558"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10736",
+      "family_view": "FAM-INSPECTION",
+      "issue": 10736,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "canonical scalar mutation target/value/operation/outcome contracts",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10745",
+      "family_view": "FAM-INSPECTION",
+      "issue": 10745,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "MutationValueText.v1 parses into exact scalar data",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10752",
+      "family_view": "FAM-INSPECTION",
+      "issue": 10752,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "exact scalar mutation data encodes as one non-interpolating Perl value",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10759",
+      "family_view": "FAM-INSPECTION",
+      "issue": 10759,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "acknowledged scalar mutation transactions execute through the sole native broker",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10765",
+      "family_view": "FAM-INSPECTION",
+      "issue": 10765,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "graph-member writability derives and projects exact read-only hints",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10774",
+      "family_view": "FAM-INSPECTION",
+      "issue": 10774,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "setVariable targets resolve from exact current container/member identity",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10782",
+      "family_view": "FAM-INSPECTION",
+      "issue": 10782,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "bounded current-frame setExpression l-values lower to exact core targets",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10789",
+      "family_view": "FAM-INSPECTION",
+      "issue": 10789,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "acknowledged scalar mutation coordinates with exact value-authority transitions",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10797",
+      "family_view": "FAM-INSPECTION",
+      "issue": 10797,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "scalar variable-edit handlers cut onto canonical services while capabilities stay false",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10891",
+      "family_view": "FAM-INSPECTION",
+      "issue": 10891,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "exact current-frame core targets lower to bounded native debugger plans",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    },
+    {
+      "stable_semantic_id": "DAPREL-10926",
+      "family_view": "FAM-INSPECTION",
+      "issue": 10926,
+      "train_slot": null,
+      "role": "implementation_leaf",
+      "semantic_authority": "correlated scalar mutation read-back interprets without global output or cached-value fallback",
+      "disposition": "SPEC_COMPILED",
+      "disposition_basis": "no in-tree durable owner existed before this bundle; normative invariant compiled here, node authority remains the owning issue",
+      "hard_dependency_issues": [],
+      "covered_invariants": [
+        "INV-IN-07"
+      ],
+      "consumers": [
+        "10558",
+        "7278"
+      ]
+    }
+  ],
+  "scope_corrections": [
+    {
+      "referenced_numbers": [
+        9528,
+        9529
+      ],
+      "finding": "inside the cited #9527-#9538 range both numbers are unrelated clippy/metrics repair tickets",
+      "action_required_on": 10976
+    },
+    {
+      "referenced_numbers": [
+        7344,
+        7347
+      ],
+      "finding": "inside the cited #7337-#7348 range both numbers are parser-incremental tickets, not backend convergence",
+      "action_required_on": 10976
+    },
+    {
+      "referenced_numbers": [
+        6991,
+        7206,
+        7310,
+        7343,
+        9531
+      ],
+      "finding": "cited numbers do not resolve to repository issues at all",
+      "action_required_on": 10976
+    }
+  ],
+  "limitations": [
+    "per-node currentness and landed-vs-pending status are intentionally absent: current-tree truth belongs to probe layer #10997 and consumer #10558",
+    "node completeness beyond the seven families enumerated by #10976 (error-origin stages, collection budgets, nullability subtrain, lifecycle races, backpressure, Windows containment) remains the #10558 population sweep",
+    "this index does not adjudicate individual issue outcomes; stale dispositions are corrected through the owning issue or revision governance, never silently",
+    "consumer_vocabulary is a closed superset of current usage: 4346 and 6056 are declared consumers that no contract_node currently cites, reserved as forward references for the #10558 population sweep; a node that begins citing either is admitted by the vocabulary but is not thereby justified by any compiled decision here",
+    "the five NOT_PROVEN fan_in nodes (6991, 7206, 7310, 7343, 9531) aggregate unresolvable citations rather than behavioural authority; their semantic_authority records that absence explicitly, so index_law entry 3 should be read as a role-plane statement about placement, not as a claim that these five carry compiled authority summaries"
+  ]
+}
