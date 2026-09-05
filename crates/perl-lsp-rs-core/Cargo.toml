@@ -36,6 +36,7 @@ sha2.workspace = true
 
 # Provider crate dependencies (Wave G1a: 15 providers absorbed)
 perl-parser-core.workspace = true
+perl-regex.workspace = true
 perl-module.workspace = true
 perl-position-tracking.workspace = true
 perl-semantic-analyzer.workspace = true
