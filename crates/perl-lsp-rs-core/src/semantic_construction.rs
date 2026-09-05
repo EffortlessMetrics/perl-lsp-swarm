@@ -1513,10 +1513,6 @@ mod tests {
         ) -> Self {
             Self { invocations: AtomicUsize::new(0), adjust: Box::new(make) }
         }
-
-        fn count(&self) -> usize {
-            self.invocations.load(std::sync::atomic::Ordering::SeqCst)
-        }
     }
 
     impl FreshFullSemanticProducer for BundleProducer {
