@@ -88,7 +88,7 @@ const V2_CRATE_PATH: &str = "perl_ast_v2";
 /// together with the manifest bytes; patching around it silently is exactly what
 /// the pin exists to prevent.
 pub const PINNED_CANONICAL_DIGEST: &str =
-    "501898BDD7ABF36ADA695318B0B4BFB37FF3790D5E393022AD7A07D45843BFD0";
+    "20292E87EB7BB31B1A8DC9129D24AB182ADA829AACCD2C9A16149720FEF84B33";
 
 // ---------------------------------------------------------------------------
 // Code-owned v1 vocabularies. A cardinality check lets a repinned manifest
@@ -372,12 +372,47 @@ fn collect_public_items(
     module_path: &str,
     derived: &mut Vec<DerivedItem>,
 ) -> Result<()> {
+    // Types declared here and *not* public. An `impl` carries no visibility of
+    // its own, so without this an inherent `pub fn` on a private helper — or
+    // any trait impl for one — produced a public-inventory row for something no
+    // consumer can name. That is a false positive in the direction that hurts:
+    // it demands a manifest row for internal code and fails reconciliation on
+    // an honest change.
+    //
+    // Collected rather than assumed: a type this list does not mention is
+    // treated as public, so an impl for an imported or generic type keeps the
+    // fail-closed behaviour rather than being silently skipped.
+    let mut private_types: BTreeSet<String> = BTreeSet::new();
+    for item in items {
+        let declared = match item {
+            syn::Item::Struct(node) => Some((node.ident.to_string(), &node.vis)),
+            syn::Item::Enum(node) => Some((node.ident.to_string(), &node.vis)),
+            syn::Item::Type(node) => Some((node.ident.to_string(), &node.vis)),
+            syn::Item::Union(node) => Some((node.ident.to_string(), &node.vis)),
+            _ => None,
+        };
+        if let Some((name, vis)) = declared
+            && !is_public(vis)
+        {
+            private_types.insert(name);
+        }
+    }
+
     for item in items {
         // Non-public items are genuinely out of scope, so they are skipped
         // before the unhandled-kind check — otherwise a private helper `fn`
         // would fail the audit for no reason.
         if let Some(vis) = item_visibility(item)
             && !is_public(vis)
+        {
+            continue;
+        }
+
+        // An impl inherits the reachability of the type it is on.
+        if let syn::Item::Impl(item_impl) = item
+            && let syn::Type::Path(path) = item_impl.self_ty.as_ref()
+            && let Some(last) = path.path.segments.last()
+            && private_types.contains(&last.ident.to_string())
         {
             continue;
         }
@@ -407,7 +442,11 @@ fn collect_public_items(
                         render_derives(&item_struct.attrs)?,
                         render_non_exhaustive(&item_struct.attrs),
                         render_contract_attrs(&item_struct.attrs)?,
-                        render_fields(&item_struct.fields, FieldContext::Struct)?
+                        render_fields(
+                            &item_struct.fields,
+                            FieldContext::Struct,
+                            field_order_is_contract(&item_struct.attrs),
+                        )?
                     ),
                 });
             }
@@ -435,7 +474,11 @@ fn collect_public_items(
                             render_non_exhaustive(&variant.attrs),
                             render_contract_attrs(&variant.attrs)?,
                             render_discriminant(variant)?,
-                            render_fields(&variant.fields, FieldContext::Variant)?
+                            render_fields(
+                                &variant.fields,
+                                FieldContext::Variant,
+                                field_order_is_contract(&item_enum.attrs),
+                            )?
                         ),
                     });
                 }
@@ -1051,7 +1094,35 @@ enum FieldContext {
     Variant,
 }
 
-fn render_fields(fields: &syn::Fields, context: FieldContext) -> Result<String> {
+/// Whether a declaration's own attributes fix its field order.
+///
+/// Named-field order is not contract in a plain Rust type: construction and
+/// pattern matching are by name, so a reordering changes nothing a consumer can
+/// observe, and recording it would make the audit fire on a cosmetic edit — the
+/// kind of churn that gets a check switched off. Under a layout-fixing `repr`
+/// it is the opposite: order *is* the ABI, and a reordering is a breaking
+/// change no name or type would record. The attribute decides which rule
+/// applies.
+fn field_order_is_contract(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        if !attr.path().is_ident("repr") {
+            return false;
+        }
+        let syn::Meta::List(list) = &attr.meta else {
+            return false;
+        };
+        let spelled = list.tokens.to_string();
+        // `transparent` and the primitive representations do not fix an order
+        // over several fields; `C` and `packed` do.
+        spelled.contains('C') || spelled.contains("packed")
+    })
+}
+
+fn render_fields(
+    fields: &syn::Fields,
+    context: FieldContext,
+    order_is_contract: bool,
+) -> Result<String> {
     match fields {
         syn::Fields::Unit => Ok("unit".to_string()),
         syn::Fields::Named(named) => {
@@ -1073,6 +1144,12 @@ fn render_fields(fields: &syn::Fields, context: FieldContext) -> Result<String> 
                     render_type(&field.ty)?,
                     render_contract_attrs(&field.attrs)?
                 ));
+            }
+            // Sorted unless the representation makes order observable, so a
+            // cosmetic reordering does not move the shape while an ABI-visible
+            // one does.
+            if !order_is_contract {
+                reachable.sort();
             }
             let mut rendered = format!("{{ {} }}", reachable.join(", "));
             if non_public > 0 {

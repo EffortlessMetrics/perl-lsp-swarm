@@ -1234,6 +1234,107 @@ fn a_grouped_import_in_a_doctest_is_still_code() -> Result<()> {
 }
 
 #[test]
+fn an_impl_on_a_private_type_is_not_public_inventory() -> Result<()> {
+    // An `impl` carries no visibility of its own, so a `pub fn` on a private
+    // helper — or any trait impl for one — produced a public-inventory row for
+    // something no consumer can name. That is a false positive in the direction
+    // that hurts: it demands a manifest row for internal code and fails
+    // reconciliation on an honest change.
+    let kinds = |src: &str| -> Result<Vec<String>> {
+        Ok(derive_public_items(src)?.iter().map(|item| item.kind.clone()).collect())
+    };
+    assert!(
+        kinds("struct Hidden;\nimpl Hidden { pub fn f() {} }")?.is_empty(),
+        "an inherent impl on a private type publishes nothing"
+    );
+    assert!(
+        kinds("struct Hidden;\nimpl Clone for Hidden {}")?.is_empty(),
+        "a trait impl on a private type publishes nothing"
+    );
+
+    // The public case is unaffected — this narrows the denominator, and a
+    // narrowing that also drops real public API would be worse than the
+    // false positive it fixes.
+    assert!(
+        kinds("pub struct Shown;\nimpl Shown { pub fn f() {} }")?
+            .contains(&"associated_fn".to_string()),
+        "a public type's inherent impl still publishes"
+    );
+    assert!(
+        kinds("pub struct Shown;\nimpl Clone for Shown {}")?.contains(&"trait_impl".to_string()),
+        "a public type's trait impl still publishes"
+    );
+
+    // A type this file does not declare is treated as public, so an impl on an
+    // imported or foreign type keeps the fail-closed behaviour rather than
+    // being silently skipped.
+    assert!(
+        kinds("impl Clone for Imported {}")?.contains(&"trait_impl".to_string()),
+        "an impl on a type declared elsewhere is not assumed private"
+    );
+    Ok(())
+}
+
+#[test]
+fn field_order_is_contract_only_where_the_representation_makes_it_so() -> Result<()> {
+    // Named-field order is not observable in a plain Rust type: construction
+    // and matching are by name. Recording it made the audit fire on a cosmetic
+    // reordering — the kind of churn that gets a check switched off. Under a
+    // layout-fixing `repr` the opposite holds: order *is* the ABI, and a
+    // reordering is a breaking change no name or type would record.
+    let shape_of = |src: &str| -> Result<String> {
+        derive_public_items(src)?
+            .iter()
+            .find(|item| item.kind == "struct")
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no struct derived from {src}"))
+    };
+    assert_eq!(
+        shape_of("pub struct S { pub a: u8, pub b: u16 }")?,
+        shape_of("pub struct S { pub b: u16, pub a: u8 }")?,
+        "reordering named fields of a plain struct is not a contract change"
+    );
+    assert_ne!(
+        shape_of("#[repr(C)]\npub struct S { pub a: u8, pub b: u16 }")?,
+        shape_of("#[repr(C)]\npub struct S { pub b: u16, pub a: u8 }")?,
+        "under `repr(C)` the field order is the ABI"
+    );
+    assert_ne!(
+        shape_of("#[repr(packed)]\npub struct S { pub a: u8, pub b: u16 }")?,
+        shape_of("#[repr(packed)]\npub struct S { pub b: u16, pub a: u8 }")?,
+        "under `repr(packed)` the field order is the ABI"
+    );
+
+    // Renaming or retyping a field is still a change in every case — the
+    // relaxation is about order alone.
+    assert_ne!(
+        shape_of("pub struct S { pub a: u8 }")?,
+        shape_of("pub struct S { pub a: u16 }")?,
+        "a field type is contract regardless of order"
+    );
+    assert_ne!(
+        shape_of("pub struct S { pub a: u8 }")?,
+        shape_of("pub struct S { pub renamed: u8 }")?,
+        "a field name is contract regardless of order"
+    );
+
+    // Tuple fields keep source order unconditionally: the position is the name.
+    let tuple_shape = |src: &str| -> Result<String> {
+        derive_public_items(src)?
+            .iter()
+            .find(|item| item.kind == "struct")
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no struct derived from {src}"))
+    };
+    assert_ne!(
+        tuple_shape("pub struct T(pub u8, pub u16);")?,
+        tuple_shape("pub struct T(pub u16, pub u8);")?,
+        "a tuple field's position is its name"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_trait_impls_associated_assignments_are_part_of_its_contract() -> Result<()> {
     // The trait impl row recorded only the header, so `type Item = u8` becoming
     // `= u16` — which changes what every consumer of the trait gets back —
