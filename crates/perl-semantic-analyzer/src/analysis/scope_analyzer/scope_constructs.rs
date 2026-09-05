@@ -122,7 +122,10 @@ pub(super) fn handle_foreach<'a>(
         analyzer.analyze_node(variable, &loop_scope, ancestors, issues, context);
     }
     analyzer.mark_initialized(variable, &loop_scope, context);
-    analyzer.analyze_node(list, &loop_scope, ancestors, issues, context);
+    // Perl evaluates the foreach list in the enclosing scope, before the loop
+    // variable exists. Analyzing it in `loop_scope` after the declaration
+    // would make `for my $x ($x)` resolve `$x` instead of reporting it.
+    analyzer.analyze_node(list, scope, ancestors, issues, context);
     analyzer.analyze_node(body, &loop_scope, ancestors, issues, context);
     if let Some(cb) = continue_block {
         analyzer.analyze_node(cb, &loop_scope, ancestors, issues, context);
