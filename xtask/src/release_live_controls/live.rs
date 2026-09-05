@@ -592,10 +592,14 @@ fn ref_glob_matches(pattern: &str, subject: &str) -> bool {
 struct RawBypassActor {
     actor_id: Option<u64>,
     #[serde(default)]
-    actor_type: String,
+    actor_type: Option<String>,
     #[serde(default)]
-    bypass_mode: String,
+    bypass_mode: Option<String>,
 }
+
+/// The enforcement modes GitHub documents. Anything else is an unknown this
+/// build cannot classify, and must not read as "not enforced".
+const KNOWN_ENFORCEMENT: [&str; 3] = ["active", "evaluate", "disabled"];
 
 #[derive(Deserialize)]
 struct RawRulesetRule {
@@ -653,6 +657,12 @@ pub fn collect_rulesets(
             }
         };
         let applies_to_branch = match (item.target.as_str(), conditions) {
+            _ if !KNOWN_ENFORCEMENT.contains(&item.enforcement.as_str()) => {
+                Observed::not_proven(format!(
+                    "ruleset {} carries an unrecognised enforcement {:?}",
+                    item.id, item.enforcement
+                ))
+            }
             ("branch", Some(conditions)) => {
                 ruleset_applies_to_branch(conditions, branch, default_branch)
             }
@@ -705,19 +715,25 @@ fn fetch_ruleset_detail(
 /// field key absent, or explicitly `null`); `Observed(vec![])` only when the
 /// payload carries an explicit empty array. These must never be conflated.
 fn observed_bypass_actors(detail: &RawRulesetDetail) -> Observed<Vec<BypassActor>> {
-    match &detail.bypass_actors {
-        Some(actors) => Observed::observed(
-            actors
-                .iter()
-                .map(|actor| BypassActor {
-                    actor_id: actor.actor_id,
-                    actor_type: actor.actor_type.clone(),
-                    bypass_mode: actor.bypass_mode.clone(),
-                })
-                .collect(),
-        ),
-        None => Observed::not_proven("ruleset payload omitted bypass_actors"),
+    let Some(actors) = &detail.bypass_actors else {
+        return Observed::not_proven("ruleset payload omitted bypass_actors");
+    };
+    let mut rows = Vec::with_capacity(actors.len());
+    for (index, actor) in actors.iter().enumerate() {
+        // A bypass row missing its type or mode is a bypass we cannot
+        // characterise, not an empty one.
+        let (Some(actor_type), Some(bypass_mode)) = (&actor.actor_type, &actor.bypass_mode) else {
+            return Observed::not_proven(format!(
+                "bypass_actors[{index}] omitted actor_type or bypass_mode"
+            ));
+        };
+        rows.push(BypassActor {
+            actor_id: actor.actor_id,
+            actor_type: actor_type.clone(),
+            bypass_mode: bypass_mode.clone(),
+        });
     }
+    Observed::observed(rows)
 }
 
 fn observed_rules(detail: &RawRulesetDetail) -> Observed<Vec<RulesetRule>> {

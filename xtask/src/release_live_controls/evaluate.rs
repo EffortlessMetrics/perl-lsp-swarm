@@ -110,9 +110,9 @@ fn collect_ruleset_contexts(
     // ref conditions do not select this branch must not inflate the union.
     // Whether it selects the branch must itself be conclusive: an unreadable
     // condition set is a gap, not an exclusion.
-    if ruleset.enforcement != "active" {
-        return;
-    }
+    // Applicability first: an unrecognised enforcement value is recorded as
+    // NOT_PROVEN applicability by collection, and must block rather than be
+    // skipped as "not active".
     match ruleset.applies_to_branch.value() {
         Some(true) => {}
         Some(false) => return,
@@ -120,6 +120,9 @@ fn collect_ruleset_contexts(
             missing.push(format!("branch_rulesets[{}].applies_to_branch", ruleset.id));
             return;
         }
+    }
+    if ruleset.enforcement != "active" {
+        return;
     }
     match ruleset.rules.state {
         ObservationState::Absent => {}

@@ -1247,3 +1247,49 @@ fn the_schema_enforces_the_state_value_invariant() -> TestResult {
     assert!(!validator.is_valid(&json), "NOT_PROVEN with a value must fail schema validation");
     Ok(())
 }
+
+/// An `enforcement` value outside `active|evaluate|disabled` is an unknown
+/// this build cannot classify: it must block the union and the verdict, not
+/// read as "not enforced".
+#[test]
+fn an_unrecognised_enforcement_value_is_not_proven() -> TestResult {
+    let commands = FakeCommands::default()
+        .on(
+            &format!("repos/{OWNER}/{NAME}/rulesets?includes_parents=true&per_page=100&page=1"),
+            &format!("[{}]", ruleset_list_item(1, "branch", "shadow")),
+        )
+        .on(&format!("repos/{OWNER}/{NAME}/rulesets/1"), ALL_BRANCHES_DETAIL);
+
+    let (branch_rulesets, _) = collect_rulesets(&commands, OWNER, NAME, BRANCH, Some(BRANCH));
+    let rows = branch_rulesets.value().ok_or("the list itself is still observed")?;
+    assert_eq!(rows[0].applies_to_branch.state, ObservationState::NotProven);
+    assert!(!rows[0].enforced_on_branch());
+    let union = required_contexts_union(&conclusive_classic(), &branch_rulesets);
+    assert_eq!(union.state, ObservationState::NotProven);
+    Ok(())
+}
+
+/// A bypass row missing `actor_type` or `bypass_mode` is a bypass that cannot
+/// be characterised, so the ruleset's `bypass_actors` is `NOT_PROVEN`, never
+/// a row with empty strings.
+#[test]
+fn an_incomplete_bypass_actor_row_is_not_proven() -> TestResult {
+    let detail = r#"{
+        "conditions": {"ref_name": {"include": ["~ALL"]}},
+        "bypass_actors": [{"actor_id": 5, "actor_type": "Team"}],
+        "rules": []
+    }"#;
+    let commands = FakeCommands::default()
+        .on(
+            &format!("repos/{OWNER}/{NAME}/rulesets?includes_parents=true&per_page=100&page=1"),
+            &format!("[{}]", ruleset_list_item(1, "branch", "active")),
+        )
+        .on(&format!("repos/{OWNER}/{NAME}/rulesets/1"), detail);
+
+    let (branch_rulesets, _) = collect_rulesets(&commands, OWNER, NAME, BRANCH, Some(BRANCH));
+    let rows = branch_rulesets.value().ok_or("the list itself is still observed")?;
+    assert_eq!(rows[0].bypass_actors.state, ObservationState::NotProven);
+    let detail = rows[0].bypass_actors.detail.clone().ok_or("detail required")?;
+    assert!(detail.contains("bypass_actors[0]"), "{detail}");
+    Ok(())
+}
