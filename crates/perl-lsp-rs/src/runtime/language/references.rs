@@ -14,7 +14,6 @@ use crate::runtime::window::RequestProgressGuard;
 use crate::state::{reference_search_deadline, references_cap};
 use crate::util::{is_word_boundary, token_under_cursor};
 use std::collections::BinaryHeap;
-use std::sync::OnceLock;
 use std::time::Instant;
 
 /// Serialize a slice of typed values to a JSON array (#4995).
@@ -35,8 +34,6 @@ use perl_workspace::semantic::queries::{QueryContext, SemanticQueries};
 use crate::runtime::readiness::IndexReadinessPolicy;
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
-
-static QUALIFIED_NAME_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 
 const REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS: usize = 128;
 const REFERENCE_TEXT_FALLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -348,13 +345,6 @@ fn line_has_initialized_lexical_declaration(line: &str, sigil: char, name: &str)
         }
     }
     false
-}
-
-fn get_qualified_name_regex() -> Option<&'static regex::Regex> {
-    QUALIFIED_NAME_RE
-        .get_or_init(|| regex::Regex::new(r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)"))
-        .as_ref()
-        .ok()
 }
 
 fn search_document_texts_for_references<'a, I>(documents: I, needle: &str, cap: usize) -> Vec<Value>
@@ -817,39 +807,18 @@ impl LspServer {
                             key.sigil.is_none()
                                 && matches!(key.kind, crate::workspace_index::SymKind::Sub)
                         });
-                        if let Some(bare_sub_key) = bare_sub_key
-                            && let Some(qualified_name_re) = get_qualified_name_regex()
-                        {
-                            let (line_start, line_text) =
-                                crate::util::line_window_around_offset(&doc.text, offset);
-                            let cursor_in_line = offset.saturating_sub(line_start);
+                        if let Some(bare_sub_key) = bare_sub_key {
                             // The question the guard actually asks is "does the
                             // cursor sit on the token that names the sub every tier
-                            // below is about to search for?".
-                            //
-                            // A prefix component never does. Nor does a *final*
-                            // component whose text disagrees with the key's name:
-                            // in `Foo::Bar->baz()` the qualified-name match stops at
-                            // the `->`, so a cursor on `Bar` is the match's final
-                            // component while the key names the method `baz`. Testing
-                            // only for `Prefix` would let that receiver through and
-                            // answer with `baz`'s references -- this issue's defect,
-                            // reached by a different route.
+                            // below is about to search for?" -- the same question
+                            // `rename.rs` asks before editing, through the predicate
+                            // the two share (#14757).
                             let cursor_is_off_the_named_sub =
-                                match super::navigation::fqn_component_at_cursor(
-                                    qualified_name_re,
-                                    line_text,
-                                    cursor_in_line,
-                                ) {
-                                    Some(super::navigation::FqnCursorComponent::Prefix) => true,
-                                    Some(super::navigation::FqnCursorComponent::Final {
-                                        name,
-                                        ..
-                                    }) => name.as_str() != &*bare_sub_key.name,
-                                    // Not inside a `::`-qualified match at all, so the
-                                    // cursor's component is not a question worth asking.
-                                    None => false,
-                                };
+                                super::navigation::cursor_is_off_named_symbol(
+                                    &doc.text,
+                                    offset,
+                                    Some(&bare_sub_key.name),
+                                );
                             if cursor_is_off_the_named_sub {
                                 return Ok((
                                     Some(json!([])),
@@ -1163,7 +1132,12 @@ impl LspServer {
                                 let cursor_in_text = offset.saturating_sub(text_start);
 
                                 // Use cached regex to avoid per-request compilation overhead
-                                if let Some(qualified_name_re) = get_qualified_name_regex() {
+                                // `navigation.rs` owns the one copy of this
+                                // pattern. This file kept a byte-identical second
+                                // `OnceLock` until #14757; the guard above and
+                                // this fallback must see the same match, and two
+                                // owners is the drift that costs.
+                                if let Ok(qualified_name_re) = super::navigation::get_fqn_regex() {
                                     for captures in qualified_name_re.captures_iter(text_around) {
                                         if let Some(m) = captures.get(1)
                                             && cursor_in_text >= m.start()
