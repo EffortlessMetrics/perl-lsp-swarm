@@ -519,7 +519,10 @@ fn has_cpanfile_statement_modifier(statement: &str) -> bool {
         }
         if let Some(start) = word_start.take() {
             let word: String = chars[start..index].iter().collect();
-            if depth == 0 && CPANFILE_STATEMENT_MODIFIERS.contains(&word.as_str()) {
+            if depth == 0
+                && CPANFILE_STATEMENT_MODIFIERS.contains(&word.as_str())
+                && !is_bound_name(&chars, start)
+            {
                 return true;
             }
         }
@@ -532,6 +535,25 @@ fn has_cpanfile_statement_modifier(statement: &str) -> bool {
         }
     }
     false
+}
+
+/// Whether the word starting at `start` is bound to a sigil, a package
+/// separator, or an arrow, which makes it a name rather than a statement
+/// modifier.
+///
+/// `$object->if()`, `Package::if()`, and `$if` are all valid Perl in which
+/// `if` names a method, a subroutine, or a variable. A real postfix modifier
+/// is never written directly against one of these, so excluding them cannot
+/// let a genuine condition through.
+fn is_bound_name(chars: &[char], start: usize) -> bool {
+    let Some(previous) = start.checked_sub(1).and_then(|index| chars.get(index)) else {
+        return false;
+    };
+    match previous {
+        '$' | '@' | '%' | '&' | ':' => true,
+        '>' => start >= 2 && chars[start - 2] == '-',
+        _ => false,
+    }
 }
 
 fn starts_with_cpanfile_keyword(statement: &str, keyword: &str) -> bool {
@@ -1245,6 +1267,53 @@ mod tests {
                 "FAIL-OPEN: {content:?} published {:?}",
                 facts.prereqs
             );
+        }
+    }
+
+    #[test]
+    fn cpanfile_modifier_words_used_as_names_keep_their_declaration() {
+        // `if` and friends are legal method, subroutine and variable names.
+        // `perl -c` (v5.40.1) accepts every form below, so treating them as
+        // postfix conditions loses a real unconditional dependency.
+        for version in [
+            "$object->if()",
+            "Package::if()",
+            "$if",
+            "$object->unless",
+            "&if()",
+            "$object->until($x)",
+        ] {
+            let content = format!("requires 'Foo', {version};\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+
+            assert_eq!(
+                facts.prereqs,
+                vec![Prereq {
+                    module: "Foo".to_string(),
+                    version: None,
+                    phase: "runtime".to_string(),
+                    relation: "requires".to_string(),
+                }],
+                "{version} names something; it is not a condition"
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_bound_name_exclusion_does_not_admit_real_conditions() {
+        // The exclusion above keys on the character directly before the word.
+        // A genuine postfix modifier is never written against a sigil, `::` or
+        // `->`, so none of these may survive it.
+        for statement in [
+            "requires 'Win32' if $enabled;",
+            "requires('Win32') if ($enabled);",
+            "requires 'Win32' if $object->enabled;",
+            "requires 'Win32' if $Config::Config{osname};",
+            "requires 'Win32' unless &disabled();",
+            "requires 'Win32'if $enabled;",
+        ] {
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), statement);
+            assert!(facts.prereqs.is_empty(), "{statement} is conditional: {:?}", facts.prereqs);
         }
     }
 
