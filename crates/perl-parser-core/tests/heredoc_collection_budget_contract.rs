@@ -238,13 +238,28 @@ fn total_charge_reports_only_below_the_threshold_and_is_clean_at_and_above_it() 
     assert!(total_charge > 1, "the fixture must charge enough to sit below the boundary");
 
     // One byte below the total: collection crosses the limit while running, so
-    // the after-work check must report it.
+    // the after-work check must report it — as a diagnostic. Every drain still
+    // finished and every body is attached, so this is a complete parse and must
+    // not claim early termination.
     let below_threshold =
         parse_with_budget(&source, heredoc_scan_budget(total_charge.saturating_sub(1)));
     assert!(
-        matches!(below_threshold.stop_cause(), Some(ParseStopCause::HeredocBudgetExhausted { .. })),
-        "a charge that overruns the limit must report exhaustion, got {:?}",
+        below_threshold
+            .diagnostics
+            .iter()
+            .any(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. })),
+        "a charge that overruns the limit must surface the typed diagnostic"
+    );
+    assert_eq!(
+        below_threshold.stop_cause(),
+        None,
+        "an overrun that refused nothing must not claim early termination, got {:?}",
         below_threshold.stop_cause()
+    );
+    assert_eq!(
+        heredoc_contents(&below_threshold),
+        heredoc_contents(&measured),
+        "the overrunning parse must lose no content relative to an unlimited budget"
     );
 
     // Landing exactly on the limit truncated nothing: the drains completed and
@@ -310,16 +325,11 @@ fn a_single_overrunning_drain_reports_exhaustion_without_a_later_drain() {
     // 0 >= 1 is false. Only the after-work check can catch this.
     let overrun = parse_with_budget(FIRST_STATEMENT, heredoc_scan_budget(1));
     assert!(
-        matches!(overrun.stop_cause(), Some(ParseStopCause::HeredocBudgetExhausted { .. })),
-        "a single drain that overruns the limit must report exhaustion, got {:?}",
-        overrun.stop_cause()
-    );
-    assert!(
         overrun
             .diagnostics
             .iter()
             .any(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. })),
-        "the overrun must also surface a typed diagnostic"
+        "the overrun must surface a typed diagnostic, or the spend is silent"
     );
     assert!(
         overrun.budget_usage.heredoc_scan_bytes >= 1,
@@ -606,5 +616,83 @@ fn a_refused_collection_performs_no_work_and_charges_nothing() {
         heredoc_contents(&refused),
         vec!["body a line one\nbody a line two".to_string(), String::new()],
         "the admitted body must stay attached and only the refused one stay unresolved"
+    );
+}
+
+/// A complete parse must never claim early termination.
+///
+/// `ParseOutput::stop_cause` documents itself as `None` for completed — clean or
+/// recovered — parses, and `terminated_early()` is exactly `stop_cause.is_some()`,
+/// so a consumer cannot separate the two. An earlier revision recorded the
+/// terminal on the after-work overrun path as well as the pre-check, which meant
+/// a single drain that overran the limit produced a byte-identical AST with an
+/// identical charge and still reported `terminated_early == true`. An LSP
+/// consumer reading that would distrust a lossless AST.
+///
+/// This is the direct falsifier, and it discriminates in a way the diagnostic
+/// controls cannot: they pin what a spend is *called*, and all of them still pass
+/// whether or not the terminal is recorded alongside. Only comparing the overrun
+/// against the same source under an unlimited budget separates "the budget was
+/// spent" from "work was refused".
+///
+/// The two must not collapse into each other, so this asserts both directions:
+/// the completed overrun reports a diagnostic with no terminal, and the genuine
+/// refusal reports a terminal. Without the second half, deleting the terminal
+/// everywhere would pass.
+#[test]
+fn an_overrun_that_refused_nothing_is_not_early_termination() {
+    let lossless = parse_with_budget(FIRST_STATEMENT, unlimited_budget());
+    let charge = lossless.budget_usage.heredoc_scan_bytes;
+    assert!(charge > 1, "the fixture must charge more than the limit set below");
+    assert_eq!(
+        heredoc_contents(&lossless).len(),
+        1,
+        "this control needs exactly one heredoc, hence exactly one drain and no pre-check refusal"
+    );
+
+    // A positive limit, so the pre-check cannot fire: usage is 0 and 0 >= 1 is
+    // false. The single drain therefore runs to completion and overruns.
+    let overrun = parse_with_budget(FIRST_STATEMENT, heredoc_scan_budget(1));
+
+    assert_eq!(
+        heredoc_contents(&overrun),
+        heredoc_contents(&lossless),
+        "the overrunning parse must be byte-identical to the unlimited one"
+    );
+    assert_eq!(
+        overrun.budget_usage.heredoc_scan_bytes, charge,
+        "the overrunning work must be charged in full"
+    );
+    assert!(
+        overrun
+            .diagnostics
+            .iter()
+            .any(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. })),
+        "the spend must be observable — a silent overrun is the hole this budget closes"
+    );
+
+    // The parse lost nothing, so it is complete.
+    assert_eq!(
+        overrun.stop_cause(),
+        None,
+        "a drain that finished and attached every body must not record a terminal, got {:?}",
+        overrun.stop_cause()
+    );
+    assert!(!overrun.terminated_early(), "a lossless parse must not present as truncated");
+
+    // Opposite direction: a genuine refusal still records the terminal, so this
+    // is a distinction between the two edges and not a blanket removal.
+    let source = two_heredoc_statements();
+    let admitted_charge =
+        parse_with_budget(FIRST_STATEMENT, unlimited_budget()).budget_usage.heredoc_scan_bytes;
+    let refused = parse_with_budget(&source, heredoc_scan_budget(admitted_charge));
+    assert!(
+        matches!(refused.stop_cause(), Some(ParseStopCause::HeredocBudgetExhausted { .. })),
+        "a collection the pre-check actually refused must still record the terminal, got {:?}",
+        refused.stop_cause()
+    );
+    assert!(
+        refused.terminated_early(),
+        "a parse with a refused collection must present as terminated early"
     );
 }

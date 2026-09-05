@@ -130,11 +130,15 @@ impl<'a> Parser<'a> {
     ///
     /// Exhaustion is one event per parse, not one per affected declaration: the
     /// diagnostic is emitted once and anchored at the first refused or
-    /// overrunning declaration, and the typed terminal is recorded so a
-    /// truncated parse can never be read as ordinary completion. Later
-    /// declarations in the same parse are still refused; they add no further
-    /// diagnostics, so consumers must treat the terminal — not the diagnostic
-    /// count — as the signal that heredoc content is incomplete.
+    /// overrunning declaration. Later declarations in the same parse are still
+    /// refused; they add no further diagnostics, so consumers must treat the
+    /// terminal — not the diagnostic count — as the signal that heredoc content
+    /// is incomplete.
+    ///
+    /// The diagnostic and the terminal are deliberately separate. A diagnostic
+    /// records that the budget was *spent*; the terminal asserts that work was
+    /// *refused*. Only the pre-check refuses work, so only the pre-check records
+    /// the terminal — see `record_heredoc_budget_terminal`.
     fn report_heredoc_budget_exhausted(&mut self, location: usize) {
         let (limit, usage) = self.operation.heredoc_scan_state();
         let already_reported = self
@@ -144,6 +148,20 @@ impl<'a> Parser<'a> {
         if !already_reported {
             self.errors.push(ParseError::HeredocBudgetExhausted { limit, usage, location });
         }
+    }
+
+    /// Record the typed terminal for a collection this parse actually refused.
+    ///
+    /// `ParseOutput::stop_cause` documents itself as `None` for completed —
+    /// clean or recovered — parses, and `ParseOutput::terminated_early` is
+    /// exactly `stop_cause.is_some()`, so a consumer cannot separate them. A
+    /// drain that overran the limit but finished still attached every body it
+    /// collected and let parsing run to EOF: that parse is complete, and
+    /// asserting a terminal for it would tell consumers a lossless AST was
+    /// truncated. Only refusal — the pre-check declining to begin a collection —
+    /// is early termination, so only the pre-check records the terminal.
+    fn record_heredoc_budget_terminal(&mut self) {
+        let (limit, usage) = self.operation.heredoc_scan_state();
         self.operation.record_terminal(ParseStopCause::HeredocBudgetExhausted { limit, usage });
     }
 
@@ -176,10 +194,12 @@ impl<'a> Parser<'a> {
         // deliberately left intact so a truncated parse cannot be mistaken for
         // an ordinary complete one.
         //
-        // Exhaustion is reported at both edges of the work. The check here
-        // refuses to *begin* another collection; the check after charging
-        // reports a drain that crossed the limit while running. Reporting only
-        // here would let a single oversized collection spend the whole budget
+        // Exhaustion is reported at both edges of the work, but only this edge
+        // is early termination. The check here refuses to *begin* another
+        // collection, so it reports the diagnostic and records the terminal;
+        // the check after charging reports a drain that crossed the limit while
+        // running, which is a diagnostic only. Reporting nothing after the work
+        // would let a single oversized collection spend the whole budget
         // silently whenever no later drain followed it.
         if self.operation.heredoc_scan_exhausted() {
             let location =
@@ -187,6 +207,7 @@ impl<'a> Parser<'a> {
                     decl.decl_span.start
                 });
             self.report_heredoc_budget_exhausted(location);
+            self.record_heredoc_budget_terminal();
             return;
         }
 
@@ -208,18 +229,24 @@ impl<'a> Parser<'a> {
 
         self.operation.record_heredoc_scan(out.next_offset.saturating_sub(scan_start));
 
-        // A drain that crossed the limit while running is itself an exhaustion
-        // event. Without this, an oversized first collection could consume the
-        // whole budget and report nothing at all when no later drain follows.
-        // The bodies this drain already collected are still attached below:
-        // work that was actually done is not discarded, it is only accounted.
+        // A drain that crossed the limit while running spent budget that no
+        // pre-check refused. Without a report here, an oversized first
+        // collection could consume the whole budget in silence when no later
+        // drain follows. The bodies this drain already collected are still
+        // attached below: work that was actually done is not discarded, it is
+        // only accounted.
+        //
+        // Diagnostic only, deliberately: this drain *finished*. Every body it
+        // collected is attached and parsing continues to EOF, so the parse is
+        // complete and recording a terminal would tell consumers — through
+        // `terminated_early()` — that a lossless AST was truncated. Refusal of
+        // the *next* collection at the pre-check above is what constitutes early
+        // termination, and that is where the terminal is recorded.
         //
         // The test is a strict overrun, not the inclusive `heredoc_scan_exhausted`
-        // the pre-check uses. A drain that lands exactly on the limit truncated
-        // nothing — every body it collected is attached, and the parse is
-        // complete — so reporting a resource limit there would be a false claim
-        // against valid source. Exhausting the budget still refuses the *next*
-        // collection, at the pre-check above.
+        // the pre-check uses. A drain that lands exactly on the limit spent
+        // exactly its budget and truncated nothing, so it has nothing to report
+        // at all.
         if self.operation.heredoc_scan_overrun() {
             let location = pending.first().map_or(scan_start, |decl| decl.decl_span.start);
             self.report_heredoc_budget_exhausted(location);
