@@ -22,6 +22,11 @@
 //! `perl-release-readiness`; the reclaimed `perl-kwalitee` name is reserved for
 //! the native Rust CPANTS-compatible distribution analyser.
 //!
+//! Catalog v1 and the fixture-identity contract live beside the legacy
+//! evaluator. They freeze metric class, scoring, and fixture identities
+//! without implementing indicators, loading archives, or exposing a public
+//! CLI.
+//!
 //! ## Existing evaluation API
 //!
 //! ```no_run
@@ -39,6 +44,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
+mod distribution_kwalitee;
 mod evaluator;
 mod evidence;
 mod indicator;
@@ -47,6 +53,18 @@ mod profile;
 mod receipt;
 mod score;
 
+pub use distribution_kwalitee::{
+    Applicability, CATALOG_KIND, CATALOG_SCHEMA_VERSION, CATALOG_VERSION, CatalogError,
+    CatalogMetric, CompatibilityRelationship, CompatibleCoreScore, ContentStatus,
+    CpantsComparability, DistributionKwaliteeCatalog, DistributionKwaliteeFixture,
+    DistributionKwaliteeFixtureContract, ExpectationRule, FIXTURE_KIND, FIXTURE_SCHEMA_VERSION,
+    FixtureError, FixtureKind, InputRole, MetricClass, MetricObservation, ObservationStatus,
+    ScoringRule, catalog_fingerprint, catalog_toml, committed_fixture_root,
+    derive_compatible_core_score, fixture_contract_toml, load_distribution_kwalitee_catalog,
+    load_distribution_kwalitee_fixture_contract, parse_catalog, parse_fixture_contract,
+    render_distribution_kwalitee_catalog_markdown, validate_catalog,
+    validate_catalog_fixture_binding, validate_fixture_contract,
+};
 pub use evaluator::{EvidencePaths, ExternalResult, KwaliteeOptions, evaluate, is_known_indicator};
 pub use indicator::{
     EvidenceRef, IndicatorExplanation, IndicatorStatus, KwaliteeIndicator, explain, indicator_ids,
@@ -77,5 +95,11 @@ mod tests {
         assert!(explain(indicator_ids()[0]).is_some());
         assert!(is_known_indicator("license.declared"));
         assert!(legacy_migration_ledger().is_ok());
+        let catalog = load_distribution_kwalitee_catalog().expect("catalog");
+        assert_eq!(catalog.kind, CATALOG_KIND);
+        assert!(catalog.metric.iter().any(|metric| metric.alias == "has_manifest"));
+        let fixtures = load_distribution_kwalitee_fixture_contract().expect("fixtures");
+        validate_catalog_fixture_binding(&catalog, &fixtures, &committed_fixture_root())
+            .expect("binding");
     }
 }

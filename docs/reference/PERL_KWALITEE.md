@@ -11,6 +11,10 @@ every historical proposition are documented in
 the independent native-product, engineering-evidence, release-integrity,
 release-governance, and installed-acceptance rails named there.
 
+The native CPANTS-compatible catalog v1 and fixture-identity contract are
+documented in [DISTRIBUTION_KWALITEE_CATALOG.md](DISTRIBUTION_KWALITEE_CATALOG.md).
+That catalog is independent of this historical evaluator.
+
 ## Compatibility commands
 
 These commands remain available only to reproduce or consume historical

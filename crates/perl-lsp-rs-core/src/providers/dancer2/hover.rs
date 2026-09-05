@@ -4,8 +4,11 @@
 //! methods, pattern/effective pattern, route name when present,
 //! application/package, static parameters/captures when available, handler
 //! kind, and framework/generated provenance with limitations. For imported
-//! DSL keywords exposes provider/version and global versus handler-only
-//! availability. For hooks exposes normalized hook identity/alias provenance
+//! DSL keywords exposes provider/version and global versus request-scoped
+//! availability, reported from the same canonical handler-context query the
+//! completion and diagnostics cells use (#13604), naming route versus hook
+//! context and staying explicit when the reviewed contract establishes
+//! neither. For hooks exposes normalized hook identity/alias provenance
 //! where #8924 proves it. Never invents bodies or locations.
 
 use super::activation::Dancer2FileActivations;
@@ -14,10 +17,10 @@ use perl_semantic_facts::framework_adapters::dancer2::{
     DANCER2_DSL_CONTRACT_VERSION, Dancer2KeywordState, DslKeywordScope,
 };
 use perl_semantic_facts::hook::HookNameSelection;
+use perl_semantic_facts::route::{HandlerContextKind, RouteFact, RouteParameterKind};
 use perl_semantic_facts::route::{
     RouteEffectivePattern, RouteHandler, RouteMethodSet, RouteNameSelection, RoutePatternKind,
 };
-use perl_semantic_facts::route::{RouteFact, RouteParameterKind};
 
 /// One hover projection derived from canonical facts.
 #[non_exhaustive]
@@ -65,7 +68,7 @@ pub fn hover_projection_at(
     if let Some(route) = facts.route_at(offset) {
         return Some(route_hover(route, facts, &version));
     }
-    keyword_hover(&activation.facts, ast, offset, &version, package)
+    keyword_hover(&activation.facts, facts, ast, offset, &version, package)
 }
 
 /// `(package, name)` pairs of subroutine declarations in the AST.
@@ -234,6 +237,7 @@ fn hook_hover(fact: &perl_semantic_facts::hook::HookFact, version: &str) -> Rout
 
 fn keyword_hover(
     facts: &perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts,
+    file_facts: &CanonicalDancer2FileFacts,
     ast: &perl_parser_core::Node,
     offset: usize,
     version: &str,
@@ -265,13 +269,38 @@ fn keyword_hover(
             DslKeywordScope::Global => {
                 "global (available in any package scope that activated the DSL)".to_string()
             }
-            DslKeywordScope::RouteHandlerOnly => {
-                "route-handler-only (available inside exact route handlers)".to_string()
-            }
+            DslKeywordScope::RouteHandlerOnly => request_context_availability(file_facts, offset),
             _ => "unknown scope".to_string(),
         },
     );
     Some(RouteHoverProjection::Keyword { content })
+}
+
+/// Describe request-scoped keyword availability at `offset`.
+///
+/// Availability comes from the one canonical handler-context query (#13604),
+/// so hover, completion, and diagnostics agree by construction. The wording
+/// names the owning declaration kind when there is one, and stays explicitly
+/// non-committal for a handler position whose request context the reviewed
+/// contract does not establish.
+fn request_context_availability(facts: &CanonicalDancer2FileFacts, offset: usize) -> String {
+    match facts.request_context_at(offset) {
+        Some(context) if context.establishes_request_context() => match context.handler_kind {
+            HandlerContextKind::Hook => {
+                "request context (available here: this is an exact Dancer2 hook handler whose \
+                 reviewed position runs with the current request)"
+                    .to_string()
+            }
+            _ => "request context (available here: this is an exact Dancer2 route handler)"
+                .to_string(),
+        },
+        Some(_) => "request context (this is an exact Dancer2 hook handler, but the reviewed hook \
+                    contract does not establish request context for this hook position)"
+            .to_string(),
+        None => "request context (available inside exact route handlers and admitted hook \
+                 handlers; this position is neither)"
+            .to_string(),
+    }
 }
 
 fn find_keyword_usage(
@@ -282,6 +311,18 @@ fn find_keyword_usage(
 ) {
     if found.is_some() {
         return;
+    }
+    // Innermost match wins. A route or hook declaration is itself a keyword
+    // call whose span covers its whole handler body, so a top-down match
+    // would answer `get` for a cursor sitting on `params` inside the body.
+    // Descending first keeps the answer the keyword actually under the
+    // cursor; the enclosing declaration still answers when the cursor is on
+    // its own keyword token, because no child covers that offset.
+    for child in node.children() {
+        find_keyword_usage(child, offset, vocabulary, found);
+        if found.is_some() {
+            return;
+        }
     }
     let covers = node.location.start <= offset && offset < node.location.end;
     if covers {
@@ -294,11 +335,7 @@ fn find_keyword_usage(
             && vocabulary.contains(name.as_str())
         {
             *found = Some(name.clone());
-            return;
         }
-    }
-    for child in node.children() {
-        find_keyword_usage(child, offset, vocabulary, found);
     }
 }
 
@@ -400,6 +437,99 @@ mod tests {
         let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         assert!(hover_projection_at(&activations, &facts, &ast, "main", 5).is_none());
+    }
+
+    /// Hover content for a request-scoped keyword usage at `offset`.
+    fn keyword_hover_content(source: &'static str, needle: &str) -> String {
+        let setup = setup(source);
+        let offset = must_some_with(source.find(needle), "keyword offset");
+        let projection = must_some_with(
+            hover_projection_at(&setup.activations, &setup.facts, &setup.ast, "main", offset),
+            "keyword hover",
+        );
+        must_some_with(
+            match projection {
+                RouteHoverProjection::Keyword { content } => Some(content),
+                RouteHoverProjection::Route { .. } | RouteHoverProjection::Hook { .. } => None,
+            },
+            "expected keyword projection",
+        )
+    }
+
+    #[test]
+    fn hover_answers_the_keyword_under_the_cursor_not_the_enclosing_declaration() {
+        // A declaration's call span covers its whole handler body, so the
+        // keyword lookup must resolve innermost-first. Both directions are
+        // pinned: the inner keyword inside the body, and the declaration
+        // keyword on its own token.
+        let source = "use Dancer2;\nget '/x' => sub { params; };";
+        assert!(
+            keyword_hover_content(source, "params").contains("keyword `params`"),
+            "cursor inside the body must answer `params`"
+        );
+        let setup = setup(source);
+        let get_offset = must_some_with(source.find("get"), "get keyword offset");
+        let projection = must_some_with(
+            hover_projection_at(&setup.activations, &setup.facts, &setup.ast, "main", get_offset),
+            "route hover",
+        );
+        // The route declaration itself still owns its own keyword token.
+        assert!(matches!(projection, RouteHoverProjection::Route { .. }), "{projection:?}");
+    }
+
+    #[test]
+    fn a_hook_name_operand_colliding_with_a_keyword_still_hovers_as_the_hook() {
+        // `redirect` is both a real imported DSL keyword and, here, the hook's
+        // own name operand. The declaration owns that token: hover must answer
+        // the hook, not report a keyword usage at a position that is not one.
+        let source = "use Dancer2;\nhook redirect => sub { 1 };";
+        let setup = setup(source);
+        let operand = must_some_with(source.find("redirect"), "hook name operand offset");
+        let projection = must_some_with(
+            hover_projection_at(&setup.activations, &setup.facts, &setup.ast, "main", operand),
+            "hover at the hook name operand",
+        );
+        assert!(
+            matches!(projection, RouteHoverProjection::Hook { .. }),
+            "the hook declaration owns its name operand: {projection:?}"
+        );
+    }
+
+    #[test]
+    fn hover_inside_a_route_handler_names_the_route_request_context() {
+        let content = keyword_hover_content("use Dancer2;\nget '/x' => sub { params; };", "params");
+        assert!(content.contains("request context"), "{content}");
+        assert!(content.contains("route handler"), "{content}");
+    }
+
+    #[test]
+    fn hover_inside_an_admitted_hook_handler_names_the_hook_request_context() {
+        let content =
+            keyword_hover_content("use Dancer2;\nhook before => sub { params; };", "params");
+        assert!(content.contains("request context"), "{content}");
+        assert!(content.contains("hook handler"), "{content}");
+        assert!(
+            !content.contains("does not establish"),
+            "an admitted position must not read as unproven: {content}"
+        );
+    }
+
+    #[test]
+    fn hover_inside_an_unadmitted_hook_handler_says_availability_is_not_established() {
+        let content = keyword_hover_content(
+            "use Dancer2;\nhook before_template_render => sub { params; };",
+            "params",
+        );
+        assert!(
+            content.contains("does not establish request context"),
+            "an unproven position must say so rather than claim availability: {content}"
+        );
+    }
+
+    #[test]
+    fn hover_outside_every_handler_does_not_claim_availability_here() {
+        let content = keyword_hover_content("use Dancer2;\nmy $p = params;", "params");
+        assert!(content.contains("this position is neither"), "{content}");
     }
 
     #[test]

@@ -147,7 +147,9 @@ copy_doc "$DOCS_DIR/reference/CRATE_ARCHITECTURE_DAP.md" "$BOOK_SRC/architecture
 
 # Developer Guides section
 echo "Setting up Developer Guides..."
-copy_doc "$REPO_ROOT/CONTRIBUTING.md" "$BOOK_SRC/developer/contributing.md"
+# contributing.md is a committed canonical-pointer stub. Do not replace it with
+# root CONTRIBUTING.md: repository-relative links would resolve under the book
+# tree, and the copied workflow would drift independently between population runs.
 copy_doc "$DOCS_DIR/reference/COMMANDS_REFERENCE.md" "$BOOK_SRC/developer/commands-reference.md"
 copy_testing_doc "$DOCS_DIR/tutorials/COMPREHENSIVE_TESTING_GUIDE.md" "$BOOK_SRC/developer/testing-guide.md"
 copy_doc "$DOCS_DIR/reference/TEST_INFRASTRUCTURE_GUIDE.md" "$BOOK_SRC/developer/test-infrastructure.md"
