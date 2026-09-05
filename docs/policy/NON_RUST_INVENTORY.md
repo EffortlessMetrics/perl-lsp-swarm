@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12713 |
-| Rust-family files | 3965 |
-| Non-Rust files | 8748 |
+| Total tracked files | 12716 |
+| Rust-family files | 3967 |
+| Non-Rust files | 8749 |
 | Allowlisted | 6509 |
-| Unclassified | 2239 |
+| Unclassified | 2240 |
 
 ## Non-Rust files by category
 
@@ -22,7 +22,7 @@
 | production | 357 |
 | test | 2111 |
 | tooling | 685 |
-| unclassified | 2239 |
+| unclassified | 2240 |
 
 ## Unclassified files
 
@@ -2174,6 +2174,7 @@
 | `xtask/tests/fixtures/methodology/clean.json` | `json` |
 | `xtask/tests/fixtures/methodology/merge-ready-plus-needs.json` | `json` |
 | `xtask/tests/fixtures/methodology/review-plus-needs-builder.json` | `json` |
+| `xtask/tests/fixtures/neovim_activation_root_envelopes/valid-linux-nvim-0-11-3.json` | `json` |
 | `xtask/tests/fixtures/parser-accuracy/example-artifact.json` | `json` |
 | `xtask/tests/fixtures/parser-ratchet/equal.base.json` | `json` |
 | `xtask/tests/fixtures/parser-ratchet/equal.head.json` | `json` |
