@@ -389,7 +389,7 @@ fn check_row(
     let discovered_refs: Vec<&String> =
         discovered_paths.map(Vec::as_slice).unwrap_or(&[]).iter().collect();
     for cited in &row.emitters {
-        if !discovered_refs.iter().any(|found| *found == cited) {
+        if !discovered_refs.contains(&cited) {
             violations.push(Violation::new(
                 "emitter-not-discovered",
                 &row.id,

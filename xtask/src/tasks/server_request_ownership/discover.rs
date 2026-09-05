@@ -277,12 +277,13 @@ fn char_literal_len(bytes: &[u8], at: usize) -> Option<usize> {
     let escaped = bytes.get(at + 1) == Some(&b'\\');
     let limit = if escaped { 12 } else { 4 };
     let start = if escaped { at + 2 } else { at + 1 };
-    for cursor in start..(at + limit).min(bytes.len()) {
-        if bytes[cursor] == b'\n' {
+    let end = (at + limit).min(bytes.len());
+    for (offset, byte) in bytes[start..end].iter().enumerate() {
+        if *byte == b'\n' {
             return None;
         }
-        if bytes[cursor] == b'\'' {
-            return Some(cursor + 1 - at);
+        if *byte == b'\'' {
+            return Some(start + offset + 1 - at);
         }
     }
     None
@@ -351,17 +352,15 @@ fn blank_comments(source: &str) -> (String, Vec<bool>) {
         }
         // Raw and byte-raw strings, which do not process escapes.
         if let Some(len) = raw_string_len(bytes, at) {
-            for index in (at + 1)..(at + len).min(bytes.len()) {
-                code[index] = false;
-            }
+            let end = (at + len).min(bytes.len());
+            code[(at + 1)..end].fill(false);
             at += len;
             continue;
         }
         // Character literal, recognised only so `'"'` cannot open a string.
         if let Some(len) = char_literal_len(bytes, at) {
-            for index in (at + 1)..(at + len).min(bytes.len()) {
-                code[index] = false;
-            }
+            let end = (at + len).min(bytes.len());
+            code[(at + 1)..end].fill(false);
             at += len;
             continue;
         }
