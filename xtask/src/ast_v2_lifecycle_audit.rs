@@ -1993,7 +1993,12 @@ fn scan_macro_path_tokens(tokens: &proc_macro2::TokenStream, prefix: &[String]) 
                     continue;
                 }
                 if spelled == "as" {
-                    alias_name_next = true;
+                    // `as` is a rename only in a use tree. In a cast —
+                    // `value as perl_ast_v2::Node` — what follows is a type
+                    // path, and suppressing it hid a real reference. The two
+                    // are told apart by what comes after the identifier: a
+                    // rename ends there, a path continues with `::`.
+                    alias_name_next = !ident_is_followed_by_path_separator(&trees, index + 1);
                     restart(&mut segments);
                     after_ident = false;
                     continue;
@@ -2021,6 +2026,24 @@ fn scan_macro_path_tokens(tokens: &proc_macro2::TokenStream, prefix: &[String]) 
         }
     }
     false
+}
+
+/// Whether the identifier at `index` is followed by `::`.
+///
+/// This is what separates a use-tree rename from a cast after `as`:
+/// `use perl_ast::{Node as v2}` ends the path at `v2`, while
+/// `value as perl_ast_v2::Node` continues into one.
+fn ident_is_followed_by_path_separator(trees: &[proc_macro2::TokenTree], index: usize) -> bool {
+    if !matches!(trees.get(index), Some(proc_macro2::TokenTree::Ident(_))) {
+        return false;
+    }
+    matches!(
+        (trees.get(index + 1), trees.get(index + 2)),
+        (
+            Some(proc_macro2::TokenTree::Punct(first)),
+            Some(proc_macro2::TokenTree::Punct(second))
+        ) if first.as_char() == ':' && second.as_char() == ':'
+    )
 }
 
 /// Whether a lone package identifier in a macro is being *used* rather than

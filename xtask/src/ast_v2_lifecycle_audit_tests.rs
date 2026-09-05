@@ -1008,6 +1008,19 @@ fn the_instruments_own_files_are_classified_by_parser_not_exempted() -> Result<(
             );
         }
 
+        // `as` is a rename only in a use tree. In a cast it is followed by a
+        // type path, and suppressing that hid a real reference.
+        for cast in [
+            "fn f() { some_macro!(value as perl_ast_v2::Node); }",
+            "fn f() { some_macro!(x as perl_ast::v2::Node); }",
+            "fn f() { some_macro!(a as u8, b as perl_ast_v2::Node); }",
+        ] {
+            assert!(
+                reaches_audited_package(cast, instrument_file),
+                "a package path after a cast in {instrument_file} is a real reference: {cast}"
+            );
+        }
+
         // And the distinction that makes the token scan usable here at all: a
         // string literal inside a macro is what this module's own fixtures and
         // assertion messages are made of, and must not register.
