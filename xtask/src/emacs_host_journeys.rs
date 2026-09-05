@@ -202,22 +202,41 @@ impl DiagnosticCohort {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostSurface {
+    /// Client registers and the exact server process identity is observed.
     ClientRegistrationExactProcess,
+    /// Major mode attaches and maps to the expected LSP language id.
     ModeAttachmentMajorModeLanguageId,
+    /// Workspace reaches readiness from a stock-discovered root.
     WorkspaceReadinessStockRoot,
+    /// Flymake diagnostics appear, update, and clear over their lifecycle.
     FlymakeDiagnosticLifecycle,
+    /// Pull-model diagnostic protocol frames are exchanged. Protocol membership
+    /// only: this is the one surface [`HostSurface::is_host_visible`] reports
+    /// false for.
     DiagnosticsPollProtocol,
+    /// `completion-at-point` yields candidates consistent with buffer state.
     CapfCompletionBufferState,
+    /// ElDoc surfaces hover content for the symbol at point.
     EldocHoverObservation,
+    /// Xref resolves definitions and references.
     XrefDefinitionReferences,
+    /// A rename applies a multi-file workspace edit.
     MultiFileRenameWorkspaceEdit,
+    /// Results from a superseded generation are rejected rather than applied.
     StaleResultRejection,
+    /// A configuration change produces its declared behavioral effect.
     ConfigurationBehaviorEffect,
+    /// Shutdown completes cleanly and leaves no server process behind.
     CleanShutdownProcessCleanup,
+    /// Newline-domain and Unicode position coordinates resolve correctly.
     CoordinateDiscriminators,
+    /// A competing client or server is not silently selected in place of the subject.
     WrongCompetingSelectionGuard,
+    /// Document formatting is applied to the buffer.
     DocumentFormattingApplication,
+    /// A code action is applied, or refused with a stated reason.
     CodeActionApplicationRefusal,
+    /// Inlay hints are requested and refreshed.
     InlayHintRequestRefresh,
 }
 
@@ -236,7 +255,10 @@ impl HostSurface {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceKind {
+    /// The cell admits a host-visible semantic observation.
     HostVisibleObservation,
+    /// The cell admits protocol-membership facts only; it can never carry a
+    /// host-visible semantic pass.
     ProtocolMembershipOnly,
 }
 
@@ -245,7 +267,9 @@ pub enum EvidenceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DepthClass {
+    /// Bounded core profile depth.
     Core,
+    /// #9413 documented-feature depth: additive, never profile-strengthening.
     Optional,
 }
 
@@ -255,8 +279,13 @@ pub enum DepthClass {
 /// grow a private semantic oracle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExpectationRef {
+    /// Canonical expectation package id (`perl-agent-client-v1`).
     pub set_id: String,
+    /// Digest of the canonical set the cell binds. Binding by version rather
+    /// than by name is what makes a revised canonical set fail closed instead of
+    /// silently re-resolving the same ids.
     pub set_digest: String,
+    /// Expectation ids referenced from that set. An id absent from the landed set fails closed.
     pub ids: Vec<String>,
 }
 
@@ -264,6 +293,8 @@ pub struct ExpectationRef {
 /// expressible; root bytes and root subsets stay owned by #11366.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootReference {
+    /// `root_11366.<role>` token from the closed role vocabulary. Root bytes
+    /// and root subsets stay owned by #11366 and are unrepresentable here.
     pub role_token: String,
 }
 
@@ -273,6 +304,7 @@ pub struct RootReference {
 pub struct JourneyCell {
     /// Stable id: `emacs.<class>.<name>`, `<class>` equal to `journey_class`.
     pub cell_id: String,
+    /// Cell schema version within the manifest. Must be positive.
     pub cell_version: u32,
     /// Registered journey-class token (member of [`BASELINE_CLASSES`] or
     /// [`OPTIONAL_CLASSES`]).
@@ -318,13 +350,18 @@ pub struct JourneyCell {
 /// Validated summary of the whole compiled manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RegistrySummary {
+    /// Manifest schema version this summary was produced under.
     pub schema_version: &'static str,
+    /// Total registered cells.
     pub cell_count: usize,
+    /// Registered cells at core depth.
     pub core_cell_count: usize,
+    /// Registered cells at #9413 optional depth.
     pub optional_cell_count: usize,
     /// Per-cohort membership counts, proving cohort independence is explicit
     /// rather than inherited.
     pub cohort_membership: BTreeMap<String, usize>,
+    /// Order-insensitive digest over every binding field of every cell.
     pub digest: String,
 }
 

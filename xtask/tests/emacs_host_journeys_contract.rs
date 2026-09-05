@@ -683,3 +683,25 @@ fn production_check_fails_closed_without_landed_subject_authority() -> Result<()
     validate_compiled_registry_against(landed.path())?;
     Ok(())
 }
+
+#[test]
+fn cells_must_carry_a_positive_version() -> Result<()> {
+    // The `cell_version >= 1` law is otherwise unfalsified: every compiled row
+    // carries version 1, so a validator that dropped the check entirely would
+    // still satisfy the rest of this suite.
+    let mut cells = compiled()?;
+    cells[0].cell_version = 0;
+    let error = match emacs_host_journeys::validate_registry(&cells) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("a cell carrying version 0 passed validation"),
+    };
+    ensure!(
+        error.contains("must carry a positive version") && error.contains(&cells[0].cell_id),
+        "unexpected rejection for a zero cell version: {error}"
+    );
+
+    let mut cells = compiled()?;
+    cells[0].cell_version = 1;
+    emacs_host_journeys::validate_registry(&cells)?;
+    Ok(())
+}
