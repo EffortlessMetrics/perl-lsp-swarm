@@ -19,6 +19,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { EventEmitter } = require('node:events');
+const { PassThrough } = require('node:stream');
 const { test } = require('node:test');
 
 const {
@@ -73,7 +75,11 @@ function writeFixture(name, source) {
  */
 const READY_AND_STAY = `
 const fs = require('node:fs');
-if (process.env.FIXTURE_PIDS_FILE) fs.writeFileSync(process.env.FIXTURE_PIDS_FILE, JSON.stringify([process.pid]));
+if (process.env.FIXTURE_PIDS_FILE) {
+  const temp = process.env.FIXTURE_PIDS_FILE + '.' + process.pid + '.tmp';
+  fs.writeFileSync(temp, JSON.stringify([process.pid]));
+  fs.renameSync(temp, process.env.FIXTURE_PIDS_FILE);
+}
 console.log(process.env.FIXTURE_MARKER ?? 'FIXTURE_READY');
 process.on('SIGTERM', () => { if (process.env.FIXTURE_IGNORE_TERM !== '1') process.exit(0); });
 process.on('SIGINT', () => { if (process.env.FIXTURE_IGNORE_INT !== '1') process.exit(0); });
@@ -102,7 +108,9 @@ const STUBBORN_WITH_GRANDCHILD = `
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore' });
-fs.writeFileSync(process.env.FIXTURE_PIDS_FILE, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));
+const pidTemp = process.env.FIXTURE_PIDS_FILE + '.' + process.pid + '.tmp';
+fs.writeFileSync(pidTemp, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));
+fs.renameSync(pidTemp, process.env.FIXTURE_PIDS_FILE);
 console.log('FIXTURE_READY');
 if (process.platform !== 'win32') { process.on('SIGTERM', () => {}); }
 process.on('SIGINT', () => {});
@@ -130,9 +138,10 @@ setInterval(() => {}, 1000);
  *
  * @param {import('./dev-supervisor').WatchChildSpec[] | ((dir: string) => import('./dev-supervisor').WatchChildSpec[])} specs
  * @param {Partial<import('./dev-supervisor').SupervisorOptions>} [options]
+ * @param {{outputStreams?: {stdout?: NodeJS.WritableStream, stderr?: NodeJS.WritableStream}}} [input]
  * @returns {Run}
  */
-function runSupervisor(specs, options = {}) {
+function runSupervisor(specs, options = {}, input = {}) {
   /** @type {string[]} */
   const infos = [];
   /** @type {string[]} */
@@ -146,6 +155,7 @@ function runSupervisor(specs, options = {}) {
       info: (message) => infos.push(message),
       error: (message) => errors.push(message),
     },
+    ...input,
     options: {
       readinessTimeoutMs: 5000,
       shutdownGraceMs: 250,
@@ -716,7 +726,9 @@ const EXIT_WITH_LIVE_GRANDCHILD = `
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore' });
-fs.writeFileSync(process.env.FIXTURE_PIDS_FILE, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));
+const pidTemp = process.env.FIXTURE_PIDS_FILE + '.' + process.pid + '.tmp';
+fs.writeFileSync(pidTemp, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));
+fs.renameSync(pidTemp, process.env.FIXTURE_PIDS_FILE);
 setTimeout(() => process.exit(Number(process.env.FIXTURE_EXIT_CODE ?? '5')), 120);
 setInterval(() => {}, 1000);
 `;
@@ -742,8 +754,8 @@ void test(
     assert.equal(result.code, 5);
     assert.match(result.reason, /child-failure:types/);
     assert.ok(
-      run.infos.some((m) => m.includes('orphaned process group')),
-      `expected the orphaned-group termination receipt, got: ${run.infos.join(' | ')}`,
+      run.infos.includes('watcher "types" SIGTERM sent (process group)'),
+      `expected the exited leader's group termination receipt, got: ${run.infos.join(' | ')}`,
     );
     const { child, grandchild } = JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
     assertAllGone([...resultPids(result), child, grandchild]);
@@ -817,6 +829,287 @@ void test(
     assertAllGone([pids.child, pids.grandchild]);
   },
 );
+
+/* ---------------------------------------------------------------------- */
+/* Closed output cannot bypass owned watcher shutdown                      */
+/* ---------------------------------------------------------------------- */
+
+void test('a synchronous reporter failure prevents watcher launch', async () => {
+  const error = Object.assign(new Error('closed reporter'), { code: 'EPIPE' });
+  const controller = runDevSupervisor({
+    children: ['types', 'bundle'].map((name) => ({
+      name,
+      command: 'this-command-must-never-run',
+      args: [],
+      cwd: '.',
+      readyPattern: /NEVER_READY/,
+    })),
+    reporter: {
+      info: () => {
+        throw error;
+      },
+      error: () => {},
+    },
+    options: {
+      readinessTimeoutMs: 1000,
+      shutdownGraceMs: 25,
+      stopWhenReady: false,
+      forwardOutput: false,
+    },
+  });
+  const result = await controller.waitForExit();
+  assert.equal(result.code, 1);
+  assert.equal(result.reason, 'output-failure:reporter');
+  assert.deepEqual(
+    result.children.map((child) => child.pid),
+    [null, null],
+  );
+  assert.equal(result.failures.length, 1);
+  assert.match(result.failures[0] ?? '', /EPIPE/);
+});
+
+for (const failureMode of ['throw', 'emit']) {
+  void test(
+    `${failureMode === 'throw' ? 'synchronous' : 'asynchronous'} EPIPE enters owned shutdown`,
+    { timeout: 10000 },
+    async () => {
+      class FailingOutput extends EventEmitter {
+        constructor() {
+          super();
+          this.failed = false;
+        }
+
+        write() {
+          if (this.failed) {
+            return false;
+          }
+          this.failed = true;
+          const error = Object.assign(new Error('closed output'), { code: 'EPIPE' });
+          if (failureMode === 'throw') {
+            throw error;
+          }
+          queueMicrotask(() => this.emit('error', error));
+          return false;
+        }
+      }
+
+      const stdout = new FailingOutput();
+      const run = runSupervisor(
+        [readyChild('types', 'FIXTURE_READY_A'), readyChild('bundle', 'FIXTURE_READY_B')],
+        { forwardOutput: true },
+        { outputStreams: { stdout, stderr: new PassThrough() } },
+      );
+      const result = await run.exit;
+      assert.equal(result.code, 1);
+      assert.equal(result.reason, 'output-failure:stdout');
+      assert.equal(
+        result.failures.filter((failure) => failure.includes('output stream "stdout" failed'))
+          .length,
+        1,
+      );
+      assert.ok(
+        result.failures.some((failure) => failure.includes('EPIPE')),
+        `expected EPIPE evidence, got: ${result.failures.join(' | ')}`,
+      );
+      assertAllGone(resultPids(result));
+    },
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Windows forced-shutdown ordering                                       */
+/* ---------------------------------------------------------------------- */
+
+void test('prompt Windows taskkill records every forced shutdown exactly once', async () => {
+  const { EventEmitter } = require('node:events');
+  const { PassThrough } = require('node:stream');
+  const { runInNewContext } = require('node:vm');
+  const filename = path.join(extensionRoot, 'scripts', 'dev-supervisor.js');
+  const source = fs.readFileSync(filename, 'utf8');
+
+  // Exercise the real module with only the platform/process boundary replaced.
+  // Never change the test runner's platform or invoke taskkill on a real PID.
+  for (const promptExit of [true, false]) {
+    /** @type {Map<number, import('node:events').EventEmitter>} */
+    const watchers = new Map();
+    /** @type {number[]} */
+    const killed = [];
+    let nextPid = 1000;
+    const fakeSpawn = (command, args) => {
+      const child = new EventEmitter();
+      if (command === 'taskkill') {
+        assert.deepEqual(Array.from(args).slice(2), ['/T', '/F']);
+        assert.equal(args[0], '/pid');
+        const pid = Number(args[1]);
+        const watcher = watchers.get(pid);
+        assert.ok(watcher !== undefined, 'taskkill must target a spawned watcher');
+        killed.push(pid);
+        queueMicrotask(() => {
+          if (promptExit) {
+            // The watcher exit is observable before the awaited taskkill ends.
+            watcher.emit('exit', 0, null);
+            child.emit('exit', 0, null);
+          } else {
+            child.emit('exit', 0, null);
+            queueMicrotask(() => watcher.emit('exit', 0, null));
+          }
+        });
+      } else {
+        const pid = ++nextPid;
+        const stdout = new PassThrough();
+        Object.assign(child, { pid, stdout, stderr: new PassThrough() });
+        watchers.set(pid, child);
+        queueMicrotask(() => stdout.write('FIXTURE_READY\n'));
+      }
+      return child;
+    };
+    const moduleCopy = { exports: {} };
+    runInNewContext(
+      source,
+      {
+        module: moduleCopy,
+        require: (name) => (name === 'node:child_process' ? { spawn: fakeSpawn } : require(name)),
+        __dirname: path.dirname(filename),
+        process: { platform: 'win32', env: {} },
+        setTimeout,
+        clearTimeout,
+        setInterval,
+        clearInterval,
+      },
+      { filename },
+    );
+    const { runDevSupervisor: runIsolated } = /** @type {typeof import('./dev-supervisor')} */ (
+      moduleCopy.exports
+    );
+    const controller = runIsolated({
+      children: ['types', 'bundle'].map((name) => ({
+        name,
+        command: 'fixture-node',
+        args: [],
+        cwd: '.',
+        readyPattern: /FIXTURE_READY/,
+      })),
+      options: {
+        stopWhenReady: true,
+        forwardOutput: false,
+        readinessTimeoutMs: 1000,
+        shutdownGraceMs: 25,
+      },
+    });
+    const result = await controller.waitForExit();
+    assert.equal(result.code, 0);
+    assert.deepEqual(Array.from(result.failures), []);
+    assert.deepEqual(killed, [1001, 1002]);
+    assert.deepEqual(Array.from(result.escalations), ['types', 'bundle']);
+  }
+});
+
+/* ---------------------------------------------------------------------- */
+/* Normal leader exit does not retire a live POSIX process group           */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * The leaf installs its signal policy BEFORE it acknowledges readiness.
+ * Otherwise a fast shutdown can kill it before its ignore handler exists,
+ * making a leader-only implementation appear to clean up the whole tree.
+ */
+const GRACEFUL_LEADER_WITH_LIVE_LEAF = `
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const leafSource = \`
+  const fs = require('node:fs');
+  process.on('SIGTERM', () => {
+    fs.appendFileSync(process.env.FIXTURE_EVENTS_FILE, 'term\\\\n');
+    if (process.env.FIXTURE_LEAF_MODE === 'delayed') {
+      setTimeout(() => {
+        fs.appendFileSync(process.env.FIXTURE_EVENTS_FILE, 'clean\\\\n');
+        process.exit(0);
+      }, 100);
+    }
+  });
+  process.send('ready');
+  setInterval(() => {}, 1000);
+\`;
+const grandchild = spawn(process.execPath, ['-e', leafSource], {
+  stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+});
+process.on('SIGTERM', () => process.exit(0));
+grandchild.once('message', () => {
+  const pidTemp = process.env.FIXTURE_PIDS_FILE + '.' + process.pid + '.tmp';
+  fs.writeFileSync(pidTemp, JSON.stringify({
+    child: process.pid, grandchild: grandchild.pid,
+  }));
+  fs.renameSync(pidTemp, process.env.FIXTURE_PIDS_FILE);
+  console.log('FIXTURE_READY');
+});
+setInterval(() => {}, 1000);
+`;
+
+for (const mode of ['stubborn', 'delayed']) {
+  void test(
+    `normal shutdown retains the ${mode} descendant after its leader exits (POSIX)`,
+    { skip: IS_WINDOWS, timeout: 15000 },
+    async (t) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-dev-supervisor-group-'));
+      tempDirs.push(dir);
+      const pidsFile = path.join(dir, 'normal-stop.pids.json');
+      const eventsFile = path.join(dir, 'leaf-events.txt');
+      const fixture = path.join(dir, 'leader.cjs');
+      fs.writeFileSync(fixture, GRACEFUL_LEADER_WITH_LIVE_LEAF);
+      const run = runSupervisor(
+        [
+          {
+            name: 'types',
+            command: process.execPath,
+            args: [fixture],
+            cwd: dir,
+            readyPattern: /FIXTURE_READY/,
+            env: {
+              ...process.env,
+              FIXTURE_PIDS_FILE: pidsFile,
+              FIXTURE_EVENTS_FILE: eventsFile,
+              FIXTURE_LEAF_MODE: mode,
+            },
+          },
+          readyChild('bundle', 'FIXTURE_READY_B'),
+        ],
+        { shutdownGraceMs: mode === 'delayed' ? 2500 : 500 },
+      );
+      t.after(async () => {
+        // Test-owned cleanup must also run when an intentionally wrong
+        // implementation leaves the leaf behind or readiness fails.
+        const result = await run.controller.stop();
+        const pids = fs.existsSync(pidsFile) ? JSON.parse(fs.readFileSync(pidsFile, 'utf8')) : {};
+        for (const pid of [...resultPids(result), pids.child, pids.grandchild]) {
+          if (typeof pid === 'number') {
+            try {
+              process.kill(pid, 'SIGKILL');
+            } catch {
+              /* Already absent. */
+            }
+          }
+        }
+        // Allow the OS reaper to retire fixture PIDs before suite cleanup.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      });
+      await waitForReady(run);
+      const result = await run.controller.stop();
+      assert.equal(result.code, 0);
+      assert.deepEqual(result.failures, []);
+      const pids = JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
+      // Unlike a cleanup poll, this pins absence at the return boundary.
+      assert.throws(
+        () => process.kill(pids.grandchild, 0),
+        { code: 'ESRCH' },
+        'returning a stopped result must not leave a live descendant',
+      );
+      assert.deepEqual(result.escalations, mode === 'stubborn' ? ['types'] : []);
+      const events = fs.readFileSync(eventsFile, 'utf8');
+      assert.match(events, /term/);
+      assert.equal(events.includes('clean'), mode === 'delayed');
+    },
+  );
+}
 
 /* ---------------------------------------------------------------------- */
 /* Cleanup                                                                 */

@@ -90,6 +90,7 @@ const FORCE_KILL_WAIT_MS = 10_000;
 /** How the supervisor reports stopping, keyed by cause. */
 const STOP_REASONS = {
   CHILD_FAILURE: 'child-failure',
+  OUTPUT_FAILURE: 'output-failure',
   READINESS_TIMEOUT: 'readiness-timeout',
   SIGNAL: 'signal',
   STOP_WHEN_READY: 'stop-when-ready',
@@ -233,7 +234,7 @@ function spawnWatcher(spec) {
  */
 async function requestTermination(child, report) {
   const proc = child.proc;
-  if (proc === null || child.exit !== undefined) {
+  if (proc === null || shutdownTargetExited(child)) {
     return;
   }
   const pid = proc.pid;
@@ -256,6 +257,42 @@ async function requestTermination(child, report) {
 }
 
 /**
+ * A POSIX leader exit is not a process-group exit: a descendant can still
+ * ignore SIGTERM. Retire the group only after ESRCH, and never probe that
+ * retired id again. Windows retains its leader-based boundary; an exited
+ * Windows leader still needs independent Job Object ownership to cover it.
+ *
+ * @param {ChildState} child
+ * @returns {boolean}
+ */
+function shutdownTargetExited(child) {
+  if (child.proc === null) {
+    return true;
+  }
+  if (child.exit === undefined) {
+    return false;
+  }
+  if (process.platform === 'win32' || child.groupExited) {
+    return true;
+  }
+  const pid = child.proc?.pid;
+  if (typeof pid !== 'number') {
+    child.groupExited = true;
+    return true;
+  }
+  try {
+    process.kill(-pid, 0);
+  } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ESRCH') {
+      child.groupExited = true;
+      return true;
+    }
+    // Permission or instrumentation failures are not evidence of absence.
+  }
+  return false;
+}
+
+/**
  * Forced-kill escalation. POSIX: SIGKILL to the process group. Windows: the
  * same `taskkill /T /F` (already forced; retried for a tree that ignored
  * the first pass).
@@ -266,7 +303,7 @@ async function requestTermination(child, report) {
  */
 async function escalateTermination(child, report) {
   const proc = child.proc;
-  if (proc === null || child.exit !== undefined) {
+  if (proc === null || shutdownTargetExited(child)) {
     return;
   }
   const pid = proc.pid;
@@ -290,9 +327,19 @@ async function escalateTermination(child, report) {
 function killGroup(pid, signal, report) {
   try {
     process.kill(-pid, signal);
-  } catch {
-    // ESRCH: the group is already gone — that is the desired state.
-    report(`process group -${pid} already gone (${signal})`);
+  } catch (error) {
+    const failure = /** @type {NodeJS.ErrnoException} */ (error);
+    if (failure.code === 'ESRCH') {
+      // The process group is already gone — that is the desired state.
+      report(`process group -${pid} already gone (${signal})`);
+      return;
+    }
+    // EPERM and instrumentation failures are not evidence of absence. The
+    // bounded ownership probe below will keep the target live and make the
+    // terminal result red if shutdown cannot be confirmed.
+    report(
+      `process group -${pid} ${signal} failed (${failure.code ?? failure.message ?? String(error)})`,
+    );
   }
 }
 
@@ -321,6 +368,7 @@ function runTaskkill(pid) {
  * @property {'pending' | 'ready' | 'stopping' | 'stopped' | 'failed'} phase
  * @property {{code: number | null, signal: string | null, error?: string}} [exit]
  * @property {boolean} escalated
+ * @property {boolean} groupExited POSIX group absence has been observed.
  * @property {string} stdoutTail
  * @property {string} stderrTail
  * @property {StringDecoder} stdoutDecoder
@@ -336,6 +384,7 @@ function runTaskkill(pid) {
  * @param {{
  *   children: WatchChildSpec[],
  *   reporter?: {info: (message: string) => void, error: (message: string) => void},
+ *   outputStreams?: {stdout?: NodeJS.WritableStream, stderr?: NodeJS.WritableStream},
  *   options?: Partial<SupervisorOptions>,
  * }} input
  * @returns {{
@@ -346,6 +395,10 @@ function runTaskkill(pid) {
 function runDevSupervisor(input) {
   const report = input.reporter?.info ?? (() => {});
   const reportError = input.reporter?.error ?? (() => {});
+  const outputStreams = {
+    stdout: input.outputStreams?.stdout ?? process.stdout,
+    stderr: input.outputStreams?.stderr ?? process.stderr,
+  };
   const options = {
     readinessTimeoutMs: 300_000,
     shutdownGraceMs: 5_000,
@@ -360,6 +413,7 @@ function runDevSupervisor(input) {
     proc: null,
     phase: 'pending',
     escalated: false,
+    groupExited: false,
     stdoutTail: '',
     stderrTail: '',
     stdoutDecoder: new StringDecoder('utf8'),
@@ -383,40 +437,95 @@ function runDevSupervisor(input) {
   const exitPromise = new Promise((resolve) => {
     settle = resolve;
   });
-
-  const emit = (message) => report(message);
+  let outputFailureStarted = false;
 
   /**
-   * Waits until every child recorded an exit, or the deadline passes.
+   * Broken stdout/stderr must enter the same owned shutdown path as a watcher
+   * failure. Otherwise an unhandled EPIPE can kill the supervisor while its
+   * detached watcher groups continue running.
+   *
+   * @param {'stdout' | 'stderr' | 'reporter'} stream
+   * @param {unknown} error
+   */
+  function onOutputFailure(stream, error) {
+    if (outputFailureStarted) {
+      return;
+    }
+    outputFailureStarted = true;
+    const failure = /** @type {NodeJS.ErrnoException} */ (error);
+    const detail = `output stream "${stream}" failed (${
+      failure.code ?? failure.message ?? String(error)
+    })`;
+    result.failures.push(detail);
+    try {
+      reportError(`FAIL: ${detail}`);
+    } catch {
+      // The failure path cannot rely on either reporting stream remaining open.
+    }
+    void shutdown(`${STOP_REASONS.OUTPUT_FAILURE}:${stream}`, 1);
+  }
+
+  /** @param {string} message */
+  function emit(message) {
+    if (outputFailureStarted) {
+      return;
+    }
+    try {
+      report(message);
+    } catch (error) {
+      onOutputFailure('reporter', error);
+    }
+  }
+
+  /** @param {string} message */
+  function emitError(message) {
+    if (outputFailureStarted) {
+      return;
+    }
+    try {
+      reportError(message);
+    } catch (error) {
+      onOutputFailure('reporter', error);
+    }
+  }
+
+  if (options.forwardOutput) {
+    outputStreams.stdout.on('error', (error) => onOutputFailure('stdout', error));
+    outputStreams.stderr.on('error', (error) => onOutputFailure('stderr', error));
+  }
+
+  /**
+   * Waits for owned shutdown targets, not just direct-child exits. Polling
+   * observes orphaned-group death, for which Node emits no child event.
    *
    * @param {number} deadlineMs Epoch milliseconds.
    * @returns {Promise<void>}
    */
   function waitForExits(deadlineMs) {
-    const pending = children.filter((child) => child.exit === undefined);
-    if (pending.length === 0) {
-      return Promise.resolve();
-    }
-    const remaining = deadlineMs - Date.now();
-    if (remaining <= 0) {
+    if (children.every(shutdownTargetExited) || deadlineMs <= Date.now()) {
       return Promise.resolve();
     }
     return new Promise((resolve) => {
-      /** @type {NodeJS.Timeout} */
-      let timer;
       const done = () => {
         clearTimeout(timer);
+        clearInterval(poll);
+        for (const child of children) {
+          if (child.exitedNotify === notify) {
+            delete child.exitedNotify;
+          }
+        }
         resolve();
       };
       const notify = () => {
-        if (children.every((child) => child.exit !== undefined)) {
+        if (children.every(shutdownTargetExited)) {
           done();
         }
       };
-      for (const child of pending) {
+      const timer = setTimeout(done, Math.max(0, deadlineMs - Date.now()));
+      const poll = setInterval(notify, 25);
+      for (const child of children) {
         child.exitedNotify = notify;
       }
-      timer = setTimeout(done, remaining);
     });
   }
 
@@ -440,79 +549,53 @@ function runDevSupervisor(input) {
     result.code = code;
     emit(stoppingMessage(reason));
 
+    // POSIX ownership belongs to the process group, not only its leader. An
+    // already-exited leader can still have live descendants, so it receives
+    // the same graceful group signal before the bounded escalation. Windows
+    // cannot recover tree ownership after a leader exits; name that residual
+    // rather than silently claiming cleanup.
     for (const child of children) {
-      if (child.exit === undefined && child.proc !== null) {
-        child.phase = 'stopping';
-        await requestTermination(child, emit);
-        if (
-          process.platform === 'win32' &&
-          child.exit === undefined &&
-          !result.escalations.includes(child.spec.name)
-        ) {
-          // On Windows requestTermination is already the forced tree kill
-          // (`taskkill /T /F`): record it as an escalation so the result
-          // reports the forced termination instead of a silent pass.
-          result.escalations.push(child.spec.name);
-        }
+      if (child.proc === null) {
+        continue;
       }
-    }
-    // A watcher that exited ON ITS OWN may have left descendants in the
-    // process group it led. The supervisor still owns that group: on POSIX
-    // the group id survives while any member lives, so it is terminated
-    // exactly like a live child's group. On Windows there is no way to
-    // enumerate (or force-kill) the descendants of an already-exited leader,
-    // so the residual is named loudly instead of being silently dropped.
-    for (const child of children) {
-      if (child.exit !== undefined && child.phase === 'failed') {
-        const pid = child.proc?.pid;
-        if (typeof pid === 'number') {
-          if (process.platform === 'win32') {
-            result.failures.push(
-              `watcher "${child.spec.name}" exited on its own — any descendants it left behind cannot be force-killed from Windows after the leader exited`,
-            );
-          } else {
-            emit(
-              childTerminationMessage(
-                child.spec.name,
-                'SIGTERM sent (orphaned process group of the exited watcher)',
-              ),
-            );
-            killGroup(pid, 'SIGTERM', emit);
-          }
+      if (process.platform === 'win32' && child.exit !== undefined) {
+        if (child.phase === 'failed') {
+          result.failures.push(
+            `watcher "${child.spec.name}" exited on its own — any descendants it left behind cannot be force-killed from Windows after the leader exited`,
+          );
         }
+        continue;
+      }
+      if (shutdownTargetExited(child)) {
+        continue;
+      }
+      if (child.exit === undefined) {
+        child.phase = 'stopping';
+      }
+      await requestTermination(child, emit);
+      if (child.escalated && !result.escalations.includes(child.spec.name)) {
+        // On Windows requestTermination is already the forced tree kill
+        // (`taskkill /T /F`): record it as an escalation so the result
+        // reports it even when the watcher exits before taskkill returns.
+        result.escalations.push(child.spec.name);
       }
     }
     const graceDeadline = Date.now() + (process.platform === 'win32' ? 0 : options.shutdownGraceMs);
     await waitForExits(graceDeadline);
 
     for (const child of children) {
-      if (child.exit === undefined && child.proc !== null) {
+      if (!shutdownTargetExited(child) && child.proc !== null) {
         if (!child.escalated) {
           child.escalated = true;
           result.escalations.push(child.spec.name);
         }
         await escalateTermination(child, emit);
-      } else if (
-        child.exit !== undefined &&
-        child.phase === 'failed' &&
-        process.platform !== 'win32'
-      ) {
-        const pid = child.proc?.pid;
-        if (typeof pid === 'number') {
-          emit(
-            childTerminationMessage(
-              child.spec.name,
-              'SIGKILL sent (orphaned process group, escalation)',
-            ),
-          );
-          killGroup(pid, 'SIGKILL', emit);
-        }
       }
     }
     await waitForExits(Date.now() + FORCE_KILL_WAIT_MS);
 
     for (const child of children) {
-      if (child.exit === undefined) {
+      if (!shutdownTargetExited(child)) {
         result.failures.push(
           `watcher "${child.spec.name}" did not confirm termination during shutdown`,
         );
@@ -522,7 +605,7 @@ function runDevSupervisor(input) {
       result.children.push({
         name: child.spec.name,
         pid: child.proc?.pid ?? null,
-        phase: child.exit === undefined ? 'stopping' : 'stopped',
+        phase: shutdownTargetExited(child) ? 'stopped' : 'stopping',
         ...(child.exit !== undefined ? { exit: child.exit } : {}),
       });
     }
@@ -552,7 +635,7 @@ function runDevSupervisor(input) {
     }
     emit(detail);
     if (exit.error !== undefined) {
-      reportError(`FAIL: watcher "${child.spec.name}" could not be launched (${exit.error})`);
+      emitError(`FAIL: watcher "${child.spec.name}" could not be launched (${exit.error})`);
     }
     const code = exit.error !== undefined || exit.code === null || exit.code === 0 ? 1 : exit.code;
     void shutdown(`${STOP_REASONS.CHILD_FAILURE}:${child.spec.name}`, code);
@@ -571,9 +654,14 @@ function runDevSupervisor(input) {
   function onChildOutput(child, stream, chunk) {
     const decoder = stream === 'stdout' ? child.stdoutDecoder : child.stderrDecoder;
     const text = decoder.write(chunk);
-    if (options.forwardOutput) {
-      const sink = stream === 'stdout' ? process.stdout : process.stderr;
-      sink.write(chunk);
+    if (options.forwardOutput && !outputFailureStarted) {
+      const sink = outputStreams[stream];
+      try {
+        sink.write(chunk);
+      } catch (error) {
+        onOutputFailure(stream, error);
+        return;
+      }
     }
     if (child.phase === 'pending') {
       const tailKey = stream === 'stdout' ? 'stdoutTail' : 'stderrTail';
@@ -600,6 +688,9 @@ function runDevSupervisor(input) {
   // Spawn all watchers. Any single spawn failure is a supervisor failure.
   for (const child of children) {
     emit(startingMessage(child.spec.name));
+    if (shutdownStarted) {
+      break;
+    }
     /** @type {import('node:child_process').ChildProcess} */
     let proc;
     try {
@@ -650,7 +741,7 @@ function runDevSupervisor(input) {
       const pending = children
         .filter((child) => child.phase === 'pending')
         .map((child) => child.spec.name);
-      reportError(
+      emitError(
         `FAIL: readiness window expired before every watcher became ready (pending: ${
           pending.join(', ') || 'none'
         }) — the dev service is not healthy and will stop both watchers`,
@@ -681,7 +772,7 @@ function runDevSupervisor(input) {
     if (shutdownStarted) {
       emit(`escalating on repeated stop request (${cause})`);
       for (const child of children) {
-        if (child.exit === undefined && child.proc !== null) {
+        if (!shutdownTargetExited(child) && child.proc !== null) {
           if (!child.escalated) {
             child.escalated = true;
             result.escalations.push(child.spec.name);
