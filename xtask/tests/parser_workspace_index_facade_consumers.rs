@@ -324,7 +324,15 @@ fn forbidden_facade_references(code: &str) -> Vec<String> {
                 && chars.get(cursor + alias_chars.len()) == Some(&':')
                 && chars.get(cursor + alias_chars.len() + 1) == Some(&':')
             {
-                hits.push(target.clone());
+                if target == FACADE_HEAD {
+                    // A bare crate-root alias carries no governed segment of its
+                    // own; rescan the continuation so `parser::workspace_index`
+                    // is judged exactly like `perl_parser::workspace_index`, and
+                    // `parser::Parser` stays allowed.
+                    scan_facade_path(&chars, cursor + alias_chars.len(), false, &mut hits);
+                } else {
+                    hits.push(target.clone());
+                }
             }
         }
     }
@@ -507,7 +515,9 @@ fn scan_roots_cover_all_root_level_workspace_members_and_target_kinds() {
     assert_eq!(SCAN_ROOTS, &["crates", "xtask", "fuzz"]);
     for relative in ["xtask/src", "xtask/tests", "xtask/examples", "fuzz/fuzz_targets"] {
         assert!(
-            SCAN_ROOTS.iter().any(|root| relative == *root || relative.starts_with(&format!("{root}/"))),
+            SCAN_ROOTS
+                .iter()
+                .any(|root| relative == *root || relative.starts_with(&format!("{root}/"))),
             "governed target root is outside the scan denominator: {relative}"
         );
     }
@@ -573,8 +583,7 @@ fn compat_escape_hatch_paths_are_rejected() {
         ]
     );
 
-    let grouped_at_head =
-        "use perl_parser::{compat::workspace_index::WorkspaceIndex};\n";
+    let grouped_at_head = "use perl_parser::{compat::workspace_index::WorkspaceIndex};\n";
     let grouped_hits = forbidden_facade_references(&code_without_comments(grouped_at_head));
     assert_eq!(
         grouped_hits,
@@ -618,12 +627,12 @@ fn comments_cannot_hide_or_create_violations() {
 
 #[test]
 fn literals_cannot_hide_or_create_violations() {
-    let source = r#"
+    let source = r####"
 let ordinary = "perl_parser::workspace_index::WorkspaceIndex";
 let raw = r###"perl_parser::document_store::DocumentStore"###;
 let character = ':';
 let marker = "//"; use perl_parser::workspace_index::WorkspaceIndex;
-"#;
+"####;
     let hits = forbidden_facade_references(&code_without_comments(source));
     assert_eq!(hits, vec!["perl_parser::workspace_index".to_string()]);
 }
@@ -636,10 +645,7 @@ use index::WorkspaceIndex; use docs::DocumentStore;\n";
     let hits = forbidden_facade_references(&code_without_comments(source));
     assert_eq!(
         hits,
-        vec![
-            "perl_parser::document_store".to_string(),
-            "perl_parser::workspace_index".to_string(),
-        ]
+        vec!["perl_parser::document_store".to_string(), "perl_parser::workspace_index".to_string(),]
     );
 }
 
@@ -672,4 +678,23 @@ use my_perl_parser::workspace_index::Wrong;
 ";
     let hits = forbidden_facade_references(&code_without_comments(source));
     assert!(hits.is_empty(), "unexpected boundary hits: {hits:?}");
+}
+
+#[test]
+fn crate_root_alias_without_a_governed_segment_remains_allowed() {
+    // A crate-root alias is not itself a facade violation: only a governed
+    // continuation behind it is. Pins the bare-head replay so `parser::Parser`
+    // stays allowed while `parser::workspace_index` is still rejected.
+    let allowed = "use perl_parser as parser;\nuse parser::{Node, Parser};\n\
+use parser::ast::NodeKind;\nuse parser::workspace_refactor::WorkspaceRefactor;\n";
+    assert!(
+        forbidden_facade_references(&code_without_comments(allowed)).is_empty(),
+        "crate-root alias without a governed segment must stay allowed"
+    );
+
+    let rejected = "use perl_parser as parser;\nuse parser::workspace_index::WorkspaceIndex;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(rejected)),
+        vec!["perl_parser::workspace_index".to_string()]
+    );
 }

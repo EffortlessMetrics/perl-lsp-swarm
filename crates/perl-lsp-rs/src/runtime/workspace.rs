@@ -33,9 +33,7 @@ use perl_lsp_rs_core::config::{
 use perl_module::file_path_to_module_name;
 use perl_module::plan_module_rename_edits;
 #[cfg(feature = "workspace")]
-use perl_parser_core::source_file::{
-    is_perl_source_bytes, is_perl_source_path, is_perl_source_uri,
-};
+use perl_parser_core::source_file::is_perl_source_path;
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 use perl_semantic_facts::{
     Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFallbackState,
