@@ -28,7 +28,7 @@
 
 use chrono::{NaiveDate, Utc};
 use color_eyre::eyre::{Context, Result, bail, eyre};
-use glob::Pattern;
+use glob::{MatchOptions, Pattern};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -222,14 +222,111 @@ fn validate_exact_allow_entries(entries: &[AllowEntry]) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Entry-level coherence (#9680/#9993)
+// ---------------------------------------------------------------------------
+
+/// Git conflict-marker line prefixes. Textual conflict resolution can leave
+/// these inside a multi-line TOML string, where the parser still accepts the
+/// file; markers left at the top level already fail TOML parsing. Git writes
+/// markers at column 0, so the raw line prefix is matched and indented or
+/// commented mentions are not flagged.
+const POLICY_CONFLICT_MARKER_PREFIXES: &[&str] = &["<<<<<<< ", ">>>>>>> ", "||||||| "];
+
+fn is_policy_conflict_marker(line: &str) -> bool {
+    line == "======="
+        || POLICY_CONFLICT_MARKER_PREFIXES.iter().any(|prefix| line.starts_with(prefix))
+}
+
+/// Return 1-based line numbers that begin a Git conflict marker.
+fn policy_conflict_marker_lines(text: &str) -> Vec<usize> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| is_policy_conflict_marker(line))
+        .map(|(index, _)| index + 1)
+        .collect()
+}
+
+/// Shared wording for the mispaired-provenance finding so the raw-bytes,
+/// policy-table, and typed entry surfaces report one identical message shape.
+fn mispaired_provenance_message(
+    first_id: &str,
+    first_matcher: &str,
+    id: &str,
+    matcher: &str,
+) -> String {
+    format!(
+        "entries {first_id:?} and {id:?} carry an identical `reason` under different matchers ({first_matcher:?} vs {matcher:?}); provenance is mispaired"
+    )
+}
+
+/// Detect the mispaired-provenance shape produced by textual conflict
+/// resolution (#9680): two non-retired entries with different matchers that
+/// carry a byte-identical `reason`. The file stays valid TOML with green
+/// schema, duplicate, and coverage checks while its identity join is wrong.
+///
+/// The allowlist schema carries no issue/authority field beyond `id` today,
+/// so the subject join is derived from the identity-bearing `reason` field
+/// rather than from prose structure. Retired entries are exempt: a
+/// historical row may deliberately record the disposition of an accepted
+/// entry without being live policy.
+fn mispaired_provenance_conflicts(entries: &[&toml::map::Map<String, toml::Value>]) -> Vec<String> {
+    let mut conflicts = Vec::new();
+    let mut seen: std::collections::BTreeMap<&str, (&str, &str)> =
+        std::collections::BTreeMap::new();
+    for entry in entries {
+        let retired = entry.get("retired").and_then(toml::Value::as_bool).unwrap_or(false);
+        if retired {
+            continue;
+        }
+        let Some(reason) = entry.get("reason").and_then(toml::Value::as_str) else {
+            continue;
+        };
+        if reason.trim().is_empty() {
+            continue;
+        }
+        let id = entry.get("id").and_then(toml::Value::as_str).unwrap_or("<unnamed>");
+        let matcher = entry
+            .get("glob")
+            .or_else(|| entry.get("path"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or("<none>");
+        match seen.entry(reason) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert((id, matcher));
+            }
+            std::collections::btree_map::Entry::Occupied(slot) => {
+                let (first_id, first_matcher) = slot.get();
+                if *first_matcher != matcher {
+                    conflicts.push(mispaired_provenance_message(
+                        first_id,
+                        first_matcher,
+                        id,
+                        matcher,
+                    ));
+                }
+            }
+        }
+    }
+    conflicts
+}
+
 fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
-    let value: toml::Value =
-        toml::from_str(std::str::from_utf8(policy).context("allowlist is not UTF-8")?)
-            .context("parsing allowlist policy")?;
+    let text = std::str::from_utf8(policy).context("allowlist is not UTF-8")?;
+    let marker_lines = policy_conflict_marker_lines(text);
+    if !marker_lines.is_empty() {
+        bail!("allowlist contains Git conflict markers at lines {marker_lines:?}");
+    }
+    let value: toml::Value = toml::from_str(text).context("parsing allowlist policy")?;
     let entries = value
         .get("allow")
         .and_then(toml::Value::as_array)
         .ok_or_else(|| eyre!("allowlist must define an allow array"))?;
+    let tables: Vec<&toml::map::Map<String, toml::Value>> =
+        entries.iter().filter_map(toml::Value::as_table).collect();
+    if let Some(conflict) = mispaired_provenance_conflicts(&tables).first() {
+        bail!("mispaired provenance: {conflict}");
+    }
     let mut matchers = std::collections::BTreeSet::new();
     for (index, raw) in entries.iter().enumerate() {
         let table = raw.as_table().ok_or_else(|| eyre!("allow entry {index} is not a table"))?;
@@ -313,13 +410,39 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Match options for every allowlist glob.
+///
+/// `require_literal_separator` stops `*` and `?` at `/`, so a single-segment
+/// matcher governs exactly the directory it names: `.changes/unreleased/*.yaml`
+/// covers the fragments sitting directly in that directory, and a nested path
+/// such as `.changes/unreleased/archive/old.yaml` cannot inherit the entry.
+/// Entries that genuinely own a tree opt in explicitly with `**`.
+///
+/// The `glob` crate's default (used by the bare `Pattern::matches`) lets `*`
+/// cross `/`, which silently widens every single-segment entry into a
+/// whole-tree entry and contradicts the documented schema in
+/// `docs/policy/NON_RUST_POLICY.md`. Refs: #9994.
+const POLICY_MATCH_OPTIONS: MatchOptions = MatchOptions {
+    case_sensitive: true,
+    require_literal_separator: true,
+    require_literal_leading_dot: false,
+};
+
+/// Match one repo-relative path against an allowlist glob.
+///
+/// Every allowlist matcher goes through here so glob breadth is decided in one
+/// place instead of per call site.
+fn glob_matches_path(pattern: &Pattern, path: &str) -> bool {
+    pattern.matches_with(path, POLICY_MATCH_OPTIONS)
+}
+
 fn find_matching_prepared_entry<'a>(
     file_path: &str,
     entries: &[PreparedAllowEntry<'a>],
 ) -> Option<&'a AllowEntry> {
     for prepared in entries {
         let matched = if let Some(pattern) = prepared.glob.as_ref() {
-            pattern.matches(file_path)
+            glob_matches_path(pattern, file_path)
         } else if let Some(ref exact) = prepared.entry.path {
             exact == file_path
         } else {
@@ -407,10 +530,6 @@ fn tree_file(root: &Path, sha: &str, path: &str) -> Result<(String, Vec<u8>)> {
     Ok((object_sha.to_string(), bytes))
 }
 
-fn classify_tree(root: &Path, sha: &str) -> Result<(Vec<FileRecord>, String)> {
-    classify_tree_at(root, sha, Utc::now().date_naive())
-}
-
 fn classify_tree_at(
     root: &Path,
     sha: &str,
@@ -462,7 +581,7 @@ fn expired_paths_in_tree(
         .filter(|path| {
             !is_rust_file(path)
                 && expired.iter().any(|(glob, exact, _)| {
-                    glob.as_ref().is_some_and(|pattern| pattern.matches(path))
+                    glob.as_ref().is_some_and(|pattern| glob_matches_path(pattern, path))
                         || exact.is_some_and(|candidate| candidate == path)
                 })
                 && find_matching_prepared_entry(path, &active).is_none()
@@ -1385,7 +1504,11 @@ pub fn render_markdown(records: &[FileRecord]) -> String {
         );
         out.push_str("| Path | Extension |\n|---|---|\n");
         for r in non_rust.iter().filter(|r| !r.allowlisted) {
-            out.push_str(&format!("| `{}` | `{}` |\n", r.path, r.extension));
+            out.push_str(&format!(
+                "| `{}` | `{}` |\n",
+                escape_markdown_cell(&r.path),
+                escape_markdown_cell(&r.extension)
+            ));
         }
         out.push('\n');
     }
@@ -1395,7 +1518,13 @@ pub fn render_markdown(records: &[FileRecord]) -> String {
     for r in non_rust.iter().filter(|r| r.allowlisted) {
         let (id, owner) =
             r.entry.as_ref().map(|e| (e.id.as_str(), e.owner.as_str())).unwrap_or(("", ""));
-        out.push_str(&format!("| `{}` | {} | `{}` | {} |\n", r.path, r.category, id, owner));
+        out.push_str(&format!(
+            "| `{}` | {} | `{}` | {} |\n",
+            escape_markdown_cell(&r.path),
+            r.category,
+            escape_markdown_cell(id),
+            escape_markdown_cell(owner)
+        ));
     }
     out.push('\n');
 
@@ -1419,7 +1548,7 @@ pub fn render_markdown(records: &[FileRecord]) -> String {
 /// row counts, so stale summary totals cannot survive a regeneration.
 pub(crate) fn verify_inventory_projection(markdown: &str) -> Result<()> {
     let mut seen_paths = std::collections::BTreeSet::new();
-    let mut summary_counts: std::collections::BTreeMap<&str, usize> =
+    let mut summary_counts: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     let mut section_rows: std::collections::BTreeMap<&str, usize> =
         std::collections::BTreeMap::new();
@@ -1431,22 +1560,21 @@ pub(crate) fn verify_inventory_projection(markdown: &str) -> Result<()> {
             section = line.trim_start_matches('#').trim();
             continue;
         }
-        let Some(rest) = line.strip_prefix("| ") else { continue };
-        let cells: Vec<&str> =
-            rest.trim_end().trim_end_matches('|').split('|').map(str::trim).collect();
+        let Some(cells) = parse_markdown_cells(line) else { continue };
         if cells.len() == 2 && section == "Summary" {
             if let Ok(count) = cells[1].parse::<usize>() {
-                summary_counts.insert(cells[0], count);
+                summary_counts.insert(cells[0].clone(), count);
             }
             continue;
         }
         let Some(path) = cells
             .first()
             .and_then(|cell| cell.strip_prefix('`').and_then(|path| path.strip_suffix('`')))
+            .map(str::to_string)
         else {
             continue;
         };
-        if !seen_paths.insert(path) {
+        if !seen_paths.insert(path.clone()) {
             bail!(
                 "non-Rust inventory projection emits duplicate file rows for `{path}`; \
                  regenerate from a single pass with `cargo xtask non-rust inventory --write`"
@@ -1622,9 +1750,10 @@ fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -
         );
     }
     if normalize_line_endings(&actual) != normalize_line_endings(&expected) {
+        let path_delta = inventory_path_delta(&actual, &expected);
         bail!(
-            "non-Rust inventory documentation is stale at {}; run `cargo xtask non-rust inventory --write` to regenerate it",
-            docs_path.display()
+            "non-Rust inventory documentation is stale at {}; {path_delta}; run `cargo xtask non-rust inventory --write` to regenerate it",
+            docs_path.display(),
         );
     }
     println!("Non-Rust inventory scan completed: {}", docs_path.display());
@@ -1679,6 +1808,87 @@ fn added_paths_since(root: &Path, baseline: &str) -> Result<Vec<String>> {
 
 fn normalize_line_endings(value: &str) -> String {
     value.replace("\r\n", "\n")
+}
+
+/// Escape a literal value for embedding in one Markdown table cell so the
+/// rendered row keeps exactly one cell per column: a literal `|` inside a
+/// value would otherwise split the row. Backslashes are intentionally left
+/// unchanged because values may be rendered inside Markdown code spans. The
+/// pipe escape is reversed by [`parse_markdown_cells`].
+fn escape_markdown_cell(value: &str) -> String {
+    value.replace('|', "\\|")
+}
+
+/// Split one rendered table row into its raw cell values, honoring
+/// [`escape_markdown_cell`] pipe escapes and trimming the surrounding
+/// whitespace the renderer emits. Only the marker immediately before a pipe
+/// is consumed; all other backslashes are preserved verbatim. Returns `None`
+/// for lines outside table rows.
+fn parse_markdown_cells(line: &str) -> Option<Vec<String>> {
+    let rest = line.trim().strip_prefix("| ")?;
+    // Remove exactly the table delimiter. Using `trim_end_matches('|')` would
+    // also remove a literal pipe when a caller provides a row without the
+    // renderer's separating whitespace.
+    let trimmed = rest.trim_end().strip_suffix('|')?;
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    for ch in trimmed.chars() {
+        match ch {
+            '|' => {
+                if current.ends_with('\\') {
+                    current.pop();
+                    current.push('|');
+                } else {
+                    cells.push(current.trim().to_string());
+                    current = String::new();
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    cells.push(current.trim().to_string());
+    Some(cells)
+}
+
+/// Collect the backtick-wrapped first-column cells of a generated inventory
+/// table.
+///
+/// Header, separator, and summary rows have no backtick-wrapped first cell
+/// and are ignored, so the result is exactly the tracked-file rows.
+fn inventory_row_paths(markdown: &str) -> std::collections::BTreeSet<String> {
+    markdown
+        .lines()
+        .filter_map(|line| {
+            let cells = parse_markdown_cells(line)?;
+            let cell = cells.first()?;
+            Some(cell.strip_prefix('`')?.strip_suffix('`')?.to_string())
+        })
+        .collect()
+}
+
+/// Describe how a regenerated inventory (`expected`) differs from the
+/// committed one (`actual`).
+///
+/// Returns the exact missing and no-longer-generated rows when the row paths
+/// diverge, or a metadata-only note when both documents cover the same rows
+/// but summary counts or other non-row content changed.
+fn inventory_path_delta(actual: &str, expected: &str) -> String {
+    let actual = inventory_row_paths(actual);
+    let expected = inventory_row_paths(expected);
+    let missing = expected.difference(&actual).cloned().collect::<Vec<_>>();
+    let unexpected = actual.difference(&expected).cloned().collect::<Vec<_>>();
+    let mut details = Vec::new();
+    if !missing.is_empty() {
+        details.push(format!("missing generated paths: {}", missing.join(", ")));
+    }
+    if !unexpected.is_empty() {
+        details.push(format!("paths no longer generated: {}", unexpected.join(", ")));
+    }
+    if details.is_empty() {
+        "the row paths match but summary or metadata changed".to_string()
+    } else {
+        details.join("; ")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1791,6 +2001,13 @@ fn validate_policy_table(
             return 0;
         }
     };
+    // Scan the raw source before parsing and table lookup: a syntactically
+    // valid policy without the selected table must not bypass marker checks.
+    let marker_lines = policy_conflict_marker_lines(&text);
+    if !marker_lines.is_empty() {
+        errors.push(format!("{}: Git conflict markers at lines {marker_lines:?}", path.display()));
+    }
+
     let data = match toml::from_str::<toml::Value>(&text) {
         Ok(data) => data,
         Err(err) => {
@@ -1809,12 +2026,14 @@ fn validate_policy_table(
 
     let mut seen_ids: BTreeMap<String, usize> = BTreeMap::new();
     let mut seen_matchers: BTreeMap<String, String> = BTreeMap::new();
+    let mut coherence_tables: Vec<&toml::map::Map<String, toml::Value>> = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         let Some(table) = entry.as_table() else {
             errors
                 .push(format!("{}: `{table_name}` entry #{index} must be a table", path.display()));
             continue;
         };
+        coherence_tables.push(table);
 
         if strict_allow_schema {
             validate_allow_schema_entry(table, index, errors);
@@ -1839,6 +2058,12 @@ fn validate_policy_table(
             errors.push(format!(
                 "{entry_id}: duplicate matcher `{matcher}` (also used by id `{previous_id}`)"
             ));
+        }
+    }
+
+    if table_name == "allow" {
+        for conflict in mispaired_provenance_conflicts(&coherence_tables) {
+            errors.push(format!("{}: mispaired provenance: {conflict}", path.display()));
         }
     }
 
@@ -1999,11 +2224,20 @@ fn parse_policy_date(
 /// Broad-glob heuristic for policy schema validation. Mirrors the original
 /// Python gate and intentionally catches more than the strict enforcement
 /// broad-glob helper.
+///
+/// Breadth is decided by `**`, the only token that crosses a directory
+/// boundary, and it counts wherever it appears — `**/x`, `x/**`, and
+/// `x/**/y` all reach an arbitrary-depth tree. Testing only the leading and
+/// trailing forms let an internal `**` (`fixtures/pkt/**/*.json`) span a tree
+/// while the validator called it narrow and waived `broad_glob_reason`.
+///
+/// `*.md` used to be listed here because the loose matcher let its `*` cross
+/// `/`, making it a whole-repository grab; with segment-aware matching
+/// (#9994) it reaches only the repository root, so demanding a
+/// `broad_glob_reason` for it would force a misleading justification onto a
+/// genuinely narrow rule. Refs: #9994, #14583.
 fn is_policy_broad_glob(glob_str: &str) -> bool {
-    glob_str.starts_with("**")
-        || glob_str.ends_with("/**")
-        || glob_str == "*.md"
-        || glob_str.starts_with("**/")
+    glob_str.split('/').any(|segment| segment == "**")
 }
 
 // ---------------------------------------------------------------------------
@@ -2127,14 +2361,6 @@ fn days_to_ymd(days: u64) -> (u32, u32, u32) {
     (year as u32, month as u32, day as u32)
 }
 
-/// Returns `true` when the glob pattern looks like a "broad" glob
-/// (e.g. `**/*`, `**`, `*`).
-fn is_broad_glob(glob_str: &str) -> bool {
-    matches!(glob_str.trim(), "**" | "**/*" | "*" | "*.*")
-        || glob_str.starts_with("**/*.")
-            && glob_str.trim_start_matches("**/").trim_start_matches("*.").is_empty()
-}
-
 fn expired_entry_count(entries: &[AllowEntry]) -> usize {
     entries
         .iter()
@@ -2167,7 +2393,7 @@ fn entry_matches_any_tracked_file(entry: &AllowEntry, tracked: &[String]) -> boo
         let Ok(pattern) = Pattern::new(glob_str) else {
             return false;
         };
-        return tracked.iter().any(|tracked_path| pattern.matches(tracked_path));
+        return tracked.iter().any(|tracked_path| glob_matches_path(&pattern, tracked_path));
     }
     false
 }
@@ -2179,12 +2405,6 @@ fn unused_entry_count(entries: &[AllowEntry], tracked: &[String]) -> usize {
         .filter(|entry| entry.glob.is_some() ^ entry.path.is_some())
         .filter(|entry| !entry_matches_any_tracked_file(entry, tracked))
         .count()
-}
-
-/// Load the allowlist from the given path (overrides root-relative default).
-fn load_allowlist_from(path: &std::path::Path) -> Result<Allowlist> {
-    let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
 fn render_policy_report_markdown(receipt: &FilePolicyReceipt) -> String {
@@ -2243,6 +2463,38 @@ fn check_allowlist_entries(
                     path: None,
                     entry_id: Some(id.to_string()),
                 });
+            }
+        }
+    }
+
+    // --- Mispaired provenance (#9680/#9993), blocking in enforcement modes ---
+    if mode != CheckFilePolicyMode::Advisory {
+        let mut seen_reasons: BTreeMap<&str, (&str, &str)> = BTreeMap::new();
+        for entry in entries.iter().filter(|entry| !entry.retired) {
+            if entry.reason.trim().is_empty() {
+                continue;
+            }
+            let matcher = entry.glob.as_deref().or(entry.path.as_deref()).unwrap_or("<none>");
+            match seen_reasons.entry(entry.reason.as_str()) {
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert((entry.id.as_str(), matcher));
+                }
+                std::collections::btree_map::Entry::Occupied(slot) => {
+                    let (first_id, first_matcher) = slot.get();
+                    if *first_matcher != matcher {
+                        violations.push(PolicyViolation {
+                            kind: "mispaired-provenance".to_string(),
+                            message: mispaired_provenance_message(
+                                first_id,
+                                first_matcher,
+                                &entry.id,
+                                matcher,
+                            ),
+                            path: None,
+                            entry_id: Some(entry.id.clone()),
+                        });
+                    }
+                }
             }
         }
     }
@@ -2406,9 +2658,12 @@ fn check_allowlist_entries(
         }
 
         // --- Broad glob without reason ---
+        // Emptiness is judged the same way schema validation judges it: a
+        // blank or whitespace-only justification is an absent one, or a broad
+        // glob could satisfy enforcement with `broad_glob_reason = ""`.
         if let Some(ref glob_str) = entry.glob
-            && is_broad_glob(glob_str)
-            && entry.broad_glob_reason.is_none()
+            && is_policy_broad_glob(glob_str)
+            && entry.broad_glob_reason.as_deref().is_none_or(|reason| reason.trim().is_empty())
         {
             violations.push(PolicyViolation {
                 kind: "broad-glob-no-reason".to_string(),
@@ -2432,12 +2687,19 @@ pub fn check_file_policy(root: &std::path::Path, config: CheckFilePolicyConfig) 
         if let Some(ref r) = config.root_override { r.clone() } else { root.to_path_buf() };
     let root = effective_root.as_path();
 
-    // Load allowlist.
-    let allowlist = if let Some(ref custom_path) = config.allowlist_path {
-        load_allowlist_from(custom_path)?
-    } else {
-        load_allowlist(root)?
-    };
+    // Load the raw allowlist before deserializing it so blocking enforcement
+    // cannot bypass conflict-marker detection by going through the typed
+    // loader. The structural validation path performs the same raw scan.
+    let allowlist_path = config
+        .allowlist_path
+        .clone()
+        .unwrap_or_else(|| root.join("policy/non-rust-allowlist.toml"));
+    let allowlist_text = fs::read_to_string(&allowlist_path)
+        .with_context(|| format!("reading {}", allowlist_path.display()))?;
+    let marker_lines = policy_conflict_marker_lines(&allowlist_text);
+
+    let allowlist: Allowlist = toml::from_str(&allowlist_text)
+        .with_context(|| format!("parsing {}", allowlist_path.display()))?;
 
     let entries = &allowlist.allow;
 
@@ -2446,6 +2708,15 @@ pub fn check_file_policy(root: &std::path::Path, config: CheckFilePolicyConfig) 
     let prepared = prepare_allow_entries(entries);
 
     let mut violations: Vec<PolicyViolation> = Vec::new();
+
+    if !marker_lines.is_empty() && config.mode != CheckFilePolicyMode::Advisory {
+        violations.push(PolicyViolation {
+            kind: "conflict-marker".to_string(),
+            message: format!("Git conflict markers at lines {marker_lines:?}"),
+            path: Some(allowlist_path.display().to_string()),
+            entry_id: None,
+        });
+    }
 
     // --- Per-file classification ---
     let mut non_rust_count = 0usize;
@@ -2550,7 +2821,7 @@ pub fn check_file_policy(root: &std::path::Path, config: CheckFilePolicyConfig) 
 
     // Decide exit code based on mode.
     if config.mode != CheckFilePolicyMode::Advisory && !violations.is_empty() {
-        std::process::exit(1);
+        bail!("file policy check found {} violation(s)", violations.len());
     }
 
     Ok(())
@@ -3316,6 +3587,146 @@ mod tests {
         violations.iter().map(|violation| violation.kind.as_str()).collect()
     }
 
+    /// Two-schema-valid entries whose `reason` prose was spliced from one row
+    /// into the other by textual conflict resolution (#9680).
+    fn mispaired_allowlist_fixture() -> String {
+        r#"
+schema_version = 1
+policy = "non-rust-allowlist"
+
+[[allow]]
+id = "entry-a"
+path = "docs/a.md"
+kind = "doc"
+language = "markdown"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Documents the alpha subsystem with its full user contract."
+covered_by = ["manual review"]
+created = "2026-01-01"
+review_after = "2026-06-01"
+
+[[allow]]
+id = "entry-b"
+path = "docs/b.md"
+kind = "doc"
+language = "markdown"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Documents the alpha subsystem with its full user contract."
+covered_by = ["manual review"]
+created = "2026-01-01"
+review_after = "2026-06-01"
+"#
+        .to_string()
+    }
+
+    #[test]
+    fn mispaired_provenance_fails_exact_policy_bytes() -> Result<()> {
+        let err =
+            validate_exact_policy_bytes(mispaired_allowlist_fixture().as_bytes()).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("provenance is mispaired"), "{message}");
+        assert!(message.contains("entry-a") && message.contains("entry-b"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn distinct_reasons_pass_exact_policy_bytes() -> Result<()> {
+        let policy = mispaired_allowlist_fixture().replacen(
+            "reason = \"Documents the alpha subsystem with its full user contract.\"",
+            "reason = \"Documents the beta subsystem with its own operator guide.\"",
+            1,
+        );
+        validate_exact_policy_bytes(policy.as_bytes())?;
+        Ok(())
+    }
+
+    #[test]
+    fn retired_duplicate_reason_passes_exact_policy_bytes() -> Result<()> {
+        let policy = mispaired_allowlist_fixture()
+            .replace("id = \"entry-b\"", "id = \"entry-b\"\nretired = true");
+        validate_exact_policy_bytes(policy.as_bytes())?;
+        Ok(())
+    }
+
+    #[test]
+    fn conflict_marker_inside_multiline_string_fails_exact_policy_bytes() -> Result<()> {
+        let policy = mispaired_allowlist_fixture().replace(
+            "reason = \"Documents the alpha subsystem with its full user contract.\"",
+            "reason = \"\"\"\nKeeps the alpha subsystem documented.\n<<<<<<< HEAD\nKeeps the gamma subsystem documented.\n=======\n>>>>>>> feature-branch\n\"\"\"",
+        );
+        let err = validate_exact_policy_bytes(policy.as_bytes()).unwrap_err();
+        assert!(err.to_string().contains("conflict markers"), "{}", err);
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_multiline_reason_separator_is_not_a_conflict_marker() -> Result<()> {
+        let policy = mispaired_allowlist_fixture().replacen(
+            "reason = \"Documents the alpha subsystem with its full user contract.\"",
+            "reason = \"\"\"\n======= Overview\nDescribes the alpha subsystem.\n\"\"\"",
+            1,
+        );
+        let policy = policy.replacen(
+            "reason = \"Documents the alpha subsystem with its full user contract.\"",
+            "reason = \"Documents the beta subsystem with its own operator guide.\"",
+            1,
+        );
+        validate_exact_policy_bytes(policy.as_bytes())?;
+        Ok(())
+    }
+
+    #[test]
+    fn mispaired_provenance_blocks_enforcement_modes_and_spares_advisory() -> Result<()> {
+        let allowlist: Allowlist = toml::from_str(&mispaired_allowlist_fixture())?;
+        let entries = allowlist.allow;
+        let blocking =
+            check_allowlist_entries(&entries, CheckFilePolicyMode::BlockingAllowlist, &[]);
+        assert!(violation_kinds(&blocking).contains(&"mispaired-provenance"));
+        let strict = check_allowlist_entries(&entries, CheckFilePolicyMode::BlockingStrict, &[]);
+        assert!(violation_kinds(&strict).contains(&"mispaired-provenance"));
+        let advisory = check_allowlist_entries(&entries, CheckFilePolicyMode::Advisory, &[]);
+        assert!(!violation_kinds(&advisory).contains(&"mispaired-provenance"));
+        Ok(())
+    }
+
+    #[test]
+    fn policy_table_path_reports_mispaired_provenance_and_conflict_markers() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let allowlist_path = temp.path().join("allowlist.toml");
+        std::fs::write(&allowlist_path, mispaired_allowlist_fixture())?;
+        let mut errors = Vec::new();
+        validate_policy_table(&allowlist_path, "allow", true, &mut errors);
+        assert!(errors.iter().any(|error| error.contains("provenance is mispaired")), "{errors:?}");
+
+        let marker_path = temp.path().join("markers.toml");
+        std::fs::write(
+            &marker_path,
+            "[[allow]]\nid = \"entry-a\"\nreason = \"\"\"\nline\n<<<<<<< HEAD\n\"\"\"\n",
+        )?;
+        let mut marker_errors = Vec::new();
+        validate_policy_table(&marker_path, "allow", false, &mut marker_errors);
+        assert!(
+            marker_errors.iter().any(|error| error.contains("conflict markers")),
+            "{marker_errors:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn policy_table_path_scans_markers_before_missing_table_return() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("missing-allow.toml");
+        std::fs::write(&path, "# no allow table\n<<<<<<< HEAD\n")?;
+        let mut errors = Vec::new();
+        assert_eq!(validate_policy_table(&path, "allow", true, &mut errors), 0);
+        assert!(errors.iter().any(|error| error.contains("conflict markers")), "{errors:?}");
+        Ok(())
+    }
+
     #[test]
     fn expiry_is_valid_on_expiration_date_and_excluded_afterward() -> Result<()> {
         let mut entry = make_entry("expiring", None, Some("docs/a.txt"), "documentation");
@@ -3546,6 +3957,474 @@ mod tests {
         assert_eq!(rec.category, "unclassified", "retired entry must not match");
     }
 
+    // --- glob breadth: `*` is one segment, `**` is a tree (#9994) ---
+
+    /// The repository root, for proofs that must bind to the shipped policy
+    /// rather than a fixture copy of it.
+    fn repo_root() -> Result<std::path::PathBuf> {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        manifest_dir
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| eyre!("{} has no workspace-root parent", manifest_dir.display()))
+    }
+
+    /// The single production rule that governs unreleased Changie fragments.
+    fn changie_fragment_entry() -> Result<AllowEntry> {
+        let allowlist = load_allowlist(&repo_root()?)?;
+        allowlist
+            .allow
+            .into_iter()
+            .find(|entry| entry.id == CHANGIE_FRAGMENT_ENTRY_ID)
+            .ok_or_else(|| eyre!("allowlist is missing entry {CHANGIE_FRAGMENT_ENTRY_ID}"))
+    }
+
+    const CHANGIE_FRAGMENT_ENTRY_ID: &str = "non-rust-changelog-fragments";
+
+    #[test]
+    fn single_star_glob_stops_at_a_directory_separator() {
+        let entries = vec![make_entry("fragments", Some("a/b/*.yaml"), None, "documentation")];
+
+        assert!(classify_file("a/b/one.yaml", &entries).allowlisted, "direct child must match");
+        assert!(
+            !classify_file("a/b/nested/one.yaml", &entries).allowlisted,
+            "`*` must not cross `/`: a nested path cannot inherit a single-segment entry"
+        );
+        assert!(
+            !classify_file("a/b/nested/deeper/one.yaml", &entries).allowlisted,
+            "`*` must not cross `/` at any depth"
+        );
+    }
+
+    #[test]
+    fn double_star_glob_still_owns_a_whole_tree() {
+        // Negative control for the fix above: tree-shaped entries must keep
+        // matching nested paths, or the matcher change would silently strip
+        // coverage from every `**` entry in the ledger.
+        let entries = vec![make_entry("docs", Some("docs/**"), None, "documentation")];
+
+        assert!(classify_file("docs/policy/FILE_POLICY.md", &entries).allowlisted);
+        assert!(classify_file("docs/a/b/c/deep.md", &entries).allowlisted);
+    }
+
+    #[test]
+    fn leading_double_star_glob_matches_root_and_nested_paths() {
+        // `**/*.md` is the breadth `non-rust-root-governance-docs` carries.
+        let entries = vec![make_entry("markdown", Some("**/*.md"), None, "documentation")];
+
+        assert!(classify_file("README.md", &entries).allowlisted, "root-level markdown");
+        assert!(classify_file("book/src/intro.md", &entries).allowlisted, "nested markdown");
+    }
+
+    #[test]
+    fn nested_markdown_keeps_the_coverage_the_loose_matcher_used_to_supply() -> Result<()> {
+        // Tightening `*` to one segment would have dropped every nested
+        // markdown file out of the ledger, because the entry that covered them
+        // was written `*.md` and only reached them through the loose matcher.
+        // The breadth is now declared instead of accidental; this proves the
+        // fix did not quietly shrink what the policy governs.
+        let allowlist = load_allowlist(&repo_root()?)?;
+        let prepared = prepare_allow_entries(&allowlist.allow);
+
+        for nested in [
+            ".claude/skills/deliver-pr/SKILL.md",
+            "docs/policy/NON_RUST_POLICY.md",
+            "book/src/SUMMARY.md",
+        ] {
+            assert!(
+                find_matching_prepared_entry(nested, &prepared).is_some(),
+                "{nested} must stay governed by the allowlist"
+            );
+        }
+        Ok(())
+    }
+
+    // --- one typed rule governs the Changie fragment class (#9994) ---
+
+    #[test]
+    fn changie_rule_governs_exactly_the_fragment_directory() -> Result<()> {
+        let entry = changie_fragment_entry()?;
+        let entries = vec![entry];
+
+        // Ordinary fragments the producer creates are covered with no edit here.
+        for fragment in [
+            ".changes/unreleased/product-1-Added-101010.yaml",
+            ".changes/unreleased/product-14466-Fixed-000000.yaml",
+        ] {
+            assert!(
+                classify_file(fragment, &entries).allowlisted,
+                "{fragment} must be governed by the typed rule"
+            );
+        }
+
+        // Nothing outside the exact fragment path class may inherit the rule.
+        for outsider in [
+            ".changes/unreleased/nested/product-1-Added-101010.yaml",
+            ".changes/unreleased/archive/2025/product-1-Added-101010.yaml",
+            ".changes/product-1-Added-101010.yaml",
+            ".changes/v0.1.0.yaml",
+            "CHANGELOG.md",
+            "docs/product-1-Added-101010.yaml",
+            "crates/perl-parser/fixtures/product-1-Added-101010.yaml",
+        ] {
+            assert!(
+                !classify_file(outsider, &entries).allowlisted,
+                "{outsider} must not inherit the Changie fragment rule"
+            );
+        }
+
+        // The rule is bound to the producer's extension, not to YAML generally.
+        assert!(
+            !classify_file(".changes/unreleased/product-1-Added-101010.yml", &entries).allowlisted,
+            "`.yml` is not the fragment extension Changie writes"
+        );
+        assert!(
+            !classify_file(".changes/unreleased/.gitkeep", &entries).allowlisted,
+            "the directory keeper is not a fragment and is covered on its own terms"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn changie_rule_is_narrow_enough_to_need_no_broad_glob_justification() -> Result<()> {
+        let entry = changie_fragment_entry()?;
+        let glob = entry.glob.as_deref().ok_or_else(|| eyre!("fragment rule must be a glob"))?;
+
+        assert!(
+            !is_policy_broad_glob(glob),
+            "{glob} must stay a narrow path class; a broad matcher would let unrelated files in"
+        );
+        assert!(
+            entry.broad_glob_reason.is_none(),
+            "a narrow rule must not carry a decorative broad-glob justification"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn broad_glob_detection_tracks_segment_aware_matching() {
+        // `**` is the only token that crosses a directory boundary, so it is
+        // the only thing that makes a matcher broad.
+        for broad in [
+            "**/*.md",
+            "**/*.pl",
+            "docs/**",
+            "**/LICENSE-*",
+            "**",
+            // `**` counts wherever it sits. Checking only the leading and
+            // trailing forms let an internal `**` span a tree while the
+            // validator waived `broad_glob_reason`.
+            "docs/**/README.md",
+            "fixtures/agent_review_packet/**/*.json",
+            "crates/perl-parser/**/*.disabled",
+        ] {
+            assert!(is_policy_broad_glob(broad), "{broad} reaches a whole tree");
+        }
+
+        // Single-segment matchers govern one directory. Requiring a
+        // broad-glob justification for these would force a misleading
+        // rationale onto a narrow rule — and would block #14583 from
+        // narrowing the markdown entry back to repository-root governance
+        // docs, whose matcher is exactly `*.md`.
+        for narrow in
+            ["*.md", ".changes/unreleased/*.yaml", "badges/*.json", "crates/*/features_sot.toml"]
+        {
+            assert!(!is_policy_broad_glob(narrow), "{narrow} governs one directory level");
+        }
+    }
+
+    #[test]
+    fn both_production_validators_agree_on_tree_glob_breadth() {
+        // `validate-policy` and `check-file-policy --mode blocking-strict` are
+        // both advertised as enforcing the broad-glob justification rule. They
+        // used to consult different predicates, so an entry could be refused by
+        // one and waved through by the other.
+        for glob in ["docs/**/README.md", "fixtures/pkt/**/*.json", "docs/**", "**/*.md"] {
+            // A blank justification is treated as absent on both sides;
+            // otherwise `broad_glob_reason = ""` would satisfy enforcement
+            // while schema validation still refused the entry.
+            for reason in [None, Some(String::new()), Some("   \n".to_string())] {
+                let mut entry = make_entry("tree", Some(glob), None, "documentation");
+                entry.broad_glob_reason = reason.clone();
+
+                let strict = check_allowlist_entries(
+                    std::slice::from_ref(&entry),
+                    CheckFilePolicyMode::BlockingStrict,
+                    &[],
+                );
+                assert!(
+                    violation_kinds(&strict).contains(&"broad-glob-no-reason"),
+                    "blocking-strict must refuse {glob} with justification {reason:?}"
+                );
+            }
+
+            assert!(
+                is_policy_broad_glob(glob),
+                "schema validation must agree that {glob} is broad"
+            );
+
+            // Positive control: a real justification satisfies enforcement, so
+            // the rule cannot be passing by refusing everything.
+            let mut justified = make_entry("tree", Some(glob), None, "documentation");
+            justified.broad_glob_reason = Some("Bounded by one owned tree.".to_string());
+            let accepted = check_allowlist_entries(
+                std::slice::from_ref(&justified),
+                CheckFilePolicyMode::BlockingStrict,
+                &[],
+            );
+            assert!(
+                !violation_kinds(&accepted).contains(&"broad-glob-no-reason"),
+                "a justified {glob} must not be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn broad_changes_tree_glob_is_rejected_without_a_reason() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let allowlist = temp.path().join("allow.toml");
+        let debt = temp.path().join("debt.toml");
+        fs::write(
+            &allowlist,
+            r#"
+schema_version = 1
+policy = "non-rust-allowlist"
+
+[[allow]]
+id = "non-rust-changes-tree"
+glob = ".changes/**"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Everything under the changes directory."
+covered_by = []
+created = "2026-05-13"
+review_after = "2026-11-13"
+"#,
+        )?;
+        fs::write(&debt, "debt = []\n")?;
+
+        let validation = validate_non_rust_policy_files(&allowlist, &debt);
+
+        assert!(
+            validation.errors.iter().any(|error| error.contains("broad_glob_reason")),
+            "a `.changes/**` tree grab must be refused, not silently accepted: {:?}",
+            validation.errors
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fragment_path_coverage_is_not_a_claim_about_fragment_content() -> Result<()> {
+        // The path rule says only "this path class is accounted for". It must
+        // not become an implicit content exemption: a hand-written file that
+        // never went through `cargo change` still matches the path class, and
+        // is still the changelog gate's to reject. `validate_fragment` owns
+        // that verdict and has its own negative suite in `changelog.rs`.
+        use crate::tasks::changelog::{ChangieConfig, Fragment, validate_fragment};
+
+        let entry = changie_fragment_entry()?;
+        let entries = vec![entry.clone()];
+        let hand_written = ".changes/unreleased/not-a-real-fragment.yaml";
+
+        assert!(
+            classify_file(hand_written, &entries).allowlisted,
+            "the path class must stay checkable rather than routing around the content gate"
+        );
+        assert!(
+            entry.covered_by.iter().any(|check| check == "cargo xtask changelog check"),
+            "the entry must name the gate that actually validates fragment content"
+        );
+
+        // Drive the production validator with the production `.changie.yaml`,
+        // not a fixture copy of either: the claim is that the path rule leaves
+        // the real gate reachable, so a copy would prove nothing about it.
+        let config: ChangieConfig =
+            serde_yaml_ng::from_str(&fs::read_to_string(repo_root()?.join(".changie.yaml"))?)?;
+
+        let malformed: Fragment = serde_yaml_ng::from_str(concat!(
+            "project: not-a-project\n",
+            "kind: NotAKind\n",
+            "body: tiny\n",
+            "custom:\n",
+            "  PR: \"nonsense\"\n",
+        ))?;
+        let findings = validate_fragment(&malformed, &config);
+        assert!(
+            findings.iter().any(|f| f.contains("unknown project")),
+            "the real gate must still reject an unknown project: {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.contains("unknown kind")),
+            "the real gate must still reject an unknown kind: {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.contains("body")),
+            "the real gate must still reject an under-length body: {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.contains("PR")),
+            "the real gate must still reject a non-numeric PR reference: {findings:?}"
+        );
+
+        // Positive control: without it, a validator that rejected everything
+        // would satisfy the assertions above.
+        let well_formed: Fragment = serde_yaml_ng::from_str(concat!(
+            "project: product\n",
+            "component: Developer experience\n",
+            "kind: Changed\n",
+            "body: A sufficiently long changelog body line for the gate.\n",
+            // An RFC 3339 `time:` is part of well-formedness, not decoration:
+            // the renderer unmarshals it as a timestamp and crashes repo-wide
+            // without one (#13484).
+            "time: 2026-08-30T12:34:56Z\n",
+            "custom:\n",
+            "  PR: \"14588\"\n",
+            "  Breaking: \"no\"\n",
+        ))?;
+        assert!(
+            validate_fragment(&well_formed, &config).is_empty(),
+            "a well-formed fragment must pass the same production validator"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn no_per_fragment_allowlist_rows_remain() -> Result<()> {
+        let allowlist = load_allowlist(&repo_root()?)?;
+
+        let per_fragment: Vec<&str> = allowlist
+            .allow
+            .iter()
+            .filter(|entry| entry.id != CHANGIE_FRAGMENT_ENTRY_ID)
+            .filter(|entry| {
+                let matcher = entry.glob.as_deref().or(entry.path.as_deref()).unwrap_or_default();
+                matcher.starts_with(".changes/unreleased/")
+            })
+            .map(|entry| entry.id.as_str())
+            .collect();
+
+        assert!(
+            per_fragment.is_empty(),
+            "individual fragments must not earn allowlist rows; found {per_fragment:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn every_tracked_fragment_resolves_to_the_single_typed_rule() -> Result<()> {
+        let root = repo_root()?;
+        let allowlist = load_allowlist(&root)?;
+        let prepared = prepare_allow_entries(&allowlist.allow);
+
+        let mut fragments: Vec<String> = list_tracked_files(&root)?
+            .into_iter()
+            .filter(|path| path.starts_with(".changes/unreleased/") && path.ends_with(".yaml"))
+            .collect();
+
+        // A release drains the directory, so the tracked population is
+        // legitimately empty some of the time. Always exercise a synthetic
+        // fragment as well, so this proof can never pass vacuously on the
+        // release commit.
+        fragments.push(".changes/unreleased/product-1-Added-101010.yaml".to_string());
+
+        for fragment in &fragments {
+            let owner = find_matching_prepared_entry(fragment, &prepared)
+                .ok_or_else(|| eyre!("{fragment} is not covered by any allowlist entry"))?;
+            assert_eq!(
+                owner.id, CHANGIE_FRAGMENT_ENTRY_ID,
+                "{fragment} must be governed by the typed rule, not by {}",
+                owner.id
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn draining_the_fragment_directory_leaves_no_stale_policy_row() -> Result<()> {
+        // A release renders and deletes every unreleased fragment. Because the
+        // rule names a path class rather than instances, the ledger needs no
+        // edit; the entry simply stops matching. This is the property that a
+        // per-fragment row could not have.
+        let entry = changie_fragment_entry()?;
+        let entries = vec![entry.clone()];
+
+        assert!(
+            classify_file(".changes/unreleased/product-1-Added-101010.yaml", &entries).allowlisted,
+            "covered before the release drains the directory"
+        );
+        assert!(
+            !entry_matches_any_tracked_file(&entry, &[".changes/unreleased/.gitkeep".to_string()]),
+            "after the drain the rule matches nothing and leaves no per-file receipt behind"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn two_independent_fragment_additions_do_not_touch_the_allowlist() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        let entry = changie_fragment_entry()?;
+        let allowlist_toml =
+            format!("[[allow]]\n{}", toml::to_string(&entry).context("serializing rule")?);
+
+        run_git(root, &["init", "-q"])?;
+        run_git(root, &["config", "user.email", "fixture@example.invalid"])?;
+        run_git(root, &["config", "user.name", "fixture"])?;
+        // A global `commit.gpgSign=true` with no usable key is inherited here
+        // and would abort the fixture commits before any matcher or merge
+        // behaviour is exercised, turning a host setting into a test failure.
+        run_git(root, &["config", "commit.gpgsign", "false"])?;
+        // Name the base branch without depending on `git init -b` or on the
+        // host's `init.defaultBranch`.
+        run_git(root, &["checkout", "-q", "-b", "base"])?;
+        write_fixture(root, "policy/non-rust-allowlist.toml", &allowlist_toml)?;
+        write_fixture(root, ".changes/unreleased/.gitkeep", "")?;
+        run_git(root, &["add", "."])?;
+        run_git(root, &["commit", "-qm", "base"])?;
+
+        let first = ".changes/unreleased/product-101-Added-101010.yaml";
+        let second = ".changes/unreleased/product-202-Fixed-202020.yaml";
+
+        for (branch, fragment) in [("candidate-a", first), ("candidate-b", second)] {
+            run_git(root, &["checkout", "-q", "-b", branch, "base"])?;
+            write_fixture(root, fragment, "project: product\nkind: Added\nbody: fixture\n")?;
+            run_git(root, &["add", fragment])?;
+            run_git(root, &["commit", "-qm", branch])?;
+        }
+
+        // Neither candidate edited the shared policy authority: that is the
+        // whole point of the typed rule. #9680's conflicts came from both
+        // candidates appending a row to this one file.
+        for branch in ["candidate-a", "candidate-b"] {
+            let output = std::process::Command::new("git")
+                .current_dir(root)
+                .args(["diff", "--name-only", "base", branch])
+                .output()
+                .context("diffing candidate against base")?;
+            let changed = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                !changed.contains("policy/non-rust-allowlist.toml"),
+                "adding a fragment must not mutate the allowlist; {branch} changed: {changed}"
+            );
+        }
+
+        run_git(root, &["checkout", "-q", "candidate-a"])?;
+        run_git(root, &["merge", "-q", "--no-edit", "candidate-b"])?;
+
+        let entries = vec![entry];
+        for fragment in [first, second] {
+            assert!(root.join(fragment).exists(), "{fragment} must survive the merge");
+            assert!(
+                classify_file(fragment, &entries).allowlisted,
+                "{fragment} must be governed after the merge with no allowlist edit"
+            );
+        }
+        Ok(())
+    }
+
     // --- extension extraction ---
 
     #[test]
@@ -3689,6 +4568,110 @@ mod tests {
     }
 
     #[test]
+    fn inventory_path_delta_reports_exact_added_and_removed_rows() {
+        let actual = "| `docs/old.md` | documentation | `old` | owner |\n";
+        let expected = "| `docs/new.md` | documentation | `new` | owner |\n";
+        let delta = inventory_path_delta(actual, expected);
+        assert!(delta.contains("missing generated paths: docs/new.md"));
+        assert!(delta.contains("paths no longer generated: docs/old.md"));
+    }
+
+    #[test]
+    fn inventory_path_delta_reports_metadata_only_change_when_row_paths_match() {
+        // Same backtick-wrapped row paths in both documents; only the summary
+        // metadata line differs, so the delta must take the metadata-only
+        // branch instead of naming missing or removed rows.
+        let actual = "# Non-Rust File Inventory\n\n\
+            | Metric | Count |\n|---|---|\n\
+            | Total tracked files | 1 |\n\n\
+            | `docs/keep.md` | documentation | `keep` | owner |\n";
+        let expected = "# Non-Rust File Inventory\n\n\
+            | Metric | Count |\n|---|---|\n\
+            | Total tracked files | 2 |\n\n\
+            | `docs/keep.md` | documentation | `keep` | owner |\n";
+        let delta = inventory_path_delta(actual, expected);
+        assert_eq!(delta, "the row paths match but summary or metadata changed");
+    }
+
+    /// A tracked path containing `|` is rendered escaped in table cells; the
+    /// delta parser must reverse the escape and name the raw path, not hide
+    /// the stale row as metadata-only drift.
+    #[test]
+    fn inventory_path_delta_names_pipe_paths_through_markdown_escapes() {
+        let actual = "| `docs/old.md` | documentation | `old` | owner |\n\
+            | `docs/a|b.md` | documentation | `ab` | owner |\n";
+        let actual_rendered = actual.replace("docs/a|b.md", "docs/a\\|b.md");
+        let expected = "| `docs/new.md` | documentation | `new` | owner |\n\
+             | `docs/a\\|b.md` | documentation | `ab` | owner |\n";
+        let delta = inventory_path_delta(&actual_rendered, expected);
+        assert!(delta.contains("missing generated paths: docs/new.md"), "{delta}");
+        assert!(delta.contains("paths no longer generated: docs/old.md"), "{delta}");
+        assert!(
+            !delta.contains("docs/a"),
+            "the pipe path must be recovered on both sides, not reported stale: {delta}"
+        );
+
+        // Round trip: the escaped cell parses back to the raw path.
+        let escaped = escape_markdown_cell("docs/a|b.md");
+        let row = format!("| `{escaped}` | documentation | `ab` | owner |\n");
+        let parsed = inventory_row_paths(&row);
+        assert_eq!(
+            parsed.into_iter().collect::<Vec<_>>(),
+            vec!["docs/a|b.md"],
+            "escape and parse must be exact inverses"
+        );
+
+        // A backslash that is not part of a `\|` escape stays verbatim, and
+        // the pipe after it still decodes (#14330 review).
+        let raw = "docs\\a|b.md";
+        assert_eq!(escape_markdown_cell(raw), "docs\\a\\|b.md");
+        let row = format!("| `{}` | documentation | `ab` | owner |\n", escape_markdown_cell(raw));
+        let parsed = inventory_row_paths(&row);
+        assert_eq!(
+            parsed.into_iter().collect::<Vec<_>>(),
+            vec![raw],
+            "non-escape backslashes must round-trip verbatim"
+        );
+    }
+
+    #[test]
+    fn markdown_metadata_cells_round_trip_odd_backslashes_before_pipe() {
+        for count in 1..=3 {
+            let prefix = "\\".repeat(count);
+            let id = format!("id-{prefix}|suffix");
+            let owner = format!("owner-{prefix}|suffix");
+            let row = format!(
+                "| `path.md` | documentation | `{}` | {} |\n",
+                escape_markdown_cell(&id),
+                escape_markdown_cell(&owner)
+            );
+            let cells = parse_markdown_cells(&row).expect("rendered row must parse");
+            assert_eq!(cells.len(), 4, "metadata backslashes must not add cells");
+            assert_eq!(cells[2], format!("`{id}`"));
+            assert_eq!(cells[3], owner);
+        }
+    }
+
+    #[test]
+    fn markdown_metadata_cells_round_trip_trailing_literal_pipe() {
+        let id = "id|";
+        let owner = "owner|";
+        let row = format!(
+            "| `path.md` | documentation | `{}` | {} |\n",
+            escape_markdown_cell(id),
+            escape_markdown_cell(owner)
+        );
+        let cells = parse_markdown_cells(&row).expect("rendered row must parse");
+        assert_eq!(cells, vec!["`path.md`", "documentation", "`id|`", "owner|"]);
+
+        // The codec must also preserve a final literal pipe when there is no
+        // whitespace before the table delimiter.
+        let compact = "| `path.md`|documentation|`id\\|`|owner\\||";
+        let cells = parse_markdown_cells(compact).expect("compact row must parse");
+        assert_eq!(cells, vec!["`path.md`", "documentation", "`id|`", "owner|"]);
+    }
+
+    #[test]
     fn non_rust_inventory_check_accepts_unclassified_files() -> Result<()> {
         let temp = tempfile::tempdir()?;
         init_tracked_fixture(
@@ -3756,6 +4739,33 @@ mod tests {
         )?;
 
         assert!(non_rust_inventory_check(temp.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn blocking_check_file_policy_rejects_conflict_markers_in_raw_allowlist() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let _tracked = init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
+        let allowlist = temp.path().join("allow.toml");
+        std::fs::write(
+            &allowlist,
+            "[[allow]]\nid = \"readme\"\npath = \"README.md\"\nkind = \"documentation\"\nlanguage = \"markdown\"\nowner = \"team\"\nreason = \"\"\"\n<<<<<<< HEAD\n\"\"\"\nsurface = \"docs\"\nclassification = \"documentation\"\ncovered_by = [\"fixture\"]\ncreated = \"2026-01-01\"\nreview_after = \"2099-01-01\"\n",
+        )?;
+
+        let result = check_file_policy(
+            temp.path(),
+            CheckFilePolicyConfig {
+                mode: CheckFilePolicyMode::BlockingAllowlist,
+                json_output: None,
+                allowlist_path: Some(allowlist),
+                root_override: Some(temp.path().to_path_buf()),
+            },
+        );
+        let error = result.expect_err("blocking policy accepted raw conflict marker");
+        assert!(
+            error.to_string().contains("violation"),
+            "blocking policy did not report a violation: {error:?}"
+        );
         Ok(())
     }
 
@@ -3855,6 +4865,30 @@ review_after = "2026-08-13"
         Ok(())
     }
 
+    #[test]
+    fn debt_entries_may_reuse_reason_across_matchers() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let debt = temp.path().join("debt.toml");
+        fs::write(
+            &debt,
+            r#"
+[[debt]]
+id = "debt-a"
+path = "legacy/a.py"
+reason = "classification pending"
+
+[[debt]]
+id = "debt-b"
+path = "legacy/b.py"
+reason = "classification pending"
+"#,
+        )?;
+        let mut errors = Vec::new();
+        let count = validate_policy_table(&debt, "debt", false, &mut errors);
+        assert_eq!(count, 2);
+        assert!(!errors.iter().any(|error| error.contains("mispaired provenance")), "{errors:?}");
+        Ok(())
+    }
     #[test]
     fn validate_non_rust_policy_reports_schema_errors() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -4160,10 +5194,9 @@ review_after = "2026-08-13"
         assert_eq!(add_days((1970, 1, 1), 31), (1970, 2, 1));
         assert_eq!(fmt_ymd((2026, 6, 9)), "2026-06-09");
         assert!(is_past_date("not-a-date"));
-        assert!(is_policy_broad_glob("*.md"));
         assert!(is_policy_broad_glob("docs/**"));
-        assert!(is_broad_glob("**/*"));
-        assert!(!is_broad_glob("docs/*.md"));
+        assert!(is_policy_broad_glob("**/*"));
+        assert!(!is_policy_broad_glob("docs/*.md"));
         assert_eq!(classify_dir("docs"), "docs");
         assert_eq!(classify_dir("scripts"), "build");
         assert_eq!(classify_dir("unknown"), "tbd");
