@@ -195,6 +195,22 @@ coverage_filters = [
 ]
 
 [[pack]]
+id = "patch-coverage-xtask-product-topology"
+lcov = false
+files = [
+  "xtask/src/bin/product-topology.rs",
+  "xtask/tests/product_topology_cli.rs",
+]
+commands = [
+  "cargo test -p xtask --bin product-topology --profile agent --locked -- --nocapture",
+  "cargo test -p xtask --test product_topology_cli --profile agent --locked -- --nocapture",
+]
+coverage_filters = [
+  "product_topology",
+  "product-topology",
+]
+
+[[pack]]
 id = "patch-coverage-xtask-parser-tdd-facade-guard"
 lcov = false
 files = [

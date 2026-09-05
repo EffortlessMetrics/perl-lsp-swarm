@@ -703,15 +703,11 @@ fn require_precedes(
     findings: &mut BTreeSet<String>,
 ) {
     let Some(dependency_index) = publish_order.get(dependency) else {
-        findings.insert(format!(
-            "publish-order: dependency missing from allowlist={dependency}"
-        ));
+        findings.insert(format!("publish-order: dependency missing from allowlist={dependency}"));
         return;
     };
     let Some(consumer_index) = publish_order.get(consumer) else {
-        findings.insert(format!(
-            "publish-order: consumer missing from allowlist={consumer}"
-        ));
+        findings.insert(format!("publish-order: consumer missing from allowlist={consumer}"));
         return;
     };
     if dependency_index >= consumer_index {
@@ -1125,9 +1121,7 @@ mod tests {
     #[test]
     fn dap_rejects_code_intelligence_dependencies() -> Result<()> {
         let (policy, mut metadata, manifest) = fixture(McpStage::Absent);
-        if let Some(dap) =
-            metadata.packages.iter_mut().find(|package| package.name == "perl-dap")
-        {
+        if let Some(dap) = metadata.packages.iter_mut().find(|package| package.name == "perl-dap") {
             dap.dependencies.push(dependency("perllsp"));
         }
         let report = validate(&policy, &metadata, &manifest);
@@ -1137,12 +1131,7 @@ mod tests {
     #[test]
     fn missing_publish_order_edge_fails_closed() -> Result<()> {
         let (policy, metadata, mut manifest) = fixture(McpStage::Absent);
-        manifest
-            .workspace
-            .metadata
-            .publish
-            .allow
-            .retain(|package| package != "perl-lsp-rs");
+        manifest.workspace.metadata.publish.allow.retain(|package| package != "perl-lsp-rs");
         let report = validate(&policy, &metadata, &manifest);
         require_finding(&report, "dependency missing from allowlist=perl-lsp-rs")
     }

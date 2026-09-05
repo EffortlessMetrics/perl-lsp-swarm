@@ -1629,6 +1629,19 @@ jobs:
       - name: Dependabot dependency-name contract (required merge surface)
         run: cargo test -p xtask --test dependabot_cargo_dependency_names --locked -- --nocapture
 
+      # #13491: identical reasoning to the contracts above. The staged
+      # product-topology contract lives in `xtask/src/bin/product-topology.rs`
+      # (unit tests) and `xtask/tests/product_topology_cli.rs` (current-tree
+      # reachability). The merge gate runs `cargo test --workspace --lib`,
+      # which builds neither `--bin` nor `tests/` targets, and no workflow
+      # names either one — so as authored the whole contract would compile and
+      # never execute, the exact state #14585 found `file_policy` in. A
+      # topology guard that cannot go red does not guard the topology.
+      - name: Product-topology staged contract (required merge surface)
+        run: |
+          cargo test -p xtask --bin product-topology --locked -- --nocapture
+          cargo test -p xtask --test product_topology_cli --locked -- --nocapture
+
   lsp-memory-smoke:
     name: LSP Memory Smoke
     runs-on: ubuntu-24.04
