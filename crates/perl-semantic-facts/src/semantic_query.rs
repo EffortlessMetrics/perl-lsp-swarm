@@ -138,17 +138,19 @@ impl SemanticQueryEvidence {
         if has_duplicates(&self.consumed_fact_ids) {
             return Err(SemanticQueryContractError::DuplicateConsumedFact);
         }
-        let foreign_family = self.limitations.iter().find_map(|limitation| match limitation {
+        for family in self.limitations.iter().filter_map(|limitation| match limitation {
             SemanticQueryLimitation::IncompleteFactFamily(family)
-            | SemanticQueryLimitation::UnavailableFactFamily(family)
-                if !required.contains(family) =>
-            {
-                Some(*family)
-            }
+            | SemanticQueryLimitation::UnavailableFactFamily(family) => Some(*family),
             _ => None,
-        });
-        if let Some(family) = foreign_family {
-            return Err(SemanticQueryContractError::LimitationFamilyNotRequired(family));
+        }) {
+            if !required.contains(&family) {
+                return Err(SemanticQueryContractError::LimitationFamilyNotRequired(family));
+            }
+            if self.complete_fact_families.contains(&family) {
+                return Err(SemanticQueryContractError::LimitationContradictsCompleteFamily(
+                    family,
+                ));
+            }
         }
         Ok(())
     }
@@ -487,6 +489,18 @@ impl<T: PartialEq> SemanticQueryOutcome<T> {
         if self.claims_exact() && !evidence.describes(subject) {
             return Err(SemanticQueryContractError::SubjectMismatch);
         }
+        if let Self::Stale { expected, observed, .. } = self {
+            // A stale receipt must name a real mismatch between what the
+            // consumer asked for and what the evidence describes, on the
+            // source or the workspace dimension.
+            let source_stale =
+                expected == &subject.source_generation && observed == &evidence.source_generation;
+            let workspace_stale = expected == &subject.workspace_generation
+                && observed == &evidence.workspace_generation;
+            if !(source_stale || workspace_stale) {
+                return Err(SemanticQueryContractError::StaleGenerationsUnbound);
+            }
+        }
         Ok(())
     }
 
@@ -541,6 +555,9 @@ pub enum SemanticQueryContractError {
     DuplicateConsumedFact,
     /// A limitation named a fact family outside the evidence's denominator.
     LimitationFamilyNotRequired(SemanticFactFamily),
+    /// A limitation reported a family incomplete that the evidence also
+    /// lists as complete.
+    LimitationContradictsCompleteFamily(SemanticFactFamily),
     /// Evidence used a different query schema.
     SchemaMismatch,
     /// Evidence was produced for a different query family.
@@ -565,6 +582,9 @@ pub enum SemanticQueryContractError {
     EmptyReason,
     /// A stale outcome used the same generation on both sides.
     MatchingGenerations,
+    /// A stale outcome's generations describe neither the queried subject
+    /// nor the evidence snapshot.
+    StaleGenerationsUnbound,
     /// An ambiguous outcome did not retain multiple candidates.
     InsufficientCandidates,
     /// A dynamic outcome did not record its boundary in evidence.
@@ -593,6 +613,10 @@ impl std::fmt::Display for SemanticQueryContractError {
             Self::LimitationFamilyNotRequired(family) => write!(
                 formatter,
                 "semantic query limitation names a family outside the denominator: {family:?}"
+            ),
+            Self::LimitationContradictsCompleteFamily(family) => write!(
+                formatter,
+                "semantic query limitation contradicts a complete family: {family:?}"
             ),
             Self::SchemaMismatch => {
                 formatter.write_str("semantic query schema does not match requirement")
@@ -630,6 +654,9 @@ impl std::fmt::Display for SemanticQueryContractError {
             Self::MatchingGenerations => {
                 formatter.write_str("stale semantic query generations unexpectedly match")
             }
+            Self::StaleGenerationsUnbound => formatter.write_str(
+                "stale semantic query generations describe neither the subject nor the evidence",
+            ),
             Self::InsufficientCandidates => {
                 formatter.write_str("ambiguous semantic query outcome lacks multiple candidates")
             }
@@ -758,6 +785,17 @@ mod tests {
         registry_with(requirement())
     }
 
+    /// A Stale outcome whose evidence is one source generation behind the
+    /// fixture subject (`doc-1`).
+    fn stale_source(mut evidence: SemanticQueryEvidence) -> SemanticQueryOutcome<u8> {
+        evidence.source_generation = SourceGeneration::known("doc-0");
+        SemanticQueryOutcome::Stale {
+            expected: SourceGeneration::known("doc-1"),
+            observed: SourceGeneration::known("doc-0"),
+            evidence,
+        }
+    }
+
     fn budget_partial(complete: bool) -> SemanticQueryOutcome<u8> {
         let mut evidence = evidence(complete);
         evidence.limitations.push(SemanticQueryLimitation::BudgetExceeded);
@@ -864,7 +902,8 @@ mod tests {
             assert!(!outcome.is_exact(&registry, mismatched));
         }
 
-        // A Stale outcome legitimately describes another generation.
+        // A Stale outcome legitimately describes another generation, as long
+        // as it names the real mismatch between subject and evidence.
         let stale = SemanticQueryOutcome::<u8>::Stale {
             expected: SourceGeneration::known("doc-2"),
             observed: SourceGeneration::known("doc-1"),
@@ -874,17 +913,52 @@ mod tests {
     }
 
     #[test]
+    fn stale_generations_must_bind_subject_and_evidence() {
+        let (registry, subject) = (registry(), subject());
+        assert_eq!(stale_source(evidence(true)).validate_against(&registry, &subject), Ok(()));
+
+        // Workspace-dimension staleness is equally legitimate.
+        let mut old_workspace = evidence(true);
+        old_workspace.workspace_generation = SourceGeneration::known("ws-0");
+        let workspace_stale = SemanticQueryOutcome::<u8>::Stale {
+            expected: SourceGeneration::known("ws-1"),
+            observed: SourceGeneration::known("ws-0"),
+            evidence: old_workspace,
+        };
+        assert_eq!(workspace_stale.validate_against(&registry, &subject), Ok(()));
+
+        // Distinct but unrelated generations describe no real mismatch.
+        let unrelated = SemanticQueryOutcome::<u8>::Stale {
+            expected: SourceGeneration::known("doc-9"),
+            observed: SourceGeneration::known("doc-8"),
+            evidence: evidence(true),
+        };
+        assert_eq!(unrelated.validate(), Ok(()));
+        assert_eq!(
+            unrelated.validate_against(&registry, &subject),
+            Err(SemanticQueryContractError::StaleGenerationsUnbound)
+        );
+        // Expected matches the subject but observed is not what the evidence
+        // actually describes.
+        let misreported = SemanticQueryOutcome::<u8>::Stale {
+            expected: SourceGeneration::known("doc-1"),
+            observed: SourceGeneration::known("doc-0"),
+            evidence: evidence(true),
+        };
+        assert_eq!(
+            misreported.validate_against(&registry, &subject),
+            Err(SemanticQueryContractError::StaleGenerationsUnbound)
+        );
+    }
+
+    #[test]
     fn every_non_exact_state_remains_distinct_and_validates_against_the_family() {
         let (registry, subject) = (registry(), subject());
         let e = evidence(true);
         let states = [
             budget_partial(true),
             SemanticQueryOutcome::NotReady { reason: "building".into(), evidence: e.clone() },
-            SemanticQueryOutcome::Stale {
-                expected: SourceGeneration::known("doc-2"),
-                observed: SourceGeneration::known("doc-1"),
-                evidence: e.clone(),
-            },
+            stale_source(e.clone()),
             SemanticQueryOutcome::Ambiguous {
                 candidates: vec![1_u8, 2],
                 limitations: vec![],
@@ -915,11 +989,7 @@ mod tests {
                 reason: "building".into(),
                 evidence: incomplete.clone(),
             },
-            SemanticQueryOutcome::Stale {
-                expected: SourceGeneration::known("doc-2"),
-                observed: SourceGeneration::known("doc-1"),
-                evidence: incomplete.clone(),
-            },
+            stale_source(incomplete.clone()),
             SemanticQueryOutcome::Unsupported { reason: "profile".into(), evidence: incomplete },
         ];
         for state in &states {
@@ -1113,12 +1183,40 @@ mod tests {
                 .is_err()
             );
         }
-        // The same limitation over a required family is legitimate.
+        // The same limitation over a required, not-yet-complete family is
+        // legitimate.
         let mut declared = evidence(false);
         declared.limitations.push(SemanticQueryLimitation::IncompleteFactFamily(
             SemanticFactFamily::ScopeLocalDeclaration,
         ));
         assert_eq!(declared.validate(), Ok(()));
+    }
+
+    #[test]
+    fn limitations_cannot_contradict_complete_families() {
+        for limitation in [
+            SemanticQueryLimitation::IncompleteFactFamily(
+                SemanticFactFamily::ScopeLocalDeclaration,
+            ),
+            SemanticQueryLimitation::UnavailableFactFamily(
+                SemanticFactFamily::ScopeLocalDeclaration,
+            ),
+        ] {
+            let contradictory = evidence_with_limitation(limitation.clone());
+            assert_eq!(
+                contradictory.validate(),
+                Err(SemanticQueryContractError::LimitationContradictsCompleteFamily(
+                    SemanticFactFamily::ScopeLocalDeclaration
+                ))
+            );
+            let partial = SemanticQueryOutcome::<u8>::Partial {
+                value: 1,
+                limitations: vec![limitation],
+                evidence: contradictory,
+            };
+            assert!(partial.validate().is_err());
+            assert!(partial.validate_against(&registry(), &subject()).is_err());
+        }
     }
 
     #[test]
