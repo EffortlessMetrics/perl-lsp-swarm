@@ -732,34 +732,60 @@ impl PendingGeometryGuard {
         Self { active: true, id }
     }
 
-    /// Pop this guard's own session, or `None` when it is not the active one.
+    /// Remove this guard's own entry, wherever it sits, and report whether it was
+    /// the active one.
     ///
-    /// Returning `None` rather than the stack top is the whole point: an
-    /// out-of-order finish would otherwise hand this guard a *different* parse's
-    /// geometry, which the caller would then anchor against its own source.
-    fn finish(mut self) -> Option<PendingGeometrySession> {
+    /// Removal is by identity rather than by position. Retiring only the stack top
+    /// would leave a buried entry behind forever: `finish` consumes the guard, so
+    /// nothing runs `Drop` afterwards to clean it up. A leaked entry keeps
+    /// [`has_active_session`] true for the rest of the thread's life, which charges
+    /// every later parse the whole-source `from_utf8` check that guard exists to
+    /// avoid, and the stack grows once per out-of-order finish without bound.
+    ///
+    /// Identity is also what keeps the original hazard closed: this guard can never
+    /// take a *different* parse's entry, which it would then anchor against its own
+    /// source.
+    fn retire(&mut self) -> Retired {
         self.active = false;
         ACTIVE_GEOMETRY_SESSIONS.with(|sessions| {
             let mut sessions = sessions.borrow_mut();
-            match sessions.last() {
-                Some(top) if top.id == self.id => sessions.pop(),
-                // Not ours. Leave it for its owner rather than consuming it.
-                _ => None,
-            }
+            let Some(index) = sessions.iter().position(|session| session.id == self.id) else {
+                return Retired::Missing;
+            };
+            let was_top = index + 1 == sessions.len();
+            let session = sessions.remove(index);
+            if was_top { Retired::Active(session) } else { Retired::Buried }
         })
     }
+
+    /// This guard's own session, or `None` when it was finished out of order.
+    ///
+    /// A buried session stopped receiving geometry the moment a nested session was
+    /// pushed, so what it holds is partial. Retaining nothing keeps the caller on
+    /// the honest path — `collect_ast_geometry` re-derives what it needs from the
+    /// tree — rather than binding a half-populated session to a complete digest.
+    fn finish(mut self) -> Option<PendingGeometrySession> {
+        match self.retire() {
+            Retired::Active(session) => Some(session),
+            Retired::Buried | Retired::Missing => None,
+        }
+    }
+}
+
+/// Outcome of removing a guard's entry from the session stack.
+enum Retired {
+    /// The entry was the active session; its geometry is complete and usable.
+    Active(PendingGeometrySession),
+    /// The entry was below a nested session, so its geometry is partial.
+    Buried,
+    /// No entry carried this guard's identity.
+    Missing,
 }
 
 impl Drop for PendingGeometryGuard {
     fn drop(&mut self) {
         if self.active {
-            ACTIVE_GEOMETRY_SESSIONS.with(|sessions| {
-                let mut sessions = sessions.borrow_mut();
-                // Same ownership rule as `finish`: only retire our own entry.
-                if sessions.last().is_some_and(|top| top.id == self.id) {
-                    let _ = sessions.pop();
-                }
-            });
+            let _ = self.retire();
         }
     }
 }
@@ -891,6 +917,42 @@ mod tests {
         }
         // The session is popped on drop, so the next ordinary parse is unaffected.
         assert!(!record_operator_geometry(source, 8));
+    }
+
+    /// An out-of-order finish must retire its own entry, not abandon it.
+    ///
+    /// `finish` consumes the guard, so nothing runs `Drop` behind it. Retiring only
+    /// the stack top therefore leaks the buried entry permanently: the thread keeps
+    /// reporting an active session forever, and every later parse pays the
+    /// whole-source `from_utf8` check that `has_active_session` exists to skip.
+    ///
+    /// Only reachable from inside the crate, because `has_active_session` is the
+    /// state that leaks and it is `pub(crate)`.
+    #[test]
+    fn an_out_of_order_finish_leaves_no_orphaned_session_behind() {
+        let outer_source = "my $a = qr/(a+)+b/;\n";
+        let inner_source = "my $a = qr/(x+)-b/;\n";
+
+        assert!(!has_active_session(), "the thread starts clean");
+
+        let outer = PendingGeometryGuard::begin(outer_source);
+        let inner = PendingGeometryGuard::begin(inner_source);
+
+        // Finish the outer guard while the inner one is still active.
+        assert!(outer.finish().is_none(), "a buried session retains nothing");
+        assert!(has_active_session(), "the inner session is still legitimately active");
+
+        assert!(inner.finish().is_some(), "the inner guard owns the active session");
+        assert!(
+            !has_active_session(),
+            "both sessions are finished, so nothing may remain on the stack"
+        );
+
+        // The observable consequence of a leak: the hook would still engage here.
+        assert!(
+            !record_operator_geometry(outer_source, 8),
+            "no session is active, so an ordinary parse keeps the compatibility path"
+        );
     }
 
     #[test]
