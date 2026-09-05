@@ -58,13 +58,18 @@ macro_rules! define_diagnostic_codes {
                 $(Self::$variant,)+
             ];
 
-            const fn registry_code(self) -> &'static str {
+            /// Get the string representation of this code.
+            pub fn as_str(&self) -> &'static str {
                 match self {
                     $(Self::$variant => $code,)+
                 }
             }
 
-            fn from_registry_code(code: &str) -> Option<Self> {
+            /// Try to parse a code string into a `DiagnosticCode`.
+            ///
+            /// Only exact registered identities parse; case, surrounding
+            /// whitespace, and Rust variant spellings are rejected.
+            pub fn parse_code(code: &str) -> Option<Self> {
                 match code {
                     $($code => Some(Self::$variant),)+
                     _ => None,
@@ -251,7 +256,7 @@ impl serde::Serialize for DiagnosticCode {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(self.registry_code())
+        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -262,7 +267,7 @@ impl<'de> serde::Deserialize<'de> for DiagnosticCode {
         D: serde::Deserializer<'de>,
     {
         let code = <String as serde::Deserialize>::deserialize(deserializer)?;
-        Self::from_registry_code(&code)
+        Self::parse_code(&code)
             .ok_or_else(|| serde::de::Error::custom(format!("unknown diagnostic code `{code}`")))
     }
 }
@@ -270,18 +275,5 @@ impl<'de> serde::Deserialize<'de> for DiagnosticCode {
 impl fmt::Display for DiagnosticCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::DiagnosticCode;
-
-    #[test]
-    fn legacy_identity_projections_match_registry() {
-        for code in DiagnosticCode::ALL {
-            assert_eq!((*code).registry_code(), code.as_str());
-            assert_eq!(DiagnosticCode::parse_code((*code).registry_code()), Some(*code));
-        }
     }
 }
