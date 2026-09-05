@@ -142,20 +142,45 @@ mod tests {
     // ── SourceOrigin tests ────────────────────────────────────────────────────
 
     #[test]
-    fn workspace_origin_is_workspace() {
-        assert!(SourceOrigin::Workspace.is_workspace());
-        assert!(!SourceOrigin::Virtual.is_workspace());
+    fn is_workspace_matches_every_current_origin_variant() {
+        let cases = [
+            (SourceOrigin::Workspace, true),
+            (SourceOrigin::Virtual, false),
+            (SourceOrigin::Generated, false),
+            (SourceOrigin::Staged, false),
+            (SourceOrigin::Upstream, false),
+            (SourceOrigin::RuntimeDerived, false),
+            (SourceOrigin::Unknown, false),
+        ];
+
+        for (origin, expected) in cases {
+            assert_eq!(
+                origin.is_workspace(),
+                expected,
+                "unexpected workspace classification for {origin}"
+            );
+        }
     }
 
     #[test]
     fn has_physical_path_covers_correct_variants() {
-        assert!(SourceOrigin::Workspace.has_physical_path());
-        assert!(SourceOrigin::Generated.has_physical_path());
-        assert!(SourceOrigin::Staged.has_physical_path());
-        assert!(SourceOrigin::Upstream.has_physical_path());
-        assert!(!SourceOrigin::Virtual.has_physical_path());
-        assert!(!SourceOrigin::RuntimeDerived.has_physical_path());
-        assert!(!SourceOrigin::Unknown.has_physical_path());
+        let cases = [
+            (SourceOrigin::Workspace, true),
+            (SourceOrigin::Virtual, false),
+            (SourceOrigin::Generated, true),
+            (SourceOrigin::Staged, true),
+            (SourceOrigin::Upstream, true),
+            (SourceOrigin::RuntimeDerived, false),
+            (SourceOrigin::Unknown, false),
+        ];
+
+        for (origin, expected) in cases {
+            assert_eq!(
+                origin.has_physical_path(),
+                expected,
+                "unexpected physical-path classification for {origin}"
+            );
+        }
     }
 
     #[test]
@@ -172,14 +197,24 @@ mod tests {
     // ── PhysicalSourceRole tests ──────────────────────────────────────────────
 
     #[test]
-    fn primary_role_is_accessible() {
-        assert!(PhysicalSourceRole::Primary.is_accessible());
-    }
+    fn is_accessible_matches_every_current_physical_role_variant() {
+        let cases = [
+            (PhysicalSourceRole::Primary, true),
+            (PhysicalSourceRole::Generated, true),
+            (PhysicalSourceRole::Staged, true),
+            (PhysicalSourceRole::Upstream, true),
+            (PhysicalSourceRole::RuntimeDerived, true),
+            (PhysicalSourceRole::Unavailable, false),
+            (PhysicalSourceRole::Unknown, false),
+        ];
 
-    #[test]
-    fn unavailable_role_is_not_accessible() {
-        assert!(!PhysicalSourceRole::Unavailable.is_accessible());
-        assert!(!PhysicalSourceRole::Unknown.is_accessible());
+        for (role, expected) in cases {
+            assert_eq!(
+                role.is_accessible(),
+                expected,
+                "unexpected accessibility classification for {role}"
+            );
+        }
     }
 
     #[test]
