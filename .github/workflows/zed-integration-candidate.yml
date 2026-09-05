@@ -65,8 +65,10 @@ jobs:
 
       # The stage-packet source-authority boundary is enforced here, not left
       # as an opt-in CLI: every PR touching the packet tree, its generators,
-      # the verifier, or the contract tests must reprove that all 29 fixture
-      # files stay authority-classified, digest-current, and data-only.
+      # the verifier, or the contract tests must reprove that every fixture
+      # file stays authority-classified, digest-current, and data-only.
+      # The count is deliberately not written here — the manifest is the only
+      # place it is declared, and a second copy goes stale silently.
       - name: Enforce Zed stage-packet source-authority boundary
         shell: bash
         run: |

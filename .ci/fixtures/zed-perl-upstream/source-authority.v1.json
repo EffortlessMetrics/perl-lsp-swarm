@@ -4,15 +4,42 @@
   "external_write_policy": "maintainer_manual_checkpoint_only",
   "manifest_file": "source-authority.v1.json",
   "generators": [
-    { "path": "scripts/apply-zed-perl-upstream.sh" },
-    { "path": "scripts/apply-zed-core-perl-defaults.sh" },
-    { "path": "scripts/check-zed-core-perl-defaults.sh" },
-    { "path": "scripts/check-zed-registry-update-packet.sh" },
-    { "path": "scripts/check-zed-upstream-candidate.sh" },
-    { "path": "scripts/check-zed-upstream-submission-packet.sh" },
-    { "path": "scripts/zed_assets/dap_contract.py" },
-    { "path": "scripts/zed_host/finalize.py" },
-    { "path": "scripts/zed_host/prepare.py" }
+    {
+      "path": "scripts/apply-zed-perl-upstream.sh"
+    },
+    {
+      "path": "scripts/apply-zed-core-perl-defaults.sh"
+    },
+    {
+      "path": "scripts/check-zed-core-perl-defaults.sh"
+    },
+    {
+      "path": "scripts/check-zed-registry-update-packet.sh"
+    },
+    {
+      "path": "scripts/check-zed-upstream-candidate.sh"
+    },
+    {
+      "path": "scripts/check-zed-upstream-submission-packet.sh"
+    },
+    {
+      "path": "scripts/zed_assets/dap_contract.py"
+    },
+    {
+      "path": "scripts/zed_assets/dap_cli.py"
+    },
+    {
+      "path": "scripts/zed_assets/dap_public.py"
+    },
+    {
+      "path": "scripts/zed_assets/dap_support.py"
+    },
+    {
+      "path": "scripts/zed_host/finalize.py"
+    },
+    {
+      "path": "scripts/zed_host/prepare.py"
+    }
   ],
   "inputs": [
     {
@@ -140,6 +167,14 @@
       "subject": "receipts/dap-asset-windows-x86_64.v1.json",
       "authority": "receipt_evidence",
       "digest": "137764e80c7a745f0b5b7263de9b2c1721aa08a6f55afceb48e1a5d00ad90e10",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "dap-public-registry-receipt",
+      "subject": "receipts/dap-public-registry.v1.json",
+      "authority": "receipt_evidence",
+      "digest": "cefaab2a5827117c9e81bdb1f7e30ab5e71bfa0450761251d867cf3a2dc94499",
       "instruction_allowed": false,
       "sensitivity": "public"
     },
@@ -283,7 +318,7 @@
       "id": "candidate-extension-source",
       "subject": "zed-perl/src/perl.rs",
       "authority": "rendered_external_body",
-      "digest": "f502bfc331f21d0178d51184c55db4fcf4433b6dceea625abae07a7e9932254b",
+      "digest": "de6bfee760f1e6a12e48394ac643f7b8a3302c335d6bf8538fb1573932ab74d7",
       "instruction_allowed": false,
       "sensitivity": "public"
     }

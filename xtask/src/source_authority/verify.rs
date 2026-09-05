@@ -518,6 +518,12 @@ fn verify_generator_surface(
 
 /// Deterministically list `.sh`/`.py` candidates under the scan root,
 /// descending through every subdirectory except skipped test harnesses.
+///
+/// Symbolic links are never traversed, matching [`walk_packet_tree`]: entry
+/// types are resolved without following links, so a symlinked directory can
+/// neither redirect the scan outside the repository nor loop it forever. A
+/// symlinked script is surfaced as a file and read through the link, so it
+/// still has to be declared.
 fn generator_scan_files(root: &Path) -> Result<Vec<PathBuf>, color_eyre::eyre::Report> {
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -534,7 +540,10 @@ fn generator_scan_files(root: &Path) -> Result<Vec<PathBuf>, color_eyre::eyre::R
                 .wrap_err_with(|| format!("iterating generator scan root {}", dir.display()))?;
             let path = entry.path();
             let name = entry.file_name();
-            if path.is_dir() {
+            let file_type = entry
+                .file_type()
+                .wrap_err_with(|| format!("resolving entry type for {}", path.display()))?;
+            if file_type.is_dir() {
                 if !SKIPPED_SCAN_DIRECTORIES.contains(&name.to_string_lossy().as_ref()) {
                     stack.push(path);
                 }

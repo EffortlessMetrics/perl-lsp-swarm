@@ -410,3 +410,47 @@ fn cli_source_check_accepts_the_live_manifest() -> anyhow::Result<()> {
     assert_eq!(receipt["verdict"].as_str(), Some("clean"));
     Ok(())
 }
+
+#[test]
+fn the_generator_scan_does_not_follow_a_symlinked_directory_out_of_the_scan_root()
+-> anyhow::Result<()> {
+    if cfg!(windows) {
+        // Creating symlinks on Windows needs elevated privileges; this seam is
+        // covered on Unix runners.
+        return Ok(());
+    }
+
+    // The generator scan descends `scripts/**` looking for `.sh`/`.py`
+    // consumers of the packet tree, and must resolve entry types without
+    // following links. `Path::is_dir` reports a symlinked directory as a
+    // directory, so `scripts/link -> ../outside` would walk content that is
+    // not in the scanned surface at all and report it as an undeclared
+    // generator. `walk_packet_tree` already documents this contract; the
+    // generator scan has to hold the same one.
+    let dir = TempDir::new()?;
+    let packets = dir.path().join("packets");
+    fs::create_dir_all(&packets)?;
+    fs::write(packets.join("evidence.txt"), b"evidence\n")?;
+
+    // A script outside the scan root that does reference the packet tree, so
+    // it is reported the moment the walk reaches it.
+    let outside = dir.path().join("outside");
+    fs::create_dir_all(&outside)?;
+    fs::write(outside.join("stray.py"), b"open('.ci/fixtures/zed-perl-upstream/x')\n")?;
+
+    fs::create_dir_all(dir.path().join("scripts"))?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("../outside", dir.path().join("scripts").join("link"))?;
+
+    let manifest = SourceAuthorityManifest {
+        schema_version: SOURCE_AUTHORITY_SCHEMA_VERSION.to_string(),
+        packet_root: "packets".to_string(),
+        external_write_policy: "maintainer_manual_checkpoint_only".to_string(),
+        manifest_file: "source-authority.v1.json".to_string(),
+        generators: Vec::new(),
+        inputs: vec![input("evidence", "evidence.txt", b"evidence\n")],
+    };
+
+    let receipt = run_verify(&manifest, dir.path())?;
+    refuse_code(&receipt, "undeclared_generator")
+}
