@@ -223,8 +223,9 @@ fn repeated_refusals_are_identical() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Only the extension cell moved to the authority; sibling standard cells keep
-/// their existing catalog-driven wiring.
+/// Only the extension cell moved to the authority; the completions and hover
+/// sibling cells keep their wiring. (The setVariable sibling later moved to
+/// its own #8354 authority — asserted below.)
 #[test]
 fn sibling_capability_cells_are_independent() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = create_test_adapter();
@@ -237,8 +238,9 @@ fn sibling_capability_cells_are_independent() -> Result<(), Box<dyn std::error::
     );
     assert_eq!(
         capability(&caps, "supportsSetVariable")?,
-        perl_dap::feature_catalog::has_feature("dap.core"),
-        "supportsSetVariable keeps its catalog-driven cell"
+        false,
+        "supportsSetVariable carried a catalog-driven cell when #9089 landed; #8354 later \
+         floored it on the exact-mutation authority, so it must now read false"
     );
     assert!(
         !capability(&caps, "supportsEvaluateForHovers")?,
