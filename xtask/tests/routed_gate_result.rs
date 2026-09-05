@@ -625,7 +625,8 @@ fn resealed_contradictory_plan_authority_still_fails_validation() {
     // re-sealed, so only the authority checks themselves can catch it.
     let plan = compiled_plan();
 
-    let mutations: Vec<(&str, Box<dyn Fn(&mut RoutedGateResultV1)>)> = vec![
+    type Mutation = Box<dyn Fn(&mut RoutedGateResultV1)>;
+    let mutations: Vec<(&str, Mutation)> = vec![
         (
             "foreign plan schema",
             Box::new(|r: &mut RoutedGateResultV1| {
@@ -648,6 +649,13 @@ fn resealed_contradictory_plan_authority_still_fails_validation() {
             "row/authority profile disagreement",
             Box::new(|r: &mut RoutedGateResultV1| {
                 r.row.requested_profile = "some_other_profile".to_string();
+            }),
+        ),
+        (
+            "reporting success with no bound log artifact",
+            Box::new(|r: &mut RoutedGateResultV1| {
+                r.artifacts.retain(|artifact| artifact.role != "log");
+                r.reporting.outcome = xtask::routed_result::TerminalOutcome::Success;
             }),
         ),
     ];

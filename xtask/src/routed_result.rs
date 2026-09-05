@@ -975,6 +975,16 @@ fn validate_plane_honesty(result: &RoutedGateResultV1) -> Result<(), String> {
         return Err("never-started command carries a product verdict".to_string());
     }
 
+    // Reporting success is a claim about evidence that exists: it must be
+    // backed by a bound gate log and no named shortfall, exactly as the
+    // sealer produces it. A re-sealed record asserting reporting success with
+    // no log artifact would otherwise validate.
+    if result.reporting.outcome == TerminalOutcome::Success
+        && !result.artifacts.iter().any(|artifact| artifact.role == "log")
+    {
+        return Err("reporting success without a bound log artifact is unsubstantiated".to_string());
+    }
+
     let expected_instrument = match (result.prerequisites.state, result.command_started) {
         (PrerequisiteState::Ready, true) => TerminalOutcome::Success,
         (PrerequisiteState::Ready, false) => TerminalOutcome::InstrumentFailure,

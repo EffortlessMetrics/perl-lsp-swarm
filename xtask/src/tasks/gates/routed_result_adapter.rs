@@ -42,14 +42,14 @@ use color_eyre::eyre::{Context as _, Result, bail, eyre};
 use duct::cmd;
 use sha2::{Digest as _, Sha256};
 
-use xtask::ci_route_plan::{Applicability, CiRoutePlanV1, PlannedOutcome};
+use xtask::ci_route_plan::{Applicability, CiRoutePlanV1, PlannedOutcome, RouteSubjectRef};
 use xtask::routed_result::{
     ArtifactRef, ChildObservation, HostedIdentity, ObservationTiming, PrerequisiteEvidence,
     PrerequisiteState, RoutedGateResultV1, RoutedReaderGateStatus, RunObservation,
     build_routed_result, hex, publish_routed_receipt,
 };
 
-use super::{GateDefinition, GateResult};
+use super::{GateDefinition, GateResult, GateTier};
 
 /// Directory under the repo root receiving normalized results.
 pub(super) const ROUTED_RESULTS_DIR: &str = "target/receipts/routed-results";
@@ -64,52 +64,6 @@ pub(super) fn load_compiled_plan(path: &Path) -> Result<CiRoutePlanV1> {
         .with_context(|| format!("parsing route plan {}", path.display()))?;
     plan.validate().map_err(|error| eyre!("route plan {} refused: {error}", path.display()))?;
     Ok(plan)
-}
-
-/// Bind the plan's *planning* identity to this invocation, not just its
-/// gate population. Two plans can select the same gates while having been
-/// compiled for a different base or a different requested profile; without
-/// this, such a plan passes preflight whenever the resulting commands
-/// coincide, and every published result then carries selection authority
-/// that did not govern the execution.
-///
-/// Bases are compared as resolved commit identities where possible, so an
-/// equivalent symbolic ref (`origin/main` vs its SHA) is not a mismatch;
-/// when neither side resolves, the literal spellings must agree.
-pub(super) fn ensure_plan_planning_identity_matches(
-    plan: &CiRoutePlanV1,
-    invocation_base: &str,
-    invocation_profile: &str,
-    root: &Path,
-) -> Result<()> {
-    if plan.requested_profile != invocation_profile {
-        bail!(
-            "route plan was compiled for profile {:?} but this invocation runs {:?}; \
-             refusing to publish results under a foreign selection authority",
-            plan.requested_profile,
-            invocation_profile
-        );
-    }
-    let planned_base = plan.selection.base.as_str();
-    if planned_base == invocation_base {
-        return Ok(());
-    }
-    let resolve = |rev: &str| -> Option<String> {
-        cmd!("git", "rev-parse", "--verify", format!("{rev}^{{commit}}"))
-            .dir(root)
-            .stderr_null()
-            .read()
-            .ok()
-            .map(|sha| sha.trim().to_string())
-    };
-    match (resolve(planned_base), resolve(invocation_base)) {
-        (Some(planned), Some(actual)) if planned == actual => Ok(()),
-        _ => bail!(
-            "route plan selection base {planned_base:?} does not match this \
-             invocation's base {invocation_base:?}; refusing to publish results \
-             under a foreign selection authority"
-        ),
-    }
 }
 
 /// Mirrors the runner's own quarantine skip in `run_single_gate`: a
@@ -231,20 +185,86 @@ pub(super) fn ensure_plan_subject_matches_receipt(
 ) -> Result<()> {
     let subject = crate::tasks::ci_subject::load_and_resolve(subject_path, root)
         .with_context(|| format!("loading route-plan subject {}", subject_path.display()))?;
-    if subject.receipt.subject_digest != plan.subject.subject_digest {
+    ensure_plan_subject_fields_match_receipt(&plan.subject, &subject.receipt)
+}
+
+/// Every subject field the plan mirrors from the receipt must agree with the
+/// receipt, not only the digest and head. The digest is authority-supplied
+/// rather than recomputed here, so a plan could otherwise copy a valid digest
+/// and head while changing its subject kind or base SHA and publish a false
+/// subject identity under a valid digest.
+pub(super) fn ensure_plan_subject_fields_match_receipt(
+    plan_subject: &RouteSubjectRef,
+    receipt: &crate::tasks::ci_subject::CiSubjectReceipt,
+) -> Result<()> {
+    if receipt.subject_digest != plan_subject.subject_digest {
         bail!(
             "route plan subject digest {} does not match immutable subject receipt {}; \
              refusing to execute against a foreign subject",
-            plan.subject.subject_digest,
-            subject.receipt.subject_digest
+            plan_subject.subject_digest,
+            receipt.subject_digest
         );
     }
-    if subject.receipt.head_sha != plan.subject.head_sha {
+    if receipt.head_sha != plan_subject.head_sha {
         bail!(
             "route plan subject head {} does not match immutable subject receipt {}; \
              refusing to execute against a foreign subject",
-            plan.subject.head_sha,
-            subject.receipt.head_sha
+            plan_subject.head_sha,
+            receipt.head_sha
+        );
+    }
+    if let Some(base_sha) = plan_subject.base_sha.as_deref()
+        && base_sha != receipt.base_sha
+    {
+        bail!(
+            "route plan subject base {} does not match immutable subject receipt base {}; \
+             refusing to publish a result under a false subject identity",
+            base_sha,
+            receipt.base_sha
+        );
+    }
+    let receipt_kind = serde_json::to_value(receipt.event_kind)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    if plan_subject.kind != receipt_kind {
+        bail!(
+            "route plan subject kind {:?} does not match immutable subject receipt event kind {:?}; \
+             refusing to publish a result under a false subject identity",
+            plan_subject.kind,
+            receipt_kind
+        );
+    }
+    Ok(())
+}
+
+/// Bind the plan's selection authority to the runner that is about to execute
+/// it. Matching gate commands is not enough: a plan compiled for another
+/// profile or another selection base can select the same commands, and its
+/// published results would then claim a selection authority that did not
+/// govern this execution.
+pub(super) fn ensure_plan_authority_matches_invocation(
+    plan: &CiRoutePlanV1,
+    tier: &GateTier,
+    resolved_base_sha: Option<&str>,
+) -> Result<()> {
+    let runner_profile = tier.to_string();
+    if plan.requested_profile != runner_profile {
+        bail!(
+            "route plan was compiled for profile {:?} but this runner executes tier {:?}; \
+             refusing a plan whose selection authority did not govern this invocation",
+            plan.requested_profile,
+            runner_profile
+        );
+    }
+    if let Some(base) = resolved_base_sha
+        && plan.selection.base != base
+    {
+        bail!(
+            "route plan selection base {} does not match this runner's resolved base {}; \
+             refusing a plan whose selection authority did not govern this invocation",
+            plan.selection.base,
+            base
         );
     }
     Ok(())
@@ -343,6 +363,7 @@ pub(super) fn collect_hosted_identity() -> Result<Option<HostedIdentity>> {
 pub(super) fn observation_from_gate_result(
     _gate: &GateDefinition,
     result: &GateResult,
+    root: &Path,
     receipt_root: &Path,
     hosted: Option<HostedIdentity>,
 ) -> Result<RunObservation> {
@@ -441,7 +462,8 @@ pub(super) fn observation_from_gate_result(
     // fact or disappear behind an unconditional instrument success (review
     // thread 3871822416).
     let mut receipt_shortfall: Vec<String> = Vec::new();
-    let artifacts = project_log_artifact(result, receipt_root, &mut receipt_shortfall);
+    let mut artifacts = project_log_artifact(result, receipt_root, &mut receipt_shortfall);
+    artifacts.extend(project_declared_artifacts(result, root, &mut receipt_shortfall));
 
     Ok(RunObservation {
         runner_status,
@@ -501,6 +523,44 @@ fn project_log_artifact(
     }
 }
 
+/// Project the gate policy's declared artifacts (repository-root relative
+/// paths such as `target/receipts/clippy.json`) into bounded receipt
+/// identities. A declared artifact that a completed command did not produce
+/// is a named reporting shortfall, so consumers can inspect declared outputs
+/// through the normalized record instead of re-deriving them from policy.
+/// Never-started commands declare nothing.
+fn project_declared_artifacts(
+    result: &GateResult,
+    root: &Path,
+    receipt_shortfall: &mut Vec<String>,
+) -> Vec<ArtifactRef> {
+    let Some(declared) = result.artifacts.as_deref() else {
+        return Vec::new();
+    };
+    if result.status == "skip" || result.status == "error" {
+        return Vec::new();
+    }
+    let mut projected = Vec::new();
+    for path in declared {
+        match std::fs::read(root.join(path)) {
+            Ok(bytes) => {
+                let mut hasher = Sha256::new();
+                hasher.update(&bytes);
+                projected.push(ArtifactRef {
+                    role: "artifact".to_string(),
+                    path: path.clone(),
+                    sha256: Some(hex(&hasher.finalize())),
+                });
+            }
+            Err(_) => receipt_shortfall.push(format!(
+                "declared artifact absent or unreadable for completed gate {}: {path}",
+                result.gate_name
+            )),
+        }
+    }
+    projected
+}
+
 /// Build, validate, and durably publish the normalized result for one
 /// executed planned `run` row.
 ///
@@ -515,11 +575,12 @@ pub(super) fn emit_planned_run_row_result(
     plan: &CiRoutePlanV1,
     gate: &GateDefinition,
     result: &GateResult,
+    root: &Path,
     receipt_root: &Path,
     output_dir: &Path,
     hosted: Option<HostedIdentity>,
 ) -> Result<RoutedGateResultV1> {
-    let observation = observation_from_gate_result(gate, result, receipt_root, hosted)?;
+    let observation = observation_from_gate_result(gate, result, root, receipt_root, hosted)?;
     let built = build_routed_result(plan, &gate.name, observation)
         .map_err(|error| eyre!("result normalization refused for {}: {error}", gate.name))?;
     // canonical_json validates before any filesystem effect, then the
@@ -637,6 +698,7 @@ mod fixtures {
             &plan,
             &gate,
             &result,
+            dir.path(),
             &receipt_root,
             dir.path().join("routed").as_path(),
             None,
@@ -684,8 +746,15 @@ mod fixtures {
 
         let gate = fmt_gate_definition();
         let result = passing_result();
-        let refused =
-            emit_planned_run_row_result(&plan, &gate, &result, &receipt_root, &output_dir, None);
+        let refused = emit_planned_run_row_result(
+            &plan,
+            &gate,
+            &result,
+            dir.path(),
+            &receipt_root,
+            &output_dir,
+            None,
+        );
         assert!(refused.is_err(), "unpublishable result must fail the invocation");
     }
 
@@ -702,6 +771,7 @@ mod fixtures {
             &plan,
             &gate,
             &result,
+            dir.path(),
             &receipt_root,
             &dir.path().join("routed"),
             None,
@@ -785,15 +855,22 @@ mod fixtures {
         let mut result = passing_result();
         result.duration_ms = u64::MAX;
 
-        let refused = observation_from_gate_result(&gate, &result, Path::new("target"), None);
+        let refused =
+            observation_from_gate_result(&gate, &result, Path::new("."), Path::new("target"), None);
         assert!(
             refused.is_err(),
             "an unrepresentable duration on a started command must refuse, got {refused:?}"
         );
 
         // The ordinary duration still produces a bound observation window.
-        let ok = observation_from_gate_result(&gate, &passing_result(), Path::new("target"), None)
-            .expect("an ordinary duration observes cleanly");
+        let ok = observation_from_gate_result(
+            &gate,
+            &passing_result(),
+            Path::new("."),
+            Path::new("target"),
+            None,
+        )
+        .expect("an ordinary duration observes cleanly");
         assert!(ok.timing.started_at_unix_ms.is_some());
         assert!(ok.timing.ended_at_unix_ms.is_some());
     }
@@ -802,29 +879,29 @@ mod fixtures {
     fn a_plan_from_a_foreign_base_or_profile_is_refused() {
         // The gate population alone does not identify a plan: two plans can
         // select the same gates while having been compiled for a different
-        // base or profile. Without this the foreign selection authority is
-        // carried into every published result.
+        // base or profile, and the published results would then claim a
+        // selection authority that did not govern the execution.
         let plan = compiled_fixture();
-        let root = Path::new(".");
 
-        let accepted = ensure_plan_planning_identity_matches(
+        let accepted = ensure_plan_authority_matches_invocation(
             &plan,
-            &plan.selection.base,
-            &plan.requested_profile,
-            root,
+            &GateTier::MergeGate,
+            Some(plan.selection.base.as_str()),
         );
         assert!(accepted.is_ok(), "the plan's own identity must accept, got {accepted:?}");
 
-        let foreign_profile =
-            ensure_plan_planning_identity_matches(&plan, &plan.selection.base, "nightly", root);
+        let foreign_profile = ensure_plan_authority_matches_invocation(
+            &plan,
+            &GateTier::Nightly,
+            Some(plan.selection.base.as_str()),
+        );
         assert!(foreign_profile.is_err(), "a plan compiled for another profile must refuse");
         assert!(foreign_profile.err().unwrap().to_string().contains("profile"));
 
-        let foreign_base = ensure_plan_planning_identity_matches(
+        let foreign_base = ensure_plan_authority_matches_invocation(
             &plan,
-            "cccccccccccccccccccccccccccccccccccccccc",
-            &plan.requested_profile,
-            root,
+            &GateTier::MergeGate,
+            Some("cccccccccccccccccccccccccccccccccccccccc"),
         );
         assert!(foreign_base.is_err(), "a plan compiled against another base must refuse");
         assert!(foreign_base.err().unwrap().to_string().contains("selection base"));
@@ -979,6 +1056,7 @@ timeout_seconds: 60
             &plan,
             &gate,
             &result,
+            dir.path(),
             &receipt_root,
             &dir.path().join("routed"),
             None,
@@ -1009,5 +1087,123 @@ timeout_seconds: 60
     // Silence unused-import lint for re-exported helper types used by
     // fixtures above in stricter configurations.
     #[allow(dead_code)]
+    fn receipt_fixture() -> crate::tasks::ci_subject::CiSubjectReceipt {
+        use crate::tasks::ci_subject::{
+            CiEventKind, CiSubjectReceipt, SubjectDiffMode, SubjectResolutionSource, SubjectStatus,
+        };
+        CiSubjectReceipt {
+            schema_version: "ci_subject.v1".to_string(),
+            producer: "test".to_string(),
+            status: SubjectStatus::Resolved,
+            repository: "EffortlessMetrics/perl-lsp-swarm".to_string(),
+            event_kind: CiEventKind::PullRequest,
+            resolution_source: SubjectResolutionSource::ExplicitInput,
+            diff_mode: SubjectDiffMode::MergeBase,
+            base_sha: SHA_B.to_string(),
+            head_sha: SHA_A.to_string(),
+            base_tree: SHA_B.to_string(),
+            head_tree: SHA_A.to_string(),
+            diff_base_sha: SHA_B.to_string(),
+            diff_base_tree: SHA_B.to_string(),
+            changed_file_count: 0,
+            changed_input_digest: DIGEST_B.to_string(),
+            subject_digest: DIGEST_A.to_string(),
+            error_code: None,
+        }
+    }
+
+    #[test]
+    fn plan_subject_binds_every_mirrored_receipt_field_not_only_the_digest() {
+        let plan = compiled_fixture();
+        let receipt = receipt_fixture();
+        assert!(ensure_plan_subject_fields_match_receipt(&plan.subject, &receipt).is_ok());
+
+        // Same digest and head, different base: a false subject identity under
+        // a valid digest must be refused.
+        let mut foreign_base = plan.subject.clone();
+        foreign_base.base_sha = Some(SHA_A.to_string());
+        let refused = ensure_plan_subject_fields_match_receipt(&foreign_base, &receipt);
+        assert!(refused.is_err(), "base mismatch must refuse, got {refused:?}");
+        assert!(refused.unwrap_err().to_string().contains("subject base"));
+
+        let mut foreign_kind = plan.subject.clone();
+        foreign_kind.kind = "merge_group".to_string();
+        let refused = ensure_plan_subject_fields_match_receipt(&foreign_kind, &receipt);
+        assert!(refused.is_err(), "kind mismatch must refuse, got {refused:?}");
+        assert!(refused.unwrap_err().to_string().contains("subject kind"));
+
+        // A plan that carries no base binds nothing extra and stays accepted.
+        let mut baseless = plan.subject.clone();
+        baseless.base_sha = None;
+        assert!(ensure_plan_subject_fields_match_receipt(&baseless, &receipt).is_ok());
+    }
+
+    #[test]
+    fn plan_selection_authority_binds_runner_profile_and_base() {
+        let plan = compiled_fixture();
+        assert!(
+            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, Some(SHA_B))
+                .is_ok()
+        );
+        assert!(
+            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, None).is_ok(),
+            "a runner without a base ref binds the profile only"
+        );
+
+        let foreign_profile =
+            ensure_plan_authority_matches_invocation(&plan, &GateTier::PrFast, Some(SHA_B));
+        assert!(foreign_profile.is_err(), "profile mismatch must refuse: {foreign_profile:?}");
+        assert!(foreign_profile.unwrap_err().to_string().contains("profile"));
+
+        let foreign_base =
+            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, Some(SHA_A));
+        assert!(foreign_base.is_err(), "base mismatch must refuse: {foreign_base:?}");
+        assert!(foreign_base.unwrap_err().to_string().contains("selection base"));
+    }
+
+    #[test]
+    fn declared_artifacts_are_projected_or_named_as_shortfall() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let receipt_root = dir.path().join("target/receipts");
+        std::fs::create_dir_all(receipt_root.join("logs")).expect("log dir");
+        std::fs::write(receipt_root.join("logs/fmt_gate.log"), b"fmt clean").expect("log");
+        std::fs::write(receipt_root.join("present.json"), b"{}").expect("artifact");
+
+        let gate = fmt_gate_definition();
+        let mut result = passing_result();
+        result.artifacts = Some(vec![
+            "target/receipts/present.json".to_string(),
+            "target/receipts/absent.json".to_string(),
+        ]);
+        let observation =
+            observation_from_gate_result(&gate, &result, dir.path(), &receipt_root, None)
+                .expect("observation");
+        let roles: Vec<(&str, &str)> = observation
+            .artifacts
+            .iter()
+            .map(|artifact| (artifact.role.as_str(), artifact.path.as_str()))
+            .collect();
+        assert!(roles.contains(&("log", "target/receipts/logs/fmt_gate.log")), "{roles:?}");
+        assert!(roles.contains(&("artifact", "target/receipts/present.json")), "{roles:?}");
+        assert!(
+            observation
+                .artifacts
+                .iter()
+                .all(|artifact| artifact.sha256.as_deref().is_some_and(|sha| sha.len() == 64)),
+            "every projected artifact carries a bounded sha256"
+        );
+        assert!(
+            observation.receipt_shortfall.iter().any(|entry| entry.contains("absent.json")),
+            "a declared-but-missing artifact is named as a reporting shortfall: {:?}",
+            observation.receipt_shortfall
+        );
+
+        // A never-started command declares nothing.
+        let never_started =
+            observation_from_gate_result(&gate, &error_result(), dir.path(), &receipt_root, None)
+                .expect("observation");
+        assert!(never_started.artifacts.is_empty());
+    }
+
     fn _type_witness(_: Applicability) {}
 }

@@ -62,10 +62,7 @@ impl DebugAdapter {
         self.initialized.store(true, std::sync::atomic::Ordering::Release);
 
         let supports_core = catalog_has_feature("dap.core");
-        let supports_basic_breakpoints = catalog_has_feature("dap.breakpoints.basic");
         let supports_exceptions = catalog_has_feature("dap.exceptions.die");
-        let supports_completions = catalog_has_feature("dap.completions");
-        let supports_modules = catalog_has_feature("dap.modules");
         let supports_watchpoints = catalog_has_feature("dap.watchpoints");
         let supports_warn = catalog_has_feature("dap.exceptions.warn");
         let supports_any_exception = supports_exceptions || supports_warn;
@@ -77,8 +74,6 @@ impl DebugAdapter {
         let supports_restart_frame = catalog_has_feature("dap.restart_frame");
         let supports_terminate_threads = catalog_has_feature("dap.terminate_threads");
         let supports_step_in_targets = catalog_has_feature("dap.step_in_targets");
-        let supports_restart = catalog_has_feature("dap.restart");
-        let supports_loaded_sources = catalog_has_feature("dap.loaded_sources");
         // `gotoTargets`/`goto` are fail-closed while the native backend only has
         // a run-to-line primitive (`f <source>` + `c <line>` resumes execution
         // instead of moving the next statement).  The catalog row is
@@ -146,15 +141,38 @@ impl DebugAdapter {
             "supportsRestartFrame": supports_restart_frame,
             "supportsGotoTargetsRequest": supports_goto_targets,
             "supportsStepInTargetsRequest": supports_step_in_targets,
-            "supportsCompletionsRequest": supports_completions,
-            "supportsModulesRequest": supports_modules,
-            "supportsRestartRequest": supports_restart,
+            // --- #9581 secondary-capability floor -------------------------------
+            // The seven rows below are independent literal `false` cells. None
+            // of them may be derived from `supports_core`, catalog maturity,
+            // handler/type presence, or another mode's support: the useful
+            // handler pieces exist, but their advertised contracts are not yet
+            // exact behavior facts (#9581). Each row re-enables only through
+            // its own gate, owned by the per-feature issues named in its
+            // comment; one field's receipt never widens another. While a row
+            // is false, its request is rejected by the dispatcher before any
+            // handler computation (see `dispatch_request`), so the floored
+            // paths perform no debugger I/O and mutate no state.
+            //
+            // completions: column/current-frame semantics unproven.
+            // Gate: #9021 + #9046 + #9050 + #8581 + #9582 + #9584.
+            "supportsCompletionsRequest": false,
+            // modules: `%INC` output without stable module/source identity.
+            // Gate: #8581 + #7667/#8668 + #9585 + #9586.
+            "supportsModulesRequest": false,
+            // restart: no atomic fresh-debuggee transaction yet.
+            // Gate: #9051 + #8691/#8703 + #8974 + #9587 + #8726 + #7568.
+            "supportsRestartRequest": false,
             "supportsExceptionOptions": supports_any_exception,
-            "supportsValueFormattingOptions": supports_core,
+            // ValueFormat: formatting honor is not proven consistently across
+            // variables/evaluate/mutation. Gate: #9050 + #8364 + #9070 +
+            // #7342/#7345 + #9588 + #9590.
+            "supportsValueFormattingOptions": false,
             "supportsExceptionInfoRequest": supports_any_exception,
             "supportTerminateDebuggee": supports_core,
             "supportsDelayedStackTraceLoading": false,
-            "supportsLoadedSourcesRequest": supports_loaded_sources,
+            // loadedSources: same identity gate as modules, as its own row.
+            // Gate: #8581 + #7667/#8668 + #9585 + #9586.
+            "supportsLoadedSourcesRequest": false,
             "supportsTerminateThreadsRequest": supports_terminate_threads,
             // #8294: exactly one synthetic main execution context is exposed;
             // single-thread execution requests are not a distinct capability
@@ -169,8 +187,13 @@ impl DebugAdapter {
             "supportsDataBreakpoints": supports_watchpoints,
             "supportsReadMemoryRequest": false,
             "supportsDisassembleRequest": false,
-            "supportsCancelRequest": supports_core,
-            "supportsBreakpointLocationsRequest": supports_basic_breakpoints,
+            // cancel: the shared flag can affect another request; request-scoped
+            // correlation is unproven. Gate: #9074 + #8712 + #7568.
+            "supportsCancelRequest": false,
+            // breakpointLocations: canonical geometry/coordinate contract
+            // unproven. Gate: #10524 + #2300 + #9021 + #7566.
+            "supportsBreakpointLocationsRequest": false,
+            // --- end #9581 secondary-capability floor ---------------------------
             "supportsClipboardContext": false,
             "supportsSteppingGranularity": false,
             "supportsInstructionBreakpoints": false,
