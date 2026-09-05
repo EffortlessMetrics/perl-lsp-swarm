@@ -425,7 +425,13 @@ impl ModuleMovePlan {
                     None
                 }
                 [start] => {
-                    Some(substitute(&occurrence.old_text, *start, &source.package, &target_package))
+                    let new_text =
+                        substitute(&occurrence.old_text, *start, &source.package, &target_package);
+                    // A same-identity target substitutes nothing. The plan is
+                    // already blocked as a collision; emitting an unchanged
+                    // edit would make `build` produce a plan its own
+                    // `validate` rejects.
+                    (new_text != occurrence.old_text).then_some(new_text)
                 }
                 _ => {
                     // A multi-statement anchor has more than one substitution
@@ -439,8 +445,7 @@ impl ModuleMovePlan {
             // identity — a dependent file's `package Old::Name` is a reference.
             if occurrence.kind == OccurrenceKind::Definition
                 && occurrence.file_id == source.file_id
-                && declares_package(&occurrence.old_text)
-                && sites.len() == 1
+                && declares_identity(&occurrence.old_text, &sites)
             {
                 primary_declarations += 1;
             }
@@ -628,8 +633,10 @@ impl ModuleMovePlan {
             .filter(|edit| {
                 edit.file_id == self.source.file_id
                     && edit.kind == OccurrenceKind::Definition
-                    && declares_package(&edit.old_text)
-                    && identity_sites(&edit.old_text, &self.source.package).len() == 1
+                    && declares_identity(
+                        &edit.old_text,
+                        &identity_sites(&edit.old_text, &self.source.package),
+                    )
             })
             .count();
         if declarations != 1 {
@@ -825,14 +832,27 @@ fn valid_package(value: &str) -> bool {
         })
 }
 
-/// Whether an anchor's text opens a `package` declaration.
+/// The byte offset of the package-name slot in a `package` declaration.
 ///
 /// Perl separates the keyword from the name with any whitespace, so a tab or
 /// newline declares a package exactly as a space does; `packageFoo` does not.
-fn declares_package(text: &str) -> bool {
-    text.trim_start()
-        .strip_prefix("package")
-        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_whitespace()))
+/// Returning the slot rather than a boolean is what makes
+/// `package Other; Old::Name` refusable: the identity must be the name this
+/// declaration introduces, not merely present somewhere in the anchor.
+fn declaration_name_offset(text: &str) -> Option<usize> {
+    let leading = text.len() - text.trim_start().len();
+    let rest = text.trim_start().strip_prefix("package")?;
+    if !rest.starts_with(|c: char| c.is_ascii_whitespace()) {
+        return None;
+    }
+    let gap = rest.len() - rest.trim_start().len();
+    Some(leading + "package".len() + gap)
+}
+
+/// Whether this anchor declares `identity` as its own package name, with that
+/// declaration site as the anchor's single substitution site.
+fn declares_identity(text: &str, sites: &[usize]) -> bool {
+    declaration_name_offset(text).is_some_and(|offset| sites == [offset])
 }
 
 /// The source-identity conjunction this profile requires.
@@ -883,10 +903,12 @@ fn identity_sites(text: &str, identity: &str) -> Vec<usize> {
             let end = start + identity.len();
             // A `::`-separated identity must not be a suffix or prefix of a
             // longer package path either.
+            // Both `::` and Perl's legacy `'` separator extend a package
+            // identity, so a match adjacent to either is part of a longer name.
             boundary(start.checked_sub(1).and_then(|index| text.as_bytes().get(index).copied()))
-                && !text[..*start].ends_with(':')
+                && !text[..*start].ends_with([':', '\''])
                 && boundary(text.as_bytes().get(end).copied())
-                && !text[end..].starts_with(':')
+                && !text[end..].starts_with([':', '\''])
         })
         .map(|(start, _)| start)
         .collect()
@@ -1888,6 +1910,155 @@ mod tests {
         assert_eq!(received, built);
         assert!(received.is_complete());
         Ok(())
+    }
+
+    // --- builder/acceptance agreement (Devin review) --------------------------
+
+    /// The invariant behind the same-name finding, stated generally: whatever
+    /// `build` produces, `validate` must accept as an honest plan. A builder
+    /// that emits a plan its own acceptance boundary calls malformed has an
+    /// internal contradiction, whatever the disposition.
+    #[test]
+    fn every_plan_the_builder_produces_validates() {
+        let cases: Vec<(&str, ModuleMoveTarget, Vec<ModuleMoveOccurrence>, bool)> = vec![
+            (
+                "same-name target",
+                ModuleMoveTarget::Package("Old::Name".into()),
+                vec![declaration()],
+                false,
+            ),
+            (
+                "target exists",
+                ModuleMoveTarget::Package("New::Name".into()),
+                vec![declaration()],
+                true,
+            ),
+            (
+                "traversal",
+                ModuleMoveTarget::RelativePath("lib/../New.pm".into()),
+                vec![declaration()],
+                false,
+            ),
+            ("digit target", ModuleMoveTarget::Package("123".into()), vec![declaration()], false),
+            ("empty denominator", ModuleMoveTarget::Package("New::Name".into()), Vec::new(), false),
+            (
+                "unsupported occurrence",
+                ModuleMoveTarget::Package("New::Name".into()),
+                vec![declaration(), {
+                    let mut item = occurrence_at("use Old::Name", 40, 4);
+                    item.unsupported = true;
+                    item
+                }],
+                false,
+            ),
+            (
+                "ambiguous anchor",
+                ModuleMoveTarget::Package("New::Name".into()),
+                vec![declaration(), occurrence_at("package Old::Name; use Old::Name;", 40, 4)],
+                false,
+            ),
+            (
+                "happy path",
+                ModuleMoveTarget::Package("New::Name".into()),
+                vec![declaration(), occurrence_at("use Old::Name", 40, 4)],
+                false,
+            ),
+        ];
+        for (label, target, occurrences, target_exists) in cases {
+            let plan = ModuleMovePlan::build(
+                source(),
+                target,
+                occurrences,
+                source_only_snapshot(),
+                target_exists,
+            );
+            assert_eq!(plan.validate(), Ok(()), "{label} produced a plan validate rejects");
+        }
+    }
+
+    #[test]
+    fn a_same_name_target_emits_no_no_op_edit() {
+        let plan = ModuleMovePlan::build(
+            source(),
+            ModuleMoveTarget::Package("Old::Name".into()),
+            vec![declaration()],
+            source_only_snapshot(),
+            false,
+        );
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::TargetCollision));
+        assert!(plan.edits.is_empty(), "a no-op edit was planned: {:?}", plan.edits);
+        assert_eq!(plan.validate(), Ok(()));
+    }
+
+    // --- the declaration's own name slot (Devin review) ------------------------
+
+    /// `package Other; Old::Name` declares `Other`. Renaming the trailing
+    /// reference would leave the real declaration untouched while the plan
+    /// reported itself complete.
+    #[test]
+    fn an_identity_outside_the_declaration_slot_does_not_declare_it() {
+        for text in [
+            "package Other; Old::Name",
+            "package Other::Thing; use Old::Name",
+            "package  Other;Old::Name",
+        ] {
+            let mut item = declaration();
+            item.old_text = text.into();
+            item.end_byte = text.len() as u32;
+            let plan = plan(vec![item], source_only_snapshot());
+            assert!(
+                plan.blockers.contains(&ModuleMoveBlocker::MissingPackageDeclaration),
+                "{text:?} was accepted as declaring Old::Name"
+            );
+            assert!(!plan.is_complete());
+        }
+    }
+
+    /// `build` now refuses to construct this, so the acceptance boundary needs
+    /// its own control: a forged complete plan whose declaration edit is a
+    /// well-formed substitution that does not sit in the declaration slot.
+    #[test]
+    fn a_forged_declaration_edit_outside_the_slot_is_refused() {
+        let mut forged = plan(vec![declaration()], source_only_snapshot());
+        let old_text = "package Other; Old::Name".to_string();
+        let new_text = "package Other; New::Name".to_string();
+        forged.edits[0].end_byte = forged.edits[0].start_byte + old_text.len() as u32;
+        forged.edits[0].old_text = old_text;
+        forged.edits[0].new_text = new_text;
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::MissingPackageDeclaration));
+        assert!(!forged.is_complete());
+    }
+
+    #[test]
+    fn the_declaration_slot_still_accepts_real_declarations() {
+        for text in ["package Old::Name", "package\tOld::Name;", "  package  Old::Name ;"] {
+            let mut item = declaration();
+            item.old_text = text.into();
+            item.end_byte = text.len() as u32;
+            let plan = plan(vec![item], source_only_snapshot());
+            assert!(plan.is_complete(), "{text:?} was rejected: {:?}", plan.blockers);
+        }
+    }
+
+    // --- legacy package separator (Devin review) ------------------------------
+
+    /// Perl's `'` is a package separator, so `Old::Name'Child` is a longer
+    /// identity and renaming its prefix would corrupt it.
+    #[test]
+    fn the_legacy_apostrophe_separator_extends_a_package_identity() {
+        for text in ["use Old::Name'Child", "use Prefix'Old::Name"] {
+            let item = occurrence_at(text, 40, 4);
+            let plan = plan(vec![declaration(), item], source_only_snapshot());
+            assert!(
+                plan.blockers.contains(&ModuleMoveBlocker::UnsupportedProjection),
+                "{text} was treated as the source identity"
+            );
+            assert!(
+                plan.edits.iter().all(|edit| edit.occurrence_id != OccurrenceId(4)),
+                "a longer legacy-separator identity was partially renamed"
+            );
+        }
     }
 
     // --- helpers -----------------------------------------------------------
