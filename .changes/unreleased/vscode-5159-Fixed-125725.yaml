@@ -1,9 +1,0 @@
-project: vscode
-component: Packaging and distribution
-kind: Fixed
-body: "The VS Code Marketplace listing's keywords were trimmed from 12 (exceeding the 5-tag limit, so the last 7 were silently dropped) to the 5 highest-intent terms; the README's command table and links were corrected to match actual command-palette labels; and the bug-report issue template now points at the real 'Perl: Show Output Channel' command instead of one that doesn't exist."
-time: 2026-07-28T12:57:25Z
-custom:
-  PR: "5159"
-  Slug: marketplace-first-run-ux
-  Breaking: "no"
