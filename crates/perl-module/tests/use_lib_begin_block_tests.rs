@@ -485,10 +485,18 @@ fn filehandle_builtins_still_open_heredocs() {
 /// the rail treats as a pragma.
 #[test]
 fn data_section_markers_end_the_scanned_region() {
-    let end_marker = "use lib 'real';\n__END__\nprose; use lib 'phantom_end';\n";
-    let data_marker = "use lib 'real';\n__DATA__\nrow; use lib 'phantom_data';\n";
+    let sources = [
+        "use lib 'real';\n__END__\nprose; use lib 'phantom_end';\n",
+        "use lib 'real';\n__DATA__\nrow; use lib 'phantom_data';\n",
+        // The boundary is the end of the identifier, not whitespace: `perl -c`
+        // accepts `__END__;` and `__END__ trailing words` alike and treats the
+        // rest of the file as data.
+        "use lib 'real';\n__END__;\nprose; use lib 'phantom_punctuated';\n",
+        "use lib 'real';\n__DATA__:\nrow; use lib 'phantom_colon';\n",
+        "use lib 'real';\n__END__ trailing words\nprose; use lib 'phantom_trailing';\n",
+    ];
 
-    for source in [end_marker, data_marker] {
+    for source in sources {
         assert_eq!(
             extract_use_lib_operations(source),
             vec![UseLibAction::Add(vec![UseLibPath {

@@ -153,12 +153,17 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
     statements
 }
 
-/// Whether `rest` begins with a `__END__` or `__DATA__` marker occupying its
-/// own line.
+/// Whether `rest` begins with a `__END__` or `__DATA__` marker.
+///
+/// The boundary is the end of the identifier, not whitespace: `perl -c` accepts
+/// `__END__;` and `__END__ trailing words` alike and treats the rest of the file
+/// as data, while `__ENDS__ = 1;` is still compiled as code — so requiring
+/// whitespace would leave a punctuated marker's payload scanned as code.
 fn is_data_section_marker(rest: &str) -> bool {
     ["__END__", "__DATA__"].iter().any(|marker| {
-        rest.strip_prefix(marker)
-            .is_some_and(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
+        rest.strip_prefix(marker).is_some_and(|tail| {
+            tail.chars().next().is_none_or(|ch| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        })
     })
 }
 
