@@ -9,10 +9,6 @@
 //!
 //! AC:3486 — End-to-end workflow: launch -> breakpoint -> inspect -> step -> continue -> exit
 
-#![expect(
-    clippy::print_stderr,
-    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
-)]
 mod common;
 
 use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, workflow_timeout};

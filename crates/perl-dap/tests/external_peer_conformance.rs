@@ -1040,7 +1040,11 @@ fn peer_reported_debuggee_failure_is_not_an_adapter_bug() {
             // reply carries none, so the causeless classification stands (#14582).
             assert_eq!(*cause, None);
         }
-        other => panic!("expected PeerReported from a peer success:false, got {other:?}"),
+        other => {
+            must(Err::<(), _>(format!(
+                "expected PeerReported from a peer success:false, got {other:?}"
+            )));
+        }
     }
 
     assert_ne!(
@@ -1103,7 +1107,11 @@ fn peer_response_echoing_a_different_command_is_a_protocol_violation() {
                 "the protocol error names both the request and the echoed command: {detail}"
             );
         }
-        other => panic!("a crossed command must not be reported as an outcome, got {other:?}"),
+        other => {
+            must(Err::<(), _>(format!(
+                "a crossed command must not be reported as an outcome, got {other:?}"
+            )));
+        }
     }
 
     assert_eq!(err.error_class(), ErrorCategory::Protocol);
