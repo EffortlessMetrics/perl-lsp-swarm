@@ -42,7 +42,7 @@ fn has_undeclared(issues: &[ScopeIssue], var_name: &str) -> bool {
 fn foreach_list_does_not_see_loop_variable_under_strict() {
     let code = "use strict; for my $x ($x) { }";
     let issues = scope_issues(code);
-    let list_x = code.rfind("$x");
+    let list_x = code.find("($x)").map(|i| i + 1);
     assert!(
         issues.iter().any(|i| {
             i.kind == IssueKind::UndeclaredVariable
