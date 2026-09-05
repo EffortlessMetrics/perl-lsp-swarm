@@ -515,8 +515,8 @@ fn evaluate_compatibility(
         // highest-precedence symptom.  State remains single-valued. (#10184)
         // Cross-bucket duplicates are normalized by the single caller.
         let mut reasons = mismatch;
-        reasons.extend_from_slice(&not_proven);
-        reasons.extend_from_slice(&partial);
+        reasons.extend(not_proven);
+        reasons.extend(partial);
         return (BinaryCompatibilityState::Mismatch, reasons, limitations);
     }
     if !not_proven.is_empty() {
@@ -525,7 +525,7 @@ fn evaluate_compatibility(
         // outstanding gap set rather than only the not_proven symptoms. (#10184)
         // Cross-bucket duplicates are normalized by the single caller.
         let mut reasons = not_proven;
-        reasons.extend_from_slice(&partial);
+        reasons.extend(partial);
         return (BinaryCompatibilityState::NotProven, reasons, limitations);
     }
     if !partial.is_empty() {
