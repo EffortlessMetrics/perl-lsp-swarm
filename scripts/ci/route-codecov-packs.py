@@ -153,7 +153,7 @@ def _explicit_bin_source(
     """
     raw_path = target.get("path")
     if isinstance(raw_path, str) and raw_path:
-        return raw_path.replace("\\", "/")
+        return str(PurePosixPath(raw_path.replace("\\", "/")))
     if name == package_name and (crate_root / "src" / "main.rs").is_file():
         return "src/main.rs"
     for candidate in (f"src/bin/{name}.rs", f"src/bin/{name}/main.rs"):
@@ -206,13 +206,6 @@ def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> Packag
 
     binaries: dict[str, BinaryTestTarget] = {}
     claimed_sources: set[str] = set()
-    if isinstance(explicit_lib, dict):
-        raw_lib_path = explicit_lib.get("path")
-        claimed_sources.add(
-            raw_lib_path.replace("\\", "/")
-            if isinstance(raw_lib_path, str) and raw_lib_path
-            else "src/lib.rs"
-        )
     explicit_bins = manifest.get("bin") or []
     if not isinstance(explicit_bins, list):
         raise ValueError(f"Cargo manifest for changed crate {crate_name} has invalid [[bin]] entries")

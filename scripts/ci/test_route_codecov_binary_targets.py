@@ -329,6 +329,30 @@ class BinaryTargetRoutingTests(unittest.TestCase):
         self.assertTrue(any("--bin renamed " in command for command in commands))
         self.assertFalse(any("--bin helper " in command for command in commands))
 
+    def test_explicit_bin_path_is_normalized_before_dedup(self) -> None:
+        """Source occupancy compares normalized paths, so `./src/main.rs` counts."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "dotted-path-directory",
+                """
+                [package]
+                name = "dotted-path"
+                edition = "2021"
+
+                [[bin]]
+                name = "renamed"
+                path = "./src/main.rs"
+                """,
+                ["src/main.rs", "src/changed.rs"],
+            )
+
+            commands = self._commands_for(root, "dotted-path-directory")
+
+        self.assertTrue(any("--bin renamed " in command for command in commands))
+        self.assertFalse(any("--bin dotted-path " in command for command in commands))
+
     def test_pathless_explicit_bin_claims_its_inferred_source(self) -> None:
         """A pathless `[[bin]]` named after the package still claims `src/main.rs`."""
         with tempfile.TemporaryDirectory() as directory:
