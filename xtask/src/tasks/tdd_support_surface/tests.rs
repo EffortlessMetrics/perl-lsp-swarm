@@ -5,6 +5,7 @@
 //! correct ledger proves nothing: the point of these fixtures is that they fail
 //! when the corresponding guard is removed.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -440,6 +441,7 @@ fn a_consumer_the_symbol_never_reaches_is_rejected() -> Result<()> {
         dep_kind: "dev-dependencies".to_string(),
         referenced: ["must".to_string()].into_iter().collect(),
         class: "must_only".to_string(),
+        enabled_features: BTreeSet::new(),
     }];
     expect_err(
         validate_derived_consumers(&ledger(vec![row]), &edges),
@@ -744,6 +746,7 @@ fn a_consumer_the_symbol_does_not_reach_is_rejected() -> Result<()> {
             dep_kind: "dev-dependencies".to_string(),
             referenced: names(&["must_err"]),
             class: "must_only".to_string(),
+            enabled_features: BTreeSet::new(),
         },
         ConsumerEdge {
             crate_name: "perl-lexer".to_string(),
@@ -751,6 +754,7 @@ fn a_consumer_the_symbol_does_not_reach_is_rejected() -> Result<()> {
             dep_kind: "dev-dependencies".to_string(),
             referenced: names(&["must"]),
             class: "must_only".to_string(),
+            enabled_features: BTreeSet::new(),
         },
     ];
     let mut row =
@@ -773,6 +777,7 @@ fn a_missing_real_consumer_is_rejected() -> Result<()> {
         dep_kind: "dev-dependencies".to_string(),
         referenced: names(&["must_some_with"]),
         class: "must_only".to_string(),
+        enabled_features: BTreeSet::new(),
     }];
     let mut row = entry(
         "reexport:perl_tdd_support::must_some_with",
@@ -799,6 +804,7 @@ fn tdd_reexport_alias_attributes_both_paths() -> Result<()> {
             dep_kind: "dependencies".to_string(),
             referenced: names(&["tdd"]),
             class: "other_only".to_string(),
+            enabled_features: BTreeSet::new(),
         },
         ConsumerEdge {
             crate_name: "perl-lsp-rs".to_string(),
@@ -806,6 +812,7 @@ fn tdd_reexport_alias_attributes_both_paths() -> Result<()> {
             dep_kind: "dependencies".to_string(),
             referenced: names(&["tdd_basic"]),
             class: "other_only".to_string(),
+            enabled_features: BTreeSet::new(),
         },
     ];
     let index = reference_index(&edges);
@@ -825,6 +832,7 @@ fn proven_consumers_reject_a_self_only_class() -> Result<()> {
         dep_kind: "dev-dependencies".to_string(),
         referenced: names(&["must"]),
         class: "must_only".to_string(),
+        enabled_features: BTreeSet::new(),
     }];
     let mut row = entry("reexport:perl_tdd_support::must", "reexport", "perl_tdd_support::must");
     row.consumer_class = "self_only".to_string();
@@ -858,6 +866,223 @@ fn the_projection_carries_a_do_not_edit_marker() -> Result<()> {
     let rendered = render_projection(&ledger, &discover_consumers(&root)?);
     if !rendered.to_lowercase().contains("do not edit") {
         bail!("the generated projection must announce that it is generated");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Members: methods, fields, variants (#8418 scopes them explicitly)
+// ---------------------------------------------------------------------------
+
+const MEMBER_FIXTURE: &str = "\
+pub struct Scenario { pub title: String, hidden: u8 }\n\
+impl Scenario {\n\
+    pub fn new() -> Self { Scenario { title: String::new(), hidden: 0 } }\n\
+    pub fn given(self) -> Self { self }\n\
+    fn private_step(&self) {}\n\
+    #[cfg(test)]\n    pub fn only_in_tests(&self) {}\n\
+}\n\
+impl Default for Scenario { fn default() -> Self { Self::new() } }\n\
+pub struct Pair(pub u8, u8);\n\
+pub enum Outcome { Passed, Failed { reason: String } }\n\
+struct Hidden;\n\
+impl Hidden { pub fn reachable_only_in_crate() {} }\n";
+
+fn governed_ids(root: &Path) -> Result<Vec<String>> {
+    Ok(discover_surface(root)?.into_iter().map(|item| item.id).collect())
+}
+
+#[test]
+fn public_inherent_methods_are_governed_members() -> Result<()> {
+    let dir = fixture_root(MEMBER_FIXTURE, MINIMAL_MANIFEST)?;
+    let ids = governed_ids(dir.path())?;
+    for expected in
+        ["method:perl_tdd_support::Scenario::new", "method:perl_tdd_support::Scenario::given"]
+    {
+        if !ids.iter().any(|id| id == expected) {
+            bail!("public inherent method {expected} was not discovered: {ids:?}");
+        }
+    }
+    for unexpected in [
+        "method:perl_tdd_support::Scenario::private_step",
+        "method:perl_tdd_support::Scenario::only_in_tests",
+        "method:perl_tdd_support::Scenario::default",
+        "method:perl_tdd_support::Hidden::reachable_only_in_crate",
+    ] {
+        if ids.iter().any(|id| id == unexpected) {
+            bail!("{unexpected} is not public inherent surface, but discovery reported it");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn public_fields_and_variants_are_governed_members() -> Result<()> {
+    let dir = fixture_root(MEMBER_FIXTURE, MINIMAL_MANIFEST)?;
+    let ids = governed_ids(dir.path())?;
+    for expected in [
+        "field:perl_tdd_support::Scenario::title",
+        "field:perl_tdd_support::Pair::0",
+        "variant:perl_tdd_support::Outcome::Passed",
+        "variant:perl_tdd_support::Outcome::Failed",
+    ] {
+        if !ids.iter().any(|id| id == expected) {
+            bail!("{expected} was not discovered: {ids:?}");
+        }
+    }
+    for unexpected in
+        ["field:perl_tdd_support::Scenario::hidden", "field:perl_tdd_support::Pair::1"]
+    {
+        if ids.iter().any(|id| id == unexpected) {
+            bail!("private field {unexpected} must not be governed surface");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_member_without_a_row_is_rejected() -> Result<()> {
+    let dir = fixture_root("pub struct S;\nimpl S { pub fn m() {} }\n", MINIMAL_MANIFEST)?;
+    let discovered = discover_surface(dir.path())?;
+    let ledger = ledger(vec![
+        entry("struct:perl_tdd_support::S", "struct", "perl_tdd_support::S"),
+        entry("feature:default", "feature", "default"),
+    ]);
+    expect_err(
+        reconcile(&discovered, &ledger),
+        "`method:perl_tdd_support::S::m`",
+        "a public method whose owning type is governed but which has no row of its own",
+    )
+}
+
+#[test]
+fn every_real_member_row_names_a_governed_owning_type() -> Result<()> {
+    let root = repo_root()?;
+    let ledger = load_ledger(&root.join(LEDGER_PATH))?;
+    let paths: BTreeSet<&str> = ledger.entry.iter().map(|e| e.path.as_str()).collect();
+    for entry in ledger.entry.iter().filter(|e| MEMBER_KINDS.contains(&e.api_kind.as_str())) {
+        let Some((owner, _)) = entry.path.rsplit_once("::") else {
+            bail!("member row `{}` has no owning type segment", entry.id);
+        };
+        if !paths.contains(owner) {
+            bail!("member row `{}` names owner `{owner}` which has no ledger row", entry.id);
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Feature activation is a consumer edge
+// ---------------------------------------------------------------------------
+
+fn feature_edge(crate_name: &str, features: &[&str]) -> ConsumerEdge {
+    ConsumerEdge {
+        crate_name: crate_name.to_string(),
+        manifest: format!("crates/{crate_name}/Cargo.toml"),
+        dep_kind: "dependencies".to_string(),
+        referenced: BTreeSet::new(),
+        class: "declared_unused".to_string(),
+        enabled_features: names(features),
+    }
+}
+
+#[test]
+fn a_feature_row_omitting_an_activating_consumer_is_rejected() -> Result<()> {
+    let row = entry("feature:lsp-compat", "feature", "lsp-compat");
+    let edges = vec![feature_edge("perl-parser", &["default", "lsp-compat"])];
+    expect_err(
+        validate_derived_consumers(&ledger(vec![row]), &edges),
+        "row `feature:lsp-compat` consumers are stale",
+        "a feature activated by a workspace crate but recorded as self_only",
+    )
+}
+
+#[test]
+fn a_feature_row_naming_its_activating_consumer_is_accepted() -> Result<()> {
+    let mut row = entry("feature:lsp-compat", "feature", "lsp-compat");
+    row.consumers = vec!["perl-parser".to_string()];
+    row.consumer_class = "production_workspace_consumer".to_string();
+    let edges = vec![feature_edge("perl-parser", &["default", "lsp-compat"])];
+    validate_derived_consumers(&ledger(vec![row]), &edges)
+}
+
+#[test]
+fn feature_activation_follows_cargo_spellings() -> Result<()> {
+    let manifest: toml::Value = toml::from_str(
+        r#"
+[package]
+name = "consumer"
+
+[dependencies]
+perl-tdd-support = { workspace = true, features = ["url"] }
+
+[features]
+lsp = ["perl-tdd-support/lsp-compat"]
+maybe = ["perl-tdd-support?/lsp-types"]
+"#,
+    )?;
+    let root_spec: toml::Value = toml::from_str(
+        r#"path = "crates/perl-tdd-support"
+default-features = false
+features = ["extra"]"#,
+    )?;
+    let enabled = enabled_features(&manifest, Some(&root_spec));
+    let expected = names(&["extra", "lsp-compat", "lsp-types", "url"]);
+    if enabled != expected {
+        bail!("expected {expected:?}, derived {enabled:?}");
+    }
+    let plain: toml::Value = toml::from_str(
+        "[package]\nname = \"consumer\"\n[dependencies]\nperl-tdd-support = \"1\"\n",
+    )?;
+    if enabled_features(&plain, None) != names(&["default"]) {
+        bail!("a plain dependency must activate exactly `default`");
+    }
+    Ok(())
+}
+
+#[test]
+fn real_feature_rows_reflect_manifest_activation() -> Result<()> {
+    let root = repo_root()?;
+    let edges = discover_consumers(&root)?;
+    let activated = feature_consumers("lsp-compat", &edges);
+    if !activated.contains("perl-parser") {
+        bail!("perl-parser activates `perl-tdd-support/lsp-compat` in its manifest: {activated:?}");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The receipt is written in every mode
+// ---------------------------------------------------------------------------
+
+#[test]
+fn propose_still_writes_the_requested_receipt() -> Result<()> {
+    let dir = fixture_root("pub struct Ungoverned;\n", MINIMAL_MANIFEST)?;
+    let ledger_path = dir.path().join(LEDGER_PATH);
+    fs::create_dir_all(ledger_path.parent().ok_or_else(|| color_eyre::eyre::eyre!("no parent"))?)?;
+    fs::write(
+        &ledger_path,
+        format!(
+            "schema_version = {SCHEMA_VERSION}\npolicy = \"{POLICY_NAME}\"\n\
+             subject_crate = \"{SUBJECT_CRATE}\"\n\n[[entry]]\nid = \"feature:default\"\n\
+             api_kind = \"feature\"\npath = \"default\"\nbehavior = \"b\"\n\
+             consumer_class = \"self_only\"\ncompatibility = \"published\"\n\
+             disposition = \"retain_pure\"\nreplacement_owner = \"none\"\nowner_issue = 8418\n\
+             exit_condition = \"e\"\nproof_command = \"p\"\n"
+        ),
+    )?;
+    let receipt = Path::new("target/tdd-surface-receipt.json");
+    let result = run(dir.path(), false, true, false, Some(receipt));
+    if result.is_ok() {
+        bail!("--propose must fail when an item is unclassified");
+    }
+    let written = dir.path().join(receipt);
+    if !written.is_file() {
+        bail!("--propose --json returned without writing {}", written.display());
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&fs::read_to_string(&written)?)?;
+    if parsed.get("policy").and_then(serde_json::Value::as_str) != Some(POLICY_NAME) {
+        bail!("receipt does not carry the policy name: {parsed}");
     }
     Ok(())
 }

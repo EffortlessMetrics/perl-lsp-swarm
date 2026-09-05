@@ -1,7 +1,7 @@
 project: product
 component: Developer tooling
 kind: Added
-body: "`cargo xtask tdd-support-surface` reconciles the `perl-tdd-support` public surface and its workspace consumer edges against a checked disposition ledger (`policy/tdd-support-surface.toml`, 110 governed rows) and renders `docs/policy/TDD_SUPPORT_SURFACE.md` from it. The check fails when a public item has no row, when a governed row no longer names a real symbol, when an item's `cfg` gate drifts from source, when a named consumer no longer declares the dependency, or when the projection is stale. No runtime behavior changes (#8418)."
+body: "`cargo xtask tdd-support-surface` reconciles the `perl-tdd-support` public surface and its workspace consumer edges against a checked disposition ledger (`policy/tdd-support-surface.toml`, 393 governed rows, including each public type's inherent methods, public fields, and variants) and renders `docs/policy/TDD_SUPPORT_SURFACE.md` from it. The check fails when a public item has no row, when a governed row no longer names a real symbol, when an item's `cfg` gate drifts from source, when a named consumer no longer declares the dependency or activates the feature, or when the projection is stale. No runtime behavior changes (#8418)."
 time: 2026-09-03T12:00:00Z
 custom:
   PR: "0000"

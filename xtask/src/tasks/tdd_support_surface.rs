@@ -97,8 +97,15 @@ const COMPATIBILITY_CLASSES: &[&str] = &["published", "internal"];
 /// API kinds discovery can produce; a ledger row must declare one of these.
 const API_KINDS: &[&str] = &[
     "struct", "enum", "fn", "const", "static", "type", "trait", "union", "module", "reexport",
-    "macro", "feature",
+    "macro", "feature", "method", "field", "variant",
 ];
+
+/// Kinds that are members of an owning public type rather than free items.
+///
+/// Their identity is `<Type>::<name>` under the owning type's path, and
+/// `--propose` inherits their disposition from the owning type's row so that a
+/// member cannot be classified more loosely than the type it hangs off.
+const MEMBER_KINDS: &[&str] = &["method", "field", "variant"];
 
 // ---------------------------------------------------------------------------
 // Discovery
@@ -117,11 +124,36 @@ pub(crate) struct Discovered {
     pub(crate) cfg: String,
     /// For re-exports, the origin path the name is imported from.
     pub(crate) source: String,
+    /// For members (`method`, `field`, `variant`), the owning type's path.
+    pub(crate) owner: String,
 }
 
 impl Discovered {
     fn new(api_kind: &str, path: String, cfg: String, source: String) -> Self {
-        Self { id: format!("{api_kind}:{path}"), api_kind: api_kind.to_string(), path, cfg, source }
+        Self {
+            id: format!("{api_kind}:{path}"),
+            api_kind: api_kind.to_string(),
+            path,
+            cfg,
+            source,
+            owner: String::new(),
+        }
+    }
+
+    fn member(api_kind: &str, owner: String, name: &str, cfg: String) -> Self {
+        let path = format!("{owner}::{name}");
+        Self {
+            id: format!("{api_kind}:{path}"),
+            api_kind: api_kind.to_string(),
+            path,
+            cfg,
+            source: String::new(),
+            owner,
+        }
+    }
+
+    fn is_member(&self) -> bool {
+        MEMBER_KINDS.contains(&self.api_kind.as_str())
     }
 }
 
@@ -134,11 +166,11 @@ impl Discovered {
 fn cfg_of(attrs: &[syn::Attribute]) -> String {
     let mut found = Vec::new();
     for attr in attrs {
-        if attr.path().is_ident("cfg") {
-            if let syn::Meta::List(list) = &attr.meta {
-                let rendered = list.tokens.to_string();
-                found.push(normalize_cfg(&rendered));
-            }
+        if attr.path().is_ident("cfg")
+            && let syn::Meta::List(list) = &attr.meta
+        {
+            let rendered = list.tokens.to_string();
+            found.push(normalize_cfg(&rendered));
         }
     }
     found.join(" + ")
@@ -267,6 +299,15 @@ pub(crate) fn discover_surface(root: &Path) -> Result<Vec<Discovered>> {
     }
     let mut out = Vec::new();
     walk_module_file(&src_dir, &[], "", &lib, &mut out)?;
+    // An inherent method is public surface only when its type is: `impl` blocks
+    // are walked wherever they appear, so drop the ones whose owning type was
+    // never discovered as a public struct, enum, or union at that path.
+    let owning_types: BTreeSet<String> = out
+        .iter()
+        .filter(|item| matches!(item.api_kind.as_str(), "struct" | "enum" | "union"))
+        .map(|item| item.path.clone())
+        .collect();
+    out.retain(|item| item.api_kind != "method" || owning_types.contains(&item.owner));
     out.extend(discover_features(root)?);
     out.sort();
     out.dedup();
@@ -322,17 +363,40 @@ fn walk_item(
     }
 
     match item {
-        Item::Struct(node) => simple!(node, "struct"),
-        Item::Enum(node) => simple!(node, "enum"),
-        Item::Fn(node) => {
+        Item::Struct(node) => {
+            simple!(node, "struct");
             if is_pub(&node.vis) && !is_cfg_test(&node.attrs) {
-                out.push(Discovered::new(
-                    "fn",
-                    qualify(module_path, &node.sig.ident.to_string()),
-                    combine_cfg(inherited_cfg, &cfg_of(&node.attrs)),
-                    String::new(),
-                ));
+                let owner = qualify(module_path, &node.ident.to_string());
+                let type_cfg = combine_cfg(inherited_cfg, &cfg_of(&node.attrs));
+                walk_fields(&owner, &type_cfg, &node.fields, out);
             }
+        }
+        Item::Enum(node) => {
+            simple!(node, "enum");
+            if is_pub(&node.vis) && !is_cfg_test(&node.attrs) {
+                let owner = qualify(module_path, &node.ident.to_string());
+                let type_cfg = combine_cfg(inherited_cfg, &cfg_of(&node.attrs));
+                for variant in &node.variants {
+                    if is_cfg_test(&variant.attrs) {
+                        continue;
+                    }
+                    out.push(Discovered::member(
+                        "variant",
+                        owner.clone(),
+                        &variant.ident.to_string(),
+                        combine_cfg(&type_cfg, &cfg_of(&variant.attrs)),
+                    ));
+                }
+            }
+        }
+        Item::Impl(node) => walk_impl(module_path, inherited_cfg, node, out),
+        Item::Fn(node) if is_pub(&node.vis) && !is_cfg_test(&node.attrs) => {
+            out.push(Discovered::new(
+                "fn",
+                qualify(module_path, &node.sig.ident.to_string()),
+                combine_cfg(inherited_cfg, &cfg_of(&node.attrs)),
+                String::new(),
+            ));
         }
         Item::Const(node) => simple!(node, "const"),
         Item::Static(node) => simple!(node, "static"),
@@ -344,21 +408,92 @@ fn walk_item(
         // A `macro_rules!` with `#[macro_export]` is public surface reachable as
         // `perl_tdd_support::<name>`, independent of module visibility. Its
         // identity is the macro name; there is no signature to spell here.
-        Item::Macro(node) => {
-            if !is_cfg_test(&node.attrs) && has_macro_export(&node.attrs) {
-                if let Some(ident) = &node.ident {
-                    out.push(Discovered::new(
-                        "macro",
-                        format!("{SUBJECT_ROOT_PATH}::{ident}"),
-                        combine_cfg(inherited_cfg, &cfg_of(&node.attrs)),
-                        String::new(),
-                    ));
-                }
+        Item::Macro(node) if !is_cfg_test(&node.attrs) && has_macro_export(&node.attrs) => {
+            if let Some(ident) = &node.ident {
+                out.push(Discovered::new(
+                    "macro",
+                    format!("{SUBJECT_ROOT_PATH}::{ident}"),
+                    combine_cfg(inherited_cfg, &cfg_of(&node.attrs)),
+                    String::new(),
+                ));
             }
         }
         _ => {}
     }
     Ok(())
+}
+
+/// Record the public fields of a struct as `<Type>::<field>` members.
+///
+/// Tuple-struct fields are named by position (`Type::0`), which is how a
+/// consumer spells them. Unit structs contribute nothing.
+fn walk_fields(owner: &str, type_cfg: &str, fields: &syn::Fields, out: &mut Vec<Discovered>) {
+    match fields {
+        syn::Fields::Named(named) => {
+            for field in &named.named {
+                if !is_pub(&field.vis) || is_cfg_test(&field.attrs) {
+                    continue;
+                }
+                if let Some(ident) = &field.ident {
+                    out.push(Discovered::member(
+                        "field",
+                        owner.to_string(),
+                        &ident.to_string(),
+                        combine_cfg(type_cfg, &cfg_of(&field.attrs)),
+                    ));
+                }
+            }
+        }
+        syn::Fields::Unnamed(unnamed) => {
+            for (index, field) in unnamed.unnamed.iter().enumerate() {
+                if !is_pub(&field.vis) || is_cfg_test(&field.attrs) {
+                    continue;
+                }
+                out.push(Discovered::member(
+                    "field",
+                    owner.to_string(),
+                    &index.to_string(),
+                    combine_cfg(type_cfg, &cfg_of(&field.attrs)),
+                ));
+            }
+        }
+        syn::Fields::Unit => {}
+    }
+}
+
+/// Record the public inherent methods of an `impl` block as
+/// `<Type>::<method>` members.
+///
+/// Trait impls are skipped: their methods are governed through the trait row
+/// (or the foreign trait's own contract), not as inherent surface of the type.
+/// The owning type is spelled under the module the `impl` block lives in;
+/// [`discover_surface`] later drops methods whose owner is not a discovered
+/// public type at that path, so an `impl` of a private type is never surface.
+fn walk_impl(
+    module_path: &[String],
+    inherited_cfg: &str,
+    node: &syn::ItemImpl,
+    out: &mut Vec<Discovered>,
+) {
+    if node.trait_.is_some() || is_cfg_test(&node.attrs) {
+        return;
+    }
+    let syn::Type::Path(type_path) = node.self_ty.as_ref() else { return };
+    let Some(last) = type_path.path.segments.last() else { return };
+    let owner = qualify(module_path, &last.ident.to_string());
+    let impl_cfg = combine_cfg(inherited_cfg, &cfg_of(&node.attrs));
+    for item in &node.items {
+        let syn::ImplItem::Fn(method) = item else { continue };
+        if !is_pub(&method.vis) || is_cfg_test(&method.attrs) {
+            continue;
+        }
+        out.push(Discovered::member(
+            "method",
+            owner.clone(),
+            &method.sig.ident.to_string(),
+            combine_cfg(&impl_cfg, &cfg_of(&method.attrs)),
+        ));
+    }
 }
 
 /// True when an item carries `#[macro_export]`.
@@ -725,13 +860,13 @@ pub(crate) fn reconcile(discovered: &[Discovered], ledger: &Ledger) -> Result<()
         }
         // `cfg` is part of what a consumer must satisfy to name the item, so a
         // silent gate change is a contract change even when the path is stable.
-        if let Some(entry) = ledger_by_id.get(id) {
-            if entry.cfg != item.cfg {
-                problems.push(format!(
-                    "cfg drift on `{id}`: source declares {:?}, ledger records {:?}",
-                    item.cfg, entry.cfg
-                ));
-            }
+        if let Some(entry) = ledger_by_id.get(id)
+            && entry.cfg != item.cfg
+        {
+            problems.push(format!(
+                "cfg drift on `{id}`: source declares {:?}, ledger records {:?}",
+                item.cfg, entry.cfg
+            ));
         }
     }
 
@@ -766,6 +901,10 @@ pub(crate) struct ConsumerEdge {
     pub(crate) dep_kind: String,
     pub(crate) referenced: BTreeSet<String>,
     pub(crate) class: String,
+    /// Cargo features of the governed crate this consumer activates, through
+    /// its dependency spec (`features = [..]`, `default-features`) or its own
+    /// `[features]` table (`"perl-tdd-support/x"`, `"perl-tdd-support?/x"`).
+    pub(crate) enabled_features: BTreeSet<String>,
 }
 
 /// Names re-exported from `perl-test-must`; an edge that touches only these is
@@ -807,10 +946,10 @@ fn entry_segments(path: &str) -> Vec<String> {
     let Some(&first) = segments.first() else { return Vec::new() };
     let mut out = vec![first.to_string()];
     if first == "tdd" {
-        if let Some(&second) = segments.get(1) {
-            if TDD_REEXPORTED_SUBMODULES.contains(&second) {
-                out.push(second.to_string());
-            }
+        if let Some(&second) = segments.get(1)
+            && TDD_REEXPORTED_SUBMODULES.contains(&second)
+        {
+            out.push(second.to_string());
         }
     } else if TDD_REEXPORTED_SUBMODULES.contains(&first) {
         out.push("tdd".to_string());
@@ -832,6 +971,15 @@ pub(crate) fn derived_consumers(
     out
 }
 
+/// The crates that activate a governed Cargo feature.
+pub(crate) fn feature_consumers(feature: &str, edges: &[ConsumerEdge]) -> BTreeSet<String> {
+    edges
+        .iter()
+        .filter(|edge| edge.enabled_features.contains(feature))
+        .map(|edge| edge.crate_name.clone())
+        .collect()
+}
+
 /// Validate that each row's `consumers` matches the crates that actually
 /// reference it, and that the `consumer_class` is consistent with that set.
 ///
@@ -843,10 +991,13 @@ pub(crate) fn validate_derived_consumers(ledger: &Ledger, edges: &[ConsumerEdge]
     let mut problems: Vec<String> = Vec::new();
 
     for entry in &ledger.entry {
-        if entry.api_kind == "feature" {
-            continue;
-        }
-        let expected = derived_consumers(&entry.path, &index);
+        // A feature is consumed by activation, not by path reference, so its
+        // consumer set is derived from the manifests rather than the symbol scan.
+        let expected = if entry.api_kind == "feature" {
+            feature_consumers(&entry.path, edges)
+        } else {
+            derived_consumers(&entry.path, &index)
+        };
         let listed: BTreeSet<String> = entry
             .consumers
             .iter()
@@ -901,6 +1052,7 @@ pub(crate) fn validate_derived_consumers(ledger: &Ledger, edges: &[ConsumerEdge]
 /// Locate every workspace manifest that declares a dependency on the crate.
 pub(crate) fn discover_consumers(root: &Path) -> Result<Vec<ConsumerEdge>> {
     let mut edges = Vec::new();
+    let workspace_spec = workspace_dependency_spec(root)?;
     for manifest in workspace_manifests(root)? {
         let text = fs::read_to_string(&manifest)
             .wrap_err_with(|| format!("failed to read {}", manifest.display()))?;
@@ -917,12 +1069,14 @@ pub(crate) fn discover_consumers(root: &Path) -> Result<Vec<ConsumerEdge>> {
         let Some(crate_dir) = manifest.parent() else { continue };
         let referenced = referenced_symbols(crate_dir)?;
         let class = classify_edge(&referenced);
+        let enabled_features = enabled_features(&parsed, workspace_spec.as_ref());
         edges.push(ConsumerEdge {
             crate_name: name.to_string(),
             manifest: relative(root, &manifest),
             dep_kind,
             referenced,
             class,
+            enabled_features,
         });
     }
     edges.sort();
@@ -951,6 +1105,101 @@ fn declared_dep_kind(manifest: &toml::Value) -> Option<String> {
     None
 }
 
+/// The `[workspace.dependencies]` spec for the governed crate, when the root
+/// manifest declares one; `workspace = true` consumers inherit its
+/// `features`/`default-features`.
+fn workspace_dependency_spec(root: &Path) -> Result<Option<toml::Value>> {
+    let path = root.join("Cargo.toml");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text =
+        fs::read_to_string(&path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
+    let parsed: toml::Value =
+        toml::from_str(&text).wrap_err_with(|| format!("failed to parse {}", path.display()))?;
+    Ok(parsed
+        .get("workspace")
+        .and_then(|w| w.get("dependencies"))
+        .and_then(|deps| deps.get(SUBJECT_CRATE))
+        .cloned())
+}
+
+/// Every dependency spec for the governed crate in a manifest, across the
+/// plain and `[target.'cfg(..)']` sections.
+fn dependency_specs(manifest: &toml::Value) -> Vec<&toml::Value> {
+    let mut specs = Vec::new();
+    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        if let Some(spec) = manifest.get(section).and_then(|table| table.get(SUBJECT_CRATE)) {
+            specs.push(spec);
+        }
+        if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
+            for target in targets.values() {
+                if let Some(spec) = target.get(section).and_then(|table| table.get(SUBJECT_CRATE)) {
+                    specs.push(spec);
+                }
+            }
+        }
+    }
+    specs
+}
+
+fn spec_features(spec: &toml::Value, out: &mut BTreeSet<String>) {
+    if let Some(list) = spec.get("features").and_then(toml::Value::as_array) {
+        out.extend(list.iter().filter_map(toml::Value::as_str).map(str::to_string));
+    }
+}
+
+fn spec_disables_default(spec: &toml::Value) -> bool {
+    ["default-features", "default_features"]
+        .iter()
+        .any(|key| spec.get(key).and_then(toml::Value::as_bool) == Some(false))
+}
+
+/// The governed crate's features a consumer manifest activates.
+///
+/// Cargo's rule is followed rather than approximated: `default` is on unless
+/// the effective spec says `default-features = false`; a `workspace = true`
+/// spec takes `features`/`default-features` from the root; and a consumer's own
+/// `[features]` table activates `x` through `"perl-tdd-support/x"` or
+/// `"perl-tdd-support?/x"`.
+fn enabled_features(
+    manifest: &toml::Value,
+    workspace_spec: Option<&toml::Value>,
+) -> BTreeSet<String> {
+    let mut enabled = BTreeSet::new();
+    let mut default_on = true;
+    for spec in dependency_specs(manifest) {
+        if spec.get("workspace").and_then(toml::Value::as_bool) == Some(true)
+            && let Some(root_spec) = workspace_spec
+        {
+            spec_features(root_spec, &mut enabled);
+            if spec_disables_default(root_spec) {
+                default_on = false;
+            }
+        }
+        spec_features(spec, &mut enabled);
+        if spec_disables_default(spec) {
+            default_on = false;
+        }
+    }
+    if let Some(features) = manifest.get("features").and_then(toml::Value::as_table) {
+        for value in features.values() {
+            let Some(list) = value.as_array() else { continue };
+            for item in list.iter().filter_map(toml::Value::as_str) {
+                for prefix in [format!("{SUBJECT_CRATE}/"), format!("{SUBJECT_CRATE}?/")] {
+                    if let Some(feature) = item.strip_prefix(prefix.as_str()) {
+                        enabled.insert(feature.to_string());
+                    }
+                }
+            }
+        }
+    }
+    if default_on {
+        enabled.insert("default".to_string());
+    }
+    enabled
+}
+
 /// Collect every top-level `perl_tdd_support::<name>` reference under a crate.
 ///
 /// The scan parses each file with `syn` rather than matching text. A lexical
@@ -968,7 +1217,7 @@ fn referenced_symbols(crate_dir: &Path) -> Result<BTreeSet<String>> {
         .filter_map(std::result::Result::ok)
     {
         let path = entry.path();
-        if !path.extension().is_some_and(|ext| ext == "rs") {
+        if path.extension().is_none_or(|ext| ext != "rs") {
             continue;
         }
         let Ok(source) = fs::read_to_string(path) else { continue };
@@ -1021,20 +1270,20 @@ impl ReferenceVisitor<'_> {
 
 impl<'ast> syn::visit::Visit<'ast> for ReferenceVisitor<'_> {
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
-        if let syn::UseTree::Path(path) = &node.tree {
-            if path.ident == SUBJECT_ROOT_PATH {
-                self.record_use_tree(&path.tree);
-            }
+        if let syn::UseTree::Path(path) = &node.tree
+            && path.ident == SUBJECT_ROOT_PATH
+        {
+            self.record_use_tree(&path.tree);
         }
         syn::visit::visit_item_use(self, node);
     }
 
     fn visit_path(&mut self, node: &'ast syn::Path) {
         let mut segments = node.segments.iter();
-        if let (Some(first), Some(second)) = (segments.next(), segments.next()) {
-            if first.ident == SUBJECT_ROOT_PATH {
-                self.found.insert(second.ident.to_string());
-            }
+        if let (Some(first), Some(second)) = (segments.next(), segments.next())
+            && first.ident == SUBJECT_ROOT_PATH
+        {
+            self.found.insert(second.ident.to_string());
         }
         syn::visit::visit_path(self, node);
     }
@@ -1165,8 +1414,16 @@ pub(crate) fn render_projection(ledger: &Ledger, edges: &[ConsumerEdge]) -> Stri
 // ---------------------------------------------------------------------------
 
 /// Print row skeletons for public items that have no ledger row yet.
-fn propose(discovered: &[Discovered], ledger: &Ledger) -> Result<()> {
+///
+/// A member (`method`, `field`, `variant`) whose owning type already has a row
+/// inherits that row's classification and derived consumers, so the proposal
+/// is complete rather than a `TODO` skeleton: a member cannot be reached by a
+/// consumer the type is not reached by, and its fate follows the type's.
+fn propose(discovered: &[Discovered], ledger: &Ledger, edges: &[ConsumerEdge]) -> Result<()> {
     let governed: BTreeSet<&str> = ledger.entry.iter().map(|e| e.id.as_str()).collect();
+    let owners: BTreeMap<&str, &LedgerEntry> =
+        ledger.entry.iter().map(|e| (e.path.as_str(), e)).collect();
+    let index = reference_index(edges);
     let missing: Vec<&Discovered> =
         discovered.iter().filter(|item| !governed.contains(item.id.as_str())).collect();
     if missing.is_empty() {
@@ -1176,21 +1433,53 @@ fn propose(discovered: &[Discovered], ledger: &Ledger) -> Result<()> {
     let missing_count = missing.len();
     println!("# {missing_count} unclassified item(s); add to {LEDGER_PATH}");
     for item in missing {
+        let owner = if item.is_member() { owners.get(item.owner.as_str()).copied() } else { None };
+        let consumers = if item.api_kind == "feature" {
+            feature_consumers(&item.path, edges)
+        } else {
+            derived_consumers(&item.path, &index)
+        };
+        let consumers_toml =
+            consumers.iter().map(|name| format!("\"{name}\"")).collect::<Vec<_>>().join(", ");
         println!();
         println!("[[entry]]");
         println!("id = \"{}\"", item.id);
         println!("api_kind = \"{}\"", item.api_kind);
         println!("path = \"{}\"", item.path);
         println!("cfg = \"{}\"", item.cfg);
-        println!("behavior = \"TODO: what this item does today\"");
-        println!("consumers = []");
-        println!("consumer_class = \"not_proven\"");
-        println!("compatibility = \"published\"");
-        println!("disposition = \"legacy_internal_until_issue\"");
-        println!("replacement_owner = \"TODO: replacement API or owning package\"");
-        println!("owner_issue = 8418");
-        println!("exit_condition = \"TODO: when this row is removed or revisited\"");
-        println!("proof_command = \"cargo test -p {SUBJECT_CRATE} --locked\"");
+        match owner {
+            Some(owner_row) => {
+                let member_name = item.path.rsplit("::").next().unwrap_or(item.path.as_str());
+                let noun = match item.api_kind.as_str() {
+                    "method" => "Inherent method",
+                    "field" => "Public field",
+                    _ => "Variant",
+                };
+                println!(
+                    "behavior = \"{noun} `{member_name}` of `{}`; governed with its owning type.\"",
+                    item.owner
+                );
+                println!("consumers = [{consumers_toml}]");
+                println!("consumer_class = \"{}\"", owner_row.consumer_class);
+                println!("compatibility = \"{}\"", owner_row.compatibility);
+                println!("disposition = \"{}\"", owner_row.disposition);
+                println!("replacement_owner = \"{}\"", owner_row.replacement_owner);
+                println!("owner_issue = {}", owner_row.owner_issue);
+                println!("exit_condition = \"{}\"", owner_row.exit_condition);
+                println!("proof_command = \"{}\"", owner_row.proof_command);
+            }
+            None => {
+                println!("behavior = \"TODO: what this item does today\"");
+                println!("consumers = [{consumers_toml}]");
+                println!("consumer_class = \"not_proven\"");
+                println!("compatibility = \"published\"");
+                println!("disposition = \"legacy_internal_until_issue\"");
+                println!("replacement_owner = \"TODO: replacement API or owning package\"");
+                println!("owner_issue = 8418");
+                println!("exit_condition = \"TODO: when this row is removed or revisited\"");
+                println!("proof_command = \"cargo test -p {SUBJECT_CRATE} --locked\"");
+            }
+        }
     }
     bail!("{missing_count} unclassified public item(s) in {SUBJECT_CRATE}");
 }
@@ -1204,10 +1493,11 @@ fn propose(discovered: &[Discovered], ledger: &Ledger) -> Result<()> {
 fn emit_consumers(discovered: &[Discovered], edges: &[ConsumerEdge]) {
     let index = reference_index(edges);
     for item in discovered {
-        if item.api_kind == "feature" {
-            continue;
-        }
-        let consumers = derived_consumers(&item.path, &index);
+        let consumers = if item.api_kind == "feature" {
+            feature_consumers(&item.path, edges)
+        } else {
+            derived_consumers(&item.path, &index)
+        };
         println!("{}\t{}", item.id, consumers.iter().cloned().collect::<Vec<_>>().join(","));
     }
 }
@@ -1225,12 +1515,18 @@ pub fn run(
     validate_ledger(&ledger, &ledger_path)?;
 
     let discovered = discover_surface(root)?;
+    let edges = discover_consumers(root)?;
 
-    if propose_rows {
-        return propose(&discovered, &ledger);
+    // The receipt describes the ledger and edges as loaded, so it is written
+    // before any mode-specific early return: `--propose --json` and
+    // `--emit-consumers --json` must not silently drop the requested file.
+    if let Some(json_path) = json {
+        write_json_receipt(root, json_path, &ledger, &edges)?;
     }
 
-    let edges = discover_consumers(root)?;
+    if propose_rows {
+        return propose(&discovered, &ledger, &edges);
+    }
 
     if emit_consumers_rows {
         emit_consumers(&discovered, &edges);
@@ -1258,10 +1554,6 @@ pub fn run(
                 relative(root, &projection_path)
             );
         }
-    }
-
-    if let Some(json_path) = json {
-        write_json_receipt(root, json_path, &ledger, &edges)?;
     }
 
     println!(
@@ -1303,6 +1595,7 @@ fn write_json_receipt(
                 "dep_kind": edge.dep_kind,
                 "class": edge.class,
                 "referenced": edge.referenced.iter().collect::<Vec<_>>(),
+                "enabled_features": edge.enabled_features.iter().collect::<Vec<_>>(),
             })
         })
         .collect();
