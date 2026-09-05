@@ -236,7 +236,14 @@ fn follows_complete_term(source: &str, start: usize) -> bool {
     let Some(last) = before.chars().next_back() else {
         return false;
     };
-    if matches!(last, ')' | ']' | '}') {
+    // A closing paren/bracket or a string literal ends a term. A closing *brace*
+    // deliberately does not: `print {$fh} <<'EOF'` is Perl's braced indirect
+    // filehandle form, a heredoc that `perl -c` confirms by demanding the
+    // terminator. Misreading it as a shift would scan the heredoc body as code
+    // and invent an `@INC` root, which is the failure this rail must never make;
+    // the cost is that a genuine `$h{k} << 2` suppresses instead, which only
+    // loses candidates.
+    if matches!(last, ')' | ']' | '\'' | '"') {
         return true;
     }
     if !(last.is_ascii_alphanumeric() || last == '_') {

@@ -542,3 +542,59 @@ fn package_qualified_marker_lookalikes_do_not_end_the_scan() {
         ]
     );
 }
+
+/// A string literal ends a term, so `<<` after one is the shift operator.
+///
+/// `perl -c` accepts `my $x = 'a' <<'EOF';` with no terminator anywhere.
+#[test]
+fn shift_after_a_string_literal_does_not_hide_later_pragmas() {
+    for source in
+        ["my $x = 'a' <<'EOF';\nuse lib 'real';\n", "my $x = \"a\" <<'EOF';\nuse lib 'real';\n"]
+    {
+        assert_eq!(
+            extract_use_lib_operations(source),
+            vec![UseLibAction::Add(vec![UseLibPath {
+                path: "real".to_string(),
+                from_findbin: false,
+            }])],
+            "a shift after a string literal swallowed a later pragma: {source:?}"
+        );
+    }
+}
+
+/// A closing brace does *not* end a term, because Perl's braced indirect
+/// filehandle form puts `<<` in term position.
+///
+/// `print {$fh} <<'EOF'` is a heredoc — `perl -c` demands the terminator — so
+/// reading the `}` as a shift operand would scan the body as code and invent an
+/// `@INC` root. Both the terminated and the still-being-typed forms are pinned:
+/// the second must suppress rather than invent.
+#[test]
+fn braced_filehandle_heredoc_bodies_do_not_create_lib_operations() {
+    let terminated = "print {$fh} <<'EOF';\nuse lib 'phantom';\nEOF\nuse lib 'real';\n";
+    let still_being_typed = "print {$fh} <<'EOF';\nuse lib 'phantom_typing';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(terminated),
+        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])]
+    );
+    assert!(extract_use_lib_operations(still_being_typed).is_empty());
+}
+
+/// A data-section marker inside a quote-like literal is prose, and the rail
+/// cannot tell — it has no `q{}` / `qq{}` state, by design.
+///
+/// `perl` runs the code after such a literal (the marker is not a marker), but
+/// the scanner truncates there and loses later pragmas. This pins the boundary
+/// as proof rather than silence. The direction is the acceptable one: candidates
+/// are lost, never invented. Exact `q{}` handling belongs to the parser-native
+/// `@INC` train (#10568/#10569).
+#[test]
+fn data_marker_inside_a_quote_like_literal_is_a_known_truncation() {
+    let source = "my $text = q{\n__END__\n};\nuse lib 'unreachable_for_this_rail';\n";
+
+    assert!(
+        extract_use_lib_operations(source).is_empty(),
+        "boundary changed: update the documented q{{}} limitation if this now resolves"
+    );
+}
