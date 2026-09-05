@@ -6332,6 +6332,16 @@ fn validate_legacy_population_evidence(artifact: &ParserAccuracyArtifact) -> Res
             population.population_total_count
         );
     }
+    // The population is projected from the same manifest the run scored, so
+    // its total is the run's fixture count. A total that differs binds current
+    // metrics to a stale or foreign population.
+    if population.population_total_count != artifact.denominator.fixture_count {
+        bail!(
+            "legacy population total ({}) does not equal the scored fixture count ({}); the population is not the one this run measured",
+            population.population_total_count,
+            artifact.denominator.fixture_count
+        );
+    }
 
     // A retained population that applied to nothing has nothing to observe, so
     // `investigation_rate` honestly emits the aggregate as `insufficient_data`.
@@ -6341,6 +6351,16 @@ fn validate_legacy_population_evidence(artifact: &ParserAccuracyArtifact) -> Res
     // validator and the status reader then refuse.
     if population.quarantined_metrics.is_empty() {
         bail!("legacy population must declare the metrics it quarantines");
+    }
+    // The schema declares `uniqueItems`; a repeated name is an artifact the
+    // schema rejects and the reader must not read.
+    {
+        let mut seen = std::collections::BTreeSet::new();
+        for metric in &population.quarantined_metrics {
+            if !seen.insert(metric.as_str()) {
+                bail!("legacy population declares quarantined metric {metric} more than once");
+            }
+        }
     }
     if !population.quarantined_metrics.contains(&population.aggregate_metric) {
         bail!(
@@ -6375,6 +6395,14 @@ fn validate_legacy_population_evidence(artifact: &ParserAccuracyArtifact) -> Res
                 }
                 if *packet_policy != PacketPolicy::None {
                     bail!("investigation metric {metric} must not emit parser-defect packets");
+                }
+                // `quarantined_metrics` is the exhaustive declaration of
+                // investigation-only rows; the reader refuses an undeclared
+                // one, so the generator must never write one.
+                if !population.quarantined_metrics.contains(metric) {
+                    bail!(
+                        "investigation metric {metric} is not declared in the population's quarantined metrics"
+                    );
                 }
                 if metric == &population.aggregate_metric {
                     if transformation_profile != &population.transformation_profile {
@@ -10036,7 +10064,8 @@ sub dynamic_boundary_case {
                 generated_at: "2026-05-02T00:00:00Z".to_string(),
                 commit: "test".to_string(),
                 cadence: Cadence::Pr,
-                denominator: Denominator::default(),
+                // The population total must equal the scored fixture count.
+                denominator: Denominator { fixture_count: 4, ..Denominator::default() },
                 families: Vec::new(),
                 metrics,
                 legacy_population: population,
@@ -10181,6 +10210,48 @@ sub dynamic_boundary_case {
             ))
             .is_err(),
             "an untyped aggregate must be refused while the population applied to rows"
+        );
+
+        // A population whose counts close internally but whose total is not
+        // the run's fixture count is stale or foreign evidence.
+        let mut stale = test_legacy_population();
+        stale.population_total_count = 5;
+        stale.population_applied_count = 3;
+        assert!(
+            validate_legacy_population_evidence(&artifact(stale, vec![aggregate_row(3, 0.5)]))
+                .is_err(),
+            "a population total that differs from the scored fixture count must be refused"
+        );
+
+        // The schema's `uniqueItems` on the declaration must hold here too.
+        let mut duplicated = test_legacy_population();
+        duplicated.quarantined_metrics.push(LEGACY_WHITESPACE_AGGREGATE_METRIC.to_string());
+        assert!(
+            validate_legacy_population_evidence(&artifact(duplicated, vec![aggregate_row(2, 0.5)]))
+                .is_err(),
+            "a repeated quarantined metric name must be refused"
+        );
+
+        // An investigation row the population does not declare is one the
+        // reader refuses, so the generator must refuse to write it.
+        let undeclared = MetricRow::InvestigationOnly {
+            metric: "some_future_investigation_rate".to_string(),
+            value: 0.5,
+            sample_count: 2,
+            transformation_profile: "future.v1".to_string(),
+            evidence_class: EvidenceClass::InvestigationOnly,
+            terminal_disposition: TerminalDisposition::NotProven,
+            reason: InvestigationReason::LegacyHashOracleUntrusted,
+            packet_policy: PacketPolicy::None,
+            floor_eligible: false,
+        };
+        assert!(
+            validate_legacy_population_evidence(&artifact(
+                test_legacy_population(),
+                vec![aggregate_row(2, 0.5), undeclared]
+            ))
+            .is_err(),
+            "an investigation row absent from the quarantine declaration must be refused"
         );
     }
 

@@ -1653,9 +1653,9 @@
       "comment_invariance_rate",
       "newline_style_invariance_rate"
     ],
-    "population_total_count": 3,
+    "population_total_count": 9,
     "population_applied_count": 2,
-    "population_unclassified_count": 1,
+    "population_unclassified_count": 7,
     "manifest_schema_version": 1
   }
 }

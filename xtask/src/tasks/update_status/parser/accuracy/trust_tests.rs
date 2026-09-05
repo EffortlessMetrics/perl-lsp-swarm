@@ -114,7 +114,29 @@ fn fail_closed_reader_rejects_missing_or_stale_population_evidence() {
         "artifact without retained population evidence must fail closed"
     );
 
-    let population_cases: [(&str, serde_json::Value); 6] = [
+    let population_cases: [(&str, serde_json::Value); 8] = [
+        // Counts close (3 + 2 = 5) but the total is not the denominator's
+        // fixture count of 4: current metrics bound to a stale population.
+        (
+            "a total that is not the scored fixture count",
+            serde_json::json!({
+                "population_total_count": 5,
+                "population_applied_count": 3,
+                "population_unclassified_count": 2,
+            }),
+        ),
+        // The schema pins `uniqueItems` on the declaration.
+        (
+            "a repeated quarantined metric name",
+            serde_json::json!({
+                "quarantined_metrics": [
+                    "whitespace_invariance_rate",
+                    "whitespace_invariance_rate",
+                    "comment_invariance_rate",
+                    "newline_style_invariance_rate",
+                ],
+            }),
+        ),
         (
             "counts that do not close over retained rows",
             serde_json::json!({ "population_unclassified_count": 1 }),

@@ -42,6 +42,11 @@ pub(super) fn trust_disposition_is_fail_closed(artifact: &ParserAccuracyArtifact
     if closed != population.population_total_count {
         return false;
     }
+    // Projected from the manifest the run scored, so the total is the run's
+    // fixture count; anything else binds current metrics to stale evidence.
+    if population.population_total_count != artifact.denominator.fixture_count {
+        return false;
+    }
 
     // The declared aggregate must appear in its own quarantine list, or the
     // two declarations disagree about what this population covers.
@@ -50,6 +55,14 @@ pub(super) fn trust_disposition_is_fail_closed(artifact: &ParserAccuracyArtifact
     }
     if population.quarantined_metrics.iter().any(String::is_empty) {
         return false;
+    }
+    // The schema declares `uniqueItems`; mirror it so a repeated name is not
+    // readable here while the schema rejects it.
+    {
+        let mut seen = std::collections::BTreeSet::new();
+        if !population.quarantined_metrics.iter().all(|m| seen.insert(m.as_str())) {
+            return false;
+        }
     }
     // A *partial* declaration would otherwise obey the artifact into letting a
     // quarantined observation back through as `measured`. The declaration must

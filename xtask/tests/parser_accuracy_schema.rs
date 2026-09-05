@@ -421,9 +421,11 @@ fn validate_legacy_population(population: &Value) -> TestResult {
         .strip_prefix("sha256:")
         .ok_or_else(|| eyre!("population identity must be sha256-tagged"))?;
     assert_eq!(digest.len(), 64, "population identity digest must be 64 hex characters");
+    // Same format the schema pins: lowercase only, so this helper cannot
+    // accept an identity the compiled schema rejects.
     assert!(
-        digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        "population identity digest must be hexadecimal"
+        digest.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')),
+        "population identity digest must be lowercase hexadecimal"
     );
     let total = object
         .get("population_total_count")
