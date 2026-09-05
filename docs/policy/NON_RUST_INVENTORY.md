@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12720 |
-| Rust-family files | 3971 |
-| Non-Rust files | 8749 |
-| Allowlisted | 6510 |
+| Total tracked files | 12723 |
+| Rust-family files | 3973 |
+| Non-Rust files | 8750 |
+| Allowlisted | 6511 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 502 |
-| documentation | 2853 |
+| documentation | 2854 |
 | generated | 2 |
 | production | 357 |
 | test | 2111 |
@@ -2308,6 +2308,7 @@
 | `.cargo/config.toml` | config | `non-rust-cargo-config` | release/ci |
 | `.cargo/mutants.toml` | config | `non-rust-cargo-config` | release/ci |
 | `.changes/header.tpl.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.changes/unreleased/product-0000-Added-environment-snapshot-builder-s1.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-0000-Changed-module-facade-seal.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10004-Changed-201500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10100-Added-025500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
