@@ -297,8 +297,6 @@ def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> Packag
         binaries[name] = BinaryTestTarget(name, _target_features(target))
 
     edition = _package_edition(crate_name, package, repo_root)
-    # Cargo disables edition-2015 auto-discovery when the manifest defines ANY
-    # target manually, not only a [[bin]]; an explicit [lib] counts.
     # Cargo's 2015 auto-discovery rule is per target kind: only a manually
     # declared `[[bin]]` disables binary auto-discovery.  An explicit `[lib]`
     # does not -- verified against `cargo metadata` for an edition-2015 package
