@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import textwrap
@@ -278,6 +279,189 @@ class BinaryTargetRoutingTests(unittest.TestCase):
             commands = self._commands_for(root, "disabled-lib-directory")
 
         self.assertFalse(any(" --lib " in command for command in commands))
+
+    def test_explicit_bin_claiming_main_suppresses_autodiscovered_duplicate(self) -> None:
+        """An explicit `[[bin]]` owning `src/main.rs` renames it; Cargo has no
+        package-named target left to run."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "renamed-main-directory",
+                """
+                [package]
+                name = "renamed-main"
+                edition = "2021"
+
+                [[bin]]
+                name = "renamed"
+                path = "src/main.rs"
+                """,
+                ["src/main.rs", "src/changed.rs"],
+            )
+
+            commands = self._commands_for(root, "renamed-main-directory")
+
+        self.assertTrue(any("--bin renamed " in command for command in commands))
+        self.assertFalse(any("--bin renamed-main " in command for command in commands))
+
+    def test_explicit_bin_claiming_src_bin_file_suppresses_inferred_name(self) -> None:
+        """A claimed `src/bin/*.rs` must not also register under its stem."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "claimed-bin-directory",
+                """
+                [package]
+                name = "claimed-bin"
+                edition = "2021"
+
+                [[bin]]
+                name = "renamed"
+                path = "src/bin/helper.rs"
+                """,
+                ["src/lib.rs", "src/bin/helper.rs", "src/changed.rs"],
+            )
+
+            commands = self._commands_for(root, "claimed-bin-directory")
+
+        self.assertTrue(any("--bin renamed " in command for command in commands))
+        self.assertFalse(any("--bin helper " in command for command in commands))
+
+    def test_pathless_explicit_bin_claims_its_inferred_source(self) -> None:
+        """A pathless `[[bin]]` named after the package still claims `src/main.rs`."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "pathless-directory",
+                """
+                [package]
+                name = "pathless"
+                edition = "2021"
+
+                [[bin]]
+                name = "pathless"
+                required-features = ["cli"]
+                """,
+                ["src/main.rs", "src/changed.rs"],
+            )
+
+            commands = self._commands_for(root, "pathless-directory")
+
+        binary_commands = [command for command in commands if "--bin pathless " in command]
+        self.assertEqual(1, len(binary_commands))
+        self.assertIn("--features cli", binary_commands[0])
+
+    def test_edition_2015_manual_target_disables_bin_autodiscovery(self) -> None:
+        """Cargo 2015 stops autodiscovering `src/bin` once a target is manual."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "legacy-directory",
+                """
+                [package]
+                name = "legacy"
+                edition = "2015"
+
+                [[bin]]
+                name = "manual"
+                path = "src/manual.rs"
+                """,
+                ["src/manual.rs", "src/bin/auto.rs", "src/changed.rs"],
+            )
+
+            commands = self._commands_for(root, "legacy-directory")
+
+        self.assertTrue(any("--bin manual " in command for command in commands))
+        self.assertFalse(any("--bin auto " in command for command in commands))
+
+    def test_edition_2015_without_manual_targets_still_autodiscovers(self) -> None:
+        """Negative control: the 2015 rule keys on manual targets, not the edition."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "legacy-auto-directory",
+                """
+                [package]
+                name = "legacy-auto"
+                edition = "2015"
+                """,
+                ["src/bin/auto.rs", "src/changed.rs"],
+            )
+
+            commands = self._commands_for(root, "legacy-auto-directory")
+
+        self.assertTrue(any("--bin auto " in command for command in commands))
+
+    def test_explicit_autobins_overrides_the_edition_2015_default(self) -> None:
+        """A declared `autobins` wins over the edition-derived default."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "legacy-forced-directory",
+                """
+                [package]
+                name = "legacy-forced"
+                edition = "2015"
+                autobins = true
+
+                [[bin]]
+                name = "manual"
+                path = "src/manual.rs"
+                """,
+                ["src/manual.rs", "src/bin/auto.rs", "src/changed.rs"],
+            )
+
+            commands = self._commands_for(root, "legacy-forced-directory")
+
+        self.assertTrue(any("--bin auto " in command for command in commands))
+        self.assertTrue(any("--bin manual " in command for command in commands))
+
+    def test_untested_explicit_bin_still_claims_its_source(self) -> None:
+        """`test = false` removes the target but must not release its source file."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "untested-directory",
+                """
+                [package]
+                name = "untested"
+                edition = "2021"
+
+                [[bin]]
+                name = "renamed"
+                path = "src/main.rs"
+                test = false
+                """,
+                ["src/main.rs", "src/changed.rs"],
+            )
+
+            commands = self._commands_for(root, "untested-directory")
+
+        self.assertFalse(any("--bin " in command for command in commands))
+
+    def test_targets_resolve_independently_of_the_process_cwd(self) -> None:
+        """The router is invoked from workflow steps with an unrelated cwd."""
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as directory:
+            previous = Path.cwd()
+            try:
+                os.chdir(directory)
+                targets = router.package_test_targets("perl-ci-hygiene")
+            finally:
+                os.chdir(previous)
+
+        self.assertEqual("perl-ci-hygiene", targets.package_name)
+        self.assertIn(
+            "perl-ci-hygiene", [target.name for target in targets.binaries]
+        )
+        self.assertTrue((repo_root / "crates" / "perl-ci-hygiene").is_dir())
 
 
 if __name__ == "__main__":
