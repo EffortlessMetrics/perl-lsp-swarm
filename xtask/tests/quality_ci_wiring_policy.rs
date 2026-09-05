@@ -627,6 +627,22 @@ fn conventional_required_checks_record_live_proof_floor() {
     }
 }
 
+#[test]
+fn tautology_check_job_runs_the_xtask_ast_checker() {
+    let root = repo_root();
+    let workflow = must(fs::read_to_string(root.join(".github/workflows/ci-nightly.yml")));
+    let job = must_some(workflow_job(&workflow, "tautology-check"));
+    assert!(
+        job.contains("cargo run -p xtask --locked -- check-tautology --check"),
+        "tautology-check must invoke the syn AST checker rather than regex grep"
+    );
+    assert!(!job.contains("grep -r"), "tautology-check must not keep the regex-only detector");
+    assert!(
+        job.contains("dtolnay/rust-toolchain") && job.contains("Swatinem/rust-cache"),
+        "tautology-check must install and cache the Rust toolchain to compile xtask"
+    );
+}
+
 fn policy_required_check(policy: &toml::Value, name: &str) -> bool {
     policy.get("checks").and_then(toml::Value::as_array).into_iter().flatten().any(|item| {
         item.get("name").and_then(toml::Value::as_str) == Some(name)
