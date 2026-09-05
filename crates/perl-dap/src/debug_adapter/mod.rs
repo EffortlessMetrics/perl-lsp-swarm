@@ -1218,7 +1218,10 @@ print "result: $final\n";
                 "supportsEvaluateForHovers",
                 crate::backend::capabilities::advertises_evaluate_for_hovers(),
             ),
-            ("supportsSetVariable", crate::feature_catalog::has_feature("dap.core")),
+            // #8354: bound to the setVariable authority, not to `dap.core`.
+            // setVariable is gated on an exact mutation proof, so the catalog
+            // row cannot decide this one.
+            ("supportsSetVariable", crate::backend::capabilities::advertises_set_variable()),
             ("supportsValueFormattingOptions", crate::feature_catalog::has_feature("dap.core")),
             ("supportTerminateDebuggee", crate::feature_catalog::has_feature("dap.core")),
             ("supportsLogPoints", crate::backend::capabilities::advertises_log_points()),
