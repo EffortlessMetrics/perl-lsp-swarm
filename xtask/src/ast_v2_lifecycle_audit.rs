@@ -41,6 +41,19 @@
 //! parity-complete belongs here — adding one violates the issue's non-goals and
 //! the guard test named `no_migration_or_mutation_surface_is_added`.
 //!
+//! Recorded shape vs. breaking change. The shape is the declaration as written,
+//! which is deliberately broader than the semver-breaking surface: renaming a
+//! public function's parameter moves a row although Rust has no named arguments
+//! and no consumer can depend on that name. The rule deciding what gets elided
+//! is what eliding costs. Sorting named field order is free — no fact leaves the
+//! shape — so a cosmetic reordering does not fire. Dropping a parameter name, or
+//! a private field's type, is not free: the first deletes a fact a person reads
+//! when reviewing what #8845 must move, the second hides a retype that changes
+//! the struct's auto traits. So field order is relaxed, a private field's *name*
+//! is elided while its *type* is kept, and parameter names are recorded. This is
+//! a decision, not an oversight; a rename costs one mechanical row edit against
+//! an error that prints both shapes.
+//!
 //! Instrument boundary. `syn` sees the declarations this crate actually compiles,
 //! which is what a public-API denominator needs and what a grep cannot promise.
 //! It does not see semantic consumers, so the consumer rows stay authored and are
