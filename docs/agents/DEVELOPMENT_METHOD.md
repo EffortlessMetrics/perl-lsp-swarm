@@ -259,6 +259,26 @@ only duplicate claims, same-candidate writers, explicit prerequisites, destructi
 shared runtime state, actual conflicts, or demonstrated combined-tree interactions.
 Behind-only movement requires no action.
 
+### The exclusive role is writer, not reader
+
+Mutation is exclusive; reading is not. Arriving at an existing candidate to research,
+review, challenge, or comment requires no claim, no check for a current writer, and no
+wait. Duplicate review costs cheap compute and buys a second detection surface from
+changed attention, which is what substantive review asks for and cannot get from
+identity alone. A session that finds another writer already on a candidate reviews it
+and posts what it found; it does not push, and it does not stand down from reviewing.
+
+Duplicate review composes only when each session posts its findings to the durable
+GitHub surface. Two silent reviews are two contexts rediscovering the same defect and
+disagreeing invisibly; two posted reviews are joined evidence.
+
+Do not convert this into a gate. A claim ceremony, reservation, or writer-liveness
+signal ahead of reading serializes the cheap half of the work, goes stale the moment a
+context disappears, and cannot be distinguished from a live writer when it does. The
+cost of concurrency is in the write path, so the discipline belongs there: one writer,
+a merge rather than a rewrite when you turn out to be the second, and no thrash on a
+candidate another context holds.
+
 ## Proof ladder
 
 ```text

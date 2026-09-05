@@ -263,7 +263,12 @@ Otherwise detect, explain, repair, and continue.
 - read nearest package-local owner guidance before modifying an owning crate;
 - production code must not use `unwrap`, `expect`, `panic!`, `todo!`,
   `unimplemented!`, `abort`, or `dbg!` outside documented narrow exceptions;
-- never use `git stash` in worktrees; use scoped restore or a WIP commit;
+- never use `git stash`: `refs/stash` is a single repository-global stack shared by
+  every worktree, so a concurrent agent's `pop` can silently take your entry into
+  its own tree and drop the ref; use scoped restore or a WIP commit;
+- rebase and force-push are the sole candidate writer's tools; the moment a branch
+  carries commits from another context, merge instead of rewriting, so both writers'
+  work survives as ancestors;
 - stage intended paths explicitly;
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
 - run focused proof, then affected package proof, then broader proof only when risk or

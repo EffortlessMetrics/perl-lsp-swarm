@@ -237,7 +237,10 @@ A substantive skill operates on one selected root-held claim frame and its curre
 candidate.
 
 - one claim normally has one current candidate;
-- one writer mutates that candidate branch/worktree at a time;
+- one writer mutates that candidate branch/worktree at a time; a second writer
+  merges rather than rewriting history, so the first writer's commits survive;
+- the writer role is exclusive, the review role is not: research, review, and
+  comment on an existing candidate need no claim and no wait;
 - focused research, oracle, proof, review, and CI evidence work may assist;
 - helpers do not inspect sibling claim implementation details or touched-file overlap as
   routine ownership checks;
