@@ -1453,6 +1453,37 @@ enum Commands {
         out: PathBuf,
     },
 
+    /// Observe LIVE GitHub release-control enforcement, read-only (#9403).
+    ///
+    /// Distinguishes source policy from what GitHub's branch protection,
+    /// rulesets, environments, and release posture actually enforce right
+    /// now. Fails closed to `NOT_PROVEN` on anything it cannot conclusively
+    /// establish; never infers an unobserved half. Issues only `gh api` GET
+    /// reads — nothing here mutates a live setting.
+    #[command(name = "release-live-controls")]
+    ReleaseLiveControls {
+        /// Repository root used to resolve `policy/product-identity.toml`.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+
+        /// Explicit `owner/name` repositories, overriding the
+        /// product-identity defaults. May be repeated.
+        #[arg(long = "repository")]
+        repositories: Vec<String>,
+
+        /// Branch to observe for each repository. Defaults to `main`.
+        #[arg(long)]
+        branch: Option<String>,
+
+        /// Write the complete receipt as pretty JSON to this path.
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// Emit the receipt as JSON to stdout instead of a human summary.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Read-only upstream refresh and drift classification for the pinned
     /// vim-lsp subject (#11411). Advisory only: never a CI gate, never a pin
     /// update; live observation is gated behind --allow-network.
@@ -5714,6 +5745,27 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckVersionSync => check_version_sync::run(),
         Commands::PublicationDrift { input, repo_root, out } => {
             xtask::publication_drift::run_with_paths(input, repo_root, out)
+        }
+        Commands::ReleaseLiveControls { repo_root, repositories, branch, out, json } => {
+            // `.` means the workspace root, not the shell's cwd: the observer
+            // reads `policy/product-identity.toml` relative to it.
+            let repo_root = if repo_root.as_os_str() == "." {
+                utils::project_root().map_err(|error| eyre!(error.to_string()))?
+            } else {
+                repo_root
+            };
+            let verdict =
+                xtask::release_live_controls::run(xtask::release_live_controls::ObserveOptions {
+                    repo_root,
+                    repositories,
+                    branch,
+                    out,
+                    json,
+                })?;
+            if verdict == xtask::release_live_controls::Verdict::NotProven {
+                std::process::exit(xtask::release_live_controls::NOT_PROVEN_EXIT_CODE);
+            }
+            Ok(())
         }
         Commands::VimLspSubject {
             command:
