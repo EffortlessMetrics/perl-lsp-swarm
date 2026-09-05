@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Changed
+body: "`perl-position-tracking` no longer substitutes a synthetic URI when a `WireLocation` carries an invalid one. `From<WireLocation> for lsp_types::Location` is replaced by a fallible `TryFrom` returning `WireLocationUriError`, which carries the rejected input; the `fallback_lsp_uri` helper that produced `file:///unknown` is removed. Degraded URI projection remains the final LSP response adapter's decision (ADR-0037). Breaking for direct users of the `From` conversion: switch to `TryFrom` and decide explicitly. No governed public-API baseline changes."
+time: 2026-09-05T14:30:00Z
+custom:
+  PR: "14811"
+  Slug: wire-location-strict-fallible-uri-14810
+  Breaking: "yes"
