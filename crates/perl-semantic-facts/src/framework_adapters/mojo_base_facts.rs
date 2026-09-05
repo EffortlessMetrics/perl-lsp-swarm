@@ -134,15 +134,38 @@ pub enum MojoBaseAttributeDefault {
 /// Whether an explicit source method of the same name exists in the owning
 /// package.
 ///
-/// An explicit `sub name { ... }` retains stronger source identity than a
-/// generated accessor of the same name; the collision is preserved as
-/// conflict evidence rather than silently deleting either side.
+/// The collision is preserved as conflict evidence rather than silently
+/// deleting either side, and the runtime outcome is **determinate rather than
+/// order-dependent**: `Mojo::Base::attr` installs the generated accessor with
+/// an unconditional `monkey_patch($class, $attr, $sub)` — no check for an
+/// existing method — and Perl installs `sub name { ... }` at compile time
+/// while the top-level `has` runs afterwards. The generated accessor therefore
+/// overwrites the explicit method whichever order they appear in.
+///
+/// So the two sides carry different kinds of authority, and neither subsumes
+/// the other:
+///
+/// - the **explicit method** has stronger *source* evidence — a real body, a
+///   real span, exact provenance;
+/// - the **generated accessor** is the *live* method after class
+///   initialization.
+///
+/// A consumer that reports "definition" should weigh the first; one that
+/// answers "what does calling this do" should weigh the second. The shadowing
+/// is itself worth surfacing — an explicit method silently replaced by an
+/// accessor is usually a mistake in the source, not an intent.
+///
+/// Scope of that determinacy: a top-level `has` in the same file as the `sub`.
+/// A `has` under `BEGIN`, or a method installed at runtime after the `has`
+/// executes, is outside the reviewed profile and is not modelled here.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MojoBaseExplicitMethodState {
     /// No same-named explicit method was found in the owning package.
     None,
-    /// A same-named explicit `sub` is declared in the owning package.
+    /// A same-named explicit `sub` is declared in the owning package. The
+    /// generated accessor overwrites it at class initialization; the explicit
+    /// declaration keeps the stronger source evidence.
     Collides,
 }
 
@@ -519,9 +542,11 @@ fn mint_member_fact(
         .declaration_anchor
         .anchor_id
         .unwrap_or(AnchorId(u64::from(declaration.declaration_anchor.start_byte)));
-    // A same-named explicit `sub` retains stronger source identity; the
-    // generated member is still minted so the collision stays visible as
-    // conflict evidence rather than silently disappearing.
+    // The generated accessor is the live method after initialization
+    // (`monkey_patch` overwrites unconditionally), so the member is minted
+    // normally. The boundary records that it shadows an explicit declaration
+    // which keeps the stronger source evidence — a conflict a consumer should
+    // be able to see rather than one silently resolved here.
     let boundary = match declaration.explicit_method {
         MojoBaseExplicitMethodState::None => None,
         MojoBaseExplicitMethodState::Collides => Some(BoundaryLink::new(
@@ -907,6 +932,20 @@ mod tests {
         foreign.package = Some("Other".to_string());
         let facts = mint_with_detection(&activation, &[foreign]);
         assert!(facts.members.is_empty());
+    }
+
+    #[test]
+    fn a_collision_is_recorded_without_dropping_the_live_accessor() {
+        // `monkey_patch` overwrites unconditionally and runs after compile-time
+        // sub installation, so the accessor is the live method and must still
+        // be minted; the boundary records the shadowing for consumers.
+        let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
+        let mut colliding = declaration(1, "name", MojoBaseAttributeDefault::Absent);
+        colliding.explicit_method = MojoBaseExplicitMethodState::Collides;
+        let facts = mint_with_detection(&activation, &[colliding]);
+        assert_eq!(facts.members.len(), 1, "the live accessor is still a fact");
+        assert_eq!(facts.members[0].member.name, "name");
+        assert_eq!(facts.setter_results.len(), 1, "its write contract is unaffected");
     }
 
     #[test]
