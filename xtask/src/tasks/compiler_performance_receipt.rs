@@ -46,6 +46,20 @@ const FIXTURE_DIR: &str = "xtask/fixtures";
 /// unless its author also remembered to edit that list.
 const FIXTURE_PREFIX: &str = "compiler_performance_receipt.v1";
 
+/// This module's own source, read back so the gate can prove its controls exist.
+///
+/// The gate runs `cargo test <filter>` and then this validator. A cargo name
+/// filter that matches nothing exits 0 having run zero tests, so that first
+/// command cannot notice its own controls disappearing. The filter matches on
+/// the full test path, which begins with this file's module name — so renaming
+/// the file breaks the filter, and this read fails with it; deleting or gutting
+/// the controls leaves the file readable but drops the count below the floor.
+const CONTROL_SUITE_PATH: &str = "xtask/src/tasks/compiler_performance_receipt.rs";
+
+/// The floor sits below the current control count so adding one needs no edit
+/// here. Lower it only with a reason, and never to reach green.
+const CONTROL_SUITE_FLOOR: usize = 50;
+
 const REQUIRED: &[&str] = &[
     "schema_version",
     "receipt_id",
@@ -755,6 +769,8 @@ pub struct CheckStats {
 }
 
 fn validate(root: &Path) -> Result<CheckStats> {
+    validate_control_suite(root)?;
+
     let schema = load_schema(root)?;
     validate_schema_document(&schema)?;
 
@@ -851,6 +867,36 @@ fn collect_fixtures(dir: &Path, found: &mut Vec<std::path::PathBuf>) -> Result<(
         if claims_receipt_name {
             found.push(path);
         }
+    }
+    Ok(())
+}
+
+/// Prove the control suite the gate filter targets still exists and is populated.
+///
+/// Everything else here checks that the committed receipts *conform*. Those are
+/// positive artifacts: they pass whether or not the contract still forbids what
+/// it advertises forbidding. Only the controls discriminate, and the gate's
+/// `cargo test` filter cannot report its own absence — it exits 0 on no match.
+/// So the validator, which does fail loudly, carries the floor.
+fn validate_control_suite(root: &Path) -> Result<()> {
+    let path = root.join(CONTROL_SUITE_PATH);
+    let source = fs::read_to_string(&path).with_context(|| {
+        format!(
+            "failed to read {}. The gate filters `cargo test` on this module's path, so if the \
+             module moved, that filter now matches nothing and exits 0 without running a single \
+             control. Point CONTROL_SUITE_PATH and the gate command at the new path together.",
+            path.display()
+        )
+    })?;
+
+    let controls = source.matches("#[test]").count();
+    if controls < CONTROL_SUITE_FLOOR {
+        bail!(
+            "{}: {controls} controls found, expected at least {CONTROL_SUITE_FLOOR}. The gate's \
+             `cargo test` filter exits 0 when it matches nothing, so a gutted control suite would \
+             otherwise leave this gate green while proving only that two positive fixtures parse.",
+            path.display()
+        );
     }
     Ok(())
 }
@@ -1240,6 +1286,112 @@ mod tests {
         assert!(
             rendered.contains("refuses a symlink named like a receipt"),
             "the refusal must apply to a non-UTF-8 receipt name too, got {rendered}"
+        );
+    }
+
+    /// The gate must notice its own controls disappearing.
+    ///
+    /// `cargo test <filter>` exits 0 when the filter matches nothing, so the
+    /// gate's first command cannot report a renamed or gutted control suite —
+    /// it would run zero tests and pass, leaving only the positive fixtures,
+    /// which conform either way. `validate_control_suite` is the floor that
+    /// makes that visible, so it is worth its own controls in both directions.
+    #[test]
+    fn the_gate_notices_a_control_suite_that_moved_or_was_gutted() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let module = root.path().join(CONTROL_SUITE_PATH);
+        let parent = module.parent().expect("module path has a parent");
+
+        // Moved away: the gate's cargo filter is keyed on this path, so a read
+        // failure here is the only thing standing between a rename and a gate
+        // that runs no controls at all.
+        let moved = format!(
+            "{:#}",
+            validate_control_suite(root.path()).err().expect("a missing module must fail")
+        );
+        assert!(
+            moved.contains("matches nothing") && moved.contains(CONTROL_SUITE_PATH),
+            "the error must name the path and say why it matters, got {moved}"
+        );
+
+        // Gutted: the module is present but the controls are gone.
+        fs::create_dir_all(parent).expect("create module dir");
+        fs::write(&module, "fn main() {}\n#[test]\nfn one() {}\n").expect("write gutted module");
+        let gutted = format!(
+            "{:#}",
+            validate_control_suite(root.path()).err().expect("a gutted suite must fail")
+        );
+        assert!(
+            gutted.contains("1 controls found")
+                && gutted.contains(&CONTROL_SUITE_FLOOR.to_string()),
+            "the error must report the count against the floor, got {gutted}"
+        );
+
+        // Populated: a suite at or above the floor passes.
+        let populated = "#[test]\n".repeat(CONTROL_SUITE_FLOOR);
+        fs::write(&module, populated).expect("write populated module");
+        validate_control_suite(root.path()).expect("a suite at the floor must pass");
+    }
+
+    /// The floor is reached through `validate`, not only by calling it directly.
+    ///
+    /// The first version of the control above called `validate_control_suite`
+    /// itself, so deleting the call from `validate` killed nothing — the floor
+    /// existed but the gate never reached it, which is exactly the shape of bug
+    /// this whole check exists to stop. This one builds a complete project root
+    /// (real schema, real fixtures, gutted module) and drives the same entry
+    /// point the gate command runs.
+    #[test]
+    fn validate_itself_refuses_a_gutted_control_suite() {
+        let real = project_root().expect("project root");
+        let root = tempfile::tempdir().expect("temp dir");
+
+        let schema = root.path().join(SCHEMA_PATH);
+        fs::create_dir_all(schema.parent().expect("schema parent")).expect("create schema dir");
+        fs::copy(real.join(SCHEMA_PATH), &schema).expect("copy the committed schema");
+
+        let fixtures = root.path().join(FIXTURE_DIR);
+        fs::create_dir_all(&fixtures).expect("create fixture dir");
+        for name in
+            [format!("{FIXTURE_PREFIX}.json"), format!("{FIXTURE_PREFIX}.uninstrumented.json")]
+        {
+            fs::copy(real.join(FIXTURE_DIR).join(&name), fixtures.join(&name))
+                .expect("copy a committed fixture");
+        }
+
+        let module = root.path().join(CONTROL_SUITE_PATH);
+        fs::create_dir_all(module.parent().expect("module parent")).expect("create module dir");
+
+        // Everything the gate validates is present and conforms; only the
+        // controls are gone. Without the floor this root passes.
+        fs::write(&module, "#[test]\n").expect("write a gutted module");
+        let gutted = format!(
+            "{:#}",
+            validate(root.path()).err().expect("validate must refuse a gutted control suite")
+        );
+        assert!(
+            gutted.contains("controls found"),
+            "validate must reach the control floor, got {gutted}"
+        );
+
+        // With the controls restored, the same root validates.
+        fs::write(&module, "#[test]\n".repeat(CONTROL_SUITE_FLOOR))
+            .expect("write a populated module");
+        validate(root.path()).expect("a populated root must validate");
+    }
+
+    /// The committed suite is above its own floor, and the floor is real.
+    ///
+    /// Without this the floor could drift above the actual count and nobody
+    /// would learn until a gate run, or below it until it stopped discriminating.
+    #[test]
+    fn the_committed_control_suite_clears_its_floor() {
+        let root = project_root().expect("project root");
+        validate_control_suite(&root).expect("the committed control suite must clear its floor");
+        let source = fs::read_to_string(root.join(CONTROL_SUITE_PATH)).expect("read this module");
+        assert!(
+            source.matches("#[test]").count() >= CONTROL_SUITE_FLOOR,
+            "the floor must stay at or below the real control count"
         );
     }
 
