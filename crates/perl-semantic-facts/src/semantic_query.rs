@@ -177,11 +177,17 @@ impl SemanticQueryEvidence {
             && self.confidence == crate::SemanticConfidence::Known(crate::Confidence::High)
     }
 
+    /// Whether this evidence belongs to the project and root `subject` names.
+    #[must_use]
+    pub fn belongs_to(&self, subject: &SemanticQuerySubject) -> bool {
+        self.project_identity == subject.project_identity
+            && self.root_identity == subject.root_identity
+    }
+
     /// Whether this evidence describes exactly the snapshot `subject` names.
     #[must_use]
     pub fn describes(&self, subject: &SemanticQuerySubject) -> bool {
-        self.project_identity == subject.project_identity
-            && self.root_identity == subject.root_identity
+        self.belongs_to(subject)
             && self.source_generation == subject.source_generation
             && self.workspace_generation == subject.workspace_generation
     }
@@ -472,10 +478,11 @@ impl<T: PartialEq> SemanticQueryOutcome<T> {
     /// The requirement is looked up from the evidence's own family/schema, so
     /// a caller cannot substitute a requirement shaped to fit the evidence.
     /// Every evidence-bearing variant must belong to that requirement's
-    /// schema, family, denominator, and boundary vocabulary. Only the exact
-    /// variants must additionally have covered the denominator and describe
-    /// `subject` exactly; a `Stale` outcome legitimately describes another
-    /// generation.
+    /// schema, family, denominator, and boundary vocabulary, and to the
+    /// subject's project and root. Only the exact variants must additionally
+    /// have covered the denominator and describe the subject's generations
+    /// exactly; a `Stale` outcome legitimately describes another generation,
+    /// but never another project or root.
     pub fn validate_against(
         &self,
         registry: &SemanticQueryRequirementRegistry,
@@ -486,7 +493,7 @@ impl<T: PartialEq> SemanticQueryOutcome<T> {
             return Ok(());
         };
         registry.requirement_for(evidence)?.validate_evidence(evidence)?;
-        if self.claims_exact() && !evidence.describes(subject) {
+        if !evidence.belongs_to(subject) || (self.claims_exact() && !evidence.describes(subject)) {
             return Err(SemanticQueryContractError::SubjectMismatch);
         }
         if let Self::Stale { expected, observed, .. } = self {
@@ -568,7 +575,8 @@ pub enum SemanticQueryContractError {
     UnregisteredBoundary(BoundaryKind),
     /// No requirement is registered for the evidence's query family/schema.
     UnregisteredQueryFamily,
-    /// An exact outcome describes a different snapshot than the one queried.
+    /// The outcome's evidence belongs to another project or root, or an
+    /// exact outcome describes a different snapshot than the one queried.
     SubjectMismatch,
     /// Exact result was claimed without complete evidence.
     ExactOutcomeLacksEvidence,
@@ -637,7 +645,7 @@ impl std::fmt::Display for SemanticQueryContractError {
                 formatter.write_str("semantic query family/schema has no registered requirement")
             }
             Self::SubjectMismatch => {
-                formatter.write_str("exact semantic query outcome describes a different subject")
+                formatter.write_str("semantic query outcome describes a different subject")
             }
             Self::ExactOutcomeLacksEvidence => {
                 formatter.write_str("exact semantic query outcome lacks complete evidence")
@@ -938,6 +946,19 @@ mod tests {
             unrelated.validate_against(&registry, &subject),
             Err(SemanticQueryContractError::StaleGenerationsUnbound)
         );
+        // A real generation mismatch for another project or root is not a
+        // stale receipt for this subject.
+        let mut other_project = subject.clone();
+        other_project.project_identity = "other-project".into();
+        let mut other_root = subject.clone();
+        other_root.root_identity = "other-root".into();
+        for foreign in [&other_project, &other_root] {
+            assert_eq!(
+                stale_source(evidence(true)).validate_against(&registry, foreign),
+                Err(SemanticQueryContractError::SubjectMismatch),
+                "{foreign:?}"
+            );
+        }
         // Expected matches the subject but observed is not what the evidence
         // actually describes.
         let misreported = SemanticQueryOutcome::<u8>::Stale {
@@ -976,6 +997,33 @@ mod tests {
         for state in &states {
             assert_eq!(state.validate_against(&registry, &subject), Ok(()), "{state:?}");
             assert!(!state.is_exact(&registry, &subject), "{state:?}");
+        }
+    }
+
+    #[test]
+    fn non_exact_outcomes_must_belong_to_the_queried_project_and_root() {
+        let registry = registry();
+        let mut other_root = subject();
+        other_root.root_identity = "other-root".into();
+        let states = [
+            budget_partial(true),
+            SemanticQueryOutcome::NotReady { reason: "building".into(), evidence: evidence(false) },
+            SemanticQueryOutcome::Ambiguous {
+                candidates: vec![1_u8, 2],
+                limitations: vec![],
+                evidence: evidence(true),
+            },
+            SemanticQueryOutcome::Unsupported {
+                reason: "profile".into(),
+                evidence: evidence(true),
+            },
+        ];
+        for state in &states {
+            assert_eq!(
+                state.validate_against(&registry, &other_root),
+                Err(SemanticQueryContractError::SubjectMismatch),
+                "{state:?}"
+            );
         }
     }
 
