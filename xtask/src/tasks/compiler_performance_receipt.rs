@@ -814,10 +814,15 @@ fn collect_fixtures(dir: &Path, found: &mut Vec<std::path::PathBuf>) -> Result<(
         // directory cannot pull receipts in from outside the committed tree.
         let metadata = fs::symlink_metadata(&path)
             .with_context(|| format!("failed to inspect {}", path.display()))?;
-        let claims_receipt_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with(FIXTURE_PREFIX) && name.ends_with(".json"));
+        // Classify on the encoded bytes, not on `to_str`. A name is a platform
+        // string, not necessarily UTF-8; requiring UTF-8 made this predicate
+        // partial, and an unclassifiable name is one the gate cannot say it
+        // does not own. `as_encoded_bytes` is documented as safe for matching
+        // on ASCII boundaries, and both the prefix and the suffix are ASCII.
+        let claims_receipt_name = path.file_name().is_some_and(|name| {
+            let bytes = name.as_encoded_bytes();
+            bytes.starts_with(FIXTURE_PREFIX.as_bytes()) && bytes.ends_with(b".json")
+        });
 
         if metadata.is_symlink() {
             // Refuse only a link that claims a receipt name. Skipping one would
@@ -1183,6 +1188,59 @@ mod tests {
                 "{link_name}: only the committed receipt is discovered — a link is never followed"
             );
         }
+    }
+
+    /// A receipt name is classified by its bytes, not by being valid UTF-8.
+    ///
+    /// Review found `to_str` making the ownership predicate partial: a name
+    /// whose raw bytes carry the receipt prefix and the `.json` suffix but
+    /// whose middle is not UTF-8 classified as "not ours", so a link wearing
+    /// one was skipped instead of refused and a real file wearing one was
+    /// never validated. A gate cannot claim it does not own a name it could
+    /// not read. Byte classification is total, so both cases behave as they do
+    /// for any other receipt name.
+    #[cfg(unix)]
+    #[test]
+    fn a_receipt_name_that_is_not_utf8_is_still_this_gates_business() {
+        use std::os::unix::ffi::OsStrExt;
+
+        // Valid as a filename, invalid as UTF-8, and wearing this suite's
+        // prefix and suffix.
+        let mut raw = FIXTURE_PREFIX.as_bytes().to_vec();
+        raw.extend_from_slice(&[0xff, 0xfe]);
+        raw.extend_from_slice(b".json");
+        let name = std::ffi::OsStr::from_bytes(&raw);
+
+        // As a real file it must be discovered, not silently passed over.
+        let root = tempfile::tempdir().expect("temp dir");
+        let fixtures = root.path().join(FIXTURE_DIR);
+        fs::create_dir_all(&fixtures).expect("create fixture dir");
+        let receipt = fixtures.join(name);
+        fs::write(&receipt, MEASURED).expect("write receipt with a non-UTF-8 name");
+
+        let found = discover_fixtures(root.path()).expect("discovery must succeed");
+        assert_eq!(found, vec![receipt], "a receipt is claimed by its bytes, not by being UTF-8");
+
+        // As a symlink it must be refused, exactly like any other receipt-named
+        // link — never skipped as though it belonged to another suite.
+        let root = tempfile::tempdir().expect("temp dir");
+        let outside = tempfile::tempdir().expect("temp dir");
+        let stray = outside.path().join(format!("{FIXTURE_PREFIX}.stray.json"));
+        fs::write(&stray, MEASURED).expect("write receipt outside the tree");
+        let fixtures = root.path().join(FIXTURE_DIR);
+        fs::create_dir_all(&fixtures).expect("create fixture dir");
+        std::os::unix::fs::symlink(&stray, fixtures.join(name)).expect("create symlink");
+
+        let rendered = format!(
+            "{:#}",
+            discover_fixtures(root.path())
+                .err()
+                .expect("a receipt-named link must be refused whatever its encoding")
+        );
+        assert!(
+            rendered.contains("refuses a symlink named like a receipt"),
+            "the refusal must apply to a non-UTF-8 receipt name too, got {rendered}"
+        );
     }
 
     // -- the committed artifacts ------------------------------------------------
