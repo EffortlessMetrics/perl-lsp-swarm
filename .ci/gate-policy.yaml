@@ -906,6 +906,19 @@ gates:
     #     extended-cohort rerun PASS on this branch (exit 0, 2m19s, within the
     #     480s/400000ms envelope); cargo test -p perl-lsp-rs-core --all-targets
     #     --locked = 5244 passed / 0 failed across 100 targets.
+    #     ADMISSION BOUNDARY: this crate's measured residual is zero under the
+    #     cohort contract, but four blanket test-module masks predating this
+    #     work (semantic_snapshot.rs:2417, semantic_construction.rs:1338,
+    #     providers/formatting/formatting.rs:1091, and
+    #     protocol/final_surface_inventory/tests.rs:7) suppress unwrap_used /
+    #     expect_used / panic in their modules. A --force-warn remeasurement
+    #     that pierces them reports 321 further findings the gate cannot see
+    #     (166 unwrap-on-Result, 49 expect_err, 43 expect-on-Result, 31
+    #     unwrap_err, 15 unwrap-on-Option, 9 panic, 8 expect-on-Option). None
+    #     were added here and none are masked by this change; they are
+    #     inherited debt. So this row ratchets the measured surface only, and
+    #     does not assert that perl-lsp-rs-core is free of the panic family.
+    #     Removing those masks is a separate tranche on #11688.
     command: >-
       cargo clippy
       -p perl-token
