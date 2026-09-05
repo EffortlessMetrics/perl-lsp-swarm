@@ -112,10 +112,6 @@ pub const DECOY_FILE_REL: &str = "workspace/main.pl";
 /// The governed root marker (#7762 authority list).
 pub const ROOT_MARKER: &str = "cpanfile";
 
-/// Wire file-name tokens (publishDiagnostics/didOpen `uri` tails) — the only
-/// tokens the judgment accepts evidence from.
-pub const MAIN_TOKEN: &str = "main.pl";
-
 /// The old generation's governed source: the #10946 governed defect — the
 /// trailing semicolon of line 4 is missing — an error-severity parser defect
 /// with no include-path dependency, so the current-result oracle never
@@ -354,7 +350,7 @@ impl RecoveryWire {
     pub fn opens_of(&self, token: &str) -> Vec<usize> {
         self.did_open_lines
             .iter()
-            .filter(|(_, file)| file == token)
+            .filter(|(_, file)| document_path_matches(file, token))
             .map(|(line, _)| *line)
             .collect()
     }
@@ -362,13 +358,13 @@ impl RecoveryWire {
     pub fn closes_of(&self, token: &str) -> Vec<usize> {
         self.did_close_lines
             .iter()
-            .filter(|(_, file)| file == token)
+            .filter(|(_, file)| document_path_matches(file, token))
             .map(|(line, _)| *line)
             .collect()
     }
 
     pub fn batches_of(&self, token: &str) -> Vec<&RecoveryBatch> {
-        self.batches.iter().filter(|batch| batch.uri_file == token).collect()
+        self.batches.iter().filter(|batch| document_path_matches(&batch.uri_file, token)).collect()
     }
 
     /// The line index of the `initialize` request that started the given
@@ -476,10 +472,22 @@ fn walk_recovery_value(
     }
 }
 
+/// Whether a recorded document identity names the governed `token`, which is
+/// a fixture-relative path such as "workspace/project/main.pl". The match is
+/// anchored on a path separator so the fixture's decoy file
+/// ("workspace/main.pl") can never satisfy the governed document: the two
+/// share a basename by design, so basename identity would let decoy replays
+/// and decoy diagnostics prove the governed cells.
+fn document_path_matches(recorded: &str, token: &str) -> bool {
+    recorded == token || recorded.ends_with(&format!("/{token}"))
+}
+
+/// The document identity mined from a URI: the whole normalized URI, so that
+/// two fixture files sharing a basename stay distinguishable.
 fn document_token(map: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
     let uri = map.get("params")?.get("textDocument")?.get("uri")?.as_str()?;
-    let token = uri.rsplit('/').next().unwrap_or("").to_string();
-    if token.is_empty() || token.contains('\\') { None } else { Some(token) }
+    let normalized = uri.replace('\\', "/");
+    if normalized.is_empty() { None } else { Some(normalized) }
 }
 
 fn mine_recovery_batch(
@@ -488,8 +496,8 @@ fn mine_recovery_batch(
 ) -> Option<RecoveryBatch> {
     let params = map.get("params")?;
     let uri = params.get("uri")?.as_str()?;
-    let uri_file = uri.rsplit('/').next().unwrap_or("").to_string();
-    if uri_file.is_empty() || uri_file.contains('\\') {
+    let uri_file = uri.replace('\\', "/");
+    if uri_file.is_empty() {
         return None;
     }
     let diagnostics = params.get("diagnostics")?.as_array()?;
@@ -1274,7 +1282,7 @@ pub fn evaluate_recovery_observation(
     let replacement_initialize = recovery_wire.initialize_line_of(expected_generation_count);
     let old_signature_clean = replacement_initialize.is_some_and(|line| {
         recovery_wire
-            .batches_after(MAIN_TOKEN, line)
+            .batches_after(OPENED_FILE_REL, line)
             .iter()
             .all(|batch| batch.error_severity_count == 0 && batch.warning_severity_count == 0)
     });
@@ -1384,7 +1392,7 @@ fn replay_ok(replays: &[&DriverEvent], recovery_wire: &RecoveryWire, restart_cou
         let Some(init_line) = recovery_wire.initialize_line_of(generation) else { return false };
         let next_init = recovery_wire.initialize_line_of(generation + 1).unwrap_or(usize::MAX);
         let opens: Vec<usize> = recovery_wire
-            .opens_of(MAIN_TOKEN)
+            .opens_of(OPENED_FILE_REL)
             .into_iter()
             .filter(|line| *line > init_line && *line < next_init)
             .collect();
@@ -1405,12 +1413,12 @@ fn current_wire_agrees(recovery_wire: &RecoveryWire, generation_count: usize) ->
         let Some(init_line) = recovery_wire.initialize_line_of(generation) else { return false };
         let next_init = recovery_wire.initialize_line_of(generation + 1).unwrap_or(usize::MAX);
         let window_end = recovery_wire
-            .closes_of(MAIN_TOKEN)
+            .closes_of(OPENED_FILE_REL)
             .into_iter()
             .find(|close| *close > init_line && *close < next_init)
             .unwrap_or(next_init);
         let batches: Vec<&RecoveryBatch> = recovery_wire
-            .batches_after(MAIN_TOKEN, init_line)
+            .batches_after(OPENED_FILE_REL, init_line)
             .into_iter()
             .filter(|batch| batch.line_index < window_end)
             .collect();

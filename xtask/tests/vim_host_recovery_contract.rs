@@ -24,9 +24,9 @@ use xtask::vim_host_recovery_run::recovery_journey;
 use xtask::vim_host_recovery_run::{
     CELL_CURRENT_RESULT, CELL_DOCUMENT_REPLAY, CELL_EXPLICIT_RESTART,
     CELL_INITIALIZED_NEW_GENERATION, CELL_OLD_GENERATION_REJECTED, CELL_RETRY_OR_MANUAL,
-    CELL_SHUTDOWN_CLEANUP, CELL_UNEXPECTED_EXIT, GOVERNED_ROOT_REL, OPENED_FILE_REL,
-    RecoveryFixtureVariant, StimulusRecord, evaluate_recovery_observation, extract_recovery_wire,
-    materialize_recovery_fixture, stimulus_ledger_is_complete,
+    CELL_SHUTDOWN_CLEANUP, CELL_UNEXPECTED_EXIT, DECOY_FILE_REL, GOVERNED_ROOT_REL,
+    OPENED_FILE_REL, RecoveryFixtureVariant, StimulusRecord, evaluate_recovery_observation,
+    extract_recovery_wire, materialize_recovery_fixture, stimulus_ledger_is_complete,
 };
 use xtask::vim_host_run::vim_host_runner::{
     self, DRIVER_SCHEMA_VERSION, DriverEvent, DriverEventKind, RUN_PLAN_SCHEMA_VERSION,
@@ -645,6 +645,31 @@ fn the_stimulus_matcher_binds_only_the_serving_server_process() -> Result<()> {
 }
 
 #[test]
+fn decoy_wire_evidence_never_satisfies_the_governed_document() -> Result<()> {
+    // The fixture carries two files named main.pl by design: the governed
+    // workspace/project/main.pl and the outer decoy workspace/main.pl. If
+    // wire identity is the basename, a decoy replay and decoy diagnostics
+    // satisfy the governed cells and the recovery proof is false.
+    let log = [
+        "{\"method\":\"initialize\",\"params\":{\"rootUri\":\"file:///w/workspace\"}}".to_string(),
+        "{\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file:///w/workspace/main.pl\"}}}".to_string(),
+        "{\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"file:///w/workspace/main.pl\",\"diagnostics\":[{\"severity\":1}]}}".to_string(),
+        "{\"method\":\"textDocument/didClose\",\"params\":{\"textDocument\":{\"uri\":\"file:///w/workspace/main.pl\"}}}".to_string(),
+    ]
+    .join("\n");
+    let wire = extract_recovery_wire(log.as_bytes());
+
+    // The decoy is mined — it really is on the wire — but it is not the
+    // governed document.
+    assert_eq!(wire.opens_of(OPENED_FILE_REL), Vec::<usize>::new());
+    assert_eq!(wire.closes_of(OPENED_FILE_REL), Vec::<usize>::new());
+    assert_eq!(wire.batches_of(OPENED_FILE_REL).len(), 0);
+    assert_eq!(wire.opens_of(DECOY_FILE_REL), vec![1]);
+    assert_eq!(wire.batches_of(DECOY_FILE_REL).len(), 1);
+    Ok(())
+}
+
+#[test]
 fn the_governed_root_binding_requires_a_leading_separator() -> Result<()> {
     use xtask::vim_host_recovery_run::uri_ends_with_segment;
 
@@ -721,11 +746,11 @@ fn canonical_wire_mines_four_generations_and_windows() -> Result<()> {
     let wire = canonical_wire();
     assert_eq!(wire.initialize_lines, vec![0, 6, 10, 14]);
     assert_eq!(wire.initialized_lines.len(), 4);
-    assert_eq!(wire.opens_of("main.pl"), vec![2, 8, 12, 16]);
-    assert_eq!(wire.closes_of("main.pl"), vec![5]);
+    assert_eq!(wire.opens_of(OPENED_FILE_REL), vec![2, 8, 12, 16]);
+    assert_eq!(wire.closes_of(OPENED_FILE_REL), vec![5]);
     assert_eq!(wire.did_change_configuration_lines, vec![3]);
     // each generation window settles exactly as authored
-    let batches = wire.batches_of("main.pl");
+    let batches = wire.batches_of(OPENED_FILE_REL);
     assert_eq!(batches.len(), 4);
     assert_eq!(batches[0].error_severity_count, 1);
     assert_eq!(batches[3].error_severity_count, 0);
