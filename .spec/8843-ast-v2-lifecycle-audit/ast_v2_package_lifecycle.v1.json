@@ -877,7 +877,7 @@
       "item_id": "item:node-id-generator.default",
       "path": "perl_ast_v2::NodeIdGenerator as Default",
       "kind": "trait_impl",
-      "derived_shape": "impl Default for NodeIdGenerator",
+      "derived_shape": "impl Default for NodeIdGenerator { fn default() -> Self }",
       "v1_relation": "unique",
       "v1_counterpart": null,
       "range_disposition": "not_applicable",

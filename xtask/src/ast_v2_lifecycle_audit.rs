@@ -88,7 +88,7 @@ const V2_CRATE_PATH: &str = "perl_ast_v2";
 /// together with the manifest bytes; patching around it silently is exactly what
 /// the pin exists to prevent.
 pub const PINNED_CANONICAL_DIGEST: &str =
-    "ECF96EA8236FC2D65BB533EB8BF79F82D4B0C409EF9EA1063F0420C99F15C986";
+    "501898BDD7ABF36ADA695318B0B4BFB37FF3790D5E393022AD7A07D45843BFD0";
 
 // ---------------------------------------------------------------------------
 // Code-owned v1 vocabularies. A cardinality check lets a repinned manifest
@@ -493,6 +493,17 @@ fn collect_public_items(
                         shape.push_str(" for ");
                         shape.push_str(&render_type(item_impl.self_ty.as_ref())?);
                         shape.push_str(&render_contract_attrs(&item_impl.attrs)?);
+                        // A trait impl's associated assignments are its public
+                        // contract as much as the header is: `type Item = u8`
+                        // becoming `= u16` changes what every consumer of the
+                        // trait gets back, and the header does not move. The
+                        // impl produces one row, so the assignments belong in
+                        // its shape rather than as rows of their own.
+                        shape.push_str(&render_trait_impl_items(
+                            &item_impl.items,
+                            &trait_name,
+                            &self_name,
+                        )?);
                         derived.push(DerivedItem {
                             path: format!("{module_path}::{self_name} as {trait_name}"),
                             kind: "trait_impl".to_string(),
@@ -535,9 +546,15 @@ fn collect_public_items(
                                         ),
                                         kind: "associated_const".to_string(),
                                         shape: format!(
-                                            "const {}: {}{}",
+                                            // The value is contract: a public
+                                            // `const LIMIT: usize` changing
+                                            // from 128 to 64 changes what every
+                                            // consumer reads, and the name and
+                                            // type do not move.
+                                            "const {}: {} = {}{}",
                                             konst.ident,
                                             render_type(&konst.ty)?,
+                                            render_const_expr(&konst.expr)?,
                                             render_contract_attrs(&konst.attrs)?
                                         ),
                                     });
@@ -858,6 +875,56 @@ fn names_package_directly(rendered: &str) -> bool {
         ["perl_parser_core", second, ..] => *second == "DiagnosticId" || *second == "MissingKind",
         _ => false,
     }
+}
+
+/// Render the contract-bearing items of a trait implementation.
+///
+/// Sorted, so source order does not move the shape. Fails closed on an item
+/// kind this derivation has not modelled, for the same reason the item walk
+/// does: a trait item that silently contributes nothing is a contract change
+/// with no row behind it.
+fn render_trait_impl_items(
+    items: &[syn::ImplItem],
+    trait_name: &str,
+    self_name: &str,
+) -> Result<String> {
+    let mut rendered: Vec<String> = Vec::new();
+    for item in items {
+        match item {
+            syn::ImplItem::Type(assoc) => rendered.push(format!(
+                "type {}{} = {}{}",
+                assoc.ident,
+                render_generics(&assoc.generics)?,
+                render_type(&assoc.ty)?,
+                render_contract_attrs(&assoc.attrs)?
+            )),
+            syn::ImplItem::Const(konst) => rendered.push(format!(
+                "const {}: {} = {}{}",
+                konst.ident,
+                render_type(&konst.ty)?,
+                render_const_expr(&konst.expr)?,
+                render_contract_attrs(&konst.attrs)?
+            )),
+            // A trait method's signature is fixed by the trait, but its
+            // qualifiers are not: `fn f` and `const fn f` are different
+            // contracts under the same trait.
+            syn::ImplItem::Fn(method) => rendered.push(format!(
+                "{}{}",
+                render_signature(&method.sig)?,
+                render_contract_attrs(&method.attrs)?
+            )),
+            other => bail!(
+                "`impl {trait_name} for {self_name}` carries a trait item this derivation does \
+                 not model; it must be handled explicitly rather than dropped from the recorded \
+                 shape: {other:?}"
+            ),
+        }
+    }
+    if rendered.is_empty() {
+        return Ok(String::new());
+    }
+    rendered.sort();
+    Ok(format!(" {{ {} }}", rendered.join("; ")))
 }
 
 /// Render an explicit enum discriminant.
@@ -1345,17 +1412,54 @@ pub fn references_package_api_in_code(text: &str, path: &str) -> bool {
 /// found actually code", where not knowing must not let a real consumer hide.
 pub fn parsed_api_use(text: &str) -> Option<bool> {
     let file = syn::parse_file(text).ok()?;
-    let mut visitor = ApiUseVisitor { found: false };
+    let mut visitor = ApiUseVisitor { found: false, doc_block: Vec::new() };
     syn::visit::visit_file(&mut visitor, &file);
+    // Inner docs (`//!`) belong to the file, not to any item, so nothing has
+    // flushed them.
+    visitor.flush_doc_block();
     Some(visitor.found)
 }
 
 /// Collects any path, `use` tree, or doc attribute that reaches the package.
 struct ApiUseVisitor {
     found: bool,
+    /// Doc lines of the item currently being visited, in order.
+    ///
+    /// A doctest is written one `#[doc = "..."]` attribute per line, so judging
+    /// each line on its own splits every construct that spans lines: a grouped
+    /// `use perl_ast::{v2,` / `Node};` parses as neither half. The lines are
+    /// accumulated and analysed as one block at each item boundary, which is
+    /// also what `rustdoc` compiles.
+    doc_block: Vec<String>,
 }
 
 impl ApiUseVisitor {
+    /// Analyse the accumulated doc lines as one block and start a new one.
+    ///
+    /// `rustdoc` compiles a doc comment as a unit, so that is the unit judged
+    /// here. Fenced-code markers and prose lines are left in: they make the
+    /// block fail to parse rather than pass wrongly, and the per-line text
+    /// match still covers the forms a parse is not needed for.
+    fn flush_doc_block(&mut self) {
+        if self.doc_block.is_empty() {
+            return;
+        }
+        let block = self.doc_block.join("\n");
+        self.doc_block.clear();
+        if !self.found {
+            // Fence markers are prose to `syn`; stripping them is what lets the
+            // enclosed Rust parse.
+            let code: String = block
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("```"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if parsed_api_use(&code).unwrap_or(false) {
+                self.found = true;
+            }
+        }
+    }
+
     /// Match a rendered path. The trailing `::` lets a bare `use perl_ast_v2;`
     /// satisfy the same pattern as a qualified `perl_ast_v2::Node`.
     fn consider(&mut self, rendered: &str) {
@@ -1374,6 +1478,15 @@ impl<'ast> syn::visit::Visit<'ast> for ApiUseVisitor {
             node.segments.iter().map(|s| s.ident.to_string()).collect::<Vec<_>>().join("::");
         self.consider(&rendered);
         syn::visit::visit_path(self, node);
+    }
+
+    fn visit_item(&mut self, node: &'ast syn::Item) {
+        // Each item's doc lines are one block. Flushing at the boundary keeps
+        // two items' doc comments from being concatenated into a construct
+        // neither of them wrote.
+        self.flush_doc_block();
+        syn::visit::visit_item(self, node);
+        self.flush_doc_block();
     }
 
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
@@ -1397,11 +1510,13 @@ impl<'ast> syn::visit::Visit<'ast> for ApiUseVisitor {
             // The text match alone repeats the very gap that moved ordinary
             // code onto the parser: a grouped `use perl_ast::{v2, Node};` in a
             // doctest names none of the forms `API_USE_FORM` recognises, so
-            // compiled API use could still be classified as prose. A doctest
-            // line that parses as Rust is judged the same way real code is.
-            if parsed_api_use(&line).unwrap_or(false) || API_USE_FORM.is_match(&line) {
+            // compiled API use could still be classified as prose.
+            if API_USE_FORM.is_match(&line) {
                 self.found = true;
             }
+            // The parse is deferred to the block, not run per line: a construct
+            // split across doc lines parses as neither half on its own.
+            self.doc_block.push(line);
         }
         syn::visit::visit_attribute(self, node);
     }

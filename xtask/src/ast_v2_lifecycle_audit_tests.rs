@@ -1234,6 +1234,87 @@ fn a_grouped_import_in_a_doctest_is_still_code() -> Result<()> {
 }
 
 #[test]
+fn a_trait_impls_associated_assignments_are_part_of_its_contract() -> Result<()> {
+    // The trait impl row recorded only the header, so `type Item = u8` becoming
+    // `= u16` — which changes what every consumer of the trait gets back —
+    // moved nothing. The impl is one row, so its assignments belong in its
+    // shape.
+    let shape_of = |src: &str| -> Result<String> {
+        derive_public_items(src)?
+            .iter()
+            .find(|item| item.kind == "trait_impl")
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no trait impl derived from {src}"))
+    };
+    assert_ne!(
+        shape_of("pub struct S;\nimpl Iterator for S { type Item = u8; }")?,
+        shape_of("pub struct S;\nimpl Iterator for S { type Item = u16; }")?,
+        "an associated type assignment is contract"
+    );
+    assert_ne!(
+        shape_of("pub struct S;\nimpl T for S { const N: u8 = 1; }")?,
+        shape_of("pub struct S;\nimpl T for S { const N: u8 = 2; }")?,
+        "an associated const value is contract"
+    );
+    assert_ne!(
+        shape_of("pub struct S;\nimpl T for S { fn f() {} }")?,
+        shape_of("pub struct S;\nimpl T for S { const fn f() {} }")?,
+        "a method qualifier is contract even when the trait fixes the signature"
+    );
+    // Source order is not contract, or the check would fire on a reordering.
+    assert_eq!(
+        shape_of("pub struct S;\nimpl T for S { type A = u8; type B = u16; }")?,
+        shape_of("pub struct S;\nimpl T for S { type B = u16; type A = u8; }")?,
+        "reordering assignments must not move the shape"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_associated_constants_value_is_part_of_its_shape() -> Result<()> {
+    // `const LIMIT: usize` going from 128 to 64 changes what every consumer
+    // reads, and neither the name nor the type moves.
+    let shape_of = |src: &str| -> Result<String> {
+        derive_public_items(src)?
+            .iter()
+            .find(|item| item.kind == "associated_const")
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no associated const derived from {src}"))
+    };
+    assert_ne!(
+        shape_of("pub struct S;\nimpl S { pub const LIMIT: usize = 128; }")?,
+        shape_of("pub struct S;\nimpl S { pub const LIMIT: usize = 64; }")?,
+        "the value of a public associated constant is contract"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_doctest_import_split_across_lines_is_still_code() -> Result<()> {
+    // A doctest is one `#[doc = "..."]` attribute per line, so judging each
+    // line alone splits every construct that spans lines: a grouped import
+    // written across two lines parses as neither half, and the compiled
+    // doctest vanished from classification. `rustdoc` compiles the block, so
+    // the block is the unit judged.
+    let split =
+        "/// ```\n/// use perl_ast::{\n///     v2,\n///     Node,\n/// };\n/// ```\npub fn f() {}";
+    assert!(!mentions_audited_package(split), "the token scan cannot see this form");
+    assert!(
+        references_package_api_in_code(split, "crates/a/src/lib.rs"),
+        "a grouped import split across doc lines is still compiled API use"
+    );
+
+    // Two items' doc comments must not be concatenated into a construct
+    // neither of them wrote — the block boundary is the item.
+    let spliced = "/// use perl_ast::{\npub fn a() {}\n/// v2, Node };\npub fn b() {}";
+    assert!(
+        !references_package_api_in_code(spliced, "crates/a/src/lib.rs"),
+        "doc lines from two different items are not one doctest"
+    );
+    Ok(())
+}
+
+#[test]
 fn contract_attributes_reach_every_modelled_public_surface() -> Result<()> {
     // The first version rendered contract attributes on structs, enums and
     // variants only, so the same `#[cfg]` or `#[deprecated]` that moved an enum
