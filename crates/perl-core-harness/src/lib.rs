@@ -10098,6 +10098,47 @@ mod tests {
         {
             bail!("the unsupported-rail constraint does not pin availability to not_available");
         }
+
+        // Every rail slot the schema declares must be one the Rust walk
+        // reaches. The debt rails were bound to `non_execution_rail` here while
+        // `validate_series_rail_mechanisms` never visited them, so the two
+        // contracts disagreed about a slot neither test noticed. Pinning the
+        // slot inventory makes a newly added rail fail here until it is wired
+        // into the walk, rather than silently escaping it.
+        let mut slots: Vec<String> = Vec::new();
+        for (def_name, def) in
+            defs.as_object().ok_or_else(|| color_eyre::eyre::eyre!("schema has no $defs"))?
+        {
+            let Some(properties) = def["properties"].as_object() else {
+                continue;
+            };
+            for (property, value) in properties {
+                if let Some(reference) = value["$ref"].as_str()
+                    && reference.ends_with("rail")
+                {
+                    slots.push(format!("{def_name}.{property}"));
+                }
+            }
+        }
+        slots.sort();
+        let walked = [
+            "debt.history",
+            "debt.registry",
+            "observation.curated_gold",
+            "observation.differential_oracle",
+            "observation.eir",
+            "observation.execution",
+            "series.curated_gold",
+            "series.differential_oracle",
+            "series.eir",
+            "series.execution",
+        ];
+        if slots != walked {
+            bail!(
+                "schema declares rail slots {slots:?}, but validate_series_rail_mechanisms walks \
+                 {walked:?}; wire the new slot into the walk before publishing it"
+            );
+        }
         Ok(())
     }
 
