@@ -184,7 +184,7 @@ disappears:
 Use issues for durable research/rulings/plans/dependencies/goal synthesis; PR bodies or
 comments for candidate-wide route/proof/limitation summaries; inline reviews for
 localized findings; review replies for dispositions; submitted reviews for cumulative
-judgment; and issue closeout for landed effects and residual claims.
+judgment; and issue closeout for landed effects and residual work.
 
 Keep agent identity, topology, liveness, retries, task state, provisional reasoning,
 raw logs, unchanged polling, and routine skill transitions runtime-local.
@@ -266,9 +266,16 @@ Otherwise detect, explain, repair, and continue.
 - never use `git stash`: `refs/stash` is a single repository-global stack shared by
   every worktree, so a concurrent agent's `pop` can silently take your entry into
   its own tree and drop the ref; use scoped restore or a WIP commit;
-- rebase and force-push belong to a candidate's single writer; the moment a branch
-  carries commits from another context, merge instead of rewriting, so both writers'
-  work survives as ancestors;
+- immediately before candidate mutation, use the current typed writer-preflight/
+  admission authority when available, or establish the exact candidate, head, and
+  mutation owner from live evidence; missing, stale, or contradictory ownership
+  evidence is `NOT_PROVEN`, while read-only research and review remain outside this
+  write-boundary check;
+- if another current writer is established, stop mutating that candidate; continue as
+  a reviewer or take a different claim;
+- rebase and force-push belong to a candidate's single writer; if commits from multiple
+  contexts have already reached the branch, merge rather than rewriting history, then
+  return the candidate to one writer;
 - stage intended paths explicitly;
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
 - run focused proof, then affected package proof, then broader proof only when risk or
