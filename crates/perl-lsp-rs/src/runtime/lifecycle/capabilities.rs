@@ -7,22 +7,15 @@ use super::root_input::{InitialRootInput, classify_initial_root_input};
 use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
 use serde_json::{Value, json};
 
-/// Whether this exact build implements workspace-folder semantics (#8161).
+/// Workspace-folder implementation truth for this build (#8161).
 ///
-/// `workspace.workspaceFolders.supported` describes this implementation fact.
-/// It is `true` because the workspace-folder registry and the
-/// `workspace/didChangeWorkspaceFolders` dispatch route are compiled in
-/// unconditionally and no canonical feature id suppresses them. Flip this
-/// only through the canonical feature policy if a profile ever owns a
-/// suppression — never from the client's advertised bit or the active folder
-/// count. The client's own support stays a separate normalized observation on
-/// `ClientCapabilities.workspace_folders_support`.
-pub(crate) const SERVER_WORKSPACE_FOLDER_SUPPORT: bool = true;
-
-/// Whether the `workspace/didChangeWorkspaceFolders` dispatch route is
-/// available in this exact build (#8161). The advertised
-/// `changeNotifications` capability must agree with this route.
-pub(crate) const WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE: bool = true;
+/// Both constants are declared once in `perl-lsp-rs-core::protocol::capabilities`
+/// and re-exported here so the runtime builder and the pure `EffectiveLspSurface`
+/// model cannot disagree. See the core declarations for the policy: neither is
+/// ever derived from the client's advertised bit or the active folder count.
+pub(crate) use perl_lsp_rs_core::protocol::capabilities::{
+    SERVER_WORKSPACE_FOLDER_SUPPORT, WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE,
+};
 
 /// Typed TextDocumentSyncOptions for ServerCapabilities construction (#4995).
 ///
@@ -952,6 +945,16 @@ impl LspServer {
                 self.set_root_uri(&root_uri);
                 return;
             }
+            // `initializationOptions` was present but carried no recognized
+            // compatibility root. Stop here: the CWD fallback below is for
+            // clients that declared nothing at all. A client that sent
+            // options (`{}`, `null`, or config-only `{ "perl": ... }`) has
+            // spoken, and manufacturing a root from the launcher's working
+            // directory would silently index an unrelated tree. This mirrors
+            // the pre-#8161 chain, where the `initializationOptions` arm
+            // consumed the branch and the CWD arm was unreachable once the
+            // field was present.
+            return;
         }
         if let Ok(cwd) = std::env::current_dir() {
             // Compatibility fallback for lightweight clients (for example Aider)
@@ -2090,6 +2093,57 @@ mod tests {
             folders[0].uri, "file:///explicit-workspace",
             "cwd fallback must not override an explicitly provided rootUri"
         );
+    }
+
+    /// Negative control (#8161): a client that sent `initializationOptions`
+    /// carrying no recognized compatibility root must stay rootless. The CWD
+    /// convenience exists for clients that declared nothing at all; letting it
+    /// fire here would silently index the launcher's working directory for
+    /// config-only and single-file sessions. Pre-#8161 the
+    /// `initializationOptions` arm consumed the fallback chain, and that
+    /// boundary is preserved.
+    #[test]
+    fn initialize_config_only_initialization_options_do_not_manufacture_a_cwd_root() {
+        for options in [json!({}), json!(null), json!({ "perl": { "perlPath": "/usr/bin/perl" } })]
+        {
+            let server = LspServer::new();
+            let params = json!({
+                "capabilities": {},
+                "initializationOptions": options.clone(),
+            });
+
+            let _ = server.handle_initialize(Some(params));
+
+            let folders = server.workspace_folders.lock();
+            assert!(
+                folders.is_empty(),
+                "initializationOptions {options} carry no root, so the session must stay \
+                 rootless rather than adopting the process working directory"
+            );
+            drop(folders);
+            assert_eq!(
+                server.initial_root_input().map(|input| input.as_str().to_string()),
+                Some("no_workspace_root".to_string()),
+                "the receipt still records that the client declared no root"
+            );
+        }
+    }
+
+    /// The recognized-root arms of the same compatibility branch keep working;
+    /// the negative control above must not be satisfied by disabling them.
+    #[test]
+    fn initialize_initialization_options_root_uri_still_resolves() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {},
+            "initializationOptions": { "rootUri": "file:///from-options" },
+        });
+
+        let _ = server.handle_initialize(Some(params));
+
+        let folders = server.workspace_folders.lock();
+        assert_eq!(folders.len(), 1, "a recognized options root must still register");
+        assert_eq!(folders[0].uri, "file:///from-options");
     }
 
     #[test]

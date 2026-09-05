@@ -300,8 +300,12 @@ fn stdio_lifecycle_exits_zero_after_shutdown() -> Result<()> {
         "method": "initialize",
         "params": {
             "processId": null,
+            // `workspaceFolders` is omitted, not null: this lifecycle subject
+            // runs against the isolated temp workspace above, and #8161 makes
+            // a present `null` an explicit no-active-folder declaration that
+            // never adopts `rootUri`. Sending null here would silently drop
+            // the workspace this test just built.
             "rootUri": root_uri,
-            "workspaceFolders": null,
             "capabilities": {}
         }
     }))?;
