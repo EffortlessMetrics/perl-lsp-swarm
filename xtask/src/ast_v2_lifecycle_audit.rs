@@ -71,7 +71,7 @@ const V2_CRATE_PATH: &str = "perl_ast_v2";
 /// together with the manifest bytes; patching around it silently is exactly what
 /// the pin exists to prevent.
 pub const PINNED_CANONICAL_DIGEST: &str =
-    "8EF511FAEA09F4E97D8C386BA910D45297ED099944B6EDE99B1C306093C3442A";
+    "6C480EE983ACB350B0FDD916ED546457FF0C1AC367BBEF8F9180B6C2060E9197";
 
 // ---------------------------------------------------------------------------
 // Code-owned v1 vocabularies. A cardinality check lets a repinned manifest
@@ -431,6 +431,34 @@ fn collect_public_items(
                 let nested = format!("{module_path}::{}", module.ident);
                 collect_public_items(inner, &nested, derived)?;
             }
+            // Macros and extern blocks carry no visibility of their own, so the
+            // private-item skip above cannot reach them. Bailing on every one
+            // would fail an ordinary refactor that adds an internal helper
+            // macro, for a reason unrelated to the public API — so privacy is
+            // decided here instead, and only genuinely exported surface bails.
+            syn::Item::Macro(item_macro) => {
+                if item_macro.attrs.iter().any(|attr| attr.path().is_ident("macro_export")) {
+                    bail!(
+                        "`{module_path}` exports a macro with `#[macro_export]`, which is public \
+                         API this derivation cannot model. It must be handled explicitly rather \
+                         than skipped."
+                    );
+                }
+            }
+            syn::Item::ForeignMod(foreign) => {
+                let exports_public_item = foreign.items.iter().any(|item| match item {
+                    syn::ForeignItem::Fn(f) => is_public(&f.vis),
+                    syn::ForeignItem::Static(st) => is_public(&st.vis),
+                    syn::ForeignItem::Type(t) => is_public(&t.vis),
+                    _ => false,
+                });
+                if exports_public_item {
+                    bail!(
+                        "`{module_path}` contains an extern block with public items, which are \
+                         public API this derivation cannot model."
+                    );
+                }
+            }
             other => bail!(
                 "the audit derivation cannot model this public item ({}) in `{module_path}`. It \
                  must be handled explicitly: silently skipping it would mean a public item had \
@@ -494,7 +522,16 @@ fn render_generics(generics: &syn::Generics) -> Result<String> {
     for param in &generics.params {
         match param {
             syn::GenericParam::Lifetime(lifetime) => {
-                parts.push(format!("'{}", lifetime.lifetime.ident));
+                // Outlives bounds are contract: `<'a, 'b>` and `<'a: 'b, 'b>`
+                // are different APIs and must not share a shape.
+                let mut rendered = format!("'{}", lifetime.lifetime.ident);
+                let mut bounds: Vec<String> =
+                    lifetime.bounds.iter().map(|b| format!("'{}", b.ident)).collect();
+                if !bounds.is_empty() {
+                    bounds.sort();
+                    rendered.push_str(&format!(": {}", bounds.join(" + ")));
+                }
+                parts.push(rendered);
             }
             syn::GenericParam::Type(ty) => {
                 let mut rendered = ty.ident.to_string();
@@ -516,19 +553,37 @@ fn render_generics(generics: &syn::Generics) -> Result<String> {
                     bounds.sort();
                     rendered.push_str(&format!(": {}", bounds.join(" + ")));
                 }
+                // A default is contract too: changing `<T = u8>` to `<T = i32>`
+                // silently changes what every unparameterised use resolves to.
+                if let Some((_, default)) = &ty.default {
+                    rendered.push_str(&format!(" = {}", render_type(default)?));
+                }
                 parts.push(rendered);
             }
             // `GenericParam` is exhaustive in syn 3, so there is no catch-all
             // arm here: adding one would be dead code, and a future variant
             // would surface as a compile error, which is the stronger signal.
             syn::GenericParam::Const(konst) => {
-                parts.push(format!("const {}: {}", konst.ident, render_type(&konst.ty)?));
+                let mut rendered = format!("const {}: {}", konst.ident, render_type(&konst.ty)?);
+                if let Some((_, default)) = &konst.default {
+                    rendered.push_str(&format!(" = {}", render_const_expr(default)?));
+                }
+                parts.push(rendered);
             }
         }
     }
 
+    // Predicate *content*, not a count. Counting alone let `where T: Clone` and
+    // `where T: Send` share a shape, which is a breaking difference.
     let where_clause = match &generics.where_clause {
-        Some(clause) => format!(" where[{} predicates]", clause.predicates.len()),
+        Some(clause) => {
+            let mut predicates: Vec<String> = Vec::new();
+            for predicate in &clause.predicates {
+                predicates.push(render_where_predicate(predicate)?);
+            }
+            predicates.sort();
+            format!(" where[{}]", predicates.join("; "))
+        }
         None => String::new(),
     };
 
@@ -536,6 +591,46 @@ fn render_generics(generics: &syn::Generics) -> Result<String> {
         Ok(where_clause)
     } else {
         Ok(format!("<{}>{where_clause}", parts.join(", ")))
+    }
+}
+
+/// Render one `where` predicate, so two different clauses cannot share a shape.
+fn render_where_predicate(predicate: &syn::WherePredicate) -> Result<String> {
+    let render_bounds = |bounds: &syn::punctuated::Punctuated<
+        syn::TypeParamBound,
+        syn::Token![+],
+    >|
+     -> Result<String> {
+        let mut rendered: Vec<String> = Vec::new();
+        for bound in bounds {
+            match bound {
+                syn::TypeParamBound::Trait(trait_bound) => {
+                    rendered.push(render_path(&trait_bound.path)?);
+                }
+                syn::TypeParamBound::Lifetime(lifetime) => {
+                    rendered.push(format!("'{}", lifetime.ident));
+                }
+                other => bail!("the audit derivation cannot render this where bound: {other:?}"),
+            }
+        }
+        rendered.sort();
+        Ok(rendered.join(" + "))
+    };
+
+    match predicate {
+        syn::WherePredicate::Type(ty) => {
+            Ok(format!("{}: {}", render_type(&ty.bounded_ty)?, render_bounds(&ty.bounds)?))
+        }
+        syn::WherePredicate::Lifetime(lifetime) => {
+            let mut bounds: Vec<String> =
+                lifetime.bounds.iter().map(|b| format!("'{}", b.ident)).collect();
+            bounds.sort();
+            Ok(format!("'{}: {}", lifetime.lifetime.ident, bounds.join(" + ")))
+        }
+        other => bail!(
+            "the audit derivation cannot render this where predicate; it must be handled \
+             explicitly rather than approximated: {other:?}"
+        ),
     }
 }
 
@@ -907,7 +1002,7 @@ static API_USE_FORM: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::ne
     .expect("the API-use pattern is a valid literal regex")
 });
 
-/// Whether a Rust file reaches the package's API from code, ignoring comments.
+/// Whether a Rust file reaches the package's API from code.
 ///
 /// This stops the inverse of falsifier 9. The scan knows a file references the
 /// package; without this it does not know *how*, so a real code consumer could
@@ -915,57 +1010,101 @@ static API_USE_FORM: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::ne
 /// gating check — the non-gating roles are exactly the ones that skip the symbol
 /// and scan requirements.
 ///
-/// Deliberately scoped two ways. Only `.rs` files are examined, because a TOML
-/// policy row that names the crate is a genuine `policy_inventory` reference and
-/// not API use. And only `::`-joined Rust path forms count, so a crate name
-/// inside a string literal — a coverage fixture path, an allowlist glob — stays
-/// correctly classifiable as inventory rather than being forced to a code role.
+/// Implemented by parsing with `syn` rather than by stripping comments from the
+/// text. The hand-rolled stripper this replaces was wrong in both directions and
+/// the failures were ordinary, not exotic: a glob string such as
+/// `"crates/perl-ast-v2/*.rs"` contains `/*`, which opened a block comment that
+/// never closed and silently discarded the rest of the file — including any real
+/// `use perl_ast_v2::Node;` below it — and a `//` inside a string literal ate
+/// the rest of its line. Both defeated the guard outright. Parsing removes the
+/// whole class: comments and string literals simply are not paths.
+///
+/// Doc comments survive parsing as `#[doc]` attributes and are still inspected,
+/// because a doctest inside one is compiled and run and is therefore real use.
 pub fn references_package_api_in_code(text: &str, path: &str) -> bool {
     if !path.ends_with(".rs") {
         return false;
     }
-    let mut stripped = String::with_capacity(text.len());
-    let mut in_block = false;
-    for line in text.lines() {
-        let mut rest = line;
-        loop {
-            if in_block {
-                match rest.find("*/") {
-                    Some(end) => {
-                        rest = &rest[end + 2..];
-                        in_block = false;
-                    }
-                    None => {
-                        rest = "";
-                        break;
-                    }
-                }
-            }
-            let block_start = rest.find("/*");
-            let line_start = rest.find("//");
-            match (block_start, line_start) {
-                (Some(b), Some(l)) if b < l => {
-                    stripped.push_str(&rest[..b]);
-                    rest = &rest[b + 2..];
-                    in_block = true;
-                }
-                (_, Some(l)) => {
-                    stripped.push_str(&rest[..l]);
-                    rest = "";
-                    break;
-                }
-                (Some(b), None) => {
-                    stripped.push_str(&rest[..b]);
-                    rest = &rest[b + 2..];
-                    in_block = true;
-                }
-                (None, None) => break,
+    let Ok(file) = syn::parse_file(text) else {
+        // Rust this crate cannot parse cannot be shown *not* to use the API.
+        // Erring toward "this is a consumer" forces a human classification
+        // rather than letting an unreadable file take a non-gating role.
+        return true;
+    };
+    let mut visitor = ApiUseVisitor { found: false };
+    syn::visit::visit_file(&mut visitor, &file);
+    visitor.found
+}
+
+/// Collects any path, `use` tree, or doc attribute that reaches the package.
+struct ApiUseVisitor {
+    found: bool,
+}
+
+impl ApiUseVisitor {
+    /// Match a rendered path. The trailing `::` lets a bare `use perl_ast_v2;`
+    /// satisfy the same pattern as a qualified `perl_ast_v2::Node`.
+    fn consider(&mut self, rendered: &str) {
+        if self.found {
+            return;
+        }
+        if API_USE_FORM.is_match(&format!("{rendered}::")) {
+            self.found = true;
+        }
+    }
+}
+
+impl<'ast> syn::visit::Visit<'ast> for ApiUseVisitor {
+    fn visit_path(&mut self, node: &'ast syn::Path) {
+        let rendered =
+            node.segments.iter().map(|s| s.ident.to_string()).collect::<Vec<_>>().join("::");
+        self.consider(&rendered);
+        syn::visit::visit_path(self, node);
+    }
+
+    fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
+        let mut paths = Vec::new();
+        flatten_use_tree(&node.tree, "", &mut paths);
+        for rendered in &paths {
+            self.consider(rendered);
+        }
+        syn::visit::visit_item_use(self, node);
+    }
+
+    fn visit_attribute(&mut self, node: &'ast syn::Attribute) {
+        // `///` and `//!` arrive here as `#[doc = "..."]`. A doctest in one is
+        // compiled and run, so its content counts as code.
+        if node.path().is_ident("doc")
+            && let syn::Meta::NameValue(pair) = &node.meta
+            && let syn::Expr::Lit(lit) = &pair.value
+            && let syn::Lit::Str(text) = &lit.lit
+            && API_USE_FORM.is_match(&text.value())
+        {
+            self.found = true;
+        }
+        syn::visit::visit_attribute(self, node);
+    }
+}
+
+/// Flatten a `use` tree into fully qualified path strings.
+fn flatten_use_tree(tree: &syn::UseTree, prefix: &str, out: &mut Vec<String>) {
+    let join = |prefix: &str, ident: String| {
+        if prefix.is_empty() { ident } else { format!("{prefix}::{ident}") }
+    };
+    match tree {
+        syn::UseTree::Path(node) => {
+            let next = join(prefix, node.ident.to_string());
+            flatten_use_tree(&node.tree, &next, out);
+        }
+        syn::UseTree::Name(node) => out.push(join(prefix, node.ident.to_string())),
+        syn::UseTree::Rename(node) => out.push(join(prefix, node.ident.to_string())),
+        syn::UseTree::Glob(_) => out.push(join(prefix, "*".to_string())),
+        syn::UseTree::Group(node) => {
+            for item in &node.items {
+                flatten_use_tree(item, prefix, out);
             }
         }
-        stripped.push_str(rest);
-        stripped.push('\n');
     }
-    API_USE_FORM.is_match(&stripped)
 }
 
 /// Roots scanned for the gating consumer denominator.

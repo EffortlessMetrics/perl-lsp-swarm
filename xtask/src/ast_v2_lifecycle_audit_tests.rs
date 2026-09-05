@@ -66,6 +66,38 @@ fn row_mut<'a>(value: &'a mut Value, key: &str, id_field: &str, id: &str) -> Res
 }
 
 // ---------------------------------------------------------------------------
+// The read-only classifier, owned in ONE place.
+//
+// The guard and its control previously each declared their own copy of the
+// marker list, so narrowing the guard would still have left the control passing
+// against its private copy — the guard could degrade with no failing test. That
+// is the same vacuity this suite exists to prevent, so the classification lives
+// here and both callers use it.
+// ---------------------------------------------------------------------------
+
+/// The only filesystem calls this module may make.
+const PERMITTED_FS_CALLS: [&str; 2] = ["fs::read_to_string", "fs::read("];
+
+/// Markers are path forms, not bare words: a bare `duct` matches "pro-duct-ion"
+/// and a bare `Command` matches ordinary prose.
+/// `std::fs as` and `std::process as` catch module aliasing: `use std::fs as F;`
+/// then `F::write(..)` produces no `fs::` substring anywhere and slipped past
+/// the first version of this allowlist.
+const MUTATION_MARKERS: [&str; 6] =
+    ["fs::", "process::", "Command::", "duct::", "std::fs as", "std::process as"];
+
+/// Whether one source line reaches a filesystem-mutating or process API.
+fn violates_read_only(line: &str) -> bool {
+    // The allowlist entries themselves appear in this file's prose, so only the
+    // code part of the line is classified.
+    let code = line.split("//").next().unwrap_or("");
+    MUTATION_MARKERS.iter().any(|marker| {
+        code.contains(marker)
+            && !(*marker == "fs::" && PERMITTED_FS_CALLS.iter().any(|ok| code.contains(ok)))
+    })
+}
+
+// ---------------------------------------------------------------------------
 // The committed artifact itself.
 // ---------------------------------------------------------------------------
 
@@ -75,7 +107,7 @@ fn the_committed_audit_contract_loads_and_reconciles() -> Result<()> {
     assert_eq!(audit.ruling(), "absorb");
     assert_eq!(audit.public_item_count(), 39);
     assert_eq!(audit.reexport_count(), 6);
-    assert!(audit.consumer_count() >= 30);
+    assert_eq!(audit.consumer_count(), 37);
     Ok(())
 }
 
@@ -934,6 +966,90 @@ fn breaking_changes_that_touch_no_field_still_move_the_shape() -> Result<()> {
 }
 
 #[test]
+fn generic_shapes_that_differ_only_in_bounds_or_defaults_do_not_collide() -> Result<()> {
+    // A second round of collisions, in the same class as the first four: each
+    // pair is a real breaking API difference that rendered identically once the
+    // obvious cases were fixed. Where-clause content was reduced to a predicate
+    // count, parameter defaults were dropped entirely, and lifetime outlives
+    // bounds were never read.
+    let shape_of = |src: &str| -> Result<String> {
+        derive_public_items(src)?
+            .iter()
+            .find(|item| item.kind == "struct")
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no struct derived from {src}"))
+    };
+
+    for (label, left, right) in [
+        (
+            "where-clause content",
+            "pub struct S<T> where T: Clone { pub a: T }",
+            "pub struct S<T> where T: Send { pub a: T }",
+        ),
+        ("type param default", "pub struct S<T> { pub a: T }", "pub struct S<T = u8> { pub a: T }"),
+        (
+            "type param default value",
+            "pub struct S<T = u8> { pub a: T }",
+            "pub struct S<T = i32> { pub a: T }",
+        ),
+        (
+            "const generic default",
+            "pub struct S<const N: usize = 4> { pub a: [u8; N] }",
+            "pub struct S<const N: usize = 8> { pub a: [u8; N] }",
+        ),
+        (
+            "lifetime outlives bound",
+            "pub struct S<'a, 'b> { pub a: &'a u8, pub b: &'b u8 }",
+            "pub struct S<'a: 'b, 'b> { pub a: &'a u8, pub b: &'b u8 }",
+        ),
+    ] {
+        assert_ne!(
+            shape_of(left)?,
+            shape_of(right)?,
+            "{label}: a breaking change left the shape identical"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_private_macro_is_skipped_but_an_exported_one_stops_the_audit() -> Result<()> {
+    // Macros and extern blocks carry no visibility, so the private-item skip
+    // cannot reach them. Bailing on all of them would block an ordinary
+    // refactor that adds an internal helper macro; bailing on none would let
+    // exported surface vanish. Privacy is decided per kind instead.
+    assert!(
+        derive_public_items("pub mod inner { macro_rules! helper { () => {} } }")?.is_empty(),
+        "a private helper macro must not fail the audit"
+    );
+    assert!(
+        derive_public_items("extern \"C\" { fn private_thing(); }")?.is_empty(),
+        "an extern block with no public items must not fail the audit"
+    );
+
+    match derive_public_items("#[macro_export]\nmacro_rules! shipped { () => {} }") {
+        Ok(items) => bail!("an exported macro is public API and must bail, got {items:?}"),
+        Err(err) => assert!(format!("{err:#}").contains("macro_export"), "{err:#}"),
+    }
+    match derive_public_items("extern \"C\" { pub fn shipped(); }") {
+        Ok(items) => bail!("an extern block with public items must bail, got {items:?}"),
+        Err(err) => assert!(format!("{err:#}").contains("extern block"), "{err:#}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn the_read_only_guard_catches_module_aliasing() -> Result<()> {
+    // `use std::fs as F;` then `F::write(..)` produces no `fs::` substring
+    // anywhere, so the first version of this allowlist passed it with zero
+    // offenders — the same substring fragility the allowlist was meant to end.
+    assert!(violates_read_only("use std::fs as F;"));
+    assert!(violates_read_only("use std::process as P;"));
+    assert!(!violates_read_only("let text = std::fs::read_to_string(path)?;"));
+    Ok(())
+}
+
+#[test]
 fn a_real_code_consumer_cannot_be_downgraded_to_a_prose_mention() -> Result<()> {
     // The inverse of falsifier 9, and the hole the first revision had: the
     // non-gating roles skip both the symbol requirement and the scan
@@ -953,9 +1069,27 @@ fn naming_the_crate_in_policy_data_is_still_allowed_to_be_inventory() -> Result<
     // references, not API use; forcing them to a gating role would be just as
     // wrong as letting a real consumer hide.
     assert!(!references_package_api_in_code("name = \"perl-ast-v2\"\n", "policy/x.toml"));
+    // A crate path used as sample data, and the same underscored path inside a
+    // string literal: both are strings, not paths, so neither is API use.
     assert!(!references_package_api_in_code(
-        "let p = \"crates/perl-ast-v2/src/lib.rs\";\n",
+        "fn fixture() { let p = \"crates/perl-ast-v2/src/lib.rs\"; let _ = p; }\n",
         "xtask/tests/fixture.rs"
+    ));
+    assert!(!references_package_api_in_code(
+        "fn fixture() { let s = r#\"use perl_ast_v2::Node;\"#; let _ = s; }\n",
+        "xtask/tests/fixture.rs"
+    ));
+    // A glob string contains `/*`. The stripper this replaced treated that as an
+    // unterminated block comment and discarded every line after it, including
+    // real code — the defect that defeated this guard outright.
+    assert!(references_package_api_in_code(
+        "fn f() { let g = \"crates/perl-ast-v2/*.rs\"; let _ = g; }\nuse perl_ast_v2::Node;\n",
+        "crates/a/src/lib.rs"
+    ));
+    // And a `//` inside a string literal must not eat the code beside it.
+    assert!(references_package_api_in_code(
+        "use perl_ast_v2::Node;\nfn f() { let s = \"// see docs\"; let _ = s; }\n",
+        "crates/a/src/lib.rs"
     ));
     assert!(!references_package_api_in_code("// see perl_ast_v2::Node\n", "crates/a/src/lib.rs"));
     // But real API use in code is caught, including through the unqualified
@@ -966,6 +1100,30 @@ fn naming_the_crate_in_policy_data_is_still_allowed_to_be_inventory() -> Result<
         "use perl_parser_core::DiagnosticId;\n",
         "crates/a/tests/t.rs"
     ));
+    Ok(())
+}
+
+#[test]
+fn a_doctest_counts_as_code_but_a_plain_comment_does_not() -> Result<()> {
+    // A doctest inside `///` or `//!` is compiled and run, so an API reference
+    // there is real use and must not be downgradable to a prose mention. An
+    // ordinary `//` comment genuinely is prose. `////` is an ordinary comment,
+    // not a doc comment, which is why the third slash is checked rather than
+    // assumed.
+    for (label, source, expected) in [
+        ("doctest in ///", "/// ```\n/// use perl_ast_v2::Node;\n/// ```\npub fn f() {}", true),
+        ("module doc //!", "//! use perl_ast::v2::NodeKind;", true),
+        ("plain // comment", "// use perl_ast_v2::Node;\npub fn f() {}", false),
+        ("//// ordinary comment", "//// use perl_ast_v2::Node;\npub fn f() {}", false),
+        ("block comment", "/* use perl_ast_v2::Node; */\npub fn f() {}", false),
+        ("real code", "use perl_ast_v2::Node;", true),
+    ] {
+        assert_eq!(
+            references_package_api_in_code(source, "crates/a/src/lib.rs"),
+            expected,
+            "{label} was classified wrongly"
+        );
+    }
     Ok(())
 }
 
@@ -1134,24 +1292,10 @@ fn no_migration_or_mutation_surface_is_added() -> Result<()> {
         repo_root_for_tests()?.join("xtask/src/ast_v2_lifecycle_audit.rs"),
     )?;
 
-    const PERMITTED_FS_CALLS: [&str; 2] = ["fs::read_to_string", "fs::read("];
-
     let mut offenders: Vec<String> = Vec::new();
     for (index, line) in source.lines().enumerate() {
-        // The allowlist entries themselves live in this file's prose; only
-        // inspect lines that look like code, not the doc comments describing it.
-        let code = line.split("//").next().unwrap_or("");
-        // Markers are path forms, not bare words. A bare `duct` matches
-        // "pro-duct-ion", and a bare `Command` would match ordinary prose —
-        // the same substring hazard the token scan guards against elsewhere.
-        for marker in ["fs::", "process::", "Command::", "duct::"] {
-            if !code.contains(marker) {
-                continue;
-            }
-            if marker == "fs::" && PERMITTED_FS_CALLS.iter().any(|ok| code.contains(ok)) {
-                continue;
-            }
-            offenders.push(format!("line {}: {}", index + 1, code.trim()));
+        if violates_read_only(line) {
+            offenders.push(format!("line {}: {}", index + 1, line.trim()));
         }
     }
 
@@ -1175,16 +1319,12 @@ fn the_read_only_allowlist_actually_rejects_the_patterns_a_denylist_missed() -> 
         "std::fs::OpenOptions::new().write(true).open(path)?;",
         "std::fs::copy(src, dst)?;",
         "use std::process::Command as Cmd;",
+        "use std::fs as F;",
+        "use std::process as P;",
         "let out = duct::cmd!(\"rm\", path).run()?;",
     ];
-    const PERMITTED_FS_CALLS: [&str; 2] = ["fs::read_to_string", "fs::read("];
     for line in evasions {
-        let code = line.split("//").next().unwrap_or("");
-        let flagged = ["fs::", "process::", "Command::", "duct::"].iter().any(|marker| {
-            code.contains(marker)
-                && !(*marker == "fs::" && PERMITTED_FS_CALLS.iter().any(|ok| code.contains(ok)))
-        });
-        assert!(flagged, "the read-only guard must reject `{line}`");
+        assert!(violates_read_only(line), "the read-only guard must reject `{line}`");
     }
     // And it must not flag the reads this module legitimately performs, nor
     // ordinary prose. A bare `duct` marker matches "pro-duct-ion", a word this
@@ -1196,12 +1336,7 @@ fn the_read_only_allowlist_actually_rejects_the_patterns_a_denylist_missed() -> 
         "\"production_implementation\",",
         "the production AST source declares no NodeKind enum",
     ] {
-        let flagged = ["fs::", "process::", "Command::", "duct::"].iter().any(|marker| {
-            permitted.contains(marker)
-                && !(*marker == "fs::"
-                    && PERMITTED_FS_CALLS.iter().any(|ok| permitted.contains(ok)))
-        });
-        assert!(!flagged, "the read-only guard must permit `{permitted}`");
+        assert!(!violates_read_only(permitted), "the read-only guard must permit `{permitted}`");
     }
     Ok(())
 }

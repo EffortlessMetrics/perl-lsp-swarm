@@ -1417,6 +1417,7 @@
     "Per-variant consumer attribution was resolved by alias-aware analysis of each consumer file, because v1 and v2 share 16 variant names. That analysis is authored input to this manifest, not a check the loader re-runs; the loader verifies that every consumer id resolves and that every named production counterpart still exists.",
     "External evidence is a point-in-time registry observation from 2026-09-05. It ages, and the loader cannot refresh it.",
     "This audit does not claim v2 is parity-complete, does not move source, does not change AST semantics, and does not authorize removing the published package.",
+    "The role-downgrade check classifies a doc comment (`///`, `//!`) as code, because a doctest inside one is compiled and run and is therefore real API use. Two residual gaps remain: `//` inside a string literal is still treated as a comment marker and truncates the rest of that line, and a doctest that reaches the package only through a name the API pattern does not match would not be seen. No non-gating Rust consumer currently carries a doc-comment API reference, so neither gap is live, but a future consumer row must not treat this check as reliable doctest detection.",
     "The `equivalent` relation is asserted at field level only \u2014 same field names, same field types, and no child Node through which the differing node contract could leak. It never claims the two enclosing Node contracts are interchangeable."
   ]
 }
