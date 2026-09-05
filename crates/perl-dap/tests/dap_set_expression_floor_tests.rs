@@ -212,9 +212,8 @@ fn sibling_capability_cells_are_independent() -> Result<(), Box<dyn std::error::
     let mut adapter = create_test_adapter();
     let caps = extract_initialize_response(adapter.handle_request(1, "initialize", None))?;
 
-    assert_eq!(
-        capability(&caps, "supportsSetVariable")?,
-        false,
+    assert!(
+        !capability(&caps, "supportsSetVariable")?,
         "supportsSetVariable carried a catalog-driven cell when #9568 landed; #8354 later \
          floored it on the exact-mutation authority, so it must now read false"
     );
