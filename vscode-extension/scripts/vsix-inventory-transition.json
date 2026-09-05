@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14447,
-  "reason": "Makes VS Code resource configuration folder-owned and transport-coherent (#14447). The candidate adds src/configurationPull.ts (the workspace/configuration middleware) and src/configurationOwnership.ts (the checked setting ownership table), growing the bundled out/extension.js from 1605380 to 1615152 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
-  "base_baseline_file_sha256": "c334509714d671bc93c27387a153089cc133eae98f5d516bcac2f4a77ae898fd",
-  "candidate_baseline_file_sha256": "c10baf7bd1d62390aeacebfb54510dddee90e4a6ddc1f538533b3b834537c56a",
-  "base_inventory_sha256": "b6001a5b7432633f4b24a36899243f507adc4492ff35a6877f6d5b2eb63e1874",
-  "candidate_inventory_sha256": "4ff8fc287eaa5524348eb4afa96f6a8923ba1c9cd183ff5d3094f1b962cac6a3"
+  "owner_issue": 14155,
+  "reason": "Refreshes a stale size-only row. out/extension.js on current main packages at 1640957 bytes where the baseline landed in #14719 recorded 1636669; extension source landed after that baseline (#14474, #14624, #14755, #14760) and the smoke's transition instrument now fails every unrelated PR with 'total bytes grew from 1814627 to 1818915'. Measured from a clean npm ci, npm run package, and the transition instrument's own archive projection at current main. The 29-file package is unchanged: no file additions, removals, or permission loosening.",
+  "base_baseline_file_sha256": "a966dac61b30ed8f950dc9910b5dfaf354ff131cf797dcd7ea24f6b1fa756c2a",
+  "candidate_baseline_file_sha256": "bc56a9d640213d509add8c24f807a35efdce01fccce5fd9c6f2b0a380f7441fd",
+  "base_inventory_sha256": "71c92a4b4282c160e4db6417312fa3622a9ba9a8266bce7fbe6172b9ad5004f1",
+  "candidate_inventory_sha256": "114b0ad804f9267deabbdc0bcc0a1ba92d7436c207447727c82f287077a45d8d"
 }

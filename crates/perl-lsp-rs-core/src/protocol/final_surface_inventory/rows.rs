@@ -780,7 +780,7 @@ fn registration_rows() -> Vec<SurfaceRow> {
             ],
             &["AdvertisedFeatures.workspace_symbol", "config runtime_tuning.file_watchers"],
             Disposition::Dynamic,
-            "features.toml#lsp.did_change_watched_files; lsp_registration_tests.rs; RelativePattern watcher globs are the LSP 3.17 watcher surface (#8897) with string-glob fallback (**/*.pl,*.pm,*.t,*.psgi); document-filter relative patterns stay unsupported",
+            "features.toml#lsp.did_change_watched_files; lsp_registration_tests.rs; single catch-all glob (**/*) on the RelativePattern watcher surface with string-glob fallback, handler-side Perl classification (#13308)",
         ),
         registration(
             "reg.perl-inlineCompletion",
