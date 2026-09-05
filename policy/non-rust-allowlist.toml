@@ -1907,6 +1907,21 @@ created = "2026-08-24"
 review_after = "2026-09-24"
 
 [[allow]]
+id = "non-rust-neovim-activation-root-envelope-fixtures"
+glob = "xtask/tests/fixtures/neovim_activation_root_envelopes/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "devex/editor-hosts"
+reason = "Verbatim output of an actual Neovim 0.11.3 + perllsp activation/root run (#10502), kept as the subject the envelope validator judges. It pins the falsifiers that stop a wrong-root or override-laundered result from looking green: a row proven on `root_dir` equality with no content marker, an isolation row naming no rejected wrong-root fact, a resolved target outside the selected root, and an absolute path entering a durable envelope."
+covered_by = [
+  "cargo test -p xtask --locked --test neovim_activation_root_envelope",
+]
+created = "2026-09-05"
+review_after = "2026-10-05"
+
+[[allow]]
 id = "non-rust-dependency-hygiene-machete-fixtures"
 glob = "xtask/tests/fixtures/dependency-hygiene/*.json"
 kind = "test_fixture"
