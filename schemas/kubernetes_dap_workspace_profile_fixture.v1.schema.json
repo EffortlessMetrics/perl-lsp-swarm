@@ -361,12 +361,16 @@
           "type": "boolean"
         },
         "uid": {
+          "description": "Bounded to u32 because the validator parses these as u32: a schema-valid value the parser cannot represent would fail deserialization instead of receiving a typed admission result.",
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 4294967295
         },
         "gid": {
+          "description": "Bounded to u32 because the validator parses these as u32: a schema-valid value the parser cannot represent would fail deserialization instead of receiving a typed admission result.",
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 4294967295
         },
         "service_account_token": {
           "$ref": "#/$defs/service_account_token"

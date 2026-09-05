@@ -48,13 +48,35 @@ const REQUIRED_TOPOLOGY_CODES: &[RejectionReason] = &[
     RejectionReason::ImageIdentityNotExact,
 ];
 
-/// Minimum number of security requirements; #10112 lists eight ownership and
-/// disposition facts that must stay explicit.
-const MINIMUM_SECURITY_REQUIREMENTS: usize = 8;
+/// The eight ownership and disposition facts #10112 requires to stay explicit.
+///
+/// This was a count, which is not a ratchet: swapping a required requirement
+/// for an unrelated one kept the length and the gate stayed green. Guarantees
+/// are pinned by identity.
+const REQUIRED_SECURITY_REQUIREMENTS: &[&str] = &[
+    "parent_owned_stdio_no_shell_no_tty",
+    "no_kubernetes_credentials_to_adapter_or_debuggee",
+    "service_account_token_absent_or_unused",
+    "no_network_listener_created_for_dap",
+    "explicit_uid_gid_and_path_ownership",
+    "process_tree_and_pod_cleanup_owner",
+    "secrets_redacted_from_retained_receipts",
+    "workspace_data_cannot_select_adapter_or_cluster_target",
+];
 
-/// Number of DAP cells in the initial admitted family; #10112 enumerates this
-/// family explicitly and the projection may not shrink silently.
-const INITIAL_ADMITTED_FAMILY_SIZE: usize = 8;
+/// The initial admitted DAP family, by cell id. #10112 enumerates it
+/// explicitly, and — as with the security requirements — a count let a required
+/// cell be replaced rather than only removed.
+const INITIAL_ADMITTED_CELLS: &[&str] = &[
+    "initialize",
+    "launch",
+    "configurationDone",
+    "source_breakpoint_install_exact_stop",
+    "threads_stack_source",
+    "bounded_current_frame_scopes_variables",
+    "one_continue_step",
+    "termination_disconnect_cleanup",
+];
 
 #[derive(Debug, Parser)]
 #[command(name = "kubernetes-dap-profiles")]
@@ -398,16 +420,6 @@ fn validate_issue_ref(name: &str, value: &str) -> Result<()> {
 }
 
 /// Every required fact an admitted-profile row may declare, bound to the typed
-/// rejection this validator actually emits when the fact is missing or false.
-///
-/// The contract's own header claims each row is "mechanically enforced by
-/// `--check`". Before this table that claim was prose: `required_facts` was
-/// checked for name shape and duplicates only, so a declared fact could inflate
-/// the generated coverage story without any admission consequence — which is
-/// how `adapter_binary_path_version_hash_target` sat unenforced. A contract
-/// that declares a fact absent from this table is now rejected, so the
-/// advertised coverage cannot outrun the gate again.
-/// Every required fact an admitted-profile row may declare, bound to the typed
 /// rejections this validator actually emits when the fact is missing or false.
 ///
 /// The contract's own header claims each row is "mechanically enforced by
@@ -542,7 +554,9 @@ impl ProfileContract {
         toml::from_str(source).context("parse kubernetes DAP workspace-profile contract")
     }
 
-    fn validate(&self) -> Result<()> {
+    /// `evidence_root` is the repository root that DAP cell evidence paths are
+    /// resolved against, so a fabricated reference cannot pass as support.
+    fn validate(&self, evidence_root: &Path) -> Result<()> {
         if self.schema_version != CONTRACT_SCHEMA_VERSION {
             bail!(
                 "unsupported profile contract schema {:?}; expected {:?}",
@@ -677,7 +691,6 @@ impl ProfileContract {
         }
 
         let mut cell_ids = BTreeMap::new();
-        let mut initial_admitted = 0usize;
         for cell in &self.dap_cells {
             if !is_non_empty(&cell.cell_id) {
                 bail!("dap cell rows need non-empty cell ids");
@@ -687,13 +700,55 @@ impl ProfileContract {
             }
             match cell.family {
                 CellFamily::InitialAdmitted => {
-                    initial_admitted += 1;
                     if cell.state != CellState::EvidenceBacked {
                         bail!("initial admitted cell {:?} must be evidence backed", cell.cell_id);
                     }
-                    if cell.evidence.is_empty() || cell.evidence.iter().any(String::is_empty) {
+                    if cell.evidence.is_empty() {
                         bail!(
                             "initial admitted cell {:?} must reference current exact evidence",
+                            cell.cell_id
+                        );
+                    }
+                    // Arbitrary non-empty text is not evidence. A cell may
+                    // cross-reference an issue, but it may not be published
+                    // `evidence_backed` on issue numbers or prose alone: at
+                    // least one entry must name a proof file that exists.
+                    let mut proof_files = 0usize;
+                    for reference in &cell.evidence {
+                        if reference.trim().is_empty() {
+                            bail!(
+                                "initial admitted cell {:?} has a blank evidence entry",
+                                cell.cell_id
+                            );
+                        }
+                        if reference.starts_with('#') {
+                            validate_issue_ref(
+                                &format!("dap cell {} evidence", cell.cell_id),
+                                reference,
+                            )?;
+                            continue;
+                        }
+                        if !is_normalized_relative_reference(reference) {
+                            bail!(
+                                "initial admitted cell {:?} evidence {reference:?} is neither a \
+                                 repository-relative proof path nor an issue reference",
+                                cell.cell_id
+                            );
+                        }
+                        if !evidence_root.join(reference).is_file() {
+                            bail!(
+                                "initial admitted cell {:?} references evidence {reference:?} that \
+                                 does not exist under {}",
+                                cell.cell_id,
+                                evidence_root.display()
+                            );
+                        }
+                        proof_files += 1;
+                    }
+                    if proof_files == 0 {
+                        bail!(
+                            "initial admitted cell {:?} is evidence backed by issue references \
+                             alone; at least one entry must name an existing proof file",
                             cell.cell_id
                         );
                     }
@@ -714,10 +769,19 @@ impl ProfileContract {
                 }
             }
         }
-        if initial_admitted < INITIAL_ADMITTED_FAMILY_SIZE {
-            bail!(
-                "initial admitted family shrank to {initial_admitted} cells; the #10112 family has {INITIAL_ADMITTED_FAMILY_SIZE}"
-            );
+        let admitted_ids: Vec<&str> = self
+            .dap_cells
+            .iter()
+            .filter(|cell| cell.family == CellFamily::InitialAdmitted)
+            .map(|cell| cell.cell_id.as_str())
+            .collect();
+        for required in INITIAL_ADMITTED_CELLS {
+            if !admitted_ids.contains(required) {
+                bail!(
+                    "initial admitted family lost cell {required:?}; the #10112 family is pinned by \
+                     id, not by count"
+                );
+            }
         }
         let has_optional_ceiling =
             self.dap_cells.iter().any(|cell| cell.family == CellFamily::Optional);
@@ -725,10 +789,17 @@ impl ProfileContract {
             bail!("projection must keep an explicit not_proven/unsupported optional ceiling");
         }
 
-        if self.security_requirements.len() < MINIMUM_SECURITY_REQUIREMENTS {
-            bail!(
-                "security requirements fell below the {MINIMUM_SECURITY_REQUIREMENTS} explicit ownership facts required by #10112"
-            );
+        for required in REQUIRED_SECURITY_REQUIREMENTS {
+            if !self
+                .security_requirements
+                .iter()
+                .any(|requirement| requirement.requirement_id == *required)
+            {
+                bail!(
+                    "security requirement {required:?} is missing; #10112's ownership facts are \
+                     pinned by id, not by count"
+                );
+            }
         }
         let mut requirement_ids = BTreeMap::new();
         for requirement in &self.security_requirements {
@@ -1066,6 +1137,18 @@ fn is_normalized_workspace_path(value: &str) -> bool {
         && (value == "/" || !value.ends_with('/'))
         && !value.contains("//")
         && value.split('/').skip(1).all(|component| component != "." && component != "..")
+}
+
+/// A repository-relative proof reference: no leading slash, no `.`/`..`
+/// components, no backslashes, and a real path shape.
+fn is_normalized_relative_reference(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('/')
+        && !value.contains('\\')
+        && !value.contains("//")
+        && value
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
 fn is_contained_path(root: &str, path: &str) -> bool {
@@ -1455,6 +1538,23 @@ impl ProfileDocument {
                 (artifact.target_arch.as_str(), artifact.os.as_str(), artifact.libc.as_str())
             }
         };
+        // Equality between two blank values is not an identity. Every compared
+        // platform component must be named on both sides before comparison.
+        for (label, value) in [
+            ("subject architecture", subject_architecture),
+            ("subject os", subject_os),
+            ("subject libc", subject_libc),
+            ("loader architecture", self.loader.architecture.as_str()),
+            ("loader os", self.loader.os.as_str()),
+            ("loader libc", self.loader.libc.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return rejection(
+                    RejectionReason::LoaderContractMismatch,
+                    why(format!("{label} is not named; blank platform values match vacuously")),
+                );
+            }
+        }
         if subject_architecture != self.loader.architecture {
             return rejection(
                 RejectionReason::LoaderContractMismatch,
@@ -1813,7 +1913,6 @@ fn outcome_label(
 }
 
 fn render_status(contract: &ProfileContract, fixtures: &[FixtureDocument]) -> Result<String> {
-    contract.validate()?;
     let mut output = String::new();
 
     line(&mut output, "# Kubernetes DAP Workspace Profiles")?;
@@ -2140,7 +2239,8 @@ fn run(cli: &Cli) -> Result<()> {
     let contract_source = fs::read_to_string(&cli.contract)
         .with_context(|| format!("read contract {}", cli.contract.display()))?;
     let contract = ProfileContract::from_str(&contract_source)?;
-    contract.validate()?;
+    let evidence_root = std::env::current_dir().context("resolve repository root for evidence")?;
+    contract.validate(&evidence_root)?;
     let schemas = validate_published_schemas(&cli.profile_schema, &cli.fixture_schema)?;
     first_schema_error(
         &schemas.contract,
@@ -2215,7 +2315,7 @@ mod tests {
 
     fn committed_contract() -> Result<ProfileContract> {
         let contract = ProfileContract::from_str(COMMITTED_CONTRACT)?;
-        contract.validate()?;
+        contract.validate(repository_root()?)?;
         Ok(contract)
     }
 
@@ -2543,13 +2643,13 @@ mod tests {
     fn contract_header_invariants_are_load_bearing() -> Result<()> {
         let mut contract = committed_contract()?;
         contract.transport_boundary.tty = true;
-        assert!(contract.validate().is_err());
+        assert!(contract.validate(repository_root()?).is_err());
         contract.transport_boundary.tty = false;
         contract.source_namespace.rewrite_authority = "#7667-rewrite-table".into();
-        assert!(contract.validate().is_err());
+        assert!(contract.validate(repository_root()?).is_err());
         contract.source_namespace.rewrite_authority = "none".into();
         contract.complete = true;
-        assert!(contract.validate().is_err());
+        assert!(contract.validate(repository_root()?).is_err());
         Ok(())
     }
 
@@ -2644,7 +2744,7 @@ mod tests {
         let mut contract = committed_contract()?;
         contract.admitted_profiles[0].required_facts.push("unenforced_new_fact".into());
         assert!(
-            contract.validate().is_err(),
+            contract.validate(repository_root()?).is_err(),
             "a declared fact with no admission consequence must fail the contract"
         );
         Ok(())
@@ -2799,7 +2899,7 @@ mod tests {
         assert_eq!(row.install_mode, InstallMode::ProjectImage);
         row.required_facts.push("executable_mode".into());
         assert!(
-            contract.validate().is_err(),
+            contract.validate(repository_root()?).is_err(),
             "a project_image row may not declare an injected-tool-only fact"
         );
         Ok(())
@@ -2810,7 +2910,7 @@ mod tests {
         let mut contract = committed_contract()?;
         contract.admitted_profiles[0].required_facts.retain(|fact| fact != "no_network_listener");
         assert!(
-            contract.validate().is_err(),
+            contract.validate(repository_root()?).is_err(),
             "a row may not drop a fact its own admission path enforces"
         );
         Ok(())
@@ -2874,5 +2974,106 @@ mod tests {
         let adapter = profile.adapter.as_mut().context("injected fixture must name its adapter")?;
         adapter.hash = format!("sha256:{}", "c".repeat(64));
         assert_rejected_with(&profile, RejectionReason::AdapterIdentityIncomplete)
+    }
+
+    // -----------------------------------------------------------------------
+    // Count ratchets are not ratchets: a required row could be replaced rather
+    // than only removed, and the length check stayed satisfied.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn replacing_a_required_dap_cell_is_rejected() -> Result<()> {
+        let mut contract = committed_contract()?;
+        let cell = contract
+            .dap_cells
+            .iter_mut()
+            .find(|cell| cell.cell_id == "one_continue_step")
+            .context("contract must carry the one_continue_step cell")?;
+        cell.cell_id = "one_continue_step_v2".into();
+        assert!(
+            contract.validate(repository_root()?).is_err(),
+            "a required cell may not be swapped for an unrelated one at the same count"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replacing_a_required_security_requirement_is_rejected() -> Result<()> {
+        let mut contract = committed_contract()?;
+        let requirement = contract
+            .security_requirements
+            .iter_mut()
+            .find(|requirement| requirement.requirement_id == "process_tree_and_pod_cleanup_owner")
+            .context("contract must carry the cleanup-owner requirement")?;
+        requirement.requirement_id = "some_other_requirement".into();
+        assert!(contract.validate(repository_root()?).is_err());
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Evidence is a proof file, not a string.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn contract_evidence_must_name_files_that_exist() -> Result<()> {
+        for fabricated in ["proven by inspection", "crates/perl-dap/tests/does_not_exist.rs"] {
+            let mut contract = committed_contract()?;
+            let cell = contract
+                .dap_cells
+                .iter_mut()
+                .find(|cell| cell.cell_id == "initialize")
+                .context("contract must carry the initialize cell")?;
+            cell.evidence = vec![fabricated.into()];
+            assert!(
+                contract.validate(repository_root()?).is_err(),
+                "evidence {fabricated:?} must not establish support"
+            );
+        }
+        Ok(())
+    }
+
+    /// An issue may be cross-referenced, but it cannot be the whole support.
+    #[test]
+    fn issue_references_alone_do_not_back_a_cell() -> Result<()> {
+        let mut contract = committed_contract()?;
+        let cell = contract
+            .dap_cells
+            .iter_mut()
+            .find(|cell| cell.cell_id == "threads_stack_source")
+            .context("contract must carry the threads_stack_source cell")?;
+        cell.evidence = vec!["#6684".into()];
+        assert!(contract.validate(repository_root()?).is_err());
+        Ok(())
+    }
+
+    /// Two blank values are equal, which is why equality alone never
+    /// established a platform identity.
+    #[test]
+    fn blank_platform_identities_do_not_match_vacuously() -> Result<()> {
+        let fixtures = committed_fixtures()?;
+        let image = find_fixture(&fixtures, POSITIVE_PROJECT_IMAGE)?;
+        let injected = find_fixture(&fixtures, POSITIVE_INJECTED_TOOL)?;
+
+        let mut blank_image_os = image.profile.clone();
+        blank_image_os.loader.os = String::new();
+        if let Some(identity) = blank_image_os.image.as_mut() {
+            identity.os = String::new();
+        }
+        assert_rejected_with(&blank_image_os, RejectionReason::LoaderContractMismatch)?;
+
+        for blank_arch in [true, false] {
+            let mut profile = injected.profile.clone();
+            let artifact =
+                profile.artifact.as_mut().context("injected fixture must name its artifact")?;
+            if blank_arch {
+                artifact.target_arch = String::new();
+                profile.loader.architecture = String::new();
+            } else {
+                artifact.os = "   ".into();
+                profile.loader.os = "   ".into();
+            }
+            assert_rejected_with(&profile, RejectionReason::LoaderContractMismatch)?;
+        }
+        Ok(())
     }
 }
