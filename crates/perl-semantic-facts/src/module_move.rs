@@ -902,8 +902,18 @@ fn identity_sites(text: &str, identity: &str) -> Vec<usize> {
     // deliberately stricter than `is_perl_identifier_char` in `perl-parser`,
     // which is ASCII-only — refusing to rename is the safe direction for a
     // planner that rewrites source.
-    let boundary = |character: Option<char>| {
-        character.is_none_or(|value| !(value.is_alphanumeric() || value == '_'))
+    let boundary = |character: Option<char>| match character {
+        None => true,
+        Some(value) if value.is_ascii() => !(value.is_ascii_alphanumeric() || value == '_'),
+        // A non-ASCII neighbour may be a word character, a combining mark, a
+        // variation selector, or a joiner — every one of which continues a
+        // Perl identifier under `use utf8`, and `char::is_alphanumeric` is
+        // false for marks and selectors, so it cannot separate them from
+        // punctuation. Classifying them exactly needs Unicode tables this
+        // crate deliberately does not depend on, so an unclassifiable
+        // neighbour is refused rather than guessed: the planner renames only
+        // where it can prove the boundary.
+        Some(_) => false,
     };
     text.match_indices(identity)
         .filter(|(start, _)| {
@@ -1868,14 +1878,52 @@ mod tests {
         }
     }
 
-    /// Non-word Unicode next to the identity is still a boundary, so the rule
-    /// cannot over-reject legitimate occurrences.
+    /// ASCII punctuation and whitespace are still boundaries, so the rule
+    /// cannot over-reject the occurrences a populator actually produces.
     #[test]
-    fn non_word_unicode_remains_a_boundary() {
-        for text in ["use \u{ab}Old::Name\u{bb}", "use \u{2014}Old::Name"] {
+    fn ascii_punctuation_remains_a_boundary() {
+        for text in ["use Old::Name;", "use Old::Name qw(run)", "(Old::Name)", "\"Old::Name\""] {
             let item = occurrence_at(text, 40, 4);
             let plan = plan(vec![declaration(), item], source_only_snapshot());
             assert!(plan.is_complete(), "{text} was rejected: {:?}", plan.blockers);
+        }
+    }
+
+    /// A single-quoted `'Old::Name'` is refused, and that is the accepted cost
+    /// of honouring Perl's legacy `'` package separator: the same byte is both
+    /// a string delimiter and an identifier continuation, and this contract
+    /// cannot tell them apart without the parse. Refusing is the safe reading.
+    #[test]
+    fn an_apostrophe_delimited_occurrence_is_refused_rather_than_guessed() {
+        let item = occurrence_at("'Old::Name'", 40, 4);
+        let plan = plan(vec![declaration(), item], source_only_snapshot());
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::UnsupportedProjection));
+        assert!(plan.edits.iter().all(|edit| edit.occurrence_id != OccurrenceId(4)));
+    }
+
+    /// A neighbour this contract cannot classify is refused, never guessed.
+    /// `char::is_alphanumeric` is false for combining marks and variation
+    /// selectors, so it could not tell them from punctuation — and each one
+    /// continues the identifier, making the shorter prefix look complete.
+    #[test]
+    fn an_unclassifiable_unicode_neighbour_is_refused() {
+        for (label, text) in [
+            ("combining acute", "use Old::Name\u{301}"),
+            ("variation selector", "use Old::Name\u{fe0f}"),
+            ("zero-width joiner", "use Old::Name\u{200d}x"),
+            ("guillemet", "use \u{ab}Old::Name\u{bb}"),
+            ("em dash", "use \u{2014}Old::Name"),
+        ] {
+            let item = occurrence_at(text, 40, 4);
+            let plan = plan(vec![declaration(), item], source_only_snapshot());
+            assert!(
+                plan.blockers.contains(&ModuleMoveBlocker::UnsupportedProjection),
+                "{label} was accepted as a clean boundary"
+            );
+            assert!(
+                plan.edits.iter().all(|edit| edit.occurrence_id != OccurrenceId(4)),
+                "{label} produced an edit"
+            );
         }
     }
 
