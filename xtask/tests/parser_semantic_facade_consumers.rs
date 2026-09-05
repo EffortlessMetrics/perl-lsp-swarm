@@ -30,9 +30,14 @@
 //! Normalization elides string literals as well as comments, so the guards'
 //! own detector fixtures do not read as violations and no source needs a
 //! whole-file exclusion: a real facade import in a fixture-bearing file is
-//! executable code and is still reported. Character literals are deliberately
-//! not tracked — a forbidden token cannot fit in one, and `'` is ambiguous
-//! with lifetimes.
+//! executable code and is still reported. Character literals are tracked only
+//! far enough to keep `'"'` from opening a phantom string; a forbidden token
+//! cannot fit in one, and a `'` that does not close after a single character
+//! is a lifetime and is left alone.
+//!
+//! Crate renames are resolved first: `use perl_parser as pp;` makes `pp` an
+//! additional path head for that source, and violations are always reported
+//! under the crate's real name so a rename cannot change the message.
 
 use std::{
     fs,
@@ -136,6 +141,10 @@ fn code_without_comments(source: &str) -> String {
             block_depth -= 1;
             index += 2;
         } else if block_depth == 0
+            && let Some(next) = char_literal_end(&chars, index)
+        {
+            index = next;
+        } else if block_depth == 0
             && let Some(next) = string_literal_end(&chars, index)
         {
             index = next;
@@ -147,6 +156,31 @@ fn code_without_comments(source: &str) -> String {
         }
     }
     out
+}
+
+/// If a character literal closes after exactly one character at `index`,
+/// return the index just past it. A `'` that does not close that way is a
+/// lifetime and is left alone.
+///
+/// This exists for one case: `'"'`. Without it that quote opens a phantom
+/// string literal and elides every import until the next `"` in the file --
+/// the unsafe direction for a recurrence guard. No forbidden token fits in a
+/// character literal, so nothing else needs tracking here.
+fn char_literal_end(chars: &[char], index: usize) -> Option<usize> {
+    if chars[index] != '\'' {
+        return None;
+    }
+    // A `'` immediately after an identifier character is a label or a lifetime
+    // bound, never a literal opener.
+    if index > 0 && (chars[index - 1].is_ascii_alphanumeric() || chars[index - 1] == '_') {
+        return None;
+    }
+    let body_end = match chars.get(index + 1) {
+        Some('\\') => index + 3,
+        Some(_) => index + 2,
+        None => return None,
+    };
+    (chars.get(body_end) == Some(&'\'')).then_some(body_end + 1)
 }
 
 /// If a string literal opens at `index`, return the index just past its close.
@@ -320,9 +354,23 @@ fn scan_brace_group(
 }
 
 fn forbidden_facade_references(code: &str) -> Vec<String> {
+    let mut hits: Vec<String> = Vec::new();
+    for head in facade_heads(code) {
+        collect_references_for_head(code, &head, &mut hits);
+    }
+    hits.sort();
+    hits.dedup();
+    hits
+}
+
+/// Every path head that resolves to `perl_parser` in this source: the crate
+/// name itself, plus any `use perl_parser as alias;` rename. Without the
+/// aliases, `use perl_parser as pp;` followed by `pp::semantic::_` reaches
+/// semantic authority with the guard silent.
+fn facade_heads(code: &str) -> Vec<String> {
     let chars: Vec<char> = code.chars().collect();
     let head: Vec<char> = FACADE_HEAD.chars().collect();
-    let mut hits: Vec<String> = Vec::new();
+    let mut heads = vec![FACADE_HEAD.to_string()];
     let mut index = 0;
     while index + head.len() <= chars.len() {
         if chars[index..index + head.len()] != head[..]
@@ -332,18 +380,44 @@ fn forbidden_facade_references(code: &str) -> Vec<String> {
             continue;
         }
         let after_head = index + head.len();
-        // A bare `perl_parser` with no `::` is the crate name, not a path into
-        // it, and is never a violation.
+        index = after_head;
+        let as_start = skip_whitespace(&chars, after_head);
+        let (keyword, keyword_end) = read_identifier(&chars, as_start, chars.len());
+        if keyword != "as" {
+            continue;
+        }
+        let alias_start = skip_whitespace(&chars, keyword_end);
+        let (alias, _) = read_identifier(&chars, alias_start, chars.len());
+        if !alias.is_empty() && alias != "_" && !heads.contains(&alias) {
+            heads.push(alias);
+        }
+    }
+    heads
+}
+
+/// Scan one source for chains rooted at `head_name`. Hits are always recorded
+/// under the crate's real name, so a rename cannot change what the failure
+/// message says was violated.
+fn collect_references_for_head(code: &str, head_name: &str, hits: &mut Vec<String>) {
+    let chars: Vec<char> = code.chars().collect();
+    let head: Vec<char> = head_name.chars().collect();
+    let mut index = 0;
+    while index + head.len() <= chars.len() {
+        if chars[index..index + head.len()] != head[..]
+            || index > 0 && (chars[index - 1].is_ascii_alphanumeric() || chars[index - 1] == '_')
+        {
+            index += 1;
+            continue;
+        }
+        let after_head = index + head.len();
+        // A bare crate reference with no `::` is the crate name, not a path
+        // into it, and is never a violation.
         let Some(chain_start) = skip_path_separator(&chars, after_head) else {
             index = after_head;
             continue;
         };
-        index =
-            record_path_chain(&chars, chain_start, chars.len(), &mut hits, true).max(after_head);
+        index = record_path_chain(&chars, chain_start, chars.len(), hits, true).max(after_head);
     }
-    hits.sort();
-    hits.dedup();
-    hits
 }
 
 fn collect_rs_files(
@@ -412,6 +486,56 @@ fn unregistered_facade_imports() -> (Vec<(String, String)>, Vec<String>) {
         }
     }
     (violations, failures)
+}
+
+#[test]
+fn crate_renames_are_resolved_before_matching() {
+    let aliased = "use perl_parser as pp;\nuse pp::semantic::SemanticAnalyzer;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(aliased)),
+        vec!["perl_parser::semantic".to_string()]
+    );
+
+    // A rename combined with a wrapper chain and a brace group.
+    let aliased_chain = "use perl_parser as pp;\nuse pp::wrapper::{declaration, symbol};\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(aliased_chain)),
+        vec!["perl_parser::declaration".to_string(), "perl_parser::symbol".to_string(),]
+    );
+
+    // The rename only exists where it is declared: an unrelated crate keeping
+    // the same short name must not be reported.
+    let unrelated = "use perl_semantic_analyzer as pp;\nuse pp::semantic::SemanticAnalyzer;\n";
+    assert!(forbidden_facade_references(&code_without_comments(unrelated)).is_empty());
+
+    // Parser authority still passes under a rename.
+    let allowed = "use perl_parser as pp;\nuse pp::Parser;\nuse pp::ast::Node;\n";
+    assert!(forbidden_facade_references(&code_without_comments(allowed)).is_empty());
+}
+
+#[test]
+fn a_quote_character_literal_does_not_open_a_phantom_string() {
+    // `'"'` is a character literal, not a string opener. Treating its quote as
+    // one elides every import until the next `"` in the file.
+    let with_quote_char = "let quote = '\"';\nuse perl_parser::declaration::ParentMap;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(with_quote_char)),
+        vec!["perl_parser::declaration".to_string()]
+    );
+
+    let escaped = "let quote = '\\\"';\nuse perl_parser::symbol::SymbolTable;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(escaped)),
+        vec!["perl_parser::symbol".to_string()]
+    );
+
+    // A lifetime is not a literal and must not consume what follows.
+    let lifetime = "fn take<'a>(input: &'a str) -> &'a str { input }\n\
+                    use perl_parser::scope_analyzer::ScopeAnalyzer;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(lifetime)),
+        vec!["perl_parser::scope_analyzer".to_string()]
+    );
 }
 
 #[test]
