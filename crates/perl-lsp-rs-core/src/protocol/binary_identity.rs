@@ -61,8 +61,14 @@ pub enum BinaryCompatibilityState {
 macro_rules! binary_compatibility_reasons {
     ($($(#[$reason_doc:meta])* $reason:ident),+ $(,)?) => {
         /// Stable machine reasons contributing to a compatibility verdict.
+        ///
+        /// `repr(u8)` is load-bearing: `deduplicate` orders reasons by
+        /// `*value as u8`, and the reason union is serialized in that order, so
+        /// the discriminants must be fixed by the declaration list above rather
+        /// than assigned by the compiler.
         #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
         #[serde(rename_all = "snake_case")]
+        #[repr(u8)]
         pub enum BinaryCompatibilityReason {
             $($(#[$reason_doc])* $reason,)+
         }
@@ -251,6 +257,10 @@ pub struct BinaryIdentityResponseV1 {
     /// Compatibility verdict.
     pub compatibility: BinaryCompatibilityState,
     /// Stable reasons contributing to the verdict.
+    ///
+    /// Always the union of every co-occurring reason across the mismatch,
+    /// not-proven, and partial buckets; only `compatibility` is
+    /// precedence-ordered and single-valued. (#10184)
     pub reasons: Vec<BinaryCompatibilityReason>,
     /// Whether no field had to be removed or replaced by the copy-safe projection.
     pub redacted: bool,
@@ -499,10 +509,24 @@ fn evaluate_compatibility(
     deduplicate(&mut not_proven);
     deduplicate(&mut partial);
     if !mismatch.is_empty() {
-        return (BinaryCompatibilityState::Mismatch, mismatch, limitations);
+        // Return the full reason union: mismatch governs the state, but any
+        // co-occurring not_proven or partial reasons must also surface so the
+        // client receives a complete repair set rather than only the
+        // highest-precedence symptom.  State remains single-valued. (#10184)
+        // Cross-bucket duplicates are normalized by the single caller.
+        let mut reasons = mismatch;
+        reasons.extend_from_slice(&not_proven);
+        reasons.extend_from_slice(&partial);
+        return (BinaryCompatibilityState::Mismatch, reasons, limitations);
     }
     if !not_proven.is_empty() {
-        return (BinaryCompatibilityState::NotProven, not_proven, limitations);
+        // State is single-valued (not_proven takes precedence over partial),
+        // but all partial reasons must also surface so the client sees the full
+        // outstanding gap set rather than only the not_proven symptoms. (#10184)
+        // Cross-bucket duplicates are normalized by the single caller.
+        let mut reasons = not_proven;
+        reasons.extend_from_slice(&partial);
+        return (BinaryCompatibilityState::NotProven, reasons, limitations);
     }
     if !partial.is_empty() {
         return (BinaryCompatibilityState::CompatiblePartial, partial, limitations);
@@ -847,9 +871,9 @@ fn is_reason_token(value: &str) -> bool {
 mod tests {
     use super::{
         BINARY_IDENTITY_FEATURE_VERSION, BinaryCompatibilityReason, BinaryCompatibilityState,
-        BinaryIdentityRequestV1, BinaryIdentityTransportStateV1, CANONICAL_EXTENSION_ID,
-        CANONICAL_EXTENSION_PACKAGE, CANONICAL_EXTENSION_PUBLISHER, ExpectedExtensionIdentityV1,
-        MAX_IDENTITY_LEN,
+        BinaryIdentityRequestV1, BinaryIdentityResponseV1, BinaryIdentityTransportStateV1,
+        CANONICAL_EXTENSION_ID, CANONICAL_EXTENSION_PACKAGE, CANONICAL_EXTENSION_PUBLISHER,
+        ExpectedExtensionIdentityV1, MAX_IDENTITY_LEN, deduplicate,
     };
     use crate::product_identity::{ArtifactRole, BinaryIdentityInput, BinaryIdentityPacketV1};
 
@@ -1102,6 +1126,111 @@ mod tests {
         let response = state.respond(request());
         assert_eq!(response.compatibility, BinaryCompatibilityState::Mismatch);
         assert!(response.reasons.contains(&BinaryCompatibilityReason::ArtifactRoleMismatch));
+    }
+
+    // --- Discriminating tests for reason-union behaviour (#10184) ---
+    //
+    // Before the fix, `evaluate_compatibility` returned exactly one bucket of
+    // reasons (mismatch *or* not_proven *or* partial), silently discarding every
+    // reason from lower-precedence buckets.  The tests below are the minimal
+    // discriminating fixtures that prove the union contract is honoured.
+    //
+    // They assert the *exact* union rather than membership: `contains` would
+    // still pass if a spurious extra reason leaked into the response, and would
+    // not pin the wire ordering that `deduplicate` establishes.
+
+    /// Assert the response carries exactly `expected`, in the wire order that
+    /// `deduplicate` establishes.
+    fn assert_exact_reasons(
+        response: &BinaryIdentityResponseV1,
+        expected: &[BinaryCompatibilityReason],
+    ) {
+        let mut expected = expected.to_vec();
+        deduplicate(&mut expected);
+        assert_eq!(response.reasons, expected, "response must carry the exact reason union");
+    }
+
+    #[test]
+    fn mismatch_state_includes_co_occurring_not_proven_reasons() {
+        // ProductRepositoryMismatch lands in the mismatch bucket;
+        // ProductIdentityVersionUnsupported lands in the not_proven bucket.
+        // With the union fix both surface; before the fix not_proven was silently
+        // discarded whenever the mismatch bucket was non-empty.
+        let mut state = state();
+        state.server.product.public_repository = "Other/project".to_owned();
+        state.server.compatibility.expected_product_identity_version = 99;
+        let response = state.respond(request());
+        assert_eq!(
+            response.compatibility,
+            BinaryCompatibilityState::Mismatch,
+            "mismatch state must take precedence over co-occurring not_proven"
+        );
+        // `PayloadNotRedacted` co-occurs by construction: overwriting
+        // `public_repository` with a non-canonical value makes the copy-safe
+        // projection replace the field, which is itself a not_proven reason.
+        assert_exact_reasons(
+            &response,
+            &[
+                BinaryCompatibilityReason::ProductRepositoryMismatch,
+                BinaryCompatibilityReason::ProductIdentityVersionUnsupported,
+                BinaryCompatibilityReason::PayloadNotRedacted,
+            ],
+        );
+    }
+
+    #[test]
+    fn not_proven_state_includes_co_occurring_partial_reasons() {
+        // An unsafe target value is sanitised to None, producing PayloadNotRedacted
+        // (not_proven bucket).  Removing the DAP packet produces DapIdentityAbsent
+        // (partial bucket).  With the union fix both surface; before the fix the
+        // partial reason was silently discarded whenever not_proven was non-empty.
+        let mut state = state();
+        state.server.build.target = Some("/home/user/private-target".to_owned());
+        state.dap = None;
+        let response = state.respond(request());
+        assert_eq!(
+            response.compatibility,
+            BinaryCompatibilityState::NotProven,
+            "not_proven state must take precedence over co-occurring partial"
+        );
+        // Sanitising the unsafe target to `None` also leaves the build target
+        // unavailable, so `TargetNotProven` co-occurs with `PayloadNotRedacted`.
+        assert_exact_reasons(
+            &response,
+            &[
+                BinaryCompatibilityReason::TargetNotProven,
+                BinaryCompatibilityReason::PayloadNotRedacted,
+                BinaryCompatibilityReason::DapIdentityAbsent,
+            ],
+        );
+    }
+
+    #[test]
+    fn mismatch_state_includes_all_three_co_occurring_buckets() {
+        // The strongest discrimination of the union contract: every bucket is
+        // non-empty at once.  Repository identity is wrong (mismatch), the
+        // product-identity contract version is unsupported (not_proven), and the
+        // DAP packet is absent (partial).  Before the fix only the mismatch
+        // reason survived.
+        let mut state = state();
+        state.server.product.public_repository = "Other/project".to_owned();
+        state.server.compatibility.expected_product_identity_version = 99;
+        state.dap = None;
+        let response = state.respond(request());
+        assert_eq!(
+            response.compatibility,
+            BinaryCompatibilityState::Mismatch,
+            "mismatch state must govern even with all three buckets populated"
+        );
+        assert_exact_reasons(
+            &response,
+            &[
+                BinaryCompatibilityReason::ProductRepositoryMismatch,
+                BinaryCompatibilityReason::ProductIdentityVersionUnsupported,
+                BinaryCompatibilityReason::PayloadNotRedacted,
+                BinaryCompatibilityReason::DapIdentityAbsent,
+            ],
+        );
     }
 
     #[test]
