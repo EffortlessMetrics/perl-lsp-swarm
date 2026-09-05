@@ -306,6 +306,7 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ci-platform-scope-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
       - name: Classify platform overrides
         id: scope
         shell: bash
@@ -382,8 +383,13 @@ jobs:
         shell: bash
         env:
           WINDOWS_TEST_CRATES: ${{ needs.platform-overrides.outputs.windows_test_crates }}
+        # Keep the existing library smoke execution, then compile the
+        # Unix-only integration target on Windows so its cfg boundary cannot
+        # silently bit-rot. Unix remains the execution authority for the
+        # Bash/chmod smoke.
         run: |
           cargo test $WINDOWS_TEST_CRATES --locked --lib
+          cargo test -p xtask --test release_artifact_size_smoke_script --locked --no-run
           if [[ " $WINDOWS_TEST_CRATES " == *" -p perl-ci-hygiene "* ]]; then
             cargo test -p perl-ci-hygiene --locked --bin perl-ci-hygiene process::tests::
           fi
@@ -431,6 +437,7 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ci-contract-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
       - name: Run Repository Contract
         env:
           SUBJECT_BASE_SHA: ${{ inputs.base_sha || '' }}
@@ -584,6 +591,7 @@ jobs:
         with:
           key: public-api-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-public-api
         if: needs.draft-pr-check.outputs.api_scope == 'true'
@@ -646,6 +654,7 @@ jobs:
         with:
           key: semver-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-semver-checks
         if: needs.draft-pr-check.outputs.api_scope == 'true'

@@ -12,6 +12,7 @@
 //! - AC5: dap.exceptions.die
 //! - AC6: dap.inline_values
 //! - AC7: dap.modules
+//! - AC10: dap.goto_targets (fail-closed standard goto, #9064)
 //!
 //! Each feature gets:
 //! 1. Feature gate test: `has_feature("dap.X")` returns true
@@ -63,6 +64,21 @@ fn expect_success_body(
             message.unwrap_or_else(|| "<no message>".to_string())
         )
         .into()),
+        _ => Err(format!("Expected response for `{command}`").into()),
+    }
+}
+
+/// Expect the command to be refused, returning its refusal message.
+fn expect_error(response: DapMessage, command: &str) -> Result<String, Box<dyn std::error::Error>> {
+    match response {
+        DapMessage::Response { success: false, command: actual, message, .. }
+            if actual == command =>
+        {
+            Ok(message.unwrap_or_default())
+        }
+        DapMessage::Response { success, command: actual, .. } => {
+            Err(format!("expected `{actual}` to be refused, got success={success}").into())
+        }
         _ => Err(format!("Expected response for `{command}`").into()),
     }
 }
@@ -150,17 +166,23 @@ fn test_feature_gate_dap_breakpoints_basic() {
     );
 }
 
-/// Capability test: initialize advertises conditional breakpoint support.
+/// Capability test: initialize keeps conditional breakpoint support false.
+///
+/// #9578: the four optional breakpoint capability rows fail closed from the
+/// single breakpoint authority. Even while `dap.breakpoints.basic` is
+/// registered AND advertised in the catalog, the runtime contract (exact
+/// condition installation and enforcement, #8988) is unproven, so the catalog
+/// row cannot widen the wire value.
 #[test]
 fn test_capability_dap_breakpoints_basic_initialize_response() -> TestResult {
     let body = get_initialize_body()?;
 
     if has_feature("dap.breakpoints.basic") {
         let supports_conditional =
-            body.get("supportsConditionalBreakpoints").and_then(|v| v.as_bool()).unwrap_or(false);
+            body.get("supportsConditionalBreakpoints").and_then(|v| v.as_bool()).unwrap_or(true);
         assert!(
-            supports_conditional,
-            "supportsConditionalBreakpoints must be true when dap.breakpoints.basic is enabled"
+            !supports_conditional,
+            "supportsConditionalBreakpoints must stay false while the catalog row is advertised (#9578)"
         );
     }
     Ok(())
@@ -235,19 +257,21 @@ fn test_feature_gate_dap_breakpoints_hit_condition() {
     );
 }
 
-/// Capability test: initialize advertises hit-conditional breakpoint support.
+/// Capability test: initialize keeps hit-conditional breakpoint support false.
+///
+/// #9578: attributed hit counting with serialized auto-continue is unproven,
+/// so `dap.breakpoints.hit_condition` being registered and advertised cannot
+/// widen the wire value.
 #[test]
 fn test_capability_dap_breakpoints_hit_condition_initialize_response() -> TestResult {
     let body = get_initialize_body()?;
 
     if has_feature("dap.breakpoints.hit_condition") {
-        let supports_hit_conditional = body
-            .get("supportsHitConditionalBreakpoints")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let supports_hit_conditional =
+            body.get("supportsHitConditionalBreakpoints").and_then(|v| v.as_bool()).unwrap_or(true);
         assert!(
-            supports_hit_conditional,
-            "supportsHitConditionalBreakpoints must be true when dap.breakpoints.hit_condition is enabled"
+            !supports_hit_conditional,
+            "supportsHitConditionalBreakpoints must stay false while the catalog row is advertised (#9578)"
         );
     }
     Ok(())
@@ -374,26 +398,30 @@ fn test_feature_gate_dap_breakpoints_function() {
     );
 }
 
-/// Capability test: initialize advertises supportsFunctionBreakpoints.
+/// Capability test: initialize keeps supportsFunctionBreakpoints false.
 ///
-/// `supportsFunctionBreakpoints` is tied to `dap.core` in the adapter
-/// (function breakpoints are a core DAP capability, not a separately-gated
-/// extension).  This test asserts the advertised capability matches the
-/// feature-catalog state.
+/// #9578: a syntactically valid function name is not runtime resolution or
+/// engine installation (#8645 re-enable gate), so the wire value stays false
+/// regardless of the catalog or `dap.core`.
 #[test]
 fn test_capability_dap_breakpoints_function_initialize_response() -> TestResult {
     let body = get_initialize_body()?;
     let supports =
-        body.get("supportsFunctionBreakpoints").and_then(|v| v.as_bool()).unwrap_or(false);
-    assert!(supports, "supportsFunctionBreakpoints must be true in the initialize response");
+        body.get("supportsFunctionBreakpoints").and_then(|v| v.as_bool()).unwrap_or(true);
+    assert!(
+        !supports,
+        "supportsFunctionBreakpoints must stay false until exact runtime proof exists (#9578)"
+    );
     Ok(())
 }
 
-/// Functional test: setFunctionBreakpoints accepts a Perl variable as condition.
+/// Functional test: setFunctionBreakpoints is refused while the capability is
+/// floored (#9578).
 ///
-/// The DAP spec permits any string expression as a breakpoint condition; the
-/// adapter stores it without semantic validation.  A valid function name with
-/// a Perl-variable condition must return `success: true` and `verified: true`.
+/// A function name with a Perl-variable condition used to be accepted and
+/// stored. #8645 owns the runtime resolution and engine install/remove/hit
+/// proof; until then every shape — including a well-formed one — must receive
+/// the identical deterministic refusal with no stored record.
 #[test]
 fn test_functional_dap_function_breakpoints_with_condition() -> TestResult {
     if !has_feature("dap.breakpoints.function") {
@@ -413,14 +441,12 @@ fn test_functional_dap_function_breakpoints_with_condition() -> TestResult {
     );
 
     match response {
-        DapMessage::Response { success: true, command, body: Some(body), .. }
+        DapMessage::Response { success: false, command, message: Some(message), .. }
             if command == "setFunctionBreakpoints" =>
         {
-            let bps = body["breakpoints"].as_array().ok_or("missing breakpoints array")?;
-            assert_eq!(bps.len(), 1, "expected exactly one breakpoint record");
             assert!(
-                bps[0]["verified"].as_bool().unwrap_or(false),
-                "function breakpoint 'test_func' must be verified"
+                message.contains("supportsFunctionBreakpoints") && message.contains("#9578"),
+                "expected the #9578 floor refusal, got {message:?}"
             );
             Ok(())
         }
@@ -428,10 +454,8 @@ fn test_functional_dap_function_breakpoints_with_condition() -> TestResult {
     }
 }
 
-/// Functional test: setFunctionBreakpoints accepts a scalar variable condition ($count).
-///
-/// Perl scalars are truthy/falsy at runtime; the adapter must store the
-/// condition string as-is without rejecting non-boolean expressions.
+/// Functional test: setFunctionBreakpoints is refused for a scalar variable
+/// condition shape ($count) while the capability is floored (#9578).
 #[test]
 fn test_functional_dap_function_breakpoints_scalar_condition() -> TestResult {
     if !has_feature("dap.breakpoints.function") {
@@ -451,14 +475,12 @@ fn test_functional_dap_function_breakpoints_scalar_condition() -> TestResult {
     );
 
     match response {
-        DapMessage::Response { success: true, command, body: Some(body), .. }
+        DapMessage::Response { success: false, command, message: Some(message), .. }
             if command == "setFunctionBreakpoints" =>
         {
-            let bps = body["breakpoints"].as_array().ok_or("missing breakpoints array")?;
-            assert_eq!(bps.len(), 1, "expected exactly one breakpoint record");
             assert!(
-                bps[0]["verified"].as_bool().unwrap_or(false),
-                "function breakpoint 'my_sub' must be verified"
+                message.contains("supportsFunctionBreakpoints") && message.contains("#9578"),
+                "expected the #9578 floor refusal, got {message:?}"
             );
             Ok(())
         }
@@ -466,11 +488,12 @@ fn test_functional_dap_function_breakpoints_scalar_condition() -> TestResult {
     }
 }
 
-/// Functional test: setFunctionBreakpoints accepts a compound boolean expression as condition.
+/// Functional test: setFunctionBreakpoints is refused for a compound boolean
+/// expression shape while the capability is floored (#9578).
 ///
 /// Complex Perl expressions (e.g., `defined($ENV{DEBUG}) && $ENV{DEBUG} > 0`)
-/// are valid breakpoint conditions.  The adapter stores them for the debugger
-/// to evaluate at runtime.
+/// are syntactically valid conditions, but no acceptance path exists while the
+/// capability is floored: the same deterministic refusal applies.
 #[test]
 fn test_functional_dap_function_breakpoints_complex_condition() -> TestResult {
     if !has_feature("dap.breakpoints.function") {
@@ -490,14 +513,12 @@ fn test_functional_dap_function_breakpoints_complex_condition() -> TestResult {
     );
 
     match response {
-        DapMessage::Response { success: true, command, body: Some(body), .. }
+        DapMessage::Response { success: false, command, message: Some(message), .. }
             if command == "setFunctionBreakpoints" =>
         {
-            let bps = body["breakpoints"].as_array().ok_or("missing breakpoints array")?;
-            assert_eq!(bps.len(), 1, "expected exactly one breakpoint record");
             assert!(
-                bps[0]["verified"].as_bool().unwrap_or(false),
-                "function breakpoint 'handler' must be verified"
+                message.contains("supportsFunctionBreakpoints") && message.contains("#9578"),
+                "expected the #9578 floor refusal, got {message:?}"
             );
             Ok(())
         }
@@ -518,17 +539,21 @@ fn test_feature_gate_dap_breakpoints_logpoints() {
     );
 }
 
-/// Capability test: initialize advertises logpoint support.
+/// Capability test: initialize keeps logpoint support false.
+///
+/// #9578: install → hit → correlated lookup → output → continue is unproven
+/// (#9000 re-enable gate), so `dap.breakpoints.logpoints` being registered and
+/// advertised cannot widen the wire value.
 #[test]
 fn test_capability_dap_breakpoints_logpoints_initialize_response() -> TestResult {
     let body = get_initialize_body()?;
 
     if has_feature("dap.breakpoints.logpoints") {
         let supports_log_points =
-            body.get("supportsLogPoints").and_then(|v| v.as_bool()).unwrap_or(false);
+            body.get("supportsLogPoints").and_then(|v| v.as_bool()).unwrap_or(true);
         assert!(
-            supports_log_points,
-            "supportsLogPoints must be true when dap.breakpoints.logpoints is enabled"
+            !supports_log_points,
+            "supportsLogPoints must stay false while the catalog row is advertised (#9578)"
         );
     }
     Ok(())
@@ -778,35 +803,52 @@ fn test_capability_dap_exceptions_die_and_all_filters() -> TestResult {
 }
 
 // ---------------------------------------------------------------------------
-// AC6: dap.inline_values
+// AC6: dap.inline_values — fail-closed extension floor (#9089)
 // ---------------------------------------------------------------------------
 
-/// Feature gate: dap.inline_values is registered in the catalog.
+/// Feature gate: dap.inline_values is registered but not advertised.
+///
+/// #9089: the routed inlineValues extension is a project extension kept
+/// outside standard DAP capability accounting. The catalog row stays
+/// registered for inventory honesty while `advertised = false`, and the wire
+/// value comes from the single #9089 negotiation authority, which is false
+/// until a versioned negotiation contract is proven.
 #[test]
 fn test_feature_gate_dap_inline_values() {
     assert!(
-        has_feature("dap.inline_values"),
-        "dap.inline_values must be registered in the feature catalog"
+        !has_feature("dap.inline_values"),
+        "dap.inline_values must not be advertised until #9089's negotiation gate passes"
     );
 }
 
-/// Capability test: initialize advertises inline values support.
+/// Capability test: initialize must not advertise inline values.
 #[test]
 fn test_capability_dap_inline_values_initialize_response() -> TestResult {
     let body = get_initialize_body()?;
 
-    if has_feature("dap.inline_values") {
-        let supports_inline =
-            body.get("supportsInlineValues").and_then(|v| v.as_bool()).unwrap_or(false);
-        assert!(
-            supports_inline,
-            "supportsInlineValues must be true when dap.inline_values is enabled"
-        );
-    }
+    // #9089: supportsInlineValues is authority-bound false — the routed
+    // `inlineValues` request is a project extension, not standard DAP, and no
+    // versioned negotiation contract exists yet. It must not ride on the
+    // catalog row either way.
+    let supports_inline =
+        body.get("supportsInlineValues").and_then(|v| v.as_bool()).unwrap_or(true);
+    assert!(
+        !supports_inline,
+        "supportsInlineValues must stay false until #9089's negotiation gate passes"
+    );
+    assert_eq!(
+        supports_inline,
+        perl_dap::backend::capabilities::advertises_inline_values_extension(),
+        "supportsInlineValues must mirror the #9089 negotiation authority, not the \
+         catalog row — the row stays unadvertised while the authority alone owns \
+         promotion"
+    );
     Ok(())
 }
 
-/// Functional test: inlineValues extracts scalar variables from source.
+/// Functional test: inlineValues is refused with the deterministic #9089
+/// refusal — the extension cannot serve source-derived occurrences or runtime
+/// values while it is unnegotiated.
 #[test]
 fn test_functional_dap_inline_values_scalar_extraction() -> TestResult {
     use std::fs::write;
@@ -817,42 +859,25 @@ fn test_functional_dap_inline_values_scalar_extraction() -> TestResult {
     write(&script, "my $foo = 42;\nmy $bar = $foo + 1;\n")?;
 
     let mut adapter = initialize_adapter();
-    let body = expect_success_body(
-        adapter.handle_request(
-            2,
-            "inlineValues",
-            Some(json!({
-                "source": { "path": script.to_str().ok_or("path error")? },
-                "startLine": 1,
-                "endLine": 2
-            })),
-        ),
+    let response = adapter.handle_request(
+        2,
         "inlineValues",
-    )?;
-
-    let values =
-        body.get("inlineValues").and_then(|v| v.as_array()).ok_or("missing inlineValues array")?;
-
-    assert!(
-        values.iter().any(|v| v
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .contains("$foo")),
-        "inlineValues must include $foo"
+        Some(json!({
+            "source": { "path": script.to_str().ok_or("path error")? },
+            "startLine": 1,
+            "endLine": 2
+        })),
     );
+    let err = expect_error(response, "inlineValues")?;
     assert!(
-        values.iter().any(|v| v
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .contains("$bar")),
-        "inlineValues must include $bar"
+        err.contains("inlineValues"),
+        "inlineValues refusal must carry the #9089 gate reason, got: {err}"
     );
     Ok(())
 }
 
-/// Functional test: inlineValues skips special Perl variables.
+/// Functional test: the refusal is input-independent — unnegotiated requests
+/// are refused as a class, whatever variables the source contains.
 #[test]
 fn test_functional_dap_inline_values_skips_special_vars() -> TestResult {
     use std::fs::write;
@@ -863,41 +888,26 @@ fn test_functional_dap_inline_values_skips_special_vars() -> TestResult {
     write(&script, "print $_; warn $!; my $val = 1;\n")?;
 
     let mut adapter = initialize_adapter();
-    let body = expect_success_body(
-        adapter.handle_request(
-            2,
-            "inlineValues",
-            Some(json!({
-                "source": { "path": script.to_str().ok_or("path error")? },
-                "startLine": 1,
-                "endLine": 1
-            })),
-        ),
+    let response = adapter.handle_request(
+        2,
         "inlineValues",
-    )?;
-
-    let values =
-        body.get("inlineValues").and_then(|v| v.as_array()).ok_or("missing inlineValues array")?;
-
-    let texts: Vec<&str> =
-        values.iter().filter_map(|v| v.get("text").and_then(|t| t.as_str())).collect();
-
-    assert!(
-        !texts.iter().any(|t| t.contains("$_")),
-        "inlineValues must not include special variable $_, got: {texts:?}"
+        Some(json!({
+            "source": { "path": script.to_str().ok_or("path error")? },
+            "startLine": 1,
+            "endLine": 1
+        })),
     );
+    let err = expect_error(response, "inlineValues")?;
     assert!(
-        !texts.iter().any(|t| t.contains("$!")),
-        "inlineValues must not include special variable $!, got: {texts:?}"
-    );
-    assert!(
-        texts.iter().any(|t| t.contains("$val")),
-        "inlineValues must include user variable $val, got: {texts:?}"
+        err.contains("inlineValues"),
+        "inlineValues refusal must carry the #9089 gate reason, got: {err}"
     );
     Ok(())
 }
 
-/// Functional test: inlineValues for array and hash variables includes correct formatting.
+/// Functional test: inlineValues for array and hash sources is refused with
+/// the same deterministic #9089 refusal — array/hash content cannot widen the
+/// floor either.
 #[test]
 fn test_functional_dap_inline_values_array_and_hash() -> TestResult {
     use std::fs::write;
@@ -908,37 +918,19 @@ fn test_functional_dap_inline_values_array_and_hash() -> TestResult {
     write(&script, "my @items = (1, 2, 3);\nmy %config = (a => 1);\n")?;
 
     let mut adapter = initialize_adapter();
-    let body = expect_success_body(
-        adapter.handle_request(
-            2,
-            "inlineValues",
-            Some(json!({
-                "source": { "path": script.to_str().ok_or("path error")? },
-                "startLine": 1,
-                "endLine": 2
-            })),
-        ),
+    let response = adapter.handle_request(
+        2,
         "inlineValues",
-    )?;
-
-    let values =
-        body.get("inlineValues").and_then(|v| v.as_array()).ok_or("missing inlineValues array")?;
-
-    assert!(
-        values.iter().any(|v| v
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .contains("@items")),
-        "inlineValues must include @items"
+        Some(json!({
+            "source": { "path": script.to_str().ok_or("path error")? },
+            "startLine": 1,
+            "endLine": 2
+        })),
     );
+    let err = expect_error(response, "inlineValues")?;
     assert!(
-        values.iter().any(|v| v
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .contains("%config")),
-        "inlineValues must include %config"
+        err.contains("inlineValues"),
+        "inlineValues refusal must carry the #9089 gate reason, got: {err}"
     );
     Ok(())
 }
@@ -1188,9 +1180,78 @@ fn test_functional_dap_watchpoints_data_breakpoint_roundtrip() -> TestResult {
 }
 
 // ---------------------------------------------------------------------------
+// AC10: dap.goto_targets — fail-closed standard goto (#9064)
+// ---------------------------------------------------------------------------
+
+/// Feature gate: `dap.goto_targets` is not advertised while the native backend
+/// only offers run-to-line, which is not standard DAP goto.
+#[test]
+fn test_feature_gate_dap_goto_targets_not_advertised() {
+    assert!(
+        !has_feature("dap.goto_targets"),
+        "dap.goto_targets must not be advertised until a backend proves a real \
+         next-statement relocation primitive (#9064)"
+    );
+}
+
+/// Capability test: initialize must not advertise goto targets while the
+/// catalog row is unadvertised.
+#[test]
+fn test_capability_dap_goto_targets_not_advertised_in_initialize() -> TestResult {
+    let body = get_initialize_body()?;
+    let supports_goto =
+        body.get("supportsGotoTargetsRequest").and_then(|v| v.as_bool()).unwrap_or(false);
+    assert_eq!(
+        supports_goto,
+        has_feature("dap.goto_targets") && has_feature("dap.goto"),
+        "supportsGotoTargetsRequest must require the complete dap.goto_targets + dap.goto contract"
+    );
+    assert!(
+        !supports_goto,
+        "supportsGotoTargetsRequest must be false while dap.goto_targets is unadvertised"
+    );
+    Ok(())
+}
+
+/// Functional test: both goto requests are explicitly refused while unsupported.
+#[test]
+fn test_functional_dap_goto_targets_requests_fail_closed() -> TestResult {
+    let mut adapter = initialize_adapter();
+
+    for (command, args) in [
+        ("gotoTargets", json!({ "source": { "path": "script.pl" }, "line": 3 })),
+        ("goto", json!({ "threadId": 1, "targetId": 1 })),
+    ] {
+        let response = adapter.handle_request(2, command, Some(args));
+        match response {
+            DapMessage::Response { success, command: actual, message, .. } => {
+                assert_eq!(actual, command);
+                assert!(!success, "{command} must fail closed while unadvertised (#9064)");
+                let err = message.unwrap_or_default();
+                assert!(
+                    err.to_lowercase().contains("unsupported"),
+                    "{command} rejection must explain that standard goto is unsupported: {err}"
+                );
+            }
+            _ => return Err(format!("Expected {command} response").into()),
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Cross-feature: feature catalog completeness
 // ---------------------------------------------------------------------------
 
+/// All DAP features that must be advertised are registered in the feature
+/// catalog.
+///
+/// `dap.inline_values` is deliberately excluded from this advertised set
+/// (#9089): its catalog row stays registered for inventory honesty while
+/// `advertised = false`, and `test_feature_gate_dap_inline_values` pins that
+/// value. The goto rows (#9064) are likewise unadvertised and likewise live
+/// outside this list.
+///
 /// Advertised DAP features must be registered in the feature catalog.
 ///
 /// #9091: `dap.watchpoints` is deliberately excluded — the row remains in
@@ -1206,7 +1267,6 @@ fn test_all_dap_features_registered_in_catalog() {
         "dap.completions",
         "dap.exceptions.die",
         "dap.exceptions.warn",
-        "dap.inline_values",
         "dap.modules",
     ];
 
@@ -1215,6 +1275,12 @@ fn test_all_dap_features_registered_in_catalog() {
     assert!(
         missing.is_empty(),
         "The following DAP features are missing from the catalog: {missing:?}"
+    );
+
+    // The floored extension must not quietly rejoin the advertised set.
+    assert!(
+        !has_feature("dap.inline_values"),
+        "dap.inline_values must stay unadvertised until #9089's negotiation gate passes"
     );
 }
 
@@ -1235,13 +1301,30 @@ fn test_initialize_does_not_advertise_disabled_features() -> TestResult {
     //   supportsHitConditionalBreakpoints   = supports_hit_conditions
     //   supportsLogPoints                   = supports_log_points
     //   supportsInlineValues                = supports_inline_values
+    //   supportsBreakpointLocationsRequest  = supports_basic_breakpoints
+    //   supportsInlineValues                = #9089 negotiation authority (not the catalog row)
+    //   supportsCompletionsRequest          = supports_completions
+    //   supportsModulesRequest              = supports_modules
     //   supportsDataBreakpoints             = supports_watchpoints
+    //
+    // `supportsInlineValues` is deliberately absent from this catalog-mirror
+    // loop (#9089): its wire value comes from the negotiation authority, not
+    // the `dap.inline_values` row, and is pinned against the authority in
+    // `test_capability_dap_inline_values_initialize_response`.
+    //   #9578: supportsConditionalBreakpoints / supportsHitConditionalBreakpoints /
+    //   supportsLogPoints no longer mirror catalog rows at all (they are pinned
+    //   false by the breakpoint authority and pinned again below), and
+    //   supportsFunctionBreakpoints never mirrored `dap.breakpoints.basic`.
     let feature_to_cap = [
-        ("dap.breakpoints.basic", "supportsConditionalBreakpoints"),
-        ("dap.breakpoints.hit_condition", "supportsHitConditionalBreakpoints"),
-        ("dap.breakpoints.logpoints", "supportsLogPoints"),
-        ("dap.inline_values", "supportsInlineValues"),
+        // #9578/#9581: supportsConditionalBreakpoints, supportsHitConditional
+        // Breakpoints, supportsLogPoints, supportsBreakpointLocationsRequest,
+        // supportsCompletionsRequest, and supportsModulesRequest are floored
+        // rows now (pinned false below regardless of catalog state), so they
+        // are excluded from the mirror contract.
         ("dap.watchpoints", "supportsDataBreakpoints"),
+        // #9064: goto capability mirrors its own catalog row, not broad core
+        // state; while the row is unadvertised the flag must stay false.
+        ("dap.goto_targets", "supportsGotoTargetsRequest"),
     ];
 
     for (feature, capability) in feature_to_cap {
@@ -1264,6 +1347,22 @@ fn test_initialize_does_not_advertise_disabled_features() -> TestResult {
         assert!(
             !advertised,
             "Capability `{capability}` must stay false under the #9581 secondary-capability floor"
+        );
+    }
+    // #9578: the four optional breakpoint capability rows must stay false even
+    // while their catalog rows are registered and advertised — a catalog or
+    // core flag change cannot make the fields true.
+    let floored_rows = [
+        "supportsFunctionBreakpoints",
+        "supportsConditionalBreakpoints",
+        "supportsHitConditionalBreakpoints",
+        "supportsLogPoints",
+    ];
+    for capability in floored_rows {
+        let advertised = body.get(capability).and_then(|v| v.as_bool()).unwrap_or(true);
+        assert!(
+            !advertised,
+            "Capability `{capability}` must stay false despite its advertised catalog row (#9578)"
         );
     }
     Ok(())

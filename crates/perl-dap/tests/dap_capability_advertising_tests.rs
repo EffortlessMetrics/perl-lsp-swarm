@@ -21,7 +21,9 @@
 mod capability_tests {
     use anyhow::Result;
     use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+    use perl_dap::types::{Source, StackFrame};
     use serde_json::Value;
+    use std::fs;
     use std::sync::mpsc::sync_channel;
 
     fn create_test_adapter() -> DebugAdapter {
@@ -118,11 +120,83 @@ mod capability_tests {
         Ok(())
     }
 
-    /// `stepInTargets` has a working handler, so it stays advertised — but it is now
-    /// gated on the catalog rather than hardcoded, so the flag cannot drift from
-    /// `features.toml`.
+    /// `gotoTargets`/`goto` fail closed (#9064): the native backend only has a
+    /// run-to-line primitive (`f <source>` + `c <line>` resumes execution), which
+    /// is not standard DAP goto. The capability must stay unadvertised, both
+    /// requests must be explicitly refused, and a rejected goto must emit no
+    /// `continued` event or any other execution side effect.
     #[tokio::test]
-    async fn test_step_in_targets_is_advertised_and_answers_successfully() -> Result<()> {
+    async fn test_goto_is_not_advertised_and_rejected_goto_has_no_side_effects() -> Result<()> {
+        // Keep the receiver alive so a (forbidden) event emission is observable.
+        let (tx, rx) = sync_channel::<DapMessage>(64);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(tx);
+        let caps = initialize_capabilities(&mut adapter)?;
+
+        assert_eq!(
+            capability(&caps, "supportsGotoTargetsRequest")?,
+            perl_dap::feature_catalog::has_feature("dap.goto_targets")
+                && perl_dap::feature_catalog::has_feature("dap.goto"),
+            "supportsGotoTargetsRequest must require the complete dap.goto_targets + dap.goto contract"
+        );
+        assert!(
+            !capability(&caps, "supportsGotoTargetsRequest")?,
+            "supportsGotoTargetsRequest must be false while only run-to-line exists (#9064)"
+        );
+
+        // gotoTargets on a plausible source must refuse, not publish targets.
+        match adapter.handle_request(
+            2,
+            "gotoTargets",
+            Some(serde_json::json!({"source": {"path": "script.pl"}, "line": 3})),
+        ) {
+            DapMessage::Response { success, command, body, message, .. } => {
+                assert_eq!(command, "gotoTargets");
+                assert!(!success, "gotoTargets must fail closed while unadvertised");
+                assert!(body.is_none(), "unsupported gotoTargets must not publish targets");
+                assert!(
+                    message.is_some_and(|m| !m.is_empty()),
+                    "an unsupported request must explain why it failed"
+                );
+            }
+            other => anyhow::bail!("expected a response for gotoTargets, got {other:?}"),
+        }
+
+        // goto must refuse before consuming a target or resuming execution.
+        match adapter.handle_request(
+            3,
+            "goto",
+            Some(serde_json::json!({"threadId": 1, "targetId": 1})),
+        ) {
+            DapMessage::Response { success, command, message, .. } => {
+                assert_eq!(command, "goto");
+                assert!(!success, "goto must fail closed while unadvertised");
+                assert!(
+                    message.is_some_and(|m| !m.is_empty()),
+                    "an unsupported request must explain why it failed"
+                );
+            }
+            other => anyhow::bail!("expected a response for goto, got {other:?}"),
+        }
+
+        // No execution side effect: only the initialize-time `initialized`
+        // event may exist; a rejected goto must not emit `continued`.
+        while let Ok(msg) = rx.try_recv() {
+            let rendered = serde_json::to_string(&msg)?;
+            assert!(
+                !rendered.contains("\"continued\""),
+                "a rejected goto must not emit a continued event: {rendered}"
+            );
+        }
+        Ok(())
+    }
+
+    /// #9069 fail-closed: `stepInTargets` mirrors the (now unadvertised)
+    /// `dap.step_in_targets` catalog row, and every request is refused before
+    /// any source read or target allocation because a client-selected target
+    /// ID cannot influence the next native `stepIn`.
+    #[tokio::test]
+    async fn test_step_in_targets_is_not_advertised_and_fails_honestly() -> Result<()> {
         let mut adapter = create_test_adapter();
         let caps = initialize_capabilities(&mut adapter)?;
 
@@ -131,11 +205,47 @@ mod capability_tests {
             perl_dap::feature_catalog::has_feature("dap.step_in_targets"),
             "supportsStepInTargetsRequest must mirror the dap.step_in_targets catalog entry"
         );
+        assert!(
+            !capability(&caps, "supportsStepInTargetsRequest")?,
+            "supportsStepInTargetsRequest must be false while targetId has no runtime effect (#9069)"
+        );
+        // Fail-closing stepInTargets must not disturb any other catalog row:
+        // the data-breakpoint capability keeps mirroring its own (independently
+        // fail-closed, #9091) watchpoints row in both directions.
+        assert_eq!(
+            capability(&caps, "supportsDataBreakpoints")?,
+            perl_dap::feature_catalog::has_feature("dap.watchpoints"),
+            "fail-closed targeted stepping must not alter the independent watchpoints row"
+        );
+
+        let dir = tempfile::tempdir()?;
+        let script_path = dir.path().join("subroutine_calls.pl");
+        fs::write(
+            &script_path,
+            "use strict;\nuse warnings;\nmy $x = abs(sqrt(length('hello')));\nprint $x;\n",
+        )?;
+        let source_path = script_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("temporary source path is not valid UTF-8"))?;
+        adapter.seed_stopped_session_with_frames_for_test(vec![StackFrame::new(
+            1,
+            "main",
+            Source::new(source_path),
+            3,
+        )]);
 
         match adapter.handle_request(2, "stepInTargets", Some(serde_json::json!({"frameId": 1}))) {
-            DapMessage::Response { success, command, .. } => {
+            DapMessage::Response { success, command, body, message, .. } => {
                 assert_eq!(command, "stepInTargets");
-                assert!(success, "stepInTargets is advertised, so it must succeed");
+                assert!(
+                    !success,
+                    "stepInTargets must fail while targeted stepping is unsupported (#9069)"
+                );
+                assert!(body.is_none(), "an unsupported stepInTargets must not publish target IDs");
+                assert!(
+                    message.is_some_and(|m| !m.is_empty()),
+                    "an unsupported stepInTargets must explain why it failed"
+                );
             }
             other => anyhow::bail!("expected a response for stepInTargets, got {other:?}"),
         }
@@ -156,6 +266,12 @@ mod capability_tests {
             ("supportsRestartFrame", "dap.restart_frame"),
             ("supportsTerminateThreadsRequest", "dap.terminate_threads"),
             ("supportsStepInTargetsRequest", "dap.step_in_targets"),
+            // #9581: supportsRestartRequest and supportsLoadedSourcesRequest
+            // are floored below — catalog registration alone cannot advertise
+            // them, so they are excluded from the mirror contract.
+            // #9064: run-to-line is not standard goto; the capability must
+            // mirror its own catalog row instead of broad core state.
+            ("supportsGotoTargetsRequest", "dap.goto_targets"),
         ] {
             assert_eq!(
                 capability(&caps, flag)?,

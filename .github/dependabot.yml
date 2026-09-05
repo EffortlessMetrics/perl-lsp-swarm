@@ -79,10 +79,7 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "tokio"
         update-types: ["version-update:semver-major"]
-    labels:
-      - "dependencies"
-      - "cargo"
-      - "automated"
+    labels: []
     commit-message:
       prefix: "chore"
       include: "scope"
@@ -118,10 +115,7 @@ updates:
           - "*"
         update-types:
           - "patch"
-    labels:
-      - "dependencies"
-      - "github-actions"
-      - "automated"
+    labels: []
     commit-message:
       prefix: "chore(deps)"
       include: "scope"
@@ -176,11 +170,7 @@ updates:
       # for dependabot.yml/vscode-extension/package.json-only changes).
       - dependency-name: "@types/vscode"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
-    labels:
-      - "dependencies"
-      - "npm"
-      - "vscode-extension"
-      - "automated"
+    labels: []
     commit-message:
       prefix: "chore(deps)"
       include: "scope"
