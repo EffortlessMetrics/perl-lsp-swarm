@@ -1,0 +1,45 @@
+name: Worked Lane Corpus
+
+# The worked-lane corpus under `docs/agents/examples/` is accounted for by the
+# category ledger in `docs/agents/examples/README.md` (issue #5247). The paths
+# below are every file that can make that ledger false: the corpus itself, the
+# front door that links it, and this check's own files.
+# `test_workflow_triggers_on_every_constrained_path` enforces that none of them
+# is missing. It does not forbid additional paths: a path added here only makes
+# the check run more often, which cannot let the ledger go stale.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/worked-lane-corpus.yml'
+      - 'docs/agents/README.md'
+      - 'docs/agents/examples/**'
+      - 'tests/test_worked_lane_corpus.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/worked-lane-corpus.yml'
+      - 'docs/agents/README.md'
+      - 'docs/agents/examples/**'
+      - 'tests/test_worked_lane_corpus.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worked-lane-corpus-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check worked-lane category ledger
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate worked-lane ledger against the corpus
+        run: python3 -m unittest tests/test_worked_lane_corpus.py

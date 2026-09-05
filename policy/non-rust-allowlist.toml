@@ -408,6 +408,22 @@ created = "2026-08-16"
 review_after = "2026-11-16"
 
 [[allow]]
+id = "non-rust-worked-lane-corpus-test"
+path = "tests/test_worked_lane_corpus.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Binds the worked-lane category ledger to the corpus it accounts for, so an added, renamed, or deleted example cannot leave the accounting stale and a category cannot borrow a lane or receipt that demonstrates something else. Standard-library `unittest` and `re` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 -m unittest tests/test_worked_lane_corpus.py",
+  ".github/workflows/worked-lane-corpus.yml",
+]
+created = "2026-08-29"
+review_after = "2026-11-29"
+
+[[allow]]
 id = "non-rust-legacy-authority-banner-migrator"
 path = "scripts/migrate-legacy-authority-banners.py"
 kind = "retired_one_shot_helper"

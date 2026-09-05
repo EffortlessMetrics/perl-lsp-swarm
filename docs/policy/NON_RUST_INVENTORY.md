@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12737 |
+| Total tracked files | 12740 |
 | Rust-family files | 3983 |
-| Non-Rust files | 8754 |
-| Allowlisted | 6515 |
+| Non-Rust files | 8757 |
+| Allowlisted | 6518 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 502 |
-| documentation | 2856 |
+| config | 503 |
+| documentation | 2857 |
 | generated | 2 |
 | production | 357 |
-| test | 2111 |
+| test | 2112 |
 | tooling | 687 |
 | unclassified | 2239 |
 
@@ -2998,6 +2998,7 @@
 | `.github/workflows/vscode-managed-binary-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/vscode-published-extension-smoke.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/winget-bump.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/worked-lane-corpus.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/workflow-contracts-advisory.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/workflow-policy.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/workflow-security-ratchet-selftest.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -4537,6 +4538,7 @@
 | `docs/agents/bounded-subagent-brief-v1.schema.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/bounded-subagent-result-v1.fixtures.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/bounded-subagent-result-v1.schema.json` | documentation | `non-rust-docs-tree` | docs |
+| `docs/agents/examples/README.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/examples/integration-trigger-and-proof-caller.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/ledgers/ub-review-calibration.jsonl` | documentation | `non-rust-docs-tree` | docs |
 | `docs/agents/ledgers/workflow-outcomes.jsonl` | documentation | `non-rust-docs-tree` | docs |
@@ -8387,6 +8389,7 @@
 | `tests/test_active_authority_contract.py` | test | `non-rust-active-authority-contract-test` | release/ci |
 | `tests/test_agent_authority_status.py` | test | `non-rust-agent-authority-status-test` | release/ci |
 | `tests/test_legacy_authority_banners.py` | test | `non-rust-legacy-authority-banners-test` | release/ci |
+| `tests/test_worked_lane_corpus.py` | test | `non-rust-worked-lane-corpus-test` | release/ci |
 | `tests/test_writer_authority_transfer_contract.py` | test | `non-rust-writer-authority-transfer-contract-test` | release/ci |
 | `tree-sitter-perl/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `tree-sitter-perl/PURE_RUST_PERFORMANCE_ANALYSIS.md` | documentation | `non-rust-root-governance-docs` | docs |
