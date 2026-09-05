@@ -78,7 +78,7 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 
 ## Fixture matrix
 
-2 positive and 57 negative deterministic fixtures.
+2 positive and 58 negative deterministic fixtures.
 
 | Fixture | Expectation | Typed outcome |
 | --- | --- | --- |
@@ -134,6 +134,7 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 | `negative-tag-only-image` | `reject` | reject `image_identity_not_exact` |
 | `negative-tool-volume-owner-unnamed` | `reject` | reject `tool_mount_not_read_only` |
 | `negative-unbound-injection-source` | `reject` | reject `injection_source_unbound` |
+| `negative-unnamed-profile` | `reject` | reject `profile_identity_missing` |
 | `negative-unrelated-injection-source` | `reject` | reject `artifact_digest_unverified` |
 | `negative-writable-paths-undisclosed` | `reject` | reject `security_context_missing` |
 | `negative-writable-tool-mount` | `reject` | reject `tool_mount_not_read_only` |
@@ -142,4 +143,4 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 | `positive-injected-tool` | `admit` | admit |
 | `positive-project-image` | `admit` | admit |
 
-All 30 typed rejection reasons are exercised by at least one negative fixture.
+All 31 typed rejection reasons are exercised by at least one negative fixture.

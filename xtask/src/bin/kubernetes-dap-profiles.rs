@@ -102,6 +102,13 @@ struct Cli {
     #[arg(long, default_value = DEFAULT_FIXTURE_SCHEMA)]
     fixture_schema: PathBuf,
 
+    /// Repository root that DAP cell evidence paths resolve against. Named
+    /// explicitly rather than taken from the process working directory, which
+    /// would silently check a different tree when the gate is invoked from
+    /// elsewhere with explicit paths.
+    #[arg(long, default_value = ".")]
+    repo_root: PathBuf,
+
     /// Validate everything and fail when the committed status is stale.
     #[arg(long)]
     check: bool,
@@ -148,6 +155,7 @@ enum RejectionReason {
     DapCellEvidenceMissing,
     InstallModeIdentityConflict,
     AdapterIdentityIncomplete,
+    ProfileIdentityMissing,
 }
 
 impl RejectionReason {
@@ -182,6 +190,7 @@ impl RejectionReason {
         Self::DapCellEvidenceMissing,
         Self::InstallModeIdentityConflict,
         Self::AdapterIdentityIncomplete,
+        Self::ProfileIdentityMissing,
     ];
 
     fn as_str(self) -> &'static str {
@@ -218,6 +227,7 @@ impl RejectionReason {
             Self::DapCellEvidenceMissing => "dap_cell_evidence_missing",
             Self::InstallModeIdentityConflict => "install_mode_identity_conflict",
             Self::AdapterIdentityIncomplete => "adapter_identity_incomplete",
+            Self::ProfileIdentityMissing => "profile_identity_missing",
         }
     }
 }
@@ -775,11 +785,24 @@ impl ProfileContract {
             .filter(|cell| cell.family == CellFamily::InitialAdmitted)
             .map(|cell| cell.cell_id.as_str())
             .collect();
+        // Exact equality, not containment. A subset check stops the family
+        // shrinking but not growing, so promoting an optional cell — or adding a
+        // new one — silently widened the admitted capability set as soon as both
+        // positive fixtures claimed it. Widening what this seed contract admits
+        // is a contract decision, not a row edit.
         for required in INITIAL_ADMITTED_CELLS {
             if !admitted_ids.contains(required) {
                 bail!(
                     "initial admitted family lost cell {required:?}; the #10112 family is pinned by \
                      id, not by count"
+                );
+            }
+        }
+        for admitted in &admitted_ids {
+            if !INITIAL_ADMITTED_CELLS.contains(admitted) {
+                bail!(
+                    "initial admitted family gained cell {admitted:?}; widening the admitted \
+                     capability set requires a contract revision, not a new row"
                 );
             }
         }
@@ -1165,6 +1188,16 @@ impl ProfileDocument {
     /// defaulted to a pass.
     fn evaluate(&self, contract: &ProfileContract) -> Result<(), Rejection> {
         let why = |detail: String| format!("profile {:?}: {detail}", self.profile_id);
+
+        // Checked first: every rejection below names the profile, and every
+        // receipt and diagnostic identifies it by this value. An admitted
+        // profile nobody can name is not an admitted subject.
+        if self.profile_id.trim().is_empty() {
+            return rejection(
+                RejectionReason::ProfileIdentityMissing,
+                why("profile declares no identifier".into()),
+            );
+        }
 
         if self.deployment_mode == DeploymentMode::StandaloneDeployment {
             return rejection(
@@ -2254,8 +2287,7 @@ fn run(cli: &Cli) -> Result<()> {
     let contract_source = fs::read_to_string(&cli.contract)
         .with_context(|| format!("read contract {}", cli.contract.display()))?;
     let contract = ProfileContract::from_str(&contract_source)?;
-    let evidence_root = std::env::current_dir().context("resolve repository root for evidence")?;
-    contract.validate(&evidence_root)?;
+    contract.validate(&cli.repo_root)?;
     let schemas = validate_published_schemas(&cli.profile_schema, &cli.fixture_schema)?;
     first_schema_error(
         &schemas.contract,
@@ -3130,5 +3162,37 @@ mod tests {
             evidence: Vec::new(),
         });
         profile.evaluate(&contract).map_err(Into::into)
+    }
+
+    /// Every rejection message and receipt identifies a profile by this value.
+    #[test]
+    fn an_unnamed_profile_is_rejected() -> Result<()> {
+        let fixtures = committed_fixtures()?;
+        let base = find_fixture(&fixtures, POSITIVE_PROJECT_IMAGE)?;
+        for identifier in ["", "   "] {
+            let mut profile = base.profile.clone();
+            profile.profile_id = identifier.into();
+            assert_rejected_with(&profile, RejectionReason::ProfileIdentityMissing)?;
+        }
+        Ok(())
+    }
+
+    /// A subset check stops the admitted family shrinking but not growing.
+    #[test]
+    fn the_admitted_family_cannot_grow() -> Result<()> {
+        let mut contract = committed_contract()?;
+        let promoted = contract
+            .dap_cells
+            .iter_mut()
+            .find(|cell| cell.cell_id == "evaluate_repl")
+            .context("contract must carry the evaluate_repl cell")?;
+        promoted.family = CellFamily::InitialAdmitted;
+        promoted.state = CellState::EvidenceBacked;
+        promoted.evidence = vec!["crates/perl-dap/tests/dap_smoke_e2e.rs".into()];
+        assert!(
+            contract.validate(repository_root()?).is_err(),
+            "promoting an optional cell must require a contract revision, not a row edit"
+        );
+        Ok(())
     }
 }

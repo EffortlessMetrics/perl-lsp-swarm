@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12799 |
+| Total tracked files | 12800 |
 | Rust-family files | 3983 |
-| Non-Rust files | 8816 |
-| Allowlisted | 6577 |
+| Non-Rust files | 8817 |
+| Allowlisted | 6578 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 563 |
+| config | 564 |
 | documentation | 2858 |
 | generated | 2 |
 | production | 357 |
@@ -3806,6 +3806,7 @@
 | `contracts/dap/fixtures/negative-project-perl-plan-differs.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-relative-perl-include-root.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-relative-perl-interpreter.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-reversed-optional-cell-state.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-secrets-unredacted.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-security-context-root.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-service-account-token-used.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |

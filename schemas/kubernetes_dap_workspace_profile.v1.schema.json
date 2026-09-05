@@ -209,7 +209,8 @@
         "service_account_token_forbidden",
         "dap_cell_evidence_missing",
         "install_mode_identity_conflict",
-        "adapter_identity_incomplete"
+        "adapter_identity_incomplete",
+        "profile_identity_missing"
       ]
     },
     "cell_family": {
