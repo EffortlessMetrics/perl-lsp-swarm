@@ -788,8 +788,23 @@ fn validate(root: &Path) -> Result<CheckStats> {
 fn discover_fixtures(root: &Path) -> Result<Vec<std::path::PathBuf>> {
     let dir = root.join(FIXTURE_DIR);
     let mut found = Vec::new();
-    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+    collect_fixtures(&dir, &mut found)?;
+    found.sort();
+    Ok(found)
+}
+
+/// Walk one directory tree, collecting v1 receipt fixtures.
+///
+/// Recursive for the same reason discovery replaced a constant list: scanning
+/// only direct children would leave a fixture one directory deeper silently
+/// unchecked, which is the hole the list had.
+fn collect_fixtures(dir: &Path, found: &mut Vec<std::path::PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
         let path = entry.with_context(|| format!("failed to read {}", dir.display()))?.path();
+        if path.is_dir() {
+            collect_fixtures(&path, found)?;
+            continue;
+        }
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
@@ -797,8 +812,7 @@ fn discover_fixtures(root: &Path) -> Result<Vec<std::path::PathBuf>> {
             found.push(path);
         }
     }
-    found.sort();
-    Ok(found)
+    Ok(())
 }
 
 fn load_schema(root: &Path) -> Result<Value> {
@@ -1053,6 +1067,27 @@ mod tests {
 
     fn uninstrumented() -> Value {
         serde_json::from_str(UNINSTRUMENTED).expect("fixture must be valid JSON")
+    }
+
+    /// Discovery must reach a fixture that is not a direct child.
+    ///
+    /// Review asked whether the convention forbids nested receipts. It does not
+    /// say either way, so the safe reading is that a nested fixture must be
+    /// validated rather than silently skipped.
+    #[test]
+    fn discovery_reaches_nested_fixtures_and_ignores_unrelated_files() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let fixtures = root.path().join(FIXTURE_DIR);
+        let nested = fixtures.join("nested");
+        fs::create_dir_all(&nested).expect("create nested fixture dir");
+        let top = fixtures.join(format!("{FIXTURE_PREFIX}.json"));
+        let deep = nested.join(format!("{FIXTURE_PREFIX}.deep.json"));
+        fs::write(&top, MEASURED).expect("write top-level fixture");
+        fs::write(&deep, MEASURED).expect("write nested fixture");
+        fs::write(fixtures.join("unrelated.json"), "{}").expect("write unrelated file");
+
+        let found = discover_fixtures(root.path()).expect("discovery must succeed");
+        assert_eq!(found, vec![top, deep], "nested fixtures are discovered; others are not");
     }
 
     // -- the committed artifacts ------------------------------------------------
