@@ -7148,6 +7148,115 @@ paths = ["archive/["]
         Ok(())
     }
 
+    /// Falsifies a fallback accumulator whose duplicate replacement and
+    /// truncation bound interact, through the same production entry point.
+    ///
+    /// The wide-payload test below pins the bound, the sort-order window, and
+    /// a late *smaller*-id duplicate. It cannot see the rest of the ordering
+    /// algebra, because every one of its keys is distinct and its only
+    /// duplicate happens to be the one that should win: an accumulator that
+    /// simply took the last id for a key would pass it. Retaining bounded
+    /// state makes three more cases reachable, and all three are silent
+    /// wrong-answer bugs rather than crashes:
+    ///
+    /// - a *larger* id arriving for a retained key must not displace it;
+    /// - a key already pushed past the bound must stay dropped when it
+    ///   reappears with a smaller id, because ordering between distinct keys
+    ///   never depends on the id;
+    /// - a key sorting before the whole window must still get in and evict
+    ///   the current largest.
+    ///
+    /// The DOM oracle sorts, dedups, and truncates the entire set, so it is
+    /// indifferent to arrival order. This pins the streamed receipt to it.
+    #[test]
+    fn fallback_guidance_orders_duplicates_across_the_truncation_bound() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(repo.join("policy/ripr-suppressions.toml"), "")?;
+        let raw_check = repo.join(PR_RAW_CHECK_JSON);
+        if let Some(parent) = raw_check.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let actionable = "no_static_path";
+        let mut findings = Vec::new();
+        // Saturate the bound with distinct mid-range keys and mid-range ids.
+        for index in 0..FALLBACK_GUIDANCE_LIMIT {
+            findings.push(raw_check_finding(
+                &format!("probe:m{index:03}"),
+                actionable,
+                &format!("crates/m/src/f{index:03}.rs"),
+                1,
+            ));
+        }
+        // A retained key gains a smaller id after the bound is already full.
+        findings.push(raw_check_finding("probe:a000", actionable, "crates/m/src/f005.rs", 1));
+        // A retained key is offered a larger id, which must not displace it.
+        findings.push(raw_check_finding("probe:z999", actionable, "crates/m/src/f006.rs", 1));
+        // A key sorting past the bound is dropped, then reappears with a
+        // smaller id: still out, because the id never orders distinct keys.
+        findings.push(raw_check_finding("probe:z000", actionable, "crates/z/src/late.rs", 1));
+        findings.push(raw_check_finding("probe:a001", actionable, "crates/z/src/late.rs", 1));
+        // A key sorting before every retained entry must evict the largest.
+        findings.push(raw_check_finding("probe:m999", actionable, "crates/0/src/early.rs", 1));
+
+        fs::write(&raw_check, json!({ "base": "HEAD", "findings": findings }).to_string())?;
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+            timeout_seconds: None,
+        };
+        write_degraded_review_comments(repo, &options, ".", "ripr timed out after 600s")?;
+
+        let packet: Value =
+            serde_json::from_str(&fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?)?;
+        let items = packet
+            .get("summary_only")
+            .and_then(Value::as_array)
+            .ok_or_else(|| eyre!("missing summary_only array"))?;
+
+        // The DOM oracle over the same arrival order, as the receipt renders it.
+        let expected = dom_fallback_pipeline(&findings, &no_suppressions(), None, None, None);
+        let expected_paths = expected.0.iter().map(|(path, ..)| path.clone()).collect::<Vec<_>>();
+        let actual_paths =
+            items.iter().map(|item| option_string_field(Some(item), "path")).collect::<Vec<_>>();
+        assert_eq!(actual_paths, expected_paths, "retained window must match the DOM oracle");
+
+        assert_eq!(items.len(), FALLBACK_GUIDANCE_LIMIT, "the bound must stay saturated");
+        let id_for = |path: &str| {
+            items
+                .iter()
+                .find(|item| item["path"] == json!(path))
+                .map(|item| option_string_field(Some(item), "id"))
+        };
+        assert_eq!(
+            id_for("crates/m/src/f005.rs").as_deref(),
+            Some("probe:a000"),
+            "a smaller id arriving after the bound is full must replace the retained seam"
+        );
+        assert_eq!(
+            id_for("crates/m/src/f006.rs").as_deref(),
+            Some("probe:m006"),
+            "a larger id must not displace the retained seam"
+        );
+        assert_eq!(id_for("crates/z/src/late.rs"), None, "a key past the bound stays dropped");
+        assert_eq!(
+            id_for("crates/0/src/early.rs").as_deref(),
+            Some("probe:m999"),
+            "a key sorting before the window must evict the largest retained seam"
+        );
+        assert_eq!(
+            id_for(&format!("crates/m/src/f{:03}.rs", FALLBACK_GUIDANCE_LIMIT - 1)),
+            None,
+            "the evicted seam must be the largest retained key"
+        );
+        Ok(())
+    }
+
     /// Drives the production fallback seam (`fallback_guidance_comments` via
     /// `write_degraded_review_comments`) with the payload shape #12860 actually
     /// produced: many findings, each carrying an unconsumed blob the receipt
