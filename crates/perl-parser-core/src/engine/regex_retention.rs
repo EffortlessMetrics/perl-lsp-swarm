@@ -300,13 +300,28 @@ fn finish_output(
 /// parser recorded against this exact buffer before it failed, which is evidence in its
 /// own right.
 ///
-/// The pragma environment defaults, because it is built from the tree. See
-/// [`RetainedRegexSession::finish`] for what that costs.
+/// The language profile is **unknown**, not default, and the difference is a
+/// correctness one.
+///
+/// The pragma environment is built from the tree, so this path has none. Deriving the
+/// profile from a *default* environment does not mean "no pragmas were seen" — it
+/// asserts `utf8` is disabled and features are off, which is a claim about the document
+/// this path cannot support. Measured: with a default environment, a valid non-ASCII
+/// named capture under `use utf8;` followed by a fatal construct published `PL1006`, a
+/// warning about code that is correct. Retaining a finding that was really there is the
+/// point of this path; inventing one is strictly worse than the silence it replaced.
+///
+/// `FeatureState::Unknown` says what is actually true — the pragma state could not be
+/// determined — and the analyzer withholds the findings whose truth depends on it while
+/// still reporting the ones that do not, such as backtracking risk and embedded code.
 fn build_table_without_ast(
     source: &str,
     mut pending: PendingGeometrySession,
 ) -> RegexAnalysisTable {
-    let environment = CompileTimePragmaEnvironment::default();
+    let profile = CaptureLanguageProfile::new(
+        RegexLanguageProfile::new(None, FeatureState::Unknown),
+        FeatureState::Unknown,
+    );
     pending.geometries.sort_by_key(geometry_sort_key);
     pending.geometries.dedup_by(|left, right| {
         left.operator == right.operator && left.full_range == right.full_range
@@ -314,7 +329,6 @@ fn build_table_without_ast(
 
     let mut table = RegexAnalysisTable::for_source(source);
     for geometry in pending.geometries {
-        let profile = profile_at(&environment, geometry.pattern.range.start);
         let _record = table.retain_geometry(geometry, profile);
     }
     table

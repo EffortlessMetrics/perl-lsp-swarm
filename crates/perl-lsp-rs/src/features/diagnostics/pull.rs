@@ -519,6 +519,7 @@ impl PullDiagnosticsProvider {
                     uri,
                     content,
                     Some(&regex_analysis),
+                    context,
                 ));
                 diagnostics
             }
@@ -994,6 +995,7 @@ impl PullDiagnosticsProvider {
                 uri,
                 &doc_state.text,
                 parsed.regex_analysis().map(std::sync::Arc::as_ref),
+                context,
             ));
             diagnostics
         }
@@ -1072,6 +1074,7 @@ impl PullDiagnosticsProvider {
         uri: &Uri,
         text: &str,
         regex_analysis: Option<&perl_parser_core::RegexAnalysisTable>,
+        context: &PullDiagnosticsContext,
     ) -> Vec<LspDiagnostic> {
         let Some(table) = regex_analysis.filter(|table| table.source_matches(code_slice(text)))
         else {
@@ -1081,7 +1084,13 @@ impl PullDiagnosticsProvider {
             table,
         )
         .into_iter()
-        .map(|diagnostic| self.to_lsp_diagnostic(uri, text, diagnostic))
+        // The context-aware conversion, which is what the AST paths use. Plain
+        // `to_lsp_diagnostic` appends the catalog `context_hint` *and* the suggestion,
+        // and for these codes the projection initializes the suggestion from that same
+        // hint — so it rendered the identical remediation paragraph twice, once behind
+        // a 💡 and once behind "Suggestion:". Measured against the AST path, which
+        // renders it once.
+        .map(|diagnostic| self.to_lsp_diagnostic_with_context(uri, text, diagnostic, context))
         .collect()
     }
 

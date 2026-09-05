@@ -1181,21 +1181,18 @@ impl LspServer {
     /// `syntax_only_clears_when_parse_errors_clear` acceptance case work.
     /// Canonical regex findings for the paths that publish `parse_errors` alone (#7024).
     ///
-    /// Two callers need this. Syntax-only mode publishes `parse_errors` and nothing
-    /// else by design, and the push fallback below does so because a fatal parse left
-    /// no AST to run the full pipeline over. Both were complete accounts of regex
-    /// findings only while the legacy per-operator scan emitted them as parser
-    /// `Advisory` entries; a `RetainedRegexSession` suppresses that scan. That was a complete
-    /// account of regex findings only while the legacy per-operator scan emitted them
-    /// as parser `Advisory` entries. A `RetainedRegexSession` suppresses that scan, so
-    /// without this projection the mode loses those findings outright — measured, a
-    /// nested quantifier leaves `parse_errors` empty where it previously carried one
-    /// advisory.
+    /// Two callers publish `parse_errors` alone: syntax-only mode by design, and the
+    /// push fallback because a fatal parse left no AST to run the full pipeline over.
+    /// For both, that was a complete account of regex findings only while the legacy
+    /// per-operator scan emitted them as parser `Advisory` entries. A
+    /// `RetainedRegexSession` suppresses that scan, so without this projection both
+    /// lose those findings outright — measured, a nested quantifier leaves
+    /// `parse_errors` empty where it previously carried one advisory.
     ///
-    /// This stays inside the mode's contract. The retained table is produced by the
-    /// parse that syntax-only already performs, not by the semantic, critic,
-    /// module-resolution, or dead-code stack the mode exists to skip, so projecting it
-    /// costs nothing the mode was avoiding.
+    /// Neither caller pays for anything it was avoiding. The retained table comes from
+    /// the parse each has already performed, not from the semantic, critic,
+    /// module-resolution, or dead-code stack that syntax-only exists to skip and that a
+    /// fatal parse cannot feed.
     ///
     /// Freshness is checked exactly as the full provider checks it, against the code
     /// slice rather than the whole document, because the parser never sees past
@@ -6441,6 +6438,85 @@ print \"unreachable\\n\";\n";
     ///
     /// Measured with the session active and no projection, `parse_errors` for this
     /// document is empty; without the session it carries exactly one advisory.
+    /// The AST-less path must not invent findings whose truth it cannot know (#7024).
+    ///
+    /// Retaining geometry across a fatal parse leaves no pragma environment, since that
+    /// is built from the tree. Deriving the language profile from a *default*
+    /// environment asserted `utf8` was off, so a valid non-ASCII capture under
+    /// `use utf8;` published `PL1006` — a warning about correct code, caused only by an
+    /// unrelated syntax failure elsewhere in the file. Measured before the fix, this
+    /// document published `["PL001", "PL1006"]`.
+    ///
+    /// The profile now reports `Unknown`, which is what is actually true, and the
+    /// analyzer withholds the profile-dependent findings while keeping the ones that do
+    /// not depend on it.
+    #[test]
+    fn a_fatal_parse_does_not_invent_profile_dependent_findings() {
+        let source = format!("use utf8;\nmy $re = qr/(?<café>x)/;\n{}\n", "if (1) {".repeat(3000));
+        let tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
+        let server = message_union_server(tuning, false);
+        let uri = message_union_uri("7024_fatal_parse_utf8.pl");
+        server.test_apply_did_open(&uri, &source, 1).expect("didOpen should succeed");
+        let report = server
+            .test_handle_document_diagnostic(Some(json!({ "textDocument": { "uri": uri } })))
+            .expect("pull should not error");
+        let items = report
+            .and_then(|r| r.get("items").and_then(Value::as_array).cloned())
+            .unwrap_or_default();
+        let codes: Vec<&str> =
+            items.iter().filter_map(|i| i.get("code").and_then(Value::as_str)).collect();
+
+        // Control: the path is live, so absence below is withholding rather than silence.
+        assert!(codes.contains(&"PL001"), "the parse error must still publish: {codes:?}");
+        assert!(
+            !codes.contains(&"PL1006"),
+            "a valid capture under `use utf8` must not warn after a fatal parse: {codes:?}"
+        );
+    }
+
+    /// The AST-less pull path must render remediation exactly as the AST path does.
+    ///
+    /// `to_lsp_diagnostic` appends the catalog `context_hint` *and* the suggestion, and
+    /// the projection initializes that suggestion from the same hint — so routing
+    /// canonical findings through it printed the identical paragraph twice, once behind
+    /// a 💡 and once behind "Suggestion:". The AST paths use the context-aware
+    /// conversion and render it once.
+    #[test]
+    fn a_fatal_parse_renders_remediation_like_the_ast_path() {
+        let backtracking = "my $re = qr/(a+)+b/;\n";
+        let fatal = format!("{backtracking}{}\n", "if (1) {".repeat(3000));
+
+        let message_for = |text: &str, name: &str| -> String {
+            let tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
+            let server = message_union_server(tuning, false);
+            let uri = message_union_uri(name);
+            server.test_apply_did_open(&uri, text, 1).expect("didOpen should succeed");
+            let report = server
+                .test_handle_document_diagnostic(Some(json!({ "textDocument": { "uri": uri } })))
+                .expect("pull should not error");
+            report
+                .and_then(|r| r.get("items").and_then(Value::as_array).cloned())
+                .unwrap_or_default()
+                .iter()
+                .find(|item| item.get("code").and_then(Value::as_str) == Some("PL1000"))
+                .and_then(|item| item.get("message").and_then(Value::as_str))
+                .unwrap_or_default()
+                .to_string()
+        };
+
+        let ast_message = message_for(backtracking, "7024_hint_ast.pl");
+        let fatal_message = message_for(&fatal, "7024_hint_fatal.pl");
+
+        // Control: both paths actually produced the finding, so equality below is not
+        // two empty strings matching.
+        assert!(!ast_message.is_empty(), "the AST path must publish PL1000");
+        assert!(!fatal_message.is_empty(), "the fatal path must publish PL1000");
+        assert_eq!(
+            fatal_message, ast_message,
+            "the AST-less path must render the same message as the AST path"
+        );
+    }
+
     /// A fatal parse must still publish its regex findings (#7024).
     ///
     /// Retaining the geometry in `finish(None)` is only half the route: the AST-less
