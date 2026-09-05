@@ -120,6 +120,11 @@ struct CargoResolvedDependency {
 #[derive(Clone, Debug, Deserialize)]
 struct CargoResolvedDependencyKind {
     kind: Option<String>,
+    /// `cfg(...)`/triple condition cargo attaches to a platform-gated edge.
+    /// A conditional edge is not a universal one, so a required dependency
+    /// must carry `None` here.
+    #[serde(default)]
+    target: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -148,6 +153,10 @@ struct CargoDependency {
     rename: Option<String>,
     #[serde(default)]
     source: Option<String>,
+    /// Platform condition from a `[target.'cfg(...)'.dependencies]` table.
+    /// Retained so a required edge cannot be satisfied conditionally.
+    #[serde(default)]
+    target: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -613,23 +622,23 @@ fn require_normal_dependencies(
                 && !candidate.optional
                 && candidate.rename.is_none()
                 && candidate.source.is_none()
+                && candidate.target.is_none()
         });
         let resolves_to_workspace_package =
             workspace_packages.get(dependency).is_some_and(|workspace_package| {
                 resolved_node.is_some_and(|node| {
                     node.deps.iter().any(|resolved_dependency| {
                         resolved_dependency.pkg == workspace_package.id
-                            && resolved_dependency
-                                .dep_kinds
-                                .iter()
-                                .any(|dependency_kind| dependency_kind.kind.is_none())
+                            && resolved_dependency.dep_kinds.iter().any(|dependency_kind| {
+                                dependency_kind.kind.is_none() && dependency_kind.target.is_none()
+                            })
                     })
                 })
             });
 
         if !manifest_has_normal_dependency || !resolves_to_workspace_package {
             findings.insert(format!(
-                "dependency: {owner} package={} requires normal dependency={dependency} (non-optional, unrenamed, resolved to the governed workspace package)",
+                "dependency: {owner} package={} requires normal dependency={dependency} (non-optional, unrenamed, unconditional for all targets, resolved to the governed workspace package)",
                 package.name
             ));
         }
@@ -759,6 +768,7 @@ mod tests {
             optional: false,
             rename: None,
             source: None,
+            target: None,
         }
     }
 
@@ -879,6 +889,7 @@ mod tests {
                                 pkg: (*package_id).to_owned(),
                                 dep_kinds: vec![CargoResolvedDependencyKind {
                                     kind: dependency.kind.clone(),
+                                    target: dependency.target.clone(),
                                 }],
                             }
                         })
@@ -1056,6 +1067,75 @@ mod tests {
         ];
         let report = validate(&policy, &metadata, &manifest);
         require_finding(&report, "dependency=perl-code-intelligence")
+    }
+
+    /// Recompute the resolve graph from the (possibly mutated) package set,
+    /// exactly as `fixture` builds it, so a test that edits a manifest
+    /// dependency sees the matching resolved edge rather than a stale one.
+    fn rebuild_resolve(mut metadata: CargoMetadata) -> CargoMetadata {
+        let workspace_packages = metadata
+            .packages
+            .iter()
+            .filter(|package| metadata.workspace_members.contains(&package.id))
+            .map(|package| (package.name.clone(), package.id.clone()))
+            .collect::<BTreeMap<_, _>>();
+        metadata.resolve.nodes = metadata
+            .packages
+            .iter()
+            .filter(|package| metadata.workspace_members.contains(&package.id))
+            .map(|package| CargoResolveNode {
+                id: package.id.clone(),
+                deps: package
+                    .dependencies
+                    .iter()
+                    .filter_map(|dep| {
+                        workspace_packages.get(&dep.name).map(|package_id| {
+                            CargoResolvedDependency {
+                                pkg: package_id.clone(),
+                                dep_kinds: vec![CargoResolvedDependencyKind {
+                                    kind: dep.kind.clone(),
+                                    target: dep.target.clone(),
+                                }],
+                            }
+                        })
+                    })
+                    .collect(),
+            })
+            .collect();
+        metadata
+    }
+
+    /// A `[target.'cfg(...)'.dependencies]` edge satisfies the required
+    /// dependency on the platforms it names and vanishes on every other one.
+    /// Accepting it would let the product ship without the component the
+    /// contract says it composes, on any target the cfg excludes.
+    #[test]
+    fn platform_gated_required_dependency_is_rejected() -> Result<()> {
+        let (policy, mut metadata, manifest) = fixture(McpStage::Absent);
+        if let Some(product) =
+            metadata.packages.iter_mut().find(|package| package.name == "perllsp")
+        {
+            for dependency in &mut product.dependencies {
+                if dependency.name == "perl-lsp-rs" {
+                    dependency.target = Some("cfg(unix)".to_owned());
+                }
+            }
+        }
+        let metadata = rebuild_resolve(metadata);
+        let report = validate(&policy, &metadata, &manifest);
+        require_finding(&report, "product package=perllsp requires normal dependency=perl-lsp-rs")
+    }
+
+    /// The unconditional form of the edge above must still be accepted, so the
+    /// test directly above cannot pass by rejecting everything.
+    #[test]
+    fn unconditional_required_dependency_is_accepted() -> Result<()> {
+        let (policy, metadata, manifest) = fixture(McpStage::Absent);
+        let report = validate(&policy, &metadata, &manifest);
+        if !report.findings.is_empty() {
+            bail!("clean absent-stage fixture must produce no findings: {:?}", report.findings);
+        }
+        Ok(())
     }
 
     #[test]

@@ -143,3 +143,30 @@ fn unexpected_arguments_fail_closed() -> Result<(), Box<dyn Error>> {
     assert!(String::from_utf8_lossy(&output.stderr).contains("expected exactly one command"));
     Ok(())
 }
+
+/// The rejection exit (1) is distinct from the instrument-failure exit (2):
+/// a readable policy evaluated against a tree that violates it is a finding,
+/// not a broken instrument. Proving only 0 and 2 would leave the exit code
+/// the merge surface actually gates on unbound.
+#[test]
+fn violating_tree_is_rejected_not_an_instrument_failure() -> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    fixture_workspace(dir.path())?;
+    std::fs::create_dir_all(dir.path().join("policy"))?;
+    // The real policy, unmodified — the fixture workspace simply does not
+    // contain the packages it governs.
+    std::fs::copy(
+        repo_root()?.join("policy/product-topology.toml"),
+        dir.path().join("policy/product-topology.toml"),
+    )?;
+
+    let output = run_in(dir.path())?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "stdout={stdout:?} stderr={stderr:?}");
+    assert!(stderr.contains("product-topology: rejected"), "stderr={stderr:?}");
+    assert!(!stderr.contains("instrument failure"), "stderr={stderr:?}");
+    assert!(stdout.is_empty(), "a rejected tree must not print an acceptance: {stdout:?}");
+    Ok(())
+}

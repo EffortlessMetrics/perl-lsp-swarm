@@ -198,6 +198,7 @@ coverage_filters = [
 id = "patch-coverage-xtask-product-topology"
 lcov = false
 files = [
+  "policy/product-topology.toml",
   "xtask/src/bin/product-topology.rs",
   "xtask/tests/product_topology_cli.rs",
 ]
