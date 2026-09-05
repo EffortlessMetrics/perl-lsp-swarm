@@ -30,12 +30,16 @@ paths relative to the resolved merge baseline.
 ## Publication boundary
 
 [`docs/policy/NON_RUST_INVENTORY.md`](policy/NON_RUST_INVENTORY.md) is a
-human-readable default-branch publication. The post-merge publisher, or an
-explicit `cargo xtask non-rust inventory --write`, may refresh it from one
-current-tree scan.
+frozen pointer document. It carries no counts and no rows, no command writes
+it, and it never changes on `main`, so it cannot conflict on merge (#14688).
+The merge check requires it to stay byte-identical to `main`; a branch that
+regenerated it restores it with
+`git checkout origin/main -- docs/policy/NON_RUST_INVENTORY.md`.
 
-Feature branches do not regenerate, stage, read, or byte-compare that
-publication to establish merge validity. The allowlist plus the current-tree
-evaluator own the verdict; the ignored `target/policy/non-rust-inventory.{md,json}`
-files are the per-run evidence. The policy CI shard retains both projections
-when the check produces them, including when the new-path ratchet fails.
+The inventory itself is evidence, not publication. The allowlist plus the
+current-tree evaluator own the verdict; the ignored
+`target/policy/non-rust-inventory.{md,json}` files are the per-run evidence,
+and the policy CI shard uploads both as the `non-rust-inventory-<sha>`
+artifact on every run, including runs on `main`, which is the default-branch
+reference. The shard retains them when the check produces them, including
+when the new-path ratchet fails.

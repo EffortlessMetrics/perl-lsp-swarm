@@ -1,7 +1,9 @@
-//! Conflict-topology regression for the tracked non-Rust inventory projection.
+//! Conflict-topology regression for the tracked non-Rust inventory pointer.
 //!
 //! Two independent candidates that add unrelated tracked files must not acquire
-//! a shared write to `docs/policy/NON_RUST_INVENTORY.md`. The generated
+//! a shared write to `docs/policy/NON_RUST_INVENTORY.md` (a frozen pointer that
+//! no command writes any more; the fake hook below simulates the retired
+//! publisher to keep the regression discriminating). The generated
 //! pre-commit hook is exercised, rather than inferred from source text, because
 //! the defect lives at the index/branch boundary.
 

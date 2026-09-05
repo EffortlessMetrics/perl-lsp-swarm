@@ -42,18 +42,6 @@ created = "2026-08-24"
 review_after = "2026-11-22"
 
 [[allow]]
-id = "generated-non-rust-inventory"
-path = "docs/policy/NON_RUST_INVENTORY.md"
-kind = "inventory"
-generated_by = "cargo xtask non-rust inventory --write"
-regenerate = "cargo xtask non-rust inventory --write"
-owner = "release/ci"
-reason = "The published non-Rust inventory reference is generated from tracked files and the canonical policy ledger; it is default-branch publication, not branch merge input (#14688)."
-covered_by = ["cargo xtask check-generated", "cargo xtask non-rust inventory"]
-created = "2026-08-24"
-review_after = "2026-11-22"
-
-[[allow]]
 id = "generated-repository-topology"
 path = "docs/architecture/repository-topology.md"
 kind = "status_page"

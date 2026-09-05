@@ -9,16 +9,15 @@ declares which non-Rust files are permitted in `perl-lsp` and on what terms.
 ```text
 policy/non-rust-allowlist.toml              # active policy authority
 policy/non-rust-debt.toml                   # uncertain entries pending classification
-target/policy/non-rust-inventory.{md,json}  # ignored per-run evidence
-docs/policy/NON_RUST_INVENTORY.md           # published default-branch reference
+target/policy/non-rust-inventory.{md,json}  # ignored per-run evidence (uploaded as the non-rust-inventory-<sha> CI artifact)
+docs/policy/NON_RUST_INVENTORY.md           # frozen pointer; never generated, never changes on main
 ```
 
 Reader / writer:
 
 ```text
 cargo xtask non-rust inventory          # emit current-tree Markdown + JSON evidence
-cargo xtask non-rust inventory --check  # validate current tree and reject newly introduced debt
-cargo xtask non-rust inventory --write  # explicitly publish the default-branch reference
+cargo xtask non-rust inventory --check  # validate current tree, require the frozen pointer, reject newly introduced debt
 cargo xtask non-rust propose            # propose entries for unallowlisted files
 cargo xtask non-rust validate-policy    # validate allowlist/debt TOML schema
 cargo xtask non-rust migration-candidates  # find tooling candidates to migrate into Rust-owned surfaces
@@ -32,12 +31,15 @@ and writes both evidence files before applying its merge-base ratchet.
 Inherited unclassified paths remain visible as warnings; newly added
 unclassified paths fail and remain named in the retained evidence.
 
-The tracked Markdown is publication, not policy input. Ordinary feature
-branches do not refresh it, and `inventory --check` does not read or compare
-it. The policy shard retains both ignored projections when they are produced,
-including on a newly unclassified-path failure. The post-merge workflow may
-publish a current default-branch copy without healing, weakening, or otherwise
-changing a branch verdict.
+The tracked `docs/policy/NON_RUST_INVENTORY.md` is a frozen pointer, not
+policy input and not a publication. No command writes it and `main` never
+changes it, so it cannot conflict on merge (#14688). `inventory --check`
+requires it to match the frozen content and names the one-command restore
+(`git checkout origin/main -- docs/policy/NON_RUST_INVENTORY.md`) when a
+branch has regenerated it. The policy shard retains both ignored projections
+when they are produced, including on a newly unclassified-path failure, and
+uploads them as the `non-rust-inventory-<sha>` artifact; the artifact from a
+`main` run is the default-branch reference.
 
 ## Schema
 

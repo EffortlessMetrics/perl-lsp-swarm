@@ -51,8 +51,9 @@ fn non_rust_inventory_inventory_help_describes_current_tree_check() -> Result<()
     );
     ensure!(
         !help.contains("generated Markdown snapshot")
-            && !help.contains("line-ending normalization"),
-        "inventory --help must not restore tracked-snapshot authority"
+            && !help.contains("line-ending normalization")
+            && !help.contains("--write"),
+        "inventory --help must not restore tracked-snapshot authority or a publication writer"
     );
     Ok(())
 }
@@ -122,8 +123,8 @@ fn non_rust_inventory_check_command_exits_zero() -> Result<()> {
 
 /// Verify that the expected output files are created under `target/`.
 ///
-/// `non-rust inventory` (without `--write`) must not modify any tracked file;
-/// output goes to `target/policy/` only.
+/// `non-rust inventory` must not modify any tracked file; output goes to
+/// `target/policy/` only.
 #[test]
 fn non_rust_inventory_creates_output_files() -> Result<()> {
     let _guard = inventory_output_lock()?;
@@ -142,9 +143,8 @@ fn non_rust_inventory_creates_output_files() -> Result<()> {
         root.join("target/policy/non-rust-inventory.json").exists(),
         "target/policy/non-rust-inventory.json should exist after the command"
     );
-    // docs/policy/NON_RUST_INVENTORY.md must NOT be rewritten by the
-    // non-`--write` path; the published default-branch reference is updated
-    // only by `cargo xtask non-rust inventory --write`.
+    // docs/policy/NON_RUST_INVENTORY.md is a frozen pointer and is never
+    // written by any inventory command (#14688).
     Ok(())
 }
 

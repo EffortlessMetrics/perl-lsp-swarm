@@ -8,12 +8,9 @@
 //!   - `target/policy/non-rust-inventory.md` — human-readable markdown table.
 //!   - `target/policy/non-rust-inventory.json` — machine-readable JSON array.
 //!
-//!   (Does **not** modify `docs/policy/NON_RUST_INVENTORY.md`.)
-//!
-//! - `cargo xtask non-rust inventory --write` — runs the inventory scan and
-//!   additionally overwrites `docs/policy/NON_RUST_INVENTORY.md` with the
-//!   regenerated content. This is the deliberate write path; use it when the
-//!   committed snapshot needs to be refreshed.
+//!   (Does **not** modify any tracked file. `docs/policy/NON_RUST_INVENTORY.md`
+//!   is a frozen pointer document that never carries generated content; see
+//!   [`NON_RUST_INVENTORY_POINTER`].)
 //!
 //! - `cargo xtask non-rust check [--mode <mode>] [--json <path>] [--allowlist <path>]` —
 //!   classify tracked files against the allowlist and report violations.
@@ -1379,8 +1376,7 @@ fn write_inventory_outputs(root: &Path, records: &[FileRecord]) -> Result<()> {
 /// Entry point for `cargo xtask non-rust inventory`.
 ///
 /// Writes only current-tree evidence under `target/policy/`; no tracked file is
-/// read as authority or modified. Use [`non_rust_inventory_write_docs`] only
-/// when deliberately publishing the default-branch reader reference.
+/// read as authority or modified.
 pub fn non_rust_inventory(root: &Path) -> Result<()> {
     println!("Building non-Rust file inventory...");
 
@@ -1404,26 +1400,64 @@ pub fn non_rust_inventory(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Publish `docs/policy/NON_RUST_INVENTORY.md` from the current tree.
+/// The exact content of the tracked `docs/policy/NON_RUST_INVENTORY.md`.
 ///
-/// This deliberate `--write` path first writes the ignored evidence under
-/// `target/policy/`, then copies the Markdown to the tracked default-branch
-/// reader reference. The published copy is not an input to branch validity.
-pub fn non_rust_inventory_write_docs(root: &Path) -> Result<()> {
-    non_rust_inventory(root)?;
+/// The tracked file is a frozen pointer: it carries no counts and no rows, so
+/// it never changes on `main` and can never conflict on merge (#14688). The
+/// generated inventory lives only under `target/policy/` and in the CI
+/// artifact the policy shard uploads. The merge check requires the tracked
+/// file to match this constant byte for byte (after line-ending
+/// normalization) so a branch cannot reintroduce a generated body.
+pub const NON_RUST_INVENTORY_POINTER: &str = r#"# Non-Rust File Inventory
 
-    let target_md = root.join("target/policy/non-rust-inventory.md");
-    let markdown = fs::read_to_string(&target_md)
-        .with_context(|| format!("reading generated inventory from {}", target_md.display()))?;
+This file is a frozen pointer. It carries no counts and no rows, and it never
+changes on `main`, so it can never conflict on merge (#14688).
 
-    let docs_path = root.join("docs/policy/NON_RUST_INVENTORY.md");
-    if let Some(parent) = docs_path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+The inventory is generated evidence, not a tracked publication:
+
+- `cargo xtask non-rust inventory` writes the current-tree projection to
+  `target/policy/non-rust-inventory.md` and `target/policy/non-rust-inventory.json`
+  (both git-ignored).
+- `cargo xtask non-rust inventory --check` is the required merge gate. It
+  validates `policy/non-rust-allowlist.toml`, classifies the current tracked
+  tree, writes the same two files, requires this pointer to be byte-identical
+  to `main`, and rejects newly added unclassified paths against the merge base.
+- The `policy` CI shard uploads both projections as the
+  `non-rust-inventory-<sha>` artifact for every run, including runs on `main`.
+  That artifact is the default-branch reference.
+
+If a branch has regenerated this file, restore it with:
+
+```text
+git checkout origin/main -- docs/policy/NON_RUST_INVENTORY.md
+```
+
+Policy and authority boundaries are documented in
+[`docs/FILE_POLICY.md`](../FILE_POLICY.md) and
+[`docs/policy/NON_RUST_POLICY.md`](NON_RUST_POLICY.md).
+"#;
+
+/// Relative path of the frozen pointer document.
+pub const NON_RUST_INVENTORY_POINTER_PATH: &str = "docs/policy/NON_RUST_INVENTORY.md";
+
+/// Require the tracked inventory pointer to be the frozen publication.
+///
+/// A branch that regenerated the old counted Markdown into this path would
+/// reintroduce the structural merge conflict; refusing it here turns that
+/// residue into a gate-time failure with a one-command fix instead of a
+/// squash-time conflict.
+fn verify_frozen_inventory_publication(root: &Path) -> Result<()> {
+    let path = root.join(NON_RUST_INVENTORY_POINTER_PATH);
+    let actual = fs::read_to_string(&path)
+        .with_context(|| format!("reading the frozen inventory pointer {}", path.display()))?;
+    if actual.replace("\r\n", "\n") == NON_RUST_INVENTORY_POINTER {
+        return Ok(());
     }
-    fs::write(&docs_path, &markdown).with_context(|| format!("writing {}", docs_path.display()))?;
-    println!("  wrote {}", docs_path.display());
-
-    Ok(())
+    bail!(
+        "{NON_RUST_INVENTORY_POINTER_PATH} is not the frozen pointer document; it is never \
+         generated (#14688). Restore it with: git checkout origin/main -- \
+         {NON_RUST_INVENTORY_POINTER_PATH}"
+    )
 }
 
 /// Evaluate the current tracked tree against the non-Rust allowlist.
@@ -1431,7 +1465,8 @@ pub fn non_rust_inventory_write_docs(root: &Path) -> Result<()> {
 /// The allowlist and current tree own the verdict. The check always emits
 /// Markdown/JSON evidence before applying the merge-base ratchet, warns on
 /// existing unclassified debt, and rejects only newly added unclassified
-/// paths. It never reads or rewrites the tracked publication reference.
+/// paths. It requires the tracked pointer document to stay frozen and never
+/// rewrites it.
 pub fn non_rust_inventory_check(root: &Path) -> Result<()> {
     let baseline = resolve_inventory_baseline(root);
     non_rust_inventory_check_with_baseline(root, baseline.as_deref())
@@ -1451,6 +1486,7 @@ fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -
 
     let records = build_inventory(root)?;
     write_inventory_outputs(root, &records)?;
+    verify_frozen_inventory_publication(root)?;
 
     let unclassified: Vec<&FileRecord> =
         records.iter().filter(|record| record.category == "unclassified").collect();
@@ -3487,6 +3523,12 @@ review_after = "2026-06-01"
         list_tracked_files(root)
     }
 
+    /// Place the frozen pointer in a fixture working tree (untracked, so it
+    /// never enters the fixture's inventory or ratchet population).
+    fn seed_frozen_pointer(root: &Path) -> Result<()> {
+        write_fixture(root, NON_RUST_INVENTORY_POINTER_PATH, NON_RUST_INVENTORY_POINTER)
+    }
+
     fn readme_allowlist_toml() -> Result<String> {
         let mut entry = make_entry("readme", None, Some("README.md"), "documentation");
         entry.covered_by = vec!["README.md".to_string()];
@@ -4193,18 +4235,20 @@ review_after = "2026-11-13"
     }
 
     #[test]
-    fn non_rust_inventory_writes_target_outputs_and_write_docs_publishes_reference() -> Result<()> {
+    fn non_rust_inventory_writes_target_outputs_only() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let tracked = init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
         assert_eq!(tracked, vec!["README.md".to_string()]);
+        seed_frozen_pointer(temp.path())?;
         let allowlist_path = write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
         assert!(allowlist_path.exists());
 
+        let pointer_path = temp.path().join(NON_RUST_INVENTORY_POINTER_PATH);
+        let before = fs::read(&pointer_path)?;
         non_rust_inventory(temp.path())?;
 
         let target_markdown = temp.path().join("target/policy/non-rust-inventory.md");
         let target_json = temp.path().join("target/policy/non-rust-inventory.json");
-        let docs_markdown = temp.path().join("docs/policy/NON_RUST_INVENTORY.md");
         let markdown = fs::read_to_string(&target_markdown)
             .with_context(|| format!("reading {}", target_markdown.display()))?;
         let json = fs::read_to_string(&target_json)
@@ -4212,30 +4256,21 @@ review_after = "2026-11-13"
 
         assert!(markdown.contains("# Non-Rust File Inventory"));
         assert!(json.contains("\"path\": \"README.md\""));
-        // The plain scan is read-only w.r.t. tracked files: the committed
-        // reference is published only by the explicit write-docs path.
-        assert!(
-            !docs_markdown.exists(),
-            "default inventory must not create {}",
-            docs_markdown.display()
-        );
-
-        non_rust_inventory_write_docs(temp.path())?;
-        let docs = fs::read_to_string(&docs_markdown)
-            .with_context(|| format!("reading {}", docs_markdown.display()))?;
-        assert_eq!(markdown, docs);
+        assert_eq!(fs::read(&pointer_path)?, before, "the scan must never touch the pointer");
         Ok(())
     }
 
     #[test]
-    fn non_rust_inventory_check_ignores_stale_publication_and_emits_evidence() -> Result<()> {
+    fn non_rust_inventory_check_rejects_regenerated_pointer_and_retains_evidence() -> Result<()> {
         let temp = tempfile::tempdir()?;
         init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
         write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
+        // A branch that regenerated the old counted publication into the
+        // pointer path (the residue #14688 exists to kill).
         write_fixture(
             temp.path(),
-            "docs/policy/NON_RUST_INVENTORY.md",
-            "deliberately stale and structurally invalid\n",
+            NON_RUST_INVENTORY_POINTER_PATH,
+            "# Non-Rust File Inventory\n\n| Metric | Count |\n|---|---|\n| Total tracked files | 3 |\n",
         )?;
         run_git(temp.path(), &["add", "."])?;
         run_git(
@@ -4247,23 +4282,41 @@ review_after = "2026-11-13"
                 "user.name=test",
                 "commit",
                 "-qm",
-                "published reference baseline",
+                "regenerated publication",
             ],
         )?;
 
-        let docs_path = temp.path().join("docs/policy/NON_RUST_INVENTORY.md");
-        let before = fs::read(&docs_path)?;
-        non_rust_inventory_check_with_baseline(temp.path(), Some("HEAD"))?;
-
-        assert_eq!(
-            fs::read(&docs_path)?,
-            before,
-            "the branch check must not rewrite the published reference"
+        let pointer_path = temp.path().join(NON_RUST_INVENTORY_POINTER_PATH);
+        let before = fs::read(&pointer_path)?;
+        let error = non_rust_inventory_check_with_baseline(temp.path(), Some("HEAD"))
+            .err()
+            .ok_or_else(|| eyre!("a regenerated pointer must fail the check"))?;
+        ensure!(
+            error
+                .to_string()
+                .contains("git checkout origin/main -- docs/policy/NON_RUST_INVENTORY.md"),
+            "failure must name the one-command fix: {error}"
         );
+        assert_eq!(fs::read(&pointer_path)?, before, "the check must not rewrite the pointer");
         let markdown = fs::read_to_string(temp.path().join("target/policy/non-rust-inventory.md"))?;
         let json = fs::read_to_string(temp.path().join("target/policy/non-rust-inventory.json"))?;
-        assert!(markdown.contains("docs/policy/NON_RUST_INVENTORY.md"));
-        assert!(json.contains("docs/policy/NON_RUST_INVENTORY.md"));
+        assert!(markdown.contains("README.md"), "evidence must still be retained");
+        assert!(json.contains("README.md"));
+
+        // Restoring the frozen pointer (the documented fix) makes the check pass.
+        write_fixture(temp.path(), NON_RUST_INVENTORY_POINTER_PATH, NON_RUST_INVENTORY_POINTER)?;
+        non_rust_inventory_check_with_baseline(temp.path(), Some("HEAD"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn frozen_pointer_matches_the_tracked_document() -> Result<()> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .ok_or_else(|| eyre!("xtask must live under the workspace root"))?;
+        let tracked = fs::read_to_string(root.join(NON_RUST_INVENTORY_POINTER_PATH))?;
+        assert_eq!(tracked.replace("\r\n", "\n"), NON_RUST_INVENTORY_POINTER);
+        assert!(!NON_RUST_INVENTORY_POINTER.contains("| Total tracked files |"));
         Ok(())
     }
 
@@ -4321,6 +4374,7 @@ review_after = "2026-11-13"
     #[test]
     fn non_rust_inventory_check_accepts_unclassified_files() -> Result<()> {
         let temp = tempfile::tempdir()?;
+        seed_frozen_pointer(temp.path())?;
         init_tracked_fixture(
             temp.path(),
             &[("README.md", "# Fixture\n"), ("scripts/tool.py", "print('fixture')\n")],
@@ -4334,6 +4388,7 @@ review_after = "2026-11-13"
     fn non_rust_inventory_check_rejects_new_unclassified_files_and_retains_evidence() -> Result<()>
     {
         let temp = tempfile::tempdir()?;
+        seed_frozen_pointer(temp.path())?;
         init_tracked_fixture(
             temp.path(),
             &[("README.md", "# Fixture\n"), ("scripts/existing.py", "print('fixture')\n")],
@@ -4386,6 +4441,7 @@ review_after = "2026-11-13"
     #[test]
     fn non_rust_inventory_check_rejects_invalid_allowlist_classification() -> Result<()> {
         let temp = tempfile::tempdir()?;
+        seed_frozen_pointer(temp.path())?;
         init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
         write_fixture(
             temp.path(),
