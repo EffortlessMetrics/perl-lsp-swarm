@@ -40,10 +40,14 @@
 //!   disposition remains `Shadow`, so no provider surface can publish them
 //!   (canonical publication is owned separately).
 //!
-//! Accessor semantics follow the reviewed `Mojo::Base` profile: `has` takes a
-//! name (or an array reference of names) and one optional default, every
-//! generated accessor is read-write, a write returns the invocant, and a
-//! `sub { ... }` default is a lazy builder rather than a code-reference value.
+//! Accessor semantics follow the reviewed `Mojo::Base` profile. `attr` binds
+//! `($self, $attrs, $value, %kv)`: a name (or an array reference of names),
+//! one optional default, and optional trailing key/value options — the corpus
+//! spells `has app => undef, weak => 1;`. Every generated accessor is
+//! read-write and a write returns the invocant, so an option this profile does
+//! not model limits the *read* result without disturbing the accessor identity
+//! or the write contract. A `sub { ... }` default is a lazy builder rather
+//! than a code-reference value.
 
 use crate::envelope::{
     CallableResultCompleteness, CallableResultFact, CallableResultLimitation,
@@ -96,10 +100,15 @@ impl MojoBaseAttributeName {
 
 /// Default-value evidence of one source-extracted `has` declaration.
 ///
-/// `Mojo::Base` admits exactly two default forms: a constant value and a code
-/// reference invoked lazily to build the value. Anything else croaks at
-/// runtime, so it is an explicit unsupported boundary rather than a guessed
-/// value.
+/// `Mojo::Base` admits two default *values*: a constant, and a code reference
+/// invoked lazily to build the value. Any other reference croaks at runtime,
+/// so it is an explicit unsupported boundary rather than a guessed value.
+///
+/// This describes the default operand only. `Mojo::Base::attr` binds
+/// `($self, $attrs, $value, %kv)`, so a declaration may also carry trailing
+/// option pairs after the default; those are recorded separately on
+/// [`MojoBaseAttributeDeclaration::unmodeled_options`] and do not make the
+/// default unsupported.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MojoBaseAttributeDefault {
@@ -172,6 +181,17 @@ pub struct MojoBaseAttributeDeclaration {
     pub default: MojoBaseAttributeDefault,
     /// Same-named explicit source method state in the owning package.
     pub explicit_method: MojoBaseExplicitMethodState,
+    /// Option keys supplied after the default that the reviewed profile does
+    /// not model.
+    ///
+    /// `Mojo::Base::attr` binds `($self, $attrs, $value, %kv)`, so a
+    /// declaration may carry trailing key/value options — the corpus spells
+    /// `has app => undef, weak => 1;`. The reviewed profile models the name
+    /// and the default; every option key is recorded here rather than
+    /// silently ignored or mistaken for extra operands, and it limits the
+    /// reader result without disturbing the accessor identity or the write
+    /// contract, both of which `Mojo::Base` still generates normally.
+    pub unmodeled_options: Vec<String>,
     /// Source generation this declaration was extracted from.
     ///
     /// Load-bearing: minting refuses a declaration whose generation differs
@@ -600,7 +620,16 @@ fn mint_reader_fact(
         declaration.name_index,
         generation,
     );
-    let (relation, limitations, boundary_kind) = reader_relation(&declaration.default);
+    let (mut relation, mut limitations, mut boundary_kind) = reader_relation(&declaration.default);
+    if !declaration.unmodeled_options.is_empty() {
+        // `Mojo::Base` accepts the options (`weak => 1` and friends), so the
+        // accessor and its write contract are unaffected — but an option this
+        // profile does not model can change what a read yields, so the reader
+        // cannot keep a default-derived shape.
+        relation = CallableResultRelation::Unknown;
+        limitations.push(CallableResultLimitation::Unsupported);
+        boundary_kind = BoundaryKind::Unsupported;
+    }
     CallableResultFact::new(
         generated_envelope(
             SemanticFactKind::CallableResult,
@@ -765,6 +794,7 @@ mod tests {
             name: MojoBaseAttributeName::Literal(name.to_string()),
             default,
             explicit_method: MojoBaseExplicitMethodState::None,
+            unmodeled_options: Vec::new(),
             source_generation: SourceGeneration::known("gen-1"),
         }
     }

@@ -219,6 +219,7 @@ impl WalkState<'_> {
                 name,
                 default: parsed.default.clone(),
                 explicit_method,
+                unmodeled_options: parsed.unmodeled_options.clone(),
                 source_generation: self.generation.clone(),
             });
         }
@@ -231,6 +232,7 @@ impl WalkState<'_> {
 struct ParsedHas {
     names: Vec<(MojoBaseAttributeName, (usize, usize))>,
     default: MojoBaseAttributeDefault,
+    unmodeled_options: Vec<String>,
 }
 
 /// Recognize the three parser shapes of a reviewed `has` statement.
@@ -239,10 +241,8 @@ fn parse_has_expression(expression: &Node) -> Option<ParsedHas> {
         // `has NAME;` / `has NAME => DEFAULT;` / `has(NAME, DEFAULT)`
         NodeKind::FunctionCall { name, args } if name == HAS_KEYWORD => {
             let (name_operand, rest) = args.split_first()?;
-            Some(ParsedHas {
-                names: names_from_operand(name_operand),
-                default: default_from_operands(rest),
-            })
+            let (default, unmodeled_options) = default_and_options(rest);
+            Some(ParsedHas { names: names_from_operand(name_operand), default, unmodeled_options })
         }
         // `has [LIST];` — the bracket follows the bareword, so the parser
         // shapes it as an index expression rather than a call.
@@ -251,6 +251,7 @@ fn parse_has_expression(expression: &Node) -> Option<ParsedHas> {
             Some(ParsedHas {
                 names: names_from_operand(list),
                 default: MojoBaseAttributeDefault::Absent,
+                unmodeled_options: Vec::new(),
             })
         }
         // `has [LIST] => DEFAULT;` — the index expression becomes the key of a
@@ -260,7 +261,11 @@ fn parse_has_expression(expression: &Node) -> Option<ParsedHas> {
                 return None;
             };
             let list = has_index_list(key)?;
-            Some(ParsedHas { names: names_from_operand(list), default: classify_default(value) })
+            Some(ParsedHas {
+                names: names_from_operand(list),
+                default: classify_default(value),
+                unmodeled_options: Vec::new(),
+            })
         }
         _ => None,
     }
@@ -341,18 +346,46 @@ fn classify_name(node: &Node) -> MojoBaseAttributeName {
     }
 }
 
-/// Default evidence contributed by the operands following the name.
-fn default_from_operands(rest: &[Node]) -> MojoBaseAttributeDefault {
-    match rest {
-        [] => MojoBaseAttributeDefault::Absent,
-        [default] => classify_default(default),
-        // `Mojo::Base::attr` binds one name and one default; further operands
-        // are outside the reviewed profile.
-        _ => MojoBaseAttributeDefault::Unsupported {
-            reason: "more operands than the reviewed `has NAME => DEFAULT` profile binds"
-                .to_string(),
-        },
+/// Default and option evidence contributed by the operands following the
+/// name.
+///
+/// `Mojo::Base::attr` binds `($self, $attrs, $value, %kv)`: the operand after
+/// the name is the default, and anything after that is a key/value option
+/// list. The corpus spells `has app => undef, weak => 1;`, so trailing pairs
+/// are ordinary supported syntax — not extra operands — even though this
+/// profile does not model what each option means. Option keys are returned so
+/// the fact side can limit the reader without disturbing the accessor
+/// identity. An odd trailing operand cannot be a `%kv` list at all and stays
+/// an explicit unsupported boundary.
+fn default_and_options(rest: &[Node]) -> (MojoBaseAttributeDefault, Vec<String>) {
+    let Some((default, options)) = rest.split_first() else {
+        return (MojoBaseAttributeDefault::Absent, Vec::new());
+    };
+    if options.is_empty() {
+        return (classify_default(default), Vec::new());
     }
+    if options.len() % 2 != 0 {
+        return (
+            MojoBaseAttributeDefault::Unsupported {
+                reason: "trailing operands cannot form the `%kv` option list `Mojo::Base::attr` \
+                         binds"
+                    .to_string(),
+            },
+            Vec::new(),
+        );
+    }
+    let keys = options
+        .iter()
+        .step_by(2)
+        .map(|key| match &key.kind {
+            NodeKind::String { value, .. } => {
+                unquote(value).unwrap_or_else(|| "<empty>".to_string())
+            }
+            NodeKind::Identifier { name } => name.clone(),
+            _ => "<computed>".to_string(),
+        })
+        .collect();
+    (classify_default(default), keys)
 }
 
 /// Classify one default operand.
@@ -533,6 +566,38 @@ mod tests {
     #[test]
     fn a_has_call_inside_a_sub_body_is_not_a_class_attribute() {
         assert!(declarations("package App;\nsub build { has 'runtime'; }\n").is_empty());
+    }
+
+    #[test]
+    fn trailing_option_pairs_are_bound_as_options_not_extra_operands() {
+        // Verbatim from the bundled corpus
+        // (test_corpus/real_projects/mojolicious_skeleton/lib/Mojolicious/
+        // Controller.pm): `Mojo::Base::attr` binds ($self, $attrs, $value,
+        // %kv), so `weak => 1` is a supported option, not a malformed extra
+        // operand.
+        let found = declarations("package App;\nhas app => undef, weak => 1;\n");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name.literal(), Some("app"));
+        assert_eq!(
+            found[0].default,
+            MojoBaseAttributeDefault::Absent,
+            "the default operand is `undef`, which stores undef either way"
+        );
+        assert_eq!(found[0].unmodeled_options, ["weak"], "the option key is recorded, not dropped");
+    }
+
+    #[test]
+    fn an_odd_trailing_operand_cannot_be_an_option_list() {
+        let found = declarations("package App;\nhas name => 'v', weak;\n");
+        assert!(matches!(found[0].default, MojoBaseAttributeDefault::Unsupported { .. }));
+        assert!(found[0].unmodeled_options.is_empty());
+    }
+
+    #[test]
+    fn a_plain_declaration_records_no_options() {
+        let found = declarations("package App;\nhas name => 'v';\n");
+        assert_eq!(found[0].default, MojoBaseAttributeDefault::Constant);
+        assert!(found[0].unmodeled_options.is_empty());
     }
 
     #[test]

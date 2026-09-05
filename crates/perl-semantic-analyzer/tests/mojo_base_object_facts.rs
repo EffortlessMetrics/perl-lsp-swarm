@@ -448,6 +448,34 @@ fn a_conditional_has_declares_no_accessor() {
     assert_eq!(member_names(&facts), ["always"]);
 }
 
+#[test]
+fn a_corpus_option_bearing_declaration_keeps_its_accessor_and_write_contract() {
+    // Verbatim from the bundled corpus
+    // (test_corpus/real_projects/mojolicious_skeleton/lib/Mojolicious/Controller.pm).
+    // `Mojo::Base` generates an ordinary read-write accessor for a `weak`
+    // attribute, so the member and the write contract are unaffected; only the
+    // read result is limited, because an unmodeled option can change what a
+    // read yields.
+    let code =
+        "package Mojolicious::Controller;\nuse Mojo::Base -base;\nhas app => undef, weak => 1;\n";
+    let facts = only_facts(code);
+    assert_eq!(
+        member_names(&facts),
+        ["app"],
+        "an option-bearing `has` still declares its accessor"
+    );
+    assert_eq!(
+        facts.setter_results[0].relation,
+        CallableResultRelation::ReceiverSelf,
+        "a weak attribute's write still returns the invocant"
+    );
+    assert_eq!(facts.reader_results[0].relation, CallableResultRelation::Unknown);
+    assert!(
+        facts.reader_results[0].limitations().contains(&CallableResultLimitation::Unsupported),
+        "an unmodeled option must limit the read result"
+    );
+}
+
 // ── Currentness, isolation, determinism ─────────────────────────────────
 
 #[test]
