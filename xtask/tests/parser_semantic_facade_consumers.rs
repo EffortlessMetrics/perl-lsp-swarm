@@ -114,7 +114,8 @@ fn repo_root() -> PathBuf {
 /// guard exists to close.
 ///
 /// Literal forms handled: ordinary `"…"` with backslash escapes, raw strings
-/// `r"…"` / `r#"…"#` at any hash depth, and the `b` byte-string prefix.
+/// `r"…"` / `r#"…"#` at any hash depth, and the `b` byte-string and `c`
+/// C-string prefixes, alone or combined with `r` (`br"…"`, `cr#"…"#`).
 /// Character literals are deliberately not tracked: a forbidden token cannot
 /// fit in one, and `'` is ambiguous with lifetimes, so treating it as a
 /// literal opener would swallow real code.
@@ -153,7 +154,7 @@ fn code_without_comments(source: &str) -> String {
 /// safe side of a malformed source rather than resuming mid-literal.
 fn string_literal_end(chars: &[char], index: usize) -> Option<usize> {
     let mut cursor = index;
-    if chars[cursor] == 'b' {
+    if chars[cursor] == 'b' || chars[cursor] == 'c' {
         cursor += 1;
     }
     let raw = chars.get(cursor) == Some(&'r');
@@ -700,4 +701,31 @@ fn a_chain_reports_its_module_once_not_every_semantic_name_in_it() {
 fn a_bare_crate_reference_without_a_path_is_not_a_violation() {
     let source = "let name = perl_parser;\nextern crate perl_parser;\n";
     assert!(forbidden_facade_references(&code_without_comments(source)).is_empty());
+}
+
+/// Devin finding r3941604610: `c"…"` and `cr#"…"#` are Rust string literals
+/// too. Leaving their contents executable would both report fixture text as a
+/// violation and let a `//` inside one hide a later facade import.
+#[test]
+fn c_string_literals_are_elided_like_every_other_literal() {
+    let source = "\
+const A: &CStr = c\"use perl_parser::semantic::X;\";
+const B: &CStr = cr#\"use perl_parser::symbol::Y;\"#;
+const C: &[u8] = br\"use perl_parser::scope_analyzer::Z;\";
+use perl_parser::type_inference::TypeEnvironment;
+";
+    let hits = forbidden_facade_references(&code_without_comments(source));
+    assert_eq!(hits, vec!["perl_parser::type_inference".to_string()]);
+}
+
+/// The hiding direction for the same prefixes: a `//` inside a C string must
+/// not comment out the rest of the file.
+#[test]
+fn a_comment_marker_inside_a_c_string_cannot_hide_a_later_import() {
+    let source = "\
+const A: &CStr = c\"// not a comment\";
+use perl_parser::semantic::SemanticAnalyzer;
+";
+    let hits = forbidden_facade_references(&code_without_comments(source));
+    assert_eq!(hits, vec!["perl_parser::semantic".to_string()]);
 }
