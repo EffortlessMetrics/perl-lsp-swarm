@@ -1,0 +1,532 @@
+name: Temporary fix Emacs journey authority bindings
+
+on:
+  push:
+    branches:
+      - codex/11768-emacs-journeys-r2
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Repair optional expectation and subject authority bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          subject_path = Path('xtask/src/emacs_subject_manifest.rs')
+          subject = subject_path.read_text()
+          marker = '''pub struct SubjectManifest {
+              pub schema_version: String,
+              pub subjects: Vec<SubjectRow>,
+          }
+
+          impl SubjectManifest {'''
+          replacement = '''pub struct SubjectManifest {
+              pub schema_version: String,
+              pub subjects: Vec<SubjectRow>,
+          }
+
+          const CANONICAL_SUBJECT_MANIFEST_BYTES: &[u8] = include_bytes!(concat!(
+              env!("CARGO_MANIFEST_DIR"),
+              "/../.ci/editor-clients/emacs-subjects.v1.json"
+          ));
+
+          /// Deterministic semantic identity of one validated subject manifest.
+          ///
+          /// Subject row order is presentation only, so rows are sorted by stable
+          /// `subject_id` before serialization. Every row field and every meaningful
+          /// nested-list order remains bound. JSON whitespace and object-key formatting
+          /// therefore cannot move the identity, while any subject identity edit does.
+          pub fn subject_manifest_identity_digest(manifest: &SubjectManifest) -> Result<String> {
+              manifest.validate().map_err(|rejection| {
+                  anyhow::anyhow!("cannot digest an invalid subject manifest: {rejection}")
+              })?;
+              let mut canonical = manifest.clone();
+              canonical.subjects.sort_by(|left, right| left.subject_id.cmp(&right.subject_id));
+              let bytes = serde_json::to_vec(&canonical)
+                  .context("serializing canonical Emacs subject-manifest identity")?;
+              Ok(prefixed_sha256(&bytes))
+          }
+
+          /// Identity of the checked subject authority compiled with `xtask`.
+          ///
+          /// `include_bytes!` makes a manifest edit a build input. The host-journey
+          /// registry binds this digest into every cell and its production check
+          /// compares the repository-root manifest it loaded against the same identity.
+          pub fn canonical_subject_manifest_identity_digest() -> Result<String> {
+              let manifest: SubjectManifest =
+                  serde_json::from_slice(CANONICAL_SUBJECT_MANIFEST_BYTES)
+                      .context("embedded Emacs subject manifest is not valid JSON")?;
+              subject_manifest_identity_digest(&manifest)
+          }
+
+          impl SubjectManifest {'''
+          if subject.count(marker) != 1:
+              raise SystemExit('subject manifest insertion marker drifted')
+          subject = subject.replace(marker, replacement)
+          subject_path.write_text(subject)
+
+          journeys_path = Path('xtask/src/emacs_host_journeys.rs')
+          journeys = journeys_path.read_text()
+
+          old_import = '''use crate::editor_client_compat::EvidenceStage;
+          '''
+          new_import = '''use crate::editor_client_compat::EvidenceStage;
+          use crate::emacs_subject_manifest::{
+              canonical_subject_manifest_identity_digest, subject_manifest_identity_digest,
+          };
+          '''
+          if journeys.count(old_import) != 1:
+              raise SystemExit('host journey import marker drifted')
+          journeys = journeys.replace(old_import, new_import)
+
+          old_optional = '''/// Optional documented-feature classes under #9413. Additive only: their
+          /// existence never strengthens the bounded core profile.
+          pub const OPTIONAL_CLASSES: &[&str] =
+              &["opt_native_formatting", "opt_code_action_application", "opt_inlay_hints"];
+          '''
+          new_optional = '''/// Optional documented-feature classes under #9413 whose canonical semantic
+          /// expectation authority has landed. Additive only: their existence never
+          /// strengthens the bounded core profile. Native formatting and inlay hints
+          /// remain absent until #9413 lands feature-specific canonical expectations;
+          /// borrowing rename or hover truth would manufacture an unrelated oracle.
+          pub const OPTIONAL_CLASSES: &[&str] = &["opt_code_action_application"];
+          '''
+          if journeys.count(old_optional) != 1:
+              raise SystemExit('optional class marker drifted')
+          journeys = journeys.replace(old_optional, new_optional)
+
+          fixture_field = '''    /// Subject-fixture authorities bound to this cell from the registry-wide
+              /// [`SUBJECT_FIXTURE_SUBSTRATE`].
+              pub fixture_owners: Vec<String>,
+              /// Canonical expectation owners referenced, not copied.
+          '''
+          fixture_field_new = '''    /// Subject-fixture authorities bound to this cell from the registry-wide
+              /// [`SUBJECT_FIXTURE_SUBSTRATE`].
+              pub fixture_owners: Vec<String>,
+              /// Deterministic semantic digest of the exact checked subject manifest.
+              /// The id without this digest would silently re-resolve after a subject
+              /// row changed while leaving every journey-cell identity unchanged.
+              pub fixture_set_digest: String,
+              /// Canonical expectation owners referenced, not copied.
+          '''
+          if journeys.count(fixture_field) != 1:
+              raise SystemExit('fixture field marker drifted')
+          journeys = journeys.replace(fixture_field, fixture_field_new)
+
+          build_field = '''            fixture_owners: SUBJECT_FIXTURE_SUBSTRATE.iter().map(|f| (*f).to_string()).collect(),
+                  expectation_owner: expect_ref(self.expectations)?,
+          '''
+          build_field_new = '''            fixture_owners: SUBJECT_FIXTURE_SUBSTRATE.iter().map(|f| (*f).to_string()).collect(),
+                  fixture_set_digest: canonical_subject_manifest_identity_digest()?,
+                  expectation_owner: expect_ref(self.expectations)?,
+          '''
+          if journeys.count(build_field) != 1:
+              raise SystemExit('cell builder marker drifted')
+          journeys = journeys.replace(build_field, build_field_new)
+
+          ceiling_marker = '''fn claim_ceiling_for(depth: DepthClass, evidence_kind: EvidenceKind) -> &'static str {
+              match depth {
+                  DepthClass::Optional => OPTIONAL_CLAIM_CEILING,
+                  DepthClass::Core if evidence_kind == EvidenceKind::ProtocolMembershipOnly => {
+                      PROTOCOL_CLAIM_CEILING
+                  }
+                  DepthClass::Core => CORE_CLAIM_CEILING,
+              }
+          }
+
+          /// Declaration shape for one row; [`registry`] fills the shared bindings
+          '''
+          ceiling_replacement = '''fn claim_ceiling_for(depth: DepthClass, evidence_kind: EvidenceKind) -> &'static str {
+              match depth {
+                  DepthClass::Optional => OPTIONAL_CLAIM_CEILING,
+                  DepthClass::Core if evidence_kind == EvidenceKind::ProtocolMembershipOnly => {
+                      PROTOCOL_CLAIM_CEILING
+                  }
+                  DepthClass::Core => CORE_CLAIM_CEILING,
+              }
+          }
+
+          /// Feature-specific canonical truth an admitted optional class must bind.
+          /// Adding an optional class without an existing canonical owner is therefore
+          /// unrepresentable: #11768 requires transferring that missing authority
+          /// instead of borrowing a plausible expectation from another feature.
+          fn optional_expectation_ids(class: &str) -> Option<&'static [&'static str]> {
+              match class {
+                  "opt_code_action_application" => Some(&["code_action_preview.syntax"]),
+                  _ => None,
+              }
+          }
+
+          /// Declaration shape for one row; [`registry`] fills the shared bindings
+          '''
+          if journeys.count(ceiling_marker) != 1:
+              raise SystemExit('optional expectation function marker drifted')
+          journeys = journeys.replace(ceiling_marker, ceiling_replacement)
+
+          formatting_pattern = re.compile(
+              r'\n        CellSpec \{\n            cell_id: "emacs\.opt_native_formatting\.format_document_depth",.*?\n        \}\.build\(\)\?,',
+              re.S,
+          )
+          journeys, count = formatting_pattern.subn(
+              '\n        // Native formatting remains #9413 `not_proven` until a feature-specific\n'
+              '        // canonical expectation owner lands. A rename expectation cannot\n'
+              '        // certify formatting output.',
+              journeys,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit('formatting optional cell marker drifted')
+
+          inlay_pattern = re.compile(
+              r'\n        CellSpec \{\n            cell_id: "emacs\.opt_inlay_hints\.request_render_refresh_depth",.*?\n        \}\.build\(\)\?,',
+              re.S,
+          )
+          journeys, count = inlay_pattern.subn(
+              '\n        // Inlay-hint host consumption remains #9413 `not_proven` until a\n'
+              '        // feature-specific canonical expectation owner lands.',
+              journeys,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit('inlay optional cell marker drifted')
+
+          denominator_marker = '''    if let Err(failure) = crate::emacs_subject_fan_in::validate_subject_lane_denominator(&manifest)
+              {
+                  bail!("emacs subject denominator does not certify the governed client set: {failure}");
+              }
+              for fixture in SUBJECT_FIXTURE_SUBSTRATE {
+          '''
+          denominator_replacement = '''    if let Err(failure) = crate::emacs_subject_fan_in::validate_subject_lane_denominator(&manifest)
+              {
+                  bail!("emacs subject denominator does not certify the governed client set: {failure}");
+              }
+              let on_disk_subject_digest = subject_manifest_identity_digest(&manifest)?;
+              let compiled_subject_digest = canonical_subject_manifest_identity_digest()?;
+              ensure!(
+                  on_disk_subject_digest == compiled_subject_digest,
+                  "checked Emacs subject-manifest identity digest {on_disk_subject_digest} differs \
+                   from the compiled canonical authority {compiled_subject_digest}"
+              );
+              for fixture in SUBJECT_FIXTURE_SUBSTRATE {
+          '''
+          if journeys.count(denominator_marker) != 1:
+              raise SystemExit('subject denominator marker drifted')
+          journeys = journeys.replace(denominator_marker, denominator_replacement)
+
+          fixture_validation = '''    for fixture in &cell.fixture_owners {
+                  ensure!(
+                      fixtures.insert(fixture.as_str()),
+                      "duplicate fixture owner {fixture} in cell {}",
+                      cell.cell_id
+                  );
+                  ensure!(
+                      SUBJECT_FIXTURE_SUBSTRATE.contains(&fixture.as_str()),
+                      "cell {} binds fixture authority {fixture} outside the declared substrate",
+                      cell.cell_id
+                  );
+              }
+
+              // Expectations: referenced canonical truth, never copied. Unknown ids or
+          '''
+          fixture_validation_new = '''    for fixture in &cell.fixture_owners {
+                  ensure!(
+                      fixtures.insert(fixture.as_str()),
+                      "duplicate fixture owner {fixture} in cell {}",
+                      cell.cell_id
+                  );
+                  ensure!(
+                      SUBJECT_FIXTURE_SUBSTRATE.contains(&fixture.as_str()),
+                      "cell {} binds fixture authority {fixture} outside the declared substrate",
+                      cell.cell_id
+                  );
+              }
+              ensure!(
+                  cell.fixture_set_digest == canonical_subject_manifest_identity_digest()?,
+                  "cell {} binds a stale or foreign Emacs subject-manifest digest {}",
+                  cell.cell_id,
+                  cell.fixture_set_digest
+              );
+
+              // Expectations: referenced canonical truth, never copied. Unknown ids or
+          '''
+          if journeys.count(fixture_validation) != 1:
+              raise SystemExit('fixture validation marker drifted')
+          journeys = journeys.replace(fixture_validation, fixture_validation_new)
+
+          expectation_validation = '''    for expectation in &cell.expectation_owner.ids {
+                  ensure!(
+                      expectations.insert(expectation.as_str()),
+                      "duplicate expectation id {expectation} in cell {}",
+                      cell.cell_id
+                  );
+                  ensure!(
+                      CANONICAL_EXPECTATION_IDS.contains(&expectation.as_str()),
+                      "cell {} references unknown canonical expectation id {expectation}; missing \
+                       canonical truth blocks the cell",
+                      cell.cell_id
+                  );
+              }
+
+              // Root sensitivity: reference-only tokens, never material duplication.
+          '''
+          expectation_validation_new = '''    for expectation in &cell.expectation_owner.ids {
+                  ensure!(
+                      expectations.insert(expectation.as_str()),
+                      "duplicate expectation id {expectation} in cell {}",
+                      cell.cell_id
+                  );
+                  ensure!(
+                      CANONICAL_EXPECTATION_IDS.contains(&expectation.as_str()),
+                      "cell {} references unknown canonical expectation id {expectation}; missing \
+                       canonical truth blocks the cell",
+                      cell.cell_id
+                  );
+              }
+              if cell.depth == DepthClass::Optional {
+                  let expected = optional_expectation_ids(&cell.journey_class).with_context(|| {
+                      format!(
+                          "optional class {} has no feature-specific canonical expectation authority",
+                          cell.journey_class
+                      )
+                  })?;
+                  let expected: BTreeSet<&str> = expected.iter().copied().collect();
+                  ensure!(
+                      expectations == expected,
+                      "optional cell {} must bind its feature-specific canonical expectations {:?}, \
+                       found {:?}",
+                      cell.cell_id,
+                      expected,
+                      expectations
+                  );
+              }
+
+              // Root sensitivity: reference-only tokens, never material duplication.
+          '''
+          if journeys.count(expectation_validation) != 1:
+              raise SystemExit('expectation validation marker drifted')
+          journeys = journeys.replace(expectation_validation, expectation_validation_new)
+
+          digest_assignment = '''        fixture_owners: sorted(cell.fixture_owners.clone()),
+                  expectation_set: cell.expectation_owner.set_id.clone(),
+          '''
+          digest_assignment_new = '''        fixture_owners: sorted(cell.fixture_owners.clone()),
+                  fixture_set_digest: cell.fixture_set_digest.clone(),
+                  expectation_set: cell.expectation_owner.set_id.clone(),
+          '''
+          if journeys.count(digest_assignment) != 1:
+              raise SystemExit('digest assignment marker drifted')
+          journeys = journeys.replace(digest_assignment, digest_assignment_new)
+
+          digest_field = '''    fixture_owners: Vec<String>,
+              expectation_set: String,
+          '''
+          digest_field_new = '''    fixture_owners: Vec<String>,
+              fixture_set_digest: String,
+              expectation_set: String,
+          '''
+          if journeys.count(digest_field) != 1:
+              raise SystemExit('digest view marker drifted')
+          journeys = journeys.replace(digest_field, digest_field_new)
+
+          journeys_path.write_text(journeys)
+
+          tests_path = Path('xtask/tests/emacs_host_journeys_contract.rs')
+          tests = tests_path.read_text()
+          import_marker = '''use xtask::emacs_host_journeys::{
+              self, DepthClass, DiagnosticCohort, EvidenceKind, ExpectationRef, HostSurface, JourneyCell,
+              PLATFORM_APPLICABILITY_TOKENS, ROOT_ROLE_TOKENS, RootReference,
+          };
+          '''
+          import_replacement = '''use xtask::emacs_host_journeys::{
+              self, DepthClass, DiagnosticCohort, EvidenceKind, ExpectationRef, HostSurface, JourneyCell,
+              PLATFORM_APPLICABILITY_TOKENS, ROOT_ROLE_TOKENS, RootReference,
+          };
+          use xtask::emacs_subject_manifest::{
+              SubjectManifest, canonical_subject_manifest_identity_digest,
+              subject_manifest_identity_digest,
+          };
+          '''
+          if tests.count(import_marker) != 1:
+              raise SystemExit('test import marker drifted')
+          tests = tests.replace(import_marker, import_replacement)
+
+          optional_assertion = '''    ensure!(
+                  first.optional_cell_count >= 3,
+                  "the #9413 optional documented-feature families must stay registered"
+              );
+          '''
+          optional_assertion_new = '''    ensure!(
+                  first.optional_cell_count == 1,
+                  "only the code-action #9413 cell has feature-specific canonical truth"
+              );
+          '''
+          if tests.count(optional_assertion) != 1:
+              raise SystemExit('optional count assertion drifted')
+          tests = tests.replace(optional_assertion, optional_assertion_new)
+
+          matrix_marker = '''        ("fixture_owners", |c| c.fixture_owners.push("altered_fixture".to_string())),
+                  ("expectation_owner.ids", |c| {
+          '''
+          matrix_replacement = '''        ("fixture_owners", |c| c.fixture_owners.push("altered_fixture".to_string())),
+                  ("fixture_set_digest", |c| c.fixture_set_digest.insert_str(0, "altered")),
+                  ("expectation_owner.ids", |c| {
+          '''
+          if tests.count(matrix_marker) != 1:
+              raise SystemExit('digest mutation matrix marker drifted')
+          tests = tests.replace(matrix_marker, matrix_replacement)
+
+          insertion_marker = '''#[test]
+          fn every_fixture_owner_resolves_to_the_landed_subject_authority() -> Result<()> {
+          '''
+          new_tests = '''#[test]
+          fn optional_cells_require_feature_specific_canonical_truth() -> Result<()> {
+              let cells = compiled()?;
+              let code_action = find(
+                  &cells,
+                  "emacs.opt_code_action_application.apply_or_refuse_depth",
+              )?;
+              ensure!(
+                  code_action.expectation_owner.ids == vec!["code_action_preview.syntax"],
+                  "the code-action cell lost its feature-specific canonical truth"
+              );
+              ensure!(
+                  emacs_host_journeys::lookup(&cells, "opt_native_formatting").is_err(),
+                  "formatting was registered before a canonical formatting expectation landed"
+              );
+              ensure!(
+                  emacs_host_journeys::lookup(&cells, "opt_inlay_hints").is_err(),
+                  "inlay hints were registered before canonical hint truth landed"
+              );
+
+              let mut wrong = cells;
+              let position = wrong
+                  .iter()
+                  .position(|cell| {
+                      cell.cell_id == "emacs.opt_code_action_application.apply_or_refuse_depth"
+                  })
+                  .ok_or_else(|| anyhow::anyhow!("code-action optional cell vanished"))?;
+              wrong[position].expectation_owner.ids = vec!["hover.widget_name".to_string()];
+              let error = match emacs_host_journeys::validate_registry(&wrong) {
+                  Err(error) => error.to_string(),
+                  Ok(_) => bail!("an unrelated hover expectation certified a code-action cell"),
+              };
+              ensure!(
+                  error.contains("feature-specific canonical expectations"),
+                  "unexpected rejection for an unrelated optional expectation: {error}"
+              );
+              Ok(())
+          }
+
+          #[test]
+          fn subject_authority_identity_is_bound_per_cell_and_checked_on_disk() -> Result<()> {
+              let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                  .parent()
+                  .ok_or_else(|| anyhow::anyhow!("xtask must live below the repository root"))?;
+              let manifest = SubjectManifest::load(root)?;
+              let canonical = canonical_subject_manifest_identity_digest()?;
+              ensure!(
+                  subject_manifest_identity_digest(&manifest)? == canonical,
+                  "loaded and compiled subject authorities disagree"
+              );
+
+              let mut reordered = manifest.clone();
+              reordered.subjects.reverse();
+              ensure!(
+                  subject_manifest_identity_digest(&reordered)? == canonical,
+                  "subject row presentation order moved semantic authority identity"
+              );
+
+              let cells = compiled()?;
+              for cell in &cells {
+                  ensure!(
+                      cell.fixture_set_digest == canonical,
+                      "cell {} omitted the exact subject-authority digest",
+                      cell.cell_id
+                  );
+              }
+
+              let mut stale_cell = cells;
+              stale_cell[0].fixture_set_digest =
+                  "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                      .to_string();
+              let error = match emacs_host_journeys::validate_registry(&stale_cell) {
+                  Err(error) => error.to_string(),
+                  Ok(_) => bail!("a cell accepted a stale subject-authority digest"),
+              };
+              ensure!(
+                  error.contains("stale or foreign Emacs subject-manifest digest"),
+                  "unexpected rejection for a stale cell authority: {error}"
+              );
+
+              let source = std::fs::read(
+                  root.join(".ci/editor-clients/emacs-subjects.v1.json"),
+              )?;
+              let mut altered: serde_json::Value = serde_json::from_slice(&source)?;
+              let source_digest = altered
+                  .pointer_mut("/subjects/0/client_source_sha256")
+                  .ok_or_else(|| anyhow::anyhow!("test subject source digest vanished"))?;
+              let replacement = serde_json::Value::String(format!("sha256:{}", "1".repeat(64)));
+              ensure!(*source_digest != replacement, "test replacement did not change identity");
+              *source_digest = replacement;
+
+              let temporary = tempfile::tempdir()?;
+              let directory = temporary.path().join(".ci/editor-clients");
+              std::fs::create_dir_all(&directory)?;
+              std::fs::write(
+                  directory.join("emacs-subjects.v1.json"),
+                  serde_json::to_vec_pretty(&altered)?,
+              )?;
+              let error = match emacs_host_journeys::validate_compiled_registry_against(
+                  temporary.path(),
+              ) {
+                  Err(error) => error.to_string(),
+                  Ok(_) => bail!("the production check accepted changed subject authority bytes"),
+              };
+              ensure!(
+                  error.contains("subject-manifest identity digest"),
+                  "unexpected rejection for changed subject authority: {error}"
+              );
+              Ok(())
+          }
+
+          #[test]
+          fn every_fixture_owner_resolves_to_the_landed_subject_authority() -> Result<()> {
+          '''
+          if tests.count(insertion_marker) != 1:
+              raise SystemExit('new test insertion marker drifted')
+          tests = tests.replace(insertion_marker, new_tests)
+          tests_path.write_text(tests)
+          PY
+
+          cargo fmt -p xtask
+          cargo test -p xtask --test emacs_host_journeys_contract --locked
+          cargo test -p xtask --lib --locked emacs_host_journeys
+          cargo xtask integration emacs journeys check | tee /tmp/emacs-summary-1.json
+          cargo xtask integration emacs journeys check > /tmp/emacs-summary-2.json
+          cmp /tmp/emacs-summary-1.json /tmp/emacs-summary-2.json
+
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git rm -- .github/workflows/_temporary-fix-emacs-journey-authorities.yml
+          git add -- \
+            xtask/src/emacs_subject_manifest.rs \
+            xtask/src/emacs_host_journeys.rs \
+            xtask/tests/emacs_host_journeys_contract.rs
+          git diff --cached --check
+          git commit -m "fix(emacs): bind cells to real semantic and subject authorities"
+          git push origin HEAD:codex/11768-emacs-journeys-r2
