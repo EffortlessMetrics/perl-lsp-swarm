@@ -639,16 +639,20 @@ impl TokenSubjectError {
 /// and the identity it claims all agree. It can only be produced by a canonical
 /// construction seam, each of which runs the full validation contract:
 ///
-/// - [`ValidatedTokenStream::from_fresh_lex`] — one complete fresh lexer pass;
-/// - [`ValidatedTokenStream::from_checkpoint_replay`] — a complete replay to EOF
-///   backed by live boundary checkpoints;
+/// - [`ValidatedTokenStream::from_fresh_lex`] — one complete fresh lexer pass,
+///   performed by this module. The only seam admitted for production;
+/// - [`ValidatedTokenStream::from_checkpoint_replay`] — a complete replay to
+///   EOF, whose checkpoint backing is the producer's attestation and cannot be
+///   checked here, so the result is validated but never production-valid;
 /// - [`ValidatedTokenStream::from_test_fixture`] — a focused fixture, never
 ///   production-valid;
-/// - [`ValidatedTokenStream::from_exact_suffix_sync`] — the reserved class,
-///   which always refuses.
+/// - [`ValidatedTokenStream::from_exact_suffix_sync`] and
+///   [`ValidatedTokenStream::from_unsupported`] — the refusing seams, which
+///   never yield a subject.
 ///
-/// There is no constructor that accepts a caller-chosen provenance, so a bare
-/// token vector cannot be labelled as an admitted production stream.
+/// No constructor accepts a caller-chosen provenance, and the one production
+/// seam accepts no tokens at all, so a caller-supplied token vector cannot
+/// carry a production claim through any path.
 ///
 /// # Examples
 ///
