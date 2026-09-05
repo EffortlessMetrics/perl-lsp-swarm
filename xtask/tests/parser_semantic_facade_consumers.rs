@@ -853,3 +853,21 @@ use perl_parser::semantic::SemanticAnalyzer;
     let hits = forbidden_facade_references(&code_without_comments(source));
     assert_eq!(hits, vec!["perl_parser::semantic".to_string()]);
 }
+
+/// A rename declaration is itself whitespace-insensitive. Devin finding
+/// r3941731269 named the multiline form specifically; `35d1f4c3` already handles
+/// it, but nothing pinned it, and an unpinned behaviour in a recurrence guard
+/// is exactly what silently regresses.
+#[test]
+fn a_crate_rename_split_across_lines_is_still_resolved() {
+    let split = "use perl_parser\n    as\n    pp;\nuse pp::semantic::SemanticAnalyzer;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(split)),
+        vec!["perl_parser::semantic".to_string()]
+    );
+
+    // The negative control travels with it: an unrelated crate renamed across
+    // lines to the same short name must still not be reported.
+    let unrelated = "use perl_semantic_analyzer\n    as\n    pp;\nuse pp::semantic::X;\n";
+    assert!(forbidden_facade_references(&code_without_comments(unrelated)).is_empty());
+}
