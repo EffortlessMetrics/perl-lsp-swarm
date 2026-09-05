@@ -2,7 +2,7 @@ use color_eyre::eyre::{Context, Result};
 use std::env;
 use std::ffi::OsStr;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -198,16 +198,74 @@ pub(crate) fn command_exists(command: &str) -> bool {
 }
 
 fn command_exists_in_path(command: &str, path: Option<&OsStr>) -> bool {
-    #[cfg(windows)]
-    let suffixes: &[&str] = &[".exe", ".cmd", ".bat", ""];
-    #[cfg(not(windows))]
-    let suffixes: &[&str] = &[""];
     let Some(path) = path else {
         return false;
     };
 
+    #[cfg(windows)]
+    {
+        // Mirror std's *selection* before judging launchability: std's
+        // `program_exists` is `GetFileAttributesW`-based and admits
+        // directories and broken links, so std stops at the first
+        // attribute-resolving candidate and the real launch then fails if
+        // that subject is not a file. Selecting the same first candidate via
+        // `symlink_metadata` (which likewise does not follow links) keeps the
+        // probe from reporting a later PATH entry the launch would never
+        // reach; the probe is true only when the selected subject is a
+        // regular file, so directory and broken-link selections fail closed.
+        windows_command_candidates(command, path)
+            .into_iter()
+            .find(|candidate| std::fs::symlink_metadata(candidate).is_ok())
+            .is_some_and(|candidate| candidate.is_file())
+    }
+    #[cfg(not(windows))]
+    {
+        env::split_paths(path).any(|dir| dir.join(command).is_file())
+    }
+}
+
+/// Pure candidate generator for the Windows probe, mirroring the executable
+/// search that `std::process::Command` performs for a bare file name, in PATH
+/// order.
+///
+/// Authority: the pinned toolchain (Rust 1.95.0, `rust-toolchain.toml`),
+/// `library/std/src/sys/process/windows.rs` (`resolve_exe` / `search_paths`):
+///
+/// - A bare name containing `.` anywhere is searched verbatim — the launch API
+///   appends nothing, so `tool.cmd` probes `tool.cmd` only, never
+///   `tool.cmd.exe`. An explicit `.bat`/`.cmd` name is the *only* way
+///   `Command::new` reaches a script (std then routes it through `cmd.exe`).
+/// - A bare name without `.` is searched only as `<name>.exe`. `PATHEXT` is
+///   never consulted by `Command::new`, so it is not authority here either.
+/// - Empty PATH entries are skipped.
+/// - A name carrying a path separator is not PATH-searched by the launch API
+///   at all, so the probe fails closed (no candidates) for it.
+///
+/// Deliberate scope limits versus the full launch route: std additionally
+/// searches the application, system, and Windows directories after the child
+/// PATH; this probe covers the PATH leg only, because every caller probes for
+/// tools expected on PATH. Selection mirrors std's `GetFileAttributesW`-based
+/// `program_exists` (first attribute-resolving candidate wins, directories and
+/// broken links included); the caller in `command_exists_in_path` then fails
+/// closed unless that selected subject is a regular file, matching the
+/// eventual launch outcome. The spawn result remains authoritative for races
+/// and lifecycle failure.
+///
+/// Compiled on every platform so the candidate rules are unit-tested off
+/// Windows; the production caller exists only under `cfg(windows)`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_command_candidates(command: &str, path: &OsStr) -> Vec<PathBuf> {
+    if command.is_empty() || command.contains(['\\', '/']) {
+        return Vec::new();
+    }
+    let has_extension = command.contains('.');
     env::split_paths(path)
-        .any(|dir| suffixes.iter().any(|ext| dir.join(format!("{command}{ext}")).is_file()))
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(|dir| {
+            let candidate = dir.join(command);
+            if has_extension { candidate } else { candidate.with_extension("exe") }
+        })
+        .collect()
 }
 
 pub(crate) fn command_output_lines(output: &str) -> Vec<String> {
@@ -215,110 +273,4 @@ pub(crate) fn command_output_lines(output: &str) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::command_exists_in_path;
-    use std::env;
-    use std::error::Error;
-    use std::ffi::OsString;
-    use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    type TestResult<T = ()> = Result<T, Box<dyn Error>>;
-
-    struct TempDir(PathBuf);
-
-    impl TempDir {
-        fn new(label: &str) -> TestResult<Self> {
-            let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-            let path = env::temp_dir().join(format!(
-                "perl-ci-hygiene-command-exists-{label}-{}-{nanos}",
-                std::process::id()
-            ));
-            fs::create_dir_all(&path)?;
-            Ok(Self(path))
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn command_candidate_name(command: &str) -> String {
-        #[cfg(windows)]
-        {
-            format!("{command}.exe")
-        }
-        #[cfg(not(windows))]
-        {
-            command.to_owned()
-        }
-    }
-
-    fn joined_path(paths: &[&Path]) -> TestResult<OsString> {
-        Ok(env::join_paths(paths.iter().copied())?)
-    }
-
-    #[test]
-    fn command_exists_in_path_rejects_directory_candidate() -> TestResult {
-        let temp = TempDir::new("directory-only")?;
-        let command = "ci-hygiene-probe";
-        fs::create_dir(temp.path().join(command_candidate_name(command)))?;
-        let path = joined_path(&[temp.path()])?;
-
-        assert!(!command_exists_in_path(command, Some(path.as_os_str())));
-        Ok(())
-    }
-
-    #[test]
-    fn command_exists_in_path_accepts_regular_file_candidate() -> TestResult {
-        let temp = TempDir::new("regular-file")?;
-        let command = "ci-hygiene-probe";
-        fs::write(temp.path().join(command_candidate_name(command)), b"")?;
-        let path = joined_path(&[temp.path()])?;
-
-        assert!(command_exists_in_path(command, Some(path.as_os_str())));
-        Ok(())
-    }
-
-    #[test]
-    fn command_exists_in_path_skips_missing_path_entry() -> TestResult {
-        let missing_entry_root = TempDir::new("missing-before-file")?;
-        let regular_file_candidate = TempDir::new("file-after-missing")?;
-        let command = "ci-hygiene-probe";
-        let missing_entry = missing_entry_root.path().join("not-created");
-        fs::write(regular_file_candidate.path().join(command_candidate_name(command)), b"")?;
-        let path = joined_path(&[missing_entry.as_path(), regular_file_candidate.path()])?;
-
-        assert!(command_exists_in_path(command, Some(path.as_os_str())));
-        Ok(())
-    }
-
-    #[test]
-    fn command_exists_in_path_continues_past_directory_candidate() -> TestResult {
-        let directory_candidate = TempDir::new("directory-before-file")?;
-        let regular_file_candidate = TempDir::new("file-after-directory")?;
-        let command = "ci-hygiene-probe";
-        let candidate_name = command_candidate_name(command);
-        fs::create_dir(directory_candidate.path().join(&candidate_name))?;
-        let regular_file = regular_file_candidate.path().join(candidate_name);
-        fs::write(&regular_file, b"")?;
-        let path = joined_path(&[directory_candidate.path(), regular_file_candidate.path()])?;
-
-        assert!(command_exists_in_path(command, Some(path.as_os_str())));
-        fs::remove_file(regular_file)?;
-        assert!(!command_exists_in_path(command, Some(path.as_os_str())));
-        Ok(())
-    }
-
-    #[test]
-    fn command_exists_in_path_returns_false_without_path() {
-        assert!(!command_exists_in_path("ci-hygiene-probe", None));
-    }
-}
+mod tests;
