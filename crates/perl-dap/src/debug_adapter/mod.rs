@@ -1855,8 +1855,14 @@ print "result: $final\n";
         Ok(())
     }
 
+    /// #9089: the negotiation gate refuses before path validation, so a
+    /// traversal path receives the authority refusal — not a path-validation
+    /// error. The fixture self-validates that the requested path genuinely
+    /// escapes the workspace root, so the test cannot silently pass on a safe
+    /// path.
     #[test]
-    fn test_inline_values_rejects_traversal() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_inline_values_refusal_precedes_traversal_validation()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         adapter.handle_request(1, "initialize", None);
 
@@ -1864,11 +1870,35 @@ print "result: $final\n";
         *lock_or_recover(&adapter.workspace_root, "test.workspace_root") =
             Some(dir.path().to_path_buf());
 
+        // Self-validation: resolve the fixture lexically against the
+        // canonical workspace root and require that it escapes — otherwise
+        // this test exercises no traversal at all and would pass on a safe
+        // path.
+        let traversal = "../../../etc/passwd";
+        let canonical_root = dir.path().canonicalize()?;
+        let joined = canonical_root.join(traversal);
+        let mut resolved: Vec<std::path::Component<'_>> = Vec::new();
+        for component in joined.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    resolved.pop();
+                }
+                std::path::Component::CurDir => {}
+                other => resolved.push(other),
+            }
+        }
+        let resolved: std::path::PathBuf = resolved.iter().collect();
+        assert!(
+            !resolved.starts_with(&canonical_root),
+            "fixture must escape the workspace root: {resolved:?} must not be under \
+             {canonical_root:?}"
+        );
+
         let response = adapter.handle_request(
             2,
             "inlineValues",
             Some(json!({
-                "source": {"path": "../../../etc/passwd"},
+                "source": {"path": traversal},
                 "startLine": 1,
                 "endLine": 1
             })),

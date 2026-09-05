@@ -811,8 +811,10 @@ fn test_capability_dap_inline_values_initialize_response() -> TestResult {
     );
     assert_eq!(
         supports_inline,
-        has_feature("dap.inline_values"),
-        "supportsInlineValues must mirror the (unadvertised) dap.inline_values row"
+        perl_dap::backend::capabilities::advertises_inline_values_extension(),
+        "supportsInlineValues must mirror the #9089 negotiation authority, not the \
+         catalog row — the row stays unadvertised while the authority alone owns \
+         promotion"
     );
     Ok(())
 }
@@ -1184,19 +1186,19 @@ fn test_initialize_does_not_advertise_disabled_features() -> TestResult {
     //   supportsBreakpointLocationsRequest  = supports_basic_breakpoints
     //   supportsHitConditionalBreakpoints   = supports_hit_conditions
     //   supportsLogPoints                   = supports_log_points
-    //   supportsInlineValues                = #9089 negotiation authority (not
-    //                                         the dap.inline_values row); the
-    //                                         row is unadvertised, so both
-    //                                         sides are false today
     //   supportsCompletionsRequest          = supports_completions
     //   supportsModulesRequest              = supports_modules
     //   supportsDataBreakpoints             = supports_watchpoints
+    //
+    // `supportsInlineValues` is deliberately absent from this catalog-mirror
+    // loop (#9089): its wire value comes from the negotiation authority, not
+    // the `dap.inline_values` row, and is pinned against the authority in
+    // `test_capability_dap_inline_values_initialize_response`.
     let feature_to_cap = [
         ("dap.breakpoints.basic", "supportsConditionalBreakpoints"),
         ("dap.breakpoints.basic", "supportsBreakpointLocationsRequest"),
         ("dap.breakpoints.hit_condition", "supportsHitConditionalBreakpoints"),
         ("dap.breakpoints.logpoints", "supportsLogPoints"),
-        ("dap.inline_values", "supportsInlineValues"),
         ("dap.completions", "supportsCompletionsRequest"),
         ("dap.modules", "supportsModulesRequest"),
         ("dap.watchpoints", "supportsDataBreakpoints"),

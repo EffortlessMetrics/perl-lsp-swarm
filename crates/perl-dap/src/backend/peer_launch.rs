@@ -688,34 +688,28 @@ impl MirrorPeerBridge {
                     out.push(self.event("terminated", None));
                 }
             }
-            None | Some(_) => {
-                // #9089: `inlineValues` is `native_only` in the route table, so
-                // the peer-availability filter reduces it to `None` before this
-                // arm. The routed extension is unnegotiated in every frontend,
-                // so the mirror bridge refuses it on the same single authority
-                // the native gate reads — the lenient acknowledgement would
-                // answer `success: true` with no body while the native adapter
+            Some(DapRequestRoute::InlineValues) => {
+                // #9089: the custom inline-values extension is fail-closed in
+                // every frontend until a versioned negotiation contract is
+                // proven. The mirror frontend neither advertises nor
+                // negotiates it, so the single authority refuses the request —
+                // explicitly, on its own route, before any backend access —
+                // rather than acking success-empty while the native adapter
                 // refuses the identical request.
-                if matches!(
-                    DapRequestRoute::from_command(command),
-                    Some(DapRequestRoute::InlineValues)
-                ) && crate::backend::capabilities::refuse_inline_values_extension(
-                    crate::backend::capabilities::advertises_inline_values_extension(),
-                ) {
-                    out.push(self.response(
-                        request_seq,
-                        command,
-                        false,
-                        None,
-                        Some(
-                            crate::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE
-                                .to_string(),
-                        ),
-                    ));
-                } else {
-                    tracing::warn!(command, "mirror bridge: unhandled DAP request");
-                    out.push(self.response(request_seq, command, true, None, None));
-                }
+                out.push(self.response(
+                    request_seq,
+                    command,
+                    false,
+                    None,
+                    Some(
+                        crate::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE
+                            .to_string(),
+                    ),
+                ));
+            }
+            None | Some(_) => {
+                tracing::warn!(command, "mirror bridge: unhandled DAP request");
+                out.push(self.response(request_seq, command, true, None, None));
             }
         }
         out.extend(self.poll_events());
@@ -1718,13 +1712,12 @@ mod tests {
     /// #9089: the mirror bridge refuses the routed inlineValues extension
     /// instead of acking it.
     ///
-    /// `inlineValues` is `native_only` in the route table, so before this gate
-    /// it fell through the lenient fallthrough as `success: true` with no body
-    /// while the native adapter refused the identical request. The refusal is
-    /// decided in the dispatch fallthrough before any backend access, so the
-    /// pending phase (no peer connected) is the discriminating seat: getting
-    /// the #9089 refusal rather than `NotConnected` or a success ack proves
-    /// the gate owns the route.
+    /// Before this gate, the mirror fallthrough answered `success: true` with
+    /// no body while the native adapter refused the identical request. The
+    /// refusal is decided on the explicit `InlineValues` dispatch route before
+    /// any backend access, so the pending phase (no peer connected) is the
+    /// discriminating seat: getting the #9089 refusal rather than
+    /// `NotConnected` or a success ack proves the gate owns the route.
     #[test]
     fn mirror_refuses_inline_values_instead_of_acking() -> Result<(), String> {
         let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
