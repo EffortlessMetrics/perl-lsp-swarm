@@ -321,6 +321,9 @@ pub fn static_mirror_capabilities() -> Value {
         "supportsFunctionBreakpoints": true,
         "supportsBreakpointLocationsRequest": true,
         "supportsEvaluateForHovers": crate::backend::capabilities::MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS,
+        // One source with the mirror setExpression refusal gate (#9568): the
+        // profile does not advertise setExpression, so it must refuse it.
+        "supportsSetExpression": crate::backend::capabilities::MIRROR_ADVERTISES_SET_EXPRESSION,
         "supportsHitConditionalBreakpoints": false,
         "supportsLogPoints": false,
         "supportsDataBreakpoints": false,
@@ -689,7 +692,49 @@ impl MirrorPeerBridge {
                 }
             }
             None | Some(_) => {
-                if DapRequestRoute::from_command(command).is_some() {
+                // #9568: setExpression is `native_only` in the route table, so
+                // the peer-availability filter reduces it to `None` before this
+                // arm. The mirror profile does not advertise setExpression, and
+                // this mode refuses exactly what it does not advertise — the
+                // lenient success acknowledgement would promise an assignment
+                // the mirror bridge never performs while the native adapter
+                // refuses the identical request.
+                if matches!(
+                    DapRequestRoute::from_command(command),
+                    Some(DapRequestRoute::SetExpression)
+                ) {
+                    if crate::backend::capabilities::refuse_set_expression(
+                        crate::backend::capabilities::MIRROR_ADVERTISES_SET_EXPRESSION,
+                    ) {
+                        out.push(self.response(
+                            request_seq,
+                            command,
+                            false,
+                            None,
+                            Some(
+                                crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE
+                                    .to_string(),
+                            ),
+                        ));
+                    } else {
+                        // Promotion path: advertised by this mode but mirror
+                        // delegation to an assignment primitive is not wired
+                        // yet. Fail loudly instead of acknowledging a write
+                        // that did not happen.
+                        out.push(
+                            self.response(
+                                request_seq,
+                                command,
+                                false,
+                                None,
+                                Some(
+                                    "setExpression: mirror-mode delegation is not implemented"
+                                        .to_string(),
+                                ),
+                            ),
+                        );
+                    }
+                } else if DapRequestRoute::from_command(command).is_some() {
                     // A catalog route that exists but is unavailable in this
                     // frontend must fail closed: acknowledging it would report
                     // success for work no backend performed (#9069).
@@ -1680,6 +1725,9 @@ mod tests {
         assert_eq!(caps["supportsFunctionBreakpoints"], true);
         assert_eq!(caps["supportsBreakpointLocationsRequest"], true);
         assert_eq!(caps["supportsEvaluateForHovers"], false);
+        // #9568: the mirror profile advertises setExpression false, from the
+        // same single authority its request gate reads.
+        assert_eq!(caps["supportsSetExpression"], false);
         assert_eq!(caps["supportsHitConditionalBreakpoints"], false);
         assert_eq!(caps["supportsLogPoints"], false);
         assert_eq!(caps["supportsDataBreakpoints"], false);
@@ -1745,6 +1793,40 @@ mod tests {
             assert!(
                 !message.as_deref().unwrap_or("").contains("supportsEvaluateForHovers"),
                 "watch must not be refused as hover"
+            );
+        }
+        Ok(())
+    }
+
+    /// #9568: the mirror bridge refuses setExpression instead of acking it.
+    ///
+    /// `setExpression` is `native_only` in the route table, so before this
+    /// gate it fell through the lenient fallthrough as `success: true` with no
+    /// body — while the native adapter refused the identical request and the
+    /// profile advertised the capability false. The refusal is decided in the
+    /// dispatch fallthrough before any backend access, so the pending phase
+    /// (no peer connected) is the discriminating seat: getting the #9568
+    /// refusal rather than `NotConnected` or a success ack proves the gate
+    /// owns the route.
+    #[test]
+    fn mirror_refuses_set_expression_instead_of_acking() -> Result<(), String> {
+        let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+
+        let out = bridge.dispatch(
+            2,
+            "setExpression",
+            Some(json!({ "expression": "$x", "value": "42", "frameId": 0 })),
+        );
+        let first = out.first().ok_or_else(|| "produced no response".to_string())?;
+        let (cmd, ok, body) = as_response(first)?;
+        assert_eq!(cmd, "setExpression");
+        assert!(!ok, "setExpression must be refused, not acked with success");
+        assert!(body.is_none(), "a refused setExpression carries no body");
+        if let DapMessage::Response { message, .. } = first {
+            assert_eq!(
+                message.as_deref(),
+                Some(crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE),
+                "expected the deterministic #9568 refusal"
             );
         }
         Ok(())

@@ -375,7 +375,38 @@ macro_rules! dap_request_table {
         {
             Some(DapRequestRoute::Initialize) => out.push(ok()),
             None | Some(_) => {
-                if DapRequestRoute::from_command(command).is_some() {
+                if matches!(
+                    DapRequestRoute::from_command(command),
+                    Some(DapRequestRoute::SetExpression)
+                ) {
+                    if crate::backend::capabilities::refuse_set_expression(
+                        SETEXPR_ADVERTISED
+                    ) {
+                        out.push(self.response(
+                            request_seq,
+                            command,
+                            false,
+                            None,
+                            Some(
+                                crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE
+                                    .to_string(),
+                            ),
+                        ));
+                    } else {
+                        out.push(
+                            self.response(
+                                request_seq,
+                                command,
+                                false,
+                                None,
+                                Some(
+                                    "SETEXPR_DELEGATION"
+                                        .to_string(),
+                                ),
+                            ),
+                        );
+                    }
+                } else if DapRequestRoute::from_command(command).is_some() {
 UNAVAILABLE_WARN
                     out.push(self.response(
                         request_seq,
@@ -397,12 +428,16 @@ UNAVAILABLE_WARN
 """
         fallbacks = (
             (
+                "self.advertised_set_expression(),",
+                "setExpression: external-peer delegation is not implemented",
                 "                    tracing::warn!(command, "
                 '"peer bridge: request is unavailable in this frontend");',
                 "request is unavailable in the external peer frontend",
                 "peer bridge: unhandled DAP request",
             ),
             (
+                "crate::backend::capabilities::MIRROR_ADVERTISES_SET_EXPRESSION,",
+                "setExpression: mirror-mode delegation is not implemented",
                 "                    tracing::warn!(\n"
                 "                        command,\n"
                 '                        "mirror bridge: request is unavailable in this frontend"\n'
@@ -411,13 +446,15 @@ UNAVAILABLE_WARN
                 "mirror bridge: unhandled DAP request",
             ),
         )
-        for peer_path, (unavailable, detail, message) in zip(
+        for peer_path, (advertised, delegation, unavailable, detail, message) in zip(
             PEER_DISPATCH_PATHS, fallbacks, strict=True
         ):
             path = self.root / peer_path
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
-                peer_source.replace("UNAVAILABLE_WARN", unavailable)
+                peer_source.replace("SETEXPR_ADVERTISED", advertised)
+                .replace("SETEXPR_DELEGATION", delegation)
+                .replace("UNAVAILABLE_WARN", unavailable)
                 .replace("UNAVAILABLE_DETAIL", detail)
                 .replace("BRIDGE_MESSAGE", message),
                 encoding="utf-8",
