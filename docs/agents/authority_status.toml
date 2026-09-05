@@ -173,3 +173,43 @@ path = ".spec/3988-merge-readiness/spec.md"
 status = "historical"
 successor = "docs/agents/REVIEW_CURRENTNESS.md"
 notes = "Completed mechanism snapshot. Exact-subject machine evidence survives; exact-head human-review ceremony does not."
+
+[[documents]]
+path = "docs/development/RUST_1_95_ROLLOUT.md"
+status = "superseded"
+successor = "docs/CLIPPY_POLICY.md"
+historical_source_commit = "4dc745fd3513d1a345cd1d6258bb96a13e284ae2"
+historical_source_blob_sha1 = "61284c6ceca9395c7802b0d151e9847bdbba63d4"
+notes = "Superseded 0.14/Rust 1.95 operational queue. #9850 owns current product-Clippy sequencing; #10008/#8153 retain broader Rust-hygiene authority."
+
+[[documents]]
+path = "docs/development/STRONG_CLIPPY_LINTS_ROLLOUT.md"
+status = "superseded"
+successor = "docs/CLIPPY_POLICY.md"
+historical_source_commit = "4dc745fd3513d1a345cd1d6258bb96a13e284ae2"
+historical_source_blob_sha1 = "1a676040c83475a9a2e7dd9a091da3bb732c4677"
+notes = "Superseded lint queue. Its #8590 umbrella reference is historical; current #8590 owns CPANTS/kwalitee oracle work. Current Clippy authority is #9850/#11335/#11337/#11404."
+
+[[documents]]
+path = "docs/development/RUST_1_95_PROACTIVE_GUARDS.md"
+status = "superseded"
+successor = "docs/agents/DEVELOPMENT_METHOD.md"
+historical_source_commit = "4dc745fd3513d1a345cd1d6258bb96a13e284ae2"
+historical_source_blob_sha1 = "05bfe9bf9344b4f4ea469dddbafed78eaa815131"
+notes = "Superseded guard rail. Current product and Rust-hygiene sequencing is issue-owned by #9850/#10008/#8153; #3949 owns the current repository change graph."
+
+[[documents]]
+path = "docs/ci/perl-lsp-rust-1.95-rollout.md"
+status = "superseded"
+successor = "docs/CLIPPY_POLICY.md"
+historical_source_commit = "4dc745fd3513d1a345cd1d6258bb96a13e284ae2"
+historical_source_blob_sha1 = "b1667cef5512abb2700dd24080c2731b6e327733"
+notes = "Superseded historical rollout pointer. Current product-Clippy policy and sequencing live in docs/CLIPPY_POLICY.md and #9850."
+
+[[documents]]
+path = "docs/project/RAILS_INDEX.md"
+status = "superseded"
+successor = "docs/agents/DEVELOPMENT_METHOD.md"
+historical_source_commit = "4dc745fd3513d1a345cd1d6258bb96a13e284ae2"
+historical_source_blob_sha1 = "5d27670786f80b7274e7e1d9ff357d7ee65bfb3b"
+notes = "Superseded active-rails selector. Current work selection follows provider-native method plus the issue-owned graph; #3949 owns durable change-graph placement."

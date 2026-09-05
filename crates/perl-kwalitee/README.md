@@ -57,6 +57,19 @@ The explicit compatibility surfaces are:
 New CPANTS metrics, staged-distribution facts, or release-readiness propositions
 must not be added to this frozen catalog.
 
+## Native CPANTS-compatible catalog v1
+
+The independent catalog and fixture-identity contract for the forthcoming
+distribution analyser live beside this compatibility crate:
+
+- [`distribution_kwalitee_catalog.v1.toml`](distribution_kwalitee_catalog.v1.toml)
+- [`distribution_kwalitee_fixtures.v1.toml`](distribution_kwalitee_fixtures.v1.toml)
+- generated human view: [`docs/reference/DISTRIBUTION_KWALITEE_CATALOG.md`](../../docs/reference/DISTRIBUTION_KWALITEE_CATALOG.md)
+
+They freeze metric class, unweighted compatible-core scoring, and fixture
+identities. They do not implement indicators, load archives, or add a public
+CLI. The historical `evaluate` API above is unchanged.
+
 ## License
 
 MIT OR Apache-2.0 (workspace-inherited).

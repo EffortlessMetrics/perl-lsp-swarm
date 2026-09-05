@@ -6,8 +6,10 @@
 //! `PERL_DAP_TEST_BINARY` for an explicitly extracted candidate), drives one
 //! real `perl -d` session over `Content-Length` framed stdio with a real Perl
 //! fixture, and asserts the formatted behavior of every advertised
-//! `ValueFormat` request family: `variables`, `setVariable`, `evaluate`, and
-//! `setExpression`.
+//! `ValueFormat` request family: `variables` and `evaluate` — plus the
+//! `setVariable` floor (#8354) and the `setExpression` floor (#9568): the same
+//! session advertises both false, refuses both with the deterministic
+//! authority message, and neither refusal performs a mutation.
 //!
 //! Handler-level and seeded-cache unit tests cannot satisfy #9590; none are
 //! used here. Every row is driven through framed stdio requests against the
@@ -31,10 +33,10 @@
 //!   evaluation or mutation (side-effect canary stays empty);
 //! - correlated-literal `evaluate`/read-back results are never reparsed as
 //!   numeric authority: `0  255` stays `0  255` under `hex: true`;
-//! - mutation admission stays client-value-bound: `setVariable`/
-//!   `setExpression` with `format: { "hex": true }` assigns the admitted
-//!   client value (read-back proves `66`/`77` decimal), never the formatted
-//!   display text;
+//! - mutation floors stay closed: `setVariable` (#8354) and `setExpression`
+//!   (#9568) are refused with their deterministic authority messages before
+//!   any assignment work, and a correlated read-back proves the refusal
+//!   performed no mutation — `$pos` stays at its fixture value `255`;
 //! - formatting and inspection execute no user callbacks: tied `FETCH`/
 //!   `STORE`, overload stringification, and object-method canaries stay
 //!   empty for the whole session, including failed unsupported-option
@@ -368,12 +370,9 @@ impl StdioSession {
         else {
             return Err("initialize over framed stdio failed".into());
         };
-        for capability in [
-            "supportsValueFormattingOptions",
-            "supportsSetVariable",
-            "supportsSetExpression",
-            "supportsCancelRequest",
-        ] {
+        for capability in
+            ["supportsValueFormattingOptions", "supportsTerminateRequest", "supportsCancelRequest"]
+        {
             if body.get(capability).and_then(Value::as_bool) != Some(true) {
                 return Err(format!(
                     "capability-set identity: `{capability}` must be advertised true in the \
@@ -381,6 +380,23 @@ impl StdioSession {
                 )
                 .into());
             }
+        }
+        // #8354: setVariable is pinned false by the exact-mutation floor and
+        // must not ride along with the other ValueFormat-session capabilities.
+        if body.get("supportsSetVariable").and_then(Value::as_bool) != Some(false) {
+            return Err("capability-set identity: `supportsSetVariable` must be advertised false \
+                 (#8354) in the same session that serves the ValueFormat rows"
+                .into());
+        }
+        // #9568: the same session must advertise the setExpression floor —
+        // the field no longer rides on dap.core, and the ValueFormat proof
+        // must observe the floored value, not the superseded true.
+        if body.get("supportsSetExpression").and_then(Value::as_bool) != Some(false) {
+            return Err(
+                "capability-set identity: `supportsSetExpression` must be advertised false \
+                 (#9568 floor) in the same session that serves the ValueFormat rows"
+                    .into(),
+            );
         }
         session.wait_event("initialized")?;
 
@@ -803,8 +819,8 @@ fn write_receipt_to(
             },
             "capabilities": {
                 "supportsValueFormattingOptions": true,
-                "supportsSetVariable": true,
-                "supportsSetExpression": true,
+                "supportsSetVariable": false,
+                "supportsSetExpression": false,
                 "supportsCancelRequest": true,
             },
         },
@@ -1109,19 +1125,11 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
 
     // --- unsupported options: one documented behavior in all four families -
     {
-        let cells: [(&str, Value); 4] = [
+        let cells: [(&str, Value); 2] = [
             ("variables", json!({ "variablesReference": locals_ref, "format": { "radix": 16 } })),
-            (
-                "setVariable",
-                json!({ "variablesReference": locals_ref, "name": "$pos", "value": "5", "format": { "radix": 16 } }),
-            ),
             (
                 "evaluate",
                 json!({ "expression": "$pos", "frameId": frame_id, "format": { "radix": 16 } }),
-            ),
-            (
-                "setExpression",
-                json!({ "expression": "$pos", "value": "5", "frameId": frame_id, "format": { "radix": 16 } }),
             ),
         ];
         for (command, arguments) in cells {
@@ -1133,12 +1141,45 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
                 .into());
             }
         }
+        // #8354: setVariable with an unknown format option must receive the
+        // deterministic capability-floor refusal — the gate fires before
+        // argument parsing, so the request never reaches the envelope layer.
+        {
+            let message = dap.expect_failure(
+                "setVariable",
+                Some(json!({ "variablesReference": locals_ref, "name": "$pos", "value": "5", "format": { "radix": 16 } })),
+            )?;
+            if !message.contains("supportsSetVariable") {
+                return Err(format!(
+                    "`setVariable` with an unknown format option must receive the #8354 floor \
+                     refusal before argument parsing, got: {message}"
+                )
+                .into());
+            }
+        }
+        // #9568: setExpression with a *malformed* format still fails at the
+        // envelope layer (typed format deserialization precedes the gate —
+        // the same ordering the floor suite pins). The floor refusal is
+        // covered by the dedicated leg below. Fail-closed either way.
+        {
+            let message = dap.expect_failure(
+                "setExpression",
+                Some(json!({ "expression": "$pos", "value": "5", "frameId": frame_id, "format": { "radix": 16 } })),
+            )?;
+            if !message.contains("Invalid arguments") || !message.contains("radix") {
+                return Err(format!(
+                    "`setExpression` with an unknown format option must fail at the envelope \
+                     layer naming it: {message}"
+                )
+                .into());
+            }
+        }
         assert_canary_empty(&canary_path, "after unsupported-option failures")?;
         matrix.pass(
             "unsupported-option-fails-all-families",
             "variables|setVariable|evaluate|setExpression",
             "unknown",
-            "Invalid arguments naming `radix`; no hidden evaluation or mutation",
+            "Invalid arguments naming `radix` in variables/evaluate/setExpression (envelope-first); setVariable refuses at the #8354 floor before parsing; no hidden evaluation or mutation",
         );
 
         let malformed = dap.expect_failure(
@@ -1158,10 +1199,19 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
         );
     }
 
-    // --- setVariable: response rendering only; assignment stays client-bound
+    // --- setVariable: floored refusal, no mutation (#8354) ------------------
     let mutation_ref: i64;
+    // Exact read-back baseline captured after the refused setVariable: the
+    // refused setExpression leg below must reproduce this string byte-for-byte
+    // (a `contains("255")` check would also pass a wrong mutation like `2555`).
+    let original_read_back: String;
     {
-        let body = dap.expect_success(
+        // #8354 floors setVariable: the request is refused with the
+        // deterministic authority message before argument parsing or any
+        // assignment work. The read-back proves the floor performed no hidden
+        // mutation — the same client-value-binding guarantee the superseded
+        // success leg pinned, now proven in the refused direction.
+        let message = dap.expect_failure(
             "setVariable",
             Some(json!({
                 "variablesReference": locals_ref,
@@ -1170,40 +1220,47 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
                 "format": { "hex": true }
             })),
         )?;
-        // The read-back is a correlated literal (no typed facts over this
-        // boundary), so the response renders the honest decimal read-back —
-        // proving the formatted text is never used as the assigned value.
-        let response_value = body.get("value").and_then(Value::as_str).unwrap_or("");
-        if response_value != "66" {
+        if !message.contains("supportsSetVariable") {
             return Err(format!(
-                "setVariable response must render the read-back value, got `{response_value}`"
+                "`setVariable` must receive the deterministic #8354 floor refusal: {message}"
             )
             .into());
         }
-        mutation_ref = body.get("variablesReference").and_then(Value::as_i64).unwrap_or(0);
         let read_back = dap.expect_success(
             "evaluate",
             Some(json!({ "expression": "$pos", "frameId": frame_id })),
         )?;
-        let read_back_result = read_back.get("result").and_then(Value::as_str).unwrap_or("");
-        if !read_back_result.contains("66") {
+        original_read_back =
+            read_back.get("result").and_then(Value::as_str).unwrap_or("").to_string();
+        // The fixture seeds `$pos = 255`; a refused setVariable must leave it
+        // exactly there — no `66`, and no hex display text leaked into data.
+        if !original_read_back.contains("255") || original_read_back.contains("66") {
             return Err(format!(
-                "assigned data must be the admitted client value 66, read-back `{read_back_result}`"
+                "refused setVariable must not mutate: read-back `{original_read_back}` must \
+                 still hold the fixture value 255 and never the refused value 66"
             )
             .into());
         }
+        // The stale-handle row below needs an evaluate-result reference minted
+        // before the resume; the read-back response carries exactly that.
+        mutation_ref = read_back.get("variablesReference").and_then(Value::as_i64).unwrap_or(0);
         matrix.pass(
-            "setVariable-formatted-text-not-mutation-input",
+            "setVariable-floor-refuses-without-mutation",
             "setVariable",
             "hex",
-            "assigned 66 (not 0x42); read-back proves client-value binding",
+            "#8354 deterministic refusal before parsing; read-back proves no hidden mutation of $pos",
         );
         assert_canary_empty(&canary_path, "after setVariable rows")?;
     }
 
-    // --- setExpression: same response-only contract ------------------------
+    // --- setExpression: floored refusal, no mutation ------------------------
     {
-        let body = dap.expect_success(
+        // #9568 floors setExpression: the request is refused with the
+        // deterministic authority message and the admitted value is never
+        // written. The read-back proves the floor performed no hidden
+        // mutation — the same client-value-binding guarantee the superseded
+        // success leg pinned, now proven in the refused direction.
+        let message = dap.expect_failure(
             "setExpression",
             Some(json!({
                 "expression": "$pos",
@@ -1212,10 +1269,9 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
                 "format": { "hex": true }
             })),
         )?;
-        let response_value = body.get("value").and_then(Value::as_str).unwrap_or("");
-        if response_value != "77" {
+        if message != perl_dap::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE {
             return Err(format!(
-                "setExpression response must render the read-back value, got `{response_value}`"
+                "`setExpression` must receive the deterministic #9568 floor refusal: {message}"
             )
             .into());
         }
@@ -1224,27 +1280,21 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
             Some(json!({ "expression": "$pos", "frameId": frame_id })),
         )?;
         let read_back_result = read_back.get("result").and_then(Value::as_str).unwrap_or("");
-        if !read_back_result.contains("77") {
+        if read_back_result != original_read_back {
             return Err(format!(
-                "setExpression assigned data must be 77, read-back `{read_back_result}`"
+                "refused setExpression must not mutate: read-back `{read_back_result}` \
+                 must exactly equal the original read-back `{original_read_back}`"
             )
             .into());
         }
         matrix.pass(
-            "setExpression-formatted-text-not-mutation-input",
+            "setExpression-floor-refuses-without-mutation",
             "setExpression",
             "hex",
-            "assigned 77 (not 0x4d); read-back proves client-value binding",
+            "#9568 deterministic refusal; read-back proves no hidden mutation of $pos",
         );
-        // Restore for the later-stop rows.
-        let restore = dap.expect_success(
-            "setVariable",
-            Some(json!({ "variablesReference": locals_ref, "name": "$pos", "value": "255" })),
-        )?;
-        let restored = restore.get("value").and_then(Value::as_str).unwrap_or("");
-        if !restored.contains("255") {
-            return Err(format!("restore to 255 failed, response `{restored}`").into());
-        }
+        // No restore step: both mutation requests were refused at their
+        // floors, so `$pos` never left its fixture value 255.
         assert_canary_empty(&canary_path, "after setExpression rows")?;
     }
 

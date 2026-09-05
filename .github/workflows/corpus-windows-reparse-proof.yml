@@ -50,28 +50,38 @@ jobs:
         with:
           cache-on-failure: true
           shared-key: corpus-windows-reparse-proof-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Run non-skipping Windows reparse proof
+        shell: pwsh
         env:
           # The proof must never be certified by a typed privilege skip: on
           # an unprivileged runner the helper hard-fails instead (#12567).
           PLSW_REQUIRE_SYMLINK_PRIVILEGE: "1"
-        run: >-
-          cargo test --locked -p perl-corpus
-          --test strict_sectioned_loading
-          public_plain_loader_rejects_windows_reparse_point
-          -- --exact --nocapture
+        run: |
+          $output = cargo test --locked -p perl-corpus --test strict_sectioned_loading public_plain_loader_rejects_windows_reparse_point -- --exact --nocapture 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | ForEach-Object { $_ }
+          if ($exitCode -ne 0) { exit $exitCode }
+          $runningCount = @($output | Select-String '^running 1 test$').Count
+          $resultCount = @($output | Select-String '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9.]+s$').Count
+          if ($runningCount -ne 1 -or $resultCount -ne 1) { throw "exact proof did not execute exactly one passing test" }
 
       - name: Run non-skipping xtask reparse proof
+        shell: pwsh
         env:
           # Same anti-vacuity contract as the corpus proof above: the xtask
           # publication-drift rejection test must never be certified by a
           # typed privilege skip on an unprivileged runner (#12567).
           PLSW_REQUIRE_SYMLINK_PRIVILEGE: "1"
-        run: >-
-          cargo test --locked -p xtask --lib
-          dangling_protected_source_rejects_before_publication_write
-          -- --nocapture
+        run: |
+          $output = cargo test --locked -p xtask --lib publication_drift::output_tests::dangling_protected_source_rejects_before_publication_write -- --exact --nocapture 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | ForEach-Object { $_ }
+          if ($exitCode -ne 0) { exit $exitCode }
+          $runningCount = @($output | Select-String '^running 1 test$').Count
+          $resultCount = @($output | Select-String '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9.]+s$').Count
+          if ($runningCount -ne 1 -or $resultCount -ne 1) { throw "exact proof did not execute exactly one passing test" }
 
       - name: Run exact non-skipping perl-corpus topology proofs
         env:
@@ -109,6 +119,12 @@ jobs:
             fi
             echo "- $test_name"
           done
+
+          selected_test_count="${#selected_tests[@]}"
+          if [[ "$selected_test_count" -ne 10 ]]; then
+            echo "expected exactly 10 selected topology tests" >&2
+            exit 1
+          fi
 
           for test_name in "${selected_tests[@]}"; do
             test_output="$(mktemp)"
