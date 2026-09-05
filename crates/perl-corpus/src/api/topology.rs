@@ -745,11 +745,38 @@ fn is_ignored_path(path: &Path) -> bool {
     })
 }
 
+/// Selects a layer-relative path exactly as discovery does.
+///
+/// Discovery walks entry by entry and refuses a directory whose own name classifies
+/// as an asset (`UnsupportedFileType`), so it never descends into one; it likewise
+/// skips ignored names before descending. Both rules therefore constrain every
+/// intermediate component, not only the leaf. Validation reaches a serialized leaf
+/// directly, so it must apply the same component rules to agree with discovery about
+/// which paths are selectable.
+///
+/// The ancestor rule cannot change discovery's own behavior: discovery only descends
+/// through directories that classify as `None`, so no entry it reaches can have a
+/// classifying ancestor.
 fn classify_selected_asset(layer: CorpusAssetLayer, path: &Path) -> Option<CorpusAssetKind> {
     if is_ignored_path(path) {
         return None;
     }
 
+    let has_classifying_ancestor = path
+        .ancestors()
+        .skip(1)
+        .filter(|ancestor| !ancestor.as_os_str().is_empty())
+        .any(|ancestor| classify_layer_asset(layer, ancestor).is_some());
+    if has_classifying_ancestor {
+        return None;
+    }
+
+    classify_layer_asset(layer, path)
+}
+
+/// Applies the owning layer's leaf classifier, the single authority shared by
+/// discovery and validation for what a path's kind is.
+fn classify_layer_asset(layer: CorpusAssetLayer, path: &Path) -> Option<CorpusAssetKind> {
     match layer {
         CorpusAssetLayer::TestCorpus => classify_test_asset(path),
         CorpusAssetLayer::Fuzz => classify_fuzz_asset(path),
@@ -1251,6 +1278,106 @@ mod tests {
                 }
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_and_validation_reject_assets_under_classifying_directories()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Discovery refuses a directory whose own name classifies as an asset, so it
+        // never descends into one. A serialized leaf beneath such a directory names a
+        // record discovery can never produce and must fail validation for the same
+        // reason, not merely resolve on disk.
+        let cases = [
+            (
+                CorpusAssetLayer::TestCorpus,
+                "test_corpus/container.pl/case.pm",
+                "test_corpus/container.pl",
+            ),
+            (
+                CorpusAssetLayer::Fuzz,
+                "crates/perl-corpus/fuzz/cases.txt/case.pl",
+                "crates/perl-corpus/fuzz/cases.txt",
+            ),
+            (
+                CorpusAssetLayer::Fuzz,
+                "crates/perl-corpus/fuzz/crash-nested/case.pl",
+                "crates/perl-corpus/fuzz/crash-nested",
+            ),
+        ];
+
+        for (layer, relative_path, classifying_directory) in cases {
+            let root = tempfile::tempdir()?;
+            let fixture_path = root.path().join(relative_path);
+            let parent = fixture_path
+                .parent()
+                .ok_or_else(|| format!("fixture {relative_path:?} has no parent"))?;
+            fs::create_dir_all(parent)?;
+            fs::write(fixture_path, "my $value = 1;")?;
+
+            // Discovery half: the classifying directory is a hard refusal, anchored at
+            // the directory itself rather than at the leaf.
+            match topology_from_root(root.path()) {
+                Err(CorpusTopologyError::UnsupportedFileType { path })
+                    if path == root.path().join(classifying_directory) => {}
+                result => {
+                    return Err(format!(
+                        "discovery must refuse classifying directory {classifying_directory:?}, got {result:?}"
+                    )
+                    .into());
+                }
+            }
+
+            // Validation half: the declared kind matches the leaf classifier, so only
+            // the intermediate-component rule can reject this record.
+            let asset = CorpusAsset {
+                id: relative_path.to_string(),
+                layer,
+                kind: CorpusAssetKind::PerlSource,
+                relative_path: relative_path.to_string(),
+                requirement: AssetRequirement::Required,
+            };
+            match topology_with(vec![asset]).validate() {
+                Err(CorpusTopologyError::UnclassifiedAssetPath { id, layer: rejected_layer })
+                    if id == relative_path && rejected_layer == layer => {}
+                result => {
+                    return Err(format!(
+                        "undiscoverable nested path {relative_path:?} must fail validation, got {result:?}"
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_and_validation_accept_assets_under_ordinary_directories()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Opposite-direction control: nesting is not itself disqualifying. Without
+        // this, rejecting every nested path would satisfy the test above.
+        let valid_paths =
+            ["crates/perl-corpus/fuzz/nested/case.txt", "test_corpus/nested/deeper/case.pl"];
+        let root = tempfile::tempdir()?;
+        for relative_path in valid_paths {
+            let fixture_path = root.path().join(relative_path);
+            let parent = fixture_path
+                .parent()
+                .ok_or_else(|| format!("fixture {relative_path:?} has no parent"))?;
+            fs::create_dir_all(parent)?;
+            fs::write(fixture_path, "my $value = 1;")?;
+        }
+
+        let discovered = topology_from_root(root.path())?;
+        let discovered_ids =
+            discovered.assets.iter().map(|asset| asset.id.as_str()).collect::<Vec<_>>();
+        if discovered_ids != valid_paths {
+            return Err(format!(
+                "discovery must retain both ordinary nested assets, got {discovered_ids:?}"
+            )
+            .into());
+        }
+        discovered.validate()?;
         Ok(())
     }
 
