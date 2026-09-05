@@ -166,5 +166,10 @@ Notes for releases:
 
 - Workspace utility crate, not shipped in releases
 - Use `cargo xtask <task>` to run tasks (not `cargo run -p xtask`)
+- Exception: dedicated gate proof binaries under `src/bin/` that are wired
+  into `.ci/gate-policy.yaml` are invoked as
+  `cargo run -p xtask --bin <name> --locked --` so the gate command names the
+  exact proof it runs (existing examples: `parser-behavior-proof`,
+  `kubernetes-dap-profiles`). They are gate entrypoints, not developer tasks.
 - Gate receipts written to `target/receipts/` by default
 - See `.ci/gate-policy.yaml` for gate definitions
