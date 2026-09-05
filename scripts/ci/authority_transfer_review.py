@@ -59,6 +59,7 @@ Usage:
       [--base-sha SHA] [--head-sha SHA]
       [--changed-list PATH | --changed-file PATH]...
       [--packet PATH]... [--max-changed-files N]
+      [--merge-base-sha SHA] [--head-tree-sha SHA]
       [--receipt PATH] [--summary PATH] [--self-test]
 
 With --self-test the evaluator replays internal expected-verdict fixtures and
@@ -70,6 +71,7 @@ import argparse
 import hashlib
 import json
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -80,8 +82,9 @@ if str(_HERE) not in sys.path:
 
 import validate_review_surfaces as vrs  # noqa: E402
 
-DEFAULT_MANIFEST = Path("policy/review-surfaces.toml")
-DEFAULT_PROJECTION = Path("docs/policy/REVIEW_SURFACES.md")
+# Bound to the validator contract so manifest and projection reads cannot drift.
+DEFAULT_MANIFEST = vrs.DEFAULT_MANIFEST
+DEFAULT_PROJECTION = vrs.DEFAULT_PROJECTION
 
 PASS_NOT_APPLICABLE = "PASS_NOT_APPLICABLE"
 PASS_CURRENT_REVIEW = "PASS_CURRENT_REVIEW"
@@ -119,6 +122,22 @@ SEVERITY_ORDER = (
 EXIT_PASS = 0
 EXIT_TYPED_FAILURE = 1
 EXIT_NOT_PROVEN = 3
+
+# Exit-code classes are explicit memberships, never a string-prefix test, so a
+# renamed verdict cannot silently change the CLI contract.
+PASS_RESULTS = (PASS_NOT_APPLICABLE, PASS_CURRENT_REVIEW)
+TYPED_FAILURE_RESULTS = (
+    FAIL_REVIEW_MISSING,
+    FAIL_REVIEW_STALE_HEAD,
+    FAIL_REVIEW_PROFILE_MISMATCH,
+    FAIL_DENOMINATOR_INCOMPLETE,
+    FAIL_FIRST_FALSIFIER_MISSING,
+    FAIL_ARTIFACT_REVIEW_INCOMPLETE,
+    FAIL_PREDECESSOR_REVIEW_INCOMPLETE,
+    FAIL_CLAIM_CEILING_EXCEEDED,
+    FAIL_CONTROLLER_RELATION,
+)
+NOT_PROVEN_RESULTS = (NOT_PROVEN_GITHUB, NOT_PROVEN_SUBJECT, INSTRUMENT_FAILURE)
 
 STATUS_BOUNDARY = (
     "Advisory context only: a pass means the review evidence required by the "
@@ -268,9 +287,13 @@ def read_changed_files(inputs: dict[str, Any]) -> tuple[list[str], bool]:
     listed: Path | None = inputs["changed_list"]
     if listed is not None:
         try:
-            raw_paths.extend(listed.read_text(encoding="utf-8", errors="replace").splitlines())
+            raw_paths.extend(listed.read_bytes().decode("utf-8").splitlines())
         except OSError as error:
             raise ValueError(f"changed_list_unreadable ({error})")
+        except UnicodeDecodeError as error:
+            # A governed path Git emits with non-UTF-8 bytes must not be
+            # silently reclassified as ungoverned; fail closed as NOT_PROVEN.
+            raise ValueError(f"changed_list_not_utf8 ({error.reason})")
     raw_paths.extend(inputs["changed_files"])
     normalized: list[str] = []
     seen: set[str] = set()
@@ -345,17 +368,6 @@ def governed_rows(
 # Reviewer-packet classification (agent_review_packet.v1, exact-head)
 # ---------------------------------------------------------------------------
 
-_PACKET_FAIL_FIELDS = (
-    "path",
-    "sha256",
-    "verdict",
-    "reason",
-    "covered_surfaces",
-    "profile",
-    "head_binding",
-)
-
-
 def _packet_fail(
     path_label: str,
     digest: str,
@@ -372,6 +384,8 @@ def _packet_fail(
         "covered_refs": [],
         "profile": profile,
         "head_binding": "absent",
+        "base_binding": "absent",
+        "tree_binding": "absent",
         "repo_subject": "",
         "seam_dispositions": [],
         "lens_state": {},
@@ -518,11 +532,19 @@ def validate_packet(
     negative_controls = packet.get("negative_controls")
     if not isinstance(negative_controls, list) or not negative_controls:
         return fail(FAIL_FIRST_FALSIFIER_MISSING, "negative_controls_absent")
+    controlled_falsifiers: set[str] = set()
     for control in negative_controls:
         if not isinstance(control, dict):
             return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "malformed_negative_control")
-        if control.get("falsifier_id") not in falsifier_ids:
+        control_target = control.get("falsifier_id")
+        if control_target not in falsifier_ids:
             return fail(FAIL_FIRST_FALSIFIER_MISSING, "negative_control_without_falsifier")
+        if control_target in controlled_falsifiers:
+            return fail(
+                FAIL_ARTIFACT_REVIEW_INCOMPLETE,
+                f"duplicate_negative_control ({control_target})",
+            )
+        controlled_falsifiers.add(str(control_target))
         checks = control.get("checks")
         if not isinstance(checks, dict):
             return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "negative_control_checks_missing")
@@ -553,6 +575,15 @@ def validate_packet(
             ):
                 return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, f"established_without_evidence ({name})")
 
+    # Closed packet contract: every declared falsifier carries exactly one
+    # load-bearing negative-control audit, not merely "some control exists".
+    uncontrolled = [fid for fid in falsifier_ids if fid not in controlled_falsifiers]
+    if uncontrolled:
+        return fail(
+            FAIL_FIRST_FALSIFIER_MISSING,
+            f"falsifier_without_negative_control ({uncontrolled[0]})",
+        )
+
     obligations = packet.get("obligations")
     if not isinstance(obligations, dict):
         return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "obligations_missing")
@@ -560,10 +591,20 @@ def validate_packet(
     if not isinstance(tests_mutations, list) or not tests_mutations:
         return fail(FAIL_FIRST_FALSIFIER_MISSING, "no_test_mutation_obligation")
 
+    migrated_raw = packet_field(packet, "subject", "changed", "migrated_seams")
+    if not isinstance(migrated_raw, list):
+        return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "migrated_seams_malformed")
+    migrated_seams: list[str] = []
+    for seam_id in migrated_raw:
+        if not (isinstance(seam_id, str) and seam_id.strip()):
+            return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "migrated_seam_unbound")
+        migrated_seams.append(seam_id)
+
     old_paths = packet.get("old_paths")
     if not isinstance(old_paths, list):
         return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "old_paths_malformed")
     seam_dispositions: list[tuple[str, str]] = []
+    dispositioned_seams: set[str] = set()
     for seam_row in old_paths:
         if not isinstance(seam_row, dict):
             return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "malformed_old_path_row")
@@ -573,7 +614,20 @@ def validate_packet(
             return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "old_path_seam_unbound")
         if disposition not in OLD_PATH_DISPOSITIONS:
             return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "old_path_disposition_unknown")
+        # A disposition is about a declared predecessor seam, not free prose:
+        # the row must name a seam the subject says it migrated.
+        if seam not in migrated_seams:
+            return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, f"old_path_seam_not_migrated ({seam})")
+        if seam in dispositioned_seams:
+            return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, f"duplicate_old_path_seam ({seam})")
+        dispositioned_seams.add(str(seam))
         seam_dispositions.append((str(seam), str(disposition)))
+    undispositioned = [seam_id for seam_id in migrated_seams if seam_id not in dispositioned_seams]
+    if undispositioned:
+        return fail(
+            FAIL_PREDECESSOR_REVIEW_INCOMPLETE,
+            f"migrated_seam_undispositioned ({undispositioned[0]})",
+        )
 
     lifecycle = packet.get("lifecycle")
     if not isinstance(lifecycle, dict) or not isinstance(
@@ -591,7 +645,11 @@ def validate_packet(
         "profile": programme_profile,
         "repo_subject": str(identity_fields["name"]),
         "head": str(identity_fields["head"]),
+        "base": str(identity_fields["base"]),
+        "tree": str(identity_fields["tree"]),
         "head_binding": "current" if identity_fields["head"] == evaluated_head else "stale",
+        "base_binding": "unbound",
+        "tree_binding": "unbound",
         "required_roles": sorted(set(required_roles)),
         "lens_state": lens_state,
         "seam_dispositions": seam_dispositions,
@@ -619,8 +677,14 @@ def classify_packets(
     governed: list[dict[str, Any]],
     profiles: dict[str, Any],
     repository: str,
+    merge_base_sha: str | None = None,
+    head_tree_sha: str | None = None,
 ) -> None:
-    """Finalize each packet's verdict before any row aggregates it."""
+    """Finalize each packet's verdict before any row aggregates it.
+
+    Head is always bound to the evaluated head. Base and tree are bound to the
+    trusted merge subject only when the caller supplies them; an unsupplied
+    identity stays ``unbound`` in the receipt rather than passing silently."""
     for packet in packets:
         if packet["verdict"] != PASS_CURRENT_REVIEW:
             continue
@@ -632,6 +696,18 @@ def classify_packets(
             packet["verdict"] = FAIL_REVIEW_STALE_HEAD
             packet["reason"] = "packet_head_differs_from_evaluated_head"
             continue
+        if merge_base_sha:
+            packet["base_binding"] = "current" if packet["base"] == merge_base_sha else "stale"
+            if packet["base_binding"] == "stale":
+                packet["verdict"] = FAIL_REVIEW_STALE_HEAD
+                packet["reason"] = "packet_base_differs_from_merge_base"
+                continue
+        if head_tree_sha:
+            packet["tree_binding"] = "current" if packet["tree"] == head_tree_sha else "stale"
+            if packet["tree_binding"] == "stale":
+                packet["verdict"] = FAIL_REVIEW_STALE_HEAD
+                packet["reason"] = "packet_tree_differs_from_head_tree"
+                continue
         if packet["profile"] not in profiles:
             packet["verdict"] = FAIL_REVIEW_PROFILE_MISMATCH
             packet["reason"] = "packet_profile_not_in_manifest"
@@ -740,16 +816,17 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
 
     changed_files: list[str] = []
     truncated = False
+    changed_list_error = ""
     governed: list[dict[str, Any]] = []
     overlap_detected = False
     if doc:
         try:
             changed_files, truncated = read_changed_files(inputs)
         except ValueError as error:
+            changed_list_error = str(error)
             global_results.append(NOT_PROVEN_GITHUB)
             changed_files = []
             truncated = True
-            del error
         if changed_files or not truncated:
             governed, overlap_detected = governed_rows(doc, changed_files)
         if truncated:
@@ -764,7 +841,14 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
 
     surfaces = doc.get("surface") if isinstance(doc.get("surface"), dict) else {}
     profiles = doc.get("profile") if isinstance(doc.get("profile"), dict) else {}
-    classify_packets(packets, governed, profiles, inputs["repository"])
+    classify_packets(
+        packets,
+        governed,
+        profiles,
+        inputs["repository"],
+        inputs.get("merge_base_sha") or None,
+        inputs.get("head_tree_sha") or None,
+    )
     for packet in packets:
         global_results.append(packet["verdict"])
 
@@ -791,9 +875,18 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
         "pr_number": inputs["pr_number"],
         "base_sha": inputs["base_sha"],
         "evaluated_head_sha": evaluated_head,
+        "identity_binding": {
+            "head": "exact",
+            "base": "exact" if inputs.get("merge_base_sha") else "unbound",
+            "tree": "exact" if inputs.get("head_tree_sha") else "unbound",
+            "diff": "unbound",
+            "merge_base_sha": inputs.get("merge_base_sha") or "",
+            "head_tree_sha": inputs.get("head_tree_sha") or "",
+        },
         "inputs": {
             "changed_file_count": len(changed_files),
             "changed_files_truncated": truncated,
+            "changed_list_error": changed_list_error,
             "max_changed_files": inputs["max_changed_files"],
             "packet_count": len(packets),
         },
@@ -805,9 +898,11 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
             "validator_script": "scripts/ci/validate_review_surfaces.py",
             "base_tree_strict_pass": base_strict_pass,
             "base_tree_issues": base_issues[:50],
+            "base_tree_issue_count": len(base_issues),
             "candidate_tree_checked": candidate_checked,
             "candidate_tree_strict_pass": candidate_strict_pass,
             "candidate_tree_issues": candidate_issues[:50],
+            "candidate_tree_issue_count": len(candidate_issues),
         },
         "governed_rows": [
             {
@@ -834,6 +929,8 @@ def _public_packet_view(packet: dict[str, Any]) -> dict[str, Any]:
         "covered_surfaces": packet["covered_surfaces"],
         "profile": packet["profile"],
         "head_binding": packet["head_binding"],
+        "base_binding": packet["base_binding"],
+        "tree_binding": packet["tree_binding"],
     }
 
 
@@ -894,6 +991,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pr-number", type=int, default=None)
     parser.add_argument("--base-sha", default="")
     parser.add_argument("--head-sha", default="")
+    parser.add_argument(
+        "--merge-base-sha",
+        default="",
+        help="trusted merge-base commit; packets whose subject.repository.base differs are stale",
+    )
+    parser.add_argument(
+        "--head-tree-sha",
+        default="",
+        help="trusted head tree object id; packets whose subject.repository.tree differs are stale",
+    )
     parser.add_argument("--changed-list", type=Path, default=None)
     parser.add_argument("--changed-file", action="append", default=[])
     parser.add_argument("--packet", action="append", default=[])
@@ -1216,10 +1323,87 @@ def _write_fixture_root(base: Path) -> None:
     projection_path.write_text(rendered, encoding="utf-8", newline="\n")
 
 
+def fixture_packet_body(
+    profile: str,
+    head_value: str,
+    repo: str = "EffortlessMetrics/perl-lsp-swarm",
+    authorities: list[dict[str, str]] | None = None,
+    base_value: str = "c" * 40,
+    tree_value: str = "d" * 40,
+) -> dict[str, Any]:
+    """One reviewer-packet fixture shared by the self-test and the unit tests so
+    the expected-verdict contract cannot drift between two copies."""
+    return {
+        "schema": "agent_review_packet.v1",
+        "schema_version": 1,
+        "packet_id": "fixture-packet",
+        "subject": {
+            "repository": {
+                "name": repo,
+                "base": base_value,
+                "head": head_value,
+                "tree": tree_value,
+                "diff": "diff-digest",
+            },
+            "programme": {
+                "name": "authority-transfer",
+                "stage": "advisory-preflight",
+                "proposition": "Governed change carries current review.",
+                "profile": profile,
+            },
+            "owning_issue": "#11795",
+            "builder_packet": {
+                "contract": "agent_implementation_packet.v1",
+                "digest": "digest-1",
+            },
+            "changed": {
+                "authorities": authorities
+                or [{"ref": "config.authority_catalog", "subject": "src/authority/catalog.rs"}],
+                "evidence": [{"kind": "receipt", "identity": "receipt-1"}],
+                "migrated_seams": [],
+            },
+        },
+        "challenge": {
+            "primary_proposition": "The governed change is reviewed.",
+            "falsifiers": [
+                {"id": "F1", "stage": "review", "statement": "Unregistered leaf passes."}
+            ],
+            "stage_questions": [
+                {"id": "Q1", "question": "What re-derives the leaf parity check?"}
+            ],
+        },
+        "lenses": [{"lens": lens, "applicability": "required"} for lens in vrs.LENSES],
+        "negative_controls": [
+            {
+                "falsifier_id": "F1",
+                "checks": {
+                    name: {"status": "established", "evidence": f"{name}-evidence"}
+                    for name in NEGATIVE_CONTROL_CRITERIA
+                },
+            }
+        ],
+        "old_paths": [],
+        "obligations": {
+            "spec_ledger_ids": [],
+            "fixture_expectation_manifests": [],
+            "tests_mutations": [{"ref": "test_leaf_parity", "identity": "digest-2"}],
+            "generated_artifacts": [],
+            "docs_projections": [],
+            "change_fragments": [],
+        },
+        "roles": [
+            {
+                "role": "adversarial_challenger",
+                "required": True,
+                "obligation": "Re-derive the leaf-parity invariant independently.",
+            }
+        ],
+        "lifecycle": {"graceful_cleanup_claimed": False},
+    }
+
+
 def self_test() -> int:
     """Replay internal expected-verdict fixtures; any drift fails the instrument."""
-    import tempfile
-
     failures: list[str] = []
 
     def expect(label: str, actual: object, expected: object) -> None:
@@ -1262,81 +1446,7 @@ def self_test() -> int:
             repo: str = repository,
             authorities: list[dict[str, str]] | None = None,
         ) -> dict[str, Any]:
-            return {
-                "schema": "agent_review_packet.v1",
-                "schema_version": 1,
-                "packet_id": "self-test-packet",
-                "subject": {
-                    "repository": {
-                        "name": repo,
-                        "base": "main",
-                        "head": head_value,
-                        "tree": "tree-identity",
-                        "diff": "diff-digest",
-                    },
-                    "programme": {
-                        "name": "authority-transfer",
-                        "stage": "advisory-preflight",
-                        "proposition": "Governed change carries current review.",
-                        "profile": profile,
-                    },
-                    "owning_issue": "#11795",
-                    "builder_packet": {
-                        "contract": "agent_implementation_packet.v1",
-                        "digest": "digest-1",
-                    },
-                    "changed": {
-                        "authorities": authorities
-                        or [
-                            {
-                                "ref": "config.authority_catalog",
-                                "subject": "src/authority/catalog.rs",
-                            }
-                        ],
-                        "evidence": [{"kind": "receipt", "identity": "receipt-1"}],
-                        "migrated_seams": [],
-                    },
-                },
-                "challenge": {
-                    "primary_proposition": "The governed change is reviewed.",
-                    "falsifiers": [
-                        {"id": "F1", "stage": "review", "statement": "Unregistered leaf passes."}
-                    ],
-                    "stage_questions": [
-                        {"id": "Q1", "question": "What re-derives the leaf parity check?"}
-                    ],
-                },
-                "lenses": [
-                    {"lens": lens, "applicability": "required"}
-                    for lens in vrs.LENSES
-                ],
-                "negative_controls": [
-                    {
-                        "falsifier_id": "F1",
-                        "checks": {
-                            name: {"status": "established", "evidence": f"{name}-evidence"}
-                            for name in NEGATIVE_CONTROL_CRITERIA
-                        },
-                    }
-                ],
-                "old_paths": [],
-                "obligations": {
-                    "spec_ledger_ids": [],
-                    "fixture_expectation_manifests": [],
-                    "tests_mutations": [{"ref": "test_leaf_parity", "identity": "digest-2"}],
-                    "generated_artifacts": [],
-                    "docs_projections": [],
-                    "change_fragments": [],
-                },
-                "roles": [
-                    {
-                        "role": "adversarial_challenger",
-                        "required": True,
-                        "obligation": "Re-derive the leaf-parity invariant independently.",
-                    }
-                ],
-                "lifecycle": {"graceful_cleanup_claimed": False},
-            }
+            return fixture_packet_body(profile, head_value, repo, authorities)
 
         # 1. Not-applicable PR takes the cheap deterministic route.
         receipt = evaluate(make_inputs(["crates/other/src/lib.rs"], []))
@@ -1451,6 +1561,7 @@ def self_test() -> int:
             FAIL_PREDECESSOR_REVIEW_INCOMPLETE,
         )
         dup_packet = packet_body("semantic_close_authority", head)
+        dup_packet["subject"]["changed"]["migrated_seams"] = ["old catalog"]
         dup_packet["old_paths"] = [
             {"seam": "old catalog", "disposition": "unexpected_duplicate"}
         ]
@@ -1464,6 +1575,7 @@ def self_test() -> int:
             FAIL_CONTROLLER_RELATION,
         )
         ok_packet = packet_body("semantic_close_authority", head)
+        ok_packet["subject"]["changed"]["migrated_seams"] = ["old catalog"]
         ok_packet["old_paths"] = [{"seam": "old catalog", "disposition": "removed"}]
         expect(
             "predecessor_acknowledged",
@@ -1507,6 +1619,43 @@ def self_test() -> int:
         receipt = evaluate(make_inputs(["docs/policy/REVIEW_SURFACES.md"], []))
         expect("checked_projection_satisfiable", receipt["result"], PASS_CURRENT_REVIEW)
 
+        # 16. Exact base/tree binding when the trusted merge subject is supplied.
+        current_good = write_packet("current-good.json", packet_body("semantic_close_authority", head))
+        stale_base = make_inputs(["src/authority/catalog.rs"], [current_good])
+        stale_base["merge_base_sha"] = "e" * 40
+        expect("stale_base_bound", evaluate(stale_base)["result"], FAIL_REVIEW_STALE_HEAD)
+        exact = make_inputs(["src/authority/catalog.rs"], [current_good])
+        exact["merge_base_sha"] = "c" * 40
+        exact["head_tree_sha"] = "d" * 40
+        expect("exact_base_tree_pass", evaluate(exact)["result"], PASS_CURRENT_REVIEW)
+
+        # 17. Every declared falsifier needs its own negative control.
+        uncontrolled = packet_body("semantic_close_authority", head)
+        uncontrolled["challenge"]["falsifiers"].append(
+            {"id": "F2", "stage": "review", "statement": "Second falsifier."}
+        )
+        expect(
+            "falsifier_without_control",
+            evaluate(
+                make_inputs(
+                    ["src/authority/catalog.rs"],
+                    [write_packet("uncontrolled.json", uncontrolled)],
+                )
+            )["result"],
+            FAIL_FIRST_FALSIFIER_MISSING,
+        )
+
+        # 18. Old-path dispositions must name a declared migrated seam.
+        stray = packet_body("semantic_close_authority", head)
+        stray["old_paths"] = [{"seam": "unrelated", "disposition": "removed"}]
+        expect(
+            "old_path_seam_bound",
+            evaluate(
+                make_inputs(["src/authority/catalog.rs"], [write_packet("stray.json", stray)])
+            )["result"],
+            FAIL_ARTIFACT_REVIEW_INCOMPLETE,
+        )
+
     if failures:
         print(f"Authority Transfer Review self-test FAILED ({len(failures)}):")
         for failure in failures:
@@ -1533,6 +1682,8 @@ def main(argv: list[str] | None = None) -> int:
         "pr_number": args.pr_number,
         "base_sha": args.base_sha,
         "head_sha": args.head_sha,
+        "merge_base_sha": args.merge_base_sha,
+        "head_tree_sha": args.head_tree_sha,
         "changed_list": args.changed_list,
         "changed_files": list(args.changed_file),
         "packets": packets,
@@ -1549,9 +1700,9 @@ def main(argv: list[str] | None = None) -> int:
         args.summary.write_text(summary, encoding="utf-8", newline="\n")
     print(summary, end="")
     result = receipt["result"]
-    if result in (PASS_NOT_APPLICABLE, PASS_CURRENT_REVIEW):
+    if result in PASS_RESULTS:
         return EXIT_PASS
-    if result.startswith("FAIL_"):
+    if result in TYPED_FAILURE_RESULTS:
         return EXIT_TYPED_FAILURE
     return EXIT_NOT_PROVEN
 

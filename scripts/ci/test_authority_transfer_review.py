@@ -43,75 +43,8 @@ def packet_body(
     repo: str = REPOSITORY,
     authorities: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    return {
-        "schema": "agent_review_packet.v1",
-        "schema_version": 1,
-        "packet_id": "test-packet",
-        "subject": {
-            "repository": {
-                "name": repo,
-                "base": "main",
-                "head": head_value,
-                "tree": "tree-identity",
-                "diff": "diff-digest",
-            },
-            "programme": {
-                "name": "authority-transfer",
-                "stage": "advisory-preflight",
-                "proposition": "Governed change carries current review.",
-                "profile": profile,
-            },
-            "owning_issue": "#11795",
-            "builder_packet": {
-                "contract": "agent_implementation_packet.v1",
-                "digest": "digest-1",
-            },
-            "changed": {
-                "authorities": authorities
-                or [
-                    {"ref": "config.authority_catalog", "subject": "src/authority/catalog.rs"}
-                ],
-                "evidence": [{"kind": "receipt", "identity": "receipt-1"}],
-                "migrated_seams": [],
-            },
-        },
-        "challenge": {
-            "primary_proposition": "The governed change is reviewed.",
-            "falsifiers": [
-                {"id": "F1", "stage": "review", "statement": "Unregistered leaf passes."}
-            ],
-            "stage_questions": [
-                {"id": "Q1", "question": "What re-derives the leaf parity check?"}
-            ],
-        },
-        "lenses": [{"lens": lens, "applicability": "required"} for lens in atr.vrs.LENSES],
-        "negative_controls": [
-            {
-                "falsifier_id": "F1",
-                "checks": {
-                    name: {"status": "established", "evidence": f"{name}-evidence"}
-                    for name in atr.NEGATIVE_CONTROL_CRITERIA
-                },
-            }
-        ],
-        "old_paths": [],
-        "obligations": {
-            "spec_ledger_ids": [],
-            "fixture_expectation_manifests": [],
-            "tests_mutations": [{"ref": "test_leaf_parity", "identity": "digest-2"}],
-            "generated_artifacts": [],
-            "docs_projections": [],
-            "change_fragments": [],
-        },
-        "roles": [
-            {
-                "role": "adversarial_challenger",
-                "required": True,
-                "obligation": "Re-derive the leaf-parity invariant independently.",
-            }
-        ],
-        "lifecycle": {"graceful_cleanup_claimed": False},
-    }
+    # Single fixture source: the evaluator's self-test and these tests share it.
+    return atr.fixture_packet_body(profile, head_value, repo, authorities)
 
 
 class AuthorityTransferReviewTests(unittest.TestCase):
@@ -139,6 +72,8 @@ class AuthorityTransferReviewTests(unittest.TestCase):
             "pr_number": 1,
             "base_sha": "c" * 40,
             "head_sha": overrides.get("head_sha", HEAD),
+            "merge_base_sha": overrides.get("merge_base_sha", ""),
+            "head_tree_sha": overrides.get("head_tree_sha", ""),
             "changed_list": None,
             "changed_files": changed,
             "packets": [{"label": p.name, "path": p} for p in packets],
@@ -169,10 +104,21 @@ class AuthorityTransferReviewTests(unittest.TestCase):
     def test_checked_projection_row_is_satisfiable_today(self) -> None:
         receipt = self.evaluate(["docs/policy/REVIEW_SURFACES.md"], [])
         self.assertEqual(atr.PASS_CURRENT_REVIEW, receipt["result"])
+        self.assertEqual(
+            ["checked_projection"],
+            [row["required_evidence"] for row in receipt["governed_rows"]],
+        )
+        self.assertEqual(atr.PASS_CURRENT_REVIEW, receipt["verdicts"][0]["result"])
 
     def test_trusted_workflow_run_row_stays_not_proven_github(self) -> None:
         receipt = self.evaluate([".github/workflows/review-receipt-retirement.yml"], [])
         self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
+        self.assertEqual(
+            ["trusted_workflow_run"],
+            [row["required_evidence"] for row in receipt["governed_rows"]],
+        )
+        self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["verdicts"][0]["result"])
+        self.assertFalse(receipt["inputs"]["changed_files_truncated"])
 
     # ------------------------------------------------------------------
     # Exact current-head contract
@@ -186,6 +132,37 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         receipt = self.evaluate(GOVERNED_CHANGED, [stale])
         self.assertEqual(atr.FAIL_REVIEW_STALE_HEAD, receipt["result"])
         self.assertEqual("stale", receipt["packets"][0]["head_binding"])
+
+    def test_packet_bound_to_another_base_is_stale_when_merge_base_is_trusted(self) -> None:
+        # #11795: exact base identity, not only head. Packet base defaults to
+        # "c" * 40, so binding to a different trusted merge base must fail.
+        good = self.write_packet("good.json", packet_body("semantic_close_authority", HEAD))
+        receipt = self.evaluate(GOVERNED_CHANGED, [good], merge_base_sha="e" * 40)
+        self.assertEqual(atr.FAIL_REVIEW_STALE_HEAD, receipt["result"])
+        self.assertEqual("stale", receipt["packets"][0]["base_binding"])
+        self.assertEqual("packet_base_differs_from_merge_base", receipt["packets"][0]["reason"])
+        self.assertEqual("exact", receipt["identity_binding"]["base"])
+        current = self.evaluate(GOVERNED_CHANGED, [good], merge_base_sha="c" * 40)
+        self.assertEqual(atr.PASS_CURRENT_REVIEW, current["result"])
+        self.assertEqual("current", current["packets"][0]["base_binding"])
+
+    def test_packet_bound_to_another_tree_is_stale_when_head_tree_is_trusted(self) -> None:
+        good = self.write_packet("good.json", packet_body("semantic_close_authority", HEAD))
+        receipt = self.evaluate(GOVERNED_CHANGED, [good], head_tree_sha="f" * 40)
+        self.assertEqual(atr.FAIL_REVIEW_STALE_HEAD, receipt["result"])
+        self.assertEqual("stale", receipt["packets"][0]["tree_binding"])
+        self.assertEqual("packet_tree_differs_from_head_tree", receipt["packets"][0]["reason"])
+        current = self.evaluate(GOVERNED_CHANGED, [good], head_tree_sha="d" * 40)
+        self.assertEqual(atr.PASS_CURRENT_REVIEW, current["result"])
+        self.assertEqual("current", current["packets"][0]["tree_binding"])
+
+    def test_unbound_base_and_tree_are_recorded_not_assumed(self) -> None:
+        good = self.write_packet("good.json", packet_body("semantic_close_authority", HEAD))
+        receipt = self.evaluate(GOVERNED_CHANGED, [good])
+        self.assertEqual("unbound", receipt["identity_binding"]["base"])
+        self.assertEqual("unbound", receipt["identity_binding"]["tree"])
+        self.assertEqual("unbound", receipt["identity_binding"]["diff"])
+        self.assertEqual("unbound", receipt["packets"][0]["base_binding"])
 
     def test_evidence_claiming_another_repository_exceeds_the_claim_ceiling(self) -> None:
         other = self.write_packet(
@@ -241,6 +218,26 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         receipt = self.evaluate(GOVERNED_CHANGED, [packet])
         self.assertEqual(atr.FAIL_FIRST_FALSIFIER_MISSING, receipt["result"])
 
+    def test_second_falsifier_without_its_own_control_fails_first_falsifier_class(self) -> None:
+        body = packet_body("semantic_close_authority", HEAD)
+        body["challenge"]["falsifiers"].append(
+            {"id": "F2", "stage": "review", "statement": "Second falsifier."}
+        )
+        packet = self.write_packet("uncontrolled-f2.json", body)
+        receipt = self.evaluate(GOVERNED_CHANGED, [packet])
+        self.assertEqual(atr.FAIL_FIRST_FALSIFIER_MISSING, receipt["result"])
+        self.assertEqual(
+            "falsifier_without_negative_control (F2)", receipt["packets"][0]["reason"]
+        )
+
+    def test_duplicate_negative_control_for_one_falsifier_is_incomplete(self) -> None:
+        body = packet_body("semantic_close_authority", HEAD)
+        body["negative_controls"].append(dict(body["negative_controls"][0]))
+        packet = self.write_packet("dup-control.json", body)
+        receipt = self.evaluate(GOVERNED_CHANGED, [packet])
+        self.assertEqual(atr.FAIL_ARTIFACT_REVIEW_INCOMPLETE, receipt["result"])
+        self.assertEqual("duplicate_negative_control (F1)", receipt["packets"][0]["reason"])
+
     def test_no_test_mutation_obligation_is_zero_work_proof(self) -> None:
         # Falsifier 8: proof selected zero work but review reports current.
         body = packet_body("semantic_close_authority", HEAD)
@@ -255,6 +252,10 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         packet = self.write_packet("unevidenced.json", body)
         receipt = self.evaluate(GOVERNED_CHANGED, [packet])
         self.assertEqual(atr.FAIL_ARTIFACT_REVIEW_INCOMPLETE, receipt["result"])
+        self.assertTrue(
+            receipt["packets"][0]["reason"].startswith("established_without_evidence ("),
+            receipt["packets"][0]["reason"],
+        )
 
     def test_not_established_negative_control_is_a_finding_never_a_pass(self) -> None:
         # Packet contract: every criterion must be established; a fully
@@ -266,6 +267,10 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         receipt = self.evaluate(GOVERNED_CHANGED, [packet])
         self.assertEqual(atr.FAIL_ARTIFACT_REVIEW_INCOMPLETE, receipt["result"])
         self.assertNotEqual(atr.PASS_CURRENT_REVIEW, receipt["result"])
+        self.assertEqual(
+            "negative_control_criterion_unestablished (exists)",
+            receipt["packets"][0]["reason"],
+        )
 
     def test_single_not_established_negative_control_criterion_fails(self) -> None:
         body = packet_body("semantic_close_authority", HEAD)
@@ -273,6 +278,10 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         packet = self.write_packet("one-unestablished.json", body)
         receipt = self.evaluate(GOVERNED_CHANGED, [packet])
         self.assertEqual(atr.FAIL_ARTIFACT_REVIEW_INCOMPLETE, receipt["result"])
+        self.assertEqual(
+            "negative_control_criterion_unestablished (exists)",
+            receipt["packets"][0]["reason"],
+        )
 
     def test_malformed_packet_is_not_a_pass(self) -> None:
         malformed = self.packets_dir / "malformed.json"
@@ -292,18 +301,8 @@ class AuthorityTransferReviewTests(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def _manifest_with_predecessor_exit(self) -> Path:
+        # No restore needed: setUp builds a fresh fixture tree for every test.
         manifest_path = self.base / atr.DEFAULT_MANIFEST
-        saved = manifest_path.read_text(encoding="utf-8")
-        self.addCleanup(
-            lambda: (
-                manifest_path.write_text(saved, encoding="utf-8", newline="\n"),
-                (self.base / atr.DEFAULT_PROJECTION).write_text(
-                    atr.vrs.render_projection(atr.load_manifest_document(self.base)),
-                    encoding="utf-8",
-                    newline="\n",
-                ),
-            )
-        )
         variant = atr._fixture_manifest_text(
             catalog_predecessor_exit="Old catalog retired here."
         )
@@ -326,6 +325,7 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         # Falsifier 7: a controller-closing relation survives review.
         self._manifest_with_predecessor_exit()
         dup = packet_body("semantic_close_authority", HEAD)
+        dup["subject"]["changed"]["migrated_seams"] = ["old catalog"]
         dup["old_paths"] = [{"seam": "old catalog", "disposition": "unexpected_duplicate"}]
         packet = self.write_packet("dup.json", dup)
         receipt = self.evaluate(GOVERNED_CHANGED, [packet])
@@ -334,6 +334,7 @@ class AuthorityTransferReviewTests(unittest.TestCase):
     def test_typed_predecessor_acknowledgment_passes(self) -> None:
         self._manifest_with_predecessor_exit()
         ok = packet_body("semantic_close_authority", HEAD)
+        ok["subject"]["changed"]["migrated_seams"] = ["old catalog"]
         ok["old_paths"] = [{"seam": "old catalog", "disposition": "removed"}]
         packet = self.write_packet("ok.json", ok)
         receipt = self.evaluate(GOVERNED_CHANGED, [packet])
@@ -342,6 +343,29 @@ class AuthorityTransferReviewTests(unittest.TestCase):
     # ------------------------------------------------------------------
     # Denominator and input bounds
     # ------------------------------------------------------------------
+
+    def test_old_path_disposition_must_name_a_migrated_seam(self) -> None:
+        # A disposition about a seam the subject never declared as migrated is
+        # not predecessor review of this change.
+        self._manifest_with_predecessor_exit()
+        stray = packet_body("semantic_close_authority", HEAD)
+        stray["old_paths"] = [{"seam": "unrelated seam", "disposition": "removed"}]
+        packet = self.write_packet("stray.json", stray)
+        receipt = self.evaluate(GOVERNED_CHANGED, [packet])
+        self.assertEqual(atr.FAIL_ARTIFACT_REVIEW_INCOMPLETE, receipt["result"])
+        self.assertEqual(
+            "old_path_seam_not_migrated (unrelated seam)", receipt["packets"][0]["reason"]
+        )
+
+    def test_declared_migrated_seam_without_disposition_is_predecessor_incomplete(self) -> None:
+        body = packet_body("semantic_close_authority", HEAD)
+        body["subject"]["changed"]["migrated_seams"] = ["old catalog"]
+        packet = self.write_packet("undispositioned.json", body)
+        receipt = self.evaluate(GOVERNED_CHANGED, [packet])
+        self.assertEqual(atr.FAIL_PREDECESSOR_REVIEW_INCOMPLETE, receipt["result"])
+        self.assertEqual(
+            "migrated_seam_undispositioned (old catalog)", receipt["packets"][0]["reason"]
+        )
 
     def test_broken_manifest_denominator_never_passes(self) -> None:
         manifest_path = self.base / atr.DEFAULT_MANIFEST
@@ -411,6 +435,26 @@ class AuthorityTransferReviewTests(unittest.TestCase):
     # Determinism and CLI contract
     # ------------------------------------------------------------------
 
+    def test_non_utf8_changed_list_is_not_proven_never_ungoverned(self) -> None:
+        listed = self.base / "changed.txt"
+        listed.write_bytes(b"src/authority/catalog\xff.rs\n")
+        inputs = {
+            "root": self.base,
+            "candidate_root": None,
+            "repository": REPOSITORY,
+            "pr_number": 1,
+            "base_sha": "c" * 40,
+            "head_sha": HEAD,
+            "changed_list": listed,
+            "changed_files": [],
+            "packets": [],
+            "max_changed_files": 100,
+        }
+        receipt = atr.evaluate(inputs)
+        self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
+        self.assertNotEqual(atr.PASS_NOT_APPLICABLE, receipt["result"])
+        self.assertTrue(receipt["inputs"]["changed_list_error"].startswith("changed_list_not_utf8"))
+
     def test_consecutive_computations_over_unchanged_inputs_are_byte_identical(self) -> None:
         good = self.write_packet("good.json", packet_body("semantic_close_authority", HEAD))
         first = atr.render_receipt(self.evaluate(GOVERNED_CHANGED, [good]))
@@ -458,6 +502,38 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         summary = summary_path.read_text(encoding="utf-8")
         self.assertIn("FAIL_REVIEW_MISSING", summary)
         self.assertIn(HEAD, summary)
+
+    def test_cli_not_proven_exit_code_is_distinct_from_typed_failure(self) -> None:
+        receipt_path = self.base / "out" / "receipt.json"
+        argv = [
+            "--root",
+            str(self.base),
+            "--repository",
+            REPOSITORY,
+            "--pr-number",
+            "1",
+            "--base-sha",
+            "c" * 40,
+            "--head-sha",
+            HEAD,
+            "--changed-file",
+            ".github/workflows/review-receipt-retirement.yml",
+            "--receipt",
+            str(receipt_path),
+        ]
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            status = atr.main(argv)
+        self.assertEqual(atr.EXIT_NOT_PROVEN, status)
+        written = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual(atr.NOT_PROVEN_GITHUB, written["result"])
+
+    def test_exit_code_classes_partition_the_result_vocabulary(self) -> None:
+        # Membership, not a string prefix, decides the exit code.
+        every = set(atr.PASS_RESULTS) | set(atr.TYPED_FAILURE_RESULTS) | set(atr.NOT_PROVEN_RESULTS)
+        self.assertEqual(set(atr.SEVERITY_ORDER), every)
+        self.assertFalse(set(atr.PASS_RESULTS) & set(atr.TYPED_FAILURE_RESULTS))
+        self.assertFalse(set(atr.NOT_PROVEN_RESULTS) & set(atr.TYPED_FAILURE_RESULTS))
 
     def test_cli_self_test_flag_runs_green(self) -> None:
         buffer = io.StringIO()
