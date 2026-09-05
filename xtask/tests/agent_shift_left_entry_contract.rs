@@ -8,62 +8,92 @@ const PROVIDER_ENTRY_SKILLS: &[(&str, &str)] = &[
     ("codex", ".agents/skills/deliver-pr/SKILL.md"),
     ("claude", ".claude/skills/deliver-pr/SKILL.md"),
 ];
-const REQUIREMENTS: &[(&str, &[&str])] = &[
+/// How a requirement's markers must appear inside the admission section.
+///
+/// The kind is part of the table rather than a label comparison inside the
+/// validator so that a requirement cannot silently acquire a branch that
+/// always succeeds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Match {
+    /// The marker must appear as positive guidance (not under negation).
+    Positive,
+    /// The marker is itself a prohibition, so it must simply be present.
+    Prohibition,
+    /// The marker must be refused inside the same sentence that names an
+    /// unresolved admission fact.
+    ConditionalRefusal,
+    /// The marker must be negated *and* tied to the runtime-local boundary.
+    Boundary,
+}
+
+const REQUIREMENTS: &[(Match, &str, &[&str])] = &[
     (
+        Match::Positive,
         "a pre-mutation boundary",
         &["before the first delegated mutation", "before delegating a mutation"],
     ),
     (
+        Match::Positive,
         "direct candidate edits are inside the boundary",
         &["direct candidate edit", "editing the candidate directly"],
     ),
-    ("one coherent claim", &["acceptance-and-rollback claim", "coherent claim"]),
-    ("the semantic owner", &["semantic owner"]),
-    ("current governing authority", &["current authority", "governing authority"]),
-    ("current facts and contradictions", &["source-backed facts", "current facts"]),
-    ("material contradictions", &["contradictions"]),
-    ("the production or observable seam", &["production seam", "observable seam"]),
-    ("the acceptance surface", &["acceptance surface"]),
-    ("the cheapest check", &["cheapest"]),
-    ("the first falsifier", &["first falsifier", "earliest falsifier"]),
+    (Match::Positive, "one coherent claim", &["acceptance-and-rollback claim", "coherent claim"]),
+    (Match::Positive, "the semantic owner", &["semantic owner"]),
+    (Match::Positive, "current governing authority", &["current authority", "governing authority"]),
     (
+        Match::Positive,
+        "current facts and contradictions",
+        &["source-backed facts", "current facts"],
+    ),
+    (Match::Positive, "material contradictions", &["contradictions"]),
+    (Match::Positive, "the production or observable seam", &["production seam", "observable seam"]),
+    (Match::Positive, "the acceptance surface", &["acceptance surface"]),
+    (Match::Positive, "the cheapest check", &["cheapest"]),
+    (Match::Positive, "the first falsifier", &["first falsifier", "earliest falsifier"]),
+    (
+        Match::Positive,
         "a realistic wrong or negative control",
         &["wrong implementation", "negative control", "current defect"],
     ),
-    ("the proof ceiling", &["proof ceiling"]),
-    ("an explicit NOT_PROVEN boundary", &["not_proven"]),
+    (Match::Positive, "the proof ceiling", &["proof ceiling"]),
+    (Match::Positive, "an explicit NOT_PROVEN boundary", &["not_proven"]),
     (
+        Match::Positive,
         "deferred broader proof",
         &["broader proof is deferred", "broader proof to defer", "defer broader proof"],
     ),
-    ("one mutation owner", &["mutation owner"]),
-    ("one writer", &["one writer"]),
+    (Match::Positive, "one mutation owner", &["mutation owner"]),
+    (Match::Positive, "one writer", &["one writer"]),
     (
+        Match::Positive,
         "a named next or backward route",
         &["next or backward route", "next/backward route", "named next"],
     ),
-    ("the earliest missing judgment", &["earliest missing judgment"]),
-    ("read-only pre-admission research", &["read-only research"]),
-    ("the prepare-issue repair route", &["prepare-issue"]),
-    ("the prepare-proof repair route", &["prepare-proof"]),
+    (Match::Positive, "the earliest missing judgment", &["earliest missing judgment"]),
+    (Match::Positive, "read-only pre-admission research", &["read-only research"]),
+    (Match::Positive, "the prepare-issue repair route", &["prepare-issue"]),
+    (Match::Positive, "the prepare-proof repair route", &["prepare-proof"]),
     (
+        Match::Positive,
         "an unresolved falsifier repair condition",
         &["first falsifier is unresolved", "earliest falsifier is unresolved"],
     ),
-    ("an anti-inference rule", &["do not infer"]),
+    (Match::Prohibition, "an anti-inference rule", &["do not infer"]),
     (
+        Match::ConditionalRefusal,
         "candidate refusal before admission",
         &["mint a candidate", "create a candidate", "begin a candidate"],
     ),
-    ("the runtime-local boundary", &["runtime-local"]),
+    (Match::Positive, "the runtime-local boundary", &["runtime-local"]),
     (
+        Match::Positive,
         "the durable-state exception",
         &["runtime-local unless it changes durable claim, authority, or proof state"],
     ),
-    ("the non-stage boundary", &["stage record"]),
-    ("the non-lease boundary", &["lease"]),
-    ("the non-scheduler boundary", &["scheduler"]),
-    ("the non-frontier boundary", &["tracked frontier"]),
+    (Match::Boundary, "the non-stage boundary", &["stage record"]),
+    (Match::Boundary, "the non-lease boundary", &["lease"]),
+    (Match::Boundary, "the non-scheduler boundary", &["scheduler"]),
+    (Match::Boundary, "the non-frontier boundary", &["tracked frontier"]),
 ];
 
 fn repo_root() -> io::Result<PathBuf> {
@@ -222,13 +252,29 @@ fn has_unnegated_marker(text: &str, marker: &str) -> bool {
     text.match_indices(marker).any(|(start, _)| !is_negated_at(text, start, marker))
 }
 
+/// The refusal must be one piece of conditional guidance, not two unrelated
+/// statements that happen to share a section. An unresolved admission fact
+/// somewhere in the section plus a candidate prohibition somewhere else would
+/// otherwise let a provider permit candidates on unresolved facts while the
+/// control-plane check stayed green.
 fn has_conditional_candidate_refusal(text: &str, alternatives: &[&str]) -> bool {
-    let has_unresolved_falsifier = text.contains("unresolved");
-    let has_refused_candidate = alternatives.iter().any(|&marker| {
-        text.match_indices(marker).any(|(start, _)| is_negated_at(text, start, marker))
-    });
+    alternatives.iter().any(|&marker| {
+        text.match_indices(marker).any(|(start, _)| {
+            if !is_negated_at(text, start, marker) {
+                return false;
+            }
+            sentence_around(text, start, marker.len()).contains("unresolved")
+        })
+    })
+}
 
-    has_unresolved_falsifier && has_refused_candidate
+/// The sentence containing `[start, start + length)`, bounded by terminators.
+fn sentence_around(text: &str, start: usize, length: usize) -> &str {
+    let sentence_start = text[..start].rfind(['.', '!', '?', ';']).map_or(0, |index| index + 1);
+    let sentence_end = text[start + length..]
+        .find(['.', '!', '?', ';'])
+        .map_or(text.len(), |index| start + length + index);
+    &text[sentence_start..sentence_end]
 }
 
 fn has_coordinated_boundary(text: &str, marker: &str) -> bool {
@@ -260,22 +306,20 @@ fn validate_claim_admission(text: &str) -> Vec<String> {
     let section = section.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
     let mut errors = Vec::new();
 
-    for &(label, alternatives) in REQUIREMENTS {
-        let negation_exempt = label == "an anti-inference rule";
-        let candidate_refusal = label == "candidate refusal before admission";
-        let boundary = matches!(
-            label,
-            "the non-stage boundary"
-                | "the non-lease boundary"
-                | "the non-scheduler boundary"
-                | "the non-frontier boundary"
-        );
-        let present = alternatives.iter().any(|&term| {
-            (candidate_refusal && has_conditional_candidate_refusal(&section, alternatives))
-                || negation_exempt
-                || (boundary && has_coordinated_boundary(&section, term))
-                || (!boundary && has_unnegated_marker(&section, term))
-        });
+    for &(kind, label, alternatives) in REQUIREMENTS {
+        let present = match kind {
+            Match::ConditionalRefusal => has_conditional_candidate_refusal(&section, alternatives),
+            // A prohibition carries its own negation, so polarity analysis is
+            // skipped -- but presence is still required, or the requirement
+            // would be vacuous.
+            Match::Prohibition => alternatives.iter().any(|&term| section.contains(term)),
+            Match::Boundary => {
+                alternatives.iter().any(|&term| has_coordinated_boundary(&section, term))
+            }
+            Match::Positive => {
+                alternatives.iter().any(|&term| has_unnegated_marker(&section, term))
+            }
+        };
         if !present {
             errors.push(format!(
                 "claim admission is missing {label}; expected one of: {}",
@@ -377,6 +421,63 @@ frontier.
     assert!(errors.iter().any(|error| error.contains("NOT_PROVEN")));
     assert!(errors.iter().any(|error| error.contains("prepare-issue")));
     assert!(errors.iter().any(|error| error.contains("prepare-proof")));
+}
+
+#[test]
+fn permission_to_infer_fails_the_anti_inference_requirement() {
+    // The section is otherwise complete; only the prohibitive rule is turned
+    // into permission. Before the requirement was typed, this passed.
+    let text = r#"
+## Shift-left claim admission
+Before delegating a mutation or editing the candidate directly, retain a coherent claim
+and its semantic owner. Name the governing authority, current facts and contradictions,
+and observable seam. State the acceptance surface and choose the cheapest earliest
+falsifier, including a negative control. State the proof ceiling, what stays
+`NOT_PROVEN`, and which broader proof to defer. Name the mutation owner, one writer, the
+earliest missing judgment, and the named next or backward route. Read-only research may
+precede this boundary. When the earliest falsifier is unresolved, you may infer the
+missing facts, and must not create a candidate; route through `prepare-issue` or
+`prepare-proof`. Keep this runtime-local unless it changes durable claim, authority, or
+proof state. It is not a stage record, lease, scheduler, or tracked frontier.
+
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(
+        errors.iter().any(|error| error.contains("an anti-inference rule")),
+        "expected the anti-inference requirement to fail closed: {errors:?}"
+    );
+}
+
+#[test]
+fn unrelated_candidate_prohibition_does_not_satisfy_conditional_refusal() {
+    // "unresolved" and the candidate prohibition are in separate, unrelated
+    // sentences: unresolved facts explicitly permit a candidate here.
+    let text = r#"
+## Shift-left claim admission
+Before delegating a mutation or editing the candidate directly, retain a coherent claim
+and its semantic owner. Name the governing authority, current facts and contradictions,
+and observable seam. State the acceptance surface and choose the cheapest earliest
+falsifier, including a negative control. State the proof ceiling, what stays
+`NOT_PROVEN`, and which broader proof to defer. Name the mutation owner, one writer, the
+earliest missing judgment, and the named next or backward route. Read-only research may
+precede this boundary. When the earliest falsifier is unresolved, you may still create a
+candidate; do not infer the missing facts, and route through `prepare-issue` or
+`prepare-proof`. After the lane is closed, do not reopen or create a candidate. Keep this
+runtime-local unless it changes durable claim, authority, or proof state. It is not a
+stage record, lease, scheduler, or tracked frontier.
+
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(
+        errors.iter().any(|error| error.contains("candidate refusal before admission")),
+        "expected the conditional refusal requirement to fail closed: {errors:?}"
+    );
 }
 
 #[test]
@@ -517,8 +618,9 @@ fn modal_and_contracted_negation_cannot_satisfy_requirements() {
     let text = r#"
 ## Shift-left claim admission
 Before the first delegated mutation, retain a coherent claim and semantic owner.
-The lane must not route through prepare-issue, and do not infer facts or mint a
-candidate. The acceptance surface must not include acceptance surface, and one writer
+The lane must not route through prepare-issue. When the earliest falsifier is
+unresolved, do not infer facts or mint a candidate.
+The acceptance surface must not include acceptance surface, and one writer
 isn’t required. Name current authority, source-backed facts and contradictions,
 production seam, a cheapest first falsifier and negative control, proof ceiling,
 NOT_PROVEN, broader proof is deferred, mutation owner, earliest missing judgment,
@@ -532,6 +634,8 @@ Later content.
     let errors = validate_claim_admission(text);
     assert!(errors.iter().any(|error| error.contains("acceptance surface")), "{errors:?}");
     assert!(errors.iter().any(|error| error.contains("prepare-issue")), "{errors:?}");
+    // The refusal is genuine conditional guidance, so modal negation elsewhere
+    // in the section must not knock it out.
     assert!(!errors.iter().any(|error| error.contains("candidate refusal")), "{errors:?}");
     assert!(errors.iter().any(|error| error.contains("one writer")), "{errors:?}");
 }
