@@ -150,6 +150,37 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Report a refused collection, re-anchoring an earlier overrun diagnostic.
+    ///
+    /// The one-diagnostic policy and the anchor contract collide here. An
+    /// admitted drain that overran already pushed a diagnostic anchored at the
+    /// declaration it was collecting — and that declaration is *fully attached*.
+    /// If a later drain is then refused, plain deduplication keeps the earlier
+    /// anchor, so the diagnostic points at a heredoc that parsed perfectly while
+    /// the one whose body is actually missing carries no source location at all.
+    ///
+    /// Refusal is the more actionable anchor: it names the declaration the user
+    /// has lost content for. So the first refusal re-anchors an existing
+    /// diagnostic in place rather than adding a second one, keeping exactly one
+    /// diagnostic per parse. Later refusals do not re-anchor — exhaustion is one
+    /// event, and the first declaration refused is the one that explains it.
+    fn report_heredoc_budget_refusal(&mut self, location: usize) {
+        if self.operation.heredoc_budget_terminal_recorded() {
+            // A refusal already re-anchored this parse's diagnostic.
+            return;
+        }
+        let (limit, usage) = self.operation.heredoc_scan_state();
+        let refusal = ParseError::HeredocBudgetExhausted { limit, usage, location };
+        match self
+            .errors
+            .iter_mut()
+            .find(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. }))
+        {
+            Some(existing) => *existing = refusal,
+            None => self.errors.push(refusal),
+        }
+    }
+
     /// Record the typed terminal for a collection this parse actually refused.
     ///
     /// `ParseOutput::stop_cause` documents itself as `None` for completed —
@@ -206,7 +237,7 @@ impl<'a> Parser<'a> {
                 self.pending_heredocs.get(pending_start).map_or(self.byte_cursor, |decl| {
                     decl.decl_span.start
                 });
-            self.report_heredoc_budget_exhausted(location);
+            self.report_heredoc_budget_refusal(location);
             self.record_heredoc_budget_terminal();
             return;
         }

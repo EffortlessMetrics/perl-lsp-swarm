@@ -778,3 +778,117 @@ fn ordinary_source_between_heredocs_is_not_charged() {
         "an ordinary file with widely separated heredocs must not trip the budget"
     );
 }
+
+/// After an overrun, a later refusal re-anchors the one diagnostic to itself.
+///
+/// The one-diagnostic policy and the anchor contract collide when both edges
+/// fire in one parse. An admitted drain that overruns pushes a diagnostic
+/// anchored at the declaration it was collecting — and that declaration ends up
+/// fully attached. If a later drain is then refused, plain deduplication keeps
+/// the earlier anchor: the diagnostic points at a heredoc that parsed perfectly,
+/// while the one whose body is actually missing has no source location at all.
+/// A user following that diagnostic lands on working code.
+///
+/// `refusal_anchors_at_the_declaration_it_refused` cannot catch this: it sets
+/// the budget to exactly the first statement's charge, so the first drain lands
+/// *on* the limit, never overruns, and emits no diagnostic to be kept. Only a
+/// budget low enough for the first drain to overrun puts both edges in one
+/// parse, and that is what this pins.
+#[test]
+fn a_refusal_after_an_overrun_anchors_at_the_refused_declaration() {
+    let source = two_heredoc_statements();
+    let overrunning = must_some_with(source.find("<<EOF;"), "fixture must contain the first decl");
+    let refused = must_some_with(source.find("<<EOF2;"), "fixture must contain the second decl");
+    assert!(overrunning < refused, "the fixture must declare the refused heredoc second");
+
+    // A budget of 1 is positive, so the first drain's pre-check cannot fire: it
+    // runs, overruns, and reports. The second drain's pre-check then refuses.
+    let output = parse_with_budget(&source, heredoc_scan_budget(1));
+
+    // Both edges fired: the first body is attached, the second is not.
+    assert_eq!(
+        heredoc_contents(&output),
+        vec!["body a line one\nbody a line two".to_string(), String::new()],
+        "the fixture must attach the overrunning body and leave the refused one unresolved"
+    );
+    assert!(
+        matches!(output.stop_cause(), Some(ParseStopCause::HeredocBudgetExhausted { .. })),
+        "the refusal must record the terminal, got {:?}",
+        output.stop_cause()
+    );
+
+    let reported: Vec<_> = output
+        .diagnostics
+        .iter()
+        .filter(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. }))
+        .collect();
+    assert_eq!(
+        reported.len(),
+        1,
+        "exhaustion is one event per parse: re-anchoring must not add a second diagnostic"
+    );
+    let reported = must_some_with(reported.first().copied(), "one diagnostic must be present");
+    assert_eq!(
+        reported.location(),
+        Some(refused),
+        "the diagnostic must anchor at the refused declaration ({refused}), not the overrunning \
+         one ({overrunning}) whose body is fully attached"
+    );
+    assert_eq!(
+        reported.diagnostic_anchor(),
+        ParseDiagnosticAnchor::Exact(refused),
+        "the rendered anchor must agree with the reported location"
+    );
+}
+
+/// Only the first refusal re-anchors; later ones must not move the diagnostic.
+///
+/// A compound statement retains its own declaration in the queue while its block
+/// is parsed, so the block's heredocs drain first and the enclosing one drains
+/// last. That produces a parse with *two* refusals, and both refused
+/// declarations are genuinely unresolved — so without a first-refusal guard the
+/// anchor drifts to whichever refusal happened to run last, which here is the
+/// enclosing declaration near the top of the file.
+///
+/// Exhaustion is one event, so the anchor must be deterministic rather than
+/// order-dependent: the first declaration this parse refused is the one that
+/// explains it. Measured here, the guard holds the anchor at the inner
+/// declaration; removing it moves the anchor backward to the enclosing one.
+#[test]
+fn only_the_first_refusal_re_anchors_the_diagnostic() {
+    let source = "if (<<AAA) {\naaa body\nAAA\n  my $b = <<BBB;\nbbb body\nBBB\n  my $c = <<CCC;\nccc body\nCCC\n}\n";
+    let enclosing =
+        must_some_with(source.find("<<AAA"), "fixture must declare the enclosing heredoc");
+    let overrunning =
+        must_some_with(source.find("<<BBB"), "fixture must declare the overrunning heredoc");
+    let first_refused =
+        must_some_with(source.find("<<CCC"), "fixture must declare the refused heredoc");
+    assert!(
+        enclosing < overrunning && overrunning < first_refused,
+        "the enclosing declaration must sit earliest in source for this to discriminate"
+    );
+
+    let output = parse_with_budget(source, heredoc_scan_budget(1));
+
+    // The enclosing declaration drains last and is refused; the block's first
+    // heredoc drains first and overruns; its second is the first refusal.
+    assert_eq!(
+        heredoc_contents(&output),
+        vec![String::new(), "bbb body".to_string(), String::new()],
+        "the fixture must produce one collected body between two refused ones"
+    );
+
+    let reported: Vec<_> = output
+        .diagnostics
+        .iter()
+        .filter(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. }))
+        .collect();
+    assert_eq!(reported.len(), 1, "two refusals must still yield exactly one diagnostic");
+    let reported = must_some_with(reported.first().copied(), "one diagnostic must be present");
+    assert_eq!(
+        reported.location(),
+        Some(first_refused),
+        "the anchor must stay at the first refusal ({first_refused}); drifting to the enclosing \
+         declaration ({enclosing}) makes it depend on drain order rather than on the event"
+    );
+}
