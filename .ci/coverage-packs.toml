@@ -205,6 +205,9 @@ commands = [
 ]
 coverage_filters = [
   "parser_semantic_facade_consumers",
+]
+
+[[pack]]
 id = "patch-coverage-xtask-parser-tdd-facade-guard"
 lcov = false
 files = [

@@ -1598,6 +1598,7 @@ jobs:
       # lanes, so stale facade imports could merge without it ever running.
       - name: Semantic facade consumer contract (required merge surface)
         run: cargo test -p xtask --test parser_semantic_facade_consumers --locked -- --nocapture
+
       # Same reasoning as the contracts above: the #11382 TDD-facade
       # recurrence guard otherwise only executes through diff-routed advisory
       # lanes, so stale facade imports could merge without it ever running.

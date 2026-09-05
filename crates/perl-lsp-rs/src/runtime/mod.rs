@@ -83,10 +83,12 @@ use perl_lsp_rs_core::tooling::perl_critic::BuiltInAnalyzer;
 use perl_parser::{
     Parser,
     ast::{Node, NodeKind},
+};
+use perl_semantic_analyzer::analysis::declaration::ParentMap;
+use perl_tdd_support::{
     tdd_basic::TestGenerator,
     test_runner::{TestKind, TestRunner},
 };
-use perl_semantic_analyzer::analysis::declaration::ParentMap;
 
 use crate::call_hierarchy_provider::CallHierarchyProvider;
 use crate::cancellation::{GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken};
@@ -464,6 +466,11 @@ pub struct LspServer {
     /// mutation (#11674 falsifiers).
     #[cfg(test)]
     document_symbols_before_commit_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Test-only barrier inside the sink boundary: fires after the currency
+    /// precheck passes and before the serialized install, so falsifiers can
+    /// race the exact validation -> mutation window (#11674 review barrier).
+    #[cfg(test)]
+    document_symbols_before_install_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Optional AI inline-completion backend.
     ///
     /// When `Some`, the `handle_inline_completion` handler will attempt
