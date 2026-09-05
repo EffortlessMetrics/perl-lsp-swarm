@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12735 |
-| Rust-family files | 3982 |
-| Non-Rust files | 8753 |
-| Allowlisted | 6514 |
+| Total tracked files | 12738 |
+| Rust-family files | 3984 |
+| Non-Rust files | 8754 |
+| Allowlisted | 6515 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 502 |
+| config | 503 |
 | documentation | 2856 |
 | generated | 2 |
 | production | 357 |
@@ -6459,6 +6459,7 @@
 | `policy/parser-behavior-proofs.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/pr-candidate-sets.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/product-identity.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/product-topology.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/provider-fact-reads.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/provider-promotion-ledger.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/quality-gate-exceptions.toml` | config | `non-rust-policy-ledgers` | release/ci |
