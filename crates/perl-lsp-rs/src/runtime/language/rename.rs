@@ -1441,12 +1441,13 @@ impl LspServer {
         // renamed" about a request that never named a position.
         // `handle_prepare_rename` already answers `-32602` here, through these
         // same two helpers; this makes `rename` agree with its sibling.
-        if let Some(p) = params.as_ref() {
-            let _ = req_uri(p)?;
-            let _ = req_position(p)?;
-            if p.get("newName").and_then(Value::as_str).is_none() {
-                return Err(crate::protocol::invalid_params("Missing required parameter: newName"));
-            }
+        let Some(validated) = params.as_ref() else {
+            return Err(crate::protocol::invalid_params("Missing required parameter: params"));
+        };
+        let _ = req_uri(validated)?;
+        let _ = req_position(validated)?;
+        if validated.get("newName").and_then(Value::as_str).is_none() {
+            return Err(crate::protocol::invalid_params("Missing required parameter: newName"));
         }
 
         if let Some(p) = params
