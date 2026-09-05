@@ -1462,6 +1462,14 @@ enum Commands {
         command: VimLspSubjectCommand,
     },
 
+    /// Check the server-initiated LSP request ownership matrix against the
+    /// direction registry, production emitters, and feature catalog (#13223).
+    #[command(name = "server-request-ownership")]
+    ServerRequestOwnership {
+        #[command(subcommand)]
+        command: tasks::server_request_ownership::Command,
+    },
+
     /// Sync active release narrative docs from workspace version and publish count.
     SyncReleaseDocs {
         /// Write synced files (omit to run a dry check).
@@ -5740,6 +5748,9 @@ fn run_cli(cli: Cli) -> Result<()> {
                 Ok(_) => Ok(()),
                 Err(error) => Err(eyre!(error.to_string())),
             }
+        }
+        Commands::ServerRequestOwnership { command } => {
+            tasks::server_request_ownership::run(tasks::server_request_ownership::Cli { command })
         }
         Commands::SyncReleaseDocs { write } => sync_release_docs::run(write),
         Commands::CheckFromRaw => ci_policy::check_from_raw(),

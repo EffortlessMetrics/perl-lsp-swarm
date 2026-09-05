@@ -19,6 +19,7 @@ fn list_commands_emits_sorted_top_level_names() -> Result<()> {
     assert!(lines.contains(&"generate-lsp-318-matrix"));
     assert!(lines.contains(&"layer-check"));
     assert!(lines.contains(&"list-commands"));
+    assert!(lines.contains(&"server-request-ownership"));
     assert!(lines.contains(&"srp"));
     assert!(lines.contains(&"srp-microcrates"));
     assert!(lines.contains(&"unwired-scan"));
