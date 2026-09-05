@@ -1,9 +1,9 @@
 use super::{
-    admissible_search_paths, apply_admissible_search_path, command_exists, command_exists_in_path,
-    command_output_lines, command_output_with_status, command_status, command_status_strict,
-    command_timed_status, command_with_input_with_status, command_with_output,
-    command_with_output_all, command_with_output_allow_empty_match,
-    command_with_output_allow_failure, windows_command_candidates,
+    admissible_search_paths, command_exists, command_exists_in_path, command_output_lines,
+    command_output_with_status, command_status, command_status_strict, command_timed_status,
+    command_with_input_with_status, command_with_output, command_with_output_all,
+    command_with_output_allow_empty_match, command_with_output_allow_failure, configure_child,
+    windows_command_candidates,
 };
 use std::env;
 use std::error::Error;
@@ -886,6 +886,10 @@ mod child_cwd_launch_coherence {
 
     const PROBE: &str = "ci-hygiene-cwd-coherence-probe";
 
+    /// The verdict `launch_with_policy` reports when production refuses to spawn
+    /// rather than launching against a search path it cannot interpret.
+    const REFUSED: &str = "<refused before spawn>";
+
     fn plant(dir: &Path, marker: &str) -> TestResult {
         let candidate = dir.join(PROBE);
         fs::write(&candidate, format!("#!/bin/sh\necho {marker}\n"))?;
@@ -893,12 +897,25 @@ mod child_cwd_launch_coherence {
         Ok(())
     }
 
-    /// Launch `PROBE` under `child_cwd` with `path` as the *inherited* PATH,
-    /// applying the production admission policy, and report what actually ran.
+    /// What production does when asked to launch `PROBE` under `child_cwd` with
+    /// `path` as its effective search path.
+    ///
+    /// This drives `configure_child` — the seam every wrapper in this module
+    /// goes through — rather than reconstructing the policy locally, so a row
+    /// cannot pass against a launch shape production no longer performs. The
+    /// search path is supplied through `env_vars`, which is the caller-supplied
+    /// half of the effective-path rule; the inherited half is covered by the
+    /// re-exec'd child rows below, which control the real process environment.
+    ///
+    /// A refusal is a launch outcome, not a test failure: `configure_child`
+    /// declines a bare name it cannot resolve coherently, so the harness reports
+    /// that verdict alongside the ones where a process actually ran.
     fn launch_with_policy(child_cwd: &Path, path: &OsStr) -> TestResult<String> {
-        let mut child = Command::new(PROBE);
-        child.current_dir(child_cwd);
-        apply_admissible_search_path(&mut child, Some(path));
+        let path = path.to_str().ok_or("fixture search paths are UTF-8")?;
+        let mut child = match configure_child(PROBE, child_cwd, &[], &[("PATH", path)]) {
+            Ok(child) => child,
+            Err(_) => return Ok(REFUSED.to_owned()),
+        };
         Ok(match child.output() {
             Ok(output) => String::from_utf8_lossy(&output.stdout).trim().to_owned(),
             Err(error) => format!("<{}>", error.kind()),
@@ -981,13 +998,15 @@ mod child_cwd_launch_coherence {
                 !command_exists_in_path(PROBE, Some(path)),
                 "PATH={raw:?} has no admissible component and must report the tool absent"
             );
-            // PATH is removed rather than emptied, so the launch falls back to
-            // the platform's absolute default search path — never the
-            // workspace. An empty PATH *value* would have meant the workspace.
+            // Production refuses the spawn outright. It cannot express "search
+            // nothing" through the variable itself: an empty PATH *value* means
+            // the workspace copy, and an absent PATH means the platform's own
+            // default directories. Refusing is the only answer that names
+            // neither.
             assert_eq!(
                 launch_with_policy(workspace.path(), path)?,
-                "<entity not found>",
-                "an unadmitted PATH must not reach the workspace candidate (PATH={raw:?})"
+                REFUSED,
+                "an unadmitted PATH must be refused, not launched (PATH={raw:?})"
             );
             assert_eq!(
                 launch_without_policy(workspace.path(), path)?,

@@ -31,33 +31,6 @@ fn admissible_search_paths(path: Option<&OsStr>) -> Vec<PathBuf> {
     env::split_paths(path).filter(|dir| dir.is_absolute()).collect()
 }
 
-/// Bind the child's PATH to exactly the components [`command_exists`] searched,
-/// so discovery and launch traverse one identical, cwd-independent list.
-///
-/// Without this the two disagree even when the probe is honest: with
-/// `PATH=".:/usr/bin"` the probe admits `/usr/bin/tool` while a bare-name launch
-/// under `current_dir(repo_root)` runs `repo_root/tool` instead.
-///
-/// When nothing is admissible the variable is *removed* rather than set to an
-/// empty value, because an empty PATH means the current directory on Unix — the
-/// `repo_root` candidate this policy refuses. Removing it is not by itself an
-/// empty search list either: Unix `execvp` falls back to the platform's own
-/// default directories when PATH is unset, so a bare name could still resolve
-/// somewhere [`command_exists`] never looked. [`configure_child`] closes that
-/// gap by refusing to launch a bare name at all when nothing is admissible.
-fn apply_admissible_search_path(child: &mut Command, path: Option<&OsStr>) {
-    match env::join_paths(admissible_search_paths(path)) {
-        Ok(joined) if !joined.is_empty() => {
-            child.env("PATH", joined);
-        }
-        // Either there is no admissible component, or one could not be
-        // re-joined (a component containing the list separator). Fail closed.
-        _ => {
-            child.env_remove("PATH");
-        }
-    }
-}
-
 /// Whether `key` names the search-path variable on this platform.
 ///
 /// Windows environment names are case-insensitive, so `Path` and `PATH` are the
@@ -88,11 +61,16 @@ fn is_search_path_key(key: &str) -> bool {
 /// explicitly configured `PATH` reach `repo_root`. One rule over the effective
 /// value avoids both.
 ///
-/// A bare name is refused when that effective path has no admissible component.
-/// Removing PATH is not an empty search list — the platform substitutes its own
-/// default directories — so launching anyway would run a tool that
-/// [`command_exists`] reports absent, which is exactly the discovery/launch
-/// disagreement this module exists to prevent.
+/// A bare name is refused when that effective path has no admissible component,
+/// and again when the admissible components cannot be rebuilt into a `PATH`
+/// value. Both refusals exist for one reason: there is no way to hand a child an
+/// *empty* search list. An empty `PATH` value means the current directory on
+/// Unix — the `repo_root` candidate this policy exists to refuse — while an
+/// absent `PATH` makes the platform substitute its own default directories, so a
+/// bare name could still resolve somewhere [`command_exists`] never looked.
+/// Refusing before the spawn is the only expression of "nothing is admissible"
+/// that does not silently name a directory, so the child's `PATH` is set from
+/// the admissible projection or the launch does not happen.
 fn configure_child(
     command: &str,
     repo_root: &Path,
@@ -123,22 +101,36 @@ fn configure_child(
         .map(|(_, value)| OsStr::new(*value));
     let effective = configured.or(inherited.as_deref());
 
-    if admissible_search_paths(effective).is_empty() {
+    // The admissible projection is computed once and is the only thing that can
+    // become the child's PATH. Either the child searches exactly the components
+    // `command_exists` searched, or it is not launched — there is deliberately
+    // no third outcome in which the variable is dropped and the platform
+    // substitutes directories neither side inspected.
+    let admitted = admissible_search_paths(effective);
+    if admitted.is_empty() {
         return Err(color_eyre::eyre::eyre!(
             "command '{command}' is not available: the search path has no absolute \
              component, and a relative or empty component cannot be resolved to the \
              directory the child would run in"
         ));
     }
+    let search_path = env::join_paths(&admitted).map_err(|error| {
+        color_eyre::eyre::eyre!(
+            "command '{command}' cannot be launched: its admissible search path could \
+             not be rebuilt ({error}). Launching without it would resolve the name \
+             against the platform's default directories, which this process never \
+             searched"
+        )
+    })?;
 
     for (key, value) in env_vars {
-        // PATH is set from the effective value below so that one policy governs
-        // it, whichever source supplied it.
+        // PATH is set from the admissible projection below so that one policy
+        // governs it, whichever source supplied it.
         if !is_search_path_key(key) {
             child.env(key, value);
         }
     }
-    apply_admissible_search_path(&mut child, effective);
+    child.env("PATH", search_path);
     Ok(child)
 }
 
@@ -320,9 +312,8 @@ pub(crate) fn command_status_strict(
 ///
 /// The answer is coherent with the launches this module performs on the same
 /// search path: discovery and every wrapper traverse the same absolute-only
-/// component list (see [`admissible_search_paths`] and
-/// [`apply_admissible_search_path`]), so the probe cannot certify one candidate
-/// while the child runs another.
+/// component list (see [`admissible_search_paths`] and [`configure_child`]), so
+/// the probe cannot certify one candidate while the child runs another.
 ///
 /// Advisory limitations that remain, by design:
 ///
