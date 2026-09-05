@@ -408,17 +408,42 @@ fn test_capabilities_exception_info_consistent() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
-// AC:17 — supportsSetExpression is advertised and setExpression validates inputs
+// AC:17 — supportsSetExpression is floored false (#9568) and setExpression is refused
 fn test_capabilities_set_expression_advertised() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
     let caps = get_capabilities(&mut adapter)?;
     let advertised = caps.get("supportsSetExpression").and_then(Value::as_bool).unwrap_or(false);
 
-    assert!(advertised, "supportsSetExpression must be advertised");
+    // #9568: supportsSetExpression is authority-bound false until the exact
+    // current-frame l-value assignment proof lands (#9570 promotion boundary).
+    // It no longer rides on dap.core, so this previously-green advertisement
+    // assertion pins the floored value instead.
+    assert!(
+        !advertised,
+        "supportsSetExpression must stay false until #9568's re-enable gate (#9570) passes"
+    );
 
-    // Handler must reject missing args
+    // A well-formed request is refused with the deterministic #9568 gate
+    // message — the floor refuses after envelope validation, before any
+    // expression screening or debugger write.
     let mut adapter2 = new_adapter();
-    let err = assert_err(adapter2.handle_request(2, "setExpression", None), "setExpression")?;
+    let err = assert_err(
+        adapter2.handle_request(
+            2,
+            "setExpression",
+            Some(json!({"expression": "$x", "value": "42"})),
+        ),
+        "setExpression",
+    )?;
+    assert!(
+        err.contains("setExpression is not supported"),
+        "setExpression refusal must carry the #9568 gate reason, got: {err}"
+    );
+
+    // Missing arguments are still rejected (envelope validation), with a
+    // non-empty refusal.
+    let mut adapter3 = new_adapter();
+    let err = assert_err(adapter3.handle_request(2, "setExpression", None), "setExpression")?;
     assert!(!err.is_empty(), "missing-args error must be non-empty");
     Ok(())
 }

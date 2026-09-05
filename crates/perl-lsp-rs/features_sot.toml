@@ -1270,25 +1270,31 @@ description = "Exception breakpoint handling for `die`/uncaught exception catego
 
 [[feature]]
 id = "dap.inline_values"
-spec = "DAP 1.0"
+spec = "perl-lsp"
 area = "debug"
 policy_class = "debug_adapter"
 maturity = "not_proven"
-advertised = true
+advertised = false
 counts_in_coverage = false
 direction = "client_to_server"
-capability_gate = "dap capabilities advertisement"
+capability_gate = "none"
 registration = "static_capabilities"
 implementation_owner = "missing"
 state_owner = "missing"
-tests = ["crates/perl-dap/tests/dap_comprehensive_test.rs"]
+tests = [
+  "crates/perl-dap/tests/dap_comprehensive_test.rs",
+  "crates/perl-dap/tests/dap_inline_values_extension_floor_tests.rs",
+]
 evidence = [
   { class = "integration_test", id = "crates/perl-dap/tests/dap_comprehensive_test.rs" },
+  { class = "integration_test", id = "crates/perl-dap/tests/dap_inline_values_extension_floor_tests.rs" },
 ]
 limitations = [
   "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
+  "The routed inlineValues extension is fail-closed (#9089): no versioned negotiation contract is proven, so no standard capability cell advertises it and every unnegotiated request is refused.",
+  "Custom project extension, not standard DAP: the wire value comes from the #9089 negotiation authority, not from this row, so no `dap capabilities advertisement` gate applies.",
 ]
-description = "Inline variable values while debugging (native adapter)"
+description = "Inline variable values while debugging (custom extension, fail-closed until #9089 negotiation is proven)"
 
 [[feature]]
 id = "dap.completions"

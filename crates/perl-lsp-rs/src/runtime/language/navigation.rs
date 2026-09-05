@@ -357,7 +357,7 @@ fn type_definition_receipt_freshness(fact_source: &'static str) -> ProviderDecis
 }
 
 #[cfg(feature = "workspace")]
-fn get_fqn_regex() -> Result<&'static regex::Regex, JsonRpcError> {
+pub(super) fn get_fqn_regex() -> Result<&'static regex::Regex, JsonRpcError> {
     FQN_RE
         .get_or_init(|| regex::Regex::new(r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)"))
         .as_ref()
