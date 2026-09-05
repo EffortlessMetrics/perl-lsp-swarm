@@ -637,6 +637,90 @@ fn focused_reproduce_command_adds_staged_only_for_the_commit_tier() {
 }
 
 #[test]
+fn scoped_rows_reproduce_with_the_expanded_command_not_a_gate_filter() {
+    // `plan_gates` short-circuits to `static_gate_plan` whenever a `--gate`
+    // filter is present, so the scope selector never runs and a scoped
+    // gate's `{package_args}` placeholder stays unresolved -- which the
+    // runner refuses. Advertising the `--gate` spelling for a scoped row
+    // therefore hands the reader a command that always fails. Those rows
+    // must reproduce with the plan's own expanded command instead.
+    let mut input = plan_input();
+    input.selectors[0].role = Some(SelectorRole::RustScoped);
+    input.execution[0].command =
+        "cargo clippy -p perl-lexer -p perl-parser --all-targets".to_string();
+    input.selection.package_args = vec![
+        "-p".to_string(),
+        "perl-lexer".to_string(),
+        "-p".to_string(),
+        "perl-parser".to_string(),
+    ];
+    let plan = CiRoutePlanV1::compile(input).expect("scoped fixture plan compiles");
+    let result = build_success(&plan);
+
+    assert_eq!(
+        result.focused_reproduce_command, "cargo clippy -p perl-lexer -p perl-parser --all-targets",
+        "a scoped row must reproduce with the command it actually ran"
+    );
+    assert!(
+        !result.focused_reproduce_command.contains("--gate"),
+        "a --gate filter cannot reproduce a scoped row: {}",
+        result.focused_reproduce_command
+    );
+
+    // An always-on row is unaffected and keeps the focused CLI spelling.
+    let always_on = compiled_plan();
+    assert!(
+        build_success(&always_on).focused_reproduce_command.contains("--gate fmt_gate"),
+        "non-scoped rows must keep the focused gates CLI spelling"
+    );
+}
+
+#[test]
+fn contradictory_copied_plan_identity_fails_closed() {
+    // A consumer validates a result without the plan beside it, so the
+    // copied provenance must be coherent on its own. Re-sealing the
+    // fingerprint after a contradiction preserves it rather than catching
+    // it, so each contradiction is re-sealed here before validating.
+    let plan = compiled_plan();
+
+    let mut wrong_schema = build_success(&plan);
+    wrong_schema.plan_authority.schema = "ci_route_plan.v2".to_string();
+    wrong_schema.result_fingerprint = wrong_schema.semantic_fingerprint_of().expect("re-seal");
+    assert!(wrong_schema.validate().is_err(), "a foreign plan schema must fail closed");
+
+    let mut wrong_profile = build_success(&plan);
+    wrong_profile.row.requested_profile = "pr_fast".to_string();
+    wrong_profile.result_fingerprint = wrong_profile.semantic_fingerprint_of().expect("re-seal");
+    assert!(
+        wrong_profile.validate().is_err(),
+        "a row claiming a different profile than its plan authority must fail closed"
+    );
+
+    let mut off_denominator = build_success(&plan);
+    off_denominator.plan_authority.denominator = vec!["unit_gate".to_string()];
+    off_denominator.result_fingerprint =
+        off_denominator.semantic_fingerprint_of().expect("re-seal");
+    assert!(
+        off_denominator.validate().is_err(),
+        "a row absent from the governed denominator must fail closed"
+    );
+
+    let mut duplicated = build_success(&plan);
+    duplicated.plan_authority.denominator =
+        vec!["fmt_gate".to_string(), "fmt_gate".to_string(), "unit_gate".to_string()];
+    duplicated.result_fingerprint = duplicated.semantic_fingerprint_of().expect("re-seal");
+    assert!(duplicated.validate().is_err(), "a denominator naming the row twice must fail closed");
+
+    let mut foreign_tier = build_success(&plan);
+    foreign_tier.row.native_tier = "nightly".to_string();
+    foreign_tier.result_fingerprint = foreign_tier.semantic_fingerprint_of().expect("re-seal");
+    assert!(
+        foreign_tier.validate().is_err(),
+        "a row whose native tier is outside the plan's included tiers must fail closed"
+    );
+}
+
+#[test]
 fn validation_rejects_success_with_timeout_or_cancellation_flags() {
     let plan = compiled_plan();
     for (timed_out, cancelled) in [(true, false), (false, true)] {

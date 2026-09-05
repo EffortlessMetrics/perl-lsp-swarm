@@ -37,8 +37,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::ci_route_plan::{
-    Applicability, CI_ROUTE_PLAN_SCHEMA, CiRoutePlanV1, LifecycleDisposition, PolicyRole,
-    canonical_json, deserialize_option_reject_null,
+    Applicability, CI_ROUTE_PLAN_SCHEMA, CiRoutePlanV1, LifecycleDisposition, PlannedOutcome,
+    PolicyRole, SelectorRole, canonical_json, deserialize_option_reject_null,
 };
 
 /// Domain contract identity of this payload.
@@ -695,6 +695,8 @@ pub fn build_routed_result(
             &row.native_tier,
             gate_id,
             &plan.selection.base,
+            row.selector_role,
+            &row.outcome,
         ),
         result_fingerprint: String::new(),
     };
@@ -775,10 +777,48 @@ fn check_timing(timing: &ObservationTiming) -> Result<(), String> {
 /// `gates` CLI spells them kebab-case, so the command is emitted in the CLI
 /// spelling; `cargo xtask gates --tier <tier> --gate <gate>` re-runs exactly
 /// this row's gate.
-fn build_reproduce_command(native_tier: &str, gate_id: &str, base: &str) -> String {
+/// The command a reader can actually run to reproduce this row.
+///
+/// The generic `--tier/--base/--gate` spelling is only invocable for rows
+/// whose command does not depend on resolved package scope. `plan_gates`
+/// short-circuits to `static_gate_plan` as soon as a `--gate` filter is
+/// present, so the scope selector never runs and a scoped gate's
+/// `{package_args}` placeholder is left unresolved -- which the runner then
+/// refuses outright rather than running a gate that would silently pass with
+/// zero packages. Advertising that spelling for a scoped row would hand the
+/// reader a command that always fails.
+///
+/// For those rows the honest reproduction is the plan's own fully expanded
+/// command: it is exactly what this row executed, it needs no scope
+/// re-derivation, and it cannot go stale relative to the result it is
+/// attached to.
+fn build_reproduce_command(
+    native_tier: &str,
+    gate_id: &str,
+    base: &str,
+    selector_role: SelectorRole,
+    outcome: &PlannedOutcome,
+) -> String {
+    if let (true, PlannedOutcome::Run { command, .. }) =
+        (scope_dependent_selector(selector_role), outcome)
+    {
+        return command.trim().to_string();
+    }
     let tier = native_tier.replace('_', "-");
     let staged = if tier == "commit" { " --staged" } else { "" };
     format!("cargo xtask gates --tier {tier} --base {base} --gate {gate_id}{staged}")
+}
+
+/// Selector roles whose expanded command depends on the resolved package
+/// scope, and which therefore cannot be reproduced through a `--gate` filter.
+fn scope_dependent_selector(role: SelectorRole) -> bool {
+    match role {
+        SelectorRole::RustScoped | SelectorRole::RustPackageScoped => true,
+        SelectorRole::AlwaysOn
+        | SelectorRole::RustFallback
+        | SelectorRole::Static
+        | SelectorRole::Unspecified => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -794,6 +834,41 @@ fn validate_result(result: &RoutedGateResultV1) -> Result<(), String> {
     }
     if result.route_plan_fingerprint != result.plan_authority.semantic_fingerprint {
         return Err("route_plan_fingerprint disagrees with plan_authority identity".to_string());
+    }
+    // A consumer validates a result without the plan beside it, so the copied
+    // provenance has to be coherent on its own. Re-sealing the fingerprint
+    // preserves a contradiction rather than catching it, which would let an
+    // incoherent result read as validated provenance.
+    if result.plan_authority.schema != CI_ROUTE_PLAN_SCHEMA {
+        return Err(format!(
+            "plan_authority claims schema {:?}, not {CI_ROUTE_PLAN_SCHEMA}",
+            result.plan_authority.schema
+        ));
+    }
+    if result.row.requested_profile != result.plan_authority.requested_profile {
+        return Err(format!(
+            "row claims profile {:?} but the plan authority is {:?}",
+            result.row.requested_profile, result.plan_authority.requested_profile
+        ));
+    }
+    let denominator_hits = result
+        .plan_authority
+        .denominator
+        .iter()
+        .filter(|gate| *gate == &result.row.gate_id)
+        .count();
+    if denominator_hits != 1 {
+        return Err(format!(
+            "row gate {:?} appears {denominator_hits} times in the governed denominator; \
+             exactly one occurrence is required",
+            result.row.gate_id
+        ));
+    }
+    if !result.plan_authority.included_native_tiers.contains(&result.row.native_tier) {
+        return Err(format!(
+            "row native tier {:?} is outside the plan's included tiers {:?}",
+            result.row.native_tier, result.plan_authority.included_native_tiers
+        ));
     }
     for sha in [&result.subject.head_sha, &result.subject.subject_digest] {
         if sha.is_empty() {
