@@ -727,8 +727,16 @@ pub struct EnvironmentInputReceipt {
     pub input_id: EnvironmentInputId,
     /// Logical precedence key.
     pub semantic_key: String,
-    /// Input authority.
+    /// Input authority — the precedence class that decided the outcome.
     pub authority: EnvironmentInputAuthority,
+    /// Provenance: the producer-supplied source the value came from.
+    ///
+    /// Distinct from [`Self::authority`], and carried because the two answer
+    /// different questions. PLSP-SPEC-0022 requires PERL5LIB receipts to state
+    /// their ambient origin, which an enabled activation cannot express through
+    /// authority alone: it is precedence class 6 so that it can be active at
+    /// all, while its entries remain process-environment material.
+    pub source_id: String,
     /// Stable explanation code carried by the input.
     pub explanation_code: String,
     /// Typed rejection reason, or `None` when selected.
@@ -757,6 +765,7 @@ impl EnvironmentSnapshotReceipts {
                 input_id: input.id.clone(),
                 semantic_key: input.semantic_key.clone(),
                 authority: input.authority,
+                source_id: input.source_id.clone(),
                 explanation_code: input.explanation_code.clone(),
                 rejection: rejection_reason(snapshot, input),
             };
@@ -1635,14 +1644,19 @@ mod tests {
                 WorkspaceEnvironmentDeclaration::new("workspace:s1", 6, WorkspaceTrust::Trusted)
                     .with_perl5lib(state)
                     .compile()?;
-            let perl5lib = snapshot
-                .inputs
+            // Assert on the receipt projection, not the raw input: the receipt is
+            // what a downstream report reads, and it is the surface
+            // PLSP-SPEC-0022 constrains.
+            let receipts = EnvironmentSnapshotReceipts::of(&snapshot);
+            let perl5lib = receipts
+                .selected()
                 .iter()
-                .find(|input| {
-                    input.semantic_key.contains("perl5lib")
-                        || input.semantic_key.contains("PERL5LIB")
+                .chain(receipts.rejected())
+                .find(|receipt| {
+                    receipt.semantic_key.contains("perl5lib")
+                        || receipt.semantic_key.contains("PERL5LIB")
                 })
-                .ok_or("every PERL5LIB state must report an input")?;
+                .ok_or("every PERL5LIB state must reach the receipts")?;
             assert_eq!(
                 perl5lib.source_id, "process_environment",
                 "PERL5LIB values are ambient in every arm; the client setting only gates them"
