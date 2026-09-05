@@ -244,6 +244,16 @@ fn root_probe_driver_refuses_to_pass_without_cleanup_proof() -> Result<(), Box<d
         driver.contains("manual_action_required"),
         "the receipt separates manual action from session facts"
     );
+    // Batch Emacs cannot answer `yes-or-no-p': killing a buffer something
+    // marked modified would block on a prompt and hang the run, which is the
+    // one failure mode a fail-closed instrument must not have.
+    let kill = driver.find("(kill-buffer buffer)").ok_or("driver must release the probe buffer")?;
+    let clears_flag = driver.find("(set-buffer-modified-p nil)").is_some_and(|clear| clear < kill);
+    assert!(
+        clears_flag,
+        "the probe buffer's modified flag must be cleared before `kill-buffer', or a batch run \
+         blocks on an interactive prompt"
+    );
     Ok(())
 }
 

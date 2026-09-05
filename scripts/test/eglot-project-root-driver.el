@@ -142,6 +142,12 @@
       ;; never asserted while optimism was still possible.
       (setq cleanup-live-servers (perl-lsp-root-probe--live-server-count server))
       (when (buffer-live-p buffer)
+        ;; Batch Emacs has no one to answer a prompt: killing a buffer that
+        ;; something marked modified would block on `yes-or-no-p' and hang
+        ;; the run.  The probe never edits the file, so dropping the flag
+        ;; discards nothing.
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
         (kill-buffer buffer)
         (setq cleanup-buffer-dead (not (buffer-live-p buffer))))
       (when (> cleanup-live-servers 0)
