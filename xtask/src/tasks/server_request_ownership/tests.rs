@@ -770,6 +770,91 @@ fn scan_synthetic(
     scan_synthetic_files(&[("synthetic.rs", source)])
 }
 
+/// `senders` holds bare names, because a call site names a function rather than
+/// a definition. An unrelated function sharing a forwarder's name therefore made
+/// its own callers' arguments read as emitted methods, silently. Attributing the
+/// call needs types a syntactic reader lacks, so the collision must be reported.
+#[test]
+fn a_forwarder_name_shared_with_an_unrelated_function_is_reported()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic_files(&[
+        (
+            "real.rs",
+            r"
+impl Server {
+    fn relay(&self, method: &str, params: Value) -> io::Result<()> {
+        self.send_request(id, method, params)
+    }
+}
+",
+        ),
+        (
+            "other.rs",
+            r#"
+impl Unrelated {
+    fn relay(&self, label: &str) -> String {
+        label.to_string()
+    }
+    fn caller(&self) -> String {
+        self.relay("phantom/method")
+    }
+}
+"#,
+        ),
+    ])?;
+
+    assert_eq!(
+        findings,
+        vec!["forwarder-ambiguous".to_string()],
+        "a name that both forwards and does not must not resolve silently"
+    );
+    assert!(
+        !emitted.contains_key("phantom/method"),
+        "the unrelated call is not an emission: {emitted:?}"
+    );
+    Ok(())
+}
+
+/// The mirror of the above: when every definition of a shared name really does
+/// forward, resolving by name is sound and must stay silent, or a trait with
+/// several implementations would be unusable.
+#[test]
+fn a_forwarder_name_shared_only_with_other_forwarders_is_not_reported()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic_files(&[
+        (
+            "one.rs",
+            r"
+impl ServerOne {
+    fn relay(&self, method: &str, params: Value) -> io::Result<()> {
+        self.send_request(id, method, params)
+    }
+}
+",
+        ),
+        (
+            "two.rs",
+            r#"
+impl ServerTwo {
+    fn relay(&self, method: &str, params: Value) -> io::Result<()> {
+        self.send_request(id, method, params)
+    }
+    fn caller(&self) -> io::Result<()> {
+        self.relay("window/showDocument", params)
+    }
+}
+"#,
+        ),
+    ])?;
+
+    assert!(findings.is_empty(), "{findings:?}");
+    assert!(
+        emitted.contains_key("window/showDocument"),
+        "a call through a genuine forwarder is still an emission: {emitted:?}"
+    );
+    Ok(())
+}
+
 /// A send outside `src/runtime` but inside the sender's own crate must still be
 /// discovered. `OutboundSink` is `pub(crate)`, so the reachable surface is the
 /// whole crate; scanning only the runtime subtree let a production emitter
