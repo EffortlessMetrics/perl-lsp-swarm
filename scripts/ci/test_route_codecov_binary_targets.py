@@ -886,5 +886,118 @@ class BinaryTargetRoutingTests(unittest.TestCase):
         )
         self.assertFalse(any(" --bin " in command for command in commands))
 
+
+class PackageTestTargetsUnitTests(unittest.TestCase):
+    """Direct assertions on the derived data structure.
+
+    The routing tests above assert on emitted command strings, which cannot
+    distinguish a dropped `has_lib` from a command-emission change, and never
+    observe binary ordering.  The command loop depends on both.
+    """
+
+    def _write_package(
+        self, root: Path, crate_directory: str, manifest: str, files: list[str]
+    ) -> None:
+        crate_root = root / "crates" / crate_directory
+        crate_root.mkdir(parents=True)
+        (crate_root / "Cargo.toml").write_text(
+            textwrap.dedent(manifest).lstrip(), encoding="utf-8"
+        )
+        for relative_path in files:
+            path = crate_root / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("// target fixture\n", encoding="utf-8")
+
+    def test_dual_target_package_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "dual-directory",
+                """
+                [package]
+                name = "dual"
+                edition = "2021"
+                """,
+                ["src/lib.rs", "src/main.rs"],
+            )
+            targets = router.package_test_targets("dual-directory", root)
+
+        self.assertIsNotNone(targets)
+        assert targets is not None
+        self.assertEqual("dual", targets.package_name)
+        self.assertTrue(targets.has_lib)
+        self.assertEqual((router.BinaryTestTarget("dual"),), targets.binaries)
+
+    def test_autolib_false_drops_the_library(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "nolib-directory",
+                """
+                [package]
+                name = "nolib"
+                edition = "2021"
+                autolib = false
+                """,
+                ["src/lib.rs", "src/main.rs"],
+            )
+            targets = router.package_test_targets("nolib-directory", root)
+
+        assert targets is not None
+        self.assertFalse(targets.has_lib)
+
+    def test_required_features_are_carried_on_the_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "gated-directory",
+                """
+                [package]
+                name = "gated"
+                edition = "2021"
+
+                [[bin]]
+                name = "gated"
+                required-features = ["beta", "alpha"]
+                """,
+                ["src/main.rs"],
+            )
+            targets = router.package_test_targets("gated-directory", root)
+
+        assert targets is not None
+        self.assertEqual(
+            (router.BinaryTestTarget("gated", ("alpha", "beta")),), targets.binaries
+        )
+
+    def test_binaries_are_ordered_by_name(self) -> None:
+        """The command loop emits in iteration order; routing must be stable."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "ordered-directory",
+                """
+                [package]
+                name = "ordered"
+                edition = "2021"
+                """,
+                ["src/bin/zulu.rs", "src/bin/alpha.rs", "src/bin/mike.rs"],
+            )
+            targets = router.package_test_targets("ordered-directory", root)
+
+        assert targets is not None
+        names = [target.name for target in targets.binaries]
+        self.assertEqual(sorted(names), names)
+        self.assertEqual(["alpha", "mike", "zulu"], names)
+
+    def test_non_package_directory_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "crates" / "vendored").mkdir(parents=True)
+            self.assertIsNone(router.package_test_targets("vendored", root))
+
 if __name__ == "__main__":
     unittest.main()

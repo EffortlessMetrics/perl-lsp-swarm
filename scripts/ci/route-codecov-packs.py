@@ -393,6 +393,18 @@ def augment_rust_focused_commands(
             if cmd not in commands:
                 commands.append(cmd)
     if has_xtask_source_change(paths):
+        # Deliberate special case (#13499).  `xtask` lives outside `crates/`, so
+        # it does not flow through `package_test_targets` above -- and routing it
+        # through that derivation is not the improvement it looks like: xtask
+        # declares 25 binaries, so deriving its target set turns any xtask source
+        # change into 26 coverage commands instead of one, against the
+        # changed-package cost constraint this pack exists to hold.
+        #
+        # INVARIANT: xtask's coverage entry point is the `xtask` bin at
+        # `xtask/src/main.rs`.  If xtask renames that bin, sets
+        # `autobins = false`, or moves its entry point, this command goes stale
+        # silently -- Cargo rejects the target and the lane loses xtask coverage.
+        # `xtask/tests/ci_route_cli.rs` owns the broader xtask proof.
         cmd = "cargo llvm-cov test --no-report -p xtask --bin xtask --profile agent --locked"
         if cmd not in commands:
             commands.append(cmd)
