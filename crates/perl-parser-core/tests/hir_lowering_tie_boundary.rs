@@ -21,6 +21,7 @@ use perl_parser_core::Parser;
 use perl_parser_core::hir::{
     DynamicBoundary, DynamicBoundaryKind, HirFile, HirItem, HirKind, disposition, lower_ast,
 };
+use perl_parser_core::pir::{PirCallee, PirOperation, lower_hir, lower_hir_bodies};
 use perl_tdd_support::must_some;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -153,6 +154,95 @@ fn tie_boundary_still_traverses_arguments() -> TestResult {
         "build_args() inside the tie argument list must still lower to a CallExpr; \
          anchored HIR items: {:?}",
         file.items.iter().map(|item| item.anchor.node_kind).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+/// Perl evaluates the tie operands and only then dispatches the hidden `TIE*`
+/// constructor, so the boundary must come **after** its arguments.
+///
+/// This is not cosmetic ordering. `pir::lower` turns consecutive flat items into
+/// `PirEdgeKind::Fallthrough` edges, so a boundary emitted before its own
+/// arguments makes the graph assert that control reaches the hidden dispatch
+/// first and falls through into the arguments afterwards — an evaluation order
+/// Perl does not have.
+#[test]
+fn tie_boundary_follows_its_arguments_in_evaluation_order() -> TestResult {
+    let file = lower_source("tie %hash, 'Tie::StdHash', build_args();\n");
+
+    let call_index = must_some(file.items.iter().position(|item| match &item.kind {
+        HirKind::CallExpr(call) => call.name == "build_args",
+        _ => false,
+    }));
+    let boundary_index = must_some(file.items.iter().position(|item| {
+        matches!(&item.kind, HirKind::DynamicBoundary(b) if b.kind == DynamicBoundaryKind::TiedPlaceBinding)
+    }));
+
+    assert!(
+        call_index < boundary_index,
+        "build_args() is evaluated before the hidden TIE* constructor, so its \
+         CallExpr must precede the tie boundary; got call at {call_index}, \
+         boundary at {boundary_index}, items: {:?}",
+        file.items.iter().map(|item| item.anchor.node_kind).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+/// The same ordering, observed through the flat PIR graph the boundary actually
+/// reaches — the surface where the `Fallthrough` edges exist.
+#[test]
+fn flat_pir_reaches_the_tie_boundary_after_its_arguments() -> TestResult {
+    let mut parser = Parser::new("tie %hash, 'Tie::StdHash', build_args();\n");
+    let output = parser.parse_with_recovery();
+    let hir = lower_ast(&output.ast);
+    let graph = lower_hir(&hir);
+
+    let call_index = must_some(graph.nodes.iter().position(|node| {
+        matches!(&node.operation, PirOperation::Call { callee: PirCallee::Named { name, .. }, .. } if name == "build_args")
+    }));
+    let boundary_index = must_some(
+        graph
+            .nodes
+            .iter()
+            .position(|node| matches!(&node.operation, PirOperation::DynamicBoundary { .. })),
+    );
+
+    assert!(
+        call_index < boundary_index,
+        "the flat PIR graph must reach build_args() before the tie boundary; \
+         got call at {call_index}, boundary at {boundary_index}"
+    );
+    Ok(())
+}
+
+/// Honest claim boundary against the *canonical* PIR-A path.
+///
+/// `lower_hir` (flat items) is the dormant back-compat path and is the one this
+/// slice marks. `lower_hir_bodies` is canonical PIR-A, and it lowers from the
+/// body arenas where tie/untie are still opaque calls — so it carries **no**
+/// tie boundary. The concept ledger records `pir_a = "absent"` for both rows,
+/// and this test is what keeps that row honest: if PIR-A ever does start
+/// emitting a tie boundary, this fails and the ledger must be updated with it.
+#[test]
+fn canonical_pir_a_does_not_yet_carry_a_tie_boundary() -> TestResult {
+    let mut parser = Parser::new("tie %hash, 'Tie::StdHash';\nuntie %hash;\n");
+    let output = parser.parse_with_recovery();
+    let hir = lower_ast(&output.ast);
+
+    let flat = lower_hir(&hir);
+    assert!(
+        flat.nodes
+            .iter()
+            .any(|node| matches!(&node.operation, PirOperation::DynamicBoundary { .. })),
+        "the flat items path must carry the boundary this slice adds"
+    );
+
+    let canonical = lower_hir_bodies(&hir);
+    assert!(
+        canonical.receipt.dynamic_boundary_counts.is_empty(),
+        "canonical PIR-A carries no tie boundary today, so the ledger's \
+         pir_a = \"absent\" must stay honest; got {:?}",
+        canonical.receipt.dynamic_boundary_counts
     );
     Ok(())
 }

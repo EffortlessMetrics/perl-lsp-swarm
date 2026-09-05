@@ -715,9 +715,16 @@ impl Lowerer {
             }
             // `tie`/`untie` change what a place *is*. After a tie, ordinary-looking
             // reads and writes of the target dispatch to hidden TIE* methods, so
-            // flat HIR must not present the place as ordinary storage. Mark the
-            // boundary explicitly, then keep traversing: the class expression and
-            // the constructor arguments are ordinary Perl and still lower.
+            // flat HIR must not present the place as ordinary storage.
+            //
+            // Children are traversed *before* the boundary is pushed, unlike the
+            // pre-order shape used elsewhere in this lowerer. That is deliberate:
+            // Perl evaluates the target, the class expression, and the constructor
+            // arguments first, and only then dispatches the hidden TIE* method.
+            // `pir::lower` turns consecutive items into `Fallthrough` edges, so
+            // pushing the boundary first would make it fall through into its own
+            // arguments and assert an evaluation order Perl does not have. The
+            // boundary belongs at the hidden dispatch point, after the operands.
             //
             // The reasons are deliberately constant and do not name the tie class.
             // Modeling the tied place identity, the hidden constructor dispatch,
@@ -725,6 +732,7 @@ impl Lowerer {
             // in prose here would imply a machine-readable fact this slice has not
             // established.
             NodeKind::Tie { .. } => {
+                self.visit_children(node, confidence);
                 self.push_item(
                     node,
                     None,
@@ -738,9 +746,9 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.visit_children(node, confidence);
             }
             NodeKind::Untie { .. } => {
+                self.visit_children(node, confidence);
                 self.push_item(
                     node,
                     None,
@@ -754,7 +762,6 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.visit_children(node, confidence);
             }
             NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
                 self.push_item(

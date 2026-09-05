@@ -173,7 +173,7 @@ ast_kinds = ["Tie"]
 parser_ast = "parsed"
 flat_hir = "boundary"
 body_hir = "opaque"
-pir_a = "boundary"
+pir_a = "absent"
 compile_effects_world = "not_applicable"
 eir_profile = "boundary"
 gold = "missing"
@@ -182,7 +182,7 @@ composition = "missing"
 provider_eligibility = "ineligible"
 ownership = "active"
 owner_issue = "#6683"
-claim_boundary = "Flat HIR marks the binding with DynamicBoundary(TiedPlaceBinding) and PIR carries it as an unclassified boundary, so a tied place is no longer presented as ordinary storage. Tie lifecycle, target place identity, hidden TIE* method effects, and capability boundaries are still not represented."
+claim_boundary = "Flat HIR marks the tie site itself with DynamicBoundary(TiedPlaceBinding), emitted after the operands. Canonical PIR-A lowers from the body arenas, where the construct is still an opaque call, so PIR-A carries no tie boundary. Only the binding site is marked: subsequent reads and writes of the tied place remain indistinguishable from ordinary storage. Tie lifecycle, target place identity, hidden TIE* method effects, and capability boundaries are not represented."
 evidence = ["docs/project/status/hir_lowering.md", "#6683", "#14786"]
 
 [[concepts]]
@@ -193,7 +193,7 @@ ast_kinds = ["Untie"]
 parser_ast = "parsed"
 flat_hir = "boundary"
 body_hir = "opaque"
-pir_a = "boundary"
+pir_a = "absent"
 compile_effects_world = "not_applicable"
 eir_profile = "boundary"
 gold = "missing"
@@ -202,7 +202,7 @@ composition = "missing"
 provider_eligibility = "ineligible"
 ownership = "active"
 owner_issue = "#6683"
-claim_boundary = "Flat HIR marks the release with DynamicBoundary(TiedPlaceRelease) and PIR carries it as an unclassified boundary. Tied-place lifetime, hidden UNTIE/DESTROY consequences, and the resulting storage semantics are still not represented."
+claim_boundary = "Flat HIR marks the untie site itself with DynamicBoundary(TiedPlaceRelease), emitted after the target expression. Canonical PIR-A lowers from the body arenas, where the construct is still an opaque call, so PIR-A carries no untie boundary. Only the release site is marked: the tied place's storage character before and after it is not tracked. Tied-place lifetime and hidden UNTIE/DESTROY consequences are not represented."
 evidence = ["docs/project/status/hir_lowering.md", "#6683", "#14786"]
 
 [[concepts]]
