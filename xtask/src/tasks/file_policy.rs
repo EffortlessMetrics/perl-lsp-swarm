@@ -619,23 +619,37 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
             .context("trusted workflow contract-version must be an integer")
     };
     let text = String::from_utf8(bytes).context("subject workflow is not UTF-8")?;
+    let subject_version = contract_version(&text)?;
     if !base_listing.is_empty() {
         let (_, base_bytes) = tree_file(root, base_sha, ".github/workflows/non-rust-policy.yml")?;
         let base_text = String::from_utf8(base_bytes).context("base workflow is not UTF-8")?;
         let base_version = contract_version(&base_text)?;
-        let subject_version = contract_version(&text)?;
         if !subject_matches_base && subject_version != base_version.saturating_add(1) {
             bail!(
                 "trusted workflow changes require exactly one contract-version increment (base {base_version}, subject {subject_version})"
             );
         }
-        if !subject_matches_base && subject_version == 4 {
-            validate_v4_subject_workflow(&text)?;
-            return Ok(());
-        }
-    } else {
-        contract_version(&text)?;
     }
+    if !subject_matches_base && subject_version == PREAPPROVED_SUBJECT_CONTRACT_VERSION {
+        // The preapproved structural contract is the reviewed upgrade path; a
+        // candidate that is not byte-for-byte that contract may still land as
+        // an in-family change, but only if it survives the shape scan below.
+        // Both rejections are surfaced so the failing gate is explicit.
+        if let Err(structural) = validate_preapproved_subject_workflow(&text) {
+            return scan_trusted_workflow_shape(&text).map_err(|legacy| {
+                eyre!(
+                    "{legacy}; the subject is also not the preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} contract: {structural}"
+                )
+            });
+        }
+        return Ok(());
+    }
+    scan_trusted_workflow_shape(&text)
+}
+
+/// In-family trusted-shape scan for a changed workflow: required v6-era
+/// substrings plus structural rejection of candidate-derived execution.
+fn scan_trusted_workflow_shape(text: &str) -> Result<()> {
     for required in [
         "pull_request_target:",
         "merge_group:",
@@ -673,7 +687,7 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     // Validate the load-bearing steps structurally, so comments or unrelated
     // jobs cannot satisfy the trusted-base contract.
     let yaml: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&text).context("parsing trusted workflow YAML")?;
+        serde_yaml_ng::from_str(text).context("parsing trusted workflow YAML")?;
     let key = |name: &str| serde_yaml_ng::Value::String(name.to_string());
     let jobs = yaml
         .as_mapping()
@@ -923,7 +937,22 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     Ok(())
 }
 
-fn validate_v4_subject_workflow(text: &str) -> Result<()> {
+/// Contract version the structural preapproval below binds. It must be exactly
+/// one above the trusted workflow on `main`, or the reviewed upgrade path is
+/// unreachable; `preapproved_contract_version_is_the_next_increment` fails
+/// closed when `main` moves without retargeting this constant.
+pub(crate) const PREAPPROVED_SUBJECT_CONTRACT_VERSION: u64 = 7;
+
+/// Canonical `with:` mapping of the preapproved checkout step.
+const PREAPPROVED_CHECKOUT_WITH: &str =
+    "ref: ${{ env.EVALUATOR_SHA }}\npersist-credentials: false\n";
+
+/// Canonical `with:` mapping of the preapproved receipt upload step. Both
+/// receipts live under `target/policy/`; a missing directory is an error so an
+/// approved workflow cannot silently drop the evidence it exists to publish.
+const PREAPPROVED_UPLOAD_WITH: &str = "name: non-rust-policy-${{ env.SUBJECT_SHA || env.SUBJECT_INPUT_SHA }}\npath: target/policy/\nif-no-files-found: error\nretention-days: 14\n";
+
+fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
     let yaml: serde_yaml_ng::Value =
         serde_yaml_ng::from_str(text).context("parsing preapproved v4 workflow YAML")?;
     let key = |name: &str| serde_yaml_ng::Value::String(name.to_string());
@@ -1033,6 +1062,12 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
             bail!("preapproved v4 workflow identity {variable} is not canonical");
         }
     }
+    // Job env reaches every trusted `cargo run` and `git` invocation, so an
+    // extra key (`GIT_CONFIG_*`, `RUSTFLAGS`, `CARGO_*`, ...) is an injection
+    // surface, not a harmless addition.
+    if env.len() != expected_env.len() {
+        bail!("preapproved v4 exact-tree job env contains an unapproved variable");
+    }
     let steps = job
         .get(key("steps"))
         .and_then(serde_yaml_ng::Value::as_sequence)
@@ -1059,28 +1094,21 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
             .and_then(serde_yaml_ng::Value::as_str)
             .map(str::to_owned)
     };
+    let step_with = |step: &serde_yaml_ng::Value| {
+        step.as_mapping().and_then(|map| map.get(key("with"))).cloned()
+    };
+    let canonical_with = |fixture: &str| -> Result<serde_yaml_ng::Value> {
+        serde_yaml_ng::from_str(fixture).context("canonical with fixture is not YAML")
+    };
     let checkout = steps.first().ok_or_else(|| eyre!("v4 checkout step is missing"))?;
     let trusted_checkout = checkout
         .as_mapping()
         .and_then(|map| map.get(key("uses")))
         .and_then(serde_yaml_ng::Value::as_str)
         .is_some_and(|uses| uses == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
-        && checkout
-            .as_mapping()
-            .and_then(|map| map.get(key("with")))
-            .and_then(serde_yaml_ng::Value::as_mapping)
-            .and_then(|with| with.get(key("ref")))
-            .and_then(serde_yaml_ng::Value::as_str)
-            .is_some_and(|reference| reference == "${{ env.EVALUATOR_SHA }}")
-        && checkout
-            .as_mapping()
-            .and_then(|map| map.get(key("with")))
-            .and_then(serde_yaml_ng::Value::as_mapping)
-            .and_then(|with| with.get(key("persist-credentials")))
-            .and_then(serde_yaml_ng::Value::as_bool)
-            == Some(false);
+        && step_with(checkout).as_ref() == Some(&canonical_with(PREAPPROVED_CHECKOUT_WITH)?);
     if !trusted_checkout {
-        bail!("v4 must checkout the trusted evaluator SHA first");
+        bail!("v4 must checkout the trusted evaluator SHA first with exactly the canonical inputs");
     }
     let materializer = steps.get(1).ok_or_else(|| eyre!("v4 materializer step is missing"))?;
     let materializer_run = step_run(materializer);
@@ -1136,6 +1164,9 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
             .is_none_or(|condition| condition.trim() != "always()")
     {
         bail!("v4 must always upload receipts");
+    }
+    if step_with(upload).as_ref() != Some(&canonical_with(PREAPPROVED_UPLOAD_WITH)?) {
+        bail!("v4 receipt upload must use exactly the canonical artifact inputs");
     }
     let propagate = steps.get(4).ok_or_else(|| eyre!("v4 propagation step is missing"))?;
     if step_name(propagate).as_deref() != Some("Propagate subject or policy failure")
@@ -5341,9 +5372,7 @@ review_after = "2026-08-13"
         Ok((temp, base))
     }
 
-    #[test]
-    fn preapproved_v4_workflow_rejects_extra_executable_steps() -> Result<()> {
-        let workflow = r#"# contract-version: 4
+    const PREAPPROVED_FIXTURE: &str = r#"# contract-version: 7
 name: Non-Rust policy
 on:
   pull_request_target:
@@ -5391,23 +5420,32 @@ jobs:
       - name: Upload exact-tree receipt
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: non-rust-policy-${{ env.SUBJECT_SHA || env.SUBJECT_INPUT_SHA }}
+          path: target/policy/
+          if-no-files-found: error
+          retention-days: 14
       - name: Propagate subject or policy failure
         if: "always() && (steps.materialize.outcome == 'failure' || steps.evaluate.outcome == 'failure')"
         run: exit 1
 "#;
-        validate_v4_subject_workflow(workflow)?;
+
+    #[test]
+    fn preapproved_workflow_rejects_control_plane_tampering() -> Result<()> {
+        let workflow = PREAPPROVED_FIXTURE;
+        validate_preapproved_subject_workflow(workflow)?;
         let tampered = workflow.replace(
             "      - name: Propagate subject or policy failure\n",
             "      - name: Extra executable step\n        run: echo extra\n      - name: Propagate subject or policy failure\n",
         );
-        ensure!(validate_v4_subject_workflow(&tampered).is_err());
+        ensure!(validate_preapproved_subject_workflow(&tampered).is_err());
         let tampered_identity = workflow.replacen(
             "${{ github.event_name == 'push' && github.sha || github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || inputs.base_sha }}",
             "${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha }}",
             1,
         );
         ensure!(
-            validate_v4_subject_workflow(&tampered_identity).is_err(),
+            validate_preapproved_subject_workflow(&tampered_identity).is_err(),
             "candidate-controlled subject identity must be rejected"
         );
         for (label, tampered) in [
@@ -5475,12 +5513,126 @@ jobs:
                     "        if: always() && false\n        uses: actions/upload-artifact@",
                 ),
             ),
+            (
+                "extra job env key (git config injection)",
+                workflow.replace(
+                    "    steps:\n",
+                    "      GIT_CONFIG_COUNT: '1'\n    steps:\n",
+                ),
+            ),
+            (
+                "extra job env key (RUSTFLAGS)",
+                workflow.replace("    steps:\n", "      RUSTFLAGS: -Zunstable\n    steps:\n"),
+            ),
+            (
+                "checkout gains an unapproved input",
+                workflow.replace(
+                    "          persist-credentials: false\n",
+                    "          persist-credentials: false\n          repository: attacker/fork\n",
+                ),
+            ),
+            (
+                "checkout drops persist-credentials",
+                workflow.replace("          persist-credentials: false\n", ""),
+            ),
+            (
+                "upload loses its with block",
+                workflow.replace(
+                    "        with:\n          name: non-rust-policy-${{ env.SUBJECT_SHA || env.SUBJECT_INPUT_SHA }}\n          path: target/policy/\n          if-no-files-found: error\n          retention-days: 14\n",
+                    "",
+                ),
+            ),
+            (
+                "upload redirected away from the receipts",
+                workflow.replace("          path: target/policy/\n", "          path: /tmp/elsewhere\n"),
+            ),
+            (
+                "upload tolerates missing receipts",
+                workflow.replace("          if-no-files-found: error\n", "          if-no-files-found: ignore\n"),
+            ),
+            (
+                "upload step gains an executable body",
+                workflow.replace(
+                    "          retention-days: 14\n",
+                    "          retention-days: 14\n        run: echo leak\n",
+                ),
+            ),
         ] {
             ensure!(
-                validate_v4_subject_workflow(&tampered).is_err(),
+                validate_preapproved_subject_workflow(&tampered).is_err(),
                 "control-plane tampering must be rejected: {label}"
             );
         }
+        Ok(())
+    }
+
+    /// The canonical preapproved text, as a subject against the real trusted
+    /// workflow on `main`, must be selected by `validate_subject_workflow` and
+    /// accepted end to end; the same text with one extra job env key must be
+    /// rejected on that same path. This is what proves the structural contract
+    /// is reachable rather than dead code behind a stale version number.
+    #[test]
+    fn preapproved_workflow_is_reachable_from_the_current_trusted_base() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        write_fixture(temp.path(), ".github/workflows/non-rust-policy.yml", PREAPPROVED_FIXTURE)?;
+        let subject = commit_fixture(temp.path(), "preapproved upgrade")?;
+        non_rust_exact_tree(
+            temp.path(),
+            &base,
+            &subject,
+            None,
+            &temp.path().join("preapproved.json"),
+            None,
+            None,
+        )
+        .context("canonical preapproved workflow must be accepted against the live base")?;
+
+        let (temp, base) = exact_fixture()?;
+        let tampered = PREAPPROVED_FIXTURE
+            .replace("    steps:\n", "      GIT_CONFIG_COUNT: '1'\n    steps:\n");
+        write_fixture(temp.path(), ".github/workflows/non-rust-policy.yml", &tampered)?;
+        let subject = commit_fixture(temp.path(), "tampered upgrade")?;
+        let error = non_rust_exact_tree(
+            temp.path(),
+            &base,
+            &subject,
+            None,
+            &temp.path().join("tampered.json"),
+            None,
+            None,
+        )
+        .expect_err("extra env key must be rejected on the reachable path");
+        assert!(
+            error.to_string().contains("unapproved variable"),
+            "rejection must come from the structural validator, got: {error}"
+        );
+        Ok(())
+    }
+
+    /// `main` bumping the trusted workflow's contract-version without retargeting
+    /// `PREAPPROVED_SUBJECT_CONTRACT_VERSION` would silently make the structural
+    /// preapproval unreachable again (the defect this test exists to catch).
+    #[test]
+    fn preapproved_contract_version_is_the_next_increment() -> Result<()> {
+        let live = include_str!("../../../.github/workflows/non-rust-policy.yml");
+        let live_version = live
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("# contract-version:"))
+            .map(str::trim)
+            .ok_or_else(|| eyre!("live workflow is missing contract-version"))?
+            .parse::<u64>()?;
+        assert_eq!(
+            PREAPPROVED_SUBJECT_CONTRACT_VERSION,
+            live_version + 1,
+            "retarget PREAPPROVED_SUBJECT_CONTRACT_VERSION to live + 1"
+        );
+        let fixture_version = PREAPPROVED_FIXTURE
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("# contract-version:"))
+            .map(str::trim)
+            .ok_or_else(|| eyre!("fixture is missing contract-version"))?
+            .parse::<u64>()?;
+        assert_eq!(fixture_version, PREAPPROVED_SUBJECT_CONTRACT_VERSION);
         Ok(())
     }
 

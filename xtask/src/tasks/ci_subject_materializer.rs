@@ -15,9 +15,7 @@ use color_eyre::eyre::{Context, Result, eyre};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::ci_subject::{
-    self, CiEventKind, CiSubjectConfig, SubjectDiffMode, SubjectInput, SubjectResolutionSource,
-};
+use super::ci_subject::{self, CiEventKind, CiSubjectConfig, SubjectInput};
 
 const SCHEMA_VERSION: &str = "ci-subject-materialization.v1";
 const PRODUCER: &str = "cargo-xtask-ci-subject-materializer";
@@ -96,17 +94,17 @@ pub fn run(config: Config) -> Result<()> {
         write_receipt(&config.receipt, &receipt)?;
         return Err(error);
     }
-    if let Some(path) = config.env_file {
-        if let Err(error) = write_env(
+    if let Some(path) = config.env_file
+        && let Err(error) = write_env(
             &path,
             receipt.derived_subject_sha.as_deref(),
             receipt.derived_subject_tree_sha.as_deref(),
-        ) {
-            receipt.failure_stage = Some("environment-export".to_string());
-            receipt.error = Some(error.to_string());
-            write_receipt(&config.receipt, &receipt)?;
-            return Err(error);
-        }
+        )
+    {
+        receipt.failure_stage = Some("environment-export".to_string());
+        receipt.error = Some(error.to_string());
+        write_receipt(&config.receipt, &receipt)?;
+        return Err(error);
     }
     receipt.outcome = "pass";
     write_receipt(&config.receipt, &receipt)?;
@@ -385,29 +383,18 @@ fn replace_receipt_file_with<F>(temporary: &Path, destination: &Path, mut rename
 where
     F: FnMut(&Path, &Path) -> std::io::Result<()>,
 {
-    match rename(temporary, destination) {
-        Ok(()) => Ok(()),
-        Err(first_error) if destination.is_file() => {
-            // Windows cannot atomically rename over an open destination. Copying
-            // into the existing file keeps the canonical directory entry in
-            // place even if the fallback is interrupted; importantly, do not
-            // move the prior receipt out of the way first.
-            let bytes = fs::read(temporary).with_context(|| {
-                format!("reading replacement receipt after rename failed: {first_error}")
-            })?;
-            let mut file =
-                fs::OpenOptions::new().write(true).truncate(true).open(destination).with_context(
-                    || format!("opening existing receipt for replacement: {first_error}"),
-                )?;
-            file.write_all(&bytes)
-                .context("writing replacement receipt while preserving destination")?;
-            file.sync_all().context("flushing replacement receipt")?;
-            drop(file);
-            fs::remove_file(temporary).context("removing replaced temporary receipt")?;
-            Ok(())
-        }
-        Err(error) => Err(error.into()),
-    }
+    // Write-then-rename is the only replacement strategy. A rename either
+    // publishes the complete new receipt or leaves the prior one untouched;
+    // there is deliberately no copy-into-place fallback, because an interrupted
+    // copy would leave a truncated receipt at the canonical path and a partial
+    // receipt is worse than a stale one for a fail-closed consumer.
+    rename(temporary, destination).with_context(|| {
+        format!(
+            "replacing receipt {} with {} (prior receipt left intact)",
+            destination.display(),
+            temporary.display()
+        )
+    })
 }
 
 fn write_env(path: &Path, subject: Option<&str>, tree: Option<&str>) -> Result<()> {
@@ -428,6 +415,7 @@ fn write_env(path: &Path, subject: Option<&str>, tree: Option<&str>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tasks::ci_subject::{SubjectDiffMode, SubjectResolutionSource};
     use color_eyre::eyre::{Result, ensure, eyre};
 
     fn git(root: &Path, args: &[&str]) -> Result<String> {
@@ -812,13 +800,13 @@ mod tests {
         fs::write(&destination, b"prior receipt")?;
         fs::write(&temporary, b"new receipt")?;
 
-        let result = replace_receipt_file_with(&temporary, &destination, |from, to| {
+        let result = replace_receipt_file_with(&temporary, &destination, |_from, _to| {
             Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "occupied"))
         });
 
-        result?;
-        ensure!(fs::read(&destination)? == b"new receipt");
-        ensure!(!temporary.exists());
+        ensure!(result.is_err(), "a failed rename must surface, not fall back to a copy");
+        ensure!(fs::read(&destination)? == b"prior receipt", "prior receipt must stay intact");
+        ensure!(temporary.exists());
         Ok(())
     }
 
@@ -830,7 +818,7 @@ mod tests {
         fs::create_dir(&destination)?;
         fs::write(&temporary, b"new receipt")?;
 
-        let result = replace_receipt_file_with(&temporary, &destination, |from, to| {
+        let result = replace_receipt_file_with(&temporary, &destination, |_from, _to| {
             Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "locked"))
         });
 
