@@ -171,7 +171,18 @@ pub fn run(cli: Cli) -> Result<()> {
                 bail!("server-request-ownership: no row matched");
             }
             print!("{rendered}");
-            println!("fingerprint {}", fingerprint(&rendered));
+            // `explain` renders; it does not validate. Printing a bare
+            // fingerprint here invites it to be pasted as evidence the matrix
+            // is current, which only `check` establishes — and a filtered
+            // render covers one row, so its digest is not the check digest.
+            let scope = match method.as_deref() {
+                Some(method) => format!("`{method}` only"),
+                None => "all rows".to_string(),
+            };
+            println!(
+                "fingerprint {} ({scope}, rendered without validation; run `check` for currency)",
+                fingerprint(&rendered)
+            );
             Ok(())
         }
     }
