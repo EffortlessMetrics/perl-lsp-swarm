@@ -378,9 +378,9 @@ fn standalone_when_right_apostrophe_followed_by_non_identifier() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn standalone_empty_string_start_eq_end() {
-    // Degenerate case: start == 0, end == 0 on an empty-ish line
-    assert!(has_standalone_module_token_boundaries("", 0, 0));
+fn standalone_rejects_empty_span() {
+    // #2372 contract: an empty span is not a standalone token.
+    assert!(!has_standalone_module_token_boundaries("", 0, 0));
 }
 
 #[test]
@@ -389,9 +389,23 @@ fn standalone_end_at_line_length() {
 }
 
 #[test]
-fn standalone_end_beyond_line_length() {
-    // end > line.len() is treated as no right context
-    assert!(has_standalone_module_token_boundaries("Foo", 0, 10));
+fn standalone_rejects_end_beyond_line_length() {
+    // #2372 contract: out-of-bounds spans are rejected rather than clamped.
+    assert!(!has_standalone_module_token_boundaries("Foo", 0, 10));
+}
+
+#[test]
+fn standalone_rejects_reversed_span() {
+    // #2372 contract: a reversed span is rejected, not normalised into 1..2.
+    assert!(!has_standalone_module_token_boundaries("Foo", 2, 1));
+}
+
+#[test]
+fn standalone_rejects_mid_codepoint_span() {
+    // #2372 contract: a span that splits a multi-byte scalar is rejected
+    // before any byte-indexed neighbour inspection can slice mid-codepoint.
+    assert!(!has_standalone_module_token_boundaries("é", 0, 1));
+    assert!(has_standalone_module_token_boundaries("é", 0, 2));
 }
 
 #[test]
