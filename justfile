@@ -968,9 +968,11 @@ ci-gate:
     just status-check && \
     just ci-clippy-gate && \
     just ci-unwrap-panic-ratchet && \
+    just ci-serial-test-ratchet && \
     just ci-unsafe-ratchet && \
     just ci-print-in-lib-ratchet && \
     just ci-regex-static-ratchet && \
+    just ci-must-context && \
     just ci-forbid-fatal && \
     just ci-test-lib && \
     just check-all-targets && \
@@ -1100,11 +1102,24 @@ ci-panic-test-ratchet:
     @cargo xtask ci-hygiene check-panic-test
     @echo "✅ Test-code panic! ratchet passed"
 
+# Parallel-unsafe test ratchet: test fns mutating process-global state must be
+# #[serial]-guarded or adjudicated in ci/serial_test_identities.json (#1269)
+ci-serial-test-ratchet:
+    @echo "🧩  Checking parallel-unsafe test serialization ratchet..."
+    @cargo xtask ci-hygiene check-serial-test
+    @echo "✅ Parallel-unsafe test ratchet passed"
+
 # Unsafe syntax ratchet (production source only)
 ci-unsafe-ratchet:
     @echo "🛡️  Checking unsafe syntax ratchet..."
     @cargo xtask ci-hygiene check-unsafe-prod
     @echo "✅ Unsafe syntax ratchet passed"
+
+# Assertion-context guard: a `.expect("…")` must not migrate to a bare must* helper
+ci-must-context:
+    @echo "🧾 Checking must* migrations preserve assertion context..."
+    @cargo xtask ci-hygiene check-must-context
+    @echo "✅ No assertion context dropped by a must* migration"
 
 # Print-macro ratchet: no raw println!/eprintln! in library source (use tracing)
 ci-print-in-lib-ratchet:
@@ -1433,6 +1448,7 @@ ci-policy:
     @python3 scripts/ci/test_validate_cargo_lock_conflict_policy.py
     @python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
     @cargo xtask check-from-raw
+    @cargo xtask check-tautology --check
     @cargo xtask check-memory-lifecycle-policy
     @cargo xtask server-request-ownership check
     just version-check
