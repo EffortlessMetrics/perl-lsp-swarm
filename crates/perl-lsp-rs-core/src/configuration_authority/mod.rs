@@ -6,11 +6,11 @@
 //! effective-state store.
 //!
 //! Explicit non-registration dispositions (#7054): parsed settings that
-//! deliberately carry no authority row are limited to
-//! `ProjectPerlConfig.version` (parsed from `.perl-lsp.toml`, documented as
-//! reserved and ignored — no effective field exists to own) and the internal
+//! deliberately carry no authority row are limited to the internal
 //! `LspLimits` fields listed in `INTERNAL_UNPARSED_LIMIT_FIELDS` (compiled
 //! defaults with no external configuration channel).
+//! `ProjectPerlConfig.version` is intentionally a derived folder-scoped PL900
+//! input and is not merged into the global authority catalog.
 
 #![allow(dead_code)]
 

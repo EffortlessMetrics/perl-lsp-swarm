@@ -35,6 +35,10 @@ on:
       - 'scripts/ci/validate_provider_fact_reads.py'
       - 'scripts/ci/validate_cargo_lock_conflict_policy.py'
       - 'scripts/ci/test_validate_cargo_lock_conflict_policy.py'
+      - 'docs/releases/**'
+      - 'scripts/validate-exposed-surface-disposition.py'
+      - 'scripts/tests/test-validate-exposed-surface-disposition.py'
+      - 'scripts/tests/fixtures/exposed-surface-disposition/**'
       - 'scripts/ci/fixtures/cargo_lock_conflict_policy.json'
       - 'docs/how-to/DEPENDENCY_QUICK_REFERENCE.md'
       - 'docs/how-to/DEPENDENCY_MANAGEMENT.md'
@@ -137,6 +141,13 @@ jobs:
         run: |
           python3 scripts/ci/test_validate_cargo_lock_conflict_policy.py
           python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
+
+      - name: Validate exposed-surface disposition contract
+        run: |
+          python3 -m unittest scripts/tests/test-validate-exposed-surface-disposition.py
+          python3 scripts/validate-exposed-surface-disposition.py \
+            --authority-catalog docs/releases/exposed-surface-authorities.v1.json \
+            --projection docs/releases/exposed-surface-disposition.v1.json
 
       - name: Validate bounded-result overflow invariants
         run: |
