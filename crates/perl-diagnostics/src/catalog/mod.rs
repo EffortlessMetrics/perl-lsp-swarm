@@ -20,7 +20,7 @@ pub struct DiagnosticMeta {
 
 impl Default for DiagnosticMeta {
     fn default() -> Self {
-        Self { code: json!("PL001"), desc: None, hint: None }
+        Self::from_code(DiagnosticCode::default())
     }
 }
 
@@ -138,7 +138,17 @@ pub fn from_message(msg: &str) -> Option<DiagnosticMeta> {
 
 #[cfg(test)]
 mod tests {
-    use super::{eval_error_flow, from_message, parse_error};
+    use super::{DiagnosticMeta, eval_error_flow, from_message, parse_error};
+
+    #[test]
+    fn default_matches_canonical_parse_error_projection() {
+        let default_meta = DiagnosticMeta::default();
+        let canonical_meta = parse_error();
+
+        assert_eq!(default_meta.code, canonical_meta.code);
+        assert_eq!(default_meta.desc, canonical_meta.desc);
+        assert_eq!(default_meta.hint, canonical_meta.hint);
+    }
 
     #[test]
     fn parse_error_includes_stable_code_and_docs_url() {

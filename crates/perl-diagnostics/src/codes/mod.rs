@@ -19,7 +19,7 @@
 //! | PL800-PL899 | Heredoc anti-patterns     |
 //! | PL900-PL999 | Version compatibility     |
 
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 mod category;
 mod metadata;
@@ -30,161 +30,246 @@ pub use category::DiagnosticCategory;
 pub use severity::DiagnosticSeverity;
 pub use tag::DiagnosticTag;
 
-/// Stable diagnostic codes for Perl LSP.
-///
-/// Each code has a fixed string representation and associated metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[non_exhaustive]
-pub enum DiagnosticCode {
+macro_rules! define_diagnostic_codes {
+    (
+        $(
+            $(#[$attribute:meta])*
+            $variant:ident => $code:literal
+        ),+ $(,)?
+    ) => {
+        /// Stable diagnostic codes for Perl LSP.
+        ///
+        /// Each code has a fixed string representation and associated metadata.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+        #[non_exhaustive]
+        pub enum DiagnosticCode {
+            $(
+                $(#[$attribute])*
+                $variant,
+            )+
+        }
+
+        impl DiagnosticCode {
+            /// Every registered built-in diagnostic code in stable public-code order.
+            ///
+            /// Consumers must use this inventory instead of maintaining an
+            /// independent all-codes list.
+            pub const ALL: &'static [Self] = &[
+                $(Self::$variant,)+
+            ];
+
+            /// Get the string representation of this code.
+            pub fn as_str(&self) -> &'static str {
+                match self {
+                    $(Self::$variant => $code,)+
+                }
+            }
+
+            /// Try to parse a code string into a `DiagnosticCode`.
+            ///
+            /// Only exact registered identities parse; case, surrounding
+            /// whitespace, and Rust variant spellings are rejected.
+            pub fn parse_code(code: &str) -> Option<Self> {
+                match code {
+                    $($code => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+define_diagnostic_codes! {
     // Parser diagnostics (PL001-PL099)
     /// General parse error
     #[default]
-    ParseError,
+    ParseError => "PL001",
     /// Syntax error
-    SyntaxError,
+    SyntaxError => "PL002",
     /// Unexpected end-of-file
-    UnexpectedEof,
+    UnexpectedEof => "PL003",
 
     // Strict/warnings (PL100-PL199)
     /// Missing 'use strict' pragma
-    MissingStrict,
+    MissingStrict => "PL100",
     /// Missing 'use warnings' pragma
-    MissingWarnings,
+    MissingWarnings => "PL101",
     /// Unused variable
-    UnusedVariable,
+    UnusedVariable => "PL102",
     /// Undefined variable
-    UndefinedVariable,
+    UndefinedVariable => "PL103",
     /// Variable shadowing an outer declaration
-    VariableShadowing,
+    VariableShadowing => "PL104",
     /// Variable redeclared in the same scope
-    VariableRedeclaration,
+    VariableRedeclaration => "PL105",
     /// Duplicate parameter in a subroutine signature
-    DuplicateParameter,
+    DuplicateParameter => "PL106",
     /// Subroutine parameter shadows a global variable
-    ParameterShadowsGlobal,
+    ParameterShadowsGlobal => "PL107",
     /// Subroutine parameter is declared but never used
-    UnusedParameter,
+    UnusedParameter => "PL108",
     /// Bareword used where a quoted string is expected (under strict)
-    UnquotedBareword,
+    UnquotedBareword => "PL109",
     /// Variable used before being initialized
-    UninitializedVariable,
+    UninitializedVariable => "PL110",
     /// Pragma name appears to be misspelled
-    MisspelledPragma,
+    MisspelledPragma => "PL111",
     /// Capture variable ($1, $2, etc.) used without a preceding regex match in scope
-    CaptureVarWithoutRegexMatch,
+    CaptureVarWithoutRegexMatch => "PL112",
 
     // Package/module (PL200-PL299)
     /// Missing package declaration
-    MissingPackageDeclaration,
+    MissingPackageDeclaration => "PL200",
     /// Duplicate package declaration
-    DuplicatePackage,
+    DuplicatePackage => "PL201",
 
     // Subroutine (PL300-PL399)
     /// Duplicate subroutine definition
-    DuplicateSubroutine,
+    DuplicateSubroutine => "PL300",
     /// Missing explicit return statement
-    MissingReturn,
+    MissingReturn => "PL301",
     /// Invalid character(s) in a subroutine prototype
     ///
     /// Perl only allows `$`, `@`, `%`, `&`, `*`, `\`, `;`, `+`, `_`, and
-    /// spaces in old-style prototypes.  Any other character triggers Perl's
+    /// spaces in old-style prototypes. Any other character triggers Perl's
     /// "Illegal character in prototype" warning.
-    InvalidPrototype,
+    InvalidPrototype => "PL302",
     /// Same-file Moo/Moose roles provide conflicting methods
-    RoleConflict,
+    RoleConflict => "PL303",
     /// Exported subroutine lacks POD documentation
-    MissingPodCoverage,
+    MissingPodCoverage => "PL304",
     /// Package-qualified call to a sub not defined in the target (in-file) package (#3014)
-    UnresolvedQualifiedCall,
+    UnresolvedQualifiedCall => "PL305",
 
     // Best practices (PL400-PL499)
     /// Bareword filehandle usage
-    BarewordFilehandle,
+    BarewordFilehandle => "PL400",
     /// Two-argument open() call
-    TwoArgOpen,
+    TwoArgOpen => "PL401",
     /// Implicit return value
-    ImplicitReturn,
+    ImplicitReturn => "PL402",
     /// Assignment used where a comparison was likely intended
-    AssignmentInCondition,
+    AssignmentInCondition => "PL403",
     /// Numeric comparison against a potentially undefined value
-    NumericComparisonWithUndef,
+    NumericComparisonWithUndef => "PL404",
     /// printf/sprintf format specifier count does not match argument count
-    PrintfFormatMismatch,
+    PrintfFormatMismatch => "PL405",
     /// Statement that cannot be reached due to preceding unconditional exit
-    UnreachableCode,
+    UnreachableCode => "PL406",
     /// `$@` / `$EVAL_ERROR` reads that are not paired with a nearby `eval`/`try`
-    EvalErrorFlow,
+    EvalErrorFlow => "PL407",
     /// Duplicate key in a hash literal or hash reference constructor
-    DuplicateHashKey,
+    DuplicateHashKey => "PL408",
     /// `goto LABEL` references a label that does not exist in this file
-    GotoUndefinedLabel,
+    GotoUndefinedLabel => "PL409",
     /// `next`/`last`/`redo LABEL` references a label that does not exist in this file
-    LoopControlUndefinedLabel,
+    LoopControlUndefinedLabel => "PL410",
 
     // Pragma pitfalls / deprecated syntax (PL500-PL599)
     /// Use of deprecated defined(@array) / defined(%hash)
-    DeprecatedDefined,
+    DeprecatedDefined => "PL500",
     /// Use of deprecated $[ array base variable
-    DeprecatedArrayBase,
+    DeprecatedArrayBase => "PL501",
     /// `use strict` appears only inside a phase block and does not affect file scope
-    PhaseScopedStrictPragma,
+    PhaseScopedStrictPragma => "PL502",
     /// `use warnings` appears only inside a phase block and does not affect file scope
-    PhaseScopedWarningsPragma,
+    PhaseScopedWarningsPragma => "PL503",
 
     // Security (PL600-PL699)
     /// String eval is a security risk
-    SecurityStringEval,
+    SecurityStringEval => "PL600",
     /// Backtick/qx command execution detected
-    SecurityBacktickExec,
+    SecurityBacktickExec => "PL601",
     /// Global assignment to `$SIG{__DIE__}` / `$SIG{__WARN__}`
-    SecuritySignalHandler,
+    SecuritySignalHandler => "PL602",
     /// `system()` call executes shell commands
-    SecuritySystemCall,
+    SecuritySystemCall => "PL603",
     /// `exec()` call replaces the current process with a shell command
-    SecurityExecCall,
+    SecurityExecCall => "PL604",
     /// Pipe-open `open(FH, "|-", ...)` / `open(FH, "-|", ...)` executes shell commands
-    SecurityPipeOpen,
+    SecurityPipeOpen => "PL605",
     /// `readpipe()` function call executes shell commands (equivalent to qx//)
-    SecurityReadpipe,
+    SecurityReadpipe => "PL606",
     /// Interpolated or concatenated variables form the SQL text passed to a
     /// DBI statement-taking method (`prepare`/`prepare_cached`/`do`) (#5035)
-    SecuritySqlInjection,
+    SecuritySqlInjection => "PL607",
     /// Substitution replacement is evaluated as Perl code by the `e`/`ee`
     /// modifier (`s/pat/repl/e`) (#9818)
-    SecuritySubstitutionEval,
+    SecuritySubstitutionEval => "PL608",
     /// Regular expression pattern embeds immediate `(?{ ... })` or deferred
     /// `(??{ ... })` executable code in `m//`, `qr//`, a bare regex literal,
     /// or a substitution pattern (#9818)
-    SecurityEmbeddedRegexCode,
+    SecurityEmbeddedRegexCode => "PL609",
 
     // Import (PL700-PL799)
     /// Module appears to be unused
-    UnusedImport,
+    UnusedImport => "PL700",
     /// Module not found in workspace or configured include paths
-    ModuleNotFound,
+    ModuleNotFound => "PL701",
     /// Module is a known source filter (rewrites source before parsing)
-    SourceFilterModule,
+    SourceFilterModule => "PL702",
 
     // Heredoc anti-patterns (PL800-PL899)
     /// Heredoc used inside a format block
-    HeredocInFormat,
+    HeredocInFormat => "PL800",
     /// Heredoc used inside a BEGIN block
-    HeredocInBegin,
+    HeredocInBegin => "PL801",
     /// Heredoc delimiter is dynamic (variable interpolation)
-    HeredocDynamicDelimiter,
+    HeredocDynamicDelimiter => "PL802",
     /// Heredoc used inside a source filter
-    HeredocInSourceFilter,
+    HeredocInSourceFilter => "PL803",
     /// Heredoc used inside a regex code block
-    HeredocInRegexCode,
+    HeredocInRegexCode => "PL804",
     /// Heredoc used inside string eval
-    HeredocInEval,
+    HeredocInEval => "PL805",
     /// Heredoc used with a tied filehandle
-    HeredocTiedHandle,
+    HeredocTiedHandle => "PL806",
 
     // Version compatibility (PL900-PL999)
     /// Use of a Perl feature not available in the declared version
-    VersionIncompatFeature,
+    VersionIncompatFeature => "PL900",
+}
+
+/// Error returned when text is not a registered built-in diagnostic code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseDiagnosticCodeError;
+
+impl fmt::Display for ParseDiagnosticCodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("unregistered diagnostic code")
+    }
+}
+
+impl std::error::Error for ParseDiagnosticCodeError {}
+
+impl FromStr for DiagnosticCode {
+    type Err = ParseDiagnosticCodeError;
+
+    fn from_str(code: &str) -> Result<Self, Self::Err> {
+        Self::parse_code(code).ok_or(ParseDiagnosticCodeError)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for DiagnosticCode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for DiagnosticCode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let code = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse_code(&code)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown diagnostic code `{code}`")))
+    }
 }
 
 impl fmt::Display for DiagnosticCode {
