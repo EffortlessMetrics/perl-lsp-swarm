@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12804 |
+| Total tracked files | 12805 |
 | Rust-family files | 3983 |
-| Non-Rust files | 8821 |
-| Allowlisted | 6582 |
+| Non-Rust files | 8822 |
+| Allowlisted | 6583 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 568 |
+| config | 569 |
 | documentation | 2858 |
 | generated | 2 |
 | production | 357 |
@@ -3804,6 +3804,7 @@
 | `contracts/dap/fixtures/negative-missing-adapter-identity.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-missing-cleanup-owner.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-missing-resource-profile.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-missing-tool-volume-owner.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-musl-glibc-loader-mismatch.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-node-port-service.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-operator-crds.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |

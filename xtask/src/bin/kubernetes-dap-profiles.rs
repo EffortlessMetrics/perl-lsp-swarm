@@ -711,7 +711,20 @@ impl ProfileContract {
                 }
             }
         }
-        // Identity, not arity: a swapped cell keeps the count at eight.
+        // Identity, not arity: a swapped cell keeps the count at eight. The set is
+        // exact in both directions — an *added* evidence-backed initial cell would
+        // claim a supported capability #10112 never admitted, which is precisely
+        // what this contract exists to prevent. The optional family stays extensible.
+        for cell in self.dap_cells.iter().filter(|cell| cell.family == CellFamily::InitialAdmitted)
+        {
+            if !REQUIRED_INITIAL_ADMITTED_CELLS.contains(&cell.cell_id.as_str()) {
+                bail!(
+                    "cell {:?} is not one of the #10112 initial-admitted cells; a new admitted \
+                     capability may not be introduced here",
+                    cell.cell_id
+                );
+            }
+        }
         for required in REQUIRED_INITIAL_ADMITTED_CELLS {
             if !self
                 .dap_cells
@@ -3074,5 +3087,37 @@ mod tests {
             assert_eq!(bound, u64::from(u32::MAX), "{field} bound must match the u32 it parses");
         }
         Ok(())
+    }
+
+    #[test]
+    fn an_extra_initial_admitted_cell_is_rejected() -> Result<()> {
+        let mut contract = ProfileContract::from_str(COMMITTED_CONTRACT)?;
+        let template = contract
+            .dap_cells
+            .iter()
+            .find(|cell| cell.cell_id == "initialize")
+            .ok_or_else(|| anyhow!("missing cell"))?
+            .clone();
+        let mut extra = template;
+        extra.cell_id = "restart_frame".into();
+        contract.dap_cells.push(extra);
+        let error = contract.validate().expect_err("an added admitted capability must be rejected");
+        assert!(error.to_string().contains("restart_frame"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_optional_family_stays_extensible() -> Result<()> {
+        let mut contract = ProfileContract::from_str(COMMITTED_CONTRACT)?;
+        let template = contract
+            .dap_cells
+            .iter()
+            .find(|cell| cell.family == CellFamily::Optional)
+            .ok_or_else(|| anyhow!("missing optional cell"))?
+            .clone();
+        let mut extra = template;
+        extra.cell_id = "restart_frame".into();
+        contract.dap_cells.push(extra);
+        contract.validate()
     }
 }
