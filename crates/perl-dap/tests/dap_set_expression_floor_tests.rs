@@ -204,8 +204,9 @@ fn repeated_refusals_are_identical() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Only the setExpression cell moved to the authority; sibling mutation and
-/// data-breakpoint cells keep their existing catalog-driven wiring.
+/// Only the setExpression cell moved to the authority; the data-breakpoint
+/// cell keeps its existing catalog-driven wiring. (The setVariable sibling
+/// later moved to its own #8354 authority — asserted below.)
 #[test]
 fn sibling_capability_cells_are_independent() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = create_test_adapter();
@@ -213,8 +214,9 @@ fn sibling_capability_cells_are_independent() -> Result<(), Box<dyn std::error::
 
     assert_eq!(
         capability(&caps, "supportsSetVariable")?,
-        perl_dap::feature_catalog::has_feature("dap.core"),
-        "supportsSetVariable keeps its catalog-driven cell; this PR must not move it"
+        false,
+        "supportsSetVariable carried a catalog-driven cell when #9568 landed; #8354 later \
+         floored it on the exact-mutation authority, so it must now read false"
     );
     assert_eq!(
         capability(&caps, "supportsDataBreakpoints")?,
