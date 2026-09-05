@@ -1,0 +1,197 @@
+# Authority Transfer Review (#11795) — advisory exact-head review-context check.
+#
+# Connects the #11793 review-surface denominator (policy/review-surfaces.toml +
+# its checked projection docs/policy/REVIEW_SURFACES.md) to one stable advisory
+# GitHub check context named exactly `Authority Transfer Review`. For every PR
+# targeting main the evaluator reports either the cheap deterministic
+# PASS_NOT_APPLICABLE route or per-row typed verdicts for governed surfaces.
+#
+# Executes ONLY trusted base-branch validator code
+# (scripts/ci/authority_transfer_review.py + scripts/ci/validate_review_surfaces.py,
+# both stdlib-only): the checkout is pinned to the pull request's exact base SHA,
+# and candidate material is consumed strictly as bounded data. The candidate head
+# is fetched solely to prove its inert identity against the event payload and to
+# extract its tree with `git archive`; no candidate code is ever executed, so the
+# candidate cannot weaken the evaluator judging it. The extracted candidate tree
+# is additionally walked by the same trusted #11793 invariant set as data, so a
+# denominator-invalidated candidate input can never publish a valid-looking
+# context.
+#
+# Exit contract: 0 = pass (PASS_NOT_APPLICABLE / PASS_CURRENT_REVIEW),
+# 1 = typed review failure (FAIL_*), 3 = NOT_PROVEN/instrument failure. Every
+# missing/stale/broken evidence state stays non-green; API or instrument failure
+# is never a pass for applicable governed work. A pass means only that the review
+# evidence required by the governed surface is current and internally consistent;
+# merge readiness and live policy remain separate. Advisory / non-required:
+# intentionally absent from required enforcement; promotion belongs to #11796.
+# Reviewer packets are supplied by the #11701/#11703 machinery as they land;
+# until then governed rows report FAIL_REVIEW_MISSING rather than passing.
+#
+# The dogfood receipt uploaded here carries one bounded advisory packet (verdict
+# counts, bounded-input state, denominator digests) for the #11796 promotion
+# successor.
+
+name: Authority Transfer Review
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: authority-transfer-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+
+jobs:
+  authority-transfer-review:
+    # The display name below IS the published check context name; keep it
+    # byte-stable across edits.
+    name: Authority Transfer Review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact trusted base authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove exact base execution
+        if: github.event_name == 'pull_request_target'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid base SHA identity"
+            exit 1
+          fi
+          resolved="$(git rev-parse 'HEAD^{commit}')"
+          if [ "$resolved" != "$BASE_SHA" ]; then
+            printf '::error::Checked-out base %s does not match event base %s\n' \
+              "$resolved" "$BASE_SHA"
+            exit 1
+          fi
+
+      - name: Prove inert PR head identity
+        if: github.event_name == 'pull_request_target'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid PR head SHA identity"
+            exit 1
+          fi
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid PR number identity"
+            exit 1
+          fi
+          # Full history of the head ref (not --depth=1): the changed-file
+          # step needs real ancestry to compute the merge base.
+          git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          fetched="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          if [ "$fetched" != "$HEAD_SHA" ]; then
+            printf '::error::Fetched PR head %s does not match event head %s\n' \
+              "$fetched" "$HEAD_SHA"
+            exit 1
+          fi
+
+      - name: Extract candidate tree as bounded data
+        if: github.event_name == 'pull_request_target'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CANDIDATE_TREE: ${{ runner.temp }}/authority-review-candidate-tree
+        run: |
+          set -euo pipefail
+          mkdir -p "$CANDIDATE_TREE"
+          git archive "$HEAD_SHA" | tar -x -C "$CANDIDATE_TREE"
+          # `git archive | tar` preserves symlink entries, and the trusted
+          # validator's read calls would follow them into the predictable
+          # base checkout. Reject any linked input so the verdict can only
+          # reflect the candidate's own tree.
+          if find "$CANDIDATE_TREE" -type l -print -quit | grep -q .; then
+            echo "::error::Candidate tree contains symlink entries; refusing to follow linked content as bounded data"
+            exit 3
+          fi
+
+      - name: Instrument self-test (broken evidence never masquerades as pass)
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/authority_transfer_review.py --self-test
+
+      - name: Build bounded changed-file list
+        id: changed
+        if: github.event_name == 'pull_request_target'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHANGED_LIST: ${{ runner.temp }}/authority-review-changed-files.txt
+        run: |
+          set -euo pipefail
+          # Diff from the merge base, not the two-commit form: the event
+          # base SHA tracks the moving main tip, so a plain `git diff base
+          # head` attributes unrelated main movement to the PR and churns
+          # governed-row verdicts.
+          MERGE_BASE="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+          # core.quotePath=false emits raw UTF-8 path bytes instead of
+          # C-quoted escapes. Under the default (true) a non-ASCII governed
+          # path would arrive as `"docs/\303\251.md"` and silently match no
+          # binding; the evaluator would then report a clean verdict over a
+          # governed change it never saw. Undecodable bytes still reach the
+          # evaluator as bytes, where strict decoding fails them closed.
+          git -c core.quotePath=false diff --name-only "$MERGE_BASE" "$HEAD_SHA" > "$CHANGED_LIST"
+
+      - name: Publish advisory Authority Transfer Review context
+        if: github.event_name == 'pull_request_target'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          CHANGED_LIST: ${{ runner.temp }}/authority-review-changed-files.txt
+          CANDIDATE_TREE: ${{ runner.temp }}/authority-review-candidate-tree
+          RECEIPT: target/receipts/authority-transfer-review.json
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$RECEIPT")"
+          python3 scripts/ci/authority_transfer_review.py \
+            --root . \
+            --candidate-root "$CANDIDATE_TREE" \
+            --repository "$REPOSITORY" \
+            --pr-number "$PR_NUMBER" \
+            --base-sha "$BASE_SHA" \
+            --head-sha "$HEAD_SHA" \
+            --changed-list "$CHANGED_LIST" \
+            --receipt "$RECEIPT" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Dispatch summary (no PR context to evaluate)
+        if: github.event_name != 'pull_request_target'
+        run: |
+          set -euo pipefail
+          cat > "$GITHUB_STEP_SUMMARY" <<'EOF'
+          # Authority Transfer Review (advisory)
+
+          - Result: `PASS_NOT_APPLICABLE`
+          - Reason: dispatched without a pull-request context; nothing evaluated.
+
+          Advisory only; result vocabulary and evidence contract live in issue
+          #11795 over the #11793 denominator.
+          EOF
+
+      - name: Upload advisory dogfood receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: authority-transfer-review-receipt
+          path: target/receipts/authority-transfer-review.json
+          if-no-files-found: ignore

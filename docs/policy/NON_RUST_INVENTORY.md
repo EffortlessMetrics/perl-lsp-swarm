@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12735 |
+| Total tracked files | 12739 |
 | Rust-family files | 3982 |
-| Non-Rust files | 8753 |
-| Allowlisted | 6514 |
+| Non-Rust files | 8757 |
+| Allowlisted | 6518 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 502 |
-| documentation | 2856 |
+| config | 503 |
+| documentation | 2857 |
 | generated | 2 |
 | production | 357 |
 | test | 2111 |
-| tooling | 686 |
+| tooling | 688 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -2317,6 +2317,7 @@
 | `.changes/unreleased/product-11613-Fixed-181500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11739-Fixed-001500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11740-Fixed-200900.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-11795-Added-084500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11845-Security-034645.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11900-Added-223000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11933-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2922,6 +2923,7 @@
 | `.github/workflows/agent-flow-control-plane.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/aggregate-ci-lane-history.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/authority-transfer-graph.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/authority-transfer-review.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/badge-endpoints.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/brew-bump.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/changelog-advisory.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -6552,6 +6554,7 @@
 | `scripts/ci-audit-workflows.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci-cost-monitor.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/aggregate_lane_history.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/authority_transfer_review.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check-pr-claim-currentness` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check-pr-review-convergence` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check-pr-review-convergence-core` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6700,6 +6703,7 @@
 | `scripts/ci/security_reconciliation_io.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/security_reconciliation_model.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_aggregate_lane_history.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_authority_transfer_review.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_cache_writer_authority_13924.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_check_perl_lsp_rs_core_package.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_check_pr_semantic_review_currentness.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
