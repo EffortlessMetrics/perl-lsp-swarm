@@ -181,7 +181,11 @@ fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
     let sentence_end = line[marker_start + marker.len()..]
         .find(['.', '!', '?', ';'])
         .map_or(line.len(), |index| marker_start + marker.len() + index);
-    let prefix = line[sentence_start..marker_start].trim().to_ascii_lowercase();
+    // Anchor the prefix on a trailing word boundary. Trimming alone drops the space the
+    // negation tokens end with, so a negation sitting immediately before the marker
+    // ("do not create a candidate") would read as positive guidance and the refusal
+    // requirement would reject valid provider prose.
+    let prefix = format!("{} ", line[sentence_start..marker_start].trim().to_ascii_lowercase());
     let suffix = line[marker_start + marker.len()..sentence_end].trim().to_ascii_lowercase();
 
     let local_negation = [
@@ -219,8 +223,6 @@ fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
     local_negation
         || coordinated_negation
         || modal_negation
-        || prefix.ends_with("not a")
-        || prefix.ends_with("no")
         || suffix.starts_with("must not ")
         || suffix.starts_with("mustn't ")
         || suffix.starts_with("should not ")
@@ -449,6 +451,33 @@ Later content.
         errors.iter().any(|error| error.contains("an anti-inference rule")),
         "expected the anti-inference requirement to fail closed: {errors:?}"
     );
+}
+
+#[test]
+fn negation_adjacent_to_the_marker_is_read_as_a_refusal() {
+    // The most direct phrasing of the refusal puts the negation immediately before the
+    // marker, with no intervening words. That must count as a refusal, or the contract
+    // rejects valid provider guidance.
+    let text = r#"
+## Shift-left claim admission
+Before delegating a mutation or editing the candidate directly, retain a coherent claim
+and its semantic owner. Name the governing authority, current facts and contradictions,
+and observable seam. State the acceptance surface and choose the cheapest earliest
+falsifier, including a negative control. State the proof ceiling, what stays
+`NOT_PROVEN`, and which broader proof to defer. Name the mutation owner, one writer, the
+earliest missing judgment, and the named next or backward route. Read-only research may
+precede this boundary. When the earliest falsifier is unresolved, do not infer the
+missing facts. When the earliest falsifier is unresolved, do not create a candidate.
+Route through `prepare-issue` or `prepare-proof`. Keep this runtime-local unless it
+changes durable claim, authority, or proof state. It is not a stage record, lease,
+scheduler, or tracked frontier.
+
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(errors.is_empty(), "valid provider guidance was rejected: {errors:?}");
 }
 
 #[test]
