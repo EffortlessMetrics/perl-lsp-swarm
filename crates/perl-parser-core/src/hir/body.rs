@@ -249,12 +249,26 @@ pub struct HirVariable {
     /// [`ScopeGraph`](super::model::ScopeGraph) — not an identity reconstructed
     /// from `(body, sigil, name)` or a source range. Two same-spelling lexicals
     /// declared in nested scopes of one body therefore stay distinguishable
-    /// here, and each read / write / read-modify-write occurrence points at the
-    /// binding actually in scope at that position.
+    /// here. Resolution walks the enclosing scope chain by name; it is not yet
+    /// position-sensitive within a scope, so the binding named here is the
+    /// scope-chain resolution, which differs from the binding Perl would see
+    /// in four documented cases (tracked by #14173):
+    ///
+    /// - self-referential initializer: in `my $x = $x` the read resolves to the
+    ///   binding being declared, not the outer one;
+    /// - same-scope redeclaration: a read between `my $x = 1;` and `my $x = 2;`
+    ///   resolves to the later declaration;
+    /// - `foreach my $i` iterator: recorded in the enclosing scope rather than a
+    ///   loop-private one, so a post-loop read of `$i` captures the loop binding;
+    /// - package-scope descent: declarations at `package NAME;` top level are
+    ///   `None` when resolved from the program root.
+    ///
+    /// Declaration occurrences are exempt from the first two cases: each names
+    /// the binding it introduces, matched by declaration span.
     ///
     /// `None` means no binding was visible — an unresolved package global such
-    /// as `$Foo::bar`, or a variable with no declaration in scope. It is never
-    /// a fabricated stand-in identity.
+    /// as `$Foo::bar`, a variable with no declaration in scope, or the
+    /// package-scope case above. It is never a fabricated stand-in identity.
     ///
     /// Only the canonical [`lower_ast`](super::lower_ast) path populates this.
     /// The test-only [`lower_body`] builder has no scope graph and leaves it
