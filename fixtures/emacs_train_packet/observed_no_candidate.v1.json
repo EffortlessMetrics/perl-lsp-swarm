@@ -1,0 +1,5 @@
+{
+  "candidate_state": "observed",
+  "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "candidate_identity": "no candidate: this CI sweep observed no open PR or dirty checkout owning the claim"
+}

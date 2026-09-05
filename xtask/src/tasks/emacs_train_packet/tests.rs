@@ -277,6 +277,136 @@ fn default_fixture(root: &Path) -> Result<AdapterInputs> {
     )
 }
 
+/// An explicit complete observation that no candidate owns this claim.
+///
+/// #11719 admits a coding packet only against a current observation. Vacancy
+/// must be *observed and supplied*, never inferred from a missing flag, so the
+/// happy-path tests state it here instead of leaving `live` as `None`.
+///
+/// The shared #10872 vocabulary is `not_observed | observed`, and `observed`
+/// requires a non-empty `candidate_identity` -- so an observed vacancy is
+/// recorded as the caller's exact statement of what the sweep found, not as an
+/// absent field.
+fn observed_vacant() -> LiveObservation {
+    LiveObservation {
+        candidate_state: "observed".to_string(),
+        digest: "sha256:0000000000000000".to_string(),
+        candidate_identity: Some(
+            "no candidate: no open PR or dirty checkout owns this claim".to_string(),
+        ),
+        collision_state: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #11719: "No live observation means no coding packet assuming vacancy."
+// A coding packet admits a repository writer, so it must not be composable
+// against an unobserved claim -- and `not_observed` records that nobody
+// looked, which is not the same as looking and finding nothing.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn coding_packet_without_live_observation_refuses_fail_closed() -> Result<()> {
+    let root = fixture_tree("no-live")?;
+    let inputs = default_fixture(&root)?;
+    for profile in ["coding_agent_bounded", "coding_agent_strong"] {
+        let refusal = compose_builder_packet(&root, &inputs, "SUB", profile, None)
+            .err()
+            .unwrap_or_else(|| panic!("{profile} must not assume the claim is vacant"));
+        assert_eq!(refusal.code, "NO_LIVE_OBSERVATION", "{}", refusal.line());
+    }
+    Ok(())
+}
+
+#[test]
+fn not_observed_live_state_is_not_evidence_of_vacancy() -> Result<()> {
+    let root = fixture_tree("not-observed")?;
+    let inputs = default_fixture(&root)?;
+    let live = LiveObservation {
+        candidate_state: "not_observed".to_string(),
+        digest: "sha256:0000000000000000".to_string(),
+        candidate_identity: None,
+        collision_state: None,
+    };
+    let refusal =
+        compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&live))
+            .err()
+            .expect("not_observed must never admit a coding packet");
+    assert_eq!(refusal.code, "NO_LIVE_OBSERVATION", "{}", refusal.line());
+    assert!(refusal.detail.contains("absence of knowledge is never vacancy"), "{}", refusal.detail);
+    Ok(())
+}
+
+#[test]
+fn review_and_reconcile_routes_are_not_blocked_by_the_live_gate() -> Result<()> {
+    // Neither route emits a coding packet or a repository write boundary, so
+    // the live gate must not refuse a read-only review for want of an
+    // observation it never acts on.
+    let root = fixture_tree("anchored")?;
+    let inputs = default_fixture(&root)?;
+    let candidates = json!([
+        {"identity": "PR #8800", "state": "open_stale_base", "facts": "dirty unique work"}
+    ]);
+    let doc = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    assert_eq!(doc["frontier"]["decision"], "blocked");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The reconciliation adjudication is over the candidates' facts, so the facts
+// must reach the packet and its frontier identity. Two sets differing only in
+// facts must never render the same bytes.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reconcile_binds_the_supplied_candidate_facts_into_the_packet_and_digest() -> Result<()> {
+    let root = fixture_tree("reconcile-facts")?;
+    let inputs = default_fixture(&root)?;
+
+    let render = |facts: &str| -> Result<(String, String, String)> {
+        let candidates = json!([
+            {"identity": "PR #8800 (tooling/sub-claim)", "state": "open_stale_base", "facts": facts}
+        ]);
+        let doc = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+            .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+        Ok((
+            render_builder_packet(&doc, PacketProjection::Machine)?,
+            doc["frontier"]["digest"].as_str().unwrap_or_default().to_string(),
+            doc["frontier"]["blocking_edges"][0]["reason"].as_str().unwrap_or_default().to_string(),
+        ))
+    };
+
+    let (bytes_a, digest_a, reason_a) = render("dirty unique work, unpushed")?;
+    let (bytes_b, digest_b, _) = render("clean, fully pushed, superseded")?;
+
+    assert!(reason_a.contains("dirty unique work, unpushed"), "{reason_a}");
+    assert_ne!(bytes_a, bytes_b, "candidate facts must change the rendered packet");
+    assert_ne!(digest_a, digest_b, "candidate facts must change the frontier identity");
+    Ok(())
+}
+
+#[test]
+fn reconcile_refuses_incomplete_or_duplicate_candidate_facts() -> Result<()> {
+    let root = fixture_tree("reconcile-malformed")?;
+    let inputs = default_fixture(&root)?;
+    let cases = [
+        json!([]),
+        json!([{"identity": "PR #8800", "state": "open"}]),
+        json!([
+            {"identity": "PR #8800", "state": "open", "facts": "a"},
+            {"identity": "PR #8800", "state": "open", "facts": "b"}
+        ]),
+    ];
+    for candidates in cases {
+        let refusal = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+            .err()
+            .unwrap_or_else(|| panic!("incomplete candidate facts must refuse: {candidates}"));
+        assert_eq!(refusal.code, "MALFORMED_CANDIDATE_FACTS", "{}", refusal.line());
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Falsifier 1 + 3: a complete-input node renders a shared-contract packet
 // (zero drift) and identical inputs produce identical canonical bytes.
@@ -286,21 +416,28 @@ fn default_fixture(root: &Path) -> Result<AdapterInputs> {
 fn complete_node_renders_shared_contract_packet_deterministically() -> Result<()> {
     let root = fixture_tree("happy")?;
     let inputs = default_fixture(&root)?;
-    let doc = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
+    let live = observed_vacant();
+    let doc = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&live))
         .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
     assert_eq!(doc["schema"], BUILDER_CONTRACT, "the payload must be the shared #10872 contract");
     let first = render_builder_packet(&doc, PacketProjection::Machine)?;
     let second = render_builder_packet(&doc, PacketProjection::Machine)?;
     assert_eq!(first, second, "identical inputs must produce byte-identical packets");
     // Re-composition from the same inputs is byte-stable too.
-    let doc_again = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
-        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    let doc_again =
+        compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&live))
+            .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
     assert_eq!(first, render_builder_packet(&doc_again, PacketProjection::Machine)?);
     // Emacs supplies fields only: no Emacs-local schema identity anywhere.
     assert!(first.find("emacs_packet").is_none());
     assert!(first.find("emacs-local").is_none());
-    // Honest offline observation: no live_observation fabricated.
-    assert!(doc.get("live_observation").is_none());
+    // Honest offline observation: the packet carries exactly the observation
+    // the caller supplied and never invents one of its own.
+    assert_eq!(doc["live_observation"]["candidate_state"], "observed");
+    assert_eq!(
+        doc["live_observation"]["candidate_identity"],
+        live.candidate_identity.clone().unwrap_or_default()
+    );
     assert_eq!(doc["work"]["profile_decision"]["selected_value"], "ISSUE_PLAN_SUFFICIENT");
     Ok(())
 }
@@ -612,7 +749,8 @@ fn landed_contract_hard_dependency_admits_the_packet() -> Result<()> {
             disposition_record("DEP", 9101, "EXISTING_CONTRACT_SUFFICIENT"),
         ],
     )?;
-    let doc = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
+    let live = observed_vacant();
+    let doc = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&live))
         .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
     assert_eq!(doc["frontier"]["decision"], "ready");
     Ok(())

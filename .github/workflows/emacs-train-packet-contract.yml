@@ -46,20 +46,55 @@ jobs:
       - name: Falsifier suite
         run: cargo test -p xtask --bin xtask emacs_train_packet --locked
 
-      - name: Validate the packet denominator (fail-closed typed refusals)
-        run: cargo run -p xtask --locked -- integration emacs train packets --check
+      - name: Denominator assumes no vacancy without a live observation
+        run: |
+          set -euo pipefail
+          cargo run -p xtask --locked -- integration emacs train packets --check | tee /tmp/den-blind.txt
+          # A coding packet admits a writer, so with no observation supplied
+          # every node must refuse rather than assume its claim is free.
+          grep -q 'EMU_PACKETS_CHECK=OK rendered=0 ' /tmp/den-blind.txt
+          grep -q 'code=NO_LIVE_OBSERVATION' /tmp/den-blind.txt
+
+      - name: Validate the packet denominator against a supplied observation
+        run: |
+          set -euo pipefail
+          cargo run -p xtask --locked -- integration emacs train packets --check \
+            --live-observation fixtures/emacs_train_packet/observed_no_candidate.v1.json | tee /tmp/den.txt
+          # The render path must stay exercised on the real tree: a denominator
+          # that renders nothing proves no zero-drift.
+          grep -q 'EMU_PACKET node=CTXENG .* status=ok' /tmp/den.txt
 
       - name: Determinism proof on the real tree (two renders must match)
         run: |
-          cargo run -p xtask --locked -- integration emacs train packet CTXENG --profile coding_agent_bounded > /tmp/pkt-a.json
-          cargo run -p xtask --locked -- integration emacs train packet CTXENG --profile coding_agent_bounded > /tmp/pkt-b.json
+          set -euo pipefail
+          for out in a b; do
+            cargo run -p xtask --locked -- integration emacs train packet CTXENG \
+              --profile coding_agent_bounded \
+              --live-observation fixtures/emacs_train_packet/observed_no_candidate.v1.json \
+              > /tmp/pkt-$out.json
+          done
           diff /tmp/pkt-a.json /tmp/pkt-b.json
 
-      - name: Offline review and reconcile routes refuse fail-closed
+      - name: Offline routes refuse fail-closed with the exact typed code
         run: |
-          set -e
-          cargo run -p xtask --locked -- integration emacs train review-packet CTXENG && exit 1 || test $? -eq 3
-          cargo run -p xtask --locked -- integration emacs train reconcile-packet CTXENG && exit 1 || test $? -eq 3
+          set -uo pipefail
+          # Asserting exit 3 alone would accept any refusal, including a wrong
+          # or accidental one; assert the typed code this adapter owns.
+          assert_refusal() {
+            local expected="$1"; shift
+            local err
+            err="$("$@" 2>&1 >/dev/null)" && { echo "expected a refusal from: $*"; exit 1; }
+            test $? -eq 3 || { echo "expected exit 3 from: $*"; exit 1; }
+            echo "$err" | grep -q "EMU_PACKET_REFUSED .*code=$expected" || {
+              echo "expected code=$expected from: $*"; echo "$err"; exit 1;
+            }
+          }
+          assert_refusal MISSING_CANDIDATE_IDENTITY \
+            cargo run -p xtask --locked -- integration emacs train review-packet CTXENG
+          assert_refusal NO_LIVE_OBSERVATION \
+            cargo run -p xtask --locked -- integration emacs train reconcile-packet CTXENG
+          assert_refusal NO_LIVE_OBSERVATION \
+            cargo run -p xtask --locked -- integration emacs train packet CTXENG --profile coding_agent_bounded
 
       - name: Shared contract checks stay green (zero drift)
         run: |

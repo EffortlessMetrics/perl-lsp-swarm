@@ -20,7 +20,7 @@
 //! Packet instances are runtime-local outputs (stdout only). Nothing here is
 //! tracked workflow state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
@@ -278,6 +278,12 @@ pub enum EmacsTrainPacketCommand {
         /// Run the denominator validation.
         #[arg(long)]
         check: bool,
+        /// Optional explicitly supplied live observation JSON applied to every
+        /// node. Without it, coding profiles refuse with a typed
+        /// `NO_LIVE_OBSERVATION`: the denominator reports eligibility up to the
+        /// live boundary rather than assuming every claim is vacant.
+        #[arg(long)]
+        live_observation: Option<PathBuf>,
     },
 }
 
@@ -344,14 +350,18 @@ pub fn run(command: EmacsTrainPacketCommand) -> Result<()> {
                 }
             }
         }
-        EmacsTrainPacketCommand::Packets { check } => {
+        EmacsTrainPacketCommand::Packets { check, live_observation } => {
             if !check {
                 bail!(
                     "refusing an implicit denominator run: pass --check to validate that every \
                      stable node renders a shared-contract packet or refuses with a typed reason"
                 );
             }
-            run_packets_check(&root)
+            let live = match &live_observation {
+                Some(path) => Some(parse_live_observation(path)?),
+                None => None,
+            };
+            run_packets_check(&root, live.as_ref())
         }
     }
 }
@@ -369,6 +379,31 @@ pub fn compose_builder_packet(
     subject: &str,
     profile: &str,
     live: Option<&LiveObservation>,
+) -> Result<Value, Refusal> {
+    compose_packet_document(root, inputs, subject, profile, live, LiveGate::Enforced)
+}
+
+/// Whether a composition admits a repository writer and must therefore carry a
+/// current live candidate observation.
+///
+/// `Anchored` is used only by the review and reconciliation routes: both
+/// compose a builder document to anchor the claim they challenge, and neither
+/// emits a coding packet or a repository write boundary of its own. Admitting
+/// them through the live gate would refuse a read-only review for the absence
+/// of an observation it never acts on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LiveGate {
+    Enforced,
+    Anchored,
+}
+
+fn compose_packet_document(
+    root: &Path,
+    inputs: &AdapterInputs,
+    subject: &str,
+    profile: &str,
+    live: Option<&LiveObservation>,
+    live_gate: LiveGate,
 ) -> Result<Value, Refusal> {
     let node = resolve_train_node(inputs, subject).map_err(|error| {
         Refusal::new(subject, profile, "NODE_RESOLUTION_FAILED", error.to_string())
@@ -465,6 +500,33 @@ pub fn compose_builder_packet(
                 edges.join("; ")
             ),
         ));
+    }
+
+    // A coding packet admits a repository writer, so it requires a current
+    // candidate observation. #11719: "No live observation means no coding
+    // packet assuming vacancy." `not_observed` records that nobody looked --
+    // it is not evidence that the claim is free.
+    if is_coding && live_gate == LiveGate::Enforced {
+        let observed = live.filter(|live| live.candidate_state == "observed");
+        if observed.is_none() {
+            let detail = match live {
+                None => "no live candidate observation was supplied (--live-observation); a \
+                         coding packet must not assume the claim is vacant"
+                    .to_string(),
+                Some(live) => format!(
+                    "the supplied live observation is {}; only an explicit complete \
+                     `observed` observation establishes whether a candidate exists, and \
+                     absence of knowledge is never vacancy",
+                    live.candidate_state
+                ),
+            };
+            return Err(Refusal::new(
+                &node.node_id,
+                profile,
+                "NO_LIVE_OBSERVATION",
+                format!("{detail} (#10930 unlanded)"),
+            ));
+        }
     }
 
     let observed_tree = context.binding.git_commit.clone();
@@ -617,20 +679,7 @@ fn proposition_id(node: &TrainNode) -> String {
                 if character.is_ascii_alphanumeric() { character.to_ascii_lowercase() } else { '-' }
             })
             .collect();
-    let trimmed = slug.trim_matches('-').to_string();
-    let mut compact = String::new();
-    let mut previous_dash = false;
-    for character in trimmed.chars() {
-        if character == '-' {
-            if !previous_dash {
-                compact.push('-');
-            }
-            previous_dash = true;
-        } else {
-            compact.push(character);
-            previous_dash = false;
-        }
-    }
+    let compact = slug.split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-");
     let compact = if compact.is_empty() { node.node_id.to_lowercase() } else { compact };
     format!("P_{}", truncate_chars(&compact, 48))
 }
@@ -1061,10 +1110,35 @@ pub fn compose_review_packet(
     const PROFILE: &str = "read_only_reviewer";
     // The reviewer packet anchors the builder packet it challenges: compose
     // it first and propagate its refusal honestly.
-    let builder_doc = compose_builder_packet(root, inputs, subject, "coding_agent_bounded", None)
-        .or_else(|_| {
-        compose_builder_packet(root, inputs, subject, "coding_agent_strong", None)
-    })?;
+    // Try the bounded profile first and fall back to strong: a node may permit
+    // only one of the two. Both refusals are kept so a caller can see the whole
+    // chain rather than only the profile that happened to be attempted last.
+    let builder_doc = match compose_packet_document(
+        root,
+        inputs,
+        subject,
+        "coding_agent_bounded",
+        None,
+        LiveGate::Anchored,
+    ) {
+        Ok(doc) => doc,
+        Err(bounded) => compose_packet_document(
+            root,
+            inputs,
+            subject,
+            "coding_agent_strong",
+            None,
+            LiveGate::Anchored,
+        )
+        .map_err(|strong| {
+            let mut chained = strong;
+            chained.detail = format!(
+                "{}; coding_agent_bounded first refused {}: {}",
+                chained.detail, bounded.code, bounded.detail
+            );
+            chained
+        })?,
+    };
     let node = resolve_train_node(inputs, subject).map_err(|error| {
         Refusal::new(subject, PROFILE, "NODE_RESOLUTION_FAILED", error.to_string())
     })?;
@@ -1243,13 +1317,14 @@ pub fn compose_review_packet(
             "fixture_expectation_manifests": context
                 .checked_specs
                 .iter()
-                .map(|checked| json!({
-                    "ref": checked.bundle,
-                    "identity": format!(
-                        "sha256:{}",
-                        short(&checked.files.first().map(|file| file.sha256.clone()).unwrap_or_default(), 16)
-                    ),
-                }))
+                .flat_map(|checked| {
+                    checked.files.iter().map(move |file| {
+                        json!({
+                            "ref": format!("{}#{}", checked.bundle, file.path),
+                            "identity": format!("sha256:{}", short(&file.sha256, 16)),
+                        })
+                    })
+                })
                 .collect::<Vec<_>>(),
             "tests_mutations": context
                 .tests
@@ -1532,10 +1607,26 @@ pub fn compose_reconcile_packet(
             "candidate facts must be a JSON array of {identity, state, facts}".to_string(),
         ));
     };
+    if entries.is_empty() {
+        return Err(Refusal::new(
+            &node.node_id,
+            PROFILE,
+            "MALFORMED_CANDIDATE_FACTS",
+            "reconciliation requires at least one supplied candidate; an empty set is not an \
+             observation of vacancy"
+                .to_string(),
+        ));
+    }
     let mut blocking_edges = Vec::new();
+    let mut seen_identities: BTreeSet<String> = BTreeSet::new();
+    // The adjudication the reviewer must make is over the candidates' *facts*
+    // (dirty/unpushed work, stack, base, ownership, salvage), not their names.
+    // Carry those facts into the packet and into the frontier identity so two
+    // candidate sets that differ only in facts can never render the same bytes.
+    let mut candidate_binding = String::new();
     for entry in entries {
-        let identity = entry.get("identity").and_then(Value::as_str).unwrap_or_default();
-        if identity.trim().is_empty() {
+        let identity = entry.get("identity").and_then(Value::as_str).unwrap_or_default().trim();
+        if identity.is_empty() {
             return Err(Refusal::new(
                 &node.node_id,
                 PROFILE,
@@ -1543,18 +1634,51 @@ pub fn compose_reconcile_packet(
                 "every supplied candidate fact requires a non-empty exact identity".to_string(),
             ));
         }
+        if !seen_identities.insert(identity.to_string()) {
+            return Err(Refusal::new(
+                &node.node_id,
+                PROFILE,
+                "MALFORMED_CANDIDATE_FACTS",
+                format!(
+                    "candidate identity {identity} is supplied twice; each candidate must be \
+                     adjudicated exactly once"
+                ),
+            ));
+        }
         let state = entry.get("state").and_then(Value::as_str).unwrap_or("state_unspecified");
+        let facts = entry.get("facts").and_then(Value::as_str).unwrap_or_default().trim();
+        if facts.is_empty() {
+            return Err(Refusal::new(
+                &node.node_id,
+                PROFILE,
+                "MALFORMED_CANDIDATE_FACTS",
+                format!(
+                    "candidate {identity} supplies no facts; keep/rewrite/drop/transfer cannot \
+                     be adjudicated from an identity and a state alone"
+                ),
+            ));
+        }
+        candidate_binding.push_str(identity);
+        candidate_binding.push('\u{1f}');
+        candidate_binding.push_str(state);
+        candidate_binding.push('\u{1f}');
+        candidate_binding.push_str(facts);
+        candidate_binding.push('\u{1e}');
         blocking_edges.push(json!({
             "edge": identity,
-            "reason": format!("supplied candidate fact ({state}) requires explicit keep/rewrite/drop/transfer adjudication before any coding packet"),
+            "reason": format!(
+                "supplied candidate fact ({state}): {facts}; requires explicit \
+                 keep/rewrite/drop/transfer adjudication before any coding packet"
+            ),
         }));
     }
+    let candidates_digest = sha256_hex(candidate_binding.as_bytes());
 
     // The reconciliation packet is a shared-contract document: it carries no
     // coding authority (write boundary none) and blocks coding until exact
     // candidate ownership is resolved.
-    let mut doc =
-        compose_builder_packet(root, inputs, subject, PROFILE, None).map_err(|mut refusal| {
+    let mut doc = compose_packet_document(root, inputs, subject, PROFILE, None, LiveGate::Anchored)
+        .map_err(|mut refusal| {
             // The only acceptable refusal class here is a coding eligibility
             // rule that does not apply to a non-coding reconciliation packet.
             refusal.profile = PROFILE.to_string();
@@ -1566,9 +1690,10 @@ pub fn compose_reconcile_packet(
             json!({
                 "decision": "blocked",
                 "digest": format!(
-                    "reconcile:emacs-train:{}:{}:supplied",
+                    "reconcile:emacs-train:{}:{}:supplied:sha256:{}",
                     short(&inputs.engine.manifest_digest, 12),
-                    node.node_id
+                    node.node_id,
+                    short(&candidates_digest, 16)
                 ),
                 "blocking_edges": blocking_edges,
             }),
@@ -1620,10 +1745,11 @@ fn is_eligibility_refusal(code: &str) -> bool {
             | "CONTEXT_MAPPING_GAP"
             | "HARD_DEPENDENCY_NOT_CURRENT"
             | "NO_WRITE_SURFACE"
+            | "NO_LIVE_OBSERVATION"
     )
 }
 
-fn run_packets_check(root: &Path) -> Result<()> {
+fn run_packets_check(root: &Path, live: Option<&LiveObservation>) -> Result<()> {
     let inputs = load_adapter_inputs(root)?;
     let mut rendered = 0usize;
     let mut refused = 0usize;
@@ -1631,7 +1757,7 @@ fn run_packets_check(root: &Path) -> Result<()> {
     for node in &inputs.engine.manifest.nodes {
         let mut node_rendered = false;
         for profile in ["coding_agent_bounded", "coding_agent_strong"] {
-            match compose_builder_packet(root, &inputs, &node.node_id, profile, None) {
+            match compose_builder_packet(root, &inputs, &node.node_id, profile, live) {
                 Ok(doc) => {
                     // Determinism: two independent renders must be
                     // byte-identical, and the shared contract must accept the
