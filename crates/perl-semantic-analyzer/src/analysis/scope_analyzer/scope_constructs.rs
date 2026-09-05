@@ -96,6 +96,13 @@ pub(super) fn handle_foreach<'a>(
 
     ancestors.push(node);
 
+    // Perl evaluates the foreach list before the loop variable exists, but a
+    // `my` in the list is still a loop-scoped lexical: visible in the body,
+    // not after the loop (`for my $x (my $y = 1) { print $y; }` is legal;
+    // `print $y` after the loop is not). Analyze the list in `loop_scope`
+    // *before* declaring the iterator so list uses cannot see it.
+    analyzer.analyze_node(list, &loop_scope, ancestors, issues, context);
+
     // Declare the loop variable and immediately mark it initialized — the list
     // provides its value at runtime so there is no uninitialized window.
     //
@@ -122,10 +129,6 @@ pub(super) fn handle_foreach<'a>(
         analyzer.analyze_node(variable, &loop_scope, ancestors, issues, context);
     }
     analyzer.mark_initialized(variable, &loop_scope, context);
-    // Perl evaluates the foreach list in the enclosing scope, before the loop
-    // variable exists. Analyzing it in `loop_scope` after the declaration
-    // would make `for my $x ($x)` resolve `$x` instead of reporting it.
-    analyzer.analyze_node(list, scope, ancestors, issues, context);
     analyzer.analyze_node(body, &loop_scope, ancestors, issues, context);
     if let Some(cb) = continue_block {
         analyzer.analyze_node(cb, &loop_scope, ancestors, issues, context);

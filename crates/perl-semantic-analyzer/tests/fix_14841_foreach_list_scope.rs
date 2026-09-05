@@ -1,7 +1,7 @@
 #![deny(clippy::map_err_ignore)]
 // Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
-//! Tests for issue #14841 — a `foreach` list is evaluated in the enclosing
-//! scope, not in the loop scope that holds the loop variable.
+//! Tests for issue #14841 — a `foreach` list is analyzed before the loop
+//! variable is declared, so the list cannot see the iterator.
 //!
 //! Real Perl (5.38.2 `perl -c`):
 //!
@@ -15,10 +15,17 @@
 //!
 //! $ perl -c -e 'use strict; my $x = 1; for my $x ($x) { }'
 //! -e syntax OK
+//!
+//! $ perl -c -e 'use strict; for my $x (my $y = 1) { print $y; }'
+//! -e syntax OK
+//!
+//! $ perl -c -e 'use strict; for my $x (my $y = 1) { } print $y;'
+//! Global symbol "$y" requires explicit package name ...
 //! ```
 //!
-//! The analyzer previously analyzed the list inside `loop_scope` after declaring
-//! the loop variable, so the strict case produced no `UndeclaredVariable`.
+//! The analyzer previously analyzed the list inside `loop_scope` *after*
+//! declaring the loop variable, so the strict self-reference produced no
+//! `UndeclaredVariable`. A `my` in the list remains loop-scoped.
 
 use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssue};
@@ -36,8 +43,8 @@ fn has_undeclared(issues: &[ScopeIssue], var_name: &str) -> bool {
     issues.iter().any(|i| i.kind == IssueKind::UndeclaredVariable && i.variable_name == var_name)
 }
 
-/// `use strict; for my $x ($x) { }` — the list's `$x` is evaluated in the
-/// enclosing scope, where the loop variable does not exist.
+/// `use strict; for my $x ($x) { }` — the list's `$x` is analyzed before the
+/// loop variable is declared, so it does not resolve to the iterator.
 #[test]
 fn foreach_list_does_not_see_loop_variable_under_strict() {
     let code = "use strict; for my $x ($x) { }";
@@ -97,5 +104,29 @@ fn foreach_list_resolves_outer_binding_when_loop_var_shadows() {
     assert!(
         !has_undeclared(&issues, "$x"),
         "`my $x = 1; for my $x ($x)` must resolve the list to the outer $x; got: {issues:?}"
+    );
+}
+
+/// `for my $x (my $y = 1) { print $y; }` — a `my` in the list is loop-scoped
+/// and must be visible in the body. perl 5.38.2: `-e syntax OK`.
+#[test]
+fn foreach_list_my_is_visible_in_body() {
+    let code = "use strict; for my $x (my $y = 1) { print $y; }";
+    let issues = scope_issues(code);
+    assert!(
+        !has_undeclared(&issues, "$y"),
+        "`for my $x (my $y = 1) {{ print $y; }}` must not report UndeclaredVariable for $y; got: {issues:?}"
+    );
+}
+
+/// `for my $x (my $y = 1) { } print $y;` — the list `my` must not leak into
+/// the enclosing scope. perl 5.38.2 rejects `$y` after the loop.
+#[test]
+fn foreach_list_my_does_not_leak_after_loop() {
+    let code = "use strict; for my $x (my $y = 1) { } print $y;";
+    let issues = scope_issues(code);
+    assert!(
+        has_undeclared(&issues, "$y"),
+        "`for my $x (my $y = 1) {{ }} print $y;` must report UndeclaredVariable for $y; got: {issues:?}"
     );
 }
