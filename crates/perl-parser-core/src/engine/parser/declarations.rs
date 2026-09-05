@@ -690,8 +690,11 @@ impl<'a> Parser<'a> {
         // Expect =
         self.expect(TokenKind::Assign)?;
 
-        // Tell the lexer to enter format body mode
-        self.tokens.enter_format_mode();
+        // Tell the lexer to enter format body mode. A buffered stream that
+        // cannot honor the entry records an advisory; the format-body expect
+        // below then surfaces the misaligned cache as a typed error instead of
+        // silently accepting a wrongly classified token (#8128).
+        self.observe_contextual_operation(ContextualTokenOp::EnterFormatBody, start)?;
 
         // Get the format body
         let body_token = self.tokens.next()?;
@@ -1387,22 +1390,32 @@ impl<'a> Parser<'a> {
     fn parse_data_section(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
 
-        // Consume the data marker token
+        // Consume the data marker token, capturing its exact span from real
+        // token positions rather than deriving it from string lengths.
         let marker_token = self.consume_token()?;
         let marker = marker_token.text.to_string();
+        let marker_span = Some(SourceLocation { start, end: self.previous_position() });
 
-        // Check if there's a data body token
-        let body = if self.peek_kind() == Some(TokenKind::DataBody) {
+        // Check if there's a data body token, capturing its exact span the
+        // same way. No body means no span, not an empty range.
+        let (body, body_span) = if self.peek_kind() == Some(TokenKind::DataBody) {
+            let body_start = self.current_position();
             let body_token = self.consume_token()?;
-            Some(body_token.text.to_string())
+            let text = body_token.text.to_string();
+            let span = Some(SourceLocation { start: body_start, end: self.previous_position() });
+            (Some(text), span)
         } else {
-            None
+            (None, None)
         };
 
         let end = self.previous_position();
 
-        // Create a data section node
-        Ok(Node::new(NodeKind::DataSection { marker, body }, SourceLocation { start, end }))
+        // Create a data section node. The whole-node span stays exactly as
+        // before so existing consumers of the node's own location do not shift.
+        Ok(Node::new(
+            NodeKind::DataSection { marker, marker_span, body, body_span },
+            SourceLocation { start, end },
+        ))
     }
 
     /// Parse no statement (similar to use but disables pragmas/modules)

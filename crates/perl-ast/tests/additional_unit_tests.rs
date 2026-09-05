@@ -971,7 +971,9 @@ fn sexp_data_section_with_body() {
     let node = Node::new(
         NodeKind::DataSection {
             marker: "__DATA__".to_string(),
+            marker_span: None,
             body: Some("line1\nline2".to_string()),
+            body_span: None,
         },
         loc(0, 30),
     );
