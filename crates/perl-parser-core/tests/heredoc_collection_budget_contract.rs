@@ -551,3 +551,60 @@ fn refusal_anchors_at_the_declaration_it_refused() {
     assert!(second_declaration > 0, "the fixture must not place the refusal at offset 0");
     assert!(second_declaration < source.len(), "the fixture must not place the refusal at EOF");
 }
+
+/// A refused collection must perform no work and charge nothing.
+///
+/// This is the property that makes the budget a *bound* rather than a label.
+/// Every other control here pins what a refusal is *called* — a typed
+/// resource-limit terminal, not a syntax claim — and each of those is still
+/// satisfied if the parser scans the whole file and only then announces that it
+/// was over budget. Removing the before-work refusal entirely leaves the
+/// after-work overrun check to report the same terminal with the same
+/// classification at the same anchor, so the diagnostic-shaped controls cannot
+/// tell the two implementations apart.
+///
+/// Charged usage can. With the refusal in place, the drain that is refused adds
+/// nothing to the tracker, so the total stops at what the admitted drains spent.
+/// Without it, the refused drain runs to completion and the total reaches the
+/// whole source's charge. Asserting the exact resting total is therefore the
+/// direct falsifier for a budget that reports exhaustion but never prevents the
+/// work.
+#[test]
+fn a_refused_collection_performs_no_work_and_charges_nothing() {
+    let source = two_heredoc_statements();
+
+    // Measure both charges under an unlimited budget so the boundary below is
+    // derived from the production drain path, not from a hand-counted constant.
+    let first_only = parse_with_budget(FIRST_STATEMENT, unlimited_budget());
+    let admitted_charge = first_only.budget_usage.heredoc_scan_bytes;
+    let whole_source = parse_with_budget(&source, unlimited_budget());
+    let total_charge = whole_source.budget_usage.heredoc_scan_bytes;
+    assert!(
+        admitted_charge < total_charge,
+        "the second statement must contribute charge of its own for this control to discriminate"
+    );
+
+    // Exactly the first statement's charge: the first drain lands on the limit
+    // and completes, and the second drain's pre-check must refuse before doing
+    // any work.
+    let refused = parse_with_budget(&source, heredoc_scan_budget(admitted_charge));
+
+    assert!(
+        matches!(refused.stop_cause(), Some(ParseStopCause::HeredocBudgetExhausted { .. })),
+        "the refused second collection must report the typed terminal, got {:?}",
+        refused.stop_cause()
+    );
+    assert_eq!(
+        refused.budget_usage.heredoc_scan_bytes, admitted_charge,
+        "a refused collection must charge nothing: usage must rest at what the admitted \
+         drain spent ({admitted_charge}), not reach the whole source's charge ({total_charge})"
+    );
+
+    // The refusal is selective, not total: work admitted before the limit is
+    // kept, so this is a bound on further work rather than a discarded parse.
+    assert_eq!(
+        heredoc_contents(&refused),
+        vec!["body a line one\nbody a line two".to_string(), String::new()],
+        "the admitted body must stay attached and only the refused one stay unresolved"
+    );
+}
