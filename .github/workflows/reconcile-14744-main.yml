@@ -1,0 +1,109 @@
+name: Reconcile #14744 with exact main
+
+on:
+  push:
+    branches:
+      - ops/reconcile-14744-main-f7f8dff
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    if: github.actor == 'EffortlessSteven'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout trusted reconciliation control
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+
+      - name: Checkout exact PR branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: build/9848-dev-supervisor-f5-workflow
+          path: target
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install Rust 1.95.0
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+
+      - name: Merge exact main and resolve only generated inventory
+        working-directory: target
+        env:
+          EXPECTED_HEAD: e98c22a0216cac820043dc3ea8302abef83cce88
+          EXPECTED_MAIN: f7f8dffa72067f788c2edc6f6fc18eda2d797870
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git fetch --no-tags origin "$EXPECTED_MAIN"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_MAIN"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$EXPECTED_MAIN"
+
+          git config user.name 'EffortlessSteven'
+          git config user.email 'git@effortlesssteven.com'
+
+          set +e
+          git merge --no-commit --no-ff "$EXPECTED_MAIN"
+          merge_status=$?
+          set -e
+
+          if [ "$merge_status" -ne 0 ]; then
+            conflicts="$(git diff --name-only --diff-filter=U | sort)"
+            expected_conflict='docs/policy/NON_RUST_INVENTORY.md'
+            if [ "$conflicts" != "$expected_conflict" ]; then
+              printf 'Unexpected conflict set:\n%s\n' "$conflicts" >&2
+              exit 1
+            fi
+            git checkout --theirs -- docs/policy/NON_RUST_INVENTORY.md
+            git add docs/policy/NON_RUST_INVENTORY.md
+          fi
+
+          test -f .git/MERGE_HEAD
+          git diff --check
+
+      - name: Regenerate and verify non-Rust policy inventory
+        working-directory: target
+        run: |
+          set -euo pipefail
+          cargo xtask non-rust inventory --write
+          cargo xtask non-rust inventory --check
+          cargo xtask check-file-policy
+          git diff --check
+
+      - name: Install locked extension dependencies
+        working-directory: target/vscode-extension
+        run: npm ci --ignore-scripts
+
+      - name: Verify merged developer workflow
+        working-directory: target/vscode-extension
+        run: |
+          set -euo pipefail
+          npm run fmt:check
+          npm run lint
+          npm run typecheck:all
+          npm run bundle
+          node --test scripts/dev-supervisor.test.js
+          node --test scripts/dev-launch-contract.test.js
+          npm run check:source-map
+          npm run package
+
+      - name: Commit and push exact reconciliation
+        working-directory: target
+        env:
+          EXPECTED_HEAD: e98c22a0216cac820043dc3ea8302abef83cce88
+          EXPECTED_MAIN: f7f8dffa72067f788c2edc6f6fc18eda2d797870
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse .git/MERGE_HEAD)" = "$EXPECTED_MAIN"
+          git add docs/policy/NON_RUST_INVENTORY.md
+          git diff --cached --check
+          git commit -m 'merge(main): reconcile #14744 with current repository state'
+          git push origin HEAD:build/9848-dev-supervisor-f5-workflow
