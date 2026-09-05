@@ -762,6 +762,23 @@ pub enum DriverEventKind {
     StaleGenerationHeld,
     ClientMaterializationApplied,
     GenerationCurrentObserved,
+    /// #11398 server-generation recovery events. Like the #11390 freshness
+    /// kinds, these may repeat within one journey: the recovery journey walks
+    /// multiple server-process generations (explicit restart, unexpected-exit
+    /// stimulus plus manual-route recovery, shutdown-during-pending) in a
+    /// single host run. Each repeating kind carries a monotone 1-based index
+    /// detail with a per-kind cap, so an unordered, duplicated, or overlong
+    /// barrier stream is rejected here even before the scenario judgment
+    /// checks the exact phase sequence. No earlier journey emits them.
+    ServerRestartApplied,
+    RecoveryStimulusApplied,
+    RecoveryDispositionObserved,
+    GenerationReplayObserved,
+    OldGenerationRejected,
+    /// The #11398 shutdown-during-pending observation: emitted once, strictly
+    /// before the shutdown barriers, when the host exits while a recovery is
+    /// pending (old generation dead, replacement not started).
+    ShutdownDuringPendingObserved,
     /// #11396 save-format events. Same repeating law as the #11390 kinds: the
     /// save journey walks several ordinary saves in one host run, each with
     /// exactly one configured-owner settlement, plus stale-result holds. Each
@@ -817,6 +834,12 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
     let mut freshness_hold_index = 0_u32;
     let mut freshness_materialization_index = 0_u32;
     let mut freshness_generation_index = 0_u32;
+    // Monotone last-seen indexes for the #11398 repeating recovery kinds.
+    let mut recovery_restart_index = 0_u32;
+    let mut recovery_stimulus_index = 0_u32;
+    let mut recovery_disposition_index = 0_u32;
+    let mut recovery_replay_index = 0_u32;
+    let mut recovery_rejection_index = 0_u32;
     // Monotone last-seen indexes for the #11396 repeating save-format kinds.
     let mut save_owner_index = 0_u32;
     let mut save_settlement_index = 0_u32;
@@ -927,8 +950,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::ExternalMutationApplied => {
-                validate_repeating_freshness_event(
+                validate_repeating_event(
                     event,
+                    "freshness",
                     "mutation_index",
                     EXTERNAL_MUTATION_CAP,
                     &mut freshness_mutation_index,
@@ -955,8 +979,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::StaleGenerationHeld => {
-                validate_repeating_freshness_event(
+                validate_repeating_event(
                     event,
+                    "freshness",
                     "hold_index",
                     STALE_GENERATION_HOLD_CAP,
                     &mut freshness_hold_index,
@@ -982,8 +1007,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::ClientMaterializationApplied => {
-                validate_repeating_freshness_event(
+                validate_repeating_event(
                     event,
+                    "freshness",
                     "materialization_index",
                     CLIENT_MATERIALIZATION_CAP,
                     &mut freshness_materialization_index,
@@ -1005,8 +1031,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::GenerationCurrentObserved => {
-                validate_repeating_freshness_event(
+                validate_repeating_event(
                     event,
+                    "freshness",
                     "generation_index",
                     GENERATION_CURRENT_CAP,
                     &mut freshness_generation_index,
@@ -1034,9 +1061,197 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 );
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
-            DriverEventKind::SaveOwnerConfigured => {
-                validate_repeating_save_event(
+            DriverEventKind::ServerRestartApplied => {
+                validate_repeating_event(
                     event,
+                    "recovery",
+                    "restart_index",
+                    SERVER_RESTART_CAP,
+                    &mut recovery_restart_index,
+                )?;
+                ensure!(
+                    matches!(
+                        event.details.get("route").map(String::as_str),
+                        Some("public_stop_reopen") | Some("manual_reopen_after_exit")
+                    ),
+                    "server_restart_applied must name the public_stop_reopen or the \
+                     manual_reopen_after_exit route; a private launch path is not a restart route"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("old_init_generation")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some_and(|generation| generation >= 1)
+                        && event
+                            .details
+                            .get("new_init_generation")
+                            .and_then(|value| value.parse::<u32>().ok())
+                            .is_some_and(|generation| generation >= 2),
+                    "server_restart_applied must bind numeric old/new process generations"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("old_init_generation")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        < event
+                            .details
+                            .get("new_init_generation")
+                            .and_then(|value| value.parse::<u32>().ok()),
+                    "server_restart_applied new generation must exceed the old generation; a clean \
+                     first launch has no old generation and cannot pose as a restart"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::RecoveryStimulusApplied => {
+                validate_repeating_event(
+                    event,
+                    "recovery",
+                    "stimulus_index",
+                    RECOVERY_STIMULUS_CAP,
+                    &mut recovery_stimulus_index,
+                )?;
+                ensure!(
+                    event.details.get("stimulus") == Some(&"terminate_server_process".to_string()),
+                    "recovery_stimulus_applied must bind the terminate_server_process stimulus"
+                );
+                ensure!(
+                    event.details.contains_key("marker")
+                        && event.details.contains_key("serving_generation"),
+                    "recovery_stimulus_applied must name its marker and serving generation"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::RecoveryDispositionObserved => {
+                validate_repeating_event(
+                    event,
+                    "recovery",
+                    "disposition_index",
+                    RECOVERY_DISPOSITION_CAP,
+                    &mut recovery_disposition_index,
+                )?;
+                ensure!(
+                    event.details.get("stimulus") == Some(&"unexpected_exit".to_string()),
+                    "recovery_disposition_observed must classify the unexpected_exit stimulus"
+                );
+                ensure!(
+                    matches!(
+                        event.details.get("disposition").map(String::as_str),
+                        Some("manual_restart_required")
+                            | Some("automatic_bounded_recovery")
+                            | Some("client_not_exposed")
+                            | Some("not_proven")
+                    ),
+                    "recovery_disposition_observed must name a #11386 disposition token"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("retry_count")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some(),
+                    "recovery_disposition_observed must report a numeric retry count"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("window_ms")
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .is_some_and(|window| window >= MIN_STALE_WINDOW_MS),
+                    "recovery_disposition_observed must carry a bounded observation window of at \
+                     least {MIN_STALE_WINDOW_MS}ms"
+                );
+                ensure!(
+                    event.details.get("exit_observed") == Some(&"1".to_string()),
+                    "recovery_disposition_observed must prove the client observed the exit"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::GenerationReplayObserved => {
+                validate_repeating_event(
+                    event,
+                    "recovery",
+                    "replay_index",
+                    GENERATION_REPLAY_CAP,
+                    &mut recovery_replay_index,
+                )?;
+                ensure!(
+                    event
+                        .details
+                        .get("initialize_generation")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some_and(|generation| generation >= 2),
+                    "generation_replay_observed must bind the replaying initialize generation"
+                );
+                ensure!(
+                    event.details.contains_key("document") && event.details.contains_key("root"),
+                    "generation_replay_observed must name the replayed document and root"
+                );
+                ensure!(
+                    event.details.get("did_open_replayed") == Some(&"1".to_string()),
+                    "generation_replay_observed must prove the didOpen replay"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("client_init_events")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some_and(|count| count >= 2)
+                        && event
+                            .details
+                            .get("buffer_enabled_events")
+                            .and_then(|value| value.parse::<u32>().ok())
+                            .is_some_and(|count| count >= 2),
+                    "generation_replay_observed must bind the replacement generation's readiness \
+                     counts (client init and buffer-enabled events); a bare new PID is not \
+                     readiness"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::OldGenerationRejected => {
+                validate_repeating_event(
+                    event,
+                    "recovery",
+                    "rejection_index",
+                    OLD_GENERATION_REJECTION_CAP,
+                    &mut recovery_rejection_index,
+                )?;
+                ensure!(
+                    event.details.contains_key("held_generation")
+                        && event.details.contains_key("released_after_generation")
+                        && event.details.contains_key("held_result"),
+                    "old_generation_rejected must name the held generation, its releasing \
+                     replacement, and the held result"
+                );
+                ensure!(
+                    event.details.get("old_signature_settled") == Some(&"0".to_string()),
+                    "old_generation_rejected must prove the old signature never settled; an \
+                     admitted old-generation effect is a failure, never a pass"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::ShutdownDuringPendingObserved => {
+                ensure!(
+                    singleton.insert(DriverEventKind::ShutdownDuringPendingObserved),
+                    "duplicate shutdown_during_pending_observed event"
+                );
+                ensure!(
+                    event.details.get("old_generation_dead") == Some(&"1".to_string())
+                        && event.details.get("new_generation_started") == Some(&"0".to_string()),
+                    "shutdown_during_pending_observed must bind the pending recovery state: old \
+                     generation dead, replacement not started"
+                );
+                ensure!(
+                    event.details.contains_key("recovery_route"),
+                    "shutdown_during_pending_observed must name the pending recovery route"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::SaveOwnerConfigured => {
+                validate_repeating_event(
+                    event,
+                    "save",
                     "owner_index",
                     SAVE_OWNER_CONFIGURED_CAP,
                     &mut save_owner_index,
@@ -1071,8 +1286,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::SaveSettlementObserved => {
-                validate_repeating_save_event(
+                validate_repeating_event(
                     event,
+                    "save",
                     "save_index",
                     SAVE_SETTLEMENT_CAP,
                     &mut save_settlement_index,
@@ -1122,8 +1338,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::StaleResultHoldObserved => {
-                validate_repeating_save_event(
+                validate_repeating_event(
                     event,
+                    "save",
                     "hold_index",
                     STALE_RESULT_HOLD_CAP,
                     &mut save_hold_index,
@@ -1216,6 +1433,19 @@ fn lifecycle_rank(kind: DriverEventKind) -> u8 {
         | DriverEventKind::SaveOwnerConfigured
         | DriverEventKind::SaveSettlementObserved
         | DriverEventKind::StaleResultHoldObserved => 44,
+        // The #11398 recovery kinds share that same tier: the recovery
+        // journey legitimately interleaves its restarts, stimuli,
+        // dispositions, replays, and rejections with the shared
+        // generation-current observations, with per-kind monotone indexes
+        // carrying the order. No driver emits both families, so the shared
+        // rank keeps every authored journey's order valid; all strictly
+        // before shutdown.
+        DriverEventKind::ServerRestartApplied
+        | DriverEventKind::RecoveryStimulusApplied
+        | DriverEventKind::RecoveryDispositionObserved
+        | DriverEventKind::GenerationReplayObserved
+        | DriverEventKind::OldGenerationRejected
+        | DriverEventKind::ShutdownDuringPendingObserved => 44,
         DriverEventKind::ShutdownStarted => 50,
         DriverEventKind::ShutdownCompleted => 51,
         DriverEventKind::DriverFailed => 51,
@@ -1231,6 +1461,17 @@ pub const EXTERNAL_MUTATION_CAP: u32 = 6;
 pub const STALE_GENERATION_HOLD_CAP: u32 = 6;
 pub const CLIENT_MATERIALIZATION_CAP: u32 = 10;
 pub const GENERATION_CURRENT_CAP: u32 = 12;
+/// Per-kind occurrence caps for the #11398 repeating recovery events. The
+/// caps bound the authored journey (one public restart plus two
+/// manual-route recoveries; three terminate stimuli; one disposition window
+/// per exit stimulus; one replay per replacement generation; the held-result
+/// rejection); a stream exceeding a cap is an instrument fault, never
+/// evidence.
+pub const SERVER_RESTART_CAP: u32 = 4;
+pub const RECOVERY_STIMULUS_CAP: u32 = 3;
+pub const RECOVERY_DISPOSITION_CAP: u32 = 3;
+pub const GENERATION_REPLAY_CAP: u32 = 4;
+pub const OLD_GENERATION_REJECTION_CAP: u32 = 2;
 /// Per-kind occurrence caps for the #11396 repeating save-format events: the
 /// authored journey re-arms the owner a bounded number of times (single,
 /// removed for the disabled leg, re-armed after each restart) and walks seven
@@ -1242,30 +1483,10 @@ pub const STALE_RESULT_HOLD_CAP: u32 = 4;
 /// below this the "no spontaneous republish" claim carries no observation.
 pub const MIN_STALE_WINDOW_MS: u64 = 2000;
 
-/// Validate one repeating #11390 freshness event: its index detail is numeric,
-/// exactly one greater than the last seen index for its kind (monotone,
-/// gap-free), and within the kind's cap.
-fn validate_repeating_freshness_event(
+/// Validate one repeating event with a monotone, gap-free, capped index.
+fn validate_repeating_event(
     event: &DriverEvent,
-    index_key: &str,
-    cap: u32,
-    last_index: &mut u32,
-) -> Result<()> {
-    validate_repeating_index(event, index_key, cap, last_index)
-}
-
-/// Validate one repeating #11396 save-format event with the same law.
-fn validate_repeating_save_event(
-    event: &DriverEvent,
-    index_key: &str,
-    cap: u32,
-    last_index: &mut u32,
-) -> Result<()> {
-    validate_repeating_index(event, index_key, cap, last_index)
-}
-
-fn validate_repeating_index(
-    event: &DriverEvent,
+    family: &str,
     index_key: &str,
     cap: u32,
     last_index: &mut u32,
@@ -1274,14 +1495,13 @@ fn validate_repeating_index(
         .details
         .get(index_key)
         .and_then(|value| value.parse::<u32>().ok())
-        .with_context(|| format!("repeating event omitted a numeric {index_key}"))?;
+        .with_context(|| format!("{family} event omitted a numeric {index_key}"))?;
     ensure!(
         index == *last_index + 1,
-        "repeating event {index_key} {} is not exactly one greater than the last seen {}",
-        index,
+        "{family} event {index_key} {index} is not exactly one greater than the last seen {}",
         *last_index
     );
-    ensure!(index <= cap, "repeating event {index_key} {index} exceeds the journey cap {cap}");
+    ensure!(index <= cap, "{family} event {index_key} {index} exceeds the journey cap {cap}");
     *last_index = index;
     Ok(())
 }
@@ -1515,7 +1735,9 @@ fn vim_redactions(plan: &VimHostRunPlan, layout: &HermeticVimLayout) -> Vec<Path
 }
 
 /// Write one sanitized, bounded run artifact through the shared substrate.
-fn write_sanitized_artifact(
+/// Public for scenario modules that retain their own artifact surfaces
+/// (#11398 recovery stimulus ledger).
+pub fn write_sanitized_artifact(
     artifact_root: &Path,
     id: &str,
     kind: ArtifactKind,

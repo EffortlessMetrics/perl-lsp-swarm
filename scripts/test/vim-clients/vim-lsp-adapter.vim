@@ -66,6 +66,9 @@
 "   VimLspHostServerInitCount()     how many lsp_server_init events fired
 "                                   (process-generation observation)
 "   VimLspHostBufferEnabledCount()  how many lsp_buffer_enabled events fired
+"   VimLspHostServerExitCount()     how many lsp_server_exit events fired
+"                                   (generation-end observation; the crash
+"                                   stimulus and every stop land here, #11398)
 "   VimLspHostUpdateWorkspaceConfig(paths)
 "                                   the stable public settings channel:
 "                                   lsp#update_workspace_config over a
@@ -417,6 +420,13 @@ endfunction
 
 function! VimLspHostBufferEnabledCount() abort
   return g:perllsp_vim_host_buffer_enabled
+endfunction
+
+function! VimLspHostServerExitCount() abort
+  " How many times the client emitted its public server-exit event: the
+  " generation-end observation for crash-stimulus and restart routes (#11398).
+  " Read-only — this adapter never terminates a process.
+  return g:perllsp_vim_host_server_exit
 endfunction
 
 function! VimLspHostUpdateWorkspaceConfig(include_paths_csv) abort

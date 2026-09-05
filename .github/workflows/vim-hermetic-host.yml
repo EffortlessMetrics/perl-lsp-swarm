@@ -7,6 +7,7 @@ on:
       - "scripts/test/vim-host-driver.vim"
       - "scripts/test/vim-host-diagnostics-driver.vim"
       - "scripts/test/vim-host-freshness-driver.vim"
+      - "scripts/test/vim-host-recovery-driver.vim"
       - "scripts/test/vim-host-save-format-driver.vim"
       - "scripts/test/vim-clients/**"
       - ".ci/editor-clients/vim-vim-lsp-*.json"
@@ -276,6 +277,83 @@ jobs:
           echo "ambient_path_only control result: ${result}"
           [ "${result}" = "fail" ]
 
+      - name: Run the #11398 recovery-generations journey (canonical)
+        run: >-
+          cargo run --quiet --locked -p xtask --
+          editor-compat vim run
+          --subject pinned_vim_lsp_upstream
+          --journey recovery-generations
+          --fixture-variant canonical
+          --vim "$(command -v vim)"
+          --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"
+          --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"
+          --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-canonical"
+          --timeout-ms 600000
+
+      - name: Bind the eight recovery cells (fail closed on anything but the honest dispositions)
+        run: |
+          set -euo pipefail
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-canonical/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          cleanup="$(jq -r '.process_cleanup' "${receipt}")"
+          echo "recovery-generations result: ${result} (cleanup: ${cleanup})"
+          # The honest top-line is partial: the adverse-exit cell never
+          # passes (#11386 family law); a forced pass is an oracle violation.
+          [ "${result}" = "partial" ]
+          [ "${cleanup}" = "pass" ]
+          for cell in             vim.vim_lsp.recovery.explicit_restart             vim.vim_lsp.recovery.initialized_new_generation             vim.vim_lsp.recovery.document_replay             vim.vim_lsp.recovery.current_result             vim.vim_lsp.recovery.old_generation_rejected             vim.vim_lsp.recovery.retry_or_manual_disposition             vim.vim_lsp.recovery.shutdown_cleanup; do
+            observed="$(jq -r --arg id "${cell}" '.journey[] | select(.id == $id) | .result' "${receipt}")"
+            echo "cell ${cell}: ${observed}"
+            [ "${observed}" = "pass" ]
+          done
+          adverse="$(jq -r --arg id "vim.vim_lsp.recovery.unexpected_exit" '.journey[] | select(.id == $id) | .result' "${receipt}")"
+          echo "cell vim.vim_lsp.recovery.unexpected_exit: ${adverse} (manual_restart_required, never pass)"
+          [ "${adverse}" = "partial" ]
+          [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-canonical/hermetic/raw/vim-lsp-client.log" ]
+
+      - name: Recovery negative control — wrong/outer root must fail typed
+        run: |
+          set -euo pipefail
+          # Same law as the earlier controls: exit 0 means the typed
+          # root_mismatch failure was observed and validated.
+          cargo run --quiet --locked -p xtask --             editor-compat vim run             --subject pinned_vim_lsp_upstream             --journey recovery-generations             --fixture-variant wrong_root_decoy             --vim "$(command -v vim)"             --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"             --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-wrong-root"             --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-wrong-root/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "wrong_root_decoy control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Recovery negative control — claimed automatic recovery must fail typed
+        run: |
+          set -euo pipefail
+          # The pinned client has no automatic recovery: claiming it fails
+          # with the typed reason (a manual restart is never relabeled
+          # automatic recovery).
+          cargo run --quiet --locked -p xtask --             editor-compat vim run             --subject pinned_vim_lsp_upstream             --journey recovery-generations             --fixture-variant auto_recovery_claimed             --vim "$(command -v vim)"             --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"             --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-auto-claimed"             --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-auto-claimed/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "auto_recovery_claimed control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Recovery negative control — replay-skipped replacement must fail typed
+        run: |
+          set -euo pipefail
+          # A replacement without the governed document's replay never
+          # completes the recovery chain: the typed document_replay_absent
+          # failure is the honest outcome.
+          cargo run --quiet --locked -p xtask --             editor-compat vim run             --subject pinned_vim_lsp_upstream             --journey recovery-generations             --fixture-variant replay_skipped_claimed             --vim "$(command -v vim)"             --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"             --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"             --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-replay-skipped"             --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/recovery-replay-skipped/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "replay_skipped_claimed control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Prove no candidate process survives the recovery journeys
+        run: |
+          if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
+            echo "a perllsp process survived the recovery host runs" >&2
+            pgrep -af '[p]erllsp([[:space:]]|$)' >&2 || true
+            exit 1
+          fi
+
       - name: Prove no candidate process survives the freshness journeys
         run: |
           if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
@@ -419,6 +497,14 @@ jobs:
             target/vim-host-runs/ci/freshness-live-reload-claimed/hermetic/artifacts/
             target/vim-host-runs/ci/freshness-ambient-path/receipt.json
             target/vim-host-runs/ci/freshness-ambient-path/hermetic/artifacts/
+            target/vim-host-runs/ci/recovery-canonical/receipt.json
+            target/vim-host-runs/ci/recovery-canonical/hermetic/artifacts/
+            target/vim-host-runs/ci/recovery-wrong-root/receipt.json
+            target/vim-host-runs/ci/recovery-wrong-root/hermetic/artifacts/
+            target/vim-host-runs/ci/recovery-auto-claimed/receipt.json
+            target/vim-host-runs/ci/recovery-auto-claimed/hermetic/artifacts/
+            target/vim-host-runs/ci/recovery-replay-skipped/receipt.json
+            target/vim-host-runs/ci/recovery-replay-skipped/hermetic/artifacts/
             target/vim-host-runs/ci/save-canonical/receipt.json
             target/vim-host-runs/ci/save-canonical/hermetic/artifacts/
             target/vim-host-runs/ci/save-manual-comparator/receipt.json

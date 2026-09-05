@@ -2842,6 +2842,14 @@ enum VimEditorCompatCommand {
     /// reload route, project config through the restart route, client
     /// settings through the live push channel, stale generation rejection,
     /// and provider ownership — against the governed freshness fixture.
+    /// `recovery-generations` (#11398) runs the eight-cell server-generation
+    /// recovery journey — explicit restart through the public stop+reopen
+    /// route, the unexpected-exit disposition (honest manual_restart_required;
+    /// the adverse-exit cell never passes), new-generation
+    /// initialize/readiness, document replay, the current post-recovery
+    /// result, old-generation rejection, the retry/manual disposition, and
+    /// shutdown-during-recovery cleanup — against the governed recovery
+    /// fixture. The canonical variant must reach its honest partial top-line.
     /// `save-format` (#11396) runs the seven-cell format-on-save journey —
     /// the documented BufWritePre autocmd owner over the canonical sync
     /// format action, one-save-one-invocation cardinality, exact applied and
@@ -2855,13 +2863,14 @@ enum VimEditorCompatCommand {
         subject: String,
 
         /// Hermetic journey to execute: host-lifecycle, bootstrap-diagnostics,
-        /// freshness-generations, or save-format.
+        /// freshness-generations, recovery-generations, or save-format.
         #[arg(long, default_value = "host-lifecycle")]
         journey: String,
 
         /// Fixture variant for the bootstrap-diagnostics,
-        /// freshness-generations, and save-format journeys (canonical must
-        /// pass; the negative controls must fail with their typed reason).
+        /// freshness-generations, recovery-generations, and save-format
+        /// journeys (canonical must pass; the negative controls must fail
+        /// with their typed reason).
         #[arg(long, default_value = "canonical")]
         fixture_variant: String,
 
@@ -5071,6 +5080,74 @@ fn run_cli(cli: Cli) -> Result<()> {
                         }
                         return Ok(());
                     }
+                    if journey == "recovery-generations" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_recovery_run::RecoveryFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_recovery_run::host_recovery_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim recovery-generations run complete (variant {}): \
+                             result={:?} cleanup={:?} driver_complete={} \
+                             driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with \
+                                         the typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                // The canonical recovery journey's honest
+                                // top-line is partial by #11386 law: the
+                                // adverse-exit cell never passes, so anything
+                                // else (a forced pass, a fail, or missing
+                                // evidence) is an oracle fault.
+                                if *result
+                                    != xtask::editor_client_compat::ObservationResult::Partial
+                                {
+                                    return Err(eyre!(
+                                        "vim recovery-generations run did not reach its \
+                                         honest partial disposition: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     if journey == "bootstrap-diagnostics" {
                         // Same subject law as the host-lifecycle path: an
                         // unknown subject id is a typed error before any run,
@@ -5133,7 +5210,8 @@ fn run_cli(cli: Cli) -> Result<()> {
                     if journey != "host-lifecycle" {
                         return Err(eyre!(
                             "unknown journey {journey}: known journeys are host-lifecycle, \
-                             bootstrap-diagnostics, freshness-generations, save-format"
+                             bootstrap-diagnostics, freshness-generations, \
+                             recovery-generations, or save-format"
                         ));
                     }
                     let outcome = xtask::vim_host_run::host_run_from_cli(
