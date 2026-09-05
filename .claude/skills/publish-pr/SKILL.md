@@ -14,7 +14,33 @@ Otherwise return to `build-candidate`. Draft only for a named remote-only proof,
 
 For an existing draft, inspect the named condition. Once complete, recheck the entire ready threshold and explicitly mark the PR ready through Claude's native GitHub surface or `gh pr ready <n>`. Do not leave a completed draft in a repeating `DRAFT` state. If the threshold is no longer met, return to candidate repair rather than marking ready.
 
-Use the PR body as a review index covering claim, issue, contract, production path, proof, hardening, simplification, deviations, limits, risk, rollback, and review locations.
+## PR review index
+
+A mechanical candidate — generated regeneration, lint-site collapse, allowlist row
+removal, or comment-only edits — may publish a reduced index of **Claim**, **Proof**,
+and **Non-goals**. The full index remains the default for anything crossing a
+production seam.
+
+The order is load-bearing: establish claim and authority before proof; trace the changed
+production path; record focused and affected proof with `pass` / `fail` / `not-run` /
+`NOT_PROVEN`; challenge a realistic wrong implementation with negative, stale,
+failure, recovery, or opposite-direction controls; simplify before publication; bound
+the claim and non-goals; then name risk, rollback, and review locations.
+
+```markdown
+## Claim
+## Controlling issue
+## Governing contract
+## Changed production path
+## Proof
+## Test hardening
+## Simplification
+## Deviations
+## Claim Boundary
+## Non-goals
+## Risk and rollback
+## Review index
+```
 
 Proportionality mirrors `review-pr`'s carve-out: a candidate whose cumulative diff is mechanical — generated regeneration, lint-site collapse, allowlist row removal, comment-only edits — may publish a reduced index of three sections: **Claim**, **Proof**, and **What this does not establish**. The full index remains the default for anything crossing a production seam.
 
