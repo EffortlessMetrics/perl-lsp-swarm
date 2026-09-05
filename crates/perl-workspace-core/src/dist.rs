@@ -36,6 +36,13 @@ pub struct Prereq {
 }
 
 /// Distribution-metadata facts extracted from one metadata file.
+///
+/// This type carries no condition or feature predicate, so `cpanfile`-sourced
+/// facts contain only declarations the file states unconditionally. Feature,
+/// platform, and other conditional blocks, statement modifiers, and run-time
+/// module/phase choices are omitted rather than promoted; an absent
+/// prerequisite therefore means "not stated unconditionally", not "not
+/// required" (#13627).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DistMetadataFacts {
     /// The metadata file these facts came from.
