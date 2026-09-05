@@ -156,7 +156,7 @@ jobs:
         cache-on-failure: true
 
     - name: Install just
-      uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+      uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
       with:
         tool: just
 
@@ -716,7 +716,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -805,7 +805,7 @@ jobs:
   tautology-check:
     name: Tautology Detection
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     if: |
       (github.event_name == 'workflow_dispatch' && inputs.run_tautology) ||
       (github.event_name == 'pull_request' &&
@@ -815,26 +815,21 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: stable
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          key: tautology-${{ hashFiles('Cargo.lock') }}
+          cache-on-failure: true
+
       - name: Check for tautological assertions
         run: |
-          echo "Checking for tautological test patterns..."
-
-          if grep -r "assert!(.*\.is_some() || .*\.is_none())" tests/; then
-            echo "❌ Found tautological assertions (is_some || is_none)"
-            exit 1
-          fi
-
-          if grep -r "assert!(true)" tests/; then
-            echo "❌ Found assert!(true)"
-            exit 1
-          fi
-
-          if grep -r "assert!(.*\.len() >= 0)" tests/; then
-            echo "❌ Found tautological length check (>= 0)"
-            exit 1
-          fi
-
-          echo "✅ No tautological patterns found"
+          echo "Checking for tautological assertions..."
+          cargo run -p xtask --locked -- check-tautology --check
 
   semver-check:
     name: API Compatibility
@@ -970,7 +965,7 @@ jobs:
         run: cargo install cargo-public-api --locked --version 0.50.1
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -1007,7 +1002,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 

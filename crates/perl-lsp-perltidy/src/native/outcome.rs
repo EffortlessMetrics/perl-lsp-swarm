@@ -435,11 +435,76 @@ fn valid_range(source: &str, range: TextRange) -> bool {
     if (range.start.line, range.start.character) > (range.end.line, range.end.character) {
         return false;
     }
-    let lines: Vec<&str> = source.split('\n').collect();
+    let lines = split_lines_for_range_validation(source);
     let position_is_valid = |position: super::implementation::TextPosition| {
         lines.get(position.line as usize).is_some_and(|line| utf16_len(line) >= position.character)
     };
     position_is_valid(range.start) && position_is_valid(range.end)
+}
+
+/// Split `source` into lines using CR-aware geometry (`\r\n`, `\r`, or `\n`),
+/// stripping terminators from each line. Always produces a trailing empty
+/// element when the source ends with a line terminator, matching the LSP
+/// protocol's 0-based line addressing: a terminal newline introduces a valid
+/// zero-length final line.
+///
+/// This is the geometry that `valid_range` must use so that bare-CR documents
+/// have the line structure promised by LSP positions. Without it, bare-CR
+/// sources appear as a single `\n`-less line, causing any range past physical
+/// line 0 to be rejected as `UnsafeRange` before the CR-aware
+/// literal-preservation refusal in `format_range` can fire. The formatter's
+/// remaining line-to-byte mapping is a separate follow-up concern.
+fn split_lines_for_range_validation(source: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let bytes = source.as_bytes();
+    let mut line_start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' => {
+                result.push(&source[line_start..i]);
+                // Treat \r\n as a single two-byte terminator.
+                i += if i + 1 < bytes.len() && bytes[i + 1] == b'\n' { 2 } else { 1 };
+                line_start = i;
+            }
+            b'\n' => {
+                result.push(&source[line_start..i]);
+                i += 1;
+                line_start = i;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    // Always push the final segment; it is empty when source ends with a terminator,
+    // giving callers a valid zero-length final line (matching LSP line numbering).
+    result.push(&source[line_start..]);
+    result
+}
+
+#[cfg(test)]
+mod line_geometry_tests {
+    use super::split_lines_for_range_validation;
+
+    #[test]
+    fn split_lines_strips_terminators_and_keeps_trailing_empty() -> Result<(), String> {
+        let cases = [
+            ("", vec![""]),
+            ("a\nb", vec!["a", "b"]),
+            ("a\rb", vec!["a", "b"]),
+            ("a\r\nb", vec!["a", "b"]),
+            ("a\nb\n", vec!["a", "b", ""]),
+            ("a\r\nb\r\n", vec!["a", "b", ""]),
+        ];
+        for (source, expected) in cases {
+            let actual = split_lines_for_range_validation(source);
+            if actual != expected {
+                return Err(format!("unexpected line geometry for {source:?}: {actual:?}"));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn utf16_len(source: &str) -> u32 {

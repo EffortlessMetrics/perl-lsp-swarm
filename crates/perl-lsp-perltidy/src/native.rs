@@ -26,7 +26,7 @@ pub use implementation::counters::{
     SCALING_RATIO_BOUND_V1, exceeds_replacement_envelope_v1,
 };
 pub use implementation::*;
-pub use line_ending::inferred_line_ending;
+pub use line_ending::{inferred_line_ending, inferred_line_ending_at};
 pub use outcome::*;
 pub use terminal_sequence::{
     FinalNewlinePolicy, PolicyOutcome, TerminalChange, TerminalNewlineEvidence, TerminalRun,
