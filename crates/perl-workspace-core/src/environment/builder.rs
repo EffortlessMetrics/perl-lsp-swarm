@@ -921,6 +921,22 @@ impl EnvironmentSnapshotSlot {
     ///
     /// An equal generation still replaces, so recompiling the same generation
     /// is a refresh rather than a no-op.
+    ///
+    /// That last rule is also this type's ordering limit, and it is deliberate
+    /// rather than overlooked. `configuration_generation` orders snapshots
+    /// *across* generations and carries no information to order two snapshots
+    /// *within* one — and declarations include probe and ambient facts that can
+    /// change with no configuration increment, so two same-generation compiles
+    /// can legitimately differ. Equal-generation installs are therefore
+    /// last-write-wins, and a producer that issues concurrent refreshes at one
+    /// generation must supply its own ordering; the slot cannot recover it.
+    ///
+    /// Nothing can exercise that today: `install` takes `&mut self` and the slot
+    /// is neither `Clone` nor shared, so installs are serialized by ownership.
+    /// Whoever gives the slot a shared owner (the S7 refresh runtime) owns the
+    /// same-generation ordering contract — a compare-and-swap on the installed
+    /// snapshot's identity, or a producer-side sequence — and should choose it
+    /// against a real consumer rather than have S1 guess it.
     pub fn install(&mut self, snapshot: Arc<ProjectEnvironmentSnapshot>) -> SnapshotInstallOutcome {
         let declined = snapshot.configuration_generation;
         if self.snapshot.is_some() && declined < self.generation {
