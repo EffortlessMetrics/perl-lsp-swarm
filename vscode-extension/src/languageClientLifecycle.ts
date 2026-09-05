@@ -277,9 +277,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       // rather than retry guidance for a lifecycle that can never admit a
       // replacement. The startup error stays attached as diagnostic `cause`.
       const surfaced =
-        this.replacementBlockedError !== undefined
-          ? this.replacementBlockedFailure(error)
-          : error;
+        this.replacementBlockedError !== undefined ? this.replacementBlockedFailure(error) : error;
       this.error = surfaced;
       this.transition('failed', startGeneration);
       this.notifyCallback('failed', this.hooks.onFailed, this.snapshot);
