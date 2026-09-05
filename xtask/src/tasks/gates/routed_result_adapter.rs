@@ -39,6 +39,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use color_eyre::eyre::{Context as _, Result, bail, eyre};
+use duct::cmd;
 use sha2::{Digest as _, Sha256};
 
 use xtask::ci_route_plan::{Applicability, CiRoutePlanV1, PlannedOutcome};
@@ -63,6 +64,52 @@ pub(super) fn load_compiled_plan(path: &Path) -> Result<CiRoutePlanV1> {
         .with_context(|| format!("parsing route plan {}", path.display()))?;
     plan.validate().map_err(|error| eyre!("route plan {} refused: {error}", path.display()))?;
     Ok(plan)
+}
+
+/// Bind the plan's *planning* identity to this invocation, not just its
+/// gate population. Two plans can select the same gates while having been
+/// compiled for a different base or a different requested profile; without
+/// this, such a plan passes preflight whenever the resulting commands
+/// coincide, and every published result then carries selection authority
+/// that did not govern the execution.
+///
+/// Bases are compared as resolved commit identities where possible, so an
+/// equivalent symbolic ref (`origin/main` vs its SHA) is not a mismatch;
+/// when neither side resolves, the literal spellings must agree.
+pub(super) fn ensure_plan_planning_identity_matches(
+    plan: &CiRoutePlanV1,
+    invocation_base: &str,
+    invocation_profile: &str,
+    root: &Path,
+) -> Result<()> {
+    if plan.requested_profile != invocation_profile {
+        bail!(
+            "route plan was compiled for profile {:?} but this invocation runs {:?}; \
+             refusing to publish results under a foreign selection authority",
+            plan.requested_profile,
+            invocation_profile
+        );
+    }
+    let planned_base = plan.selection.base.as_str();
+    if planned_base == invocation_base {
+        return Ok(());
+    }
+    let resolve = |rev: &str| -> Option<String> {
+        cmd!("git", "rev-parse", "--verify", format!("{rev}^{{commit}}"))
+            .dir(root)
+            .stderr_null()
+            .read()
+            .ok()
+            .map(|sha| sha.trim().to_string())
+    };
+    match (resolve(planned_base), resolve(invocation_base)) {
+        (Some(planned), Some(actual)) if planned == actual => Ok(()),
+        _ => bail!(
+            "route plan selection base {planned_base:?} does not match this \
+             invocation's base {invocation_base:?}; refusing to publish results \
+             under a foreign selection authority"
+        ),
+    }
 }
 
 /// Mirrors the runner's own quarantine skip in `run_single_gate`: a
@@ -749,6 +796,38 @@ mod fixtures {
             .expect("an ordinary duration observes cleanly");
         assert!(ok.timing.started_at_unix_ms.is_some());
         assert!(ok.timing.ended_at_unix_ms.is_some());
+    }
+
+    #[test]
+    fn a_plan_from_a_foreign_base_or_profile_is_refused() {
+        // The gate population alone does not identify a plan: two plans can
+        // select the same gates while having been compiled for a different
+        // base or profile. Without this the foreign selection authority is
+        // carried into every published result.
+        let plan = compiled_fixture();
+        let root = Path::new(".");
+
+        let accepted = ensure_plan_planning_identity_matches(
+            &plan,
+            &plan.selection.base,
+            &plan.requested_profile,
+            root,
+        );
+        assert!(accepted.is_ok(), "the plan's own identity must accept, got {accepted:?}");
+
+        let foreign_profile =
+            ensure_plan_planning_identity_matches(&plan, &plan.selection.base, "nightly", root);
+        assert!(foreign_profile.is_err(), "a plan compiled for another profile must refuse");
+        assert!(foreign_profile.err().unwrap().to_string().contains("profile"));
+
+        let foreign_base = ensure_plan_planning_identity_matches(
+            &plan,
+            "cccccccccccccccccccccccccccccccccccccccc",
+            &plan.requested_profile,
+            root,
+        );
+        assert!(foreign_base.is_err(), "a plan compiled against another base must refuse");
+        assert!(foreign_base.err().unwrap().to_string().contains("selection base"));
     }
 
     #[test]

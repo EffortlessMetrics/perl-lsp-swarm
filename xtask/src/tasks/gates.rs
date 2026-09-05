@@ -1574,6 +1574,12 @@ fn run_gate_plan(
             routed_result_adapter::ensure_execution_tree_is_clean(&tracked_status)?;
             let selected_gates: Vec<&GateDefinition> =
                 plan.selected.iter().map(|planned| &planned.gate).collect();
+            routed_result_adapter::ensure_plan_planning_identity_matches(
+                &compiled,
+                &plan.base,
+                &config.tier.to_string(),
+                &root,
+            )?;
             routed_result_adapter::ensure_plan_covers_selection(
                 &compiled,
                 &selected_gates,
