@@ -255,14 +255,44 @@ fn a_target_outside_the_selected_root_cannot_pass() -> Result<(), Box<dyn Error>
 #[test]
 fn root_match_cannot_disagree_with_the_roles_it_summarizes() -> Result<(), Box<dyn Error>> {
     let mut envelope = valid_envelope()?;
-    // The boundary row deliberately asserts no root; claiming a match there is
-    // exactly the overclaim it exists to avoid.
-    envelope["roots"]["boundary.no_marker_single_file"]["root_match"] = json!(true);
+    envelope["roots"]["marker.build_pl"]["actual_role"] = json!("fixture:roots/somewhere-else");
 
     assert_eq!(
         rejection(validate_envelope(&envelope))?,
-        "envelope.roots.boundary.no_marker_single_file.root_match: `true` contradicts expected \
-         `observation_only` against actual `none`"
+        "envelope.roots.marker.build_pl.root_match: `true` contradicts expected \
+         `fixture:roots/marker-build` against actual `fixture:roots/somewhere-else`"
+    );
+    Ok(())
+}
+
+/// The observation cell exists to withhold a root claim, so every way of
+/// turning it into one has to fail.
+#[test]
+fn the_observation_cell_cannot_become_a_single_file_root_claim() -> Result<(), Box<dyn Error>> {
+    let cell = "boundary.no_marker_single_file";
+
+    let mut claims_match = valid_envelope()?;
+    claims_match["roots"][cell]["root_match"] = json!(true);
+    assert_eq!(
+        rejection(validate_envelope(&claims_match))?,
+        format!(
+            "envelope.roots.{cell}.root_match: \
+             the observation cell asserts no root and cannot claim a match"
+        )
+    );
+
+    // Making both roles equal would satisfy the generic invariant and smuggle
+    // the claim back in through `root_match=true`.
+    let mut equal_roles = valid_envelope()?;
+    equal_roles["roots"][cell]["actual_role"] = json!("observation_only");
+    equal_roles["roots"][cell]["root_match"] = json!(true);
+    assert!(validate_envelope(&equal_roles).is_err());
+
+    let mut borrowed_marker = valid_envelope()?;
+    borrowed_marker["roots"][cell]["marker"] = json!("cpanfile");
+    assert_eq!(
+        rejection(validate_envelope(&borrowed_marker))?,
+        format!("envelope.roots.{cell}.marker: the observation cell must record `none`")
     );
     Ok(())
 }
@@ -342,6 +372,7 @@ fn a_required_family_that_failed_to_establish_itself_is_rejected() -> Result<(),
     family["language_id"] = json!("");
     family["config_eligible"] = json!(false);
     family["native_filetype"] = json!("");
+    family["opened_filetype"] = json!("");
 
     assert_eq!(
         rejection(validate_envelope(&envelope))?,
@@ -384,8 +415,8 @@ fn a_template_family_cannot_be_promoted_to_native_perl_support() -> Result<(), B
 
     assert_eq!(
         rejection(validate_envelope(&envelope))?,
-        "envelope.file_families.template.tt: disposition `native_perl_and_attached` requires a \
-         natively activating filetype, found ``"
+        "envelope.file_families.template.tt: disposition `native_perl_and_attached` requires \
+         native filetype `perl`, found ``"
     );
     Ok(())
 }
@@ -399,7 +430,7 @@ fn broadening_the_canonical_filetypes_breaks_the_adjacent_rows() -> Result<(), B
 
     assert_eq!(
         rejection(validate_envelope(&envelope))?,
-        "envelope.file_families.template.ep.config_eligible: `false` contradicts native filetype \
+        "envelope.file_families.template.ep.config_eligible: `false` contradicts opened filetype \
          `mason` against the recorded activating filetypes"
     );
     Ok(())

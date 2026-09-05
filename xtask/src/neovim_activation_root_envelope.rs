@@ -126,6 +126,20 @@ const SEMANTIC_OUTCOMES: &[&str] =
 /// Marker recorded by the boundary row that deliberately has no marker at all.
 const BOUNDARY_MARKER: &str = "none";
 
+/// The role the boundary row records instead of a root it never asserted.
+const OBSERVATION_ONLY_ROLE: &str = "observation_only";
+
+/// The filetype this envelope's Perl dispositions are about. Membership of the
+/// configured activating list is a separate, weaker fact.
+const PERL_FILETYPE: &str = "perl";
+
+/// This schema describes one editor. A receipt from another host is not weaker
+/// evidence, it is evidence about something else.
+const HOST_FAMILY: &str = "neovim";
+
+/// Server identities this envelope version can describe.
+const SERVER_ROLES: &[&str] = &["candidate_build"];
+
 /// The one required root cell that records an observation instead of asserting
 /// a root. Every other required cell must actually reach `proven`.
 const OBSERVATION_ONLY_ROOT_CELL: &str = "boundary.no_marker_single_file";
@@ -283,7 +297,8 @@ fn validate_file_families(root: &Map<String, Value>, config: &RecordedConfig) ->
         require_nonempty_string(family, "fixture", &format!("{path}.fixture"))?;
         let native =
             require_str_field(family, "native_filetype", &format!("{path}.native_filetype"))?;
-        require_str_field(family, "opened_filetype", &format!("{path}.opened_filetype"))?;
+        let opened =
+            require_str_field(family, "opened_filetype", &format!("{path}.opened_filetype"))?;
         let eligible = require_bool(family, "config_eligible", &format!("{path}.config_eligible"))?;
         let attached = require_bool(family, "attached", &format!("{path}.attached"))?;
         let override_applied =
@@ -315,11 +330,24 @@ fn validate_file_families(root: &Map<String, Value>, config: &RecordedConfig) ->
             )));
         }
 
-        let natively_activating = config.filetypes.contains(native);
-        if eligible != natively_activating {
+        // Eligibility follows the filetype the buffer actually carried when it
+        // was opened, because that is what the client matches against. Native
+        // detection is a separate fact and is what the dispositions below speak
+        // about.
+        let opened_activates = config.filetypes.contains(opened);
+        if eligible != opened_activates {
             return Err(EnvelopeValidationError::new(format!(
-                "{path}.config_eligible: `{eligible}` contradicts native filetype `{native}` \
+                "{path}.config_eligible: `{eligible}` contradicts opened filetype `{opened}` \
                  against the recorded activating filetypes"
+            )));
+        }
+        // Without a recorded override there is nothing that could have changed
+        // the buffer's filetype after detection, so a divergence here would mean
+        // an unreported override.
+        if !override_applied && opened != native {
+            return Err(EnvelopeValidationError::new(format!(
+                "{path}: opened filetype `{opened}` differs from native `{native}` with no \
+                 recorded override"
             )));
         }
 
@@ -335,10 +363,14 @@ fn validate_file_families(root: &Map<String, Value>, config: &RecordedConfig) ->
             }
             require_nonempty_string(family, "reason", &format!("{path}.reason"))?;
         } else if ATTACHING_DISPOSITIONS.contains(&disposition) {
-            if !natively_activating {
+            // The disposition names Perl, so it must mean Perl. Membership of
+            // the activating list is a separate fact and cannot stand in for
+            // it: widening that list must never turn Mason or POD evidence into
+            // native Perl support.
+            if native != PERL_FILETYPE {
                 return Err(EnvelopeValidationError::new(format!(
-                    "{path}: disposition `{disposition}` requires a natively activating filetype, \
-                     found `{native}`"
+                    "{path}: disposition `{disposition}` requires native filetype \
+                     `{PERL_FILETYPE}`, found `{native}`"
                 )));
             }
             if !attached {
@@ -352,13 +384,19 @@ fn validate_file_families(root: &Map<String, Value>, config: &RecordedConfig) ->
                 )));
             }
         } else if disposition == "native_perl_activation_only" {
+            if native != PERL_FILETYPE {
+                return Err(EnvelopeValidationError::new(format!(
+                    "{path}: disposition `{disposition}` requires native filetype \
+                     `{PERL_FILETYPE}`, found `{native}`"
+                )));
+            }
             if !attached {
                 return Err(EnvelopeValidationError::new(format!(
                     "{path}: disposition `{disposition}` requires attached=true"
                 )));
             }
         } else {
-            if natively_activating {
+            if native == PERL_FILETYPE {
                 return Err(EnvelopeValidationError::new(format!(
                     "{path}: disposition `{disposition}` contradicts native filetype `{native}`"
                 )));
@@ -408,7 +446,36 @@ fn validate_roots(root: &Map<String, Value>, config: &RecordedConfig) -> Validat
         let expected_role = require_role(cell, "expected_role", &format!("{path}.expected_role"))?;
         let actual_role = require_role(cell, "actual_role", &format!("{path}.actual_role"))?;
         let root_match = require_bool(cell, "root_match", &format!("{path}.root_match"))?;
-        if root_match != (expected_role == actual_role) {
+
+        // The observation cell exists precisely to assert no root. Left to the
+        // generic role-equality invariant, an envelope could set both roles to
+        // the same value and turn it into the single-file root claim this row
+        // is here to withhold.
+        if id == OBSERVATION_ONLY_ROOT_CELL {
+            if marker != BOUNDARY_MARKER {
+                return Err(EnvelopeValidationError::new(format!(
+                    "{path}.marker: the observation cell must record `{BOUNDARY_MARKER}`"
+                )));
+            }
+            if expected_role != OBSERVATION_ONLY_ROLE {
+                return Err(EnvelopeValidationError::new(format!(
+                    "{path}.expected_role: the observation cell must record \
+                     `{OBSERVATION_ONLY_ROLE}`"
+                )));
+            }
+            if root_match {
+                return Err(EnvelopeValidationError::new(format!(
+                    "{path}.root_match: the observation cell asserts no root and cannot claim a \
+                     match"
+                )));
+            }
+            if actual_role == OBSERVATION_ONLY_ROLE {
+                return Err(EnvelopeValidationError::new(format!(
+                    "{path}.actual_role: `{OBSERVATION_ONLY_ROLE}` is the expectation placeholder, \
+                     not an observed root"
+                )));
+            }
+        } else if root_match != (expected_role == actual_role) {
             return Err(EnvelopeValidationError::new(format!(
                 "{path}.root_match: `{root_match}` contradicts expected `{expected_role}` \
                  against actual `{actual_role}`"
@@ -551,8 +618,17 @@ fn validate_identity(root: &Map<String, Value>, key: &str, fields: &[&str]) -> V
     for field in fields {
         require_nonempty_string(object, field, &format!("{path}.{field}"))?;
     }
+    if key == "host" {
+        require_exact_string(object, "family", HOST_FAMILY, &format!("{path}.family"))?;
+    }
     if key == "server" {
         require_sha256(object, "sha256", &format!("{path}.sha256"))?;
+        let role = require_nonempty_string(object, "role", &format!("{path}.role"))?;
+        if !SERVER_ROLES.contains(&role) {
+            return Err(EnvelopeValidationError::new(format!(
+                "{path}.role: unsupported value `{role}`"
+            )));
+        }
     }
     Ok(())
 }
