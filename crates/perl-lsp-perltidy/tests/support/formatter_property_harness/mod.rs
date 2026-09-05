@@ -1454,16 +1454,16 @@ fn build_utf16_line_index(source: &str) -> Result<Vec<Utf16LineIndex>, Violation
     while let Some((byte, ch)) = chars.next() {
         match ch {
             '\r' => {
-                if chars.peek().is_some_and(|(_, next)| *next == '\n') {
+                if chars.peek().is_some_and(|&(_, next)| next == '\n') {
                     let _ = chars.next();
                 }
-                let next_line_start = chars.peek().map_or(source.len(), |(offset, _)| *offset);
+                let next_line_start = chars.peek().map_or(source.len(), |&(offset, _)| offset);
                 lines.push(Utf16LineIndex { start_byte: line_start, boundaries });
                 line_start = next_line_start;
                 boundaries = vec![(0, line_start)];
             }
             '\n' => {
-                let next_line_start = chars.peek().map_or(source.len(), |(offset, _)| *offset);
+                let next_line_start = chars.peek().map_or(source.len(), |&(offset, _)| offset);
                 lines.push(Utf16LineIndex { start_byte: line_start, boundaries });
                 line_start = next_line_start;
                 boundaries = vec![(0, line_start)];
@@ -1511,7 +1511,7 @@ fn resolve_utf16_endpoint(
         });
     };
     if let Some((_, byte_offset)) =
-        line_geometry.boundaries.iter().find(|(column, _)| *column == character)
+        line_geometry.boundaries.iter().find(|&&(column, _)| column == character)
     {
         return line_geometry
             .start_byte
