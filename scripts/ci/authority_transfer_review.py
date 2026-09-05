@@ -679,6 +679,17 @@ def evaluate_governed_row(
         row_result = worst(row_result, packet["verdict"])
 
     if row["predecessor_exit"]:
+        # Known admission width, deliberately not narrowed here. A packet's
+        # seam dispositions are matched by presence, not by which surface each
+        # seam belongs to, so a packet covering several surfaces that each
+        # declare a predecessor exit is satisfied by any one disposition.
+        #
+        # This cannot be tightened inside this evaluator: the #11793 manifest
+        # states predecessor_exit as prose, the closed agent_review_packet.v1
+        # contract gives old_paths entries no surface binding, and there is no
+        # shared identifier to match the two on. Closing it needs a machine
+        # readable seam identity from whichever of those two contracts owns it.
+        # Pinned by test_seam_disposition_is_matched_by_presence_not_by_surface.
         acknowledged = False
         duplicate_found = False
         for packet in covering:
@@ -704,29 +715,54 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
 
     manifest_bytes = b""
     projection_bytes = b""
+    # Read the two denominator files independently: an unreadable manifest must
+    # not blank the projection digest the receipt reports, which would understate
+    # what the evaluator actually observed.
     try:
         manifest_bytes = (root / DEFAULT_MANIFEST).read_bytes()
+    except OSError:
+        pass
+    try:
         projection_bytes = (root / DEFAULT_PROJECTION).read_bytes()
     except OSError:
         pass
 
-    base_issues = validate_denominator_tree(root)
-    base_strict_pass = not base_issues
-    if not base_strict_pass:
-        global_results.append(FAIL_DENOMINATOR_INCOMPLETE)
-
     candidate_root: Path | None = inputs["candidate_root"]
     candidate_checked = candidate_root is not None
+
+    # A root that is missing or is not a directory means the evaluator was
+    # pointed at nothing. That is an input-identity failure, not evidence that
+    # the repository's denominator is incomplete: running the strict walk here
+    # would report FAIL_DENOMINATOR_INCOMPLETE and blame the repository for an
+    # operator or harness error. Bail to NOT_PROVEN_GITHUB before that walk.
+    unusable_roots = [
+        label
+        for label, path in (("root", root), ("candidate_root", candidate_root))
+        if path is not None and not path.is_dir()
+    ]
+    if unusable_roots:
+        global_results.append(NOT_PROVEN_GITHUB)
+
+    base_issues: list[str] = []
+    base_strict_pass = False
     candidate_issues: list[str] = []
     candidate_strict_pass: bool | None = None
-    if candidate_root is not None:
-        candidate_issues = validate_denominator_tree(candidate_root)
-        candidate_strict_pass = not candidate_issues
-        if not candidate_strict_pass:
+    if not unusable_roots:
+        base_issues = validate_denominator_tree(root)
+        base_strict_pass = not base_issues
+        if not base_strict_pass:
             global_results.append(FAIL_DENOMINATOR_INCOMPLETE)
 
+        if candidate_root is not None:
+            candidate_issues = validate_denominator_tree(candidate_root)
+            candidate_strict_pass = not candidate_issues
+            if not candidate_strict_pass:
+                global_results.append(FAIL_DENOMINATOR_INCOMPLETE)
+
     denominator_valid = (
-        base_strict_pass and (candidate_strict_pass is None or candidate_strict_pass)
+        not unusable_roots
+        and base_strict_pass
+        and (candidate_strict_pass is None or candidate_strict_pass)
     )
 
     try:

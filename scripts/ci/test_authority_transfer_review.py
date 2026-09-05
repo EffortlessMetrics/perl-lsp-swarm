@@ -331,6 +331,23 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         receipt = self.evaluate(GOVERNED_CHANGED, [packet])
         self.assertEqual(atr.FAIL_CONTROLLER_RELATION, receipt["result"])
 
+    def test_seam_disposition_is_matched_by_presence_not_by_surface(self) -> None:
+        # Pins a known admission width rather than asserting it is correct: a
+        # seam disposition naming something unrelated to this surface's
+        # predecessor exit still satisfies the row, because agent_review_packet.v1
+        # gives old_paths no surface binding and #11793 states predecessor_exit
+        # as prose, leaving no identifier to match the two on. If either contract
+        # gains a machine-readable seam identity, this test should flip to
+        # FAIL_PREDECESSOR_REVIEW_INCOMPLETE and the evaluator tighten with it.
+        self._manifest_with_predecessor_exit()
+        unrelated = packet_body("semantic_close_authority", HEAD)
+        unrelated["old_paths"] = [
+            {"seam": "a seam from an entirely different surface", "disposition": "removed"}
+        ]
+        packet = self.write_packet("unrelated-seam.json", unrelated)
+        receipt = self.evaluate(GOVERNED_CHANGED, [packet])
+        self.assertEqual(atr.PASS_CURRENT_REVIEW, receipt["result"])
+
     def test_typed_predecessor_acknowledgment_passes(self) -> None:
         self._manifest_with_predecessor_exit()
         ok = packet_body("semantic_close_authority", HEAD)
@@ -406,6 +423,39 @@ class AuthorityTransferReviewTests(unittest.TestCase):
             GOVERNED_CHANGED + [f"filler/{i}.txt" for i in range(120)], []
         )
         self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
+
+    def test_unusable_root_is_not_proven_never_a_denominator_finding(self) -> None:
+        # Pointing the evaluator at nothing is an input-identity failure. Reporting
+        # FAIL_DENOMINATOR_INCOMPLETE would blame the repository's denominator for
+        # an operator or harness error, and would exit 1 (typed review failure)
+        # where the contract reserves 3 for unestablished input.
+        missing = self.base / "no-such-root"
+        receipt = self.evaluate([], [], root=missing)
+        self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
+
+        not_a_dir = self.base / "not-a-directory.txt"
+        not_a_dir.write_text("x", encoding="utf-8")
+        self.assertEqual(
+            atr.NOT_PROVEN_GITHUB, self.evaluate([], [], root=not_a_dir)["result"]
+        )
+
+    def test_unusable_candidate_root_is_not_proven(self) -> None:
+        receipt = self.evaluate([], [], candidate_root=self.base / "no-such-candidate")
+        self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
+
+    def test_unreadable_manifest_does_not_blank_the_projection_digest(self) -> None:
+        # The two denominator files are read independently, so a receipt never
+        # understates what it actually observed by reporting an empty digest for
+        # a file it could have read.
+        manifest_path = self.base / atr.DEFAULT_MANIFEST
+        saved = manifest_path.read_bytes()
+        manifest_path.unlink()
+        try:
+            receipt = self.evaluate([], [])
+        finally:
+            manifest_path.write_bytes(saved)
+        self.assertEqual("", receipt["denominator"]["manifest_sha256"])
+        self.assertNotEqual("", receipt["denominator"]["projection_sha256"])
 
     def test_undecodable_changed_list_is_not_proven_never_a_quiet_pass(self) -> None:
         # An input the evaluator cannot read exactly has no established identity.
