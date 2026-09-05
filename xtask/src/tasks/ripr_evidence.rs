@@ -35,6 +35,15 @@ const PR_DIFF_RECEIPT: &str = "target/ripr/pr/committed-diff.json";
 /// The `repo-exposure.json` summary only contains per-bucket counts, not the `findings[]`
 /// array.  Without `findings[]` it is impossible to diagnose suppression mismatches offline.
 const PR_RAW_CHECK_JSON: &str = "target/ripr/pr/raw-check.json";
+/// Filename prefix for the in-flight stdout file `run_ripr_streaming_to_file`
+/// publishes by rename. Distinctive so an abandoned one can be identified and
+/// swept without touching any other file in the artifact directory.
+const RIPR_STDOUT_TEMP_PREFIX: &str = "raw-check.partial-";
+/// Retained bytes of child stderr. The pipe is always drained in full — a
+/// child blocked writing to an unread pipe would never exit — but only this
+/// much is kept, so a noisy failure cannot reintroduce the unbounded buffer
+/// this change exists to remove (#12569 review).
+const MAX_RIPR_STDERR_BYTES: usize = 64 * 1024;
 const REVIEW_COMMENTS_JSON: &str = "target/ripr/review/comments.json";
 const REVIEW_COMMENTS_MD: &str = "target/ripr/review/comments.md";
 const ANNOTATIONS_TXT: &str = "target/ripr/review/annotations.txt";
@@ -843,8 +852,18 @@ fn run_ripr_streaming_to_file(args: &[String], out_path: &Path) -> Result<()> {
         _ => Path::new("."),
     };
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-    let stdout_file =
-        tempfile::NamedTempFile::new_in(parent).context("failed to create RIPR stdout file")?;
+    // `NamedTempFile` unlinks on drop, but a killed process never runs drop.
+    // This lane is killed routinely — OOM before this change, and external
+    // run cancellation after it — each time stranding a partial payload that
+    // can be gigabytes. Removing only the published artifact let those
+    // orphans accumulate on persistent self-hosted workspaces until the disk
+    // filled, which is the same failure class this change exists to prevent
+    // (#12569 review). Sweep them by prefix before writing a new one.
+    remove_orphaned_stdout_temps(parent);
+    let stdout_file = tempfile::Builder::new()
+        .prefix(RIPR_STDOUT_TEMP_PREFIX)
+        .tempfile_in(parent)
+        .context("failed to create RIPR stdout file")?;
     let mut child = Command::new(&binary)
         .args(args)
         .stdout(Stdio::from(stdout_file.reopen().context("failed to reopen RIPR stdout file")?))
@@ -853,9 +872,22 @@ fn run_ripr_streaming_to_file(args: &[String], out_path: &Path) -> Result<()> {
         .with_context(|| format!("failed to run {binary}"))?;
     let mut stderr_bytes = Vec::new();
     if let Some(mut stderr) = child.stderr.take() {
-        stderr
-            .read_to_end(&mut stderr_bytes)
-            .with_context(|| format!("failed to read {binary} stderr"))?;
+        // Drain everything, retain at most MAX_RIPR_STDERR_BYTES. Truncating
+        // by stopping the read instead would leave the child blocked on a
+        // full pipe and `wait` below would never return.
+        let mut chunk = [0_u8; 8 * 1024];
+        loop {
+            let read = stderr
+                .read(&mut chunk)
+                .with_context(|| format!("failed to read {binary} stderr"))?;
+            if read == 0 {
+                break;
+            }
+            let spare = MAX_RIPR_STDERR_BYTES.saturating_sub(stderr_bytes.len());
+            if spare > 0 {
+                stderr_bytes.extend_from_slice(&chunk[..read.min(spare)]);
+            }
+        }
     }
     let status = child.wait().with_context(|| format!("failed to wait for {binary}"))?;
     if !status.success() {
@@ -875,6 +907,23 @@ fn run_ripr_streaming_to_file(args: &[String], out_path: &Path) -> Result<()> {
         .map_err(|error| error.error)
         .with_context(|| format!("failed to publish {binary} stdout to {}", out_path.display()))?;
     Ok(())
+}
+
+/// Best-effort removal of stdout temporaries abandoned by a previous run.
+///
+/// Errors are ignored: this is disk hygiene, not a correctness gate, and a
+/// sweep failure must not block evidence generation. Removing a file a
+/// concurrent writer still holds open does not corrupt its stream — that
+/// writer keeps its descriptor and only its final `persist` fails — and this
+/// function already assumes a single writer per artifact directory, since it
+/// unconditionally removes the published artifact above.
+fn remove_orphaned_stdout_temps(parent: &Path) {
+    let Ok(entries) = fs::read_dir(parent) else { return };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(RIPR_STDOUT_TEMP_PREFIX) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Streamed ingestion of one `ripr check --format json` payload (#12860): the
@@ -9004,6 +9053,96 @@ paths = ["archive/**"]
         Ok(())
     }
 
+    /// Falsifies a transport that leaves a killed run's partial payload behind.
+    ///
+    /// `NamedTempFile` unlinks on drop, so nothing reclaims the in-flight
+    /// stdout file when the process dies without unwinding — the ordinary
+    /// outcome on this lane, which is killed by OOM or by external run
+    /// cancellation. Startup removed only the published artifact, so those
+    /// orphans accumulated on persistent self-hosted workspaces.
+    #[test]
+    fn run_ripr_check_sweeps_stdout_temporaries_abandoned_by_a_killed_run() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let raw_path = repo.join(PR_RAW_CHECK_JSON);
+        let artifact_dir = raw_path.parent().ok_or_else(|| eyre!("raw path has no parent"))?;
+        fs::create_dir_all(artifact_dir)?;
+
+        // What a killed prior run leaves: a prefixed temporary that drop never
+        // reclaimed, plus an unrelated neighbour that must survive the sweep.
+        let orphan = artifact_dir.join(format!("{RIPR_STDOUT_TEMP_PREFIX}deadbeef"));
+        fs::write(&orphan, "partial payload from a killed run")?;
+        let bystander = artifact_dir.join("committed-diff.json");
+        fs::write(&bystander, "{}")?;
+
+        let payload = r#"{"summary":{"findings":0},"findings":[]}"#;
+        let binary = write_ripr_stub(&stubs, "ripr-check-sweep", payload, 0)?;
+        let _override = override_ripr_bin(&binary)?;
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+
+        run_ripr_check(&repo, &options)?;
+
+        assert!(!orphan.exists(), "an abandoned stdout temporary must be swept");
+        assert!(bystander.exists(), "the sweep must not touch unrelated artifact files");
+        assert_eq!(fs::read(&raw_path)?, payload.as_bytes());
+        let leftovers = fs::read_dir(artifact_dir)?
+            .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        assert!(
+            !leftovers.iter().any(|name| name.starts_with(RIPR_STDOUT_TEMP_PREFIX)),
+            "no stdout temporary may survive a successful run: {leftovers:?}"
+        );
+        Ok(())
+    }
+
+    /// Falsifies a transport that buffers child stderr without a bound.
+    ///
+    /// The stdout path streams, but stderr was read with `read_to_end`, so a
+    /// noisy failure restored exactly the unbounded buffer #12569 removes. The
+    /// stub emits far more than the cap and more than a pipe buffer holds, so a
+    /// fix that truncates by *stopping* the read instead of draining would
+    /// deadlock here rather than pass.
+    #[test]
+    fn run_ripr_check_failure_retains_bounded_stderr() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let noise = MAX_RIPR_STDERR_BYTES * 4;
+        let binary =
+            write_ripr_stub_with_stderr(&stubs, "ripr-check-noisy", "partial payload", 2, noise)?;
+        let _override = override_ripr_bin(&binary)?;
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+
+        let err = run_ripr_check(&repo, &options).unwrap_err();
+        let message = format!("{err:#}");
+
+        assert!(message.contains("status"), "exit status must still appear: {message}");
+        assert!(
+            message.matches('E').count() <= MAX_RIPR_STDERR_BYTES,
+            "retained stderr must be bounded, not the child's whole output"
+        );
+        assert!(
+            message.len() < noise,
+            "the failure message must be far smaller than the emitted stderr"
+        );
+        Ok(())
+    }
+
     /// A failing ripr run must surface its status and a bounded stdout excerpt,
     /// and must not leave a raw artifact behind.
     #[test]
@@ -9201,11 +9340,24 @@ paths = ["archive/**"]
         stdout_text: &str,
         exit_code: i32,
     ) -> Result<PathBuf> {
+        write_ripr_stub_with_stderr(dir, name, stdout_text, exit_code, 0)
+    }
+
+    /// As `write_ripr_stub`, but the child also writes `stderr_bytes` bytes to
+    /// stderr, so a test can drive the bounded-retention path with more output
+    /// than the cap and more than a pipe buffer holds.
+    fn write_ripr_stub_with_stderr(
+        dir: &Path,
+        name: &str,
+        stdout_text: &str,
+        exit_code: i32,
+        stderr_bytes: usize,
+    ) -> Result<PathBuf> {
         let source = dir.join(format!("{name}.rs"));
         fs::write(
             &source,
             format!(
-                "fn main() {{\n    use std::io::Write;\n    let payload = {stdout_text:?};\n    let _ = std::io::stdout().write_all(payload.as_bytes());\n    std::process::exit({exit_code});\n}}\n"
+                "fn main() {{\n    use std::io::Write;\n    let payload = {stdout_text:?};\n    let _ = std::io::stdout().write_all(payload.as_bytes());\n    let noise = vec![b'E'; {stderr_bytes}];\n    let _ = std::io::stderr().write_all(&noise);\n    std::process::exit({exit_code});\n}}\n"
             ),
         )?;
         #[cfg(windows)]
