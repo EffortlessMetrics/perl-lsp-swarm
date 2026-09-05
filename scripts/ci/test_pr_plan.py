@@ -76,6 +76,89 @@ class PrPlanTests(unittest.TestCase):
         self.assertEqual(["docs_gate"], [lane["id"] for lane in selected])
         self.assertEqual([], skipped)
 
+    def test_full_ci_does_not_select_schedule_manual_coverage(self) -> None:
+        lanes = {
+            "coverage_alias": {
+                "base_lem": 45,
+                "blocking": False,
+                "workflow": ".github/workflows/ci-nightly.yml",
+                "job": "test-coverage",
+                "labels": ["coverage-alias"],
+            },
+            "mutation": {"base_lem": 60, "blocking": False},
+        }
+        risk_packs = {
+            "parser": {
+                "lanes": ["coverage_alias"],
+                "deep_lanes": ["coverage_alias", "mutation"],
+            },
+        }
+
+        selected, skipped = pr_plan.select_lanes(
+            files=["crates/perl-parser/src/parser.rs"],
+            labels=["full-ci"],
+            risk_pack_ids=["parser"],
+            risk_packs=risk_packs,
+            lanes=lanes,
+        )
+
+        self.assertEqual(["mutation"], [lane["id"] for lane in selected])
+        self.assertEqual([], skipped)
+
+    def test_main_loads_canonical_policy_without_routing_coverage_on_full_ci(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "ci-plan.json"
+            policy_root = Path(__file__).resolve().parents[2] / "policy"
+
+            old_argv = sys.argv
+            old_changed_files = pr_plan.changed_files
+            try:
+                pr_plan.changed_files = lambda _base, _head: [
+                    "crates/perl-parser/src/parser.rs"
+                ]
+                sys.argv = [
+                    "pr_plan.py",
+                    "--base",
+                    "origin/main",
+                    "--head",
+                    "HEAD",
+                    "--labels-json",
+                    '["full-ci"]',
+                    "--budget",
+                    str(policy_root / "ci-budget.toml"),
+                    "--lanes",
+                    str(policy_root / "ci-lanes.toml"),
+                    "--risk-packs",
+                    str(policy_root / "ci-risk-packs.toml"),
+                    "--trust-lanes",
+                    str(policy_root / "trust-lanes.toml"),
+                    "--history",
+                    str(root / "missing-history.json"),
+                    "--json-out",
+                    str(output),
+                ]
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    status = pr_plan.main()
+            finally:
+                sys.argv = old_argv
+                pr_plan.changed_files = old_changed_files
+
+            plan = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(0, status)
+        self.assertEqual(["parser"], plan["selection"]["risk_packs"])
+        self.assertEqual(
+            ["crates/perl-parser/src/parser.rs"], plan["changed"]["files"]
+        )
+        selected_ids = [lane["id"] for lane in plan["selection"]["lanes"]]
+        skipped_ids = [lane["id"] for lane in plan["selection"]["skipped_lanes"]]
+        self.assertIn("pr_smoke", selected_ids)
+        self.assertIn("merge_gate_shards", selected_ids)
+        self.assertNotIn("coverage", selected_ids)
+        self.assertNotIn("coverage", skipped_ids)
+
     def test_select_lanes_reports_path_filtered_default_lane_when_it_does_not_match(self) -> None:
         lanes = {
             "rust_small": {"default_pr": True, "base_lem": 10, "blocking": True},
