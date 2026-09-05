@@ -263,7 +263,7 @@ Behind-only movement requires no action.
 
 Mutation is exclusive; reading is not. Arriving at an existing candidate to research,
 review, challenge, or comment requires no claim, no check for a current writer, and no
-wait. Duplicate review costs cheap compute and buys a second detection surface from
+wait. Duplicate review is cheap and buys a second detection surface from
 changed attention, which is what substantive review asks for and cannot get from
 identity alone. A session that finds another writer already on a candidate reviews it
 and posts what it found; it does not push, and it does not stand down from reviewing.
