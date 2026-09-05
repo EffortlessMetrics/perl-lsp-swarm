@@ -172,6 +172,13 @@ pub struct MojoBaseAttributeDeclaration {
     pub default: MojoBaseAttributeDefault,
     /// Same-named explicit source method state in the owning package.
     pub explicit_method: MojoBaseExplicitMethodState,
+    /// Source generation this declaration was extracted from.
+    ///
+    /// Load-bearing: minting refuses a declaration whose generation differs
+    /// from the activation's, so a carrier extracted from an older parse
+    /// cannot be restamped with a current generation and reappear as a fresh
+    /// fact after the attribute was renamed or removed.
+    pub source_generation: SourceGeneration,
 }
 
 /// One minted generated-accessor member fact.
@@ -340,6 +347,20 @@ pub fn mojo_base_parent_identity(
 /// import's source interval but not its file, and the parent relationship is
 /// anchored in that file.
 ///
+/// A declaration must belong to the activation on **four** counts, because the
+/// carriers arrive as a plain slice a caller could mismatch against the
+/// activation:
+///
+/// - the same owning package;
+/// - the same file as the activating import, so a same-named package in
+///   another file cannot contribute accessors to this activation;
+/// - the same source generation, so a carrier extracted from an older parse
+///   cannot be restamped with the current generation and resurrect an accessor
+///   that has since been renamed or removed;
+/// - a position **after** the activating import, because `Mojo::Base` installs
+///   `has` at import time. A `has` call earlier in the package is a different
+///   function — the reviewed profile has no accessor to generate from it.
+///
 /// Every minted fact carries the activation's source generation plus
 /// invalidation dependencies over the owning source file and the `Mojo::Base`
 /// module, so an accessor, import, or module edit invalidates the dependent
@@ -357,9 +378,24 @@ pub fn mojo_base_object_facts(
         return facts;
     }
     let generation = &activation.source_generation;
+    let (_, import_end_byte) = activation.source_interval;
 
     for declaration in declarations {
         if declaration.package.as_deref() != package {
+            continue;
+        }
+        // A same-named package in another file is a different class: its `has`
+        // calls are not this activation's accessors.
+        if declaration.file_id != file_id {
+            continue;
+        }
+        // A carrier from an older parse cannot be relabelled current.
+        if declaration.source_generation != *generation {
+            continue;
+        }
+        // `Mojo::Base` installs `has` at import time, so a call before the
+        // activating import is not this framework's `has` at all.
+        if declaration.declaration_anchor.start_byte < import_end_byte {
             continue;
         }
         // Only a literal spelling names a method. A computed or malformed
@@ -697,7 +733,24 @@ mod tests {
         SourceAnchor::new(Some(AnchorId(u64::from(start))), FileId(1), start, end)
     }
 
+    /// Byte offset the fixture declarations start at.
+    ///
+    /// Past [`exact_activation`]'s import interval end, so a fixture
+    /// declaration is positioned after the activating import the way real
+    /// source is. Placing one before that interval is how the ordering
+    /// negative control below is built.
+    const AFTER_IMPORT: u32 = 40;
+
     fn declaration(
+        index: u32,
+        name: &str,
+        default: MojoBaseAttributeDefault,
+    ) -> MojoBaseAttributeDeclaration {
+        declaration_at(AFTER_IMPORT + 10 * index, index, name, default)
+    }
+
+    fn declaration_at(
+        start: u32,
         index: u32,
         name: &str,
         default: MojoBaseAttributeDefault,
@@ -707,11 +760,12 @@ mod tests {
             name_index: 0,
             file_id: FileId(1),
             package: Some("App".to_string()),
-            declaration_anchor: anchor(10 * index, 10 * index + 9),
-            name_anchor: anchor(10 * index + 4, 10 * index + 8),
+            declaration_anchor: anchor(start, start + 9),
+            name_anchor: anchor(start + 4, start + 8),
             name: MojoBaseAttributeName::Literal(name.to_string()),
             default,
             explicit_method: MojoBaseExplicitMethodState::None,
+            source_generation: SourceGeneration::known("gen-1"),
         }
     }
 
@@ -782,8 +836,9 @@ mod tests {
         let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
         let declarations = [declaration(2, "host", MojoBaseAttributeDefault::Absent)];
         let facts = mint_with_detection(&activation, &declarations);
-        assert_eq!(facts.members[0].member.source_anchor_id, AnchorId(20));
-        assert_eq!(facts.members[0].envelope.anchor.start_byte, 20);
+        let expected_start = AFTER_IMPORT + 20;
+        assert_eq!(facts.members[0].member.source_anchor_id, AnchorId(u64::from(expected_start)));
+        assert_eq!(facts.members[0].envelope.anchor.start_byte, expected_start);
     }
 
     #[test]
@@ -833,6 +888,30 @@ mod tests {
         assert_eq!(facts.members[0].explicit_method, MojoBaseExplicitMethodState::Collides);
         let boundary = facts.members[0].envelope.boundary.as_ref();
         assert!(boundary.is_some(), "the collision must remain visible as conflict evidence");
+    }
+
+    #[test]
+    fn a_declaration_must_match_the_activation_on_file_generation_and_order() {
+        let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
+
+        // Before the activating import: `has` is not installed yet.
+        let before = declaration_at(0, 0, "early", MojoBaseAttributeDefault::Absent);
+        assert!(mint_with_detection(&activation, &[before]).members.is_empty());
+
+        // Another file, same package name.
+        let mut foreign_file = declaration(1, "elsewhere", MojoBaseAttributeDefault::Absent);
+        foreign_file.file_id = FileId(2);
+        assert!(mint_with_detection(&activation, &[foreign_file]).members.is_empty());
+
+        // An older parse's carrier.
+        let mut stale = declaration(1, "outdated", MojoBaseAttributeDefault::Absent);
+        stale.source_generation = SourceGeneration::known("gen-0");
+        assert!(mint_with_detection(&activation, &[stale]).members.is_empty());
+
+        // Control: a declaration matching on all counts still mints, so the
+        // refusals above isolate each guard rather than a broken fixture.
+        let ok = declaration(1, "kept", MojoBaseAttributeDefault::Absent);
+        assert_eq!(mint_with_detection(&activation, &[ok]).members.len(), 1);
     }
 
     #[test]

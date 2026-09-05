@@ -82,10 +82,14 @@ fn sites(code: &str, file_id: FileId, generation: &str) -> Vec<MojoBaseActivatio
     extract_mojo_base_activation_sites(&ast, code, file_id, SourceGeneration::known(generation))
 }
 
-fn declarations(code: &str, file_id: FileId) -> Vec<MojoBaseAttributeDeclaration> {
+fn declarations(
+    code: &str,
+    file_id: FileId,
+    generation: &str,
+) -> Vec<MojoBaseAttributeDeclaration> {
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
-    extract_mojo_base_attribute_declarations(&ast, file_id)
+    extract_mojo_base_attribute_declarations(&ast, file_id, SourceGeneration::known(generation))
 }
 
 /// Run the whole seam over `code` and return the object facts of every
@@ -101,7 +105,7 @@ fn object_facts_in(
     generation: &str,
 ) -> Vec<MojoBaseObjectFacts> {
     let detection = detection(version, generation);
-    let declarations = declarations(code, file_id);
+    let declarations = declarations(code, file_id, generation);
     sites(code, file_id, generation)
         .iter()
         .map(|site| {
@@ -314,7 +318,7 @@ fn a_stale_source_generation_mints_no_object_facts() {
     // detection receipt: stale evidence must not be reused.
     let code = "package App;\nuse Mojo::Base -base;\nhas 'name';\n";
     let detection = detection("9.34", "gen-2");
-    let declarations = declarations(code, FileId(1));
+    let declarations = declarations(code, FileId(1), "gen-2");
     let stale_site = must_some(sites(code, FileId(1), "gen-1").into_iter().next());
     let activation =
         mojo_base_activation_facts(&detection, &stale_site.anchor, &stale_site.evidence);
@@ -357,7 +361,7 @@ fn an_explicit_source_method_keeps_the_collision_visible() {
 #[test]
 fn a_non_code_reference_default_stays_an_unsupported_boundary() {
     let code = "package App;\nuse Mojo::Base -base;\nhas 'list' => [];\n";
-    let declared = declarations(code, FileId(1));
+    let declared = declarations(code, FileId(1), "gen-1");
     assert!(matches!(declared[0].default, MojoBaseAttributeDefault::Unsupported { .. }));
     let facts = only_facts(code);
     assert_eq!(facts.reader_results[0].relation, CallableResultRelation::Unknown);
@@ -365,6 +369,83 @@ fn a_non_code_reference_default_stays_an_unsupported_boundary() {
         facts.reader_results[0].limitations().contains(&CallableResultLimitation::Unsupported),
         "Mojo::Base rejects a non-code reference default at runtime"
     );
+}
+
+#[test]
+fn a_has_call_before_the_activating_import_is_not_an_accessor() {
+    // `Mojo::Base` installs `has` at import time, so a call earlier in the
+    // package is a different function entirely — the later activation must not
+    // retroactively turn it into an accessor.
+    let code =
+        concat!("package App;\n", "has 'before';\n", "use Mojo::Base -base;\n", "has 'after';\n",);
+    // Both calls are observed by extraction; only the later one may mint.
+    assert_eq!(declarations(code, FileId(1), "gen-1").len(), 2, "extraction observes both calls");
+    let facts = only_facts(code);
+    assert_eq!(member_names(&facts), ["after"], "a pre-import `has` is not this framework's `has`");
+}
+
+#[test]
+fn a_declaration_from_another_file_cannot_join_this_activation() {
+    // Same package name, different file: the carrier must not contribute.
+    let code = "package App;\nuse Mojo::Base -base;\nhas 'owned';\n";
+    let mut foreign = declarations(code, FileId(2), "gen-1");
+    assert_eq!(foreign.len(), 1);
+    let mut mixed = declarations(code, FileId(1), "gen-1");
+    mixed.append(&mut foreign);
+    let detection = detection("9.34", "gen-1");
+    let site = must_some(sites(code, FileId(1), "gen-1").into_iter().next());
+    let activation = mojo_base_activation_facts(&detection, &site.anchor, &site.evidence);
+    let facts = mojo_base_object_facts(
+        &detection,
+        &activation,
+        FileId(1),
+        site.anchor.package.as_deref(),
+        &mixed,
+    );
+    assert_eq!(
+        facts.members.len(),
+        1,
+        "only the activating file's declaration may mint, despite the shared package name"
+    );
+}
+
+#[test]
+fn a_declaration_from_an_older_parse_cannot_be_restamped_as_current() {
+    // The attribute existed at gen-1 and was removed at gen-2. Handing the
+    // stale carrier to a current activation must not resurrect it.
+    let old = "package App;\nuse Mojo::Base -base;\nhas 'removed';\n";
+    let new = "package App;\nuse Mojo::Base -base;\n";
+    let stale = declarations(old, FileId(1), "gen-1");
+    assert_eq!(stale.len(), 1, "the attribute really existed at gen-1");
+    let detection = detection("9.34", "gen-2");
+    let site = must_some(sites(new, FileId(1), "gen-2").into_iter().next());
+    let activation = mojo_base_activation_facts(&detection, &site.anchor, &site.evidence);
+    assert!(activation.is_exact(), "the gen-2 activation itself is exact");
+    let facts = mojo_base_object_facts(
+        &detection,
+        &activation,
+        FileId(1),
+        site.anchor.package.as_deref(),
+        &stale,
+    );
+    assert!(
+        facts.members.is_empty(),
+        "a removed accessor must not reappear as a fresh fact under a newer generation"
+    );
+}
+
+#[test]
+fn a_conditional_has_declares_no_accessor() {
+    // Under a conditional the call may never run; an unconditional accessor
+    // would be an overclaim.
+    let code = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "if ($ENV{X}) { has 'maybe'; }\n",
+        "has 'always';\n",
+    );
+    let facts = only_facts(code);
+    assert_eq!(member_names(&facts), ["always"]);
 }
 
 // ── Currentness, isolation, determinism ─────────────────────────────────

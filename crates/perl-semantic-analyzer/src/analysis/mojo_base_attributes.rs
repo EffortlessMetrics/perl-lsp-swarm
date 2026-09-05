@@ -60,7 +60,7 @@ use perl_semantic_facts::framework_adapters::mojo_base_facts::{
     MojoBaseAttributeDeclaration, MojoBaseAttributeDefault, MojoBaseAttributeName,
     MojoBaseExplicitMethodState,
 };
-use perl_semantic_facts::{AnchorId, FileId, SourceAnchor};
+use perl_semantic_facts::{AnchorId, FileId, SourceAnchor, SourceGeneration};
 
 /// The `Mojo::Base` attribute-declaration keyword.
 const HAS_KEYWORD: &str = "has";
@@ -71,19 +71,31 @@ const HAS_KEYWORD: &str = "has";
 /// Each declaration carries its owning package, the `has` statement's
 /// source-order index, and — for an array-reference name list — the position
 /// of the name inside that list, so one statement's names never collide.
+/// `generation` is the source generation `ast` was parsed from and is retained
+/// on every declaration, so minting can refuse a carrier from an older parse
+/// instead of restamping it as current.
 ///
 /// Declarations are emitted for every package in the file. Restricting them
 /// to an activated package is the minting side's contract, not extraction's:
 /// this function deliberately reports `has` calls it observed without
 /// claiming they generate anything.
+///
+/// Only declarations that run unconditionally when the package is loaded are
+/// extracted. A `has` call inside a subroutine body, a conditional, a loop, or
+/// an `eval`/`try` block does not unconditionally declare a class attribute —
+/// it runs when (and if) that construct runs — so extracting it would claim an
+/// accessor exists on paths where the call never executes. A bare lexical
+/// block is not control flow and is still extracted.
 #[must_use]
 pub fn extract_mojo_base_attribute_declarations(
     ast: &Node,
     file_id: FileId,
+    generation: SourceGeneration,
 ) -> Vec<MojoBaseAttributeDeclaration> {
     let subroutines = SubroutineTargetIndex::build(ast, file_id);
     let mut state = WalkState {
         file_id,
+        generation,
         subroutines: &subroutines,
         next_declaration_index: 0,
         declarations: Vec::new(),
@@ -97,9 +109,29 @@ pub fn extract_mojo_base_attribute_declarations(
 
 struct WalkState<'a> {
     file_id: FileId,
+    generation: SourceGeneration,
     subroutines: &'a SubroutineTargetIndex,
     next_declaration_index: u32,
     declarations: Vec<MojoBaseAttributeDeclaration>,
+}
+
+/// Whether this node owns runtime control flow, so statements inside it do not
+/// run unconditionally at package load.
+///
+/// A bare lexical block is deliberately absent: `{ has 'x'; }` at package level
+/// executes exactly once, like any other package statement.
+fn owns_runtime_control_flow(node: &Node) -> bool {
+    matches!(
+        node.kind,
+        NodeKind::If { .. }
+            | NodeKind::While { .. }
+            | NodeKind::For { .. }
+            | NodeKind::Foreach { .. }
+            | NodeKind::Given { .. }
+            | NodeKind::When { .. }
+            | NodeKind::Eval { .. }
+            | NodeKind::Try { .. }
+    )
 }
 
 impl WalkState<'_> {
@@ -139,6 +171,10 @@ impl WalkState<'_> {
             // call inside a sub body executes at call time and does not
             // declare a class attribute, so sub bodies are not descended.
             NodeKind::Subroutine { .. } => return,
+            // Same rule for runtime control flow: a `has` under a conditional,
+            // loop, or eval/try runs only when that construct runs, so it
+            // never unconditionally declares a class attribute.
+            _ if owns_runtime_control_flow(node) => return,
             // A collected `has` statement is fully consumed here: descending
             // into its operands would re-observe them as ordinary source.
             NodeKind::ExpressionStatement { expression }
@@ -183,6 +219,7 @@ impl WalkState<'_> {
                 name,
                 default: parsed.default.clone(),
                 explicit_method,
+                source_generation: self.generation.clone(),
             });
         }
         true
@@ -393,7 +430,7 @@ mod tests {
     fn declarations(code: &str) -> Vec<MojoBaseAttributeDeclaration> {
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        extract_mojo_base_attribute_declarations(&ast, FileId(1))
+        extract_mojo_base_attribute_declarations(&ast, FileId(1), SourceGeneration::known("gen-1"))
     }
 
     fn names(code: &str) -> Vec<String> {
@@ -496,6 +533,24 @@ mod tests {
     #[test]
     fn a_has_call_inside_a_sub_body_is_not_a_class_attribute() {
         assert!(declarations("package App;\nsub build { has 'runtime'; }\n").is_empty());
+    }
+
+    #[test]
+    fn runtime_control_flow_does_not_declare_a_class_attribute() {
+        // A `has` under a conditional or loop runs only when that construct
+        // runs, so claiming an unconditional accessor would be an overclaim.
+        assert!(declarations("package App;\nif ($c) { has 'cond'; }\n").is_empty());
+        assert!(declarations("package App;\nfor (1..2) { has 'loop'; }\n").is_empty());
+        assert!(declarations("package App;\nwhile ($c) { has 'spin'; }\n").is_empty());
+        assert!(declarations("package App;\neval { has 'risky'; };\n").is_empty());
+        // Control: a bare lexical block is not control flow and still counts.
+        assert_eq!(names("package App;\n{ has 'bare'; }\n"), ["bare"]);
+    }
+
+    #[test]
+    fn declarations_carry_the_extraction_generation() {
+        let found = declarations("package App;\nhas 'name';\n");
+        assert_eq!(found[0].source_generation, SourceGeneration::known("gen-1"));
     }
 
     #[test]
