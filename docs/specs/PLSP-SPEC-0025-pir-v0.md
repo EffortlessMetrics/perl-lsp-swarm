@@ -124,7 +124,7 @@ pub struct PirNode {
     pub operation: PirOperation,
     pub context: PirContext,
     pub demand: PirEvaluationDemand,
-    pub access: PirAccessMode,
+    pub access: Option<PirAccessMode>,
     pub dynamic_boundary: Option<DynamicBoundaryId>,
 }
 
@@ -207,6 +207,13 @@ PIR v0 must model these contexts:
 
 Place access is not a value context: assignment targets are represented by
 `PirAccessMode`, while `PirContext` remains limited to value-context facts.
+Only operations that name a place carry an access fact (`LexicalRead`/`StashRead`
+read; `LexicalWrite`/`StashWrite` write; `Modify`/`StashModify` and in-place
+`s///`/`tr///` on a place read-modify-write; a match or `/r` copy on a place
+reads). Literals, calls, assignment expressions, branches, loops, returns,
+dynamic boundaries, regex literals, expression-target regex operations, and
+dereferences carry `None` rather than a fabricated `Read`, and
+`PirReceipt::access_counts` counts place-accessing nodes only.
 `DefinednessTest` is reserved in this slice: the public vocabulary is stable,
 but flat HIR lowering does not yet identify the operand of `defined` or the
 definedness arm of `//`. Those activations require a separate lowering claim.

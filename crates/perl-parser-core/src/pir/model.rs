@@ -770,7 +770,13 @@ pub struct PirNode {
     /// How the node's value is consumed.
     pub demand: PirEvaluationDemand,
     /// Whether the node reads or writes a place.
-    pub access: PirAccessMode,
+    ///
+    /// `None` when the operation does not access a place at all (literals,
+    /// calls, assignment expressions, branches, loops, returns, dynamic
+    /// boundaries, regex literals, expression-target regex operations, and
+    /// dereferences whose place identity is still owned by the place model).
+    /// Lowering never fabricates a `Read` for those nodes.
+    pub access: Option<PirAccessMode>,
     /// Link to a dynamic-boundary node this operation defers to, when any.
     pub dynamic_boundary: Option<PirId>,
     /// HIR scope this node belongs to, when known.
@@ -888,6 +894,9 @@ pub struct PirReceipt {
     /// Evaluation-demand counts, keyed by demand name.
     pub demand_counts: BTreeMap<&'static str, usize>,
     /// Access-mode counts, keyed by access name.
+    ///
+    /// Only nodes that access a place are counted, so the values sum to the
+    /// number of place-accessing nodes rather than to `node_count`.
     pub access_counts: BTreeMap<&'static str, usize>,
     /// Source-anchor coverage summary.
     pub source_anchor_coverage: PirAnchorCoverage,
@@ -1242,7 +1251,7 @@ mod tests {
             operation: PirOperation::Assign,
             context: PirContext::Void,
             demand: PirEvaluationDemand::Value,
-            access: PirAccessMode::Read,
+            access: None,
             dynamic_boundary: None,
             scope: None,
             package_context: None,
@@ -1279,7 +1288,7 @@ mod tests {
             operation: PirOperation::Assign,
             context: PirContext::Void,
             demand: PirEvaluationDemand::Value,
-            access: PirAccessMode::Read,
+            access: None,
             dynamic_boundary: None,
             scope: None,
             package_context: None,

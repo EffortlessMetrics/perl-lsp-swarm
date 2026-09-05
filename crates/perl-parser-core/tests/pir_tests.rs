@@ -47,7 +47,7 @@ fn lexical_declaration_writes_lvalue_and_assigns() {
 
     // The declared write target is a known lvalue; the statement-level
     // assignment is void. Neither is silently promoted past what HIR proves.
-    assert_eq!(graph.nodes[0].access, PirAccessMode::Write);
+    assert_eq!(graph.nodes[0].access, Some(PirAccessMode::Write));
     assert_eq!(graph.nodes[1].context, PirContext::Void);
     assert_eq!(graph.nodes[2].context, PirContext::Unknown);
 
@@ -491,7 +491,7 @@ fn multi_variable_declaration_produces_one_write_per_variable() {
     assert!(names.contains(&"b"), "expected write for $b");
 
     // Every write is an lvalue; the assignment is void.
-    assert!(writes.iter().all(|n| n.access == PirAccessMode::Write));
+    assert!(writes.iter().all(|n| n.access == Some(PirAccessMode::Write)));
 
     let assigns: Vec<_> =
         graph.nodes.iter().filter(|n| matches!(n.operation, PirOperation::Assign)).collect();
@@ -586,9 +586,50 @@ fn mutating_regex_targets_are_read_modify_write() {
                 PirOperation::Substitution { .. } | PirOperation::Transliteration { .. }
             )
         }));
-        assert_eq!(regex_node.access, expected_access, "access classification for {source}");
-        assert_eq!(graph.receipt.access_counts.get(regex_node.access.name()), Some(&1));
+        assert_eq!(regex_node.access, Some(expected_access), "access classification for {source}");
+        assert_eq!(graph.receipt.access_counts.get(expected_access.name()), Some(&1));
     }
+}
+#[test]
+fn non_place_operations_carry_no_access_fact() {
+    // `my $x = foo(1);` lowers a place write plus three value-only nodes. Only
+    // the place write may claim an access mode; an assignment expression, a
+    // call, and a literal touch no place and must not be reported as reads.
+    let graph = lower("my $x = foo(1);");
+    assert_eq!(op_names(&graph), vec!["LexicalWrite", "Assign", "Call", "Literal"]);
+
+    assert_eq!(graph.nodes[0].access, Some(PirAccessMode::Write));
+    assert!(graph.nodes[1..].iter().all(|node| node.access.is_none()), "{:?}", graph.nodes);
+
+    // The receipt counts place-accessing nodes only, so it cannot report a
+    // read that no node performed.
+    assert_eq!(graph.receipt.access_counts.get("Read"), None);
+    assert_eq!(graph.receipt.access_counts.values().sum::<usize>(), 1);
+}
+#[test]
+fn expression_target_regex_operations_carry_no_access_fact() {
+    // A regex bound to a call result has no place to read or write, even for
+    // an in-place `s///`; only a named place or `$_` yields an access fact.
+    let bound_to_expression = lower("foo() =~ s/a/b/;");
+    let regex_node = must_some(
+        bound_to_expression
+            .nodes
+            .iter()
+            .find(|node| matches!(node.operation, PirOperation::Substitution { .. })),
+    );
+    assert_eq!(regex_node.access, None);
+
+    // HIR never classifies the implicit `$_` topic as a place (`DefaultTopic`
+    // is a PIR vocabulary item that lowering does not yet construct), so a
+    // bare `s///` also carries no access fact rather than an invented one.
+    let bound_to_topic = lower("s/a/b/;");
+    let topic_node = must_some(
+        bound_to_topic
+            .nodes
+            .iter()
+            .find(|node| matches!(node.operation, PirOperation::Substitution { .. })),
+    );
+    assert_eq!(topic_node.access, None);
 }
 #[test]
 fn control_flow_loop_shell_lowers_to_loop_operation() {

@@ -22,17 +22,48 @@ use super::model::{
     PirRegexModifiers, PirRegexTarget, PirSourceAnchor, PirTargetAccess, SymbolName,
 };
 
-fn access_for_operation(operation: &PirOperation) -> PirAccessMode {
+/// Place access implied by an operation family, or `None` when the operation
+/// does not access a place.
+///
+/// Only operations whose family names a place carry an access fact. Literals,
+/// calls, assignment expressions, control nodes, returns, dynamic boundaries,
+/// and regex literals produce or consume values without touching a place, so
+/// they carry no access fact rather than a fabricated `Read`. Dereferences are
+/// also left without an access fact: element-place identity is owned by the
+/// place model (#4847) and is not proven here.
+fn access_for_operation(operation: &PirOperation) -> Option<PirAccessMode> {
     match operation {
-        PirOperation::LexicalWrite { .. } | PirOperation::StashWrite { .. } => PirAccessMode::Write,
+        PirOperation::LexicalRead { .. } | PirOperation::StashRead { .. } => {
+            Some(PirAccessMode::Read)
+        }
+        PirOperation::LexicalWrite { .. } | PirOperation::StashWrite { .. } => {
+            Some(PirAccessMode::Write)
+        }
         PirOperation::Modify { .. } | PirOperation::StashModify { .. } => {
-            PirAccessMode::ReadModifyWrite
+            Some(PirAccessMode::ReadModifyWrite)
         }
-        PirOperation::Substitution { access: PirTargetAccess::Mutate, .. }
-        | PirOperation::Transliteration { access: PirTargetAccess::Mutate, .. } => {
-            PirAccessMode::ReadModifyWrite
+        PirOperation::Match { target, access, .. }
+        | PirOperation::Substitution { target, access, .. }
+        | PirOperation::Transliteration { target, access, .. } => {
+            regex_target_access(target, *access)
         }
-        _ => PirAccessMode::Read,
+        _ => None,
+    }
+}
+
+/// Place access of a regex-family operation on its bound target.
+///
+/// A bound expression (`foo() =~ ...`) is not a place, so it carries no access
+/// fact. A named place (or a `DefaultTopic`, should lowering ever construct
+/// one) is read by a match and by a `/r` mutate-copy, and read-then-written by
+/// an in-place `s///` or `tr///`.
+fn regex_target_access(target: &PirRegexTarget, access: PirTargetAccess) -> Option<PirAccessMode> {
+    match target {
+        PirRegexTarget::Expression { .. } => None,
+        _ => Some(match access {
+            PirTargetAccess::Mutate => PirAccessMode::ReadModifyWrite,
+            PirTargetAccess::MutateCopy | PirTargetAccess::ReadOnly => PirAccessMode::Read,
+        }),
     }
 }
 
@@ -251,7 +282,7 @@ impl Lowerer {
                 operation,
                 PirContext::Void,
                 PirEvaluationDemand::Value,
-                PirAccessMode::Write,
+                Some(PirAccessMode::Write),
                 None,
             );
         }
@@ -641,7 +672,7 @@ impl Lowerer {
         operation: PirOperation,
         context: PirContext,
         demand: PirEvaluationDemand,
-        access: PirAccessMode,
+        access: Option<PirAccessMode>,
         dynamic_boundary: Option<PirId>,
     ) -> PirId {
         let id = self.push_node(item, source_anchor, operation, context, dynamic_boundary);
@@ -730,7 +761,9 @@ fn build_receipt(
         *operation_counts.entry(node.operation.name()).or_insert(0) += 1;
         *context_counts.entry(node.context.name()).or_insert(0) += 1;
         *demand_counts.entry(node.demand.name()).or_insert(0) += 1;
-        *access_counts.entry(node.access.name()).or_insert(0) += 1;
+        if let Some(access) = node.access {
+            *access_counts.entry(access.name()).or_insert(0) += 1;
+        }
         if node.source_anchor.is_anchored() {
             coverage.anchored += 1;
         } else {
@@ -1059,7 +1092,7 @@ impl BodyLowerer {
                         op,
                         PirContext::Void,
                         PirEvaluationDemand::Value,
-                        PirAccessMode::Write,
+                        Some(PirAccessMode::Write),
                         None,
                         file,
                     );
@@ -1681,7 +1714,7 @@ impl BodyLowerer {
         operation: PirOperation,
         context: PirContext,
         demand: PirEvaluationDemand,
-        access: PirAccessMode,
+        access: Option<PirAccessMode>,
         dynamic_boundary: Option<PirId>,
         file: &HirFile,
     ) -> PirId {
@@ -1872,7 +1905,7 @@ mod tests {
         let graph = lower("my $x = 1;");
         assert_eq!(graph.nodes.len(), 3);
         assert_eq!(graph.nodes[0].operation.name(), "LexicalWrite");
-        assert_eq!(graph.nodes[0].access, PirAccessMode::Write);
+        assert_eq!(graph.nodes[0].access, Some(PirAccessMode::Write));
         assert_eq!(graph.nodes[1].operation.name(), "Assign");
         assert_eq!(graph.nodes[1].context, PirContext::Void);
         assert!(matches!(

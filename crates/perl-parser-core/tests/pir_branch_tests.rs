@@ -133,8 +133,15 @@ fn branch_receipt_counts_are_consistent() {
     assert_eq!(ctx_total, graph.nodes.len(), "context_counts must sum to node count");
     let demand_total: usize = graph.receipt.demand_counts.values().sum();
     assert_eq!(demand_total, graph.nodes.len(), "demand_counts must sum to node count");
+    // Access counts cover place-accessing nodes only: the Branch node itself
+    // touches no place and must be absent from the count rather than
+    // reported as a read.
+    let branch = first_branch_node(&graph);
+    assert_eq!(branch.access, None, "a Branch node accesses no place");
+    let place_nodes = graph.nodes.iter().filter(|node| node.access.is_some()).count();
     let access_total: usize = graph.receipt.access_counts.values().sum();
-    assert_eq!(access_total, graph.nodes.len(), "access_counts must sum to node count");
+    assert_eq!(access_total, place_nodes, "access_counts must sum to place-accessing nodes");
+    assert!(place_nodes < graph.nodes.len(), "at least the Branch node carries no access fact");
 
     assert_eq!(graph.receipt.node_count, graph.nodes.len(), "receipt.node_count must match nodes");
     assert_eq!(graph.receipt.edge_count, graph.edges.len(), "receipt.edge_count must match edges");
