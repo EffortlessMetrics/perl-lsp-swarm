@@ -110,31 +110,66 @@ fn describe_error(error: &ApiError) -> String {
     }
 }
 
-/// Read `repos/{owner}/{name}`. Every field named here (`full_name`,
-/// `node_id`, `id`, `default_branch`) must be present; any one missing
-/// yields `NOT_PROVEN` rather than a partially populated identity.
+/// Percent-encode one REST path segment, keeping only RFC 3986 unreserved
+/// bytes. A branch named `release/1.0` must address
+/// `branches/release%2F1.0`, not a different route.
+pub fn encode_path_segment(value: &str) -> String {
+    fn hex_digit(value: u8) -> char {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        HEX[usize::from(value & 0x0f)] as char
+    }
+    let mut encoded = String::with_capacity(value.len());
+    for &byte in value.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(hex_digit(byte >> 4));
+            encoded.push(hex_digit(byte & 0x0f));
+        }
+    }
+    encoded
+}
+
+fn repo_path(owner: &str, name: &str) -> String {
+    format!("repos/{}/{}", encode_path_segment(owner), encode_path_segment(name))
+}
+
+/// Read `repos/{owner}/{name}` exactly once. Both the identity and the
+/// release posture derive from this single payload, so the two can never
+/// disagree with each other.
+fn fetch_repository_payload(
+    commands: &dyn ReadOnlyCommands,
+    owner: &str,
+    name: &str,
+) -> Result<Value, String> {
+    let body = commands.api(&repo_path(owner, name)).map_err(|error| {
+        format!("reading repository {owner}/{name}: {}", describe_error(&error))
+    })?;
+    serde_json::from_str(&body)
+        .map_err(|error| format!("repository payload for {owner}/{name} did not parse: {error}"))
+}
+
+/// Read `repos/{owner}/{name}` and derive the identity from it.
 pub fn collect_identity(
     commands: &dyn ReadOnlyCommands,
     owner: &str,
     name: &str,
 ) -> Observed<RepositoryIdentity> {
-    let path = format!("repos/{owner}/{name}");
-    let body = match commands.api(&path) {
-        Ok(body) => body,
-        Err(error) => {
-            return Observed::not_proven(format!(
-                "reading repository {owner}/{name}: {}",
-                describe_error(&error)
-            ));
-        }
-    };
-    let value: Value = match serde_json::from_str(&body) {
+    identity_from_payload(&fetch_repository_payload(commands, owner, name), owner, name)
+}
+
+/// Every field named here (`full_name`, `node_id`, `id`, `default_branch`)
+/// must be present; any one missing yields `NOT_PROVEN` rather than a
+/// partially populated identity.
+fn identity_from_payload(
+    payload: &Result<Value, String>,
+    owner: &str,
+    name: &str,
+) -> Observed<RepositoryIdentity> {
+    let value = match payload {
         Ok(value) => value,
-        Err(error) => {
-            return Observed::not_proven(format!(
-                "repository payload for {owner}/{name} did not parse: {error}"
-            ));
-        }
+        Err(detail) => return Observed::not_proven(detail.clone()),
     };
 
     let full_name = value.get("full_name").and_then(Value::as_str);
@@ -183,7 +218,8 @@ pub fn collect_classic_protection(
     name: &str,
     branch: &str,
 ) -> Observed<ClassicProtection> {
-    let branch_path = format!("repos/{owner}/{name}/branches/{branch}");
+    let branch_path =
+        format!("{}/branches/{}", repo_path(owner, name), encode_path_segment(branch));
     let protected: Option<bool> = match commands.api(&branch_path) {
         Ok(body) => serde_json::from_str::<RawBranch>(&body).ok().and_then(|raw| raw.protected),
         Err(_) => None,
@@ -419,6 +455,137 @@ struct RawRulesetDetail {
     bypass_actors: Option<Vec<RawBypassActor>>,
     #[serde(default)]
     rules: Option<Vec<RawRulesetRule>>,
+    #[serde(default)]
+    conditions: Option<Value>,
+}
+
+/// Largest number of pages any list endpoint is followed for. A listing that
+/// is still full at this bound is `NOT_PROVEN`, never truncated silently.
+const MAX_PAGES: u32 = 20;
+const PAGE_SIZE: usize = 100;
+
+/// Follow `page=1..` on an endpoint that returns a bare JSON array until a
+/// short page arrives. A page that fails, does not parse, or is still full at
+/// [`MAX_PAGES`] fails the whole listing: page 1 alone must never stand in
+/// for the collection.
+fn paginate_array(
+    commands: &dyn ReadOnlyCommands,
+    path_with_query: &str,
+    label: &str,
+) -> Result<Vec<Value>, String> {
+    let mut items = Vec::new();
+    for page in 1..=MAX_PAGES {
+        let path = format!("{path_with_query}&per_page={PAGE_SIZE}&page={page}");
+        let body = commands
+            .api(&path)
+            .map_err(|error| format!("reading {label} page {page}: {}", describe_error(&error)))?;
+        let page_items: Vec<Value> = serde_json::from_str(&body)
+            .map_err(|error| format!("{label} page {page} did not parse: {error}"))?;
+        let short = page_items.len() < PAGE_SIZE;
+        items.extend(page_items);
+        if short {
+            return Ok(items);
+        }
+    }
+    Err(format!("{label} was still full after {MAX_PAGES} pages; refusing to truncate"))
+}
+
+/// Whether a ruleset's `conditions.ref_name` selects `refs/heads/{branch}`.
+///
+/// Include patterns are GitHub's: `~ALL`, `~DEFAULT_BRANCH`, or an fnmatch
+/// pattern over the full ref (`*` does not cross `/`, `**` does). An
+/// exclude match wins over any include. `~DEFAULT_BRANCH` needs the
+/// repository's observed default branch; without it the answer is
+/// `NOT_PROVEN`, and so is a payload whose `conditions.ref_name` cannot be
+/// read at all: an unreadable condition set is a gap, not an exclusion.
+pub fn ruleset_applies_to_branch(
+    conditions: Option<&Value>,
+    branch: &str,
+    default_branch: Option<&str>,
+) -> Observed<bool> {
+    let Some(ref_name) = conditions.and_then(|conditions| conditions.get("ref_name")) else {
+        return Observed::not_proven("ruleset detail carried no conditions.ref_name");
+    };
+    let patterns = |key: &str| -> Result<Vec<String>, String> {
+        match ref_name.get(key) {
+            None | Some(Value::Null) => Ok(Vec::new()),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| format!("conditions.ref_name.{key} carried a non-string"))
+                })
+                .collect(),
+            Some(_) => Err(format!("conditions.ref_name.{key} is not an array")),
+        }
+    };
+    let (include, exclude) = match (patterns("include"), patterns("exclude")) {
+        (Ok(include), Ok(exclude)) => (include, exclude),
+        (Err(detail), _) | (_, Err(detail)) => return Observed::not_proven(detail),
+    };
+
+    let full_ref = format!("refs/heads/{branch}");
+    let matches = |pattern: &str| -> Option<bool> {
+        match pattern {
+            "~ALL" => Some(true),
+            "~DEFAULT_BRANCH" => default_branch.map(|default| default == branch),
+            other => Some(ref_glob_matches(other, &full_ref)),
+        }
+    };
+    let mut included = false;
+    for pattern in &include {
+        match matches(pattern) {
+            Some(true) => included = true,
+            Some(false) => {}
+            None => {
+                return Observed::not_proven(
+                    "ruleset includes ~DEFAULT_BRANCH but the default branch was not observed",
+                );
+            }
+        }
+    }
+    if !included {
+        return Observed::observed(false);
+    }
+    for pattern in &exclude {
+        match matches(pattern) {
+            Some(true) => return Observed::observed(false),
+            Some(false) => {}
+            None => {
+                return Observed::not_proven(
+                    "ruleset excludes ~DEFAULT_BRANCH but the default branch was not observed",
+                );
+            }
+        }
+    }
+    Observed::observed(true)
+}
+
+/// fnmatch over a git ref: `**` matches across `/`, `*` within one segment,
+/// `?` one non-`/` character; everything else is literal.
+fn ref_glob_matches(pattern: &str, subject: &str) -> bool {
+    fn go(pattern: &[u8], subject: &[u8]) -> bool {
+        match pattern {
+            [] => subject.is_empty(),
+            [b'*', b'*', rest @ ..] => {
+                let rest = rest.strip_prefix(b"/").unwrap_or(rest);
+                (0..=subject.len()).any(|split| go(rest, &subject[split..]))
+            }
+            [b'*', rest @ ..] => (0..=subject.len())
+                .take_while(|&split| split == 0 || subject[split - 1] != b'/')
+                .any(|split| go(rest, &subject[split..])),
+            [b'?', rest @ ..] => match subject {
+                [first, tail @ ..] if *first != b'/' => go(rest, tail),
+                _ => false,
+            },
+            [literal, rest @ ..] => match subject {
+                [first, tail @ ..] if first == literal => go(rest, tail),
+                _ => false,
+            },
+        }
+    }
+    go(pattern.as_bytes(), subject.as_bytes())
 }
 
 #[derive(Deserialize)]
@@ -449,35 +616,56 @@ pub fn collect_rulesets(
     commands: &dyn ReadOnlyCommands,
     owner: &str,
     name: &str,
+    branch: &str,
+    default_branch: Option<&str>,
 ) -> (Observed<Vec<Ruleset>>, Observed<Vec<Ruleset>>) {
-    let list_path = format!("repos/{owner}/{name}/rulesets?includes_parents=true");
-    let list_body = match commands.api(&list_path) {
-        Ok(body) => body,
-        Err(error) => {
-            let detail = format!("reading rulesets for {owner}/{name}: {}", describe_error(&error));
-            return (Observed::not_proven(detail.clone()), Observed::not_proven(detail));
-        }
-    };
-    let items: Vec<RawRulesetListItem> = match serde_json::from_str(&list_body) {
-        Ok(items) => items,
-        Err(error) => {
-            let detail = format!("ruleset listing for {owner}/{name} did not parse: {error}");
-            return (Observed::not_proven(detail.clone()), Observed::not_proven(detail));
-        }
-    };
+    let list_path = format!("{}/rulesets?includes_parents=true", repo_path(owner, name));
+    let raw_items =
+        match paginate_array(commands, &list_path, &format!("rulesets for {owner}/{name}")) {
+            Ok(items) => items,
+            Err(detail) => {
+                return (Observed::not_proven(detail.clone()), Observed::not_proven(detail));
+            }
+        };
+    let items: Vec<RawRulesetListItem> =
+        match raw_items.into_iter().map(serde_json::from_value).collect::<Result<Vec<_>, _>>() {
+            Ok(items) => items,
+            Err(error) => {
+                let detail = format!("ruleset listing for {owner}/{name} did not parse: {error}");
+                return (Observed::not_proven(detail.clone()), Observed::not_proven(detail));
+            }
+        };
 
     let mut branch_rulesets = Vec::new();
     let mut tag_rulesets = Vec::new();
     let mut unrecognized: Vec<String> = Vec::new();
 
     for item in items {
-        let (bypass_actors, rules) = fetch_ruleset_detail(commands, owner, name, item.id);
+        let detail = fetch_ruleset_detail(commands, owner, name, item.id);
+        let (bypass_actors, rules, conditions) = match &detail {
+            Ok(detail) => (
+                observed_bypass_actors(detail),
+                observed_rules(detail),
+                Some(detail.conditions.as_ref()),
+            ),
+            Err(message) => {
+                (Observed::not_proven(message.clone()), Observed::not_proven(message.clone()), None)
+            }
+        };
+        let applies_to_branch = match (item.target.as_str(), conditions) {
+            ("branch", Some(conditions)) => {
+                ruleset_applies_to_branch(conditions, branch, default_branch)
+            }
+            ("branch", None) => Observed::not_proven("ruleset detail was not readable"),
+            _ => Observed::absent("only branch rulesets apply to a branch"),
+        };
         let target = item.target.clone();
         let ruleset = Ruleset {
             id: item.id,
             name: item.name,
             target: item.target,
             enforcement: item.enforcement,
+            applies_to_branch,
             bypass_actors,
             rules,
         };
@@ -504,25 +692,13 @@ fn fetch_ruleset_detail(
     owner: &str,
     name: &str,
     id: u64,
-) -> (Observed<Vec<BypassActor>>, Observed<Vec<RulesetRule>>) {
-    let path = format!("repos/{owner}/{name}/rulesets/{id}");
-    match commands.api(&path) {
-        Ok(body) => match serde_json::from_str::<RawRulesetDetail>(&body) {
-            Ok(detail) => (observed_bypass_actors(&detail), observed_rules(&detail)),
-            Err(error) => {
-                let message =
-                    format!("ruleset {id} detail for {owner}/{name} did not parse: {error}");
-                (Observed::not_proven(message.clone()), Observed::not_proven(message))
-            }
-        },
-        Err(error) => {
-            let message = format!(
-                "reading ruleset {id} detail for {owner}/{name}: {}",
-                describe_error(&error)
-            );
-            (Observed::not_proven(message.clone()), Observed::not_proven(message))
-        }
-    }
+) -> Result<RawRulesetDetail, String> {
+    let path = format!("{}/rulesets/{id}", repo_path(owner, name));
+    let body = commands.api(&path).map_err(|error| {
+        format!("reading ruleset {id} detail for {owner}/{name}: {}", describe_error(&error))
+    })?;
+    serde_json::from_str::<RawRulesetDetail>(&body)
+        .map_err(|error| format!("ruleset {id} detail for {owner}/{name} did not parse: {error}"))
 }
 
 /// `NOT_PROVEN` when the detail payload omits `bypass_actors` entirely (the
@@ -637,32 +813,13 @@ pub fn collect_environments(
     owner: &str,
     name: &str,
 ) -> Observed<Vec<Environment>> {
-    let list_path = format!("repos/{owner}/{name}/environments");
-    let list_body = match commands.api(&list_path) {
-        Ok(body) => body,
-        Err(error) => {
-            return Observed::not_proven(format!(
-                "reading environments for {owner}/{name}: {}",
-                describe_error(&error)
-            ));
-        }
-    };
-    let list: Value = match serde_json::from_str(&list_body) {
-        Ok(value) => value,
-        Err(error) => {
-            return Observed::not_proven(format!(
-                "environment listing for {owner}/{name} did not parse: {error}"
-            ));
-        }
-    };
-    let Some(items) = list.get("environments").and_then(Value::as_array) else {
-        return Observed::not_proven(format!(
-            "environment listing for {owner}/{name} carried no environments array"
-        ));
+    let items = match paginate_environment_listing(commands, owner, name) {
+        Ok(items) => items,
+        Err(detail) => return Observed::not_proven(detail),
     };
 
     let mut environments = Vec::new();
-    for item in items {
+    for item in &items {
         let Some(env_name) = item.get("name").and_then(Value::as_str) else {
             return Observed::not_proven(format!(
                 "an environment for {owner}/{name} carried no name"
@@ -673,13 +830,69 @@ pub fn collect_environments(
     Observed::observed(environments)
 }
 
+/// The environments endpoint wraps its page in `{total_count, environments}`.
+/// Pages are followed until `total_count` rows have been read; a short page
+/// before that, or a listing still growing at [`MAX_PAGES`], is a failure.
+fn paginate_environment_listing(
+    commands: &dyn ReadOnlyCommands,
+    owner: &str,
+    name: &str,
+) -> Result<Vec<Value>, String> {
+    let base = format!("{}/environments", repo_path(owner, name));
+    let mut items: Vec<Value> = Vec::new();
+    let mut expected: Option<usize> = None;
+    for page in 1..=MAX_PAGES {
+        let path = format!("{base}?per_page={PAGE_SIZE}&page={page}");
+        let body = commands.api(&path).map_err(|error| {
+            format!(
+                "reading environments for {owner}/{name} page {page}: {}",
+                describe_error(&error)
+            )
+        })?;
+        let list: Value = serde_json::from_str(&body).map_err(|error| {
+            format!("environment listing for {owner}/{name} page {page} did not parse: {error}")
+        })?;
+        let total = list.get("total_count").and_then(Value::as_u64).ok_or_else(|| {
+            format!("environment listing for {owner}/{name} page {page} carried no total_count")
+        })?;
+        let total = usize::try_from(total).map_err(|_| "total_count overflowed".to_string())?;
+        if let Some(previous) = expected
+            && previous != total
+        {
+            return Err(format!(
+                "environment listing for {owner}/{name} changed total_count between pages ({previous} then {total})"
+            ));
+        }
+        expected = Some(total);
+        let page_items = list.get("environments").and_then(Value::as_array).ok_or_else(|| {
+            format!(
+                "environment listing for {owner}/{name} page {page} carried no environments array"
+            )
+        })?;
+        if page_items.is_empty() && items.len() < total {
+            return Err(format!(
+                "environment listing for {owner}/{name} ended at {} of {total} rows",
+                items.len()
+            ));
+        }
+        items.extend(page_items.iter().cloned());
+        if items.len() >= total {
+            return Ok(items);
+        }
+    }
+    Err(format!(
+        "environment listing for {owner}/{name} was still growing after {MAX_PAGES} pages; refusing to truncate"
+    ))
+}
+
 fn collect_one_environment(
     commands: &dyn ReadOnlyCommands,
     owner: &str,
     name: &str,
     env_name: &str,
 ) -> Environment {
-    let detail_path = format!("repos/{owner}/{name}/environments/{env_name}");
+    let detail_path =
+        format!("{}/environments/{}", repo_path(owner, name), encode_path_segment(env_name));
     let (protection_rules, deployment_branch_policy) = match commands.api(&detail_path) {
         Ok(body) => match serde_json::from_str::<Value>(&body) {
             Ok(detail) => (
@@ -702,7 +915,7 @@ fn collect_one_environment(
         }
     };
 
-    let secrets_path = format!("repos/{owner}/{name}/environments/{env_name}/secrets");
+    let secrets_path = format!("{detail_path}/secrets");
     let secret_count = match commands.api(&secrets_path) {
         Ok(body) => match serde_json::from_str::<Value>(&body) {
             Ok(value) => match value.get("total_count").and_then(Value::as_u64) {
@@ -785,27 +998,19 @@ fn parse_deployment_branch_policy(detail: &Value) -> Observed<Option<DeploymentB
 /// `false`), and `tag_rulesets_present` derived from `tag_rulesets`, which is
 /// conclusive only when that observation itself was.
 pub fn collect_release_posture(
-    commands: &dyn ReadOnlyCommands,
+    repository_payload: &Result<Value, String>,
     owner: &str,
     name: &str,
     tag_rulesets: &Observed<Vec<Ruleset>>,
 ) -> ReleasePosture {
-    let immutable_releases = match commands.api(&format!("repos/{owner}/{name}")) {
-        Ok(body) => match serde_json::from_str::<Value>(&body) {
-            Ok(value) => match value.get("immutable_releases").and_then(Value::as_bool) {
-                Some(flag) => Observed::observed(flag),
-                None => Observed::not_proven(format!(
-                    "repository payload for {owner}/{name} did not carry immutable_releases"
-                )),
-            },
-            Err(error) => Observed::not_proven(format!(
-                "repository payload for {owner}/{name} did not parse: {error}"
+    let immutable_releases = match repository_payload {
+        Ok(value) => match value.get("immutable_releases").and_then(Value::as_bool) {
+            Some(flag) => Observed::observed(flag),
+            None => Observed::not_proven(format!(
+                "repository payload for {owner}/{name} did not carry immutable_releases"
             )),
         },
-        Err(error) => Observed::not_proven(format!(
-            "reading repository {owner}/{name}: {}",
-            describe_error(&error)
-        )),
+        Err(detail) => Observed::not_proven(detail.clone()),
     };
 
     let tag_rulesets_present = if tag_rulesets.is_conclusive() {
@@ -842,8 +1047,8 @@ pub fn observe(
     let repositories: Vec<RepositoryControls> =
         subjects.iter().map(|subject| observe_repository(commands, subject)).collect();
 
-    let verdict = evaluate::verdict(&repositories);
-    let limitations = evaluate::limitations(&repositories);
+    let verdict = evaluate::receipt_verdict(&instrument, &repositories);
+    let limitations = evaluate::receipt_limitations(&instrument, &repositories);
 
     LiveControlsReceipt {
         schema_version: RELEASE_LIVE_CONTROLS_SCHEMA_VERSION.to_string(),
@@ -860,14 +1065,17 @@ fn observe_repository(
     commands: &dyn ReadOnlyCommands,
     subject: &RepositorySubject,
 ) -> RepositoryControls {
-    let identity = collect_identity(commands, &subject.owner, &subject.name);
+    let repository_payload = fetch_repository_payload(commands, &subject.owner, &subject.name);
+    let identity = identity_from_payload(&repository_payload, &subject.owner, &subject.name);
     let identity_match = evaluate::identity_match(subject, &identity);
+    let default_branch = identity.value().map(|identity| identity.default_branch.as_str());
     let classic_branch_protection =
         collect_classic_protection(commands, &subject.owner, &subject.name, &subject.branch);
-    let (branch_rulesets, tag_rulesets) = collect_rulesets(commands, &subject.owner, &subject.name);
+    let (branch_rulesets, tag_rulesets) =
+        collect_rulesets(commands, &subject.owner, &subject.name, &subject.branch, default_branch);
     let environments = collect_environments(commands, &subject.owner, &subject.name);
     let release_posture =
-        collect_release_posture(commands, &subject.owner, &subject.name, &tag_rulesets);
+        collect_release_posture(&repository_payload, &subject.owner, &subject.name, &tag_rulesets);
     let required_contexts_union =
         evaluate::required_contexts_union(&classic_branch_protection, &branch_rulesets);
 

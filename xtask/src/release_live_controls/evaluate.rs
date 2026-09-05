@@ -8,8 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::model::{
-    ClassicProtection, Environment, IdentityMatch, ObservationState, Observed, RepositoryControls,
-    RepositoryIdentity, RepositorySubject, RequiredContextsUnion, Ruleset, UnionContext, Verdict,
+    ClassicProtection, Environment, IdentityMatch, Instrument, ObservationState, Observed,
+    RepositoryControls, RepositoryIdentity, RepositorySubject, RequiredContextsUnion, Ruleset,
+    UnionContext, Verdict,
 };
 
 /// Merge classic branch protection's required contexts with every branch
@@ -105,6 +106,21 @@ fn collect_ruleset_contexts(
     contributed: &mut Vec<(String, String)>,
     missing: &mut Vec<String>,
 ) {
+    // A ruleset GitHub is not enforcing (`evaluate`/`disabled`) or whose
+    // ref conditions do not select this branch must not inflate the union.
+    // Whether it selects the branch must itself be conclusive: an unreadable
+    // condition set is a gap, not an exclusion.
+    if ruleset.enforcement != "active" {
+        return;
+    }
+    match ruleset.applies_to_branch.value() {
+        Some(true) => {}
+        Some(false) => return,
+        None => {
+            missing.push(format!("branch_rulesets[{}].applies_to_branch", ruleset.id));
+            return;
+        }
+    }
     match ruleset.rules.state {
         ObservationState::Absent => {}
         ObservationState::Observed => match ruleset.rules.value() {
@@ -188,7 +204,9 @@ fn classic_protection_conclusive(observed: &Observed<ClassicProtection>) -> bool
 }
 
 fn ruleset_row_conclusive(ruleset: &Ruleset) -> bool {
-    ruleset.bypass_actors.is_conclusive() && ruleset.rules.is_conclusive()
+    ruleset.applies_to_branch.is_conclusive()
+        && ruleset.bypass_actors.is_conclusive()
+        && ruleset.rules.is_conclusive()
 }
 
 /// Whether a ruleset list observation, and every ruleset row inside it, is
@@ -248,6 +266,33 @@ pub fn verdict(repositories: &[RepositoryControls]) -> Verdict {
             && repository.required_contexts_union.state == ObservationState::Observed
     });
     if every_plane_conclusive { Verdict::Observed } else { Verdict::NotProven }
+}
+
+/// The receipt-level verdict: [`verdict`] over the repositories, gated on
+/// the instrument itself having been observed.
+///
+/// A receipt whose `gh` could not be established is `NOT_PROVEN` even if
+/// every plane happened to read cleanly: an unobserved instrument cannot
+/// vouch for what it read.
+pub fn receipt_verdict(instrument: &Instrument, repositories: &[RepositoryControls]) -> Verdict {
+    if instrument.state != ObservationState::Observed {
+        return Verdict::NotProven;
+    }
+    verdict(repositories)
+}
+
+/// One deterministic, sorted line per non-conclusive plane, naming the
+/// repository and the plane; plus one line for an unobserved instrument.
+pub fn receipt_limitations(
+    instrument: &Instrument,
+    repositories: &[RepositoryControls],
+) -> Vec<String> {
+    let mut lines = limitations(repositories);
+    if instrument.state != ObservationState::Observed {
+        lines.push("instrument: gh is not observed".to_string());
+        lines.sort();
+    }
+    lines
 }
 
 /// One deterministic, sorted line per non-conclusive plane, naming the

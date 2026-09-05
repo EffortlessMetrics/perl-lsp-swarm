@@ -82,6 +82,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["state"],
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "OBSERVED" } } },
+          "then": { "required": ["value"] },
+          "else": { "not": { "required": ["value"] } }
+        }
+      ],
       "properties": {
         "state": { "$ref": "#/$defs/observationState" },
         "detail": { "type": "string" },
@@ -123,6 +130,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["state"],
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "OBSERVED" } } },
+          "then": { "required": ["value"] },
+          "else": { "not": { "required": ["value"] } }
+        }
+      ],
       "properties": {
         "state": { "$ref": "#/$defs/observationState" },
         "detail": { "type": "string" },
@@ -133,6 +147,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["state"],
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "OBSERVED" } } },
+          "then": { "required": ["value"] },
+          "else": { "not": { "required": ["value"] } }
+        }
+      ],
       "properties": {
         "state": { "$ref": "#/$defs/observationState" },
         "detail": { "type": "string" },
@@ -164,6 +185,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["state"],
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "OBSERVED" } } },
+          "then": { "required": ["value"] },
+          "else": { "not": { "required": ["value"] } }
+        }
+      ],
       "properties": {
         "state": { "$ref": "#/$defs/observationState" },
         "detail": { "type": "string" },
@@ -190,6 +218,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["state"],
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "OBSERVED" } } },
+          "then": { "required": ["value"] },
+          "else": { "not": { "required": ["value"] } }
+        }
+      ],
       "properties": {
         "state": { "$ref": "#/$defs/observationState" },
         "detail": { "type": "string" },
@@ -218,6 +253,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["state"],
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "OBSERVED" } } },
+          "then": { "required": ["value"] },
+          "else": { "not": { "required": ["value"] } }
+        }
+      ],
       "properties": {
         "state": { "$ref": "#/$defs/observationState" },
         "detail": { "type": "string" },
@@ -238,6 +280,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["state"],
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "OBSERVED" } } },
+          "then": { "required": ["value"] },
+          "else": { "not": { "required": ["value"] } }
+        }
+      ],
       "properties": {
         "state": { "$ref": "#/$defs/observationState" },
         "detail": { "type": "string" },
@@ -272,6 +321,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["state"],
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "OBSERVED" } } },
+          "then": { "required": ["value"] },
+          "else": { "not": { "required": ["value"] } }
+        }
+      ],
       "properties": {
         "state": { "$ref": "#/$defs/observationState" },
         "detail": { "type": "string" },
@@ -284,12 +340,13 @@
     "ruleset": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "name", "target", "enforcement", "bypass_actors", "rules"],
+      "required": ["id", "name", "target", "enforcement", "applies_to_branch", "bypass_actors", "rules"],
       "properties": {
         "id": { "type": "integer", "minimum": 0 },
         "name": { "type": "string", "minLength": 1 },
         "target": { "type": "string", "minLength": 1 },
         "enforcement": { "type": "string", "minLength": 1 },
+        "applies_to_branch": { "$ref": "#/$defs/observedBool" },
         "bypass_actors": { "$ref": "#/$defs/observedBypassActorList" },
         "rules": { "$ref": "#/$defs/observedRulesetRuleList" }
       }
@@ -298,6 +355,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["state"],
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "OBSERVED" } } },
+          "then": { "required": ["value"] },
+          "else": { "not": { "required": ["value"] } }
+        }
+      ],
       "properties": {
         "state": { "$ref": "#/$defs/observationState" },
         "detail": { "type": "string" },
@@ -322,6 +386,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["state"],
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "OBSERVED" } } },
+          "then": { "required": ["value"] },
+          "else": { "not": { "required": ["value"] } }
+        }
+      ],
       "properties": {
         "state": { "$ref": "#/$defs/observationState" },
         "detail": { "type": "string" },
@@ -344,6 +415,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["state"],
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "OBSERVED" } } },
+          "then": { "required": ["value"] },
+          "else": { "not": { "required": ["value"] } }
+        }
+      ],
       "properties": {
         "state": { "$ref": "#/$defs/observationState" },
         "detail": { "type": "string" },
@@ -370,6 +448,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["state"],
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "OBSERVED" } } },
+          "then": { "required": ["value"] },
+          "else": { "not": { "required": ["value"] } }
+        }
+      ],
       "properties": {
         "state": { "$ref": "#/$defs/observationState" },
         "detail": { "type": "string" },

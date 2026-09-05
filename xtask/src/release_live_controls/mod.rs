@@ -30,10 +30,14 @@ mod evaluate;
 mod live;
 mod model;
 
-pub use evaluate::{identity_match, limitations, required_contexts_union, verdict};
+pub use evaluate::{
+    identity_match, limitations, receipt_limitations, receipt_verdict, required_contexts_union,
+    verdict,
+};
 pub use live::{
     ApiError, ReadOnlyCommands, SystemCommands, collect_classic_protection, collect_environments,
-    collect_identity, collect_release_posture, collect_rulesets, observe, parse_http_status,
+    collect_identity, collect_release_posture, collect_rulesets, encode_path_segment, observe,
+    parse_http_status, ruleset_applies_to_branch,
 };
 pub use model::{
     BypassActor, ClassicProtection, Currency, DeploymentBranchPolicy, Environment,
@@ -235,13 +239,22 @@ fn identity_match_label(identity_match: &IdentityMatch) -> &'static str {
 ///
 /// Forces `currency = Currency::Snapshot` regardless of what the file
 /// claims, so a replayed observation can never represent itself as current.
-/// Also runs [`LiveControlsReceipt::structural_problem`], rejecting a
-/// malformed row rather than trusting it.
+/// Rejects a foreign `schema_version` outright, and runs
+/// [`LiveControlsReceipt::structural_problem`], rejecting a malformed row
+/// rather than trusting it.
 pub fn load_snapshot(path: &Path) -> Result<LiveControlsReceipt> {
     let raw = std::fs::read_to_string(path)
         .wrap_err_with(|| format!("reading live-controls snapshot {}", path.display()))?;
     let mut receipt: LiveControlsReceipt = serde_json::from_str(&raw)
         .wrap_err_with(|| format!("parsing live-controls snapshot {}", path.display()))?;
+    if receipt.schema_version != RELEASE_LIVE_CONTROLS_SCHEMA_VERSION {
+        bail!(
+            "live-controls snapshot {} carries schema_version {:?}; this build reads only {:?}",
+            path.display(),
+            receipt.schema_version,
+            RELEASE_LIVE_CONTROLS_SCHEMA_VERSION
+        );
+    }
     receipt.currency = Currency::Snapshot;
     if let Some(problem) = receipt.structural_problem() {
         bail!("live-controls snapshot {} is structurally invalid: {problem}", path.display());

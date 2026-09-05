@@ -9,6 +9,7 @@
 //! test returns [`TestResult`] and uses `?` at the assertion boundary rather
 //! than `.unwrap()`/`.expect()`.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use xtask::release_live_controls::{
@@ -17,8 +18,9 @@ use xtask::release_live_controls::{
     Observed, PullRequestReviewRule, RELEASE_LIVE_CONTROLS_SCHEMA_VERSION, ReadOnlyCommands,
     ReleasePosture, RepositoryControls, RepositoryIdentity, RepositorySubject, RequiredContextRow,
     RequiredContextsUnion, RequiredStatusChecks, Ruleset, RulesetRule, UnionContext, Verdict,
-    collect_classic_protection, collect_rulesets, identity_match, limitations, observe,
-    parse_http_status, required_contexts_union, verdict,
+    collect_classic_protection, collect_environments, collect_rulesets, encode_path_segment,
+    identity_match, limitations, observe, parse_http_status, required_contexts_union,
+    ruleset_applies_to_branch, verdict,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -34,6 +36,9 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 struct FakeCommands {
     responses: HashMap<String, Result<String, ApiError>>,
     gh_version: Option<Result<String, ApiError>>,
+    /// Every path asked for, in order, so a test can prove a read happened
+    /// exactly once (or never).
+    calls: RefCell<Vec<String>>,
 }
 
 impl FakeCommands {
@@ -51,6 +56,7 @@ impl FakeCommands {
 
 impl ReadOnlyCommands for FakeCommands {
     fn api(&self, path: &str) -> Result<String, ApiError> {
+        self.calls.borrow_mut().push(path.to_string());
         self.responses.get(path).cloned().unwrap_or_else(|| {
             Err(ApiError { status: None, detail: format!("unstubbed path: {path}") })
         })
@@ -113,6 +119,8 @@ fn healthy_repository(
     .to_string();
     let branch_ruleset_detail = format!(
         r#"{{
+            "enforcement": "active",
+            "conditions": {{"ref_name": {{"include": ["~DEFAULT_BRANCH"], "exclude": []}}}},
             "bypass_actors": [],
             "rules": [
                 {{"type": "required_status_checks", "parameters": {{"required_status_checks": [
@@ -138,10 +146,13 @@ fn healthy_repository(
         .on(&format!("repos/{owner}/{name}"), &repo_body)
         .on(&format!("repos/{owner}/{name}/branches/{BRANCH}"), &branch_body)
         .on(&format!("repos/{owner}/{name}/branches/{BRANCH}/protection"), &protection_body)
-        .on(&format!("repos/{owner}/{name}/rulesets?includes_parents=true"), &rulesets_list)
+        .on(
+            &format!("repos/{owner}/{name}/rulesets?includes_parents=true&per_page=100&page=1"),
+            &rulesets_list,
+        )
         .on(&format!("repos/{owner}/{name}/rulesets/1"), &branch_ruleset_detail)
         .on(&format!("repos/{owner}/{name}/rulesets/2"), &tag_ruleset_detail)
-        .on(&format!("repos/{owner}/{name}/environments"), &environments_list)
+        .on(&format!("repos/{owner}/{name}/environments?per_page=100&page=1"), &environments_list)
         .on(&format!("repos/{owner}/{name}/environments/release"), &environment_detail)
         .on(&format!("repos/{owner}/{name}/environments/release/secrets"), &secrets_body)
 }
@@ -252,6 +263,7 @@ fn rulesets_alone_cannot_claim_complete_enforcement() -> TestResult {
         name: "guard".to_string(),
         target: "branch".to_string(),
         enforcement: "active".to_string(),
+        applies_to_branch: Observed::observed(true),
         bypass_actors: Observed::observed(Vec::new()),
         rules: Observed::observed(vec![RulesetRule {
             rule_type: "required_status_checks".to_string(),
@@ -279,6 +291,7 @@ fn a_single_contributing_ruleset_with_unproven_rules_blocks_the_union() -> TestR
         name: "guard".to_string(),
         target: "branch".to_string(),
         enforcement: "active".to_string(),
+        applies_to_branch: Observed::observed(true),
         bypass_actors: Observed::observed(Vec::new()),
         rules: Observed::not_proven("ruleset detail returned HTTP 403"),
     }]);
@@ -530,12 +543,16 @@ fn protection_404_with_unprotected_branch_is_a_corroborated_absence() {
 fn ruleset_without_a_bypass_actors_field_is_not_proven() -> TestResult {
     let commands = FakeCommands::default()
         .on(
-            &format!("repos/{OWNER}/{NAME}/rulesets?includes_parents=true"),
+            &format!("repos/{OWNER}/{NAME}/rulesets?includes_parents=true&per_page=100&page=1"),
             r#"[{"id": 1, "name": "guard", "target": "branch", "enforcement": "active"}]"#,
         )
-        .on(&format!("repos/{OWNER}/{NAME}/rulesets/1"), r#"{"rules": []}"#);
+        .on(
+            &format!("repos/{OWNER}/{NAME}/rulesets/1"),
+            r#"{"conditions": {"ref_name": {"include": ["~ALL"]}}, "rules": []}"#,
+        );
 
-    let (branch_rulesets, _tag_rulesets) = collect_rulesets(&commands, OWNER, NAME);
+    let (branch_rulesets, _tag_rulesets) =
+        collect_rulesets(&commands, OWNER, NAME, BRANCH, Some(BRANCH));
     let rulesets = branch_rulesets.value().ok_or("the ruleset row itself must still appear")?;
     assert_eq!(rulesets.len(), 1, "the row must not vanish because one field was unproven");
     assert_eq!(rulesets[0].bypass_actors.state, ObservationState::NotProven);
@@ -557,12 +574,16 @@ fn ruleset_without_a_bypass_actors_field_is_not_proven() -> TestResult {
 fn an_explicit_empty_bypass_actors_array_is_observed() -> TestResult {
     let commands = FakeCommands::default()
         .on(
-            &format!("repos/{OWNER}/{NAME}/rulesets?includes_parents=true"),
+            &format!("repos/{OWNER}/{NAME}/rulesets?includes_parents=true&per_page=100&page=1"),
             r#"[{"id": 1, "name": "guard", "target": "branch", "enforcement": "active"}]"#,
         )
-        .on(&format!("repos/{OWNER}/{NAME}/rulesets/1"), r#"{"bypass_actors": [], "rules": []}"#);
+        .on(
+            &format!("repos/{OWNER}/{NAME}/rulesets/1"),
+            r#"{"conditions": {"ref_name": {"include": ["~ALL"]}}, "bypass_actors": [], "rules": []}"#,
+        );
 
-    let (branch_rulesets, _tag_rulesets) = collect_rulesets(&commands, OWNER, NAME);
+    let (branch_rulesets, _tag_rulesets) =
+        collect_rulesets(&commands, OWNER, NAME, BRANCH, Some(BRANCH));
     let rulesets = branch_rulesets.value().ok_or("the ruleset list must be observed")?;
     assert_eq!(rulesets[0].bypass_actors, Observed::observed(Vec::<BypassActor>::new()));
 
@@ -581,12 +602,16 @@ fn an_explicit_empty_bypass_actors_array_is_observed() -> TestResult {
 fn an_unrecognised_ruleset_target_makes_both_buckets_not_proven() {
     let commands = FakeCommands::default()
         .on(
-            &format!("repos/{OWNER}/{NAME}/rulesets?includes_parents=true"),
+            &format!("repos/{OWNER}/{NAME}/rulesets?includes_parents=true&per_page=100&page=1"),
             r#"[{"id": 1, "name": "mystery", "target": "push", "enforcement": "active"}]"#,
         )
-        .on(&format!("repos/{OWNER}/{NAME}/rulesets/1"), r#"{"bypass_actors": [], "rules": []}"#);
+        .on(
+            &format!("repos/{OWNER}/{NAME}/rulesets/1"),
+            r#"{"conditions": {"ref_name": {"include": ["~ALL"]}}, "bypass_actors": [], "rules": []}"#,
+        );
 
-    let (branch_rulesets, tag_rulesets) = collect_rulesets(&commands, OWNER, NAME);
+    let (branch_rulesets, tag_rulesets) =
+        collect_rulesets(&commands, OWNER, NAME, BRANCH, Some(BRANCH));
     assert_eq!(branch_rulesets.state, ObservationState::NotProven);
     assert_eq!(tag_rulesets.state, ObservationState::NotProven);
 }
@@ -844,6 +869,7 @@ fn malformed_present_classic_status_fields_are_not_observed_as_empty() -> TestRe
 #[test]
 fn an_unreadable_ruleset_context_row_is_not_proven_rather_than_dropped() -> TestResult {
     let detail = r#"{
+        "conditions": {"ref_name": {"include": ["~ALL"]}},
         "bypass_actors": [],
         "rules": [
             {"type": "required_status_checks", "parameters": {"required_status_checks": [
@@ -854,12 +880,13 @@ fn an_unreadable_ruleset_context_row_is_not_proven_rather_than_dropped() -> Test
     }"#;
     let commands = FakeCommands::default()
         .on(
-            &format!("repos/{OWNER}/{NAME}/rulesets?includes_parents=true"),
+            &format!("repos/{OWNER}/{NAME}/rulesets?includes_parents=true&per_page=100&page=1"),
             r#"[{"id": 1, "name": "main-guard", "target": "branch", "enforcement": "active"}]"#,
         )
         .on(&format!("repos/{OWNER}/{NAME}/rulesets/1"), detail);
 
-    let (branch_rulesets, _tag_rulesets) = collect_rulesets(&commands, OWNER, NAME);
+    let (branch_rulesets, _tag_rulesets) =
+        collect_rulesets(&commands, OWNER, NAME, BRANCH, Some(BRANCH));
     let rulesets = branch_rulesets.value().ok_or("the ruleset list should still be observed")?;
     let row = rulesets.first().ok_or("the ruleset row must survive")?;
     assert_eq!(
@@ -895,5 +922,328 @@ fn an_unreadable_ruleset_context_row_is_not_proven_rather_than_dropped() -> Test
         required_contexts_union: union,
     };
     assert_eq!(verdict(std::slice::from_ref(&controls)), Verdict::NotProven);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Repair round: pagination, enforcement/conditions, schema_version,
+// instrument-gated verdict, path encoding, single repository read
+// ---------------------------------------------------------------------------
+
+fn ruleset_list_item(id: u64, target: &str, enforcement: &str) -> String {
+    format!(
+        r#"{{"id": {id}, "name": "rs-{id}", "target": "{target}", "enforcement": "{enforcement}"}}"#
+    )
+}
+
+const ALL_BRANCHES_DETAIL: &str =
+    r#"{"conditions": {"ref_name": {"include": ["~ALL"]}}, "bypass_actors": [], "rules": []}"#;
+
+/// A full first page must not be mistaken for the whole collection: the
+/// second page is read, and a ruleset that only appears there is observed.
+#[test]
+fn a_full_rulesets_page_is_followed_to_the_next_page() -> TestResult {
+    let page_one: Vec<String> =
+        (1..=100).map(|id| ruleset_list_item(id, "branch", "active")).collect();
+    let mut commands = FakeCommands::default()
+        .on(
+            &format!("repos/{OWNER}/{NAME}/rulesets?includes_parents=true&per_page=100&page=1"),
+            &format!("[{}]", page_one.join(",")),
+        )
+        .on(
+            &format!("repos/{OWNER}/{NAME}/rulesets?includes_parents=true&per_page=100&page=2"),
+            &format!("[{}]", ruleset_list_item(101, "branch", "active")),
+        );
+    for id in 1..=101 {
+        commands = commands.on(&format!("repos/{OWNER}/{NAME}/rulesets/{id}"), ALL_BRANCHES_DETAIL);
+    }
+
+    let (branch_rulesets, _) = collect_rulesets(&commands, OWNER, NAME, BRANCH, Some(BRANCH));
+    let rulesets = branch_rulesets.value().ok_or("the paginated list must be observed")?;
+    assert_eq!(rulesets.len(), 101);
+    assert!(rulesets.iter().any(|ruleset| ruleset.id == 101), "page-2 ruleset must be present");
+    Ok(())
+}
+
+/// The mirror: a full first page whose next page cannot be read is
+/// `NOT_PROVEN`, never "the first hundred, confidently".
+#[test]
+fn an_unreadable_second_rulesets_page_is_not_proven() -> TestResult {
+    let page_one: Vec<String> =
+        (1..=100).map(|id| ruleset_list_item(id, "branch", "active")).collect();
+    let mut commands = FakeCommands::default().on(
+        &format!("repos/{OWNER}/{NAME}/rulesets?includes_parents=true&per_page=100&page=1"),
+        &format!("[{}]", page_one.join(",")),
+    );
+    for id in 1..=100 {
+        commands = commands.on(&format!("repos/{OWNER}/{NAME}/rulesets/{id}"), ALL_BRANCHES_DETAIL);
+    }
+
+    let (branch_rulesets, tag_rulesets) =
+        collect_rulesets(&commands, OWNER, NAME, BRANCH, Some(BRANCH));
+    assert_eq!(branch_rulesets.state, ObservationState::NotProven);
+    assert_eq!(tag_rulesets.state, ObservationState::NotProven);
+    let detail = branch_rulesets.detail.ok_or("detail required")?;
+    assert!(detail.contains("page 2"), "{detail}");
+    Ok(())
+}
+
+/// Environments paginate on `total_count`: a first page carrying fewer rows
+/// than the total must be followed, and the second page's row observed.
+#[test]
+fn environments_are_read_until_total_count_is_reached() -> TestResult {
+    let commands = healthy_repository(FakeCommands::default(), OWNER, NAME, "TOKEN")
+        .on(
+            &format!("repos/{OWNER}/{NAME}/environments?per_page=100&page=1"),
+            r#"{"total_count": 2, "environments": [{"name": "release"}]}"#,
+        )
+        .on(
+            &format!("repos/{OWNER}/{NAME}/environments?per_page=100&page=2"),
+            r#"{"total_count": 2, "environments": [{"name": "staging"}]}"#,
+        )
+        .on(
+            &format!("repos/{OWNER}/{NAME}/environments/staging"),
+            r#"{"protection_rules": [], "deployment_branch_policy": null}"#,
+        )
+        .on(&format!("repos/{OWNER}/{NAME}/environments/staging/secrets"), r#"{"total_count": 0}"#);
+
+    let environments = collect_environments(&commands, OWNER, NAME);
+    let rows = environments.value().ok_or("paginated environments must be observed")?;
+    let mut names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, vec!["release", "staging"]);
+
+    // And a listing that ends short of its own total_count is NOT_PROVEN.
+    let truncated = FakeCommands::default().on(
+        &format!("repos/{OWNER}/{NAME}/environments?per_page=100&page=1"),
+        r#"{"total_count": 2, "environments": [{"name": "release"}]}"#,
+    );
+    let environments = collect_environments(&truncated, OWNER, NAME);
+    assert_eq!(environments.state, ObservationState::NotProven);
+    Ok(())
+}
+
+/// A `disabled` (or `evaluate`) ruleset is recorded but contributes nothing
+/// to the required-contexts union: GitHub is not enforcing it.
+#[test]
+fn a_disabled_ruleset_does_not_inflate_the_required_set() -> TestResult {
+    let detail = r#"{
+        "conditions": {"ref_name": {"include": ["~ALL"]}},
+        "bypass_actors": [],
+        "rules": [{"type": "required_status_checks", "parameters": {"required_status_checks": [
+            {"context": "disabled-only-check"}
+        ]}}]
+    }"#;
+    let commands = FakeCommands::default()
+        .on(
+            &format!("repos/{OWNER}/{NAME}/rulesets?includes_parents=true&per_page=100&page=1"),
+            &format!("[{}]", ruleset_list_item(1, "branch", "disabled")),
+        )
+        .on(&format!("repos/{OWNER}/{NAME}/rulesets/1"), detail);
+
+    let (branch_rulesets, _) = collect_rulesets(&commands, OWNER, NAME, BRANCH, Some(BRANCH));
+    let rows = branch_rulesets.value().ok_or("the list must still be observed")?;
+    assert_eq!(rows.len(), 1, "the disabled ruleset is still recorded");
+    assert!(!rows[0].enforced_on_branch());
+
+    let union = required_contexts_union(&conclusive_classic(), &branch_rulesets);
+    assert_eq!(union.state, ObservationState::Observed);
+    assert!(
+        union.contexts.iter().all(|context| context.name != "disabled-only-check"),
+        "a disabled ruleset's contexts must not appear as required: {:?}",
+        union.contexts
+    );
+    Ok(())
+}
+
+/// Ref conditions decide applicability: an active ruleset whose include
+/// pattern selects another branch contributes nothing, one whose exclude
+/// names this branch contributes nothing, and one whose conditions cannot
+/// be read blocks the union rather than being treated as excluded.
+#[test]
+fn ruleset_ref_conditions_select_the_requested_branch() -> TestResult {
+    let value = |raw: &str| -> serde_json::Value { serde_json::from_str(raw).unwrap_or_default() };
+
+    let other = value(r#"{"ref_name": {"include": ["refs/heads/release/*"], "exclude": []}}"#);
+    assert_eq!(ruleset_applies_to_branch(Some(&other), "main", Some("main")).value(), Some(&false));
+    assert_eq!(
+        ruleset_applies_to_branch(Some(&other), "release/1.0", Some("main")).value(),
+        Some(&true)
+    );
+    assert_eq!(
+        ruleset_applies_to_branch(Some(&other), "release/1.0/hotfix", Some("main")).value(),
+        Some(&false),
+        "a single star must not cross a path separator"
+    );
+
+    let deep = value(r#"{"ref_name": {"include": ["refs/heads/release/**"], "exclude": []}}"#);
+    assert_eq!(
+        ruleset_applies_to_branch(Some(&deep), "release/1.0/hotfix", Some("main")).value(),
+        Some(&true)
+    );
+
+    let excluded = value(r#"{"ref_name": {"include": ["~ALL"], "exclude": ["refs/heads/main"]}}"#);
+    assert_eq!(
+        ruleset_applies_to_branch(Some(&excluded), "main", Some("main")).value(),
+        Some(&false)
+    );
+
+    let default = value(r#"{"ref_name": {"include": ["~DEFAULT_BRANCH"]}}"#);
+    assert_eq!(
+        ruleset_applies_to_branch(Some(&default), "main", Some("main")).value(),
+        Some(&true)
+    );
+    assert_eq!(
+        ruleset_applies_to_branch(Some(&default), "dev", Some("main")).value(),
+        Some(&false)
+    );
+    assert_eq!(
+        ruleset_applies_to_branch(Some(&default), "main", None).state,
+        ObservationState::NotProven,
+        "~DEFAULT_BRANCH without an observed default branch is a gap, not an exclusion"
+    );
+
+    assert_eq!(
+        ruleset_applies_to_branch(None, "main", Some("main")).state,
+        ObservationState::NotProven,
+        "missing conditions are a gap, not an exclusion"
+    );
+
+    // An unreadable condition set must block the union, not silently exclude.
+    let commands = FakeCommands::default()
+        .on(
+            &format!("repos/{OWNER}/{NAME}/rulesets?includes_parents=true&per_page=100&page=1"),
+            &format!("[{}]", ruleset_list_item(1, "branch", "active")),
+        )
+        .on(&format!("repos/{OWNER}/{NAME}/rulesets/1"), r#"{"bypass_actors": [], "rules": []}"#);
+    let (branch_rulesets, _) = collect_rulesets(&commands, OWNER, NAME, BRANCH, Some(BRANCH));
+    let union = required_contexts_union(&conclusive_classic(), &branch_rulesets);
+    assert_eq!(union.state, ObservationState::NotProven);
+    let detail = union.detail.ok_or("detail required")?;
+    assert!(detail.contains("branch_rulesets[1].applies_to_branch"), "{detail}");
+    Ok(())
+}
+
+/// A snapshot written by a different schema version is refused, not read
+/// as if it were this one.
+#[test]
+fn a_foreign_schema_version_snapshot_is_refused() -> TestResult {
+    let receipt = minimal_receipt(vec![admissible_repository()]);
+    let mut json = serde_json::to_value(&receipt)?;
+    json["schema_version"] = serde_json::Value::String("release_live_controls.v2".to_string());
+
+    let dir = std::env::temp_dir()
+        .join(format!("release-live-controls-schema-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("snapshot.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&json)?)?;
+
+    let error = match xtask::release_live_controls::load_snapshot(&path) {
+        Ok(_) => return Err("a foreign schema_version must not load".into()),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("release_live_controls.v2"), "{error}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// An unobserved instrument cannot vouch for what it read: even with every
+/// plane stubbed healthy, the verdict is `NOT_PROVEN` and says why.
+#[test]
+fn an_unobserved_instrument_makes_the_verdict_not_proven() {
+    let mut commands = healthy_repository(FakeCommands::default(), OWNER, NAME, "TOKEN");
+    commands.gh_version =
+        Some(Err(ApiError { status: None, detail: "gh: command not found".to_string() }));
+
+    let receipt = observe(&commands, &[subject(OWNER, NAME)], "2026-09-03T00:00:00Z".to_string());
+    assert_eq!(receipt.instrument.state, ObservationState::NotProven);
+    assert_eq!(receipt.verdict, Verdict::NotProven);
+    assert!(
+        receipt.limitations.iter().any(|line| line.starts_with("instrument:")),
+        "{:?}",
+        receipt.limitations
+    );
+    assert!(receipt.structural_problem().is_none());
+}
+
+/// A branch containing `/` addresses the encoded route. The mock fails any
+/// unstubbed path, so an unencoded request would surface as `NOT_PROVEN`.
+#[test]
+fn branch_names_are_percent_encoded_in_api_paths() -> TestResult {
+    let branch = "release/1.0";
+    let commands = FakeCommands::default()
+        .on(&format!("repos/{OWNER}/{NAME}/branches/release%2F1.0"), r#"{"protected": false}"#)
+        .failing(
+            &format!("repos/{OWNER}/{NAME}/branches/release%2F1.0/protection"),
+            Some(404),
+            "HTTP 404: Branch not protected",
+        );
+
+    let protection = collect_classic_protection(&commands, OWNER, NAME, branch);
+    assert_eq!(
+        protection.state,
+        ObservationState::Absent,
+        "the encoded route must be the one consulted: {:?}",
+        protection.detail
+    );
+    assert_eq!(encode_path_segment("release/#1.0"), "release%2F%231.0");
+    let calls = commands.calls.borrow();
+    assert!(
+        calls.iter().all(|path| !path.contains("branches/release/")),
+        "no unencoded branch path may be requested: {calls:?}"
+    );
+    Ok(())
+}
+
+/// `repos/{owner}/{name}` is read once per repository: identity and release
+/// posture derive from the same payload and cannot disagree.
+#[test]
+fn the_repository_payload_is_read_exactly_once() {
+    let commands = healthy_repository(FakeCommands::default(), OWNER, NAME, "TOKEN");
+    let receipt = observe(&commands, &[subject(OWNER, NAME)], "2026-09-03T00:00:00Z".to_string());
+    assert_eq!(receipt.verdict, Verdict::Observed, "{:?}", receipt.limitations);
+
+    let repo_path = format!("repos/{OWNER}/{NAME}");
+    let reads = commands.calls.borrow().iter().filter(|path| **path == repo_path).count();
+    assert_eq!(reads, 1, "identity and release posture must share one repository read");
+}
+
+/// The durable JSON Schema must agree with the Rust guard in both
+/// directions: a healthy receipt validates, and a wrapper that pairs
+/// `OBSERVED` with no value (or `NOT_PROVEN` with one) is rejected by the
+/// schema itself, not only by `structural_problem()`.
+#[test]
+fn the_schema_enforces_the_state_value_invariant() -> TestResult {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("schemas")
+        .join("release_live_controls.v1.schema.json");
+    let schema: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| format!("release_live_controls schema is invalid: {error}"))?;
+
+    let commands = healthy_repository(FakeCommands::default(), OWNER, NAME, "TOKEN");
+    let receipt = observe(&commands, &[subject(OWNER, NAME)], "2026-09-03T00:00:00Z".to_string());
+    assert_eq!(receipt.verdict, Verdict::Observed, "{:?}", receipt.limitations);
+    let mut json = serde_json::to_value(&receipt)?;
+    let errors: Vec<String> = validator
+        .iter_errors(&json)
+        .map(|error| format!("{} at {}", error, error.instance_path()))
+        .collect();
+    assert!(errors.is_empty(), "a live receipt must validate against its own schema: {errors:?}");
+
+    let immutable = &mut json["repositories"][0]["release_posture"]["immutable_releases"];
+    assert_eq!(immutable["state"], "OBSERVED");
+    let observed_value = immutable
+        .as_object_mut()
+        .ok_or("immutable_releases must be an object")?
+        .remove("value")
+        .ok_or("the healthy fixture must carry a value")?;
+    assert!(!validator.is_valid(&json), "OBSERVED without a value must fail schema validation");
+
+    let immutable = &mut json["repositories"][0]["release_posture"]["immutable_releases"];
+    immutable["state"] = serde_json::Value::String("NOT_PROVEN".to_string());
+    immutable["value"] = observed_value;
+    assert!(!validator.is_valid(&json), "NOT_PROVEN with a value must fail schema validation");
     Ok(())
 }

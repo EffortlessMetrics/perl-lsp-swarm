@@ -234,15 +234,33 @@ pub struct Ruleset {
     pub id: u64,
     pub name: String,
     pub target: String,
+    /// GitHub's `enforcement` for the ruleset: `active`, `evaluate`, or
+    /// `disabled`. Only `active` rulesets contribute to enforcement.
     pub enforcement: String,
+    /// Whether the ruleset's `conditions.ref_name` include/exclude patterns
+    /// select the requested branch. `Absent` for tag rulesets (no branch to
+    /// apply to); `NOT_PROVEN` when the conditions could not be read or
+    /// depend on a default branch that was not observed.
+    pub applies_to_branch: Observed<bool>,
     pub bypass_actors: Observed<Vec<BypassActor>>,
     pub rules: Observed<Vec<RulesetRule>>,
 }
 
 impl Ruleset {
+    /// Whether this ruleset is actually in force for the requested branch:
+    /// `enforcement == "active"` and `applies_to_branch` observed `true`.
+    ///
+    /// A ruleset in `evaluate` or `disabled` mode, or one whose ref
+    /// conditions exclude the branch, is recorded but must not inflate the
+    /// required-contexts union.
+    pub fn enforced_on_branch(&self) -> bool {
+        self.enforcement == "active" && self.applies_to_branch.value() == Some(&true)
+    }
+
     fn structural_problem(&self, label: &str) -> Option<String> {
-        self.bypass_actors
-            .structural_problem(&format!("{label}.bypass_actors"))
+        self.applies_to_branch
+            .structural_problem(&format!("{label}.applies_to_branch"))
+            .or_else(|| self.bypass_actors.structural_problem(&format!("{label}.bypass_actors")))
             .or_else(|| self.rules.structural_problem(&format!("{label}.rules")))
     }
 }

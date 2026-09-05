@@ -5747,6 +5747,13 @@ fn run_cli(cli: Cli) -> Result<()> {
             xtask::publication_drift::run_with_paths(input, repo_root, out)
         }
         Commands::ReleaseLiveControls { repo_root, repositories, branch, out, json } => {
+            // `.` means the workspace root, not the shell's cwd: the observer
+            // reads `policy/product-identity.toml` relative to it.
+            let repo_root = if repo_root.as_os_str() == "." {
+                utils::project_root().map_err(|error| eyre!(error.to_string()))?
+            } else {
+                repo_root
+            };
             let verdict =
                 xtask::release_live_controls::run(xtask::release_live_controls::ObserveOptions {
                     repo_root,
