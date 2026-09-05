@@ -240,14 +240,13 @@ fn set_breakpoints_with_missing_arguments_fails_structured() {
 
 // --- inlineValues -------------------------------------------------------------
 
-/// Mirrors `dispatcher::tests::test_handle_inline_values`: scanning a
-/// two-line script must surface both `$x` and `$y` in the response.
-///
-/// `dap_comprehensive_test.rs::test_dap_inline_values` already covers a
-/// similar shape; this test pins the minimal source/range that
-/// `DapDispatcher`'s unit test guarded.
+/// #9089: the routed inlineValues extension is fail-closed — scanning a
+/// two-line script is refused with the deterministic gate message, never
+/// served, until a versioned negotiation contract is proven. This pins the
+/// same minimal source/range `DapDispatcher`'s unit test once guarded, now on
+/// the refusal contract.
 #[test]
-fn inline_values_returns_scalars_for_two_line_script() {
+fn inline_values_is_refused_for_two_line_script() {
     let mut file = must(NamedTempFile::with_suffix(".pl"));
     must(file.write_all(b"my $x = 1;\nmy $y = $x + 2;\n"));
     must(file.flush());
@@ -264,20 +263,18 @@ fn inline_values_returns_scalars_for_two_line_script() {
         })),
     );
 
-    let body = match response {
-        DapMessage::Response { success: true, body, .. } => must_some(body),
-        other => must(Err::<serde_json::Value, _>(format!(
-            "expected successful Response, got {other:?}"
-        ))),
-    };
-
-    let values = must_some(body.get("inlineValues").and_then(|v| v.as_array()));
-    let saw_x =
-        values.iter().any(|v| v.get("text").and_then(|t| t.as_str()).unwrap_or("").contains("$x"));
-    let saw_y =
-        values.iter().any(|v| v.get("text").and_then(|t| t.as_str()).unwrap_or("").contains("$y"));
-    assert!(saw_x, "inlineValues must surface $x, got {values:?}");
-    assert!(saw_y, "inlineValues must surface $y, got {values:?}");
+    match response {
+        DapMessage::Response { success: false, body, message, .. } => {
+            assert!(body.is_none(), "a refused inlineValues response carries no body");
+            let message =
+                message.unwrap_or_else(|| must(Err::<String, _>("refusal must carry a message")));
+            assert!(
+                message.contains("inlineValues"),
+                "refusal must carry the #9089 gate reason, got: {message}"
+            );
+        }
+        other => must(Err::<(), _>(format!("expected refused Response, got {other:?}"))),
+    }
 }
 
 // --- configurationDone --------------------------------------------------------

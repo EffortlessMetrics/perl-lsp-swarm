@@ -88,6 +88,13 @@ pub use carmel::{
 };
 pub use dist::{DistMetadataFacts, DistMetadataSource, Prereq};
 pub use effects::CompileEffectFacts;
+pub use environment::builder::{
+    AmbientEnvironmentObservation, BuildSystemFactDeclaration, EnvironmentInputReceipt,
+    EnvironmentRejectionReason, EnvironmentSnapshotReceipts, EnvironmentSnapshotSlot,
+    IncludeRootDeclaration, InterpreterDeclaration, Perl5LibDeclaration,
+    RejectedIncludeEntryReceipt, SnapshotInstallOutcome, SystemIncDeclaration,
+    WorkspaceEnvironmentDeclaration, rejected_include_entries,
+};
 pub use environment::{
     BuildSystemFactRef, BuildSystemKind, EnvironmentBuildError, EnvironmentFingerprint,
     EnvironmentInput, EnvironmentInputAuthority, EnvironmentInputId, EnvironmentInputState,

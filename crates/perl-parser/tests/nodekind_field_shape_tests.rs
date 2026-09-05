@@ -24,7 +24,7 @@ where
     node.for_each_child(|child| find_nodes(child, predicate, out));
 }
 
-fn matching_nodes<'a, F>(node: &'a Node, predicate: F) -> Vec<&'a Node>
+fn matching_nodes<F>(node: &Node, predicate: F) -> Vec<&Node>
 where
     F: Fn(&NodeKind) -> bool,
 {
