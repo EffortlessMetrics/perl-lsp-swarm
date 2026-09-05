@@ -556,17 +556,37 @@ fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
     let Some(last_char) = trimmed.chars().next_back() else {
         return false; // blank line — statement position
     };
-    // Expression indicators: assignment, list, operator contexts
+    // Expression indicators: assignment, list, operator contexts.
+    //
+    // Multi-character operators (`==`, `!=`, `<=`, `>=`, `=~`, `//`, `=>`) need
+    // no special case: each ends in a character already listed here, and each
+    // one puts the cursor in a value position. A comparison, a match, a
+    // defined-or, and a fat comma all expect an operand next, so the sole
+    // consumer -- complete_general_context -- must go on suppressing
+    // statement-only keywords there.
     matches!(
         last_char,
-        '=' | ',' | ';' | '(' | '[' | '{' | '+' | '-' | '*' | '/' | '%' | '.' | '&' | '|' | '!' | '<' | '>' | '?' | ':' | '~' | '\\'
-    ) && !trimmed.ends_with("=>") // fat comma is a key context, not expression
-    && !trimmed.ends_with("==")
-    && !trimmed.ends_with("!=")
-    && !trimmed.ends_with("<=")
-    && !trimmed.ends_with(">=")
-    && !trimmed.ends_with("=~")
-    && !trimmed.ends_with("//")
+        '=' | ','
+            | ';'
+            | '('
+            | '['
+            | '{'
+            | '+'
+            | '-'
+            | '*'
+            | '/'
+            | '%'
+            | '.'
+            | '&'
+            | '|'
+            | '!'
+            | '<'
+            | '>'
+            | '?'
+            | ':'
+            | '~'
+            | '\\'
+    )
 }
 
 #[cfg(test)]
@@ -735,13 +755,14 @@ mod indirect_helper_tests {
         assert!(!is_in_expression_position("   ", 3));
     }
 
-    /// The exclusion list is what separates an expression position from a
-    /// comparison / match / defined-or / key context. It has to be applied to
-    /// the whitespace-trimmed prefix: the cursor in a completion request is
-    /// normally *after* a space, so testing the untrimmed prefix left every
-    /// exclusion dead in exactly the case it exists for.
+    /// A multi-character operator leaves the cursor in a value position, so
+    /// `complete_general_context` must keep suppressing statement-only keywords
+    /// (`package`, `sub`, `use`) there -- Perl wants an operand, not a new
+    /// statement. These held only by accident before: the exclusion list that
+    /// used to deny them was compared against the untrimmed prefix, so it never
+    /// fired in the normal cursor-after-a-space case. Pin both spacings.
     #[test]
-    fn operator_exclusions_hold_across_trailing_whitespace() {
+    fn multi_character_operators_are_expression_positions() {
         for (source, operator) in [
             ("if ($a == ", "=="),
             ("if ($a != ", "!="),
@@ -752,13 +773,13 @@ mod indirect_helper_tests {
             ("key => ", "=>"),
         ] {
             assert!(
-                !is_in_expression_position(source, source.len()),
-                "{operator} is a comparison/match/key context, not an expression position: {source:?}"
+                is_in_expression_position(source, source.len()),
+                "{operator} expects an operand, so this is an expression position: {source:?}"
             );
             let tight = source.trim_end();
             assert!(
-                !is_in_expression_position(tight, tight.len()),
-                "{operator} must also be excluded without trailing whitespace: {tight:?}"
+                is_in_expression_position(tight, tight.len()),
+                "{operator} must hold without trailing whitespace too: {tight:?}"
             );
         }
     }

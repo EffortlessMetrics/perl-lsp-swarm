@@ -9410,3 +9410,68 @@ fn test_incomplete_block_keeps_ancestor_and_excludes_closed_sibling() {
         "ended sibling block must not reactivate during recovery; got {labels:?}"
     );
 }
+
+/// End-to-end guard for the operator/keyword-suppression seam (#11688 review).
+///
+/// `is_in_expression_position` gates `complete_general_context`: a `false` there
+/// is read as permission to offer the whole keyword inventory, statement-only
+/// snippets included. After a comparison, match, defined-or, or fat comma the
+/// cursor sits in a value position, so offering `package` or `sub` would put a
+/// statement where Perl requires an operand.
+///
+/// Measured A/B on this seam: with the old operator exclusions active these
+/// four sites returned 324-326 completions including `package` and `sub`;
+/// without them they return 267-269 with both suppressed.
+///
+/// `use` is deliberately not asserted here. It is still offered in these
+/// positions, but it arrives from the module/import completion path rather
+/// than this keyword branch, so it is a separate pre-existing leak that this
+/// seam does not govern.
+#[test]
+fn value_positions_do_not_offer_statement_only_keywords() -> Result<(), Box<dyn std::error::Error>>
+{
+    const STATEMENT_ONLY: [&str; 2] = ["package", "sub"];
+
+    for source in [
+        "my $x = 1;\nif ($x == ",
+        "my $x = 1;\nif ($x != ",
+        "my $x = 1;\nif ($x <= ",
+        "my $x = 1;\nif ($x >= ",
+        "my $s = 'a';\n$s =~ ",
+        "my $x = 1;\nmy $y = $x // ",
+        "my %h = (key => ",
+    ] {
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+        let provider = CompletionProvider::new(&ast);
+        let completions = provider.get_completions(source, source.len());
+
+        for keyword in STATEMENT_ONLY {
+            assert!(
+                !completions.iter().any(|c| c.label == keyword),
+                "{keyword:?} is statement-only and must not be offered in the value \
+                 position after {source:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Negative control: a real statement position still offers the statement
+/// keywords, so the guard above cannot pass by suppressing them everywhere.
+#[test]
+fn statement_positions_still_offer_statement_keywords() -> Result<(), Box<dyn std::error::Error>> {
+    let source = "sub f { }\n";
+    let mut parser = Parser::new(source);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(source, source.len());
+
+    for keyword in ["package", "sub"] {
+        assert!(
+            completions.iter().any(|c| c.label == keyword),
+            "a statement position must still offer {keyword:?}"
+        );
+    }
+    Ok(())
+}
