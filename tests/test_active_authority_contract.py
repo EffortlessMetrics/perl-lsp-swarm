@@ -114,6 +114,7 @@ SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
         "INTEGRATION_READY",
         "PR_IN_FLIGHT",
         "NOT_PROVEN",
+        THREAD_PRECONDITION,
         "--match-head-commit",
         "autoMergeRequest",
         "Return `PR_IN_FLIGHT` only after a fresh GitHub read confirms",

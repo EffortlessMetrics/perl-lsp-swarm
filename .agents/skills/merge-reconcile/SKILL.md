@@ -86,11 +86,18 @@ MERGE_BLOCKED
 NOT_PROVEN
 ```
 
+Before either `INTEGRATION_READY` or `PR_IN_FLIGHT` can be returned, enumerate
+the complete live thread set with
+`scripts/reviews/threads <pr> --unresolved-only --json`. The reported
+`unresolved_count` must be `0`; bot-authored and outdated threads count. Any
+non-zero result is `MERGE_BLOCKED`, routed to `$address-review-comments`, and is never
+`PR_IN_FLIGHT`.
+
 Verify live GitHub facts:
 
 - PR is ready, not draft;
 - required checks are current for the candidate;
-- no unresolved substantive thread remains;
+- the sanctioned thread enumerator reports `unresolved_count` of 0;
 - no current `CHANGES_REQUESTED` review remains;
 - deliberately requested reviewers are not still pending where their judgment is part
   of this claim;
@@ -117,6 +124,11 @@ Use the current head SHA only as compare-and-swap protection at the instant of m
 ```text
 gh pr merge <n> --squash --match-head-commit <current-head-sha>
 ```
+
+zero unresolved review threads is a precondition of arming auto-merge. Re-run
+`scripts/reviews/threads <pr> --unresolved-only --json` immediately before the
+command. If `unresolved_count` is non-zero, return `MERGE_BLOCKED` and route to
+`$address-review-comments`.
 
 When the required union is still pending, arm auto-merge with the current head SHA:
 
