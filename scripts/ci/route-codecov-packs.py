@@ -201,16 +201,25 @@ def _package_edition(crate_name: str, package: dict[str, object], repo_root: Pat
     raise ValueError(f"Cargo manifest for changed crate {crate_name} has an invalid edition")
 
 
-def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> PackageTestTargets:
+def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> PackageTestTargets | None:
     """Derive testable lib/bin targets for one local Cargo package.
 
     Cargo's fallback route used to assume every changed package had a library
     and no ordinary binary unit tests.  Read the local manifest and source
     layout instead, including explicit targets, source-path occupancy, and
     Cargo's edition-aware autobin conventions.
+
+    Returns ``None`` when the changed directory is not a Cargo package.
     """
     crate_root = repo_root / "crates" / crate_name
     manifest_path = crate_root / "Cargo.toml"
+    if not manifest_path.is_file():
+        # Not every `crates/<dir>` is a Cargo package -- the vendored
+        # `tree-sitter-perl` grammar is not -- and a PR that deletes a crate
+        # still reports its sources as changed.  Neither owns coverage targets,
+        # and neither should abort the whole route for the other changed
+        # packages in the same pack.
+        return None
     try:
         manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
     except OSError as error:
@@ -262,11 +271,26 @@ def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> Packag
         if name in declared_names:
             raise ValueError(f"Cargo manifest for changed crate {crate_name} repeats bin target {name}")
         declared_names.add(name)
-        if target.get("test") is not False:
-            binaries[name] = BinaryTestTarget(name, _target_features(target))
+        if target.get("test") is False:
+            continue
+        # A declared target whose source is absent cannot be instrumented, so
+        # emitting `--bin <name>` for it could only fail the coverage command.
+        if raw_path is not None:
+            source_present = (crate_root / raw_path).is_file()
+        else:
+            source_present = any(
+                (crate_root / candidate).is_file()
+                for candidate in _inferred_bin_paths(name, package_name)
+            )
+        if not source_present:
+            continue
+        binaries[name] = BinaryTestTarget(name, _target_features(target))
 
     edition = _package_edition(crate_name, package, repo_root)
-    default_autobins = not (edition == "2015" and explicit_bins)
+    # Cargo disables edition-2015 auto-discovery when the manifest defines ANY
+    # target manually, not only a [[bin]]; an explicit [lib] counts.
+    manual_target_declared = bool(explicit_bins) or explicit_lib is not None
+    default_autobins = not (edition == "2015" and manual_target_declared)
     if package.get("autobins", default_autobins) is not False:
         src_root = crate_root / "src"
 
@@ -341,6 +365,8 @@ def augment_rust_focused_commands(
     test_targets_by_crate = changed_integration_test_targets(paths)
     for crate_name in changed_crates(paths):
         targets = package_test_targets(crate_name, repo_root)
+        if targets is None:
+            continue
         if targets.has_lib:
             lib_cmd = (
                 f"cargo llvm-cov test --no-report -p {targets.package_name} "

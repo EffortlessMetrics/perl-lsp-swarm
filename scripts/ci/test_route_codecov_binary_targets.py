@@ -763,6 +763,128 @@ class BinaryTargetRoutingTests(unittest.TestCase):
         )
         self.assertTrue((repo_root / "crates" / "perl-ci-hygiene").is_dir())
 
+    def test_non_package_crate_directory_is_skipped_not_fatal(self) -> None:
+        """`crates/tree-sitter-perl` is a vendored grammar, not a Cargo package."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            grammar_src = root / "crates" / "vendored-grammar" / "src"
+            grammar_src.mkdir(parents=True)
+            (grammar_src / "scanner.rs").write_text("// grammar\n", encoding="utf-8")
+
+            commands = self._commands_for(root, "vendored-grammar", "src/scanner.rs")
+
+        self.assertEqual([], commands)
+
+    def test_real_vendored_grammar_directory_does_not_abort_the_route(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        if not (repo_root / "crates" / "tree-sitter-perl").is_dir():
+            self.skipTest("vendored tree-sitter-perl directory is absent")
+        self.assertFalse((repo_root / "crates" / "tree-sitter-perl" / "Cargo.toml").is_file())
+        self.assertIsNone(router.package_test_targets("tree-sitter-perl", repo_root))
+
+    def test_deleted_crate_does_not_abort_surviving_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "surviving",
+                """
+                [package]
+                name = "surviving"
+                version = "0.0.0"
+                edition = "2024"
+                """,
+                ["src/lib.rs", "src/changed.rs"],
+            )
+            paths = [
+                "crates/removed-crate/src/gone.rs",
+                "crates/surviving/src/changed.rs",
+            ]
+            selected = router.selected_packs([self._fallback_pack()], paths)
+            commands = router.normalize_pack(selected[0], paths, repo_root=root)["commands"]
+
+        self.assertIn(
+            "cargo llvm-cov test --no-report -p surviving --lib --profile agent --locked",
+            commands,
+        )
+        self.assertTrue(all("removed-crate" not in command for command in commands))
+
+    def test_explicit_bin_without_source_is_not_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "ghost-directory",
+                """
+                [package]
+                name = "ghost-tool"
+                version = "0.0.0"
+                edition = "2024"
+
+                [[bin]]
+                name = "ghost"
+                path = "tools/ghost.rs"
+                """,
+                ["src/lib.rs", "src/changed.rs"],
+            )
+
+            commands = self._commands_for(root, "ghost-directory")
+
+        self.assertFalse(any(" --bin " in command for command in commands))
+        self.assertIn(
+            "cargo llvm-cov test --no-report -p ghost-tool --lib --profile agent --locked",
+            commands,
+        )
+
+    def test_pathless_explicit_bin_without_source_is_not_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "ghostless-directory",
+                """
+                [package]
+                name = "ghostless-tool"
+                version = "0.0.0"
+                edition = "2024"
+
+                [[bin]]
+                name = "absent"
+                """,
+                ["src/lib.rs", "src/changed.rs"],
+            )
+
+            commands = self._commands_for(root, "ghostless-directory")
+
+        self.assertFalse(any(" --bin " in command for command in commands))
+
+
+    def test_edition_2015_explicit_lib_alone_disables_autodiscovery(self) -> None:
+        """An explicit [lib] is a manual target and suppresses 2015 autobins."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "lib-only-2015",
+                """
+                [package]
+                name = "lib-only-2015"
+                version = "0.0.0"
+                edition = "2015"
+
+                [lib]
+                path = "src/lib.rs"
+                """,
+                ["src/lib.rs", "src/main.rs", "src/changed.rs"],
+            )
+
+            commands = self._commands_for(root, "lib-only-2015")
+
+        self.assertIn(
+            "cargo llvm-cov test --no-report -p lib-only-2015 --lib --profile agent --locked",
+            commands,
+        )
+        self.assertFalse(any(" --bin " in command for command in commands))
 
 if __name__ == "__main__":
     unittest.main()
