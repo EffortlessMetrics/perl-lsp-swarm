@@ -100,6 +100,8 @@ pub(super) fn inspect_sources(root: &Path) -> Result<SourceFacts> {
             "check_branch_worktree_mapping(snapshot)",
             "check_dirty_unpushed(snapshot, config)",
             "check_disk_capacity(snapshot, config)",
+            "check_remote_branch_identity(snapshot)",
+            "remote-branch-identity",
             "check_candidate_presence(snapshot)",
             "candidate-presence",
             "Advisory-first: `run` always returns `Ok(())`",
