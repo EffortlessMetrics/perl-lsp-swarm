@@ -394,7 +394,7 @@ pub fn compose_builder_packet(
             ),
         ));
     }
-    let allowed_profiles = allowed_profiles_for(&node, &disposition);
+    let allowed_profiles = allowed_profiles_for(node, &disposition);
     if BLOCKING_DISPOSITIONS.contains(&disposition.as_str())
         && (is_coding || profile == "maintainer_external_action")
     {
@@ -409,7 +409,7 @@ pub fn compose_builder_packet(
             ),
         ));
     }
-    if !allowed_profiles.iter().any(|allowed| *allowed == profile) {
+    if !allowed_profiles.contains(&profile) {
         return Err(Refusal::new(
             &node.node_id,
             profile,
@@ -816,10 +816,10 @@ fn remove_null_live_observation(mut doc: Value) -> Value {
         if object.get("live_observation").map(Value::is_null).unwrap_or(false) {
             object.remove("live_observation");
         }
-        if let Some(work) = object.get_mut("work").and_then(Value::as_object_mut) {
-            if work.get("bounded_leaf_manifest_ref").map(Value::is_null).unwrap_or(false) {
-                work.remove("bounded_leaf_manifest_ref");
-            }
+        if let Some(work) = object.get_mut("work").and_then(Value::as_object_mut)
+            && work.get("bounded_leaf_manifest_ref").map(Value::is_null).unwrap_or(false)
+        {
+            work.remove("bounded_leaf_manifest_ref");
         }
     }
     doc
@@ -1182,7 +1182,7 @@ pub fn compose_review_packet(
                     .get("work")
                     .and_then(|work| work.get("proposition_id"))
                     .and_then(Value::as_str)
-                    .unwrap_or(&proposition_id(&node)),
+                    .unwrap_or(&proposition_id(node)),
                 "profile": PROFILE,
             },
             "owning_issue": format!("#{}", node.issue),
