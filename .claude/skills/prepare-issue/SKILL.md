@@ -14,11 +14,12 @@ Use current source, live GitHub issues and PRs, accepted repository contracts, p
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains the accepted problem, whether the work should exist, semantic
-owner and consumers, one coherent claim, scope/non-goals, risk/rollback, contradiction
-resolution, current plan, and whether a durable cross-PR specification is warranted.
+The main Claude thread retains the accepted problem, whether the work should exist,
+semantic owner and consumers, one coherent claim, scope/non-goals, risk/rollback,
+contradiction resolution, current plan, and whether a durable cross-PR specification is
+warranted.
 
 ### Useful subagent work
 
@@ -35,8 +36,9 @@ and a bounded return. Children do not choose the claim or update the issue indep
 
 ### Mutation owner and join
 
-One issue-body integrator owns durable synthesis and plan updates. Join evidence and
-contradictions rather than counting agents.
+One issue-body integrator owns durable synthesis and plan updates under the root-held
+claim frame. Join evidence and contradictions in the main thread rather than counting
+agents.
 
 The join is ready when the problem, owner, consumers, scope/non-goals, proof obligations,
 prerequisites, and plan are current; material contradictions are resolved or explicitly

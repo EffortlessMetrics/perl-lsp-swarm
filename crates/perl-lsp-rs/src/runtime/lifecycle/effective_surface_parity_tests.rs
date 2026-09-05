@@ -12,11 +12,6 @@
 //! the discrimination working.
 
 #![cfg(test)]
-#![expect(
-    clippy::unwrap_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
-
 use super::super::{LspServer, json};
 use super::capabilities::{apply_disabled_feature_id, disabled_feature_ids_from_init_options};
 use perl_lsp_rs_core::features::policy::FeatureProfile;
@@ -131,26 +126,17 @@ fn inputs_from_params(params: &Value) -> SurfaceInputs {
     inputs
 }
 
-/// Post-configuration flags exactly as handle_initialize derives them.
-fn runtime_flags_for(inputs: &SurfaceInputs) -> BuildFlags {
-    let mut flags = inputs.build_flags.clone();
-    for id in &inputs.disabled_feature_ids {
-        apply_disabled_feature_id_model(&mut flags, id);
-    }
-    flags
-}
-
 /// Core discriminator: the model must reproduce the EXACT emitted initialize
 /// capabilities for the given subject, plus effective advertised identities.
-fn assert_initialize_matches_model(params: Value) -> EffectiveLspSurface {
+fn assert_initialize_matches_model(params: Value) -> Result<EffectiveLspSurface, String> {
     let server = LspServer::new();
     let response = server
         .handle_initialize(Some(params.clone()))
-        .unwrap_or_else(|error| panic!("initialize failed: {error}"))
-        .expect("initialize returned a payload");
+        .map_err(|error| format!("initialize failed: {error}"))?
+        .ok_or_else(|| "initialize returned no payload".to_string())?;
     let inputs = inputs_from_params(&params);
     let surface = EffectiveLspSurface::build(&inputs)
-        .unwrap_or_else(|error| panic!("model refused subject: {error}"));
+        .map_err(|error| format!("model refused subject: {error}"))?;
 
     assert_eq!(
         response.get("capabilities"),
@@ -173,7 +159,7 @@ fn assert_initialize_matches_model(params: Value) -> EffectiveLspSurface {
         "only the inline-completion tri-state twin may disagree with the \
          model's effective identities (S03 owns removal): {disagreements:?}"
     );
-    surface
+    Ok(surface)
 }
 
 // ---------------------------------------------------------------------------
@@ -218,12 +204,13 @@ fn suppression_table_matches_the_canonical_model_table() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn minimal_client_surface_matches() {
-    assert_initialize_matches_model(json!({ "capabilities": {} }));
+fn minimal_client_surface_matches() -> Result<(), String> {
+    assert_initialize_matches_model(json!({ "capabilities": {} }))?;
+    Ok(())
 }
 
 #[test]
-fn vscode_like_client_surface_matches() {
+fn vscode_like_client_surface_matches() -> Result<(), String> {
     assert_initialize_matches_model(json!({
         "clientInfo": { "name": "Visual Studio Code" },
         "capabilities": {
@@ -246,11 +233,12 @@ fn vscode_like_client_surface_matches() {
             "general": { "positionEncodings": ["utf-16"] }
         },
         "initializationOptions": { "disabledFeatures": ["lsp.moniker"] }
-    }));
+    }))?;
+    Ok(())
 }
 
 #[test]
-fn lsp4ij_like_dynamic_inline_completion_surface_matches() {
+fn lsp4ij_like_dynamic_inline_completion_surface_matches() -> Result<(), String> {
     let surface = assert_initialize_matches_model(json!({
         "clientInfo": { "name": "LSP4IJ" },
         "capabilities": {
@@ -262,7 +250,7 @@ fn lsp4ij_like_dynamic_inline_completion_surface_matches() {
                 "inlineCompletion": { "dynamicRegistration": true }
             }
         }
-    }));
+    }))?;
 
     let methods: Vec<&str> =
         surface.registration_plan.registrations.iter().map(|plan| plan.method).collect();
@@ -272,21 +260,25 @@ fn lsp4ij_like_dynamic_inline_completion_surface_matches() {
         surface.server_capabilities.get("inlineCompletionProvider").is_none(),
         "static provider withdrawn while the plan owns the selector"
     );
-    let family = surface.families.get(&CapabilityFamily::InlineCompletion).unwrap();
+    let family = surface
+        .families
+        .get(&CapabilityFamily::InlineCompletion)
+        .ok_or_else(|| "inline completion family missing".to_string())?;
     assert!(
         matches!(family, FamilyOutcome::Downgraded(_, _)),
         "inline completion downgraded to planned dynamic: {family:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn opencode_push_retention_surface_matches() {
+fn opencode_push_retention_surface_matches() -> Result<(), String> {
     let surface = assert_initialize_matches_model(json!({
         "clientInfo": { "name": "opencode" },
         "capabilities": {
             "textDocument": { "diagnostic": {} }
         }
-    }));
+    }))?;
     assert_eq!(
         surface.diagnostic_transport,
         perl_lsp_rs_core::protocol::effective_surface::DiagnosticTransport::PushOnly(
@@ -296,10 +288,11 @@ fn opencode_push_retention_surface_matches() {
         ),
         "OpenCode keeps push publishing through the typed exception"
     );
+    Ok(())
 }
 
 #[test]
-fn jetbrains_watcher_override_surface_matches() {
+fn jetbrains_watcher_override_surface_matches() -> Result<(), String> {
     let surface = assert_initialize_matches_model(json!({
         "clientInfo": { "name": "IntelliJ IDEA" },
         "capabilities": {
@@ -307,15 +300,16 @@ fn jetbrains_watcher_override_surface_matches() {
                 "didChangeWatchedFiles": { "dynamicRegistration": true }
             }
         }
-    }));
+    }))?;
     assert!(
         surface.registration_plan.registrations.is_empty(),
         "JetBrains exception must suppress the watcher registration plan"
     );
+    Ok(())
 }
 
 #[test]
-fn malformed_unknown_future_and_sparse_facts_match_runtime_collapse() {
+fn malformed_unknown_future_and_sparse_facts_match_runtime_collapse() -> Result<(), String> {
     assert_initialize_matches_model(json!({
         "capabilities": {
             "workspace": {
@@ -332,11 +326,13 @@ fn malformed_unknown_future_and_sparse_facts_match_runtime_collapse() {
                 "codeAction": { "documentationSupport": [] }
             }
         }
-    }));
+    }))?;
+    Ok(())
 }
 
 #[test]
-fn pull_diagnostic_client_with_refresh_supports_and_utf8_preference_matches() {
+fn pull_diagnostic_client_with_refresh_supports_and_utf8_preference_matches() -> Result<(), String>
+{
     assert_initialize_matches_model(json!({
         "clientInfo": { "name": "neovim" },
         "capabilities": {
@@ -349,11 +345,12 @@ fn pull_diagnostic_client_with_refresh_supports_and_utf8_preference_matches() {
             "textDocument": { "diagnostic": {} },
             "general": { "positionEncodings": ["utf-32", "utf-8"] }
         }
-    }));
+    }))?;
+    Ok(())
 }
 
 #[test]
-fn pull_gating_side_effect_agrees_with_transport_selection() {
+fn pull_gating_side_effect_agrees_with_transport_selection() -> Result<(), String> {
     let server = LspServer::new();
     let params = json!({
         "clientInfo": { "name": "vscode" },
@@ -365,9 +362,10 @@ fn pull_gating_side_effect_agrees_with_transport_selection() {
         "non-opencode declaring clients enable pull gating"
     );
     let surface = EffectiveLspSurface::build(&inputs_from_params(&params))
-        .unwrap_or_else(|error| panic!("model refused subject: {error}"));
+        .map_err(|error| format!("model refused subject: {error}"))?;
     assert_eq!(
         surface.diagnostic_transport,
         perl_lsp_rs_core::protocol::effective_surface::DiagnosticTransport::PullPreferred,
     );
+    Ok(())
 }

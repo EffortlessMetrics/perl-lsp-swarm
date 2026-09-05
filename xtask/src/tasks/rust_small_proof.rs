@@ -66,6 +66,19 @@ const CARGO_STEPS: &[CargoStep] = &[
         ],
     ),
     (
+        "parser accuracy NodeKind vocabulary",
+        &[
+            "test",
+            "--locked",
+            "-p",
+            "perl-parser",
+            "--test",
+            "parser_accuracy_nodekind_vocabulary",
+            "--",
+            "--nocapture",
+        ],
+    ),
+    (
         "lsp smoke",
         &[
             "test",
@@ -265,7 +278,7 @@ tests::gamma: test
     fn lane_steps_are_pinned_in_order_and_identity() {
         // Mutation guard: any drift in the semantic proof floor (target names,
         // lock discipline, nocapture/threading identity) must fail here.
-        assert_eq!(CARGO_STEPS.len(), 5);
+        assert_eq!(CARGO_STEPS.len(), 6);
         assert_eq!(CARGO_STEPS[0], ("fetch locked inputs", &["fetch", "--locked"][..]));
         assert_eq!(
             CARGO_STEPS[1],
@@ -305,6 +318,22 @@ tests::gamma: test
         );
         assert_eq!(
             CARGO_STEPS[4],
+            (
+                "parser accuracy NodeKind vocabulary",
+                &[
+                    "test",
+                    "--locked",
+                    "-p",
+                    "perl-parser",
+                    "--test",
+                    "parser_accuracy_nodekind_vocabulary",
+                    "--",
+                    "--nocapture",
+                ][..]
+            )
+        );
+        assert_eq!(
+            CARGO_STEPS[5],
             (
                 "lsp smoke",
                 &[

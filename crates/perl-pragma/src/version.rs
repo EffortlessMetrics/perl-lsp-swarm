@@ -22,15 +22,22 @@ impl PerlVersion {
 /// - `v5.36`
 /// - `v5.36.0`
 /// - `5.036`
+/// - `5.043011`
 /// - `5.10`
 /// - developer releases like `5.012_001`
+///
+/// Underscores in numeric VERSION literals are Perl visual digit separators,
+/// so repeated separators such as `5.043_0_11` name the same number as
+/// `5.043011`.
 pub fn parse_perl_version(module: &str) -> Option<PerlVersion> {
+    let is_v_string = module.starts_with('v');
     let s = module.strip_prefix('v').unwrap_or(module);
+    let is_decimal = !is_v_string && s.matches('.').count() == 1;
     let mut parts = s.splitn(3, '.');
 
     let major = parse_version_component(parts.next()?)?;
     let minor = match parts.next() {
-        Some(part) => parse_version_component(part)?,
+        Some(part) => parse_minor_version_component(part, is_decimal)?,
         None => 0,
     };
 
@@ -38,8 +45,45 @@ pub fn parse_perl_version(module: &str) -> Option<PerlVersion> {
 }
 
 fn parse_version_component(component: &str) -> Option<u32> {
-    let component = component.split_once('_').map_or(component, |(head, _)| head);
+    let component = validated_version_digits(component)?;
     component.parse().ok()
+}
+
+fn parse_minor_version_component(component: &str, is_decimal: bool) -> Option<u32> {
+    let component = validated_version_digits(component)?;
+    // Perl decimal versions group fractional digits in threes. The current
+    // public model retains only major/minor, so discard later patch groups
+    // instead of interpreting `5.043011` as the future minor version 43011.
+    let component =
+        if is_decimal && component.len() > 3 { component.get(..3)? } else { &component };
+    component.parse().ok()
+}
+
+/// Perl allows underscore characters between digits in numeric literals as
+/// visual separators (`5.012_001`, `5.043_0_11`). Accept any number of
+/// separators placed strictly between digits, reject misplaced ones
+/// (leading, trailing, or repeated), and return the digit sequence with
+/// separators removed.
+fn validated_version_digits(component: &str) -> Option<String> {
+    let mut digits = String::with_capacity(component.len());
+    // Start as if after a separator so a leading `_` is rejected.
+    let mut previous_was_separator = true;
+    for character in component.chars() {
+        match character {
+            '_' if previous_was_separator => return None,
+            '_' => previous_was_separator = true,
+            digit if digit.is_ascii_digit() => {
+                previous_was_separator = false;
+                digits.push(digit);
+            }
+            _ => return None,
+        }
+    }
+    // A trailing separator never saw its following digit.
+    if previous_was_separator {
+        return None;
+    }
+    Some(digits)
 }
 
 /// Whether `use VERSION` implies `strict` for this version.
