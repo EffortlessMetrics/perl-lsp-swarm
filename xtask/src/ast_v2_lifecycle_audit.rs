@@ -846,9 +846,18 @@ const CONTRACT_ATTRIBUTES: [&str; 4] = ["cfg", "cfg_attr", "repr", "deprecated"]
 /// Whether a rendered `use` target names the audited package itself, rather
 /// than forwarding through a local path that happens to be called `ast_v2`.
 fn names_package_directly(rendered: &str) -> bool {
-    contains_token(rendered, "perl_ast_v2")
-        || rendered.contains("perl_ast::v2")
-        || REEXPORTED_TYPE_PATH.is_match(rendered)
+    // Anchored at the root, not matched anywhere in the path. A substring test
+    // accepted `other::perl_ast_v2` — a nested module of some other package
+    // that happens to share the name — as the package itself, which let the
+    // chaining rule below wave through the very lookalike it exists to catch.
+    // A `use` path names the crate in its first segment or it does not name it.
+    let segments: Vec<&str> = rendered.split("::").map(str::trim).collect();
+    match segments.as_slice() {
+        ["perl_ast_v2", ..] => true,
+        ["perl_ast", "v2", ..] => true,
+        ["perl_parser_core", second, ..] => *second == "DiagnosticId" || *second == "MissingKind",
+        _ => false,
+    }
 }
 
 /// Render an explicit enum discriminant.

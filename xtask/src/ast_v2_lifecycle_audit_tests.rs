@@ -1628,6 +1628,38 @@ fn a_forwarding_reexport_must_terminate_in_the_inventory() -> Result<()> {
 }
 
 #[test]
+fn a_nested_module_sharing_the_package_name_is_not_the_package() -> Result<()> {
+    // `names_package_directly` used a substring test, so `other::perl_ast_v2` —
+    // a nested module of some other package that happens to share the name —
+    // counted as the package itself. That let the chaining rule wave through
+    // exactly the lookalike it exists to catch: the path was called direct, so
+    // it never had to terminate in the inventory.
+    assert!(names_package_directly("perl_ast_v2"), "the crate itself is direct");
+    assert!(names_package_directly("perl_ast_v2::Node"));
+    assert!(names_package_directly("perl_ast::v2"));
+    assert!(names_package_directly("perl_parser_core::DiagnosticId"));
+
+    assert!(!names_package_directly("other::perl_ast_v2"), "a nested lookalike is not the crate");
+    assert!(!names_package_directly("other::perl_ast::v2"));
+    assert!(!names_package_directly("wrapper::perl_parser_core::DiagnosticId"));
+    // A `perl_parser_core` path to something that is not one of the two
+    // re-exported v2 types is not a direct reference either.
+    assert!(!names_package_directly("perl_parser_core::Parser"));
+
+    // End to end: the lookalike must now be forced to chain, and fail.
+    let rows = reexport_rows(&[("rx:one", "the_crate::ast_v2", "crates/c/src/lib.rs:1")])?;
+    let lookalike = sources(&[("crates/c/src/lib.rs", "pub use other::perl_ast_v2 as ast_v2;")]);
+    let Err(err) = reconcile_reexport_inventory(&rows, &lookalike) else {
+        bail!("a nested lookalike must not satisfy a compatibility row");
+    };
+    assert!(
+        format!("{err:?}").contains("other::perl_ast_v2"),
+        "the rejection must name the lookalike path: {err:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn two_modules_exporting_one_alias_are_two_compatibility_paths() -> Result<()> {
     // Carrying only the leaf alias collapsed `a::ast_v2` and `b::ast_v2` into
     // one indistinguishable binding, so a single row covered both and a real
