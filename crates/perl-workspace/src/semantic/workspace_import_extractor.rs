@@ -38,6 +38,7 @@
 //! | `Foo->import(@names)` (standalone)         | `ManualImport`      | `Dynamic`                |
 
 use crate::ast::{Node, NodeKind};
+use perl_parser_core::hir::arguments_outside_configuration_hashes;
 use perl_semantic_facts::{
     AnchorId, Confidence, FileId, ImportKind, ImportSpec, ImportSymbols, Provenance, UseLibFact,
 };
@@ -481,69 +482,6 @@ fn classify_use(module: &str, args: &[String], file_id: FileId, node: &Node) -> 
         scope_id: None,
         span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
     })
-}
-
-/// The `use` argument tokens that are not part of a module configuration hash.
-///
-/// A standalone `{ ... }` in an import list configures the module — `use M 'a',
-/// { key => 'value' }` asks for `a` alone — so its body is not a list of requested
-/// symbols, and reading it publishes the configuration's keys and values as
-/// imported names.
-///
-/// A hash whose first key is dash-prefixed is left alone. That is
-/// Sub::Exporter's per-symbol option form, `foo => { -as => 'bar' }`, which
-/// describes the symbol being imported rather than the module; the parser drops
-/// the `=>` before it, so the two shapes are otherwise indistinguishable here.
-/// Modelling the rename is out of scope, but dropping the body would hide the
-/// installed name (`bar`) while keeping the name that is not installed (`foo`),
-/// which is worse than the imprecision it replaces.
-/// Whether the `{` at `open` begins Sub::Exporter's per-symbol option hash.
-///
-/// `foo => { -as => 'bar' }` describes the symbol being imported, and `bar` is
-/// literally the installed name, so keeping that hash keeps a real symbol. The
-/// parser splits `-as` into `-` and `as`.
-///
-/// Only `-as` qualifies. The affix options — Sub::Exporter's `-prefix`/`-suffix`
-/// and `Test2::Util::Importer`'s `-prefix`/`-postfix` — carry a *fragment*, not
-/// a name: `ok => { -postfix => '_ok' }` installs `ok_ok`, as
-/// `providers/testing/test2.rs` composes it. Keeping such a hash would publish
-/// `_ok`, which is nothing at all, so those are skipped like any other
-/// configuration. Composing the affix is rename modelling, which this pass does
-/// not do; the Test2 provider already does it where it matters.
-///
-/// Requiring the option name, rather than any dashed key,
-/// keeps an ordinary module configuration hash that happens to open with a
-/// dashed key — `use M 'foo', { -config => 'value' }` — on the skipped side.
-///
-/// Perl cannot separate these two shapes on syntax alone: `foo => {...}` and
-/// `foo, {...}` are the same list, and which reading applies is the imported
-/// module's business. The option vocabulary is the only evidence available
-/// here, so this errs toward skipping and keeps the retained case narrow.
-fn opens_per_symbol_options(args: &[String], open: usize) -> bool {
-    args.get(open + 1).map(|token| token.trim()) == Some("-")
-        && args.get(open + 2).map(|token| token.trim()).is_some_and(|name| name == "as")
-}
-
-fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
-    let mut kept = Vec::new();
-    let mut skip_depth = 0usize;
-    for (index, arg) in args.iter().enumerate() {
-        let trimmed = arg.trim();
-        if skip_depth > 0 {
-            match trimmed {
-                "{" => skip_depth = skip_depth.saturating_add(1),
-                "}" => skip_depth = skip_depth.saturating_sub(1),
-                _ => {}
-            }
-            continue;
-        }
-        if trimmed == "{" && !opens_per_symbol_options(args, index) {
-            skip_depth = 1;
-            continue;
-        }
-        kept.push(trimmed);
-    }
-    kept
 }
 
 fn classify_args(args: &[String], module: &str, node: &Node) -> (ImportKind, ImportSymbols) {

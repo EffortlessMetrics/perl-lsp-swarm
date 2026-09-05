@@ -2498,17 +2498,6 @@ fn import_spec(
     }
 }
 
-/// The `use` argument tokens that are not part of a module configuration hash.
-///
-/// A standalone `{ ... }` in an import list configures the module — `use M 'a',
-/// { key => 'value' }` asks for `a` alone — so its body is not a list of
-/// requested symbols.
-///
-/// A hash whose first key is dash-prefixed is left alone: that is
-/// Sub::Exporter's per-symbol option form, `foo => { -as => 'bar' }`, which
-/// describes the symbol rather than the module. Modelling the rename is out of
-/// scope here, but dropping the body would hide the installed name while
-/// keeping the one that is not installed.
 /// Whether the `{` at `open` begins Sub::Exporter's per-symbol option hash.
 ///
 /// `foo => { -as => 'bar' }` describes the symbol being imported, and `bar` is
@@ -2531,12 +2520,23 @@ fn import_spec(
 /// `foo, {...}` are the same list, and which reading applies is the imported
 /// module's business. The option vocabulary is the only evidence available
 /// here, so this errs toward skipping and keeps the retained case narrow.
-fn opens_per_symbol_options(args: &[String], open: usize) -> bool {
+pub fn opens_per_symbol_options(args: &[String], open: usize) -> bool {
     args.get(open + 1).map(|token| token.trim()) == Some("-")
         && args.get(open + 2).map(|token| token.trim()).is_some_and(|name| name == "as")
 }
 
-fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
+/// The `use` argument tokens that are not part of a module configuration hash.
+///
+/// A standalone `{ ... }` in an import list configures the module — `use M 'a',
+/// { key => 'value' }` asks for `a` alone — so its body is not a list of
+/// requested symbols.
+///
+/// A hash whose first key is dash-prefixed is left alone: that is
+/// Sub::Exporter's per-symbol option form, `foo => { -as => 'bar' }`, which
+/// describes the symbol rather than the module. Modelling the rename is out of
+/// scope here, but dropping the body would hide the installed name while
+/// keeping the one that is not installed.
+pub fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
     let mut kept = Vec::new();
     let mut skip_depth = 0usize;
     for (index, arg) in args.iter().enumerate() {

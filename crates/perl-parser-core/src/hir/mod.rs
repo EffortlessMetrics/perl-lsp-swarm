@@ -40,4 +40,5 @@ pub use model::{
     StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
     StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
     TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
+    arguments_outside_configuration_hashes, opens_per_symbol_options,
 };
