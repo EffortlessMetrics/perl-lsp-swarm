@@ -912,6 +912,20 @@ mod child_cwd_launch_coherence {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
     }
 
+    /// Pull a child's marker value out of its stdout.
+    ///
+    /// Position-independent on purpose: with `--nocapture` under a single test
+    /// thread, libtest writes `test <name> ... ` *without* a trailing newline
+    /// before the test body runs, so the child's marker is appended to that
+    /// line rather than starting one. Matching only at line start passes
+    /// multi-threaded and fails serially.
+    fn marker_value<'a>(stdout: &'a str, marker: &str) -> Option<&'a str> {
+        let needle = format!("{marker}:");
+        stdout
+            .lines()
+            .find_map(|line| line.find(&needle).map(|at| line[at + needle.len()..].trim_end()))
+    }
+
     fn mixed_path(prefix: &str, installed: &Path) -> OsString {
         OsString::from(format!("{prefix}:{}", installed.display()))
     }
@@ -1049,13 +1063,9 @@ mod child_cwd_launch_coherence {
                 .env(CALLER_PATH_VALUE_ENV, configured)
                 .output()?;
             let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-            stdout
-                .lines()
-                .find_map(|line| line.strip_prefix(&format!("{CALLER_PATH_MARKER}:")))
-                .map(ToOwned::to_owned)
-                .ok_or_else(|| {
-                    io::Error::other(format!("caller-path child reported nothing: {stdout}")).into()
-                })
+            marker_value(&stdout, CALLER_PATH_MARKER).map(ToOwned::to_owned).ok_or_else(|| {
+                io::Error::other(format!("caller-path child reported nothing: {stdout}")).into()
+            })
         };
 
         // The regression: an absolute PATH supplied by the caller must launch
@@ -1138,12 +1148,9 @@ mod child_cwd_launch_coherence {
                 .env(DISCOVERY_SCENARIO_ENV, raw)
                 .output()?;
             let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-            let reported = stdout
-                .lines()
-                .find_map(|line| line.strip_prefix(&format!("{DISCOVERY_MARKER}:")))
-                .ok_or_else(|| {
-                    io::Error::other(format!("discovery child reported nothing: {stdout}"))
-                })?;
+            let reported = marker_value(&stdout, DISCOVERY_MARKER).ok_or_else(|| {
+                io::Error::other(format!("discovery child reported nothing: {stdout}"))
+            })?;
 
             assert_eq!(
                 reported, "admitted=false,unfiltered=true",
@@ -1206,14 +1213,10 @@ mod child_cwd_launch_coherence {
                 .env(DEFAULT_PATH_SCENARIO_ENV, workspace.path())
                 .output()?;
             let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-            stdout
-                .lines()
-                .find_map(|line| line.strip_prefix(&format!("{DEFAULT_PATH_MARKER}:")))
-                .map(ToOwned::to_owned)
-                .ok_or_else(|| {
-                    io::Error::other(format!("platform-default child reported nothing: {stdout}"))
-                        .into()
-                })
+            marker_value(&stdout, DEFAULT_PATH_MARKER).map(ToOwned::to_owned).ok_or_else(|| {
+                io::Error::other(format!("platform-default child reported nothing: {stdout}"))
+                    .into()
+            })
         };
 
         // Control: with the real PATH the tool is genuinely reachable, so the
@@ -1277,12 +1280,9 @@ mod child_cwd_launch_coherence {
             .env(WIRING_SCENARIO_ENV, workspace.path())
             .output()?;
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let launched = stdout
-            .lines()
-            .find_map(|line| line.strip_prefix(&format!("{WIRING_MARKER}:")))
-            .ok_or_else(|| {
-                io::Error::other(format!("wiring child reported no launch: {stdout}"))
-            })?;
+        let launched = marker_value(&stdout, WIRING_MARKER).ok_or_else(|| {
+            io::Error::other(format!("wiring child reported no launch: {stdout}"))
+        })?;
 
         assert_eq!(
             launched, "INSTALLED",
