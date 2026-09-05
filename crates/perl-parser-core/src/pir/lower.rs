@@ -275,16 +275,13 @@ impl Lowerer {
                     },
                 }
             };
-            // The declaration names a write target, which is a known lvalue.
-            self.push_node_with_access(
-                item,
-                anchor,
-                operation,
-                PirContext::Void,
-                PirEvaluationDemand::Value,
-                Some(PirAccessMode::Write),
-                None,
-            );
+            // The declaration names a write target; `access_for_operation`
+            // classifies the write. The flat path cannot prove whether the
+            // place is assigned in scalar or list context (`my ($x) = ...`
+            // is a list assignment with a scalar sigil), so the value
+            // context stays `Unknown` rather than borrowing the statement's
+            // `Void` or guessing from the sigil.
+            self.push_node(item, anchor, operation, PirContext::Unknown, None);
         }
 
         if decl.has_initializer {
@@ -661,24 +658,6 @@ impl Lowerer {
         });
         if is_parent {
             self.expression_parent_ids.entry(item.scope_context).or_default().push(id);
-        }
-        id
-    }
-
-    fn push_node_with_access(
-        &mut self,
-        item: &HirItem,
-        source_anchor: PirSourceAnchor,
-        operation: PirOperation,
-        context: PirContext,
-        demand: PirEvaluationDemand,
-        access: Option<PirAccessMode>,
-        dynamic_boundary: Option<PirId>,
-    ) -> PirId {
-        let id = self.push_node(item, source_anchor, operation, context, dynamic_boundary);
-        if let Some(node) = self.nodes.get_mut(id.index() as usize) {
-            node.demand = demand;
-            node.access = access;
         }
         id
     }
@@ -1087,15 +1066,11 @@ impl BodyLowerer {
                             name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
                         },
                     };
-                    self.push_body_node_with_access(
-                        anchor,
-                        op,
-                        PirContext::Void,
-                        PirEvaluationDemand::Value,
-                        Some(PirAccessMode::Write),
-                        None,
-                        file,
-                    );
+                    // The write access comes from `access_for_operation`; the
+                    // value context of the declared place is not proven by
+                    // this lowering (scalar versus list assignment shape), so
+                    // it stays `Unknown` rather than the statement's `Void`.
+                    self.push_body_node(anchor, op, PirContext::Unknown, None, file);
                 }
                 // Lower the RHS of the initialiser. The init expr in the HIR body
                 // is an HirExpr::Assign { lhs: Variable(Write), rhs, mode: Simple }.
@@ -1705,24 +1680,6 @@ impl BodyLowerer {
             scope,
             package_context: None, // deferred: body arenas don't carry package_context yet
         });
-        id
-    }
-
-    fn push_body_node_with_access(
-        &mut self,
-        source_anchor: PirSourceAnchor,
-        operation: PirOperation,
-        context: PirContext,
-        demand: PirEvaluationDemand,
-        access: Option<PirAccessMode>,
-        dynamic_boundary: Option<PirId>,
-        file: &HirFile,
-    ) -> PirId {
-        let id = self.push_body_node(source_anchor, operation, context, dynamic_boundary, file);
-        if let Some(node) = self.nodes.get_mut(id.index() as usize) {
-            node.demand = demand;
-            node.access = access;
-        }
         id
     }
 

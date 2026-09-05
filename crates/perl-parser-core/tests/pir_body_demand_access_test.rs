@@ -15,7 +15,8 @@ use std::error::Error;
 use perl_parser_core::Parser;
 use perl_parser_core::hir::lower_ast;
 use perl_parser_core::pir::{
-    PirAccessMode, PirEvaluationDemand, PirGraph, PirNode, PirOperation, lower_hir_bodies,
+    PirAccessMode, PirContext, PirEvaluationDemand, PirGraph, PirNode, PirOperation,
+    lower_hir_bodies,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -75,6 +76,9 @@ fn body_path_return_carries_no_access_fact() -> TestResult {
         single(&graph, "LexicalWrite", |op| matches!(op, PirOperation::LexicalWrite { .. }))?;
     assert_eq!(write.access, Some(PirAccessMode::Write));
     assert_eq!(write.demand, PirEvaluationDemand::Value);
+    // The declared place's value context is not proven on this path either;
+    // it must not inherit the statement's Void.
+    assert_eq!(write.context, PirContext::Unknown);
 
     let read = single(&graph, "LexicalRead", |op| matches!(op, PirOperation::LexicalRead { .. }))?;
     assert_eq!(read.access, Some(PirAccessMode::Read));
