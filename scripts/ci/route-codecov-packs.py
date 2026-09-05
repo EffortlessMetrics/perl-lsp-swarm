@@ -176,23 +176,47 @@ def _explicit_bin_source_path(
     return None
 
 
-def _autobins_default(package: dict[str, object], manifest: dict[str, object]) -> bool:
+def _package_edition(package: dict[str, object], repo_root: Path) -> str:
+    """Resolve a package's Cargo edition, following workspace inheritance.
+
+    Most crates here declare `edition.workspace = true`, so reading the key
+    directly yields a table rather than a version and silently misses the
+    legacy rules below.  An absent edition is 2015, which is Cargo's default,
+    not a modern package.
+    """
+    edition = package.get("edition")
+    if isinstance(edition, str):
+        return edition
+    if isinstance(edition, dict) and edition.get("workspace") is True:
+        try:
+            root = tomllib.loads((repo_root / "Cargo.toml").read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            return "2015"
+        inherited = root.get("workspace", {}).get("package", {}).get("edition")
+        if isinstance(inherited, str):
+            return inherited
+    return "2015"
+
+
+def _autobins_default(
+    package: dict[str, object],
+    manifest: dict[str, object],
+    repo_root: Path,
+) -> bool:
     """Return Cargo's edition-aware autobin default for one package.
 
-    A 2015-edition package that declares any target manually turns target
-    auto-discovery off; 2018 and later keep it on.  Registering an
-    auto-discovered `--bin` that Cargo does not have is a hard command failure,
-    so honour the edition rather than assuming discovery is always active.
+    A 2015-edition package that declares binaries manually turns *binary*
+    auto-discovery off.  Only `[[bin]]` does that: `[lib]`, `[[example]]`,
+    `[[test]]`, and `[[bench]]` govern their own target kinds and leave binary
+    discovery on.  Registering an auto-discovered `--bin` Cargo does not have is
+    a hard command failure, so honour the edition rather than assuming discovery
+    is always active.
     """
     explicit = package.get("autobins")
     if explicit is not None:
         return explicit is not False
-    edition = package.get("edition")
-    if edition == "2015":
-        has_manual_target = any(
-            manifest.get(key) for key in ("lib", "bin", "example", "test", "bench")
-        )
-        return not has_manual_target
+    if _package_edition(package, repo_root) == "2015":
+        return not manifest.get("bin")
     return True
 
 
@@ -202,8 +226,9 @@ def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> Packag
     Cargo's fallback route used to assume every changed package had a library
     and no ordinary binary unit tests.  Read the local manifest and source
     layout instead, including explicit targets and Cargo's autobin conventions.
-    Targets are de-duplicated by the source file they occupy, so an explicit
-    `[[bin]]` pointing into `src/bin/` does not also surface under its file name.
+    Binary targets are de-duplicated by the source file they occupy, so an
+    explicit `[[bin]]` pointing into `src/bin/` does not also surface under its
+    file name.
     """
     crate_root = repo_root / "crates" / crate_name
     manifest_path = crate_root / "Cargo.toml"
@@ -224,16 +249,16 @@ def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> Packag
     explicit_lib = manifest.get("lib")
     if explicit_lib is not None and not isinstance(explicit_lib, dict):
         raise ValueError(f"Cargo manifest for changed crate {crate_name} has an invalid [lib] table")
+    # Occupancy tracks binary sources only.  Cargo happily emits a lib and a bin
+    # from one file (an explicit `[lib] path = "src/main.rs"` still auto-discovers
+    # the binary), so a library must not suppress binary discovery.
     occupied: set[PurePosixPath] = set()
     if isinstance(explicit_lib, dict):
         lib_path = _lib_source_path(explicit_lib, crate_name)
-        occupied.add(lib_path)
         has_lib = explicit_lib.get("test") is not False and (crate_root / lib_path).is_file()
     else:
         autolib = package.get("autolib", True) is not False
         has_lib = autolib and (crate_root / "src" / "lib.rs").is_file()
-        if has_lib:
-            occupied.add(PurePosixPath("src/lib.rs"))
 
     binaries: dict[str, BinaryTestTarget] = {}
     explicit_bins = manifest.get("bin") or []
@@ -261,7 +286,7 @@ def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> Packag
             raise ValueError(f"Cargo manifest for changed crate {crate_name} repeats bin target {name}")
         binaries[name] = BinaryTestTarget(name, _target_features(target))
 
-    if _autobins_default(package, manifest):
+    if _autobins_default(package, manifest, repo_root):
         src_root = crate_root / "src"
         discovered: list[tuple[str, PurePosixPath]] = []
         if (src_root / "main.rs").is_file():

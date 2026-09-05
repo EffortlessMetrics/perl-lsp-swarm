@@ -457,6 +457,121 @@ class BinaryTargetRoutingTests(unittest.TestCase):
             ["declared", "discovered"], [target.name for target in targets.binaries]
         )
 
+    def test_edition_2015_lib_does_not_disable_autobins(self) -> None:
+        """Only a manual `[[bin]]` disables binary discovery in edition 2015.
+
+        `cargo metadata` on a 2015 crate with `[lib]` plus `src/bin/foo.rs`
+        reports `bin foo`: `[lib]` governs the library target only.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "legacy-lib-only-directory",
+                """
+                [package]
+                name = "legacy-lib-only"
+                version = "0.0.0"
+                edition = "2015"
+
+                [lib]
+                path = "src/lib.rs"
+                """,
+                ["src/lib.rs", "src/bin/foo.rs", "src/changed.rs"],
+            )
+
+            targets = router.package_test_targets("legacy-lib-only-directory", root)
+
+        self.assertEqual(["foo"], [target.name for target in targets.binaries])
+
+    def test_omitted_edition_is_treated_as_2015(self) -> None:
+        """An absent `edition` key is 2015, so a manual bin stops discovery.
+
+        `cargo metadata` on an edition-less crate with an explicit `[[bin]]` and
+        a second `src/bin/other.rs` reports only the declared binary.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "omitted-edition-directory",
+                """
+                [package]
+                name = "omitted-edition"
+                version = "0.0.0"
+
+                [[bin]]
+                name = "declared"
+                path = "src/declared.rs"
+                """,
+                ["src/lib.rs", "src/declared.rs", "src/bin/other.rs", "src/changed.rs"],
+            )
+
+            targets = router.package_test_targets("omitted-edition-directory", root)
+
+        self.assertEqual(["declared"], [target.name for target in targets.binaries])
+
+    def test_omitted_edition_without_manual_bin_keeps_autobins(self) -> None:
+        """The 2015 default only bites when binaries are declared manually."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "omitted-edition-auto-directory",
+                """
+                [package]
+                name = "omitted-edition-auto"
+                version = "0.0.0"
+                """,
+                ["src/lib.rs", "src/bin/foo.rs", "src/changed.rs"],
+            )
+
+            targets = router.package_test_targets("omitted-edition-auto-directory", root)
+
+        self.assertEqual(["foo"], [target.name for target in targets.binaries])
+
+    def test_workspace_inherited_edition_is_resolved(self) -> None:
+        """`edition.workspace = true` must resolve, not read as a table.
+
+        43 of this workspace's 46 crates inherit their edition.  Reading the key
+        directly yields a dict, which silently takes the modern path regardless
+        of what the workspace actually declares.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "Cargo.toml").write_text(
+                textwrap.dedent(
+                    """
+                    [workspace]
+                    members = ["crates/*"]
+
+                    [workspace.package]
+                    edition = "2015"
+                    """
+                ).lstrip(),
+                encoding="utf-8",
+            )
+            self._write_package(
+                root,
+                "inherited-edition-directory",
+                """
+                [package]
+                name = "inherited-edition"
+                version = "0.0.0"
+                edition.workspace = true
+
+                [[bin]]
+                name = "declared"
+                path = "src/declared.rs"
+                """,
+                ["src/lib.rs", "src/declared.rs", "src/bin/other.rs", "src/changed.rs"],
+            )
+
+            targets = router.package_test_targets("inherited-edition-directory", root)
+
+        self.assertEqual(["declared"], [target.name for target in targets.binaries])
+
+
     def test_explicit_lib_path_is_required_to_exist(self) -> None:
         """An explicit `[lib]` whose source is absent must not emit `--lib`."""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -481,16 +596,21 @@ class BinaryTargetRoutingTests(unittest.TestCase):
         self.assertFalse(targets.has_lib)
         self.assertEqual(["absent-lib"], [target.name for target in targets.binaries])
 
-    def test_explicit_lib_path_claims_a_main_source(self) -> None:
-        """`[lib] path = "src/main.rs"` occupies the file autobins would claim."""
+    def test_library_sharing_a_main_source_still_registers_the_binary(self) -> None:
+        """Cargo emits a lib *and* a bin from one shared source file.
+
+        Verified with `cargo metadata` on a scratch crate whose only manifest
+        target is `[lib] path = "src/main.rs"`: Cargo reports both `lib c` and
+        `bin c`.  A library therefore must not occupy a binary source.
+        """
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             self._write_package(
                 root,
-                "lib-claims-main-directory",
+                "lib-shares-main-directory",
                 """
                 [package]
-                name = "lib-claims-main"
+                name = "lib-shares-main"
                 version = "0.0.0"
                 edition = "2024"
 
@@ -500,10 +620,10 @@ class BinaryTargetRoutingTests(unittest.TestCase):
                 ["src/main.rs", "src/changed.rs"],
             )
 
-            targets = router.package_test_targets("lib-claims-main-directory", root)
+            targets = router.package_test_targets("lib-shares-main-directory", root)
 
         self.assertTrue(targets.has_lib)
-        self.assertEqual([], [target.name for target in targets.binaries])
+        self.assertEqual(["lib-shares-main"], [target.name for target in targets.binaries])
 
     def test_routing_is_stable_from_an_unrelated_working_directory(self) -> None:
         """Manifest and required-feature lookups must not depend on the cwd.
