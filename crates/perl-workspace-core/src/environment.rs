@@ -1560,9 +1560,30 @@ mod tests {
             .with_include_entry(IncludeEntry::new(
                 IncludeEntryRole::Other,
                 EnvironmentPathRef::new("/repo/include", "include:fixture"),
-                configured.id,
+                configured.id.clone(),
                 0,
             ))
+            .with_project_root(ProjectRoot::new(
+                ProjectRootRole::Source,
+                EnvironmentPathRef::new("/repo/lib", "root:fixture"),
+                configured.id.clone(),
+            ))
+            .with_build_system(BuildSystemFactRef::new(
+                BuildSystemKind::Carton,
+                Digest::of("cpanfile"),
+                configured.id.clone(),
+            ))
+            .with_tool_candidate(ToolCandidate::new(
+                ToolCandidateRole::TestRunner,
+                "prove",
+                EnvironmentPathRef::new("/usr/bin/prove", "tool:fixture"),
+                configured.id.clone(),
+            ))
+            .with_limitation(EnvironmentLimitation {
+                code: "fixture.limitation".to_string(),
+                detail: "fixture".to_string(),
+                input_id: Some(configured.id),
+            })
             .build()
     }
 
@@ -2049,6 +2070,72 @@ mod tests {
         assert!(matches!(
             missing_reference.validate(),
             Err(EnvironmentBuildError::MissingInputReference { owner: "include_entry", .. })
+        ));
+
+        // Every typed owner has its own `validate()` site; each row below fails
+        // exactly when that site is removed, so the owner name is asserted.
+        let mut project_root_path = valid_snapshot()?;
+        project_root_path.project_roots[0].path.normalized.clear();
+        assert!(matches!(
+            project_root_path.validate(),
+            Err(EnvironmentBuildError::EmptyPathField {
+                owner: "project_root",
+                field: "normalized",
+            })
+        ));
+
+        let mut tool_candidate_path = valid_snapshot()?;
+        tool_candidate_path.tool_candidates[0].executable.normalized.clear();
+        assert!(matches!(
+            tool_candidate_path.validate(),
+            Err(EnvironmentBuildError::EmptyPathField {
+                owner: "tool_candidate",
+                field: "normalized",
+            })
+        ));
+
+        let mut interpreter_path = valid_snapshot()?;
+        if let Some(interpreter) = interpreter_path.selected_interpreter.as_mut() {
+            interpreter.executable.normalized.clear();
+        }
+        assert!(matches!(
+            interpreter_path.validate(),
+            Err(EnvironmentBuildError::EmptyPathField {
+                owner: "selected_interpreter",
+                field: "normalized",
+            })
+        ));
+
+        let mut project_root_reference = valid_snapshot()?;
+        project_root_reference.project_roots[0].input_id =
+            EnvironmentInputId("input:missing".to_string());
+        assert!(matches!(
+            project_root_reference.validate(),
+            Err(EnvironmentBuildError::MissingInputReference { owner: "project_root", .. })
+        ));
+
+        let mut build_system_reference = valid_snapshot()?;
+        build_system_reference.build_systems[0].input_id =
+            EnvironmentInputId("input:missing".to_string());
+        assert!(matches!(
+            build_system_reference.validate(),
+            Err(EnvironmentBuildError::MissingInputReference { owner: "build_system", .. })
+        ));
+
+        let mut tool_candidate_reference = valid_snapshot()?;
+        tool_candidate_reference.tool_candidates[0].input_id =
+            EnvironmentInputId("input:missing".to_string());
+        assert!(matches!(
+            tool_candidate_reference.validate(),
+            Err(EnvironmentBuildError::MissingInputReference { owner: "tool_candidate", .. })
+        ));
+
+        let mut limitation_reference = valid_snapshot()?;
+        limitation_reference.limitations[0].input_id =
+            Some(EnvironmentInputId("input:missing".to_string()));
+        assert!(matches!(
+            limitation_reference.validate(),
+            Err(EnvironmentBuildError::MissingInputReference { owner: "limitation", .. })
         ));
 
         let mut inactive_interpreter = valid_snapshot()?;
@@ -2740,6 +2827,7 @@ mod tests {
 
     #[test]
     fn environment_build_error_display_contains_discriminating_material() {
+        let expected_schema = PROJECT_ENVIRONMENT_SCHEMA_VERSION.to_string();
         let input_id = EnvironmentInputId("input:display".to_string());
         let errors = [
             (EnvironmentBuildError::EmptyWorkspaceId, vec!["empty"]),
@@ -2777,7 +2865,7 @@ mod tests {
             ),
             (
                 EnvironmentBuildError::UnsupportedSchemaVersion { schema_version: 99 },
-                vec!["99", "1"],
+                vec!["99", expected_schema.as_str()],
             ),
             (EnvironmentBuildError::StaleFingerprint, vec!["fingerprint"]),
             (
