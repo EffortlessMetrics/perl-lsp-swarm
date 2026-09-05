@@ -253,11 +253,51 @@ fn skip_whitespace(chars: &[char], mut index: usize) -> usize {
 /// just past it. One helper for both callers: the flat path bounds `end` at
 /// `chars.len()`, the brace path at the member span.
 fn read_identifier(chars: &[char], start: usize, end: usize) -> (String, usize) {
+    // `r#type` is one raw identifier. Reading only `r` would record an alias
+    // that never matches its own use sites, so a facade path behind a raw
+    // alias would stay invisible. `r#"..."` is a raw string, not an
+    // identifier, and is left to `string_literal_end`.
     let mut index = start;
+    if chars.get(index) == Some(&'r')
+        && chars.get(index + 1) == Some(&'#')
+        && chars.get(index + 2) != Some(&'"')
+        && index + 2 < end
+    {
+        index += 2;
+    }
     while index < end && (chars[index].is_ascii_alphanumeric() || chars[index] == '_') {
         index += 1;
     }
+    if index == start {
+        return (String::new(), start);
+    }
     (chars[start..index].iter().collect(), index)
+}
+
+/// Whether the crate name matched at `index` is a genuine path head rather
+/// than a later segment of someone else's path.
+///
+/// `use other::perl_parser::{self as pp};` names an unrelated module that
+/// happens to share the crate's name. Without this, that alias registers as
+/// the facade crate and blocks an innocent consumer — and the same applies to
+/// a direct `other::perl_parser::semantic::X`.
+fn is_crate_path_head(chars: &[char], index: usize) -> bool {
+    if index == 0 {
+        return true;
+    }
+    if chars[index - 1].is_ascii_alphanumeric() || chars[index - 1] == '_' {
+        return false;
+    }
+    // Walk back over whitespace; a `::` immediately before makes this a
+    // segment of a longer path, not the head of one.
+    let mut cursor = index;
+    while cursor > 0 && chars[cursor - 1].is_whitespace() {
+        cursor -= 1;
+    }
+    if cursor >= 2 && chars[cursor - 1] == ':' {
+        return false;
+    }
+    true
 }
 
 /// If a `::` separator starts at or after `cursor`, return the index just past
@@ -388,9 +428,7 @@ fn facade_heads(code: &str) -> Vec<String> {
     let mut heads = vec![FACADE_HEAD.to_string()];
     let mut index = 0;
     while index + head.len() <= chars.len() {
-        if chars[index..index + head.len()] != head[..]
-            || index > 0 && (chars[index - 1].is_ascii_alphanumeric() || chars[index - 1] == '_')
-        {
+        if chars[index..index + head.len()] != head[..] || !is_crate_path_head(&chars, index) {
             index += 1;
             continue;
         }
@@ -469,9 +507,7 @@ fn collect_references_for_head(code: &str, head_name: &str, hits: &mut Vec<Strin
     let head: Vec<char> = head_name.chars().collect();
     let mut index = 0;
     while index + head.len() <= chars.len() {
-        if chars[index..index + head.len()] != head[..]
-            || index > 0 && (chars[index - 1].is_ascii_alphanumeric() || chars[index - 1] == '_')
-        {
+        if chars[index..index + head.len()] != head[..] || !is_crate_path_head(&chars, index) {
             index += 1;
             continue;
         }
@@ -983,4 +1019,66 @@ fn a_braced_self_alias_registers_the_crate_head() {
     // Parser authority through the aliased head still passes.
     let allowed = "use perl_parser::{self as pp};\nuse pp::ast::Node;\n";
     assert!(forbidden_facade_references(&code_without_comments(allowed)).is_empty());
+}
+
+/// Devin finding r3941... : `other::perl_parser` is an unrelated module that
+/// happens to share the crate's name. Registering an alias from it, or
+/// reporting a path through it, blocks an innocent consumer.
+#[test]
+fn a_same_named_module_under_another_path_is_not_the_facade_crate() {
+    for source in [
+        "use other::perl_parser::{self as pp};\nuse pp::semantic::X;\n",
+        "use other::perl_parser as pp;\nuse pp::semantic::X;\n",
+        "use other::perl_parser::semantic::X;\n",
+        "use crate::vendor::perl_parser::symbol::Table;\n",
+    ] {
+        assert!(
+            forbidden_facade_references(&code_without_comments(source)).is_empty(),
+            "a later path segment sharing the crate name is not the facade: {source:?}"
+        );
+    }
+
+    // The real crate-root forms must still be detected, so the boundary check
+    // cannot become a blanket escape.
+    for (source, expected) in [
+        ("use perl_parser::{self as pp};\nuse pp::semantic::X;\n", "perl_parser::semantic"),
+        ("use perl_parser as pp;\nuse pp::symbol::Table;\n", "perl_parser::symbol"),
+        ("use perl_parser::declaration::ParentMap;\n", "perl_parser::declaration"),
+    ] {
+        assert_eq!(
+            forbidden_facade_references(&code_without_comments(source)),
+            vec![expected.to_string()],
+            "crate-root form must still be reported: {source:?}"
+        );
+    }
+}
+
+/// Devin finding r3941...: `r#type` is one raw identifier. Reading only `r`
+/// records an alias that never matches its own use sites, so the facade path
+/// behind it stays invisible — the unsafe direction.
+#[test]
+fn a_raw_identifier_alias_is_read_whole() {
+    let braced = "use perl_parser::{self as r#type};\nuse r#type::semantic::SemanticAnalyzer;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(braced)),
+        vec!["perl_parser::semantic".to_string()]
+    );
+
+    let renamed = "use perl_parser as r#match;\nuse r#match::symbol::Table;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(renamed)),
+        vec!["perl_parser::symbol".to_string()]
+    );
+
+    // Negative control: an unrelated crate under a raw alias binds nothing.
+    let unrelated = "use perl_semantic_analyzer as r#type;\nuse r#type::semantic::X;\n";
+    assert!(forbidden_facade_references(&code_without_comments(unrelated)).is_empty());
+
+    // A raw string must still be read as a literal, not as an identifier.
+    let raw_string =
+        "const A: &str = r#\"use perl_parser::semantic::X;\"#;\nuse perl_parser::symbol::T;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(raw_string)),
+        vec!["perl_parser::symbol".to_string()]
+    );
 }
