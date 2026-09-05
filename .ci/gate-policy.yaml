@@ -1689,6 +1689,26 @@ gates:
       - contract
       - generated
 
+  # The Kubernetes DAP workspace-profile contract (#10112) is fail-closed: it
+  # rejects every unsupported network/service/sidecar/operator topology and
+  # verifies each typed rejection class against a deterministic negative
+  # fixture. Nothing executed the validator until this gate existed, so the
+  # committed status doc and the fixture matrix could drift silently.
+  - name: kubernetes_dap_profiles
+    tier: merge_gate
+    description: "Validate contracts/dap/kubernetes_dap_workspace_profile.v1.toml, its fixtures, and its generated status doc"
+    required: true
+    command: cargo run --locked -p xtask --bin kubernetes-dap-profiles -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+
   # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
   # shard executes this gate; wire into parser_stack or corpus shard before
   # re-promotion.

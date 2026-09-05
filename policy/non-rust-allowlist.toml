@@ -1668,6 +1668,70 @@ created = "2026-08-16"
 review_after = "2026-11-16"
 
 # =============================================================================
+# Kubernetes DAP workspace profiles (#10112)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-kubernetes-dap-profiles-contract"
+path = "contracts/dap/kubernetes_dap_workspace_profile.v1.toml"
+kind = "dap_contract"
+language = "toml"
+surface = "dap"
+classification = "config"
+owner = "dap"
+reason = "Versioned Kubernetes DAP workspace-profile contract for #10112; admits project_image and injected_tool subjects and registers every unsupported topology; validated by cargo run -p xtask --bin kubernetes-dap-profiles -- --check in the policy merge-gate shard."
+covered_by = [
+  "cargo run -p xtask --bin kubernetes-dap-profiles -- --check",
+]
+created = "2026-08-25"
+review_after = "2026-11-25"
+
+[[allow]]
+id = "non-rust-kubernetes-dap-profiles-schema"
+path = "schemas/kubernetes_dap_workspace_profile.v1.schema.json"
+kind = "dap_contract"
+language = "json"
+surface = "dap"
+classification = "config"
+owner = "dap"
+reason = "JSON Schema for the kubernetes_dap_workspace_profile.v1 contract; reason-code enum parity with the typed validator is ratcheted, and the committed contract is validated against this schema, by the kubernetes-dap-profiles gate."
+covered_by = [
+  "cargo run -p xtask --bin kubernetes-dap-profiles -- --check",
+]
+created = "2026-08-25"
+review_after = "2026-11-25"
+
+[[allow]]
+id = "non-rust-kubernetes-dap-profile-fixture-schema"
+path = "schemas/kubernetes_dap_workspace_profile_fixture.v1.schema.json"
+kind = "dap_contract"
+language = "json"
+surface = "dap"
+classification = "config"
+owner = "dap"
+reason = "JSON Schema for deterministic positive/negative Kubernetes DAP workspace-profile fixtures consumed by the #10112 fail-closed validator."
+covered_by = [
+  "cargo run -p xtask --bin kubernetes-dap-profiles -- --check",
+]
+created = "2026-08-25"
+review_after = "2026-11-25"
+
+[[allow]]
+id = "non-rust-kubernetes-dap-profile-fixtures"
+glob = "contracts/dap/fixtures/*.toml"
+kind = "dap_contract"
+language = "toml"
+surface = "dap"
+classification = "config"
+owner = "dap"
+reason = "Deterministic positive/negative profile fixtures proving each admitted subject and every typed topology rejection of #10112; evaluated by cargo run -p xtask --bin kubernetes-dap-profiles -- --check."
+covered_by = [
+  "cargo run -p xtask --bin kubernetes-dap-profiles -- --check",
+]
+created = "2026-08-25"
+review_after = "2026-11-25"
+
+# =============================================================================
 # Binary identity protocol (perl_lsp.binary_identity.v1)
 # =============================================================================
 
