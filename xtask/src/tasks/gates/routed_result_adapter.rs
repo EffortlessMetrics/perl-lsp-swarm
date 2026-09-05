@@ -298,7 +298,7 @@ pub(super) fn observation_from_gate_result(
     result: &GateResult,
     receipt_root: &Path,
     hosted: Option<HostedIdentity>,
-) -> RunObservation {
+) -> Result<RunObservation> {
     // The runner assigns statuses after observing the child, so the mapping
     // below is total over the statuses run_single_gate produces for
     // post-planning gates: pass/fail/timeout/error/skip.
@@ -354,15 +354,36 @@ pub(super) fn observation_from_gate_result(
         ),
     };
 
-    let duration_i64 = i64::try_from(result.duration_ms).unwrap_or(i64::MAX);
     // A never-started command has no product-command window at all, so its
     // timing stays honestly empty instead of reporting spawn overhead; a
     // started one derives start from a single observed endpoint so the
     // ended-started invariant holds exactly.
+    //
+    // A started command whose clock or duration cannot be represented is a
+    // refusal, not a degradation: emptying the timing of a command that did
+    // start would publish it as never-started, which is exactly the
+    // mis-attribution this record exists to prevent.
     let timing = if command_started {
-        let ended_at_unix_ms = unix_millis_now();
-        let started_at_unix_ms = ended_at_unix_ms.map(|end| end.saturating_sub(duration_i64));
-        ObservationTiming { started_at_unix_ms, ended_at_unix_ms, duration_ms: result.duration_ms }
+        let duration_i64 = i64::try_from(result.duration_ms).map_err(|_| {
+            eyre!(
+                "gate {} reports a duration of {}ms, which exceeds the representable \
+                 observation window; refusing rather than truncating it",
+                result.gate_name,
+                result.duration_ms
+            )
+        })?;
+        let ended_at_unix_ms = unix_millis_now().ok_or_else(|| {
+            eyre!(
+                "gate {} completed but the system clock is not representable as UNIX \
+                 milliseconds; refusing rather than publishing it as never-started",
+                result.gate_name
+            )
+        })?;
+        ObservationTiming {
+            started_at_unix_ms: Some(ended_at_unix_ms.saturating_sub(duration_i64)),
+            ended_at_unix_ms: Some(ended_at_unix_ms),
+            duration_ms: result.duration_ms,
+        }
     } else {
         ObservationTiming { started_at_unix_ms: None, ended_at_unix_ms: None, duration_ms: 0 }
     };
@@ -375,7 +396,7 @@ pub(super) fn observation_from_gate_result(
     let mut receipt_shortfall: Vec<String> = Vec::new();
     let artifacts = project_log_artifact(result, receipt_root, &mut receipt_shortfall);
 
-    RunObservation {
+    Ok(RunObservation {
         runner_status,
         hosted,
         // A started command implies its prerequisites were ready (the
@@ -396,7 +417,7 @@ pub(super) fn observation_from_gate_result(
         timing,
         artifacts,
         receipt_shortfall,
-    }
+    })
 }
 
 fn project_log_artifact(
@@ -451,7 +472,7 @@ pub(super) fn emit_planned_run_row_result(
     output_dir: &Path,
     hosted: Option<HostedIdentity>,
 ) -> Result<RoutedGateResultV1> {
-    let observation = observation_from_gate_result(gate, result, receipt_root, hosted);
+    let observation = observation_from_gate_result(gate, result, receipt_root, hosted)?;
     let built = build_routed_result(plan, &gate.name, observation)
         .map_err(|error| eyre!("result normalization refused for {}: {error}", gate.name))?;
     // canonical_json validates before any filesystem effect, then the
@@ -704,6 +725,30 @@ mod fixtures {
             refused_extra
         );
         assert!(refused_extra.err().unwrap().to_string().contains("other_gate"));
+    }
+
+    #[test]
+    fn an_unrepresentable_duration_refuses_instead_of_degrading_to_never_started() {
+        // Truncating the duration, or emptying the timing when the clock
+        // cannot be read, would publish a command that did start as a
+        // never-started record — the exact mis-attribution this record
+        // exists to prevent, so it refuses instead.
+        let plan = compiled_fixture();
+        let gate = fmt_gate_definition();
+        let mut result = passing_result();
+        result.duration_ms = u64::MAX;
+
+        let refused = observation_from_gate_result(&gate, &result, Path::new("target"), None);
+        assert!(
+            refused.is_err(),
+            "an unrepresentable duration on a started command must refuse, got {refused:?}"
+        );
+
+        // The ordinary duration still produces a bound observation window.
+        let ok = observation_from_gate_result(&gate, &passing_result(), Path::new("target"), None)
+            .expect("an ordinary duration observes cleanly");
+        assert!(ok.timing.started_at_unix_ms.is_some());
+        assert!(ok.timing.ended_at_unix_ms.is_some());
     }
 
     #[test]
