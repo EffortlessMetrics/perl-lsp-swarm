@@ -226,6 +226,11 @@ fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
     .any(|negation| prefix.ends_with(negation) || suffix.starts_with(negation));
     let coordinated_negation =
         prefix.find("not a ").is_some_and(|start| !prefix[start..].contains(" but "));
+    // A contrast conjunction closes the clause an earlier negation governs, so
+    // "do not infer it, but create a candidate" permits the candidate. Scan for a
+    // clause-level modal only in the operative clause, the same insight
+    // `coordinated_negation` already encodes for "not a ... but ...".
+    let operative = prefix.rsplit(" but ").next().unwrap_or(prefix.as_str());
     let modal_negation = [
         "must not ",
         "mustn't ",
@@ -240,7 +245,7 @@ fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
         "doesn't ",
     ]
     .iter()
-    .any(|negation| prefix.contains(negation));
+    .any(|negation| operative.contains(negation));
 
     local_negation
         || coordinated_negation
@@ -275,6 +280,42 @@ fn is_negated_at(line: &str, marker_start: usize, marker: &str) -> bool {
 /// Whether `marker` appears at least once as positive guidance.
 fn has_unnegated_marker(text: &str, marker: &str) -> bool {
     text.match_indices(marker).any(|(start, _)| !is_negated_at(text, start, marker))
+}
+
+/// Whether any occurrence of `marker` withdraws the obligation it states.
+///
+/// A requirement can be stated positively and then made optional further down the
+/// section, leaving a retained mention that an existential search still accepts.
+/// Only permissive forms count: an emphatic "is not optional" is not a withdrawal,
+/// and general contradictory polarity stays with the shared reader in #13666.
+fn is_made_optional(text: &str, marker: &str) -> bool {
+    const WITHDRAWALS: &[&str] = &[
+        "is optional",
+        "are optional",
+        "optional for",
+        "is not required",
+        "are not required",
+        "is not needed",
+        "are not needed",
+        "may be omitted",
+        "can be omitted",
+        "is omitted",
+    ];
+
+    text.match_indices(marker).any(|(start, _)| {
+        let suffix = text[start + marker.len()..]
+            .split(['.', '!', '?', ';'])
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        WITHDRAWALS.iter().any(|withdrawal| {
+            suffix.starts_with(withdrawal)
+                || suffix
+                    .split_once(&format!(" {withdrawal}"))
+                    .is_some_and(|(before, _)| !before.contains(" not "))
+        })
+    })
 }
 
 /// The refusal must be one piece of conditional guidance, not two unrelated
@@ -355,9 +396,9 @@ fn validate_claim_admission(text: &str) -> Vec<String> {
             Match::Boundary => {
                 alternatives.iter().any(|&term| has_coordinated_boundary(&section, term))
             }
-            Match::Positive => {
-                alternatives.iter().any(|&term| has_unnegated_marker(&section, term))
-            }
+            Match::Positive => alternatives.iter().any(|&term| {
+                has_unnegated_marker(&section, term) && !is_made_optional(&section, term)
+            }),
         };
         if !present {
             errors.push(format!(
@@ -487,6 +528,97 @@ Later content.
     assert!(
         errors.iter().any(|error| error.contains("an anti-inference rule")),
         "expected the anti-inference requirement to fail closed: {errors:?}"
+    );
+}
+
+#[test]
+fn a_contrast_clause_does_not_carry_negation_onto_a_permission() {
+    // "do not infer it, but create a candidate" permits exactly what the refusal
+    // requirement must forbid. A negation earlier in the sentence does not govern
+    // the clause after the contrast.
+    let text = r#"
+## Shift-left claim admission
+Before delegating a mutation or editing the candidate directly, retain a coherent claim
+and its semantic owner. Name the governing authority, current facts and contradictions,
+and observable seam. State the acceptance surface and choose the cheapest earliest
+falsifier, including a negative control. State the proof ceiling, what stays
+`NOT_PROVEN`, and which broader proof to defer. Name the mutation owner, one writer, the
+earliest missing judgment, and the named next or backward route. Read-only research may
+precede this boundary. When the earliest falsifier is unresolved, do not infer it, but
+create a candidate anyway. Route through `prepare-issue` or `prepare-proof`. Keep this
+runtime-local unless it changes durable claim, authority, or proof state. It is not a
+stage record, lease, scheduler, or tracked frontier.
+
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(
+        errors.iter().any(|error| error.contains("candidate refusal before admission")),
+        "a contrasted permission must not count as a refusal: {errors:?}"
+    );
+}
+
+#[test]
+fn an_obligation_made_optional_later_fails_closed() {
+    // The requirement is stated positively, then withdrawn. A retained mention
+    // must not keep the gate green once the obligation is made optional.
+    let text = r#"
+## Shift-left claim admission
+Before delegating a mutation or editing the candidate directly, retain a coherent claim
+and its semantic owner. Name the governing authority, current facts and contradictions,
+and observable seam. State the acceptance surface and choose the cheapest earliest
+falsifier, including a negative control. State the proof ceiling, what stays
+`NOT_PROVEN`, and which broader proof to defer. Name the mutation owner, one writer, the
+earliest missing judgment, and the named next or backward route. Read-only research may
+precede this boundary. When the earliest falsifier is unresolved, do not infer it or
+create a candidate. Route through `prepare-issue` or `prepare-proof`. The acceptance
+surface is optional for small lanes, and the proof ceiling may be omitted entirely.
+Keep this runtime-local unless it changes durable claim, authority, or proof state. It
+is not a stage record, lease, scheduler, or tracked frontier.
+
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(
+        errors.iter().any(|error| error.contains("the acceptance surface")),
+        "an obligation made optional must fail closed: {errors:?}"
+    );
+    assert!(
+        errors.iter().any(|error| error.contains("the proof ceiling")),
+        "an obligation that may be omitted must fail closed: {errors:?}"
+    );
+}
+
+#[test]
+fn emphatic_non_optionality_is_not_read_as_a_withdrawal() {
+    // "is not optional" strengthens the obligation. The withdrawal check must not
+    // invert it, or the contract rejects valid emphatic guidance.
+    let text = r#"
+## Shift-left claim admission
+Before delegating a mutation or editing the candidate directly, retain a coherent claim
+and its semantic owner. Name the governing authority, current facts and contradictions,
+and observable seam. State the acceptance surface and choose the cheapest earliest
+falsifier, including a negative control. State the proof ceiling, what stays
+`NOT_PROVEN`, and which broader proof to defer. Name the mutation owner, one writer, the
+earliest missing judgment, and the named next or backward route. Read-only research may
+precede this boundary. When the earliest falsifier is unresolved, do not infer it or
+create a candidate. Route through `prepare-issue` or `prepare-proof`. The acceptance
+surface is not optional, and the proof ceiling is not required to be broad but may not
+be omitted. Keep this runtime-local unless it changes durable claim, authority, or proof
+state. It is not a stage record, lease, scheduler, or tracked frontier.
+
+## Entry route
+Later content.
+"#;
+
+    let errors = validate_claim_admission(text);
+    assert!(
+        !errors.iter().any(|error| error.contains("the acceptance surface")),
+        "emphatic non-optionality must still satisfy the requirement: {errors:?}"
     );
 }
 
