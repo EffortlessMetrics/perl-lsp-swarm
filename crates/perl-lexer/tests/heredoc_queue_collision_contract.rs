@@ -29,7 +29,19 @@ where
 }
 
 fn body_tokens(tokens: &[Token]) -> Vec<&Token> {
-    tokens.iter().filter(|token| matches!(&token.token_type, TokenType::HeredocBody(_))).collect()
+    // Interpolating openers (`<<EOF`, `<<"EOF"`, `<<~END`) emit
+    // `InterpolatedHeredocBody` segments; non-interpolating controls and
+    // opaque backtick bodies stay `HeredocBody`. Queue collision behavior is
+    // proven identically for both representations (#8779).
+    tokens
+        .iter()
+        .filter(|token| {
+            matches!(
+                &token.token_type,
+                TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_)
+            )
+        })
+        .collect()
 }
 
 fn assert_clean_continuation(source: &str, tokens: &[Token], marker: &str) -> R {

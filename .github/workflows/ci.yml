@@ -1618,6 +1618,17 @@ jobs:
       - name: Non-Rust file policy contract (required merge surface)
         run: cargo test -p xtask --test file_policy --locked -- --nocapture
 
+      # #14178: identical reasoning to the file-policy contract directly above.
+      # This suite asserts that every literal crate name in the Cargo dependabot
+      # entry, and every crate the dependency guide advertises, resolves to a
+      # dependency some workspace manifest declares. Its whole value is going
+      # red when a stale name is added, and `.github/dependabot.yml` is not in
+      # ci-scope's CI_CONFIG_PATHS, so a config-only edit does not even reach
+      # the advisory routed lane. Left off this surface the guard would compile
+      # and never execute — the state #14585 found `file_policy` in.
+      - name: Dependabot dependency-name contract (required merge surface)
+        run: cargo test -p xtask --test dependabot_cargo_dependency_names --locked -- --nocapture
+
       # #13484: nothing executed the `xtask` *bin* unit tests. The merge gate
       # runs `cargo test --workspace --lib` (a bin is not a lib target) and no
       # workflow names `--bin xtask`, so `tasks::changelog::tests` — the proof

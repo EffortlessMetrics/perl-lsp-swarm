@@ -3,15 +3,8 @@
 use super::{
     AstBreakpointValidator, BreakpointValidator, ContinueResponseBody, DapMessage, DebugAdapter,
     DebugState, GotoArguments, GotoTarget, GotoTargetsArguments, GotoTargetsResponseBody, Ordering,
-    ResumeMode, StepInTarget, StepInTargetsArguments, StepInTargetsResponseBody, Value, Write,
-    json, lock_or_recover,
+    ResumeMode, Value, Write, catalog_has_feature, json, lock_or_recover,
 };
-use regex::Regex;
-use std::sync::LazyLock;
-
-static STEP_IN_TARGET_CALL_RE: LazyLock<Option<Regex>> =
-    LazyLock::new(|| Regex::new(r"(\w[\w:]*)\s*\(").ok());
-
 impl DebugAdapter {
     /// Synthetic execution-context id exposed for TCP-attach sessions, which
     /// have no locally spawned debuggee process to derive an identity from
@@ -286,6 +279,28 @@ impl DebugAdapter {
         ) {
             return rejection;
         }
+        // #9069: while targeted stepping is unsupported, a supplied
+        // `targetId` must never silently look honored — the whole-`s`
+        // operation would step without the requested target. Refuse before
+        // any debugger I/O: no `s` write, no resume-state change, no cache
+        // clear, no `continued` event.
+        if let Some(args) = arguments.as_ref()
+            && args.get("targetId").is_some()
+        {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "stepIn".to_string(),
+                body: None,
+                message: Some(
+                    "`stepIn targetId` is not supported: targeted stepping is \
+                     unavailable, so the request is refused instead of stepping \
+                     without the requested target"
+                        .to_string(),
+                ),
+            };
+        }
         let has_session = if let Some(ref mut session) =
             *lock_or_recover(&self.session, "debug_adapter.session")
             && let Some(stdin) = session.process.stdin.as_mut()
@@ -508,6 +523,43 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
+        // Fail closed before any filesystem read, AST discovery, or goto-target
+        // map mutation (#9064).  The native backend only offers run-to-line
+        // (`f <source>` + `c <line>`), which executes intervening statements
+        // instead of relocating the next statement, so standard `gotoTargets`
+        // stays unsupported while the catalog row is unadvertised.  Publishing
+        // targets a client cannot use as standard goto would be a false promise.
+        // The deterministic refusal also names parent-directory paths so the
+        // #4638 message contract (a rejected gotoTargets source path must say
+        // why its path is not evaluated) stays observable at this gate, which
+        // refuses before path validation ever runs. Publishing targets
+        // requires the complete contract: with `dap.goto` unadvertised the
+        // targets could never be executed, so a one-row promotion of
+        // `dap.goto_targets` alone still fails closed here.
+        if !(catalog_has_feature("dap.goto_targets") && catalog_has_feature("dap.goto")) {
+            // A refused request must not leave a previously armed `cancel`
+            // flag for the next unrelated request to trip over. The pre-gate
+            // handler reset the advisory flag in its line-scan loop, which
+            // this gate bypasses, so consume it at the request boundary.
+            self.cancel_requested.store(false, Ordering::Release);
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "gotoTargets".to_string(),
+                body: None,
+                message: Some(
+                    "gotoTargets is unsupported: the native Perl debugger only provides \
+                     run-to-line (which executes intervening code), not standard DAP goto; \
+                     standard goto requires a proven next-statement relocation primitive \
+                     (#9064). Refused fail-closed at this gate before any path check: no \
+                     source path, including parent-directory paths, reaches the filesystem \
+                     or a goto-target lookup (#4638)"
+                        .to_string(),
+                ),
+            };
+        }
+
         let args: GotoTargetsArguments =
             match arguments.and_then(|v| serde_json::from_value(v).ok()) {
                 Some(a) => a,
@@ -619,6 +671,31 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
+        // Fail closed before any target lookup, perl5db write, session state
+        // transition, cache invalidation, or `continued` emission (#9064).  A
+        // rejected goto must not consume a retained target (`goto_map.remove`
+        // below is unreachable while the catalog row is unadvertised) and must
+        // not run the intervening code between the current stop and the target.
+        if !catalog_has_feature("dap.goto") {
+            // Consume a previously armed `cancel` flag at the request boundary
+            // so a refused goto cannot poison the next unrelated request (the
+            // gated line-scan loop used to reset it).
+            self.cancel_requested.store(false, Ordering::Release);
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "goto".to_string(),
+                body: None,
+                message: Some(
+                    "goto is unsupported: the native Perl debugger only provides run-to-line \
+                     (which executes intervening code), not standard DAP goto; \
+                     standard goto requires a proven next-statement relocation primitive (#9064)"
+                        .to_string(),
+                ),
+            };
+        }
+
         let args: GotoArguments = match arguments.and_then(|v| serde_json::from_value(v).ok()) {
             Some(a) => a,
             None => {
@@ -707,69 +784,24 @@ impl DebugAdapter {
         &self,
         seq: i64,
         request_seq: i64,
-        arguments: Option<Value>,
+        _arguments: Option<Value>,
     ) -> DapMessage {
-        let args: StepInTargetsArguments =
-            match arguments.and_then(|v| serde_json::from_value(v).ok()) {
-                Some(a) => a,
-                None => {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "stepInTargets".to_string(),
-                        body: None,
-                        message: Some("Missing or invalid arguments".to_string()),
-                    };
-                }
-            };
-
-        let mut targets = Vec::new();
-
-        // Extract the frame source path while session lock is held, then release.
-        let frame_info = {
-            let session_guard = lock_or_recover(&self.session, "debug_adapter.session");
-            if let Some(ref session) = *session_guard {
-                session
-                    .stack_frames
-                    .iter()
-                    .find(|f| i64::from(f.id) == args.frame_id)
-                    .map(|frame| (frame.source.path.clone(), frame.line))
-            } else {
-                None
-            }
-        };
-
-        if let Some((source_path, frame_line)) = frame_info {
-            // Defense-in-depth: validate even internal session paths
-            if let Ok(validated_path) = self.validate_source_path(&source_path)
-                && let Ok(content) = std::fs::read_to_string(&validated_path)
-            {
-                let line_idx = frame_line.max(0) as usize;
-                if let Some(source_line) = content.lines().nth(line_idx.saturating_sub(1)) {
-                    // Find function call patterns
-                    if let Some(call_re) = STEP_IN_TARGET_CALL_RE.as_ref() {
-                        for (idx, cap) in call_re.captures_iter(source_line).enumerate() {
-                            if let Some(name) = cap.get(1) {
-                                targets.push(StepInTarget {
-                                    id: idx as i64,
-                                    label: name.as_str().to_string(),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let body = StepInTargetsResponseBody { targets };
+        // Fail closed (#9069): targeted stepping is unsupported — `stepIn`
+        // refuses any `targetId` — so this request must never publish
+        // selectable target IDs a client could step with. The refusal is
+        // unconditional and performs no session lock, no source read, and no
+        // target allocation (#14369 review).
         DapMessage::Response {
             seq,
             request_seq,
-            success: true,
+            success: false,
             command: "stepInTargets".to_string(),
-            body: serde_json::to_value(&body).ok(),
-            message: None,
+            body: None,
+            message: Some(
+                "stepInTargets is unsupported: targeted stepping is unavailable \
+                 (#9069), so no target IDs are published"
+                    .to_string(),
+            ),
         }
     }
 
