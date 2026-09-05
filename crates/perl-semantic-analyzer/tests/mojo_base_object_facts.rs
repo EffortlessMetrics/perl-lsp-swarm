@@ -686,8 +686,8 @@ fn a_compile_phase_collision_reports_an_undetermined_winner() {
     let compile_facts = only_facts(compile_phase);
     assert_eq!(
         declarations(compile_phase, FileId(1), "gen-1")[0].execution_phase,
-        MojoBaseExecutionPhase::Compile,
-        "the declaration really is carried as compile-phase"
+        MojoBaseExecutionPhase::CompileImmediate,
+        "the declaration really is carried as BEGIN-phase"
     );
     assert_eq!(compile_facts.members[0].explicit_method, MojoBaseExplicitMethodState::Collides);
     let compile_boundary = must_some(compile_facts.members[0].envelope.boundary.clone());
@@ -787,4 +787,70 @@ fn an_array_reference_declaration_keeps_its_accessors_when_options_follow() {
         "an unmodeled option limits the read result"
     );
     assert_eq!(facts.setter_results[0].relation, CallableResultRelation::ReceiverSelf);
+}
+
+#[test]
+fn only_begin_is_order_sensitive_against_the_activating_import() {
+    // Verified against `perl` with the import written *below* each phaser:
+    // `BEGIN` alone does not see it, because `BEGIN` runs at its own position
+    // during compilation. `UNITCHECK`, `CHECK` and `INIT` are scheduled to run
+    // once compilation has finished, so the import has already happened and
+    // their accessors are real.
+    let code = concat!(
+        "package App;\n",
+        "BEGIN     { has('begin_above'); }\n",
+        "UNITCHECK { has('unitcheck_above'); }\n",
+        "CHECK     { has('check_above'); }\n",
+        "INIT      { has('init_above'); }\n",
+        "use Mojo::Base -base;\n",
+        "has 'ordinary';\n",
+    );
+    let facts = only_facts(code);
+    assert_eq!(
+        member_names(&facts),
+        ["unitcheck_above", "check_above", "init_above", "ordinary"],
+        "only `BEGIN` above the import is too early"
+    );
+}
+
+#[test]
+fn a_post_compile_collision_keeps_a_determinate_winner() {
+    // `CHECK`/`INIT`/`UNITCHECK` run after every `sub` in the file is
+    // compiled, so `monkey_patch` overwrites the explicit method exactly as a
+    // run-phase `has` does — verified against `perl`. Only `BEGIN`, which
+    // interleaves with subroutine compilation, is undetermined.
+    let code = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "CHECK { has('name'); }\n",
+        "sub name { 'explicit' }\n",
+    );
+    let declared = declarations(code, FileId(1), "gen-1");
+    assert_eq!(declared[0].execution_phase, MojoBaseExecutionPhase::PostCompile);
+    let facts = only_facts(code);
+    let boundary = must_some(facts.members[0].envelope.boundary.clone());
+    assert_eq!(
+        boundary.kind,
+        BoundaryKind::Compatibility,
+        "a post-compile accessor determinately overwrites the explicit sub"
+    );
+}
+
+#[test]
+fn an_odd_option_tail_keeps_the_declared_default() {
+    // `%kv` is an ordinary hash assignment, so Perl binds the dangling key to
+    // `undef` (with a warning) and `attr` still generates the accessor with
+    // the default it was given. Treating the parity as a rejected default
+    // would make a determinate reader falsely unknown.
+    let code = "package App;\nuse Mojo::Base -base;\nhas name => 'anon', weak;\n";
+    let declared = declarations(code, FileId(1), "gen-1");
+    assert_eq!(declared.len(), 1);
+    assert_eq!(
+        declared[0].default,
+        MojoBaseAttributeDefault::Constant,
+        "the default is still a source-literal constant despite the odd tail"
+    );
+    assert_eq!(declared[0].unmodeled_options, ["weak"], "the dangling key is still an option key");
+    let facts = only_facts(code);
+    assert_eq!(member_names(&facts), ["name"]);
 }

@@ -168,27 +168,51 @@ pub enum MojoBaseAttributeDefault {
 /// executes remains outside the reviewed profile.
 /// When a declaration's `has` call executes, relative to compilation.
 ///
-/// Perl runs `use` inside an implicit `BEGIN`, so the whole file is compiled —
-/// and every `use` in it imported — before any ordinary statement runs. That
-/// makes execution phase, not source position, the thing that decides whether
-/// a declaration saw the imported `has` and whether it survives a same-named
-/// explicit `sub`. Both questions have opposite answers for the two phases, so
-/// the phase travels with the carrier rather than being re-guessed at minting.
+/// Perl runs `use` inside an implicit `BEGIN`, so execution phase — not source
+/// position — decides whether a declaration saw the imported `has`, and
+/// whether it survives a same-named explicit `sub`. The phase travels with the
+/// carrier rather than being re-guessed at minting.
+///
+/// The split is between `BEGIN` and everything else, which is narrower than
+/// "compile time". Verified against `perl`, with the import written *below*
+/// each phaser and a same-named `sub` written below it:
+///
+/// | Phase | Sees that import | Collision winner |
+/// | --- | --- | --- |
+/// | ordinary statement | yes | accessor |
+/// | `BEGIN` | **no** | **undetermined** |
+/// | `UNITCHECK` / `CHECK` / `INIT` | yes | accessor |
+///
+/// `BEGIN` is alone in running *at its own position* during compilation. The
+/// other three are scheduled to run once compilation has finished, so by then
+/// every `use` has imported and every `sub` is installed — they behave exactly
+/// like an ordinary statement for both questions, and are kept distinct here
+/// only because they are not ordinary statements.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MojoBaseExecutionPhase {
     /// An ordinary statement, which runs after the whole file is compiled.
-    ///
-    /// Every `use` in the file has already imported by then, so such a
-    /// declaration reaches the imported `has` regardless of whether it is
-    /// written above or below the import.
     Run,
-    /// A statement inside an early phaser (`BEGIN`, `UNITCHECK`, `CHECK`,
-    /// `INIT`), which runs during compilation.
+    /// A statement inside a `BEGIN` block, which runs during compilation at
+    /// the point the block appears.
     ///
-    /// Source order against the activating import therefore does matter: a
-    /// phaser above the import runs before `has` exists.
-    Compile,
+    /// This is the only phase for which source order against the activating
+    /// import matters, and the only one whose collision winner is
+    /// undetermined.
+    CompileImmediate,
+    /// A statement inside `UNITCHECK`, `CHECK` or `INIT` — scheduled to run
+    /// after compilation completes but before the run phase.
+    PostCompile,
+}
+
+impl MojoBaseExecutionPhase {
+    /// Whether source order against the activating import decides anything.
+    ///
+    /// Only a `BEGIN` block can run before an import written below it.
+    #[must_use]
+    pub fn is_order_sensitive(self) -> bool {
+        matches!(self, Self::CompileImmediate)
+    }
 }
 
 #[non_exhaustive]
@@ -499,7 +523,7 @@ pub fn mojo_base_object_facts(
         // A declaration inside an early phaser is the case where order does
         // decide: a phaser above the activating import runs before `has`
         // exists.
-        if declaration.execution_phase == MojoBaseExecutionPhase::Compile
+        if declaration.execution_phase.is_order_sensitive()
             && declaration.declaration_anchor.start_byte < import_end_byte
         {
             continue;
@@ -624,15 +648,16 @@ fn mint_member_fact(
     // elsewhere.
     let boundary = match (declaration.explicit_method, declaration.execution_phase) {
         (MojoBaseExplicitMethodState::None, _) => None,
-        (MojoBaseExplicitMethodState::Collides, MojoBaseExecutionPhase::Run) => {
-            Some(BoundaryLink::new(
-                None,
-                BoundaryKind::Compatibility,
-                BoundaryDisposition::Degrade,
-                SemanticReasonCode::CompatibilityBoundary,
-            ))
-        }
-        (MojoBaseExplicitMethodState::Collides, MojoBaseExecutionPhase::Compile) => {
+        (
+            MojoBaseExplicitMethodState::Collides,
+            MojoBaseExecutionPhase::Run | MojoBaseExecutionPhase::PostCompile,
+        ) => Some(BoundaryLink::new(
+            None,
+            BoundaryKind::Compatibility,
+            BoundaryDisposition::Degrade,
+            SemanticReasonCode::CompatibilityBoundary,
+        )),
+        (MojoBaseExplicitMethodState::Collides, MojoBaseExecutionPhase::CompileImmediate) => {
             Some(BoundaryLink::new(
                 None,
                 BoundaryKind::CompileTimeExecution,
@@ -1072,11 +1097,18 @@ mod tests {
     fn a_declaration_must_match_the_activation_on_file_generation_and_order() {
         let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
 
-        // A compile-phase declaration above the activating import: it runs
-        // during compilation, before the import has installed `has`.
+        // A `BEGIN` declaration above the activating import: it runs at its
+        // own position during compilation, before the import installed `has`.
         let mut before = declaration_at(0, 0, "early", MojoBaseAttributeDefault::Absent);
-        before.execution_phase = MojoBaseExecutionPhase::Compile;
+        before.execution_phase = MojoBaseExecutionPhase::CompileImmediate;
         assert!(mint_with_detection(&activation, &[before]).members.is_empty());
+
+        // The same position under `CHECK`/`INIT`/`UNITCHECK` does mint: those
+        // are scheduled after compilation, so the import below has already
+        // run. Only `BEGIN` is order-sensitive.
+        let mut post_compile = declaration_at(0, 0, "early", MojoBaseAttributeDefault::Absent);
+        post_compile.execution_phase = MojoBaseExecutionPhase::PostCompile;
+        assert_eq!(mint_with_detection(&activation, &[post_compile]).members.len(), 1);
 
         // The same position at run phase does mint: `use` completes during
         // compilation, so an ordinary statement reaches the imported `has`

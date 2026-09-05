@@ -140,7 +140,7 @@ pub fn extract_mojo_base_attribute_declarations(
         next_declaration_index: 0,
         declarations: Vec::new(),
         deferred: false,
-        compile_phase: false,
+        phase: MojoBaseExecutionPhase::Run,
     };
     // An unqualified file's caller package is `main` in Perl, matching the
     // #9681 activation walk.
@@ -163,9 +163,8 @@ struct WalkState<'a> {
     /// whatever encloses it. A declaration counts as a class attribute only
     /// while this is false.
     deferred: bool,
-    /// Whether the current position runs during compilation rather than at run
-    /// time — that is, whether it sits inside an early phaser.
-    compile_phase: bool,
+    /// When the current position executes, relative to compilation.
+    phase: MojoBaseExecutionPhase,
 }
 
 /// Whether this node owns runtime control flow, so statements inside it do not
@@ -285,13 +284,23 @@ impl WalkState<'_> {
             // would serve has finished, so it exists for no part of the run
             // and the context defers.
             NodeKind::PhaseBlock { phase, .. } => {
-                let end_block = phase == "END";
-                let enclosing_phase = self.compile_phase;
-                // Only an early phaser runs during compilation. An `END` body
-                // runs at shutdown, which is later than run phase, not earlier.
-                self.compile_phase = !end_block;
-                self.walk_deferring(node, current_package, end_block);
-                self.compile_phase = enclosing_phase;
+                // `BEGIN` runs at its own position during compilation, so an
+                // import written below it has not happened yet. `UNITCHECK`,
+                // `CHECK` and `INIT` are scheduled to run once compilation has
+                // finished, so they see the whole file's imports and
+                // subroutines — for this producer's purposes they behave like
+                // an ordinary statement. `END` runs at shutdown and declares
+                // nothing. Any other spelling is not a phaser this profile
+                // knows, so it defers rather than being assumed harmless.
+                let (deferred, phase) = match phase.as_str() {
+                    "BEGIN" => (false, MojoBaseExecutionPhase::CompileImmediate),
+                    "UNITCHECK" | "CHECK" | "INIT" => (false, MojoBaseExecutionPhase::PostCompile),
+                    _ => (true, self.phase),
+                };
+                let enclosing_phase = self.phase;
+                self.phase = phase;
+                self.walk_deferring(node, current_package, deferred);
+                self.phase = enclosing_phase;
                 return;
             }
             // `Mojo::Base` attributes are declared at package level. A `has`
@@ -390,11 +399,7 @@ impl WalkState<'_> {
                 name,
                 default: parsed.default.clone(),
                 explicit_method,
-                execution_phase: if self.compile_phase {
-                    MojoBaseExecutionPhase::Compile
-                } else {
-                    MojoBaseExecutionPhase::Run
-                },
+                execution_phase: self.phase,
                 unmodeled_options: parsed.unmodeled_options.clone(),
                 source_generation: self.generation.clone(),
             });
@@ -551,16 +556,13 @@ fn default_and_options(rest: &[Node]) -> (MojoBaseAttributeDefault, Vec<String>)
     if options.is_empty() {
         return (classify_default(default), Vec::new());
     }
-    if options.len() % 2 != 0 {
-        return (
-            MojoBaseAttributeDefault::Unsupported {
-                reason: "trailing operands cannot form the `%kv` option list `Mojo::Base::attr` \
-                         binds"
-                    .to_string(),
-            },
-            Vec::new(),
-        );
-    }
+    // An odd tail is not a rejected declaration. `%kv` is an ordinary hash
+    // assignment, so Perl binds the dangling key to `undef` (with a warning)
+    // and `attr` still generates the accessor with the default it was given —
+    // verified by calling `attr`'s binding directly. Discarding the default as
+    // unsupported would make a determinate reader falsely unknown, so the
+    // parity only affects the option list, and `step_by(2)` already keeps the
+    // dangling key.
     let keys = options.iter().step_by(2).map(option_key_name).collect();
     (classify_default(default), keys)
 }
@@ -778,10 +780,16 @@ mod tests {
     }
 
     #[test]
-    fn an_odd_trailing_operand_cannot_be_an_option_list() {
+    fn an_odd_trailing_operand_still_leaves_the_default_intact() {
+        // `%kv` is an ordinary hash assignment, so an odd tail binds the last
+        // key to `undef` (with a warning) rather than rejecting the call —
+        // confirmed by exercising `attr`'s binding directly under `perl`. The
+        // parity limits the option list, not the default, so reporting the
+        // default as unsupported would make a determinate reader falsely
+        // unknown.
         let found = declarations("package App;\nhas name => 'v', weak;\n");
-        assert!(matches!(found[0].default, MojoBaseAttributeDefault::Unsupported { .. }));
-        assert!(found[0].unmodeled_options.is_empty());
+        assert_eq!(found[0].default, MojoBaseAttributeDefault::Constant);
+        assert_eq!(found[0].unmodeled_options, ["weak"]);
     }
 
     #[test]
