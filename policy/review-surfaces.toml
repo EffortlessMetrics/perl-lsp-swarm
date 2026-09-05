@@ -1,0 +1,483 @@
+# Sensitive Authority Review Surfaces — checked denominator and routing contract
+#
+# One stable programme-specific manifest identifying which semantic-control
+# changes require independent current-head review evidence before merge, and
+# which review machinery provides that evidence.
+#
+# Status boundary (issue #11793):
+#   source routing declaration      != current-head review evidence
+#                                   != live required-review enforcement
+#
+# This manifest is advisory classification metadata. It does not mutate branch
+# protection, rulesets, required checks, issues, PRs, releases, or publications.
+# Live-enforcement promotion belongs to #11796; advisory context publication to
+# #11795. Reviewer packets remain owned by #11701 (generation) over the shared
+# contract of #10881; current-head review semantics remain #3693/#6060.
+#
+# Checked by scripts/ci/validate_review_surfaces.py (--strict).
+# Human projection: docs/policy/REVIEW_SURFACES.md (generated, byte-deterministic;
+# regenerate with --write-projection, verify with --check-projection).
+
+schema_version = 1
+policy = "review-surfaces"
+owner = "EffortlessMetrics"
+status = "advisory"
+updated = "2026-08-24"
+issue = "11793"
+
+classification_rule = "Every sensitive semantic-control authority on current main maps to exactly one stable surface row; every surface row binds exact current paths; every row carries exactly one review profile from the closed profile vocabulary."
+enforcement_boundary = "This manifest is review-routing metadata until #11796 promotes rows into live required-review enforcement. A CODEOWNERS pattern or a manifest row is never itself proof that review happened."
+successor_consumption = "#11795 consumes the generated projection (docs/policy/REVIEW_SURFACES.md) as the advisory Authority Transfer Review context. #11796 consumes each row's code_owner_route disposition, review profile, and enforcement_successor field as its promotion denominator; it must not promote any row whose owner identity lacks platform-valid status in [code_owner_identity]."
+projection_doc = "docs/policy/REVIEW_SURFACES.md"
+validator_script = "scripts/ci/validate_review_surfaces.py"
+validator_test = "scripts/ci/test_validate_review_surfaces.py"
+
+# ---------------------------------------------------------------------------
+# Closed vocabularies (mirrored as constants in the validator; drift fails)
+# ---------------------------------------------------------------------------
+
+[families]
+semantic_issue_completion = "Semantic issue completion: close-proof policy, issue contracts, containment, evidence registries, trusted close workflows, and the PR-template fields they consume."
+configuration_authority = "Configuration authority: catalogs, public settings schema, observation/source adapters, and high-risk consumer authority adapters."
+executable_policy_and_public_migration = "Executable policy and public migration: suppression policy, receipt schemas, public-API baselines, retirement ledgers, repository-managed settings, and this manifest."
+
+# Closed review-profile vocabulary. Each profile reuses #10881's closed lens and
+# role vocabulary and the #11701 packet/handoff authority; no new review kinds.
+[profile.semantic_close_authority]
+fresh_direction = "Challenge whether the changed close contract actually prevents a realistic false close: wrong-subject proofs, stale denominators, evaluator bypass, and label-or-colour substitutes for current-head evidence."
+lenses = ["subject_evidence_identity", "lifecycle_currentness_concurrency", "spec_test_docs_consistency"]
+required_roles = ["adversarial_challenger"]
+packet_contract = "schemas/agent_review_packet.v1.schema.json"
+handoff_authority = "#11701"
+
+[profile.configuration_source_authority]
+fresh_direction = "Challenge whether parsed settings stay registered exactly once, precedence and trust channels are unchanged, and no client channel newly reaches a restricted field."
+lenses = ["semantic_correctness", "security_trust_boundary", "subject_evidence_identity"]
+required_roles = ["adversarial_challenger"]
+packet_contract = "schemas/agent_review_packet.v1.schema.json"
+handoff_authority = "#11701"
+
+[profile.configuration_generation_authority]
+fresh_direction = "Challenge whether candidate and accepted generations stay distinguishable, derived values are recomputed rather than persisted, and no second effective-state store appears beside the catalog."
+lenses = ["semantic_correctness", "architecture_authority_duplication", "spec_test_docs_consistency"]
+required_roles = ["adversarial_challenger"]
+packet_contract = "schemas/agent_review_packet.v1.schema.json"
+handoff_authority = "#11701"
+
+[profile.configuration_external_effect_authority]
+fresh_direction = "Challenge the first external effect: spawned processes, probed environments, network endpoints, credential handling, and resource ceilings that degrade user-visible behavior."
+lenses = ["security_trust_boundary", "release_external_boundary", "resource_retention_cleanup"]
+required_roles = ["adversarial_challenger"]
+packet_contract = "schemas/agent_review_packet.v1.schema.json"
+handoff_authority = "#11701"
+
+[profile.policy_lifecycle_authority]
+fresh_direction = "Challenge whether suppression/receipt lifecycle changes weaken a ratchet, recycle a retired obligation, or let generated material move without its canonical input."
+lenses = ["architecture_authority_duplication", "lifecycle_currentness_concurrency", "spec_test_docs_consistency"]
+required_roles = ["adversarial_challenger"]
+packet_contract = "schemas/agent_review_packet.v1.schema.json"
+handoff_authority = "#11701"
+
+[profile.public_api_or_retirement_authority]
+fresh_direction = "Challenge whether the public denominator actually moved, whether retirement is unreachable-in-production rather than deleted-in-tests, and whether recurrence guards survive."
+lenses = ["release_external_boundary", "architecture_authority_duplication", "subject_evidence_identity"]
+required_roles = ["adversarial_challenger"]
+packet_contract = "schemas/agent_review_packet.v1.schema.json"
+handoff_authority = "#11701"
+
+[profile.live_repository_policy_authority]
+fresh_direction = "Challenge whether repository-managed policy files silently arm enforcement, whether review machinery duplicates an existing authority, and whether routing metadata was presented as review evidence."
+lenses = ["security_trust_boundary", "architecture_authority_duplication", "lifecycle_currentness_concurrency"]
+required_roles = ["adversarial_challenger"]
+packet_contract = "schemas/agent_review_packet.v1.schema.json"
+handoff_authority = "#11701"
+
+# Platform validation of CODEOWNERS owner identities (GitHub REST API, 2026-08-24).
+# Fail closed: an owner absent from this table with status "valid" must never be
+# represented as governed, in this manifest or in .github/CODEOWNERS.
+[code_owner_identity.EffortlessSteven]
+kind = "user"
+status = "valid"
+permission = "admin"
+validation_method = "gh api repos/EffortlessMetrics/perl-lsp-swarm/collaborators/EffortlessSteven/permission -> admin; gh api users/EffortlessSteven -> type User"
+evidence_date = "2026-08-24"
+
+[code_owner_identity.EffortlessMetrics]
+kind = "organization"
+status = "invalid_as_code_owner"
+permission = "none"
+validation_method = "gh api users/EffortlessMetrics -> type Organization; gh api repos/EffortlessMetrics/perl-lsp-swarm/collaborators/EffortlessMetrics/permission -> none; gh api orgs/EffortlessMetrics/teams/EffortlessMetrics -> 404"
+reason = "An organization without a /team suffix is not an assignable CODEOWNERS owner; every row using it routed to nobody while appearing governed. Repaired to @EffortlessSteven in #11793."
+evidence_date = "2026-08-24"
+
+# ---------------------------------------------------------------------------
+# Family 1 — semantic issue completion (authorities #10168/#10380/#10413/#10382)
+# ---------------------------------------------------------------------------
+
+[surface.semantic_close_proof_policy]
+family = "semantic_issue_completion"
+authority = "Close-proof policy governing every semantic close (merge-base proof, landed-via proof, substance check)"
+controller = "#10168"
+conflict_key = "close.contract"
+risk_class = "semantic_control"
+review_profile = "semantic_close_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "A weaker close-proof rule (for example, dropping merge-base ancestry proof) passes review because no fresh-direction challenge re-derives the 29-PR false-close class it exists to prevent."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "No narrow CODEOWNERS pattern added at advisory stage; routing promotion requires platform-validated owner identity." }
+paths = ["docs/agents/CLOSE_PROOF_POLICY.md", "xtask/src/tasks/pr_close_proof.rs"]
+
+[surface.semantic_close_containment_evaluator]
+family = "semantic_issue_completion"
+authority = "Semantic-close containment evaluator and close-proof packet model (issue-contract validation, evidence-producer registry, denominator digests)"
+controller = "#10413"
+conflict_key = "close.evaluator"
+risk_class = "semantic_control"
+review_profile = "semantic_close_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "A new close-proof evaluator file lands outside the review denominator and ships with no independent current-head review."
+enforcement_successor = "#11796"
+predecessor_exit = "Supersedes ad hoc close-argument checking; the evaluator stays the single checked close gate."
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = ["xtask/src/bin/semantic-close-containment.rs", "xtask/src/close_proof/**"]
+
+[surface.semantic_close_issue_contract_fixtures]
+family = "semantic_issue_completion"
+authority = "issue_contract.v1 / issue_close_proof.v1 checked fixtures (atomic leaves, cohorts, superseded transfers, true duplicates)"
+controller = "#10380"
+conflict_key = "close.contract"
+risk_class = "semantic_control"
+review_profile = "semantic_close_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "A fixture flip relaxes a close-mode or proof-level constraint and only the fixture's own author notices."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = [".ci/close-proof-contract/**"]
+
+[surface.semantic_close_containment_fixtures]
+family = "semantic_issue_completion"
+authority = "Contradictory-close containment fixtures (unproven explicit closes, partial slices, remaining-same-issue guards)"
+controller = "#10413"
+conflict_key = "close.workflow"
+risk_class = "semantic_control"
+review_profile = "semantic_close_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "A containment fixture is weakened so an explicitly-unproven close classifies as valid and the containment workflow stays green."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = [".ci/semantic-close-containment/**"]
+
+[surface.semantic_close_trusted_workflow]
+family = "semantic_issue_completion"
+authority = "Trusted semantic-close containment workflow (the only workflow allowed to run the containment evaluator on live PRs)"
+controller = "#10413"
+conflict_key = "close.workflow"
+risk_class = "live_repository_policy_control"
+review_profile = "semantic_close_authority"
+required_evidence = "trusted_workflow_run"
+first_falsifier = "The trusted workflow is pointed at a fork or mutable ref so containment verdicts stop binding the reviewed head."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Workflow-path routing already declared in CODEOWNERS; identity repair recorded in [code_owner_identity]." }
+paths = [".github/workflows/semantic-close-containment.yml"]
+
+[surface.semantic_close_pr_template_fields]
+family = "semantic_issue_completion"
+authority = "PR-template fields consumed by semantic close (denominator, proof, and negative-control declarations)"
+controller = "#10384"
+conflict_key = "close.contract"
+risk_class = "semantic_control"
+review_profile = "semantic_close_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "A template field semantic close depends on is renamed or removed and closes proceed with silently empty evidence."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = [".github/PULL_REQUEST_TEMPLATE.md"]
+
+# ---------------------------------------------------------------------------
+# Family 2 — configuration authority (#10385/#7054/#10790/#10419/#7057)
+# ---------------------------------------------------------------------------
+
+[surface.configuration_authority_catalog]
+family = "configuration_authority"
+authority = "Configuration authority catalog and its checked projection over parsed settings leaves"
+controller = "#10790"
+conflict_key = "config.authority_catalog"
+risk_class = "configuration_control"
+review_profile = "configuration_source_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "A parsed-but-unregistered settings leaf (or a phantom authority row) slips past the leaf-parity machine check because the catalog module escaped review."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = ["crates/perl-lsp-rs-core/src/configuration_authority/**"]
+
+[surface.public_settings_schema]
+family = "configuration_authority"
+authority = "Public generic perllsp settings schema (the cross-client settings contract)"
+controller = "#10385"
+conflict_key = "config.public_schema"
+risk_class = "public_surface_control"
+review_profile = "configuration_source_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "Schema properties drift from authority rows (a limit key appears in the schema with no authority row) and clients accept settings the server ignores."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = ["schemas/perllsp-settings.schema.json"]
+
+[surface.configuration_reference_docs]
+family = "configuration_authority"
+authority = "User-facing configuration reference projecting the settings schema"
+controller = "#10385"
+conflict_key = "config.public_schema"
+risk_class = "public_surface_control"
+review_profile = "configuration_source_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "Documented defaults or ranges diverge from the shipped schema/catalog and users configure against fiction."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = ["docs/reference/CONFIGURATION_SCHEMA.md"]
+
+[surface.raw_observation_source_adapters]
+family = "configuration_authority"
+authority = "Raw observation and source-adapter contracts (config parsing, environment probes, external-root/toolchain discovery including the Perl oracle environment)"
+controller = "#10419"
+conflict_key = "config.observation_contract"
+risk_class = "configuration_control"
+review_profile = "configuration_source_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "A new observation channel starts feeding authoritative values without a precedence/trust review, so an untrusted source outranks compiled defaults."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = ["crates/perl-lsp-rs-core/src/config/**"]
+
+[surface.limits_authority_adapter]
+family = "configuration_authority"
+authority = "Resource-limit authority adapter (result caps, caches, deadlines, degradation thresholds)"
+controller = "#7054"
+conflict_key = "config.consumer.limits"
+risk_class = "configuration_control"
+review_profile = "configuration_external_effect_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "A ceiling is raised or a deadline removed and silent unbounded work reaches users with no external-effect challenge."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = ["crates/perl-lsp-rs-core/src/runtime/limits/**"]
+
+[surface.critic_authority_adapter]
+family = "configuration_authority"
+authority = "Formatter/critic engine authority adapter (native/legacy/external selection, profiles, remediation)"
+controller = "#7054"
+conflict_key = "config.consumer.critic"
+risk_class = "configuration_control"
+review_profile = "configuration_external_effect_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "Critic engine selection gains an untrusted ingress channel and project-controlled material executes as critic tooling."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = ["crates/perl-lsp-rs-core/src/tooling/perl_critic/**"]
+
+[surface.ai_transport_authority_adapter]
+family = "configuration_authority"
+authority = "AI transport authority adapter (provider selection, endpoints, credential locators, streaming)"
+controller = "#4997"
+conflict_key = "config.consumer.ai"
+risk_class = "configuration_control"
+review_profile = "configuration_external_effect_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "AI arm/select authority regains a client-channel or project-file source, recreating the #4997 recurrence class."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = ["crates/perl-lsp-rs-core/src/providers/ai/**"]
+
+[surface.testing_authority_adapter]
+family = "configuration_authority"
+authority = "High-risk testing authority adapter (test-framework detection shaping diagnostics and run integrations)"
+controller = "#7054"
+conflict_key = "config.consumer.testing"
+risk_class = "configuration_control"
+review_profile = "configuration_external_effect_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "Framework detection trusts a new untrusted marker and attacker-shaped project files steer server behavior."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = ["crates/perl-lsp-rs-core/src/providers/testing/**"]
+
+# ---------------------------------------------------------------------------
+# Family 3 — executable policy and public migration
+# ---------------------------------------------------------------------------
+
+[surface.ripr_suppression_policy]
+family = "executable_policy_and_public_migration"
+authority = "RIPR suppression policy (which exposure gaps are admitted, by whom, until when)"
+controller = "docs/ci/ripr.md (RIPR suppression ledger)"
+conflict_key = "policy.ripr_suppression"
+risk_class = "executable_policy_control"
+review_profile = "policy_lifecycle_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "A suppression entry is renewed or broadened without fresh-direction review and a known gap quietly stops counting as a gap."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = ["policy/ripr-suppressions.toml"]
+
+[surface.ripr_receipt_pipeline]
+family = "executable_policy_and_public_migration"
+authority = "RIPR typed parser, cadence adapter, receipt schema, and trusted CI workflow"
+controller = "docs/ci/ripr.md (RIPR evidence pipeline)"
+conflict_key = "policy.ripr_receipts"
+risk_class = "executable_policy_control"
+review_profile = "policy_lifecycle_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "The receipt schema loosens after the parser trusting it shipped, so stale or malformed exposure facts validate."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = [
+  "schemas/ripr-perl-facts-v1.schema.json",
+  "ripr.toml",
+  "xtask/src/tasks/ripr_evidence.rs",
+  "scripts/ci/ripr_summary.py",
+  ".github/workflows/ripr.yml",
+]
+
+[surface.public_api_baseline]
+family = "executable_policy_and_public_migration"
+authority = "Public-API denominator ratchet and generated baselines"
+controller = "#4497"
+conflict_key = "policy.public_api_baseline"
+risk_class = "public_surface_control"
+review_profile = "public_api_or_retirement_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "A baseline is regenerated alongside an accidental public addition and the ratchet certifies the widening instead of catching it."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = [".ci/public-api-baselines/**", "xtask/tests/public_api_ratchet_tests.rs"]
+
+[surface.review_receipt_retirement]
+family = "executable_policy_and_public_migration"
+authority = "Review-receipt retirement workflow (typed retirement/migration of stale receipts with recurrence guards)"
+controller = "#6060"
+conflict_key = "policy.retirement_ledger"
+risk_class = "executable_policy_control"
+review_profile = "public_api_or_retirement_authority"
+required_evidence = "trusted_workflow_run"
+first_falsifier = "Retirement criteria loosen so live obligations are retired as stale, or the recurrence guard is dropped and a retired receipt returns unreviewed."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = [".github/workflows/review-receipt-retirement.yml"]
+
+[surface.pr_review_ledger]
+family = "executable_policy_and_public_migration"
+authority = "PR review-ledger contract and producer (current-head review bookkeeping consumed by convergence checks)"
+controller = "#6060"
+conflict_key = "policy.review_ledger"
+risk_class = "executable_policy_control"
+review_profile = "live_repository_policy_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "Ledger schema widens so prose comments satisfy fields meant to carry submitted-review evidence."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = ["docs/agents/pr-ledger.schema.json", "xtask/src/tasks/pr_ledger.rs"]
+
+[surface.repository_settings_management]
+family = "executable_policy_and_public_migration"
+authority = "Repository-managed settings declarable in-tree (repository metadata that can grow into live-protection mutation)"
+controller = "#11793"
+conflict_key = "policy.repo_settings"
+risk_class = "live_repository_policy_control"
+review_profile = "live_repository_policy_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "Branch-protection or ruleset blocks appear under repository settings and silently change merge behavior with no review profile."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = [".github/settings.yaml"]
+
+[surface.codeowners_routing_declaration]
+family = "executable_policy_and_public_migration"
+authority = "CODEOWNERS source-routing declaration (coordination metadata, never review evidence)"
+controller = "#11793"
+conflict_key = "policy.codeowners_routing"
+risk_class = "live_repository_policy_control"
+review_profile = "live_repository_policy_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "A CODEOWNERS edit is accepted as proof that review happened, or an owner identity ships without platform validation and routes to nobody."
+enforcement_successor = "#11796"
+predecessor_exit = "@EffortlessMetrics organization-only identity repaired to platform-validated @EffortlessSteven in #11793; team-route promotion exits via #11796."
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Existing patterns retained narrow; identity repair evidenced in [code_owner_identity]." }
+paths = [".github/CODEOWNERS"]
+
+[surface.agent_review_packet_contract]
+family = "executable_policy_and_public_migration"
+authority = "Shared adversarial review-packet contract (closed lens/role vocabulary and canonical projections)"
+controller = "#10881"
+conflict_key = "authority_review.reviewer_packet"
+risk_class = "live_repository_policy_control"
+review_profile = "live_repository_policy_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "A new invented review kind enters the closed lens/role vocabulary and packets stop being comparable across programmes."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = [
+  "schemas/agent_review_packet.v1.schema.json",
+  "schemas/agent_review_finding.v1.schema.json",
+  "schemas/stage_closure_projection.v1.schema.json",
+  "xtask/src/tasks/agent_review_packet.rs",
+  "fixtures/agent_review_packet/**",
+]
+
+[surface.review_surface_manifest_self]
+family = "executable_policy_and_public_migration"
+authority = "This review-surface manifest, its checked validator, its fixtures, and its generated human projection"
+controller = "#11793"
+conflict_key = "authority_review.manifest"
+risk_class = "live_repository_policy_control"
+review_profile = "live_repository_policy_authority"
+required_evidence = "checked_projection"
+first_falsifier = "The manifest omits its own validator/projection paths, so the denominator can be edited without ever passing its own check."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "Routing promotion deferred to #11796." }
+paths = [
+  "policy/review-surfaces.toml",
+  "scripts/ci/validate_review_surfaces.py",
+  "scripts/ci/test_validate_review_surfaces.py",
+  "docs/policy/REVIEW_SURFACES.md",
+]
+
+# ---------------------------------------------------------------------------
+# Explicit residue — identified sensitive authority with nothing landable to
+# bind on current main. Each names its resolution owner. Promotion of any item
+# into a surface row is a manifest edit passing the validator.
+# ---------------------------------------------------------------------------
+
+[residue.accepted_configuration_store]
+authority = "Accepted configuration store and compatibility projections"
+parent_issue = "#7057"
+reason = "Runtime slice not landed on current main; no store implementation exists to bind."
+resolution_owner = "#7057"
+
+[residue.candidate_accepted_generation_contracts]
+authority = "Candidate/accepted generation and coordinator contracts"
+parent_issue = "#10386"
+reason = "Generation-pipeline contracts not landed on current main."
+resolution_owner = "#7057"
+
+[residue.post_commit_refresh_planner]
+authority = "Shared post-commit refresh/registration planner"
+parent_issue = "#7057"
+reason = "Planner not landed on current main."
+resolution_owner = "#7057"
+
+[residue.landing_content_semantic_close_layout]
+authority = "landing/content/semantic-close task layout named by the parent programme"
+parent_issue = "#11696"
+reason = "Layout not landed on current main; current close-proof tasks are bound under semantic_close_containment_evaluator."
+resolution_owner = "#11696"
+
+[residue.required_check_desired_state]
+authority = "Required-check desired-state surface for semantic close"
+parent_issue = "#11796"
+reason = "Desired state is created by the enforcement successor, not before it."
+resolution_owner = "#11796"
+
+[residue.stable_programme_graph_artifacts]
+authority = "Stable programme graph validation artifacts"
+parent_issue = "#12065"
+reason = "Graph artifacts not merged on current main; classify on landing."
+resolution_owner = "#12065"

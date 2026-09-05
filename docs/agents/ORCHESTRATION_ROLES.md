@@ -42,7 +42,7 @@ Issue
 [CI proof]           ← haiku: green-ci, pr-responder
   |
   v
-[merge / close      ← haiku closer with merge-base proof
+[merge / close      ← haiku closer with landing + semantic-completion proof
  / defer]
   |
   v
@@ -220,7 +220,9 @@ a merged PR. Governed by [CLOSE_PROOF_POLICY.md](CLOSE_PROOF_POLICY.md).
 analysis requires synthesis
 
 **Constraints:**
-- **Never close without merge-base proof** — see CLOSE_PROOF_POLICY.md
+- **Never close without landing proof and semantic completion evidence** —
+  see CLOSE_PROOF_POLICY.md (Three Distinct Proof Layers): landing ancestry
+  and content survival never authorize a semantic close by themselves
 - Must satisfy multi-pass rule for all high-wrong-cost claim classes
 - Port-before-close: content must reach a canonical surface before source closes
 - Wrong closes trigger reopen-or-reland with trail documented
@@ -230,7 +232,8 @@ analysis requires synthesis
 {
   "closed_item": "issue or PR number",
   "canonical_landed_artifact": "PR URL or file path",
-  "merge_base_proof": "git merge-base --is-ancestor <commit> <canonical-main> output",
+  "landing_proof": "landing_proof.v1 receipt from cargo xtask landing-proof (semantic_completion is always not_evaluated)",
+  "semantic_completion_evidence": "separate evidence from the semantic-close layer; landing proof is not semantic completion",
   "comment_url": "https://github.com/.../issues/N#issuecomment-M"
 }
 ```

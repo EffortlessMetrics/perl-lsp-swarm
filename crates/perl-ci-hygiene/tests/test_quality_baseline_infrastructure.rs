@@ -2,6 +2,7 @@
 //!
 //! Verifies baseline files, dev-dependency hygiene, and narrow panic burn-down
 //! targets before broader mechanical cleanup lands.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::fs;
 use std::path::{Path, PathBuf};

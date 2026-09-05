@@ -1,5 +1,3 @@
-#![allow(clippy::collapsible_if)]
-
 use serde_json::json;
 
 mod support;
@@ -48,8 +46,14 @@ fn native_default_document_formatting() -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
+/// Withdrawal control (#11955): `textDocument/rangeFormatting` must refuse at
+/// the exact `perllsp --stdio` boundary with the truthful unadvertised
+/// disposition, and the refusal must leave the document generation untouched —
+/// proven by manual whole-document formatting still observing the original
+/// unformatted bytes afterwards.
 #[test]
-fn native_default_range_formatting() -> Result<(), Box<dyn std::error::Error>> {
+fn withdrawn_range_formatting_refuses_and_leaves_document_unchanged()
+-> Result<(), Box<dyn std::error::Error>> {
     let bin = support::product_binary_path()?;
     let mut client = LspClient::spawn(&bin)?;
     let uri = "file:///range.pl";
@@ -70,18 +74,31 @@ fn native_default_range_formatting() -> Result<(), Box<dyn std::error::Error>> {
         }),
     )?;
 
-    let edits =
-        response["result"].as_array().ok_or("rangeFormatting should return an edit array")?;
-    assert!(!edits.is_empty(), "native default range formatting should return edits");
+    let error = response.get("error").ok_or("withdrawn rangeFormatting must return an error")?;
+    assert_eq!(error["code"], -32601, "refusal must be MethodNotFound (-32601)");
+    assert!(response.get("result").is_none(), "a refusal must not carry a successful edit payload");
 
-    let edit = edits.first().ok_or("edits array should have at least one element")?;
-    assert_eq!(edit["range"]["start"]["line"], 1);
-    assert_eq!(edit["range"]["end"]["line"], 1);
-    let edit_text = edit["newText"].as_str().ok_or("Edit should have newText")?;
-
-    assert!(edit_text.contains("sub first") && edit_text.contains("{"));
-    assert!(edit_text.contains("my $a = 1"), "Should format selected subroutine content");
-    assert!(!edit_text.contains("Second subroutine"), "Should not include unselected text");
+    // Manual whole-document formatting remains live for the same document and
+    // still sees the original bytes (the messy `my$a=1;` survives verbatim
+    // inside the produced edit), proving no withdrawn request mutated state.
+    let manual = client.request(
+        "textDocument/formatting",
+        json!({
+            "textDocument": {"uri": uri},
+            "options": {"tabSize": 4, "insertSpaces": true}
+        }),
+    )?;
+    let edits = manual["result"]
+        .as_array()
+        .ok_or("manual whole-document formatting should still return an edit array")?;
+    assert!(!edits.is_empty(), "manual whole-document formatting must remain available");
+    let edit_text = edits.first().ok_or("edits array should have at least one element")?["newText"]
+        .as_str()
+        .ok_or("Edit should have newText")?;
+    assert!(
+        edit_text.contains("sub first"),
+        "manual formatting must observe the original source bytes"
+    );
 
     client.shutdown()?;
     Ok(())
@@ -167,23 +184,26 @@ fn native_default_formatting_honors_lsp_tab_size() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+/// Withdrawal control (#11955): `textDocument/rangesFormatting` must refuse at
+/// the exact `perllsp --stdio` boundary; no atomic multi-range edit set may
+/// escape while #7089's composition contract is unproven.
 #[test]
-fn native_default_ranges_formatting_formats_selected_ranges()
+fn withdrawn_ranges_formatting_refuses_at_process_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
     let bin = support::product_binary_path()?;
     let mut client = LspClient::spawn(&bin)?;
     let uri = "file:///ranges.pl";
 
-    let source = r#"
-# First subroutine - format this
-sub first{my$a=1;return$a;}
-
-# Second subroutine - don't format this
-sub second{my$b=2;return$b;}
-
-# Third subroutine - format this too
-sub third{my$c=3;return$c;}
-"#;
+    let source = "\n\
+# First subroutine - format this\n\
+sub first{my$a=1;return$a;}\n\
+\n\
+# Second subroutine - don't format this\n\
+sub second{my$b=2;return$b;}\n\
+\n\
+# Third subroutine - format this too\n\
+sub third{my$c=3;return$c;}\n\
+";
 
     client.did_open(uri, "perl", source)?;
 
@@ -194,33 +214,77 @@ sub third{my$c=3;return$c;}
             "ranges": [
                 {
                     "start": {"line": 1, "character": 0},
-                    "end": {"line": 2, "character": 28}
+                    "end": {"line": 2, "character": 27}
                 },
                 {
                     "start": {"line": 7, "character": 0},
-                    "end": {"line": 8, "character": 28}
+                    "end": {"line": 8, "character": 27}
                 }
             ],
             "options": {"tabSize": 4, "insertSpaces": true}
         }),
     )?;
 
-    let edits =
-        response["result"].as_array().ok_or("rangesFormatting should return an edit array")?;
-    assert_eq!(edits.len(), 2, "native default ranges formatting should edit both ranges");
+    let error = response.get("error").ok_or("withdrawn rangesFormatting must return an error")?;
+    assert_eq!(error["code"], -32601, "refusal must be MethodNotFound (-32601)");
+    assert!(response.get("result").is_none(), "a refusal must not carry a successful edit payload");
 
-    let first_edit_text = edits[0]["newText"].as_str().ok_or("first edit should have newText")?;
-    let second_edit_text = edits[1]["newText"].as_str().ok_or("second edit should have newText")?;
+    client.shutdown()?;
+    Ok(())
+}
 
-    assert!(first_edit_text.contains("sub first {\n    my $a = 1;\n    return $a;\n}"));
-    assert!(second_edit_text.contains("sub third {\n    my $c = 3;\n    return $c;\n}"));
-    assert!(
-        !edits.iter().any(|edit| {
-            edit["newText"].as_str().is_some_and(|text| {
-                text.contains("Second subroutine") || text.contains("sub second")
-            })
+/// Withdrawal control (#11955): `textDocument/onTypeFormatting` refuses at the
+/// exact `perllsp --stdio` boundary for every trigger shape, and the refusal
+/// leaves the document observable unchanged via the still-live manual route.
+#[test]
+fn withdrawn_on_type_formatting_refuses_at_process_boundary()
+-> Result<(), Box<dyn std::error::Error>> {
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
+    let uri = "file:///on-type.pl";
+    let source = "sub first{my$a=1;return$a;}\n";
+
+    client.did_open(uri, "perl", source)?;
+
+    for (ch, line, character) in [("{", 0, 27), ("}", 0, 27), ("\n", 0, 27)] {
+        let response = client.request(
+            "textDocument/onTypeFormatting",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character},
+                "ch": ch,
+                "options": {"tabSize": 4, "insertSpaces": true}
+            }),
+        )?;
+
+        let error = response
+            .get("error")
+            .ok_or("withdrawn onTypeFormatting must return an error, not a result")?;
+        assert_eq!(error["code"], -32601, "refusal must be MethodNotFound (-32601)");
+        assert!(
+            response.get("result").is_none(),
+            "a refusal must not carry a successful edit payload"
+        );
+    }
+
+    // Manual whole-document formatting still sees the original bytes.
+    let manual = client.request(
+        "textDocument/formatting",
+        json!({
+            "textDocument": {"uri": uri},
+            "options": {"tabSize": 4, "insertSpaces": true}
         }),
-        "native default ranges formatting should not edit the unselected second subroutine"
+    )?;
+    let edits = manual["result"]
+        .as_array()
+        .ok_or("manual whole-document formatting should still return an edit array")?;
+    assert!(!edits.is_empty(), "manual whole-document formatting must remain available");
+    let edit_text = edits.first().ok_or("edits array should have at least one element")?["newText"]
+        .as_str()
+        .ok_or("Edit should have newText")?;
+    assert!(
+        edit_text.contains("my $a = 1"),
+        "manual formatting must observe the original source bytes"
     );
 
     client.shutdown()?;

@@ -1,25 +1,29 @@
-//! Content-level tests for the DAP `setVariable` request (Issue #781).
+//! Content-level tests for the DAP `setVariable` request (Issue #781; #8354).
 //!
-//! These tests verify that `setVariable` actually mutates the live variable
-//! value — not just that the protocol shape is well-formed.  Specifically:
+//! Since #8354 the exact setVariable mutation path is not proven, so
+//! `supportsSetVariable` is advertised false and every `setVariable` request
+//! is refused by the early capability gate — before argument parsing, target
+//! screening, the broker, or any debugger bytes. These tests therefore verify
+//! the fail-closed contract against a live stopped session:
 //!
-//! 1. A scalar `$x` set to a new value is reflected in a subsequent `variables`
-//!    query and in `evaluate("$x")`.
-//! 2. Array element mutation (`$arr[0]`) persists in a follow-up `variables` query.
-//! 3. Read-only / invalid `setVariable` calls return `success=false` with a
-//!    non-empty error message.
-//! 4. The `value` field in the `setVariable` response matches what the debugger
-//!    subsequently reports for the variable.
+//! 1. A well-formed scalar assignment is refused, and `evaluate("$x")` still
+//!    reports the ORIGINAL value — behavioral proof of zero mutation.
+//! 2. Array-element and quoted-string requests are refused identically.
+//! 3. Read-only / invalid requests return `success=false` with a non-empty
+//!    error message (now the capability refusal, which fires first).
+//! 4. A refused response carries no `value`/body, so a client can never
+//!    mistake the refusal for a confirmed assignment.
+//! 5. The stopped session stays fully inspectable after refusals.
 //!
 //! ## Determinism note
 //!
 //! Live-session tests require `perl` on `PATH`.  They skip gracefully when Perl
 //! is absent, matching the pattern used by `dap_e2e_workflow_tests.rs`.
 //!
-//! `handle_set_variable` drives a real `perl -d` process — the assignment is
-//! sent as `p $name = $value` followed by a read-back `p $name`.  The content
-//! tests therefore exercise the full round-trip including the Perl runtime, not
-//! a mock.
+//! The live-mutation round-trip this file asserted before #8354 (assignment
+//! sent as `p $name = $value` plus a read-back `p $name`) is the #8368
+//! promotion proof: it returns only when the exact mutation cell is promoted
+//! through #7363/#7364, not while main advertises false.
 
 mod common;
 
@@ -112,45 +116,47 @@ fn parse_set_variable_response(
     }
 }
 
-// ── Test 1: scalar mutation — setVariable response and evaluate agree ─────────
+// ── Test 1: scalar setVariable is refused and the value stays unchanged ───────
 
-/// After `setVariable($x, "99")` on a live breakpoint:
-/// - The response must be `success=true`.
-/// - The `value` field in the setVariable response must contain "99" (the
-///   read-back from `p $x` in the debugger confirms the assignment landed).
-/// - A follow-up `evaluate("$x")` must also contain "99".
+/// Since #8354 the exact setVariable mutation path is not proven, so the
+/// capability is advertised false and every `setVariable` request is refused
+/// by the early gate — including on a live stopped session.
 ///
-/// ## Why we don't search `variables()` for `$x` by name
+/// After the refused request:
+/// - The response must be `success=false` with the #8354 capability refusal
+///   and no result body (no fabricated read-back).
+/// - A follow-up `evaluate("$x")` must still report the ORIGINAL value, which
+///   behaviorally proves zero debugger bytes were written by the refusal.
 ///
-/// The Perl debugger's `V frame .` command (used by the adapter for the Locals
-/// scope) dumps **package-level** variables, not `my` lexical variables.  After
-/// the setVariable call, the variable cache may return fallback placeholders
-/// (`$self`, `@_`) rather than the real `my $x`.  The existing e2e tests only
-/// assert `!variables.is_empty()` for the same reason.  The mutation IS
-/// confirmed by (a) the setVariable read-back value and (b) `evaluate("$x")`.
+/// The live-mutation round-trip this file used to assert is the #8368
+/// promotion proof and returns only when the exact mutation cell is promoted.
 #[test]
-fn test_set_scalar_value_response_and_evaluate_agree() -> TestResult {
+fn test_set_scalar_value_is_refused_and_value_unchanged() -> TestResult {
     if !perl_available() {
         return Ok(());
     }
 
     let (mut session, locals_ref) = live_session_at_bp()?;
 
-    // ── setVariable: change $x from 10 to 99 ──────────────────────────────────
+    // ── setVariable: attempt to change $x from 10 to 99 ──────────────────────
     let response = set_variable(&mut session, locals_ref, "$x", "99");
     let (success, returned_value, err_msg) = parse_set_variable_response(&response)?;
 
-    assert!(success, "setVariable($x, 99) must succeed on a live session; err={err_msg:?}");
-
-    let returned = returned_value.ok_or("setVariable response must include a `value` field")?;
     assert!(
-        returned.contains("99"),
-        "setVariable response `value` must reflect the new value '99', got: {returned:?}"
+        !success,
+        "setVariable($x, 99) must be refused by the #8354 capability gate; err={err_msg:?}"
+    );
+    let msg = err_msg.unwrap_or_default();
+    assert!(
+        msg.contains("supportsSetVariable"),
+        "the refusal must be the #8354 capability floor, not a session error: {msg:?}"
+    );
+    assert!(
+        returned_value.is_none(),
+        "a refused setVariable must not fabricate a read-back `value`, got {returned_value:?}"
     );
 
-    // ── evaluate: independent read-back via evaluate must agree ──────────────
-    // evaluate("$x") directly queries the Perl debugger's value of $x,
-    // independent of the variable cache or the `V` command.
+    // ── evaluate: the value must be untouched by the refused request ─────────
     let eval_response =
         session.request("evaluate", Some(json!({"expression": "$x", "allowSideEffects": false})));
 
@@ -159,15 +165,23 @@ fn test_set_scalar_value_response_and_evaluate_agree() -> TestResult {
             let result =
                 body.as_ref().and_then(|b| b.get("result")).and_then(Value::as_str).unwrap_or("");
             assert!(
-                result.contains("99"),
-                "evaluate($x) after setVariable must contain '99', got: {result:?}"
+                result.contains("10"),
+                "evaluate($x) after a refused setVariable must still report the original '10', \
+                 got: {result:?}"
             );
         }
-        DapMessage::Response { success: false, .. } => {
+        DapMessage::Response { success: false, message, .. } => {
             // evaluate may fail if the safe-eval policy blocks `$x` lookup in
-            // this session mode.  The setVariable read-back already confirmed
-            // the mutation (the `p $x` command in handle_set_variable returns
-            // the new value).  This is acceptable — do not fail the test.
+            // this session mode. The refusal itself carried no body, so there
+            // is no fabricated value to contradict the cache. The branch is
+            // not vacuous, though: the session must still be alive — a lost
+            // session would make the non-mutation claim unobservable.
+            let msg = message.unwrap_or_default();
+            assert!(
+                !msg.contains("No debugger session"),
+                "the debug session must survive the refused setVariable; evaluate failed \
+                 with: {msg}"
+            );
         }
         other => return Err(format!("unexpected evaluate response: {other:?}").into()),
     }
@@ -176,16 +190,12 @@ fn test_set_scalar_value_response_and_evaluate_agree() -> TestResult {
     Ok(())
 }
 
-// ── Test 1b: variables query after setVariable is non-empty (smoke) ────────────
+// ── Test 1b: variables query after a refused setVariable is non-empty ─────────
 
-/// After `setVariable` on a live breakpoint, a follow-up `variables(locals_ref)`
-/// must still return a non-empty list (matching the pattern in the existing
-/// e2e workflow tests).  This confirms the adapter doesn't crash or reset
-/// state after a mutation.
-///
-/// Variable names are NOT checked individually because the Perl `V` command
-/// does not expose `my` lexical variables; the existing e2e tests use the
-/// same `!variables.is_empty()` assertion for the same reason.
+/// After a refused `setVariable` on a live breakpoint, a follow-up
+/// `variables(locals_ref)` must still return a non-empty list: the refusal
+/// must not corrupt, reset, or invalidate the retained variable state (the
+/// session stays fully inspectable — #8354 test 5).
 #[test]
 fn test_variables_query_non_empty_after_set_variable() -> TestResult {
     if !perl_available() {
@@ -198,16 +208,20 @@ fn test_variables_query_non_empty_after_set_variable() -> TestResult {
     let vars_before = session.variables(locals_ref)?;
     assert!(!vars_before.is_empty(), "variables(locals_ref) must be non-empty before setVariable");
 
-    // Mutate $x.
+    // Attempt the mutation — refused by the #8354 capability floor.
     let response = set_variable(&mut session, locals_ref, "$x", "42");
     let (success, _, err_msg) = parse_set_variable_response(&response)?;
-    assert!(success, "setVariable($x, 42) must succeed; err={err_msg:?}");
+    assert!(
+        !success,
+        "setVariable($x, 42) must be refused by the capability gate; err={err_msg:?}"
+    );
 
     // Follow-up variables query — must still return a non-empty list.
     let vars_after = session.variables(locals_ref)?;
     assert!(
         !vars_after.is_empty(),
-        "variables(locals_ref) must remain non-empty after setVariable (adapter must not crash)"
+        "variables(locals_ref) must remain non-empty after a refused setVariable (adapter must \
+         not crash or drop retained state)"
     );
 
     // Every variable entry must have a non-empty name and value.
@@ -222,21 +236,12 @@ fn test_variables_query_non_empty_after_set_variable() -> TestResult {
     Ok(())
 }
 
-// ── Test 2: array element mutation persists ────────────────────────────────────
+// ── Test 2: array element setVariable is refused ──────────────────────────────
 
-/// After `setVariable($arr[0], "999")` on a live breakpoint:
-/// - The response is `success=true`.
-/// - A follow-up `variables(locals_ref)` shows `$arr[0]` (or the array) reflects
-///   the change.
-///
-/// # Implementation note
-///
-/// Perl's `perl -d` does not expose array elements as individual DAP variables
-/// with the `$arr[0]` name at scope level — `@arr` appears as the array.  The
-/// `setVariable` protocol sends the subscript form to the Perl `p` command
-/// (`p $arr[0] = 999`), which mutates the underlying array slot.  This test
-/// verifies the response confirms success and the returned value reflects the
-/// new element.
+/// `setVariable($arr[0], "999")` on a live breakpoint must be refused by the
+/// #8354 capability gate like any other request: the response is
+/// `success=false` with the capability refusal, and the staged value never
+/// reaches the debugger.
 #[test]
 fn test_set_array_element_returns_success_with_new_value() -> TestResult {
     if !perl_available() {
@@ -245,24 +250,16 @@ fn test_set_array_element_returns_success_with_new_value() -> TestResult {
 
     let (mut session, locals_ref) = live_session_at_bp()?;
 
-    // $arr[0] is a valid Perl lvalue via `p` in the debugger.
-    // is_valid_set_variable_name accepts sigil-prefixed identifiers with subscripts.
     let response = set_variable(&mut session, locals_ref, "$arr[0]", "999");
-    let (success, returned_value, _err_msg) = parse_set_variable_response(&response)?;
+    let (success, returned_value, err_msg) = parse_set_variable_response(&response)?;
 
-    // If the adapter rejects $arr[0] as an invalid name, that is an expected
-    // failure — the name validation regex does not accept subscript forms.
-    // This is valid adapter behavior per the security model.
-    if !success {
-        session.disconnect()?;
-        return Ok(());
-    }
-
-    let returned =
-        returned_value.ok_or("setVariable response must include a `value` field on success")?;
     assert!(
-        returned.contains("999"),
-        "setVariable($arr[0], 999) response `value` must contain '999', got: {returned:?}"
+        !success,
+        "setVariable($arr[0], 999) must be refused by the #8354 capability gate; err={err_msg:?}"
+    );
+    assert!(
+        returned_value.is_none(),
+        "a refused setVariable must not fabricate a read-back `value`"
     );
 
     session.disconnect()?;
@@ -272,11 +269,13 @@ fn test_set_array_element_returns_success_with_new_value() -> TestResult {
 // ── Test 3: invalid name rejected with success=false ─────────────────────────
 
 /// Sending `setVariable` with a name that lacks a Perl sigil must return
-/// `success=false` with a descriptive error message (not a crash or empty
-/// message).  This exercises the `is_valid_set_variable_name` guard path in
-/// `handle_set_variable`.
+/// `success=false` with the #8354 capability refusal. Since #8354 the
+/// fail-closed gate fires before the `is_valid_set_variable_name` guard in
+/// `handle_set_variable`, so the discriminating content here is that a
+/// sigil-less name is refused by the capability floor — it can never reach
+/// the name guard, and must not be answered by any deeper machinery.
 ///
-/// This test does NOT need a live session — the guard fires before any
+/// This test does NOT need a live session — the gate fires before any
 /// debugger interaction.
 #[test]
 fn test_set_variable_invalid_name_rejected_no_session() -> TestResult {
@@ -303,13 +302,13 @@ fn test_set_variable_invalid_name_rejected_no_session() -> TestResult {
             assert!(!success, "setVariable with invalid name 'no_sigil' must return success=false");
             let msg = message.ok_or("error response must include a non-empty message")?;
             assert!(!msg.is_empty(), "error message for invalid name must be non-empty");
-            // The message should hint at the validation failure.
+            // The refusal must be the #8354 capability floor specifically. A
+            // generic "mentions variable anywhere" check is vacuous: the
+            // capability message itself contains "setVariable".
             assert!(
-                msg.to_lowercase().contains("invalid")
-                    || msg.to_lowercase().contains("sigil")
-                    || msg.to_lowercase().contains("variable")
-                    || msg.to_lowercase().contains("name"),
-                "error message for invalid name should mention the name problem, got: {msg:?}"
+                msg.contains("supportsSetVariable"),
+                "invalid-name request must be refused by the #8354 capability floor, \
+                 not by a deeper guard or a session error, got: {msg:?}"
             );
         }
         other => return Err(format!("expected Response for setVariable, got: {other:?}").into()),
@@ -320,10 +319,13 @@ fn test_set_variable_invalid_name_rejected_no_session() -> TestResult {
 // ── Test 4: unsafe value rejected with success=false ─────────────────────────
 
 /// Sending `setVariable` with a value that contains a statement separator (`;`)
-/// must return `success=false` with a descriptive error.  This exercises the
-/// `contains_unquoted_statement_separator` guard path.
+/// must return `success=false` with the #8354 capability refusal. Since #8354
+/// the fail-closed gate fires before the
+/// `contains_unquoted_statement_separator` guard, so the discriminating
+/// content here is that an injection-shaped value is refused by the capability
+/// floor — it can never reach the separator guard or the broker.
 ///
-/// Does not need a live session — the guard fires before debugger interaction.
+/// Does not need a live session — the gate fires before debugger interaction.
 #[test]
 fn test_set_variable_statement_separator_in_value_rejected() -> TestResult {
     use perl_dap::debug_adapter::DebugAdapter;
@@ -351,6 +353,14 @@ fn test_set_variable_statement_separator_in_value_rejected() -> TestResult {
             );
             let msg = message.ok_or("error response must include a non-empty message")?;
             assert!(!msg.is_empty(), "error message for unsafe value must be non-empty");
+            // The refusal must be the #8354 capability floor specifically:
+            // the gate fires before the separator guard, so a deeper-path
+            // message here would mean the gate was bypassed.
+            assert!(
+                msg.contains("supportsSetVariable"),
+                "statement-separator value must be refused by the #8354 capability floor, \
+                 got: {msg:?}"
+            );
         }
         other => return Err(format!("expected Response for setVariable, got: {other:?}").into()),
     }
@@ -359,8 +369,11 @@ fn test_set_variable_statement_separator_in_value_rejected() -> TestResult {
 
 // ── Test 5: missing variables_reference rejected with success=false ───────────
 
-/// `setVariable` with `variablesReference <= 0` must return `success=false`.
-/// This exercises the argument-guard path before any session lookup.
+/// `setVariable` with `variablesReference <= 0` must return `success=false`
+/// with the #8354 capability refusal. Since #8354 the fail-closed gate fires
+/// before the argument-guard and session-lookup paths, so the discriminating
+/// content here is that a degenerate reference is refused by the capability
+/// floor — identically to any other request shape.
 #[test]
 fn test_set_variable_zero_variables_reference_rejected() -> TestResult {
     use perl_dap::debug_adapter::DebugAdapter;
@@ -382,27 +395,27 @@ fn test_set_variable_zero_variables_reference_rejected() -> TestResult {
         DapMessage::Response { success, command, message, .. } => {
             assert_eq!(command, "setVariable");
             assert!(!success, "setVariable with variablesReference=0 must return success=false");
-            let msg = message.ok_or("error response must include a non-empty message")?;
+            let msg = message.ok_or("error response must be non-empty")?;
             assert!(!msg.is_empty(), "error message must be non-empty");
+            // The refusal must be the #8354 capability floor specifically:
+            // the gate fires before the reference guard, so a deeper-path
+            // message here would mean the gate was bypassed.
+            assert!(
+                msg.contains("supportsSetVariable"),
+                "variablesReference=0 must be refused by the #8354 capability floor, got: {msg:?}"
+            );
         }
         other => return Err(format!("expected Response for setVariable, got: {other:?}").into()),
     }
     Ok(())
 }
 
-// ── Test 6: setVariable response value reflects new value (read-back) ─────────
+// ── Test 6: refused setVariable fabricates no read-back value ─────────────────
 
-/// This test confirms that the `value` field in the setVariable response (the
-/// read-back from `p $name` in the Perl debugger) carries the new value.
-///
-/// Consistency between the setVariable response and a subsequent `variables`
-/// query cannot be directly verified for `my` lexical variables because the
-/// Perl debugger's `V frame .` command does not expose them by name.  The
-/// read-back in the setVariable response itself is the authoritative source
-/// for confirming the assignment landed.
-///
-/// This is the "value field in setVariable response matches debugger" assertion
-/// from spec — verified via the response body, not a cross-query comparison.
+/// The historical contract asserted that the `value` field in the setVariable
+/// response carried the fresh read-back from the debugger. Since #8354 the
+/// mutation path is closed: the refusal carries NO `value` field at all, so a
+/// client can never mistake a refusal for a confirmed assignment.
 #[test]
 fn test_set_variable_response_value_reflects_new_value() -> TestResult {
     if !perl_available() {
@@ -411,24 +424,22 @@ fn test_set_variable_response_value_reflects_new_value() -> TestResult {
 
     let (mut session, locals_ref) = live_session_at_bp()?;
 
-    // Change $x to the string "hello".
     let response = set_variable(&mut session, locals_ref, "$x", "'hello'");
     let (success, returned_value, err_msg) = parse_set_variable_response(&response)?;
 
-    assert!(success, "setVariable($x, 'hello') must succeed on a live session; err={err_msg:?}");
-
-    let returned = returned_value.ok_or("setVariable response must include a `value` field")?;
     assert!(
-        returned.contains("hello"),
-        "setVariable response `value` must contain 'hello', got: {returned:?}"
+        !success,
+        "setVariable($x, 'hello') must be refused by the #8354 capability gate; err={err_msg:?}"
     );
-
-    // The response type field must also be present when available.
-    if let DapMessage::Response { body: Some(body), .. } = &response {
-        if let Some(t) = body.get("type").and_then(Value::as_str) {
-            // DAP spec: `type` is optional but should not be empty if present.
-            assert!(!t.is_empty(), "setVariable response `type` field must not be empty");
-        }
+    assert!(
+        returned_value.is_none(),
+        "a refused setVariable must carry no `value` field, got {returned_value:?}"
+    );
+    if let DapMessage::Response { body, .. } = &response {
+        assert!(
+            body.is_none(),
+            "a refused setVariable must carry no result body at all, got {body:?}"
+        );
     }
 
     session.disconnect()?;
@@ -470,13 +481,16 @@ fn test_set_variable_no_session_returns_graceful_failure() -> TestResult {
             );
             let msg = message.ok_or("error response must include a non-empty message")?;
             assert!(!msg.is_empty(), "error message for no-session path must be non-empty");
-            // The message should mention the missing session or transport.
+            // Since #8354 the capability floor fires before the session
+            // lookup, so the refusal is the capability message.
             assert!(
                 msg.to_lowercase().contains("session")
                     || msg.to_lowercase().contains("debugger")
                     || msg.to_lowercase().contains("transport")
-                    || msg.to_lowercase().contains("active"),
-                "error message should describe the missing session; got: {msg:?}"
+                    || msg.to_lowercase().contains("active")
+                    || msg.to_lowercase().contains("supported"),
+                "error message should describe the missing session or the capability floor; \
+                 got: {msg:?}"
             );
         }
         other => return Err(format!("expected Response for setVariable, got: {other:?}").into()),
@@ -512,8 +526,15 @@ fn test_set_variable_newline_in_name_rejected() -> TestResult {
                 !success,
                 "setVariable with newline in name must return success=false (injection guard)"
             );
-            let msg = message.ok_or("error response must include a non-empty message")?;
+            let msg = message.ok_or("error response must be non-empty")?;
             assert!(!msg.is_empty(), "error message must be non-empty");
+            // The refusal must be the #8354 capability floor specifically:
+            // the gate fires before the newline guard, so a deeper-path
+            // message here would mean the gate was bypassed.
+            assert!(
+                msg.contains("supportsSetVariable"),
+                "newline-in-name must be refused by the #8354 capability floor, got: {msg:?}"
+            );
         }
         other => return Err(format!("expected Response for setVariable, got: {other:?}").into()),
     }

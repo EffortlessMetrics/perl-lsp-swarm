@@ -12,8 +12,12 @@ const TRACE_DOC: &str = r#"package Trace::Live;
 use strict;
 use warnings;
 
+use feature 'state';
+
 sub target {
     my $value = 1;
+    state $count = 0;
+    $count++;
     return $value;
 }
 
@@ -1350,6 +1354,7 @@ fn live_type_definition_request_blocks_ambiguous_package_identity()
     assert_eq!(receipt.get("blocker").and_then(Value::as_str), Some("ambiguous_identity"));
     assert_eq!(receipt.get("fact_source").and_then(Value::as_str), Some("parser_syntax"));
     assert_eq!(receipt.get("confidence").and_then(Value::as_str), Some("low"));
+    assert_eq!(receipt.get("freshness").and_then(Value::as_str), Some("fresh"));
     assert_eq!(receipt.get("source_backed").and_then(Value::as_bool), Some(false));
     assert_eq!(
         receipt.get("source_backed_state").and_then(Value::as_str),
@@ -1868,6 +1873,65 @@ fn live_semantic_tokens_request_persists_compiler_token_live_slice_trace()
     assert_eq!(
         receipt.get("compiler_token_class").and_then(Value::as_str),
         Some("subroutine_declaration")
+    );
+    let acted_classes = receipt
+        .get("acted_class_traces")
+        .and_then(Value::as_array)
+        .ok_or("missing acted class traces")?;
+    assert_eq!(
+        receipt.get("acted_class_trace_count").and_then(Value::as_u64),
+        Some(acted_classes.len() as u64),
+        "the live trace count must match the retained trace vector: {receipt}"
+    );
+    assert!(
+        acted_classes.len() >= 2,
+        "the mixed request must retain multiple matching reviewed classes: {receipt}"
+    );
+    let classes: Vec<&str> = acted_classes
+        .iter()
+        .filter_map(|trace| trace.get("compiler_token_class").and_then(Value::as_str))
+        .collect();
+    assert!(
+        classes.contains(&"subroutine_declaration"),
+        "the primary acted class must be retained in the array: {receipt}"
+    );
+    assert!(
+        classes.contains(&"state_variable_declaration"),
+        "the state declaration class must be retained in the array: {receipt}"
+    );
+    // Ordering is deterministic by the implementation's fixed evaluation
+    // order, not by slot happenstance: every retained class must be known to
+    // that order and appear in non-decreasing evaluation position.
+    let evaluation_order = [
+        "subroutine_declaration",
+        "method_declaration",
+        "phase_block_declaration",
+        "method_call",
+        "self_method_call",
+        "package_declaration",
+        "field_declaration",
+        "lexical_variable_declaration",
+        "lexical_variable_use",
+        "our_variable_declaration",
+        "state_variable_declaration",
+        "named_function_call",
+    ];
+    for class in &classes {
+        assert!(
+            evaluation_order.contains(class),
+            "acted class {class:?} is outside the pinned evaluation order: {receipt}"
+        );
+    }
+    let positions: Vec<usize> = classes
+        .iter()
+        .map(|class| evaluation_order.iter().position(|ordered| ordered == class))
+        .map(Option::unwrap_or_default)
+        .collect();
+    let mut ordered_positions = positions.clone();
+    ordered_positions.sort_unstable();
+    assert_eq!(
+        positions, ordered_positions,
+        "acted classes must retain the implementation evaluation order: {classes:?}"
     );
     assert_eq!(receipt.get("live_token_type").and_then(Value::as_str), Some("function"));
     assert_eq!(receipt.get("live_token_match_count").and_then(Value::as_u64), Some(1));

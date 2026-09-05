@@ -1,6 +1,5 @@
 //! Comprehensive integration tests for LSP features
 
-#![allow(clippy::collapsible_if)]
 // Integration tests print diagnostic output for CI troubleshooting; this is
 // not the LSP server's stdio transport, so print_stdout/print_stderr don't
 // apply the way they do to production code.
@@ -220,12 +219,11 @@ sub TestPackage::test_method {
     // Check shebang lens is first
     if !lenses_array.is_empty() {
         let first_lens = &lenses_array[0];
-        if let Some(cmd) = first_lens.get("command") {
-            if let Some(title) = cmd.get("title") {
-                if title.as_str() == Some("▶ Run Script") {
-                    assert_eq!(cmd["command"], "perl.runScript");
-                }
-            }
+        if let Some(cmd) = first_lens.get("command")
+            && let Some(title) = cmd.get("title")
+            && title.as_str() == Some("▶ Run Script")
+        {
+            assert_eq!(cmd["command"], "perl.runScript");
         }
     }
     Ok(())

@@ -1,4 +1,4 @@
-use perl_module::import_match::line_references_module_import;
+use perl_module::line_references_module_import;
 
 #[test]
 fn given_use_statement_when_target_matches_then_line_is_marked_for_rewrite() {

@@ -563,6 +563,9 @@ fn parse_literal_arg_list(args: &str) -> Option<Vec<String>> {
     Some(symbols)
 }
 
+/// Parses a `qw(...)` argument list into bare string symbols.
+///
+/// Public facade item: RIPR static call-graph seams import this directly.
 pub fn parse_qw_arg_list(trimmed: &str) -> Option<Vec<String>> {
     perl_parser_core::parse_qw_words(trimmed)
 }

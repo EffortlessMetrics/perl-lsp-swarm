@@ -28,8 +28,8 @@ These contracts are enforced by tests in `tests/lsp_api_contracts.rs`.
       "willSaveWaitUntil": false
     },
     "completionProvider": {
-      "triggerCharacters": ["$", "@", "%", "->"]  // EXACT set required
-      // MUST NOT include "-" or ">" as separate triggers
+      "triggerCharacters": ["$", "@", "%", "-", ">", ":", ".", "/", "\\", "\"", "'"]
+      // Multi-character Perl operators use their single-character components.
     },
     "hoverProvider": true,
     "definitionProvider": true,
@@ -39,11 +39,6 @@ These contracts are enforced by tests in `tests/lsp_api_contracts.rs`.
     "codeActionProvider": true,
     "codeLensProvider": { "resolveProvider": false },
     "documentFormattingProvider": true,
-    "documentRangeFormattingProvider": true,
-    "documentOnTypeFormattingProvider": {
-      "firstTriggerCharacter": "{",
-      "moreTriggerCharacter": ["}", ";"]
-    },
     "renameProvider": { "prepareProvider": true },
     "foldingRangeProvider": true,
     "executeCommandProvider": {
@@ -59,6 +54,11 @@ These contracts are enforced by tests in `tests/lsp_api_contracts.rs`.
   }
 }
 ```
+
+Range and on-type formatting are withdrawn from live routes, so their capability
+fields are absent from the advertised projection. Well-formed requests to those
+withdrawn methods return `MethodNotFound`; malformed requests may be rejected
+earlier as `InvalidParams` during protocol parameter validation.
 
 ### Double Initialization
 - Server MUST reject second `initialize` request

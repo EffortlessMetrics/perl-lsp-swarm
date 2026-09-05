@@ -3,8 +3,9 @@
 Use this crate when you need the native Debug Adapter Protocol server for Perl.
 
 `perl-dap` is the runtime layer of the debugger stack. It speaks DAP over stdio
-or TCP, dispatches requests, validates breakpoints, and renders observed runtime
-state for DAP-capable editors and tools.
+to editors, dispatches requests, validates breakpoints, and renders observed
+runtime state for DAP-capable editors and tools. Authenticated debugger-peer TCP
+is a backend transport, not an editor transport.
 
 ## Boundaries
 
@@ -17,7 +18,7 @@ state for DAP-capable editors and tools.
 
 - `DapServer`, `DapConfig`, and `DapMode` wire the native server runtime.
 - `DebugAdapter` handles request routing and protocol state.
-- `TcpAttachConfig` and `BreakpointStore` support socket attach and breakpoint tracking.
+- `TcpAttachConfig` and `BreakpointStore` support DAP attach configuration and breakpoint tracking.
 
 ## Run modes
 
@@ -27,15 +28,14 @@ state for DAP-capable editors and tools.
 perl-dap --stdio
 ```
 
-### TCP attach
-
-```bash
-perl-dap --socket --port 13603
-```
+Editor TCP (`--socket` / editor `--port`) is retired. Those flags still parse
+and fail before bind with a `perl-dap --stdio` migration, including when
+combined with `--external-peer`. Do not start `perl-dap` as an ambient DAP
+listener for an editor.
 
 ## External dependencies
 
-Native launch and TCP attach use the built-in Rust adapter plus a local Perl
+Native launch and DAP attach use the built-in Rust adapter plus a local Perl
 installation. The Rust parser-backed runtime and workspace support crates are
 compiled into the shipped `perl-dap` binary; users do not install internal
 crates separately.

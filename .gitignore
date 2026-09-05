@@ -32,6 +32,10 @@ log.html
 sbom-*.json
 SHA256SUMS
 
+# Lite XL composed candidate trees and receipts (#11170), deterministic
+# and reproducible on demand via clients/lite-xl/compose.lua
+clients/lite-xl/generated/
+
 # Property test regression files
 **/tests/_proptest-regressions/
 
@@ -276,3 +280,7 @@ test_corpus/workspaces/xlarge/bin/
 # Windows reserved device name — accidental redirect creates this file
 # on Windows; it cannot be opened or deleted normally (#5000).
 /nul
+
+# Staged Zed extension fixture builds locally (never committed).
+.ci/fixtures/zed-perl-upstream/zed-perl/Cargo.lock
+.ci/fixtures/zed-perl-upstream/zed-perl/target/

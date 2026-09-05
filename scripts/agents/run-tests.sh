@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=guard.sh
 source "${SCRIPT_DIR}/guard.sh"
+. "${SCRIPT_DIR}/../lib/cargo-toolchain-guard.sh"
+cargo_toolchain_guard
 
 lock_acquire
 require_lane

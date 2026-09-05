@@ -56,7 +56,10 @@ That is not a licence to churn, and the distinction is exactly where the two rul
   its subject. Do not re-review or re-run it to manufacture a receipt;
 - a *required* status that has not reported on the current head is **pending**, not
   green-by-inheritance and not stale. The resolution is to let the run report, which
-  yields `PR_IN_FLIGHT` — never a rebase, an empty commit, or a push to retrigger.
+  yields `PR_IN_FLIGHT` — never a rebase, an empty commit, or a push to retrigger,
+  except the bounded merge-tree fresh trigger in PLSP-SPEC-0006 "Live required
+  status" (a same-head rerun replays the stale merge snapshot after material base
+  movement).
 
 Reading an older green as satisfying a live required check is the failure this row
 exists to prevent. It looks like the no-churn rule and is its opposite: the no-churn
@@ -142,7 +145,7 @@ submitted review body:
 Generate it only after the useful review record is complete:
 
 ```bash
-python3 scripts/ci/check-pr-semantic-review-currentness.py   <pr> <owner/repo> --emit-marker
+python3 scripts/ci/check-pr-semantic-review-currentness.py   <pr> <owner/repo> --emit-marker --result REVIEW_CURRENT
 ```
 
 The digest covers `git diff --binary --full-index <merge-base> <reviewed-head>`. The
@@ -196,7 +199,11 @@ candidate remains conflict-free
 ```
 
 Do not rebase, update the branch, create empty commits, replay full CI, or rerun review
-merely because `main` advanced.
+merely because `main` advanced. One bounded exception lives in PLSP-SPEC-0006 "Live
+required status": when material base movement changed the merge tree a required
+`pull_request` check evaluates, and a same-head rerun would replay the stale snapshot,
+an empty-commit head bump is the sanctioned fresh trigger — it re-evaluates the changed
+subject rather than manufacturing a status on an unchanged one.
 
 If Git reports a real conflict, the later lane resolves it and refreshes only the
 affected proof/review. If an explicit stack or combined-tree check exposes a real
@@ -205,14 +212,17 @@ interaction, repair that interaction rather than predicting overlap in advance.
 ### Rebase as integration work
 
 Rebase is an ordinary integration tool, not a freshness ceremony. Its main accepted
-use is while resolving an actual merge conflict. The candidate lane rebases, resolves
+use is while resolving an actual merge conflict. One candidate writer rebases, resolves
 the conflict, and refreshes the proof and review subjects affected by the new combined
 tree and the resolution.
 
-The lane owner may also rebase when refreshing the base materially simplifies active
-work or reduces a concrete integration risk. It does not need to be the final action,
-and there is no mechanical one-rebase limit. Commit distance can inform that judgment,
-but it is not an acceptance condition.
+The accountable root may also direct a rebase when refreshing the base materially
+simplifies active work or reduces a concrete integration risk. The single-writer rule
+still binds: the root rebases only as the current candidate writer after explicit
+writer reassignment, or directs the active candidate writer to perform it — it does not
+mutate the candidate concurrently with a writer. A rebase does not need to be the final
+action, and there is no mechanical one-rebase limit. Commit distance can inform that
+judgment, but it is not an acceptance condition.
 
 Behind-only movement still requires no action. Do not rebase after every unrelated
 `main` commit, push empty commits, or keep a PR at exact head merely to retrigger CI.

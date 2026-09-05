@@ -136,7 +136,7 @@ per folder. See [Configuration Precedence](#configuration-precedence).
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `include_paths` | `string[]` | `[]` | Additional include paths for module resolution, relative to workspace root. An empty list leaves the built-in defaults (`lib`, `.`, `local/lib/perl5`) unchanged. |
-| `version` | `string` | (none) | Perl version hint, e.g. `"5.38"`. Parsed but not yet wired to diagnostics; reserved for future use. |
+| `version` | `string` | (none) | Per-folder Perl version hint, e.g. `"5.38"`, used as the PL900 fallback target when source has no `use VERSION` declaration. Malformed values produce an actionable configuration diagnostic and are never used as a fallback target. |
 
 #### `[diagnostics]` — Linting
 
@@ -205,7 +205,8 @@ for every shipped rule (ID, category, severity, and which of the `recommended` /
 # All keys are optional. Unknown keys are silently ignored.
 
 [perl]
-# Perl version hint (reserved for future diagnostic targeting)
+# Per-folder PL900 fallback target when source has no `use VERSION` declaration.
+# Source declarations win; invalid values fail closed.
 version = "5.38"
 
 # Module search paths relative to workspace root.
@@ -807,9 +808,11 @@ Flags passed when launching the `perllsp` executable. Source:
 
 | Flag | Description |
 |---|---|
-| `--check <files...>` | Validate Perl files and report parse errors to stdout |
-| `--check-project [dir]` | Scan a project directory and print parsability summary (defaults to `.`) |
+| `--check <files...>` | Native in-process parser check of listed files (does not execute project Perl) |
+| `--check-project [dir]` | Native parsability report (80% threshold; not a strict all-clean check; defaults to `.`) |
 | `--completion <shell>` | Print shell completion script (`bash`, `zsh`, `fish`, `powershell`) |
+
+Native vs real-Perl checking, exits, and examples: [Checking Perl files](CHECKING.md).
 
 Examples:
 
@@ -818,8 +821,8 @@ perllsp --stdio                         # stdio mode (default)
 perllsp --stdio --log                   # with logging to stderr
 perllsp --socket --port 9257            # TCP socket mode
 perllsp --stdio --feature-profile prod  # production feature profile
-perllsp --check lib/MyModule.pm         # batch syntax check
-perllsp --check-project lib/            # project-wide parsability scan
+perllsp --check lib/MyModule.pm         # native listed-file parser check
+perllsp --check-project lib/            # native parsability report (80%)
 perllsp --info                          # print server information
 perllsp --completion bash >> ~/.bashrc  # install bash completions
 ```
@@ -1051,7 +1054,7 @@ launch `perllsp --stdio`.
 |---|---|---|---|
 | `perl-lsp.enableSemanticTokens` | `boolean` | `true` | Enhanced syntax highlighting. |
 | `perl-lsp.enableFormatting` | `boolean` | `true` | Document formatting. Native formatting is built in; external perltidy is compatibility mode. |
-| `perl-lsp.formatOnSave` | `boolean` | `false` | Auto-format on save. |
+| `perl-lsp.formatOnSave` | `boolean` | `false` | Auto-format on save. The extension formats through the whole-document provider; server-owned `willSaveWaitUntil` formatting is withdrawn (#11955) until #8092 proves one save owner. |
 | `perl-lsp.enableTestIntegration` | `boolean` | `true` | Test::More and Test2 integration. |
 | `perl-lsp.autoPopulateNewFiles` | `boolean` | `true` | Insert package boilerplate into new `.pm` files and Test::More boilerplate into new `.t` files. Files with existing content are not modified. |
 

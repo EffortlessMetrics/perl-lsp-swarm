@@ -2,6 +2,7 @@
 //!
 //! These integration tests exercise the exported strategies the same way
 //! downstream crates consume them, complementing the module-private unit tests.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_test_generators::{
     module_path, module_path_segments, non_empty_unicode_string, unicode_string, variable,

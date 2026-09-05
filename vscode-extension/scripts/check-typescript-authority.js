@@ -671,6 +671,7 @@ if (require.main === module) {
 module.exports = {
   TYPESCRIPT_AUTHORITY_MAJOR,
   TSCONFIG_FILES,
+  declaredTscBin,
   evaluateTypeScriptAuthority,
   resolveGeneratedShimTarget,
   checkTypeScriptAuthority,

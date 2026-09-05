@@ -4,6 +4,7 @@
 //! These tests are intentionally separate from the unit tests so RIPR can
 //! identify the public behavior that must remain exposed when parser branches
 //! change.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_test_facts::{TapAssertionOutcome, TapAssertionStatus, parse_tap};
 

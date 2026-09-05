@@ -38,7 +38,8 @@ The train was reconciled against GitHub on August 16, 2026.
 | P07 — #8753 | ready | add the managed-route and cache-recovery authority from current `main` |
 | P09 — #9468 | ready | add the fail-closed support projection substrate from current `main` |
 | C01 — #9483 | ready | add stable checks, semantic routing, and receipt invalidation from current `main` |
-| D01 — #9485 | ready, non-blocking | add the static `perl-dap` adapter authority independently of the LSP train |
+| D01 — #9485 / PR #12271 | authority merged; execution not proven | the static `perl-dap` adapter authority is registered on the extension candidate |
+| DA01 — #9516 / PR #12333 | evidence merged; matching-host receipt current (windows-x86_64) | the public `perl-dap` asset receipt matrix; linux/macOS rows stay extracted-not-executed until matching hosts run |
 
 The first core wave is therefore:
 
@@ -50,7 +51,7 @@ Codex D -> P09 / #9468
 Codex E -> C01 / #9483
 ```
 
-The first non-blocking debugger wave is D01 / #9485. DA01 / #9516 and D02 / #9486 stay closed until D01 establishes the exact adapter/configuration/target subject.
+D01 landed via PR #12271 and DA01 landed via PR #12333, so D02 / #9486 is the next DAP stage; it still waits on core P03 (the deterministic fixture), which is why the derived DAP frontier is currently empty.
 
 PR #8369, PR #8373, and PR #8379 landed their authority increments on `main` directly; the earlier successor plan to reconstruct P04/P05 as stacked seeds is superseded by that merge and is not revived here. Their owning issues #7984, #7990, and #7992 remain open because a merged authority increment is not executable host evidence: P11 owns the exact-source core receipt, P12 owns the settings receipts, and P13 owns the defaults receipts. P04 and P05 therefore depend on the P02 host driver they actually consume, and reach the P03 fixture through P11 at execution time rather than at authority time.
 
@@ -303,13 +304,15 @@ Controller: #9484. None of these stages is part of `public_support_requires` for
 ### D01 — #9485: static `perl-dap` adapter authority
 
 **Depends on core:** P00.
-**State:** ready now.
+**State:** authority merged via PR #12271; executable evidence owned downstream.
 
 Add the smallest current Zed extension API manifest/schema/callback/configuration/binary-resolution authority for exact `perl-dap`. Derive managed target/member identity from canonical release topology; preserve LSP/DAP IDs, executable routes, and cache families; write identity-collapse and wrong-product falsifiers first; keep all behavioral templates `not_run`.
 
 ### DA01 — #9516: executable public `perl-dap` asset receipts
 
 **Depends on sidecar:** D01.
+**State:** evidence merged via PR #12333; the committed matching-host receipt (windows-x86_64, release `v0.17.0`) stays current against the checked projection, and the linux/macOS rows remain `managed_extracted_not_executed` until matching hosts execute them.
+
 Extend or reuse canonical read-only public-asset machinery for `product = perl-dap` without weakening the `perllsp` discriminator. Execute matching-host public adapter binaries, retain cross-built non-execution, prove exact release/target/archive/member/process identity and known-good preservation, and emit per-target plus aggregate receipts.
 
 #7980/#8678 are `perllsp`-only. They cannot satisfy DA01.

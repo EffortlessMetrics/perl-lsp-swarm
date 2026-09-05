@@ -394,7 +394,9 @@ impl ProviderQueryFact {
         envelope: SemanticFactEnvelope,
         symbols: impl IntoIterator<Item = String>,
     ) -> Result<Self, ProviderQueryContractError> {
-        validate_envelope_structure(&envelope)?;
+        validate_envelope_structure(&envelope).map_err(|violation| {
+            ProviderQueryContractError::MalformedFact { fact_id: envelope.fact_id, violation }
+        })?;
         let mut symbols: Vec<_> = symbols.into_iter().collect();
         if symbols.iter().any(|symbol| symbol.trim().is_empty()) {
             return Err(ProviderQueryContractError::MalformedSymbolKey);
@@ -720,24 +722,75 @@ fn range_contains(envelope: &SemanticFactEnvelope, byte_offset: u32) -> bool {
     }
 }
 
+/// Repository-owned structural invariant of a canonical envelope that failed
+/// validation.
+///
+/// Carried by [`ProviderQueryContractError::MalformedFact`] and the provider
+/// adapter error so operators can learn *which* invariant failed, not merely
+/// *which* fact was rejected. When several invariants fail at once, the first
+/// one in validation order is reported.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvelopeStructureViolation {
+    /// Anchor start byte is greater than the anchor end byte.
+    AnchorRangeInverted,
+    /// A known source generation is empty or whitespace-only.
+    EmptySourceGeneration,
+    /// The package name is present but empty or whitespace-only.
+    EmptyPackageName,
+    /// The envelope names no known producer.
+    UnknownProducer,
+    /// An invalidation dependency key is empty or whitespace-only.
+    EmptyDependencyKey,
+    /// A known invalidation dependency generation is empty or whitespace-only.
+    EmptyDependencyGeneration,
+    /// Two invalidation dependencies share one dependency key.
+    DuplicateDependencyKey,
+}
+
+impl std::fmt::Display for EnvelopeStructureViolation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self {
+            Self::AnchorRangeInverted => "anchor range is inverted",
+            Self::EmptySourceGeneration => "known source generation is empty",
+            Self::EmptyPackageName => "package name is empty",
+            Self::UnknownProducer => "producer is unknown",
+            Self::EmptyDependencyKey => "invalidation dependency key is empty",
+            Self::EmptyDependencyGeneration => "known dependency generation is empty",
+            Self::DuplicateDependencyKey => "duplicate invalidation dependency key",
+        };
+        formatter.write_str(reason)
+    }
+}
+
 pub(crate) fn validate_envelope_structure(
     envelope: &SemanticFactEnvelope,
-) -> Result<(), ProviderQueryContractError> {
-    if envelope.anchor.start_byte > envelope.anchor.end_byte
-        || matches!(&envelope.source_generation, SourceGeneration::Known(value) if value.trim().is_empty())
-        || envelope.package.as_ref().is_some_and(|package| package.trim().is_empty())
-        || envelope.producer == SemanticProducer::Unknown
+) -> Result<(), EnvelopeStructureViolation> {
+    if envelope.anchor.start_byte > envelope.anchor.end_byte {
+        return Err(EnvelopeStructureViolation::AnchorRangeInverted);
+    }
+    if matches!(&envelope.source_generation, SourceGeneration::Known(value) if value.trim().is_empty())
     {
-        return Err(ProviderQueryContractError::MalformedFact(envelope.fact_id));
+        return Err(EnvelopeStructureViolation::EmptySourceGeneration);
+    }
+    if envelope.package.as_ref().is_some_and(|package| package.trim().is_empty()) {
+        return Err(EnvelopeStructureViolation::EmptyPackageName);
+    }
+    if envelope.producer == SemanticProducer::Unknown {
+        return Err(EnvelopeStructureViolation::UnknownProducer);
     }
 
     let mut dependency_keys = BTreeSet::new();
     for dependency in envelope.invalidation_dependencies() {
-        if dependency.dependency_key.trim().is_empty()
-            || matches!(&dependency.generation, SourceGeneration::Known(value) if value.trim().is_empty())
-            || !dependency_keys.insert(dependency.dependency_key.as_str())
+        if dependency.dependency_key.trim().is_empty() {
+            return Err(EnvelopeStructureViolation::EmptyDependencyKey);
+        }
+        if matches!(&dependency.generation, SourceGeneration::Known(value) if value.trim().is_empty())
         {
-            return Err(ProviderQueryContractError::MalformedFact(envelope.fact_id));
+            return Err(EnvelopeStructureViolation::EmptyDependencyGeneration);
+        }
+        if !dependency_keys.insert(dependency.dependency_key.as_str()) {
+            return Err(EnvelopeStructureViolation::DuplicateDependencyKey);
         }
     }
     Ok(())

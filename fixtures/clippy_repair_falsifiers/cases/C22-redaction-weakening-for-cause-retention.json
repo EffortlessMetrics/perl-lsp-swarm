@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "C22-redaction-weakening-for-cause-retention",
+  "family": "lost_work_error_obligation_theater",
+  "purpose": "Weakening redaction or stable-protocol boundaries merely to retain an error cause leaks sensitive material.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "token scrubber dropped",
+      "report.to_string()"
+    ],
+    "content": "pub fn sanitize(report: &str) -> String {\n    // dishonest: token scrubber dropped so the raw cause survives logs\n    report.to_string()\n}\n",
+    "sha256": "9c9d4575174d36c0754d39c5a51f46e1258961a1b0990aaedde763f7a9ea72d8"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 9850,
+    "unresolved_reason": "Redaction-boundary ownership has no landed governing leaf; programme controller owns assignment."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "protocol_boundary_weakening"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "[redacted]",
+      "TOKEN_PATTERN_PLACEHOLDER"
+    ],
+    "note": "Secrets scrubbed before causes persist.",
+    "content": "pub fn sanitize(report: &str) -> String {\n    report.replace(TOKEN_PATTERN_PLACEHOLDER, \"[redacted]\")\n}\n",
+    "sha256": "090cdfb59fd4e50258f2f7fb9a5b4d86eecded8009489d342c93b4b0b3b85fad"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Security-sensitive redaction owners remain unresolved; class frozen here."
+}

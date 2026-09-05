@@ -20,6 +20,7 @@ import {
   classifyWindowsArm64Support,
   getUnsupportedWindowsArm64Message,
   findReleaseAssetName,
+  lookupSha256SumsDigest,
   selectWindowsArm64Target,
   WINDOWS_ARM64_TARGET,
   WINDOWS_X64_TARGET,
@@ -33,6 +34,16 @@ import {
   managedNamespaceDir,
   managedUpdateCheckStateKey,
 } from '../managedStorageIdentity';
+import { buildManagedCandidateManifest } from '../managedCacheProtocol';
+import type { ManagedCandidateManifest, ManagedCandidateSubject } from '../managedCacheProtocol';
+import {
+  MANAGED_CANDIDATE_MANIFEST_FILE,
+  MANAGED_CURRENT_SELECTION_FILE,
+  acquireSessionManagedHostReference,
+  commitManagedCandidateSelection,
+  readManagedCurrentSelection,
+} from '../managedCandidateRuntime';
+import { env as vscodeEnv } from './__mocks__/vscode';
 
 /**
  * The compatibility key this test host resolves to. Managed state is namespaced
@@ -55,11 +66,14 @@ interface DownloaderPrivateSurface {
   getPlatformTarget(): string;
   getLocalBinaryPath(): string;
   buildVersionedInstallDirName(versionTag: string): string;
-  commitVersionedInstall(installDirName: string): void;
-  pruneOldVersionedInstalls(baseDir: string, currentName: string): void;
+  commitVersionedInstall(
+    installDirName: string,
+    compatibilityKey?: string,
+    manifest?: ManagedCandidateManifest | null,
+  ): void;
+  collectStaleManagedCandidates(baseDir: string): void;
   runEnsureBinary(forceDownload: boolean): Promise<string | null>;
   calculateSHA256(filePath: string): Promise<string>;
-  findBinary(dir: string, name: string): string | null;
   getLatestRelease(timeoutMs?: number): Promise<unknown>;
   getLocalVersion(binaryPath: string): Promise<string | null>;
   downloadWithProgress(): Promise<string>;
@@ -736,40 +750,375 @@ describe('Versioned managed install layout', () => {
     expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe('v0.13.4-stamp');
   });
 
-  test('pruneOldVersionedInstalls keeps current plus exactly one prior install', () => {
-    const names = ['v0.13.0-a', 'v0.13.1-b', 'v0.13.2-c', 'v0.13.3-d'];
-    names.forEach((name, idx) => {
-      const dir = path.join(baseDir, name);
-      fs.mkdirSync(dir);
-      // Older index → older mtime
-      const t = Date.now() / 1000 - (names.length - idx) * 60;
-      fs.utimesSync(dir, t, t);
+  test('collectStaleManagedCandidates keeps current plus prior and deletes proven-stale generations', () => {
+    // Digest seeds must stay hex so the minted candidate ids are canonical.
+    const candidateSubject = (seed: string): ManagedCandidateSubject => ({
+      release: 'v0.13.3',
+      version: `v0.13.3-${seed}`,
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: seed.repeat(64).slice(0, 64),
+      perllsp_digest: 'f'.repeat(64),
+      perl_dap_digest: null,
+    });
+    const installCandidateDir = (
+      dirName: string,
+      seed: string,
+      ageSeconds: number,
+    ): { dir: string; manifest: ManagedCandidateManifest } => {
+      const dir = path.join(baseDir, dirName);
+      fs.mkdirSync(dir, { recursive: true });
+      const manifest = buildManagedCandidateManifest(candidateSubject(seed));
+      fs.writeFileSync(path.join(dir, MANAGED_CANDIDATE_MANIFEST_FILE), JSON.stringify(manifest));
+      const stamp = Date.now() / 1000 - ageSeconds;
+      fs.utimesSync(dir, stamp, stamp);
+      return { dir, manifest };
+    };
+
+    const current = installCandidateDir('v0.13.3-d', 'a', 0);
+    const prior = installCandidateDir('v0.13.2-c', 'b', 60);
+    const stale1 = installCandidateDir('v0.13.1-b', 'c', 120);
+    const stale2 = installCandidateDir('v0.13.0-a', 'd', 180);
+    commitManagedCandidateSelection(baseDir, current.manifest, () => {
+      /* quiet */
     });
 
-    downloader.pruneOldVersionedInstalls(baseDir, 'v0.13.3-d');
+    downloader.collectStaleManagedCandidates(baseDir);
 
-    expect(fs.existsSync(path.join(baseDir, 'v0.13.3-d'))).toBe(true); // current
-    expect(fs.existsSync(path.join(baseDir, 'v0.13.2-c'))).toBe(true); // most recent prior
-    expect(fs.existsSync(path.join(baseDir, 'v0.13.1-b'))).toBe(false); // pruned
-    expect(fs.existsSync(path.join(baseDir, 'v0.13.0-a'))).toBe(false); // pruned
+    expect(fs.existsSync(current.dir)).toBe(true); // current_default
+    expect(fs.existsSync(prior.dir)).toBe(true); // previous-known-good fallback
+    expect(fs.existsSync(stale1.dir)).toBe(false); // stale_unreferenced
+    expect(fs.existsSync(stale2.dir)).toBe(false); // stale_unreferenced
   });
 
-  test('pruneOldVersionedInstalls preserves current when it is the only versioned dir', () => {
-    fs.mkdirSync(path.join(baseDir, 'v0.13.3-d'));
+  test('collectStaleManagedCandidates preserves current when it is the only versioned dir', () => {
+    const dir = path.join(baseDir, 'v0.13.3-d');
+    fs.mkdirSync(dir);
+    const manifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '1'.repeat(64),
+      perllsp_digest: '2'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(path.join(dir, MANAGED_CANDIDATE_MANIFEST_FILE), JSON.stringify(manifest));
+    commitManagedCandidateSelection(baseDir, manifest, () => {
+      /* quiet */
+    });
 
-    downloader.pruneOldVersionedInstalls(baseDir, 'v0.13.3-d');
+    downloader.collectStaleManagedCandidates(baseDir);
 
-    expect(fs.existsSync(path.join(baseDir, 'v0.13.3-d'))).toBe(true);
+    expect(fs.existsSync(dir)).toBe(true);
   });
 
-  test('pruneOldVersionedInstalls ignores files at base dir (legacy flat binaries survive)', () => {
+  test('collectStaleManagedCandidates ignores files at base dir (legacy flat binaries survive)', () => {
     const flatBin = path.join(baseDir, lspBinaryName);
     fs.writeFileSync(flatBin, 'legacy');
-    fs.mkdirSync(path.join(baseDir, 'v0.13.3-d'));
+    const dir = path.join(baseDir, 'v0.13.3-d');
+    fs.mkdirSync(dir);
+    const manifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '3'.repeat(64),
+      perllsp_digest: '4'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(path.join(dir, MANAGED_CANDIDATE_MANIFEST_FILE), JSON.stringify(manifest));
+    commitManagedCandidateSelection(baseDir, manifest, () => {
+      /* quiet */
+    });
 
-    downloader.pruneOldVersionedInstalls(baseDir, 'v0.13.3-d');
+    downloader.collectStaleManagedCandidates(baseDir);
 
     expect(fs.existsSync(flatBin)).toBe(true);
+  });
+
+  test('commitVersionedInstall also commits the policy selection record when given a manifest', () => {
+    const installDirName = 'v0.13.3-stamp';
+    fs.mkdirSync(path.join(baseDir, installDirName));
+    const manifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '5'.repeat(64),
+      perllsp_digest: '6'.repeat(64),
+      perl_dap_digest: null,
+    });
+
+    downloader.commitVersionedInstall(installDirName, undefined, manifest);
+
+    const pointer = path.join(baseDir, 'current');
+    expect(fs.readFileSync(pointer, 'utf8').trim()).toBe(installDirName);
+    expect(fs.existsSync(`${pointer}.tmp`)).toBe(false);
+    const selection = readManagedCurrentSelection(baseDir);
+    expect(selection?.selection_generation).toBe(1);
+    expect(selection?.candidate_id).toBe(manifest.candidate_id);
+    expect(fs.existsSync(`${path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE)}.tmp`)).toBe(false);
+  });
+
+  test('commitVersionedInstall without a manifest writes the pointer only (legacy shape unchanged)', () => {
+    const installDirName = 'v0.13.3-stamp';
+    fs.mkdirSync(path.join(baseDir, installDirName));
+
+    downloader.commitVersionedInstall(installDirName);
+
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(installDirName);
+    expect(fs.existsSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE))).toBe(false);
+  });
+
+  test('getLocalBinaryPath resolves the policy-governed current candidate', () => {
+    const currentName = 'v0.13.4-stamp';
+    const currentDir = path.join(baseDir, currentName);
+    fs.mkdirSync(currentDir);
+    fs.writeFileSync(path.join(currentDir, lspBinaryName), 'current bytes');
+    const manifest = buildManagedCandidateManifest({
+      release: 'v0.13.4',
+      version: 'v0.13.4',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '7'.repeat(64),
+      perllsp_digest: '8'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(currentDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(manifest),
+    );
+    commitManagedCandidateSelection(baseDir, manifest, () => {
+      /* quiet */
+    });
+    // No legacy `current` pointer at all: resolution must come from the
+    // policy-governed branch.
+
+    expect(downloader.getLocalBinaryPath()).toBe(path.join(currentDir, lspBinaryName));
+  });
+
+  test('getLocalBinaryPath stays bound to a live-referenced candidate after current moves', () => {
+    const previousSessionId = vscodeEnv.sessionId;
+    try {
+      vscodeEnv.sessionId = 'window-a';
+      const oldName = 'v0.13.3-old';
+      const oldDir = path.join(baseDir, oldName);
+      fs.mkdirSync(oldDir);
+      fs.writeFileSync(path.join(oldDir, lspBinaryName), 'old bytes');
+      const oldManifest = buildManagedCandidateManifest({
+        release: 'v0.13.3',
+        version: 'v0.13.3',
+        target: HOST_COMPATIBILITY_KEY,
+        topology_digest: '9'.repeat(64),
+        perllsp_digest: 'a'.repeat(64),
+        perl_dap_digest: null,
+      });
+      fs.writeFileSync(
+        path.join(oldDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+        JSON.stringify(oldManifest),
+      );
+      const oldStamp = Date.now() / 1000 - 120;
+      fs.utimesSync(oldDir, oldStamp, oldStamp);
+
+      const newName = 'v0.13.4-new';
+      const newDir = path.join(baseDir, newName);
+      fs.mkdirSync(newDir);
+      fs.writeFileSync(path.join(newDir, lspBinaryName), 'new bytes');
+      const newManifest = buildManagedCandidateManifest({
+        release: 'v0.13.4',
+        version: 'v0.13.4',
+        target: HOST_COMPATIBILITY_KEY,
+        topology_digest: 'b'.repeat(64),
+        perllsp_digest: 'c'.repeat(64),
+        perl_dap_digest: null,
+      });
+      fs.writeFileSync(
+        path.join(newDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+        JSON.stringify(newManifest),
+      );
+      commitManagedCandidateSelection(baseDir, newManifest, () => {
+        /* quiet */
+      });
+      // This session already launched the old candidate and holds a live
+      // reference: moving the default must not rebind it.
+      acquireSessionManagedHostReference(baseDir, 'window-a', oldManifest.candidate_id, () => {
+        /* quiet */
+      });
+
+      expect(downloader.getLocalBinaryPath()).toBe(path.join(oldDir, lspBinaryName));
+    } finally {
+      vscodeEnv.sessionId = previousSessionId;
+    }
+  });
+
+  test('a policy-governed namespace never falls back to the pointer after restart_required', () => {
+    const previousSessionId = vscodeEnv.sessionId;
+    try {
+      vscodeEnv.sessionId = 'window-stuck';
+      const currentName = 'v0.13.4-current';
+      const currentDir = path.join(baseDir, currentName);
+      fs.mkdirSync(currentDir);
+      fs.writeFileSync(path.join(currentDir, lspBinaryName), 'current bytes');
+      const currentManifest = buildManagedCandidateManifest({
+        release: 'v0.13.4',
+        version: 'v0.13.4',
+        target: HOST_COMPATIBILITY_KEY,
+        topology_digest: '1'.repeat(64),
+        perllsp_digest: '2'.repeat(64),
+        perl_dap_digest: null,
+      });
+      fs.writeFileSync(
+        path.join(currentDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+        JSON.stringify(currentManifest),
+      );
+      // The pointer would happily resolve the current dir...
+      fs.writeFileSync(path.join(baseDir, 'current'), `${currentName}\n`);
+      // ...but this session holds a live reference to a candidate that no
+      // longer exists in the catalog: policy says restart_required, and the
+      // pointer must not silently rebind the session instead.
+      const absentManifest = buildManagedCandidateManifest({
+        release: 'v0.13.0',
+        version: 'v0.13.0',
+        target: HOST_COMPATIBILITY_KEY,
+        topology_digest: '3'.repeat(64),
+        perllsp_digest: '4'.repeat(64),
+        perl_dap_digest: null,
+      });
+      commitManagedCandidateSelection(baseDir, currentManifest, () => {
+        /* quiet */
+      });
+      acquireSessionManagedHostReference(
+        baseDir,
+        'window-stuck',
+        absentManifest.candidate_id,
+        () => {
+          /* quiet */
+        },
+      );
+
+      // The namespace is refused, so resolution falls past it to the flat
+      // legacy layout rather than launching the pointer-named binary.
+      expect(downloader.getLocalBinaryPath()).toBe(path.join(baseDir, lspBinaryName));
+    } finally {
+      vscodeEnv.sessionId = previousSessionId;
+    }
+  });
+
+  test('a policy-governed namespace resolves current despite a structurally invalid sibling manifest', () => {
+    const currentName = 'v0.13.4-current';
+    const currentDir = path.join(baseDir, currentName);
+    fs.mkdirSync(currentDir);
+    fs.writeFileSync(path.join(currentDir, lspBinaryName), 'current bytes');
+    const currentManifest = buildManagedCandidateManifest({
+      release: 'v0.13.4',
+      version: 'v0.13.4',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '5'.repeat(64),
+      perllsp_digest: '6'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(currentDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(currentManifest),
+    );
+    fs.writeFileSync(path.join(baseDir, 'current'), `${currentName}\n`);
+    commitManagedCandidateSelection(baseDir, currentManifest, () => {
+      /* quiet */
+    });
+    // A structurally invalid manifest sibling is filtered by the landed
+    // host-selection policy (it poisons GC, not selection): resolution stays
+    // governed, the valid current wins on its own, and the pointer is not
+    // consulted.
+    const broken = path.join(baseDir, 'broken');
+    fs.mkdirSync(broken);
+    fs.writeFileSync(
+      path.join(broken, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify({ schema_version: 'managed_candidate_manifest.v1', candidate_id: 'nope' }),
+    );
+
+    expect(downloader.getLocalBinaryPath()).toBe(path.join(currentDir, lspBinaryName));
+  });
+
+  test('a refused selection commit leaves the activation pointer unmoved', () => {
+    const oldName = 'v0.13.3-old';
+    const oldDir = path.join(baseDir, oldName);
+    fs.mkdirSync(oldDir);
+    const oldManifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '7'.repeat(64),
+      perllsp_digest: '8'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(oldDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(oldManifest),
+    );
+    commitManagedCandidateSelection(baseDir, oldManifest, () => {
+      /* quiet */
+    });
+    downloader.commitVersionedInstall(oldName, undefined, oldManifest);
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+
+    // Corrupt the selection record into bytes this version cannot interpret
+    // the way a torn write would: the commit must refuse rather than reset
+    // the generation counter, and the pointer must not move past it.
+    fs.writeFileSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE), '{torn write');
+    const newName = 'v0.13.4-new';
+    fs.mkdirSync(path.join(baseDir, newName));
+    const newManifest = buildManagedCandidateManifest({
+      release: 'v0.13.4',
+      version: 'v0.13.4',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: '9'.repeat(64),
+      perllsp_digest: 'a'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(baseDir, newName, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(newManifest),
+    );
+
+    downloader.commitVersionedInstall(newName, undefined, newManifest);
+
+    // The pointer must not claim an activation the policy record refutes,
+    // and the unreadable evidence is left exactly as it was found.
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+    expect(fs.readFileSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE), 'utf8')).toBe(
+      '{torn write',
+    );
+
+    // Recovery from unreadable selection evidence is an explicit repair
+    // (remove the torn record), never another commit over it; afterwards the
+    // commit lands coherently from a fresh generation.
+    fs.rmSync(path.join(baseDir, MANAGED_CURRENT_SELECTION_FILE));
+    downloader.commitVersionedInstall(newName, undefined, newManifest);
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(newName);
+    expect(readManagedCurrentSelection(baseDir)?.candidate_id).toBe(newManifest.candidate_id);
+  });
+
+  test('a null manifest refuses activation instead of moving the pointer past the policy', () => {
+    const oldName = 'v0.13.3-old';
+    const oldDir = path.join(baseDir, oldName);
+    fs.mkdirSync(oldDir);
+    const oldManifest = buildManagedCandidateManifest({
+      release: 'v0.13.3',
+      version: 'v0.13.3',
+      target: HOST_COMPATIBILITY_KEY,
+      topology_digest: 'b'.repeat(64),
+      perllsp_digest: 'c'.repeat(64),
+      perl_dap_digest: null,
+    });
+    fs.writeFileSync(
+      path.join(oldDir, MANAGED_CANDIDATE_MANIFEST_FILE),
+      JSON.stringify(oldManifest),
+    );
+    downloader.commitVersionedInstall(oldName, undefined, oldManifest);
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+
+    // A failed manifest mint is a null manifest: activating the install
+    // anyway would leave the pointer naming a dir the policy cannot see.
+    downloader.commitVersionedInstall('v0.13.4-orphan', undefined, null);
+
+    expect(fs.readFileSync(path.join(baseDir, 'current'), 'utf8').trim()).toBe(oldName);
+    expect(readManagedCurrentSelection(baseDir)?.candidate_id).toBe(oldManifest.candidate_id);
   });
 
   test('install lands side-by-side with a flat layout and the pointer activates it', () => {
@@ -1000,70 +1349,6 @@ describe('BinaryDownloader.calculateSHA256', () => {
 });
 
 // ---------------------------------------------------------------------------
-// findBinary (recursive directory search)
-// ---------------------------------------------------------------------------
-describe('BinaryDownloader.findBinary', () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'find-bin-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  test('finds binary in top-level directory', () => {
-    fs.writeFileSync(path.join(tmpDir, 'perllsp'), 'binary');
-
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'perllsp');
-
-    expect(result).toBe(path.join(tmpDir, 'perllsp'));
-  });
-
-  test('finds binary in nested directory', () => {
-    const nested = path.join(tmpDir, 'subdir', 'bin');
-    fs.mkdirSync(nested, { recursive: true });
-    fs.writeFileSync(path.join(nested, 'perllsp'), 'binary');
-
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'perllsp');
-
-    expect(result).toBe(path.join(nested, 'perllsp'));
-  });
-
-  test('returns null when binary is not found', () => {
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'nonexistent');
-
-    expect(result).toBeNull();
-  });
-
-  test('ignores files with different names', () => {
-    fs.writeFileSync(path.join(tmpDir, 'not-perllsp'), 'wrong');
-    fs.writeFileSync(path.join(tmpDir, 'perllsp.old'), 'wrong');
-
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'perllsp');
-
-    expect(result).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Download URL security validation (downloadFile method)
 // ---------------------------------------------------------------------------
 describe('BinaryDownloader download URL security', () => {
@@ -1180,18 +1465,22 @@ describe('BinaryDownloader download stream lifecycle', () => {
   type TestFile = EventEmitter & {
     destroy: jest.Mock;
     close: jest.Mock;
+    write: jest.Mock;
+    end: jest.Mock;
   };
   type TestRequest = EventEmitter & {
     destroy: jest.Mock;
   };
   type TestResponse = EventEmitter & {
     statusCode: number;
-    pipe: jest.Mock;
+    headers: Record<string, string>;
+    destroy: jest.Mock;
+    resume: jest.Mock;
   };
   type DownloaderSeams = {
     downloadFile: (url: string, dest: string, timeoutMs?: number) => Promise<void>;
     createWriteStream: (dest: string) => TestFile;
-    removePartialFile: (dest: string) => void;
+    removePartialFile: (dest: string) => Promise<void>;
     httpGet: (...args: unknown[]) => TestRequest;
   };
 
@@ -1223,26 +1512,18 @@ describe('BinaryDownloader download stream lifecycle', () => {
     };
   }
 
-  test('observes stream errors before request failure and temporary-directory cleanup', async () => {
+  test('does not open a dest stream before a response, and still cleans up request failure', async () => {
     const destination = path.join(tmpDir, 'partial.bin');
     const seams = downloader as unknown as DownloaderSeams;
-    const file = new EventEmitter() as TestFile;
-    file.destroy = jest.fn();
-    file.close = jest.fn();
-    const createWriteStream = jest.spyOn(seams, 'createWriteStream').mockReturnValue(file);
+    const createWriteStream = jest.spyOn(seams, 'createWriteStream');
     const removePartialFile = jest.spyOn(seams, 'removePartialFile');
 
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     const requestError = Object.assign(new Error('request failed'), { code: 'ECONNRESET' });
-    const streamError = Object.assign(new Error('destination disappeared'), { code: 'ENOENT' });
-    let listenerCountBeforeRequestActivity = 0;
     jest.spyOn(seams, 'httpGet').mockImplementation(() => {
-      listenerCountBeforeRequestActivity = file.listenerCount('error');
-      fs.rmSync(tmpDir, { recursive: true, force: true });
       process.nextTick(() => {
         request.emit('error', requestError);
-        setImmediate(() => file.emit('error', streamError));
       });
       return request;
     });
@@ -1254,8 +1535,7 @@ describe('BinaryDownloader download stream lifecycle', () => {
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
 
-      expect(listenerCountBeforeRequestActivity).toBe(1);
-      expect(createWriteStream).toHaveBeenCalledWith(destination);
+      expect(createWriteStream).not.toHaveBeenCalled();
       expect(removePartialFile).toHaveBeenCalledTimes(1);
       expect(uncaught.errors).toEqual([]);
     } finally {
@@ -1266,14 +1546,7 @@ describe('BinaryDownloader download stream lifecycle', () => {
   test('cleans up exactly once when the download times out', async () => {
     const destination = path.join(tmpDir, 'timed-out.bin');
     const seams = downloader as unknown as DownloaderSeams;
-    const file = new EventEmitter() as TestFile;
-    file.close = jest.fn();
-    file.destroy = jest.fn(() => {
-      process.nextTick(() =>
-        file.emit('error', Object.assign(new Error('stream closed'), { code: 'ENOENT' })),
-      );
-    });
-    jest.spyOn(seams, 'createWriteStream').mockReturnValue(file);
+    const createWriteStream = jest.spyOn(seams, 'createWriteStream');
     const removePartialFile = jest.spyOn(seams, 'removePartialFile');
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
@@ -1286,7 +1559,8 @@ describe('BinaryDownloader download stream lifecycle', () => {
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
 
-      expect(file.destroy).toHaveBeenCalledTimes(1);
+      expect(request.destroy).toHaveBeenCalled();
+      expect(createWriteStream).not.toHaveBeenCalled();
       expect(removePartialFile).toHaveBeenCalledTimes(1);
       expect(uncaught.errors).toEqual([]);
     } finally {
@@ -1300,27 +1574,30 @@ describe('BinaryDownloader download stream lifecycle', () => {
     const file = new EventEmitter() as TestFile;
     file.destroy = jest.fn();
     file.close = jest.fn();
+    file.write = jest.fn();
+    file.end = jest.fn();
     jest.spyOn(seams, 'createWriteStream').mockReturnValue(file);
     const removePartialFile = jest.spyOn(seams, 'removePartialFile');
 
     const response = new EventEmitter() as TestResponse;
     response.statusCode = 200;
+    response.headers = {};
+    response.destroy = jest.fn();
+    response.resume = jest.fn();
     const streamError = Object.assign(new Error('partial response failed'), { code: 'EPIPE' });
-    response.pipe = jest.fn(() => {
-      file.emit('error', streamError);
-      return file;
-    });
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
-      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        (callback as (value: unknown) => void)(response);
+        process.nextTick(() => response.emit('error', streamError));
+      });
       return request;
     });
 
     await expect(seams.downloadFile('http://localhost/file', destination, 1000)).rejects.toBe(
       streamError,
     );
-    expect(response.pipe).toHaveBeenCalledTimes(1);
     expect(removePartialFile).toHaveBeenCalledTimes(1);
   });
 });
@@ -1358,17 +1635,35 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   }
 
   let downloader: TestDownloader;
+  let restoreProcessHost: (() => void) | undefined;
 
   beforeEach(() => {
     downloader = new BinaryDownloader(
       makeContext(),
       makeOutputChannel(),
     ) as unknown as TestDownloader;
-    // Fixtures name x86_64-unknown-linux-gnu assets; pin the host target so
-    // these controls are independent of the machine running the suite.
+    // Fixtures name x86_64-unknown-linux-gnu .tar.gz assets; pin the host so
+    // these controls are independent of the machine running the suite. The
+    // target mock alone is not enough: getLatestRelease also derives the
+    // archive extension and the ARM64 emulation check from process.platform
+    // and process.arch, so a Windows runner would match .zip asset names
+    // against these .tar.gz fixtures and every selection control would
+    // refuse for a reason the fixture never chose.
     jest
       .spyOn(downloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
       .mockReturnValue('x86_64-unknown-linux-gnu');
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    const archDescriptor = Object.getOwnPropertyDescriptor(process, 'arch');
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+    restoreProcessHost = () => {
+      if (platformDescriptor) {
+        Object.defineProperty(process, 'platform', platformDescriptor);
+      }
+      if (archDescriptor) {
+        Object.defineProperty(process, 'arch', archDescriptor);
+      }
+    };
     const vscode = require('vscode');
     vscode.workspace.getConfiguration.mockReturnValue({
       get: jest.fn((key: string, defaultValue?: unknown) => {
@@ -1385,6 +1680,8 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   });
 
   afterEach(() => {
+    restoreProcessHost?.();
+    restoreProcessHost = undefined;
     jest.restoreAllMocks();
   });
 
@@ -1883,6 +2180,130 @@ describe('release asset candidate selection', () => {
 
     expect(candidates[0]).toBe('perllsp-0.13.1-x86_64-pc-windows-msvc.zip');
     expect(candidates).toContain('perllsp-v0.13.1-x86_64-pc-windows-msvc.zip');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SHA256SUMS anchored digest lookup (#9839)
+//
+// A line only counts when the digest is a whole leading token and the file
+// name field exactly equals the requested asset. Substring containment let a
+// crafted filename that merely contained the requested name (or an embedded
+// digest string) satisfy verification with an attacker-chosen digest.
+// ---------------------------------------------------------------------------
+describe('SHA256SUMS anchored digest lookup', () => {
+  const GOOD_DIGEST = 'ab'.repeat(32);
+  const EVIL_DIGEST = 'cd'.repeat(32);
+  const ASSET_NAME = 'perllsp-0.13.1-x86_64-pc-windows-msvc.zip';
+
+  test('rejects crafted decoy whose filename embeds a valid digest plus the requested suffix (#9839 falsifier)', () => {
+    // Today's substring match resolves `evil.asset` to EVIL_DIGEST because the
+    // decoy filename contains it; the embedded "valid" digest makes the craft
+    // look genuine at a glance.
+    const sums = `${EVIL_DIGEST}  xx${GOOD_DIGEST}evil.asset\n`;
+
+    expect(lookupSha256SumsDigest(sums, 'evil.asset')).toEqual({ status: 'absent' });
+  });
+
+  test('decoy line containing the asset name as a substring cannot shadow the real entry', () => {
+    const sums = [
+      `${EVIL_DIGEST}  prefix-${ASSET_NAME}.bak`,
+      `${GOOD_DIGEST}  ${ASSET_NAME}`,
+      '',
+      '',
+    ].join('\n');
+
+    expect(lookupSha256SumsDigest(sums, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+  });
+
+  test('resolves genuine sha256sum entries across binary modes, tabs, and CRLF', () => {
+    const binaryMarker = `${GOOD_DIGEST} *${ASSET_NAME}\n`;
+    expect(lookupSha256SumsDigest(binaryMarker, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+
+    const tabSeparated = `${GOOD_DIGEST}\t${ASSET_NAME}\n`;
+    expect(lookupSha256SumsDigest(tabSeparated, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+
+    const amongOthers = [
+      `${'11'.repeat(32)}  unrelated.tar.gz`,
+      `${GOOD_DIGEST}  ${ASSET_NAME}`,
+      `${'22'.repeat(32)}  another.zip`,
+      '',
+    ].join('\n');
+    expect(lookupSha256SumsDigest(amongOthers, ASSET_NAME)).toEqual({
+      status: 'found',
+      digest: GOOD_DIGEST,
+    });
+  });
+
+  test('rejects uppercase digest characters as non-canonical', () => {
+    const uppercaseDigest = GOOD_DIGEST.toUpperCase();
+    const sums = `${uppercaseDigest}  ${ASSET_NAME}\r\n`;
+
+    expect(lookupSha256SumsDigest(sums, ASSET_NAME)).toEqual({ status: 'malformed' });
+  });
+
+  test('fails closed on malformed lines even when they mention the asset name', () => {
+    const malformedEntries = [
+      // Digest one character short.
+      `${GOOD_DIGEST.slice(0, 63)}  ${ASSET_NAME}`,
+      // Digest one character long.
+      `${GOOD_DIGEST}a  ${ASSET_NAME}`,
+      // Non-hex character inside the digest token.
+      `${GOOD_DIGEST.slice(0, 31) + 'g' + GOOD_DIGEST.slice(32)}  ${ASSET_NAME}`,
+    ];
+
+    for (const sums of malformedEntries) {
+      expect(lookupSha256SumsDigest(`${sums}\n`, ASSET_NAME)).toEqual({ status: 'malformed' });
+    }
+
+    const ignoredCases = [
+      // Digest glued to the filename without a separator.
+      `${GOOD_DIGEST}${ASSET_NAME}`,
+      // Reversed (BSD-style) ordering is not sha256sum format.
+      `${ASSET_NAME}  ${GOOD_DIGEST}`,
+      // Indented entry never comes from sha256sum output.
+      `  ${GOOD_DIGEST}  ${ASSET_NAME}`,
+      // Prose mentioning the asset carries no digest token.
+      `checksum for ${ASSET_NAME} pending`,
+      // Empty manifest.
+      '',
+      // Comment-style line.
+      `# ${GOOD_DIGEST}  ${ASSET_NAME}`,
+    ];
+
+    for (const sums of ignoredCases) {
+      expect(lookupSha256SumsDigest(`${sums}\n`, ASSET_NAME)).toEqual({ status: 'absent' });
+    }
+  });
+
+  test('duplicate entries are conflicting and fail closed, even when they agree', () => {
+    const conflicting = [`${GOOD_DIGEST}  ${ASSET_NAME}`, `${EVIL_DIGEST}  ${ASSET_NAME}`, ''].join(
+      '\n',
+    );
+    expect(lookupSha256SumsDigest(conflicting, ASSET_NAME)).toEqual({ status: 'conflicting' });
+
+    const agreeing = [`${GOOD_DIGEST}  ${ASSET_NAME}`, `${GOOD_DIGEST}  ${ASSET_NAME}`, ''].join(
+      '\n',
+    );
+    expect(lookupSha256SumsDigest(agreeing, ASSET_NAME)).toEqual({ status: 'conflicting' });
+
+    const validAndMalformed = [
+      `${GOOD_DIGEST}  ${ASSET_NAME}`,
+      `${GOOD_DIGEST.slice(0, 63)}  ${ASSET_NAME}`,
+      '',
+    ].join('\n');
+    expect(lookupSha256SumsDigest(validAndMalformed, ASSET_NAME)).toEqual({
+      status: 'conflicting',
+    });
   });
 });
 

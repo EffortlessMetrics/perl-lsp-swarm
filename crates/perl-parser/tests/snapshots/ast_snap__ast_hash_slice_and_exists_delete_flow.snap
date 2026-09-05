@@ -1,6 +1,5 @@
 ---
 source: crates/perl-parser/tests/ast_snap.rs
-assertion_line: 184
 expression: "parse_sexp(\"my %opts = (foo => 1, bar => 2); my @pick = @opts{qw(foo bar)}; delete $opts{bar} if exists $opts{bar};\",)"
 ---
-(source_file (my_declaration (variable % opts)(hash ((string "foo") (number 1)) ((string "bar") (number 2)))) (my_declaration (variable @ pick)(hash_slice (variable @ opts) (array (string "foo") (string "bar")))) (statement_modifier_if (expression_statement (ambiguous_function_call_expression (function) (binary_{} (variable $ opts) (identifier bar)))) (ambiguous_function_call_expression (function) (binary_{} (variable $ opts) (identifier bar)))))
+(source_file (statements (my_declaration (declarator my) (variable (variable (sigil %) (name opts))) (initializer (hash (key (string (value foo))) (value (number (value 1))) (key (string (value bar))) (value (number (value 2))))))) (statements (my_declaration (declarator my) (variable (variable (sigil @) (name pick))) (initializer (hash_slice (target (variable (sigil @) (name opts))) (key (array (elements (string (value foo))) (elements (string (value bar))))))))) (statements (statement_modifier_if (modifier if) (statement (expression_statement (expression (ambiguous_function_call_expression (name delete) (args (binary_{} (op {}) (left (variable (sigil $) (name opts))) (right (identifier (name bar))))))))) (condition (ambiguous_function_call_expression (name exists) (args (binary_{} (op {}) (left (variable (sigil $) (name opts))) (right (identifier (name bar))))))))))

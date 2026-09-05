@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"my $x = ;\\nmy $y = ;\")"
 ---
-(source_file (my_declaration (variable $ x)(missing_expression)) (my_declaration (variable $ y)(missing_expression)))
+(source_file (statements (my_declaration (declarator my) (variable (variable (sigil $) (name x))) (initializer (missing_expression)))) (statements (my_declaration (declarator my) (variable (variable (sigil $) (name y))) (initializer (missing_expression)))))

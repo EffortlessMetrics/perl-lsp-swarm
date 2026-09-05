@@ -30,3 +30,10 @@ language = "Perl"
 [language_servers.perllsp]
 name = "Perl LSP (EffortlessMetrics)"
 language = "Perl"
+
+# EffortlessMetrics' DAP debug adapter. This identity is deliberately
+# independent from every language-server ID above: `perl-dap` never aliases
+# `perllsp`, `perl-lsp`, or `perlnavigator-server`, and no language-server
+# executable, cache family, or receipt may satisfy it.
+[debug_adapters.perl-dap]
+schema_path = "debug_adapter_schemas/perl-dap.json"

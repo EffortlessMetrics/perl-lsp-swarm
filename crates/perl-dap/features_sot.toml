@@ -322,7 +322,7 @@ spec = "LSP 3.0"
 area = "text_document"
 policy_class = "request_response"
 maturity = "not_proven"
-advertised = true
+advertised = false
 direction = "client_to_server"
 capability_gate = "documentRangeFormattingProvider"
 registration = "static_capabilities"
@@ -339,7 +339,7 @@ limitations = [
   "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
   "Formatting/edit route claim under #11955 withdrawal-or-promotion ruling; classified against current main only.",
 ]
-description = "Range formatting (single range)"
+description = "Range formatting (single range); withdrawn from live routes (#11955) until #9317 lands the exact geometry contract"
 
 [[feature]]
 id = "lsp.ranges_formatting"
@@ -347,7 +347,7 @@ spec = "LSP 3.18"
 area = "text_document"
 policy_class = "request_response"
 maturity = "not_proven"
-advertised = true
+advertised = false
 direction = "client_to_server"
 capability_gate = "none"
 registration = "static_capabilities"
@@ -362,7 +362,7 @@ limitations = [
   "Formatting/edit route claim under #11955 withdrawal-or-promotion ruling; classified against current main only.",
   "Multi-range formatting is a non-spec proposed route with no LSP capability field; the gate is recorded as none rather than inventing a spec name (#7029).",
 ]
-description = "Multi-range formatting (textDocument/rangesFormatting) (@proposed)"
+description = "Multi-range formatting (textDocument/rangesFormatting) (@proposed); withdrawn from live routes (#11955) until #7089 lands the atomic composition contract"
 
 [[feature]]
 id = "lsp.on_type_formatting"
@@ -370,7 +370,7 @@ spec = "LSP 3.0"
 area = "text_document"
 policy_class = "request_response"
 maturity = "not_proven"
-advertised = true
+advertised = false
 direction = "client_to_server"
 capability_gate = "documentOnTypeFormattingProvider"
 registration = "static_capabilities"
@@ -384,7 +384,7 @@ limitations = [
   "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
   "Formatting/edit route claim under #11955 withdrawal-or-promotion ruling; classified against current main only.",
 ]
-description = "On-type formatting with auto-indent"
+description = "On-type formatting with auto-indent; withdrawn from live routes (#11955) until #9320 lands the proven cutover"
 
 [[feature]]
 id = "lsp.rename"
@@ -1169,7 +1169,7 @@ evidence = [
 limitations = [
   "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
 ]
-description = "Core VS Code debug loop: initialize/launch/configurationDone, break/step, stack/scopes/variables, evaluate/setVariable, disconnect/terminate"
+description = "Core VS Code debug loop: initialize/launch/configurationDone, break/step, stack/scopes/variables, evaluate, disconnect/terminate. setVariable is excluded (#8354): its exact mutation proof is absent and the capability stays advertised false."
 
 [[feature]]
 id = "dap.breakpoints.basic"
@@ -1270,25 +1270,31 @@ description = "Exception breakpoint handling for `die`/uncaught exception catego
 
 [[feature]]
 id = "dap.inline_values"
-spec = "DAP 1.0"
+spec = "perl-lsp"
 area = "debug"
 policy_class = "debug_adapter"
 maturity = "not_proven"
-advertised = true
+advertised = false
 counts_in_coverage = false
 direction = "client_to_server"
-capability_gate = "dap capabilities advertisement"
+capability_gate = "none"
 registration = "static_capabilities"
 implementation_owner = "missing"
 state_owner = "missing"
-tests = ["crates/perl-dap/tests/dap_comprehensive_test.rs"]
+tests = [
+  "crates/perl-dap/tests/dap_comprehensive_test.rs",
+  "crates/perl-dap/tests/dap_inline_values_extension_floor_tests.rs",
+]
 evidence = [
   { class = "integration_test", id = "crates/perl-dap/tests/dap_comprehensive_test.rs" },
+  { class = "integration_test", id = "crates/perl-dap/tests/dap_inline_values_extension_floor_tests.rs" },
 ]
 limitations = [
   "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
+  "The routed inlineValues extension is fail-closed (#9089): no versioned negotiation contract is proven, so no standard capability cell advertises it and every unnegotiated request is refused.",
+  "Custom project extension, not standard DAP: the wire value comes from the #9089 negotiation authority, not from this row, so no `dap capabilities advertisement` gate applies.",
 ]
-description = "Inline variable values while debugging (native adapter)"
+description = "Inline variable values while debugging (custom extension, fail-closed until #9089 negotiation is proven)"
 
 [[feature]]
 id = "dap.completions"
@@ -1340,7 +1346,7 @@ spec = "DAP 1.0"
 area = "debug"
 policy_class = "debug_adapter"
 maturity = "not_proven"
-advertised = true
+advertised = false
 counts_in_coverage = false
 direction = "client_to_server"
 capability_gate = "dap capabilities advertisement"
@@ -1352,7 +1358,8 @@ evidence = [
   { class = "integration_test", id = "crates/perl-dap/tests/dap_watchpoints_tests.rs" },
 ]
 limitations = [
-  "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
+  "Native data breakpoints are fail-closed (#9091): dataBreakpointInfo never mints a name-only or context-qualified dataId, and setDataBreakpoints performs no debugger mutation, retains no watchpoint registry, and reports every entry unverified. Capability advertisement is false until the #9091 re-enable gate proves identity, install acknowledgement, and hit attribution.",
+  "Re-enable requires the #9091 gate: frame/container-bound session-stable dataId, backend install request through the mutation broker with parsed acknowledgement, target-value-change stop attributed to that exact watchpoint, and replacement/removal/restart cleanup.",
 ]
 description = "Data breakpoints (watchpoints) via Perl debugger w/W commands"
 
@@ -1402,7 +1409,7 @@ evidence = [
 limitations = [
   "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
 ]
-description = "Thread listing (threads request); Perl is single-threaded so returns one synthetic thread"
+description = "Thread listing (threads request): at most one synthetic execution context for the active session (main thread, attached process, or TCP attach; empty before any session); Coro discovery, Coro stack/variables/evaluate, selected-context control, and Perl interpreter-thread discovery are not proven"
 
 [[feature]]
 id = "dap.pause"
@@ -1606,7 +1613,7 @@ spec = "DAP 1.0"
 area = "debug"
 policy_class = "cancellation_progress"
 maturity = "not_proven"
-advertised = true
+advertised = false
 counts_in_coverage = false
 direction = "client_to_server"
 capability_gate = "dap capabilities advertisement"
@@ -1624,7 +1631,8 @@ evidence = [
   { class = "integration_test", id = "crates/perl-dap/tests/dap_capability_advertising_tests.rs" },
 ]
 limitations = [
-  "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
+  "Targeted stepping is fail-closed (#9069): native stepIn always issues the same perl5db `s` command, so a selected stepInTargets ID cannot influence execution. stepInTargets is unadvertised and every request is refused before source reads or target allocation.",
+  "Re-enable requires the #9069 gate: two distinct callable candidates on one line, selection of A vs B entering A vs B through the public exact binary, stale/wrong-session ID rejection, and basic stepIn preserved independently.",
 ]
 description = "List callable step-in targets for the current frame (stepInTargets)"
 
@@ -1634,7 +1642,7 @@ spec = "DAP 1.0"
 area = "debug"
 policy_class = "cancellation_progress"
 maturity = "not_proven"
-advertised = true
+advertised = false
 counts_in_coverage = false
 direction = "client_to_server"
 capability_gate = "dap capabilities advertisement"
@@ -1660,7 +1668,7 @@ spec = "DAP 1.0"
 area = "debug"
 policy_class = "cancellation_progress"
 maturity = "not_proven"
-advertised = true
+advertised = false
 counts_in_coverage = false
 direction = "client_to_server"
 capability_gate = "dap capabilities advertisement"
@@ -1989,7 +1997,7 @@ spec = "LSP 3.0"
 area = "text_document"
 policy_class = "document_sync"
 maturity = "not_proven"
-advertised = true
+advertised = false
 counts_in_coverage = false
 direction = "client_to_server"
 capability_gate = "workspace.fileOperations"
@@ -2002,7 +2010,7 @@ limitations = [
   "No qualifying behavior-evidence citation identified at reclassification; advertisement and implementation unchanged (#7029).",
   "Formatting/edit route claim under #11955 withdrawal-or-promotion ruling; classified against current main only.",
 ]
-description = "willSaveWaitUntil request with format-on-save"
+description = "willSaveWaitUntil request; withdrawn from live routes (#11955) until #8092 proves one save owner"
 
 [[feature]]
 id = "lsp.document_highlight"
@@ -2439,6 +2447,76 @@ limitations = [
   "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
 ]
 description = "workspace/applyEdit request (server->client)"
+
+[[feature]]
+id = "lsp.file_watcher_relative_pattern"
+spec = "LSP 3.17"
+area = "workspace"
+policy_class = "document_sync"
+maturity = "not_proven"
+advertised = false
+counts_in_coverage = false
+direction = "server_to_client"
+capability_gate = "workspace.didChangeWatchedFiles.relativePatternSupport"
+registration = "dynamic_registration"
+implementation_owner = "missing"
+state_owner = "missing"
+tests = [
+  "crates/perl-lsp-rs/tests/lsp_registration_tests.rs",
+  "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs",
+]
+evidence = [
+  { class = "integration_test", id = "crates/perl-lsp-rs/tests/lsp_registration_tests.rs" },
+  { class = "integration_test", id = "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs" },
+]
+limitations = [
+  "Watcher-glob relative patterns are the LSP 3.17 watcher surface only; document-filter and notebook-filter relative patterns are separate 3.18 rows (#8897).",
+]
+description = "Relative-pattern watcher globs for workspace/didChangeWatchedFiles (LSP 3.17 watcher surface; identity split #8897)."
+
+[[feature]]
+id = "lsp.document_filter_relative_pattern"
+spec = "LSP 3.18"
+area = "workspace"
+policy_class = "document_sync"
+maturity = "unsupported"
+advertised = false
+counts_in_coverage = false
+direction = "server_to_client"
+capability_gate = "not_implemented"
+registration = "dynamic_registration"
+implementation_owner = "missing"
+state_owner = "missing"
+tests = ["crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs"]
+evidence = [
+  { class = "integration_test", id = "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs" },
+]
+limitations = [
+  "Unsupported and negative-gated: no product path emits a relative document filter; document-selector relative-pattern support remains unclaimed; the gate scans every dynamic registration (#8897).",
+]
+description = "Document-filter relative-pattern support is the LSP 3.18 text-document-filter surface; unimplemented and negative-gated (identity split #8897)."
+
+[[feature]]
+id = "lsp.notebook_document_filter_relative_pattern"
+spec = "LSP 3.18"
+area = "notebook"
+policy_class = "editor_dependent"
+maturity = "unsupported"
+advertised = false
+counts_in_coverage = false
+direction = "server_to_client"
+capability_gate = "not_implemented"
+registration = "dynamic_registration"
+implementation_owner = "missing"
+state_owner = "missing"
+tests = ["crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs"]
+evidence = [
+  { class = "integration_test", id = "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs" },
+]
+limitations = [
+  "Unsupported and negative-gated: the preview profile may advertise notebookDocumentSync, but no notebook selectors are registered and no selector carries a relative-pattern baseUri (#8897).",
+]
+description = "Notebook document-filter relative-pattern support is the LSP 3.18 notebook-filter surface; independently unclaimed from text-document filters (identity split #8897)."
 
 [[feature]]
 id = "lsp.apply_edit_metadata"

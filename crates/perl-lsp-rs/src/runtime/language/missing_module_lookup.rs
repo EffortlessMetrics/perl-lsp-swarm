@@ -7,7 +7,7 @@ use super::super::{JsonRpcError, LspServer, Value, json, md5};
 use crate::protocol::invalid_params;
 use perl_module::is_lookup_safe_module_name;
 use perl_module::module_name_to_path;
-use perl_module::resolution::{
+use perl_module::{
     IncRoot, IncRootKind, ModuleUriResolution, resolve_module_uri_with_effective_inc,
 };
 use std::path::{Path, PathBuf};

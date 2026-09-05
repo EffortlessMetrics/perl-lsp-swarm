@@ -338,8 +338,10 @@ fn test_broken_symlink() -> TestResult {
     #[cfg(windows)]
     {
         if let Err(err) = std::os::windows::fs::symlink_file(target, link) {
-            if err.raw_os_error() == Some(1314) {
-                eprintln!("Skipping broken symlink test on Windows without symlink privilege");
+            if perl_tdd_support::classify_symlink_error(&err).skip_visibly() {
+                // Typed skip: Windows os error 1314 only (symlink privilege
+                // absent without Developer Mode or elevation). Every other
+                // creation error fails the test below.
                 let _ = fs::remove_file(target);
                 return Ok(());
             }

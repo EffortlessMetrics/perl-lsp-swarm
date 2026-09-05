@@ -1076,6 +1076,7 @@ fn scaffold_context() -> PreparedInlineCompletionContext {
         current_package: Some("Demo".to_string()),
         variables: vec!["$got".to_string(), "$expected".to_string()],
         imports: vec!["strict".to_string(), "warnings".to_string()],
+        ..PreparedInlineCompletionContext::default()
     }
 }
 

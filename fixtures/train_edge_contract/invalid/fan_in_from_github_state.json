@@ -1,0 +1,39 @@
+{
+  "schema": "train_edge_contract.v1",
+  "schema_version": 1,
+  "contract_id": "invalid-fan-in-from-github-state",
+  "programme": { "name": "invalid-examples" },
+  "propositions": [
+    { "id": "P_composition", "claim_ceiling": "Fan-in only." },
+    { "id": "P_child_a", "claim_ceiling": "Child only." }
+  ],
+  "edges": [
+    {
+      "source": "P_composition",
+      "kind": "fan_in",
+      "target": "P_composition",
+      "children": ["P_child_a"],
+      "satisfaction_source": "independently_terminal_child_propositions",
+      "provenance": "fan-in child success must not be manufactured"
+    }
+  ],
+  "claim_profiles": [
+    {
+      "id": "invalid_profile",
+      "version": 1,
+      "required": ["P_composition"],
+      "allowed_terminal_limitation_states": ["not_proven"],
+      "claim_ceiling": "Invalid example only."
+    }
+  ],
+  "projection": {
+    "proposition_states": [
+      {
+        "id": "P_child_a",
+        "implementation": { "terminal": true },
+        "evidence": { "terminal": true },
+        "proposition": { "terminal": true, "derives_from": "closed_issue" }
+      }
+    ]
+  }
+}

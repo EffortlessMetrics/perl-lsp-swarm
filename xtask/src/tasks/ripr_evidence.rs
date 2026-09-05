@@ -13,9 +13,11 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use xtask::git_ancestry::{AncestryDisposition, AncestryReceipt, classify_ancestry};
 
 #[cfg(test)]
 static RIPR_BIN_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -713,14 +715,32 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     write_text(&repo.join(PR_RAW_CHECK_JSON), &check_json)?;
     let suppressions = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
     let head_extents = HeadLineExtents::from_committed_diff(repo, &diff_receipt);
+    // Attribution basis for the new-gap count (#11690): findings must sit in a
+    // changed workspace package or one of its real dependents. The production
+    // surface (#12267 review repair) decides compiled-into-production status
+    // for the structural non-production filter. Both derive from the same
+    // cargo metadata run; a metadata failure keeps every finding counted —
+    // the gate never under-attributes on an unreadable graph.
+    let metadata = crate::tasks::ci_scope::load_metadata(repo).ok();
+    let changed_paths = committed_diff_entry_paths(&diff_receipt.entries);
+    let attribution_scope = metadata
+        .as_ref()
+        .and_then(|metadata| dependency_attribution_scope(metadata, &changed_paths).ok());
+    let production_surface = metadata
+        .as_ref()
+        .and_then(|metadata| production_surface_from_metadata(repo, metadata).ok());
     let packet = pr_evidence_packet_with_count(
         options,
         &check_value,
         &base_sha,
         &head_sha,
         &suppressions,
-        changed_file_count,
-        Some(&head_extents),
+        PrEvidenceContext {
+            changed_file_count,
+            head_extents: Some(&head_extents),
+            attribution_scope: attribution_scope.as_ref(),
+            production_surface: production_surface.as_ref(),
+        },
     );
     validate_pr_evidence_packet(&packet, options, changed_file_count, true, &base_sha, &head_sha)?;
     write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
@@ -794,6 +814,20 @@ struct RiprPrSummaryCounts {
     /// Same, for findings whose classification was not recognized. Decrements
     /// `severe_gaps` directly, like `suppressed_unclassified`.
     outside_head_unclassified: usize,
+    /// Classified findings sitting in a workspace package outside the changed
+    /// packages' dependent closure (#11690). Dropped before bucket counting and
+    /// reported for transparency; not a policy suppression.
+    out_of_dependency_graph: usize,
+    /// Findings on non-production paths (#11690) — archived sources and
+    /// Cargo integration-test files no production artifact compiles, per
+    /// [`classify_non_production`]. Dropped from the buckets before counting
+    /// and reported for transparency; not a policy suppression. Takes
+    /// precedence over dependency-graph attribution so an archived seam
+    /// reports here even when the graph would also drop it.
+    non_production_excluded: usize,
+    /// Same, for findings whose classification was not recognized. Decrements
+    /// `severe_gaps` directly, like `suppressed_unclassified`.
+    non_production_unclassified: usize,
 }
 
 fn ripr_pr_summary_counts(
@@ -801,6 +835,8 @@ fn ripr_pr_summary_counts(
     check_summary: Option<&Map<String, Value>>,
     suppressions: &RiprSuppressionRules,
     head_extents: Option<&HeadLineExtents>,
+    attribution: Option<&DependencyAttribution>,
+    production_surface: Option<&ProductionSurface>,
 ) -> RiprPrSummaryCounts {
     let summary_counts = RiprPrSummaryCounts {
         weakly_exposed: count_field(check_summary, "weakly_exposed"),
@@ -814,7 +850,10 @@ fn ripr_pr_summary_counts(
 
     let mut suppressed = RiprPrSummaryCounts::default();
     let mut outside_head = RiprPrSummaryCounts::default();
+    let mut non_production = RiprPrSummaryCounts::default();
     let mut unsuppressed_from_findings = RiprPrSummaryCounts::default();
+    let mut out_of_graph_buckets = RiprPrSummaryCounts::default();
+    let mut out_of_graph_total = 0usize;
     for finding in findings {
         // ripr 0.5.x: "classification" field, values "weakly_exposed" | "reachable_unrevealed" | "no_static_path".
         // ripr 0.9.x: "grip_class" field, values "weakly_gripped" | "reachable_unrevealed" | "no_static_path".
@@ -833,10 +872,20 @@ fn ripr_pr_summary_counts(
             Some("no_static_path") => Some("no_static_path"),
             _ => None,
         };
-        // A finding is discounted for exactly one reason: suppression policy takes
-        // precedence so `suppressed_by_policy` keeps its established meaning, and
-        // head-range filtering (#6260) applies only to what policy left standing.
+        // A finding is discounted for exactly one reason, in precedence
+        // order: suppression policy keeps `suppressed_by_policy` meaning what
+        // it always meant, head-range filtering (#6260) applies only to what
+        // policy left standing, the non-production filter (#11690) only to
+        // what both left standing, and dependency-graph attribution last — so
+        // an archived seam reports as `non_production_excluded` even though
+        // the graph would also drop it (#12267): the receipt attributes the
+        // advertised basis, not whichever branch happened to run first.
         let outside = head_extents.is_some_and(|extents| extents.finding_is_outside_head(finding));
+        // No resolvable path — and no compiled-into-production view — is
+        // never non-production: the structural filter, like #6260, must not
+        // take a fail-open shortcut on ambiguous input.
+        let non_production_kind = ripr_finding_path(finding)
+            .and_then(|path| classify_non_production(production_surface, &path));
         // Path suppression is checked BEFORE the classification guard (#1346).
         // A finding whose classification is unrecognized must still be suppressed if its
         // path matches a policy rule — skipping only path-unknown findings, not
@@ -848,15 +897,41 @@ fn ripr_pr_summary_counts(
             } else if outside {
                 outside_head.outside_head_revision += 1;
                 outside_head.outside_head_unclassified += 1;
+            } else if non_production_kind.is_some() {
+                non_production.non_production_excluded += 1;
+                non_production.non_production_unclassified += 1;
             }
             continue;
         };
-        let counts = if suppression_matches_finding(suppressions, finding) {
+        let policy_suppressed = suppression_matches_finding(suppressions, finding);
+        if !policy_suppressed
+            && !outside
+            && non_production_kind.is_none()
+            && attribution.is_some_and(|attribution| attribution.finding_is_out_of_graph(finding))
+        {
+            // #11690: the finding sits in a workspace package that does not
+            // depend on any changed package (or outside every package). It is
+            // dropped before bucket counting and reported for transparency.
+            // Policy suppression, head-revision filtering, and the structural
+            // non-production filter all keep precedence.
+            out_of_graph_total += 1;
+            match canonical {
+                "weakly_exposed" => out_of_graph_buckets.weakly_exposed += 1,
+                "reachable_unrevealed" => out_of_graph_buckets.reachable_unrevealed += 1,
+                "no_static_path" => out_of_graph_buckets.no_static_path += 1,
+                _ => {}
+            }
+            continue;
+        }
+        let counts = if policy_suppressed {
             suppressed.suppressed_by_policy += 1;
             &mut suppressed
         } else if outside {
             outside_head.outside_head_revision += 1;
             &mut outside_head
+        } else if non_production_kind.is_some() {
+            non_production.non_production_excluded += 1;
+            &mut non_production
         } else {
             &mut unsuppressed_from_findings
         };
@@ -871,24 +946,34 @@ fn ripr_pr_summary_counts(
         // Per-bucket suppression: subtract classified suppressions from their respective buckets.
         // Unclassified suppressions (suppressed_unclassified) cannot be attributed to a bucket,
         // so they are carried through for the caller to subtract from severe_gaps directly.
-        // Findings outside the head revision (#6260) are subtracted the same way.
+        // Findings outside the head revision (#6260) are subtracted the same way, and so are
+        // non-production findings (#11690).
         return RiprPrSummaryCounts {
             weakly_exposed: summary_counts
                 .weakly_exposed
                 .saturating_sub(suppressed.weakly_exposed)
-                .saturating_sub(outside_head.weakly_exposed),
+                .saturating_sub(outside_head.weakly_exposed)
+                .saturating_sub(out_of_graph_buckets.weakly_exposed)
+                .saturating_sub(non_production.weakly_exposed),
             reachable_unrevealed: summary_counts
                 .reachable_unrevealed
                 .saturating_sub(suppressed.reachable_unrevealed)
-                .saturating_sub(outside_head.reachable_unrevealed),
+                .saturating_sub(outside_head.reachable_unrevealed)
+                .saturating_sub(out_of_graph_buckets.reachable_unrevealed)
+                .saturating_sub(non_production.reachable_unrevealed),
             no_static_path: summary_counts
                 .no_static_path
                 .saturating_sub(suppressed.no_static_path)
-                .saturating_sub(outside_head.no_static_path),
+                .saturating_sub(outside_head.no_static_path)
+                .saturating_sub(out_of_graph_buckets.no_static_path)
+                .saturating_sub(non_production.no_static_path),
             suppressed_by_policy: suppressed.suppressed_by_policy,
             suppressed_unclassified: suppressed.suppressed_unclassified,
             outside_head_revision: outside_head.outside_head_revision,
             outside_head_unclassified: outside_head.outside_head_unclassified,
+            out_of_dependency_graph: out_of_graph_total,
+            non_production_excluded: non_production.non_production_excluded,
+            non_production_unclassified: non_production.non_production_unclassified,
         };
     }
     // Path B: no summary object — bucket totals come from `unsuppressed_from_findings`, which
@@ -896,11 +981,15 @@ fn ripr_pr_summary_counts(
     // to those buckets, so subtracting `suppressed_unclassified` in pr_evidence_packet would
     // over-subtract and could mask a real gap via saturating_sub.  Zero it out here; the
     // caller's `.saturating_sub(summary.suppressed_unclassified)` then becomes a no-op.
+    // Non-production findings were likewise never added to `unsuppressed_from_findings`.
     RiprPrSummaryCounts {
         suppressed_by_policy: suppressed.suppressed_by_policy,
         suppressed_unclassified: 0,
         outside_head_revision: outside_head.outside_head_revision,
         outside_head_unclassified: 0,
+        out_of_dependency_graph: out_of_graph_total,
+        non_production_excluded: non_production.non_production_excluded,
+        non_production_unclassified: 0,
         ..unsuppressed_from_findings
     }
 }
@@ -1112,6 +1201,254 @@ fn path_suffix_matches(candidate: &str, repo_path: &str) -> bool {
     prefix.is_empty() || prefix.ends_with('/')
 }
 
+// ---------------------------------------------------------------------------
+// Dependency-graph attribution basis (#11690)
+// ---------------------------------------------------------------------------
+
+/// The attribution basis stamped into packets that narrow counted findings to
+/// the real dependency graph: changed workspace packages plus their transitive
+/// dependents, derived from `cargo metadata` resolve edges.
+const ATTRIBUTION_BASIS: &str = "changed_plus_workspace_dependents";
+
+/// Graph source recorded alongside the basis so receipts stay honest about
+/// where the reachability decision came from.
+const ATTRIBUTION_GRAPH_SOURCE: &str = "cargo_metadata";
+
+/// How the producer attributed counted findings for this diff (#11690).
+#[derive(Debug, Clone)]
+enum AttributionScope {
+    /// Filtering is active: only findings inside a reachable package count.
+    Applied(DependencyAttribution),
+    /// A shared workspace input (root `Cargo.toml`, `Cargo.lock`, `.cargo/`)
+    /// can affect every member; nothing is excluded.
+    SharedWorkspaceInput,
+    /// No changed file mapped into a workspace package (docs-only and similar);
+    /// there is no graph claim to make, so nothing is excluded.
+    NoChangedPackage,
+}
+
+impl AttributionScope {
+    fn applied(&self) -> Option<&DependencyAttribution> {
+        match self {
+            AttributionScope::Applied(attribution) => Some(attribution),
+            _ => None,
+        }
+    }
+
+    /// The receipt-facing status string for the packet's attribution stamp.
+    fn status(&self) -> &'static str {
+        match self {
+            AttributionScope::Applied(_) => "applied",
+            AttributionScope::SharedWorkspaceInput => "shared_workspace_input_kept_all",
+            AttributionScope::NoChangedPackage => "no_changed_package_kept_all",
+        }
+    }
+
+    fn changed_packages(&self) -> Vec<String> {
+        match self {
+            AttributionScope::Applied(attribution) => {
+                attribution.changed_packages.iter().cloned().collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn reachable_packages(&self) -> Vec<String> {
+        match self {
+            AttributionScope::Applied(attribution) => {
+                attribution.reachable_packages.iter().cloned().collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// Package-level reachability derived from the real cargo dependency graph.
+///
+/// `package_dirs` holds repo-relative manifest directories (longest first) so a
+/// finding path resolves to exactly one owning package. Paths outside every
+/// workspace package — archived sources under `archive/**`, generated docs,
+/// tooling configs — belong to no package and therefore cannot link against
+/// changed crates through cargo edges.
+#[derive(Debug, Clone)]
+struct DependencyAttribution {
+    changed_packages: BTreeSet<String>,
+    /// Changed packages plus every transitive dependent, per the resolve graph.
+    reachable_packages: BTreeSet<String>,
+    package_dirs: Vec<(String, String)>,
+}
+
+/// Where a finding path sits relative to the reachable package set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttributionPathState {
+    InReachablePackage,
+    OutOfGraph,
+    Unknown,
+}
+
+impl DependencyAttribution {
+    fn resolve(&self, raw_path: &str) -> AttributionPathState {
+        let path = normalize_suppression_match_path(raw_path);
+        // Longest-prefix-first ordering makes one owning package win.
+        let owning = self.package_dirs.iter().find(|(dir, _)| {
+            path == *dir
+                || path.strip_prefix(dir.as_str()).is_some_and(|rest| rest.starts_with('/'))
+        });
+        if let Some((_, name)) = owning {
+            return if self.reachable_packages.contains(name) {
+                AttributionPathState::InReachablePackage
+            } else {
+                AttributionPathState::OutOfGraph
+            };
+        }
+
+        // A path we can tie to the repository but to no workspace package is
+        // positively outside every member: dependents must be workspace
+        // packages built by cargo, so archived sources (`archive/**`), docs,
+        // tooling configs, and stray unregistered directories cannot link
+        // against changed crates (#11690).
+        //
+        // A host-prefixed path that anchors nowhere stays Unknown — the same
+        // fail-open convention as [`HeadLineExtents`] (#6260): the gate never
+        // under-attributes on an ambiguous answer.
+        if path.starts_with('/') || path.as_bytes().get(1) == Some(&b':') {
+            return AttributionPathState::Unknown;
+        }
+        AttributionPathState::OutOfGraph
+    }
+
+    /// True only when the finding is positively known to sit in a workspace
+    /// package outside the reachable set. Unknown paths keep counting — the
+    /// same fail-open convention as [`HeadLineExtents`] (#6260): the gate never
+    /// under-attributes on an ambiguous answer.
+    fn finding_is_out_of_graph(&self, finding: &Value) -> bool {
+        let Some(path) = ripr_finding_path(finding) else {
+            return false;
+        };
+        self.resolve(&path) == AttributionPathState::OutOfGraph
+    }
+}
+
+/// Build the attribution scope for a committed diff from cargo metadata.
+///
+/// Errors mean the graph could not be read at all; callers must then skip
+/// filtering entirely rather than guess.
+fn dependency_attribution_scope(
+    metadata: &Value,
+    changed_paths: &[String],
+) -> Result<AttributionScope> {
+    let root = metadata
+        .get("workspace_root")
+        .and_then(Value::as_str)
+        .ok_or_else(|| eyre!("cargo metadata missing workspace_root"))?
+        .replace('\\', "/");
+    let packages = metadata
+        .get("packages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| eyre!("cargo metadata missing packages array"))?
+        .iter()
+        .filter_map(|pkg| {
+            let name = pkg.get("name").and_then(Value::as_str)?;
+            let manifest = pkg.get("manifest_path").and_then(Value::as_str)?;
+            let dir = manifest
+                .replace('\\', "/")
+                .strip_prefix(root.as_str())
+                .and_then(|rest| rest.strip_prefix('/'))
+                .and_then(|rest| rest.strip_suffix("/Cargo.toml"))?
+                .to_string();
+            Some((dir, name.to_string()))
+        })
+        .collect::<Vec<_>>();
+    if packages.is_empty() {
+        bail!("cargo metadata listed no workspace package manifests");
+    }
+    let all_package_names = packages.iter().map(|(_, name)| name.clone()).collect::<BTreeSet<_>>();
+
+    let mut changed_packages = BTreeSet::new();
+    let mut shared_input_touched = false;
+    for file in changed_paths {
+        let normalized = normalize_repo_relative_path(file);
+        if normalized == "Cargo.toml"
+            || normalized == "Cargo.lock"
+            || normalized.starts_with(".cargo/")
+        {
+            shared_input_touched = true;
+        }
+        for (dir, name) in &packages {
+            let inside = normalized == *dir
+                || normalized.strip_prefix(dir.as_str()).is_some_and(|rest| rest.starts_with('/'));
+            if inside {
+                changed_packages.insert(name.clone());
+                break;
+            }
+        }
+    }
+
+    if shared_input_touched {
+        return Ok(AttributionScope::SharedWorkspaceInput);
+    }
+    if changed_packages.is_empty() {
+        return Ok(AttributionScope::NoChangedPackage);
+    }
+
+    let mut package_dirs = packages;
+    package_dirs
+        .sort_by(|left, right| right.0.len().cmp(&left.0.len()).then_with(|| left.0.cmp(&right.0)));
+    // The resolve graph reflects the currently resolved feature set, so a
+    // dev-, build-, or optional-dependency edge can be absent from it while a
+    // real configuration still links the changed crate. Union every declared
+    // manifest edge into the reverse map: over-approximating reachability only
+    // keeps more findings counted — under-attribution is the one direction
+    // this filter must never take (#11690).
+    let mut rev_deps = crate::tasks::ci_scope::build_reverse_dep_map(metadata);
+    for pkg in metadata.get("packages").and_then(Value::as_array).into_iter().flatten() {
+        let Some(pkg_name) = pkg.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        for dep in pkg.get("dependencies").and_then(Value::as_array).into_iter().flatten() {
+            let Some(dep_name) = dep.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            if !dep_name.is_empty() {
+                rev_deps.entry(dep_name.to_string()).or_default().insert(pkg_name.to_string());
+            }
+        }
+    }
+    let dependents = crate::tasks::ci_scope::reverse_dep_closure(
+        &changed_packages,
+        &rev_deps,
+        &all_package_names,
+    );
+    let mut reachable_packages = changed_packages.clone();
+    reachable_packages.extend(dependents);
+
+    Ok(AttributionScope::Applied(DependencyAttribution {
+        changed_packages,
+        reachable_packages,
+        package_dirs,
+    }))
+}
+
+fn attribution_stamp(scope: Option<&AttributionScope>) -> Value {
+    let Some(scope) = scope else {
+        return json!({
+            "basis": ATTRIBUTION_BASIS,
+            "graph_source": ATTRIBUTION_GRAPH_SOURCE,
+            "status": "unavailable",
+            "changed_packages": [],
+            "reachable_packages": [],
+            "reason": "cargo metadata could not be read; no findings were excluded",
+        });
+    };
+    json!({
+        "basis": ATTRIBUTION_BASIS,
+        "graph_source": ATTRIBUTION_GRAPH_SOURCE,
+        "status": scope.status(),
+        "changed_packages": scope.changed_packages(),
+        "reachable_packages": scope.reachable_packages(),
+    })
+}
+
 fn normalize_suppression_match_path(path: &str) -> String {
     let normalized = normalize_path_text(path);
     let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
@@ -1120,6 +1457,338 @@ fn normalize_suppression_match_path(path: &str) -> String {
         .filter_map(|anchor| normalized.find(anchor))
         .min()
         .map_or_else(|| normalized.to_string(), |index| normalized[index..].to_string())
+}
+
+/// The basis stamped into packets that classify findings as non-production:
+/// a finding is excluded only when its file is provably outside the set of
+/// sources compiled into workspace artifacts (#11690, #12267 review).
+const NON_PRODUCTION_BASIS: &str = "compiled_into_workspace_artifacts";
+
+/// Graph source recorded alongside the basis so receipts stay honest about
+/// where the compiled-into-production decision came from.
+const NON_PRODUCTION_SOURCE: &str = "cargo_metadata_target_membership";
+
+/// Why a finding path is structurally non-production for the new-gap basis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NonProductionKind {
+    /// Archived sources under the repository's `archive/**`.
+    Archive,
+    /// A file under a Cargo integration-test directory that no production
+    /// artifact compiles.
+    IntegrationTest,
+}
+
+/// The compiled-into-production view of the workspace (#12267 review repair).
+///
+/// Production for the blocking count means code a PR can be required to
+/// reveal: active sources compiled into workspace artifacts. Membership is
+/// decided by target graph and include closure, not by pathname shape:
+///
+/// - the `src_path` of every workspace target whose kinds contain at least one
+///   production kind (anything other than `test`, `bench`, and `example`) — so
+///   an explicit `[[bin]]` whose path lives under `tests/` is production;
+/// - every `.rs` file under a workspace package's `src/` tree (a safe
+///   over-approximation: mislabeling a dead source as production only keeps a
+///   finding counted, the fail-closed direction);
+/// - the transitive textual include closure from those seeds: `#[path = "…"]`
+///   string-literal includes and plain `mod name;` sibling declarations. This
+///   is what marks `xtask/tests/support/emacs_host_runner.rs` (compiled into
+///   the exported `xtask::emacs_host_run` module) and the
+///   `xtask/tests/support/zed_*.rs` validator substrates (compiled into the
+///   `validate-zed-*` binaries) as production even though a `tests` component
+///   appears in their paths.
+///
+/// Limitations, kept honest by the receipt stamp: the closure is textual, not
+/// a cargo build graph — `include!`, macro-generated module paths, and
+/// multi-line `#[path]` attributes are not followed, and `#[cfg(test)] mod`
+/// declarations inside production files over-include their siblings (the safe
+/// direction). A `tests/`-located file compiled through an unfollowed
+/// mechanism would be misclassified as non-production.
+#[derive(Debug, Clone)]
+struct ProductionSurface {
+    /// Normalized (forward-slash) absolute host path of the workspace root,
+    /// from `cargo metadata`. Archive classification anchors here.
+    repo_root: String,
+    /// Repo-relative normalized paths of files compiled into production
+    /// workspace artifacts.
+    production_paths: BTreeSet<String>,
+}
+
+impl ProductionSurface {
+    #[cfg(test)]
+    fn from_parts(repo_root: &str, production_paths: &[&str]) -> Self {
+        ProductionSurface {
+            repo_root: repo_root.to_string(),
+            production_paths: production_paths.iter().map(|path| path.to_string()).collect(),
+        }
+    }
+}
+
+/// Resolve a finding path (host-absolute or repo-relative) against the
+/// repository root. Absolute paths strip the workspace root prefix; a path
+/// that is absolute but outside the root resolves to `None` — fail closed —
+/// because no repo-relative classification is possible. Relative paths pass
+/// through. This deliberately does not reuse the earliest-anchor-substring
+/// normalization: a checkout under `/work/archive/perl-lsp-swarm` would
+/// otherwise normalize active sources to `archive/perl-lsp-swarm/...`.
+fn repo_relative_surface_path(surface: &ProductionSurface, raw_path: &str) -> Option<String> {
+    let normalized = normalize_path_text(raw_path);
+    // Windows verbatim prefixes (`//?/F:/...`) from directory walks and host
+    // tools must not defeat the root-prefix match against cargo's plain
+    // `F:/...` workspace root.
+    let normalized = normalized.strip_prefix("//?/").unwrap_or(&normalized);
+    let normalized = normalized.strip_prefix("./").unwrap_or(normalized);
+    let absolute = normalized.starts_with('/') || normalized.as_bytes().get(1) == Some(&b':');
+    if !absolute {
+        return Some(normalized.to_string());
+    }
+    let root = surface.repo_root.trim_end_matches('/');
+    normalized.strip_prefix(root).and_then(|rest| rest.strip_prefix('/')).map(str::to_string)
+}
+
+/// True when a finding path belongs to a surface that is not production for
+/// the new-gap basis (#11690).
+///
+/// Two structural classes are non-production, independent of any mutable
+/// suppression policy:
+///
+/// - archived sources under the repository's `archive/**` — anchored at the
+///   workspace root so an ancestor checkout directory named `archive` never
+///   classifies active sources as archived;
+/// - files under a Cargo integration-test directory (a path component exactly
+///   `tests/`) that the production surface does not compile — the recurring
+///   `test_receipt_surface` class behind #6842's 162-finding block. A
+///   `tests/`-located file that IS compiled into a production artifact (the
+///   `xtask::emacs_host_run` runner substrate, the `validate-zed-*` validator
+///   substrates) stays counted.
+///
+/// `None` (including when no production surface could be built, or the path
+/// cannot be resolved against the repository root) is never non-production:
+/// the gate keeps failing closed on ambiguous input, the same convention as
+/// #6260 and the dependency-graph filter.
+fn classify_non_production(
+    surface: Option<&ProductionSurface>,
+    raw_path: &str,
+) -> Option<NonProductionKind> {
+    let surface = surface?;
+    let path = repo_relative_surface_path(surface, raw_path)?;
+    if path == "archive" || path.starts_with("archive/") {
+        return Some(NonProductionKind::Archive);
+    }
+    if path.split('/').any(|component| component == "tests")
+        && !surface.production_paths.contains(&path)
+    {
+        return Some(NonProductionKind::IntegrationTest);
+    }
+    None
+}
+
+/// Build the production surface from cargo metadata and the repo checkout.
+/// Errors mean the surface could not be established; callers must then skip
+/// non-production classification entirely rather than guess.
+fn production_surface_from_metadata(repo: &Path, metadata: &Value) -> Result<ProductionSurface> {
+    let root = metadata
+        .get("workspace_root")
+        .and_then(Value::as_str)
+        .ok_or_else(|| eyre!("cargo metadata missing workspace_root"))?
+        .replace('\\', "/");
+    let packages = metadata
+        .get("packages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| eyre!("cargo metadata missing packages array"))?;
+    let mut surface = ProductionSurface { repo_root: root, production_paths: BTreeSet::new() };
+    let mut scan_queue: Vec<String> = Vec::new();
+    for package in packages {
+        let manifest = package.get("manifest_path").and_then(Value::as_str);
+        let package_dir =
+            manifest.map(|manifest| manifest.replace('\\', "/")).and_then(|manifest| {
+                manifest
+                    .strip_prefix(surface.repo_root.as_str())
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .and_then(|rest| rest.strip_suffix("/Cargo.toml"))
+                    .map(str::to_string)
+            });
+        // Target membership: a target with any production kind compiles its
+        // src_path into workspace artifacts, wherever that file lives.
+        for target in package.get("targets").and_then(Value::as_array).into_iter().flatten() {
+            let production_kind =
+                target.get("kind").and_then(Value::as_array).is_some_and(|kinds| {
+                    kinds.iter().any(|kind| {
+                        kind.as_str()
+                            .is_some_and(|kind| !matches!(kind, "test" | "bench" | "example"))
+                    })
+                });
+            if !production_kind {
+                continue;
+            }
+            let Some(src_path) = target.get("src_path").and_then(Value::as_str) else {
+                continue;
+            };
+            let resolved = repo_relative_surface_path(&surface, src_path);
+            if let Some(resolved) = resolved
+                && surface.production_paths.insert(resolved.clone())
+            {
+                scan_queue.push(resolved);
+            }
+        }
+        // Seed with the package's whole `src/` tree: a safe over-approximation
+        // that also gives the include closure its production starting points.
+        if let Some(package_dir) = package_dir {
+            let src_dir = repo.join(&package_dir).join("src");
+            if src_dir.is_dir() {
+                for entry in
+                    walkdir::WalkDir::new(&src_dir).into_iter().filter_map(|entry| entry.ok())
+                {
+                    let is_source = entry.file_type().is_file()
+                        && entry.path().extension().is_some_and(|ext| ext == "rs");
+                    if !is_source {
+                        continue;
+                    }
+                    let entry_path = entry.path().display().to_string();
+                    if let Some(resolved) = repo_relative_surface_path(&surface, &entry_path)
+                        && surface.production_paths.insert(resolved.clone())
+                    {
+                        scan_queue.push(resolved);
+                    }
+                }
+            }
+        }
+    }
+    if surface.production_paths.is_empty() {
+        bail!("cargo metadata resolved no workspace production sources");
+    }
+    scan_include_closure(repo, &mut surface.production_paths, scan_queue);
+    Ok(surface)
+}
+
+/// Follow `#[path = "…"]` includes and plain `mod name;` declarations from the
+/// seeded production files so sources compiled from outside `src/` trees
+/// (notably under `tests/`) join the production set. Only files that newly
+/// join the set are scanned, so cycles terminate.
+fn scan_include_closure(repo: &Path, production_paths: &mut BTreeSet<String>, queue: Vec<String>) {
+    let mut queue = std::collections::VecDeque::from(queue);
+    while let Some(file) = queue.pop_front() {
+        let Ok(text) = fs::read_to_string(repo.join(&file)) else {
+            continue;
+        };
+        let file_dir = file.rsplit_once('/').map(|(dir, _)| dir.to_string()).unwrap_or_default();
+        for target in module_include_targets(&text, &file_dir) {
+            if production_paths.insert(target.clone()) {
+                queue.push_back(target);
+            }
+        }
+    }
+}
+
+/// Textually resolve the module targets a source file compiles: every
+/// single-line `#[path = "…"]` string-literal include and every plain
+/// `mod name;` declaration (sibling `name.rs` or `name/mod.rs`). A `mod` line
+/// covered by its own preceding `#[path]` attribute uses that attribute's
+/// target only. Paths are normalized lexically; an include that escapes the
+/// repository root is ignored (fail closed: it cannot be a workspace source).
+fn module_include_targets(text: &str, file_dir: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut previous_line_was_path_attribute = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some(relative) = path_attribute_target(trimmed) {
+            if let Some(resolved) = lexically_join(file_dir, relative) {
+                targets.push(resolved);
+            }
+            previous_line_was_path_attribute = true;
+            continue;
+        }
+        if let Some(name) = plain_mod_declaration_name(trimmed)
+            && !previous_line_was_path_attribute
+        {
+            let base =
+                if file_dir.is_empty() { name.to_string() } else { format!("{file_dir}/{name}") };
+            targets.push(format!("{base}.rs"));
+            targets.push(format!("{base}/mod.rs"));
+        }
+        previous_line_was_path_attribute = false;
+    }
+    targets
+}
+
+/// Extract the quoted target of a `#[path = "…"]` attribute on one line.
+/// `#[path` must be followed by `=`, whitespace, or `]` so a hypothetical
+/// longer attribute name is not mistaken for the include attribute.
+fn path_attribute_target(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("#[path")?;
+    if !rest.starts_with(['=', ' ', '\t', ']']) {
+        return None;
+    }
+    let quoted = line.split_once('"')?.1;
+    let target = quoted.split_once('"')?.0;
+    if target.is_empty() { None } else { Some(target) }
+}
+
+/// Extract the module name from a plain `mod name;` declaration (any
+/// visibility prefix), skipping inline `mod name {` bodies and `#[path]`
+/// lines, which carry their own target.
+fn plain_mod_declaration_name(line: &str) -> Option<&str> {
+    if line.starts_with("#[") {
+        return None;
+    }
+    let mut words = line.split_whitespace();
+    let mut word = words.next()?;
+    while word == "pub" || word.starts_with("pub(") {
+        word = words.next()?;
+    }
+    if word != "mod" {
+        return None;
+    }
+    let name = words.next()?.strip_suffix(';')?;
+    if name.is_empty()
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || name.starts_with(|c: char| c.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(name)
+}
+
+/// Join a relative include path onto its containing directory, resolving `.`
+/// and `..` lexically. Returns `None` when the path would escape the root.
+fn lexically_join(dir: &str, relative: &str) -> Option<String> {
+    let relative = normalize_path_text(relative);
+    let mut components: Vec<&str> = Vec::new();
+    for component in dir.split('/').chain(relative.split('/')) {
+        match component {
+            "." | "" => {}
+            // `..` above the root has nothing to pop: propagate the refusal
+            // through the `Option` this function already returns.
+            ".." => {
+                components.pop()?;
+            }
+            other => components.push(other),
+        }
+    }
+    if components.is_empty() {
+        return None;
+    }
+    Some(components.join("/"))
+}
+
+/// The receipt-facing non-production stamp: what basis classified findings,
+/// and whether that basis was available at all. Deliberately carries no host
+/// path — receipts never emit CI-runner paths.
+fn non_production_stamp(surface: Option<&ProductionSurface>) -> Value {
+    let Some(surface) = surface else {
+        return json!({
+            "basis": NON_PRODUCTION_BASIS,
+            "source": NON_PRODUCTION_SOURCE,
+            "status": "unavailable",
+            "reason": "cargo metadata could not be read; no findings were classified non-production",
+        });
+    };
+    json!({
+        "basis": NON_PRODUCTION_BASIS,
+        "source": NON_PRODUCTION_SOURCE,
+        "status": "applied",
+        "production_sources": surface.production_paths.len(),
+    })
 }
 
 #[cfg(test)]
@@ -1137,10 +1806,83 @@ fn pr_evidence_packet(
         base_sha,
         head_sha,
         suppressions,
-        changed_files.len(),
-        None,
+        PrEvidenceContext {
+            changed_file_count: changed_files.len(),
+            head_extents: None,
+            attribution_scope: None,
+            production_surface: None,
+        },
     )
 }
+
+#[cfg(test)]
+fn pr_evidence_packet_on_surface(
+    options: &PrEvidenceOptions,
+    changed_files: &[String],
+    check_value: &Value,
+    base_sha: &str,
+    head_sha: &str,
+    suppressions: &RiprSuppressionRules,
+    production_surface: Option<&ProductionSurface>,
+) -> Value {
+    pr_evidence_packet_with_count(
+        options,
+        check_value,
+        base_sha,
+        head_sha,
+        suppressions,
+        PrEvidenceContext {
+            changed_file_count: changed_files.len(),
+            head_extents: None,
+            attribution_scope: None,
+            production_surface,
+        },
+    )
+}
+
+/// The measurement context for one PR evidence packet: which diff was
+/// measured, and which bases the new-gap filters were applied on.
+///
+/// These four facts travel together — every caller that supplies one supplies
+/// all of them — while the options, exact base/head identity, check payload,
+/// and suppression policy stay explicit arguments. Grouping them keeps
+/// [`pr_evidence_packet_with_count`] inside the configured argument budget
+/// without weakening any call site: the struct deliberately has no `Default`,
+/// so a caller that omits a field fails to compile rather than silently
+/// measuring against an empty basis (#13809).
+#[derive(Clone, Copy)]
+struct PrEvidenceContext<'a> {
+    /// Number of files in the committed diff under evaluation.
+    changed_file_count: usize,
+    /// Head-revision line extents; `None` keeps every finding in scope.
+    head_extents: Option<&'a HeadLineExtents>,
+    /// Dependency-attribution basis; `None` keeps every finding counted.
+    attribution_scope: Option<&'a AttributionScope>,
+    /// Compiled-production surface; `None` keeps every finding counted.
+    production_surface: Option<&'a ProductionSurface>,
+}
+
+/// Pin the no-`Default` property the doc comment above claims, so it is
+/// checked rather than merely documented (#13809 review).
+///
+/// Every field would satisfy `#[derive(Default)]` — `usize` and `Option<&_>`
+/// both have one — so a future derive added to silence an unrelated lint
+/// would compile silently and hand callers an empty measurement basis. The
+/// focused tests cannot catch that: they construct the struct explicitly, so
+/// a `Default` impl would simply go unused.
+///
+/// Two blanket impls overlap only when `PrEvidenceContext: Default`, which
+/// makes the item reference below ambiguous and fails the build. This is the
+/// `static_assertions::assert_not_impl_any!` pattern, inlined to avoid a new
+/// dev-dependency for one assertion.
+const _: fn() = || {
+    trait AmbiguousIfDefault<A> {
+        fn marker() {}
+    }
+    impl<T> AmbiguousIfDefault<()> for T {}
+    impl<T: Default> AmbiguousIfDefault<u8> for T {}
+    let _ = <PrEvidenceContext<'static> as AmbiguousIfDefault<_>>::marker;
+};
 
 fn pr_evidence_packet_with_count(
     options: &PrEvidenceOptions,
@@ -1148,22 +1890,36 @@ fn pr_evidence_packet_with_count(
     base_sha: &str,
     head_sha: &str,
     suppressions: &RiprSuppressionRules,
-    changed_file_count: usize,
-    head_extents: Option<&HeadLineExtents>,
+    context: PrEvidenceContext<'_>,
 ) -> Value {
+    let PrEvidenceContext {
+        changed_file_count,
+        head_extents,
+        attribution_scope,
+        production_surface,
+    } = context;
     let check_summary = check_value.get("summary").and_then(Value::as_object);
-    let summary = ripr_pr_summary_counts(check_value, check_summary, suppressions, head_extents);
+    let summary = ripr_pr_summary_counts(
+        check_value,
+        check_summary,
+        suppressions,
+        head_extents,
+        attribution_scope.and_then(AttributionScope::applied),
+        production_surface,
+    );
     let weakly_exposed = summary.weakly_exposed;
     let reachable_unrevealed = summary.reachable_unrevealed;
     let no_static_path = summary.no_static_path;
     // Per-bucket suppressed counts have already been subtracted from their buckets above.
     // Findings suppressed by path but with an unrecognized classification (#1346) could not
-    // be attributed to a bucket; subtract them from the severe_gaps total now.
+    // be attributed to a bucket; subtract them from the severe_gaps total now. Non-production
+    // findings with an unrecognized classification (#11690) subtract the same way.
     let severe_gaps = weakly_exposed
         .saturating_add(reachable_unrevealed)
         .saturating_add(no_static_path)
         .saturating_sub(summary.suppressed_unclassified)
-        .saturating_sub(summary.outside_head_unclassified);
+        .saturating_sub(summary.outside_head_unclassified)
+        .saturating_sub(summary.non_production_unclassified);
     let ripr_severe_gap = severe_gaps > 0;
     let warnings = if check_summary.is_some() {
         Vec::new()
@@ -1202,8 +1958,12 @@ fn pr_evidence_packet_with_count(
             "routing_reason": if ripr_severe_gap { json!("ripr severe gap") } else { Value::Null },
             "suppressed_by_policy": summary.suppressed_by_policy,
             "outside_head_revision": summary.outside_head_revision,
+            "out_of_dependency_graph": summary.out_of_dependency_graph,
+            "non_production_excluded": summary.non_production_excluded,
             "suppression_patterns": suppressions.display_patterns.clone(),
         },
+        "attribution": attribution_stamp(attribution_scope),
+        "non_production": non_production_stamp(production_surface),
         "artifacts": [
             {
                 "label": "PR evidence JSON",
@@ -1313,6 +2073,43 @@ fn validate_pr_evidence_packet(
     {
         violations.push("summary.routing_reason must be string or null".to_string());
     }
+    if !summary.get("out_of_dependency_graph").is_some_and(Value::is_u64) {
+        violations.push("summary.out_of_dependency_graph is missing or not an integer".to_string());
+    }
+    if !summary.get("non_production_excluded").is_some_and(Value::is_u64) {
+        violations.push("summary.non_production_excluded is missing or not an integer".to_string());
+    }
+    match packet.get("attribution").and_then(Value::as_object) {
+        Some(attribution) => {
+            if attribution.get("basis").and_then(Value::as_str) != Some(ATTRIBUTION_BASIS) {
+                violations.push(format!("attribution.basis must be {ATTRIBUTION_BASIS:?}"));
+            }
+            match attribution.get("status").and_then(Value::as_str) {
+                Some(
+                    "applied"
+                    | "shared_workspace_input_kept_all"
+                    | "no_changed_package_kept_all"
+                    | "unavailable",
+                ) => {}
+                _ => violations.push("attribution.status is not a valid basis status".to_string()),
+            }
+        }
+        None => violations.push("attribution is missing or not an object".to_string()),
+    }
+    match packet.get("non_production").and_then(Value::as_object) {
+        Some(non_production) => {
+            if non_production.get("basis").and_then(Value::as_str) != Some(NON_PRODUCTION_BASIS) {
+                violations.push(format!("non_production.basis must be {NON_PRODUCTION_BASIS:?}"));
+            }
+            match non_production.get("status").and_then(Value::as_str) {
+                Some("applied" | "unavailable") => {}
+                _ => {
+                    violations.push("non_production.status is not a valid basis status".to_string())
+                }
+            }
+        }
+        None => violations.push("non_production is missing or not an object".to_string()),
+    }
     if !packet.get("warnings").is_some_and(Value::is_array) {
         violations.push("warnings is missing or not an array".to_string());
     }
@@ -1362,6 +2159,10 @@ fn render_pr_evidence_markdown(packet: &Value) -> String {
     out.push_str(&format!(
         "- outside_head_revision: {}\n",
         count_field(summary, "outside_head_revision")
+    ));
+    out.push_str(&format!(
+        "- non_production_excluded: {}\n",
+        count_field(summary, "non_production_excluded")
     ));
     out.push_str(&format!("- severe gaps: {}\n\n", count_field(summary, "severe_gaps")));
     out.push_str("## Targeted Mutation\n\n");
@@ -1717,13 +2518,61 @@ fn fallback_guidance_comments(
     else {
         return Ok(None);
     };
-    // Best-effort head-revision filter, matching the producer's counted set
-    // (#6260). If the diff cannot be resolved, name without it — the direction
-    // is names ⊇ counted, which stays fail-closed.
-    let head_extents = resolve_committed_diff(repo, &options.base, &options.head)
-        .map(|diff| HeadLineExtents::from_committed_diff(repo, &diff))
-        .ok();
+    // Best-effort head-revision and dependency-graph filters, matching the
+    // producer's counted set (#6260, #11690). If the diff cannot be resolved,
+    // name without them — the direction is names ⊇ counted, which stays
+    // fail-closed. The non-production filter (#12267 review repair) applies
+    // here too, with the same precedence as the counted set, so truncated
+    // fallback guidance cannot fill up with seams the count already dropped.
+    let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head).ok();
+    let metadata = crate::tasks::ci_scope::load_metadata(repo).ok();
+    let attribution = diff_receipt
+        .as_ref()
+        .and_then(|diff| {
+            metadata.as_ref().and_then(|metadata| {
+                dependency_attribution_scope(metadata, &committed_diff_entry_paths(&diff.entries))
+                    .ok()
+            })
+        })
+        .unwrap_or(AttributionScope::NoChangedPackage);
+    let production_surface = metadata
+        .as_ref()
+        .and_then(|metadata| production_surface_from_metadata(repo, metadata).ok());
+    let head_extents =
+        diff_receipt.as_ref().map(|diff| HeadLineExtents::from_committed_diff(repo, diff));
 
+    let (mut seams, suppressed) = fallback_seam_entries(
+        findings,
+        &suppressions,
+        head_extents.as_ref(),
+        attribution.applied(),
+        production_surface.as_ref(),
+    );
+
+    seams.sort_by(|left, right| (&left.0, left.1, &left.2).cmp(&(&right.0, right.1, &right.2)));
+    seams.dedup_by(|next, previous| next.0 == previous.0 && next.1 == previous.1);
+    seams.truncate(FALLBACK_GUIDANCE_LIMIT);
+    let comments = seams.into_iter().map(|(_, _, _, comment)| comment).collect::<Vec<_>>();
+    if comments.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((comments, suppressed)))
+}
+
+/// Collect the gate-actionable seams fallback guidance should name, applying
+/// the same filters — and the same precedence — as `ripr_pr_summary_counts`:
+/// suppression policy, head-range (#6260), structural non-production
+/// classification (#11690), then dependency-graph attribution. Non-production
+/// seams are dropped before sorting and truncation so the
+/// [`FALLBACK_GUIDANCE_LIMIT`] slice cannot crowd out a production seam that
+/// actually keeps `new_unresolved` positive.
+fn fallback_seam_entries(
+    findings: &[Value],
+    suppressions: &RiprSuppressionRules,
+    head_extents: Option<&HeadLineExtents>,
+    attribution: Option<&DependencyAttribution>,
+    production_surface: Option<&ProductionSurface>,
+) -> (Vec<(String, u64, String, Value)>, usize) {
     let mut suppressed = 0usize;
     let mut seams: Vec<(String, u64, String, Value)> = Vec::new();
     for finding in findings {
@@ -1742,11 +2591,21 @@ fn fallback_guidance_comments(
         if !gate_actionable_classification(canonical) {
             continue;
         }
-        if suppression_matches_finding(&suppressions, finding) {
+        if suppression_matches_finding(suppressions, finding) {
             suppressed += 1;
             continue;
         }
-        if head_extents.as_ref().is_some_and(|extents| extents.finding_is_outside_head(finding)) {
+        if head_extents.is_some_and(|extents| extents.finding_is_outside_head(finding)) {
+            continue;
+        }
+        if ripr_finding_path(finding)
+            .is_some_and(|path| classify_non_production(production_surface, &path).is_some())
+        {
+            continue;
+        }
+        if let Some(attribution) = attribution
+            && attribution.finding_is_out_of_graph(finding)
+        {
             continue;
         }
         let Some(file) = ripr_finding_path(finding) else { continue };
@@ -1787,15 +2646,7 @@ fn fallback_guidance_comments(
         });
         seams.push((path.clone(), line, id.to_string(), comment));
     }
-
-    seams.sort_by(|left, right| (&left.0, left.1, &left.2).cmp(&(&right.0, right.1, &right.2)));
-    seams.dedup_by(|next, previous| next.0 == previous.0 && next.1 == previous.1);
-    seams.truncate(FALLBACK_GUIDANCE_LIMIT);
-    let comments = seams.into_iter().map(|(_, _, _, comment)| comment).collect::<Vec<_>>();
-    if comments.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some((comments, suppressed)))
+    (seams, suppressed)
 }
 
 /// Emit an `incomplete` guidance receipt that names the gate-actionable seams
@@ -2369,6 +3220,19 @@ struct CommittedDiffEntry {
     new_path: Option<String>,
 }
 
+/// Every path a diff entry touches. For renames and copies that is both
+/// endpoints: a file moving from package A to unrelated package B still
+/// removed content from A, so A and its dependent closure must stay
+/// attributed instead of collapsing into `out_of_dependency_graph` (#11690).
+fn committed_diff_entry_paths(entries: &[CommittedDiffEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .flat_map(|entry| [entry.old_path.as_deref(), entry.new_path.as_deref()])
+        .flatten()
+        .map(str::to_owned)
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct CommittedDiffReceipt {
     schema_version: String,
@@ -2386,7 +3250,7 @@ fn resolve_committed_diff(repo: &Path, base: &str, head: &str) -> Result<Committ
         ArtifactIdentity::CommitRange { base: base.to_string(), head: head.to_string() },
         repo,
     )
-    .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
+    .with_context(|| merge_base_failure_guidance(repo, base, head))?;
     let (resolved_base, resolved_head) = match resolved.identity {
         ArtifactIdentity::CommitRange { base, head } => (base, head),
         ArtifactIdentity::StagedTree { .. } => {
@@ -2409,7 +3273,7 @@ fn resolve_committed_diff(repo: &Path, base: &str, head: &str) -> Result<Committ
             range.as_str(),
         ],
     )
-    .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
+    .with_context(|| merge_base_failure_guidance(repo, base, head))?;
     let entries = parse_name_status_z(&raw)?;
     let changed_paths = entries
         .iter()
@@ -2479,27 +3343,81 @@ fn parse_name_status_z(raw: &[u8]) -> Result<Vec<CommittedDiffEntry>> {
     Ok(entries)
 }
 
-fn is_shallow_clone(repo: &Path) -> bool {
-    run_git_output(repo, &["rev-parse", "--is-shallow-repository"])
-        .map(|out| out.trim() == "true")
-        .unwrap_or(false)
+/// Actionable guidance for a committed-diff range that could not be resolved.
+///
+/// Interpreting an absent merge base is the shared ancestry authority's job, not
+/// RIPR's. A shallow, partial, or object-incomplete checkout cannot prove that
+/// two refs are unrelated, so this message reports the typed `not_proven_*`
+/// disposition instead of asserting absent history (#10304).
+fn merge_base_failure_guidance(repo: &Path, base: &str, head: &str) -> String {
+    ancestry_failure_guidance(base, head, &classify_ancestry(repo, base, head))
 }
 
-fn merge_base_failure_guidance(base: &str, head: &str, shallow: bool) -> String {
-    let mut message =
-        format!("cannot compute diff range `{base}...{head}`: no merge base between them.");
-    if shallow {
-        message.push_str(&format!(
-            " This checkout is a shallow clone, so `{base}` and `{head}` share no common history. \
+/// Pure projection of one ancestry receipt into RIPR-specific operator guidance.
+///
+/// Only [`AncestryDisposition::Unrelated`] — which the classifier reaches solely
+/// from a complete-enough local graph — may state that two refs share no common
+/// history.
+fn ancestry_failure_guidance(base: &str, head: &str, receipt: &AncestryReceipt) -> String {
+    let mut message = format!(
+        "cannot resolve diff range `{base}...{head}`: git ancestry is `{}` ({}).",
+        receipt.disposition.as_str(),
+        receipt.reason
+    );
+    match receipt.disposition {
+        // The fetch remedies below deliberately carry no refspec operand. RIPR's
+        // base is normally a remote-tracking name such as `origin/main`, and
+        // `git fetch origin origin/main` fails with `couldn't find remote ref
+        // origin/main` because the operand is resolved in the remote namespace.
+        // Fetching the remote's configured refspec is both valid and sufficient.
+        AncestryDisposition::NotProvenShallow => message.push_str(&format!(
+            " A shallow checkout cannot prove whether `{base}` and `{head}` share history. \
              Deepen the clone before running diff-scoped RIPR locally, e.g. \
-             `git fetch --unshallow` or `git fetch --deepen=200 origin {base}`. \
+             `git fetch --unshallow` or `git fetch --deepen=200 origin`. \
              CI is unaffected: the RIPR workflow checks out with fetch-depth: 0."
-        ));
-    } else {
-        message.push_str(&format!(
-            " Ensure `{base}` is fetched and shares history with `{head}`, \
-             e.g. `git fetch origin {base}`."
-        ));
+        )),
+        AncestryDisposition::NotProvenPartialClone => message.push_str(
+            " A partial/promisor checkout can omit the objects this range needs. \
+             Materialize the required commit graph, e.g. `git fetch --refetch origin`, \
+             before running diff-scoped RIPR locally. \
+             CI is unaffected: the RIPR workflow checks out with fetch-depth: 0.",
+        ),
+        AncestryDisposition::NotProvenMissingObject => {
+            // Name the side the receipt actually found missing; "the requested
+            // revision" is useless when only one of the two failed to resolve.
+            let missing = match (receipt.base_object_exists, receipt.head_object_exists) {
+                (false, true) => format!("`{base}`"),
+                (true, false) => format!("`{head}`"),
+                _ => format!("`{base}` and `{head}`"),
+            };
+            message.push_str(&format!(
+                " {missing} could not be resolved locally, which does not establish that \
+                 `{base}` and `{head}` are unrelated. Confirm the spelling, then materialize \
+                 the missing objects: `git fetch origin` covers the remote's configured \
+                 refspec, and a revision outside that refspec must be requested by its \
+                 remote-side name."
+            ));
+        }
+        AncestryDisposition::Unrelated => message.push_str(&format!(
+            " Both commit objects are present in a complete local graph and share no \
+             common history, so `{base}...{head}` has no diff range to compute. \
+             Select a base that shares history with `{head}`."
+        )),
+        AncestryDisposition::Ancestor | AncestryDisposition::Diverged => {
+            message.push_str(&format!(
+                " `{base}` and `{head}` are related in this checkout, so ancestry does not \
+             explain the failure; inspect the underlying git error above."
+            ))
+        }
+        AncestryDisposition::InvalidInput => message.push_str(
+            " Check the base and head revision values passed to the diff-scoped command.",
+        ),
+        AncestryDisposition::InstrumentFailure => message.push_str(
+            " Git could not be inspected, so no ancestry conclusion is available for this range.",
+        ),
+    }
+    for limitation in &receipt.limitations {
+        message.push_str(&format!(" Limitation: {limitation}."));
     }
     message
 }
@@ -2561,39 +3479,32 @@ fn ripr_binary() -> Result<String> {
     Ok(binary)
 }
 
-/// Drain all bytes from an optional I/O handle into `buf`.
-///
-/// When `pipe` is `None` (e.g. a handle that was never piped) the function
-/// returns `Ok(())` without touching `buf`. This helper is extracted so the
-/// `None` arm can be exercised in unit tests independently of spawning a real
-/// child process.
-fn drain_pipe<R: std::io::Read>(pipe: Option<R>, buf: &mut Vec<u8>, label: &str) -> Result<()> {
-    if let Some(mut r) = pipe {
-        r.read_to_end(buf).with_context(|| format!("failed to read {label}"))?;
-    }
-    Ok(())
-}
-
 fn run_output(cmd: &str, args: &[String]) -> Result<String> {
-    // Drain stdout incrementally to avoid the Windows single-pipe-write limit (~4 MB).
-    // Command::output() calls wait_with_output() internally, which collects the full
-    // payload via a blocking pipe read; on Windows this panics with "os error 87
-    // (parameter incorrect)" when the child writes more than ~4 MB to stdout in one
-    // session (reproduced on a 487-file diff: `ripr check --format json`).
-    // Streaming via read_to_end() sidesteps that limit by draining the pipe
-    // incrementally.  Deadlock note: ripr's stderr is diagnostics-only and stays well
-    // under the OS pipe buffer, so draining stdout first then stderr is safe here.
+    // Keep machine-readable RIPR output off a Windows pipe.  A child can fail with
+    // ERROR_INVALID_PARAMETER (87) while performing one large stdout write even when
+    // the parent drains that pipe incrementally.  A regular temporary file removes
+    // the pipe-size limit and keeps this transport independent of RIPR subcommand
+    // support for an --out flag.
+    let stdout_file =
+        tempfile::NamedTempFile::new().context("failed to create RIPR stdout file")?;
     let mut child = Command::new(cmd)
         .args(args)
-        .stdout(Stdio::piped())
+        .stdout(Stdio::from(stdout_file.reopen().context("failed to reopen RIPR stdout file")?))
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to run {cmd}"))?;
-    let mut stdout_bytes = Vec::new();
-    drain_pipe(child.stdout.take(), &mut stdout_bytes, &format!("{cmd} stdout"))?;
     let mut stderr_bytes = Vec::new();
-    drain_pipe(child.stderr.take(), &mut stderr_bytes, &format!("{cmd} stderr"))?;
+    if let Some(mut stderr) = child.stderr.take() {
+        std::io::Read::read_to_end(&mut stderr, &mut stderr_bytes)
+            .with_context(|| format!("failed to read {cmd} stderr"))?;
+    }
     let status = child.wait().with_context(|| format!("failed to wait for {cmd}"))?;
+    let mut stdout_reader =
+        stdout_file.reopen().with_context(|| format!("failed to reopen {cmd} stdout file"))?;
+    let mut stdout_bytes = Vec::new();
+    stdout_reader
+        .read_to_end(&mut stdout_bytes)
+        .with_context(|| format!("failed to read {cmd} stdout file"))?;
     if !status.success() {
         bail!(
             "{cmd} failed with status {}\nstdout:\n{}\nstderr:\n{}",
@@ -2823,6 +3734,98 @@ fn bullet_list(values: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---------------------------------------------------------------------
+    // #13809 falsifiers: the two path helpers whose Clippy repairs are only
+    // mechanical if their refusal semantics are exact. `main` carried no
+    // focused coverage for either, so the "semantics preserved" claim rested
+    // on reading alone.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn lexically_join_resolves_dot_and_parent_segments() {
+        assert_eq!(
+            lexically_join("crates/a/src", "lib.rs").as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+        assert_eq!(
+            lexically_join("crates/a/src", "./lib.rs").as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+        // `..` pops the directory it follows rather than being retained.
+        assert_eq!(lexically_join("crates/a/src", "../lib.rs").as_deref(), Some("crates/a/lib.rs"));
+        assert_eq!(
+            lexically_join("crates/a/src", "../../lib.rs").as_deref(),
+            Some("crates/lib.rs")
+        );
+        // Backslashes normalize before joining, so Windows-shaped includes
+        // resolve identically.
+        assert_eq!(
+            lexically_join("crates/a/src", r"..\lib.rs").as_deref(),
+            Some("crates/a/lib.rs")
+        );
+    }
+
+    #[test]
+    fn lexically_join_refuses_paths_that_escape_the_root() {
+        // Only this assertion *discriminates* against a default-to-root
+        // repair (`let _ = components.pop();`): the exhausted pop is
+        // swallowed, the trailing `etc/passwd` segments repopulate
+        // `components`, and the join wrongly yields Some("etc/passwd").
+        // Verified — that repair fails here and nowhere else in this test.
+        assert_eq!(lexically_join("crates/a", "../../../etc/passwd"), None);
+
+        // These two also reach `components.pop()?` on an exhausted stack and
+        // return there, so they do exercise the changed branch. They do not
+        // discriminate, for a different reason than the line below: under the
+        // broken repair they fall through to the post-loop
+        // `components.is_empty()` guard, which yields `None` as well. Same
+        // answer by a different route, so the assertion cannot tell them
+        // apart.
+        assert_eq!(lexically_join("", ".."), None);
+        assert_eq!(lexically_join("a", "../.."), None);
+
+        // This one never reaches an exhausted pop at all: `..` pops "a"
+        // successfully and the loop ends empty, so the post-loop guard is its
+        // refusal path under both implementations. Popping exactly to empty
+        // is refusal, not an empty join.
+        assert_eq!(lexically_join("a", ".."), None);
+    }
+
+    #[test]
+    fn repo_relative_surface_path_normalizes_and_fails_closed() {
+        let surface = ProductionSurface::from_parts("/work/repo", &[]);
+
+        // Relative paths pass through, including the `./` form whose borrow
+        // this leaf simplified.
+        assert_eq!(
+            repo_relative_surface_path(&surface, "crates/a/src/lib.rs").as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+        assert_eq!(
+            repo_relative_surface_path(&surface, "./crates/a/src/lib.rs").as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+
+        // Absolute paths inside the root strip it; backslash and Windows
+        // verbatim (`//?/`) shapes normalize to the same repo-relative result.
+        let windows = ProductionSurface::from_parts("F:/work/repo", &[]);
+        assert_eq!(
+            repo_relative_surface_path(&windows, r"F:\work\repo\crates\a\src\lib.rs").as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+        assert_eq!(
+            repo_relative_surface_path(&windows, r"\\?\F:\work\repo\crates\a\src\lib.rs")
+                .as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+
+        // Absolute but outside the root is None — fail closed, never a
+        // silently mis-anchored relative path.
+        assert_eq!(repo_relative_surface_path(&surface, "/other/repo/src/lib.rs"), None);
+        // A sibling root sharing a prefix must not match on the prefix alone.
+        assert_eq!(repo_relative_surface_path(&surface, "/work/repo-two/src/lib.rs"), None);
+    }
 
     #[test]
     fn command_root_arg_allows_repo_relative_root() -> Result<()> {
@@ -3801,8 +4804,12 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             suppressions,
-            1,
-            Some(extents),
+            PrEvidenceContext {
+                changed_file_count: 1,
+                head_extents: Some(extents),
+                attribution_scope: None,
+                production_surface: None,
+            },
         )
     }
 
@@ -3971,6 +4978,544 @@ paths = ["archive/["]
         assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
         assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(1)));
         assert_eq!(packet.pointer("/summary/outside_head_revision"), Some(&json!(0)));
+        Ok(())
+    }
+
+    /// #11690 reproduction, shaped from the two live incidents in the issue:
+    /// #6842's 162-finding `no_static_path` block inside the PR's own
+    /// `crates/perl-semantic-facts/tests/prop_json_roundtrip.rs`, and #6766's
+    /// archive/caller inflation (`archive/crates/tree-sitter-perl-rs/...`).
+    /// Neither class can be closed by a test the PR could write, so neither may
+    /// inflate the blocking basis. Production seams — including production
+    /// files that simply do not depend on the changed crate, which stay this
+    /// filter's negative control — keep counting.
+    #[test]
+    fn non_production_test_and_archive_findings_do_not_inflate_the_new_gap_basis() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 2, "no_static_path": 3 },
+            "findings": [
+                {
+                    // #6842 class: proptest macro bodies in the PR's own new test file.
+                    "classification": "no_static_path",
+                    "probe": { "path": "crates/perl-semantic-facts/tests/prop_json_roundtrip.rs", "line": 41 }
+                },
+                {
+                    // ripr 0.9.x shape: grip_class + seam.file, also inside a tests/ dir.
+                    "grip_class": "weakly_gripped",
+                    "seam": { "file": "crates/perl-lsp-ux-tests/tests/ux_scenario_62.rs", "line": 7 }
+                },
+                {
+                    // #6766 class: archived sources pulled in by the analyzer's caller expansion.
+                    "classification": "no_static_path",
+                    "seam": { "file": "archive/crates/tree-sitter-perl-rs/src/scanner/mod.rs", "line": 100 }
+                },
+                {
+                    // Production seam in the PR's own crate: still counts.
+                    "grip_class": "reachable_unrevealed",
+                    "seam": { "file": "crates/perl-core-harness/src/contract.rs", "line": 12 }
+                },
+                {
+                    // Production non-dependent file: counts here. Excluding it needs the
+                    // dependency-graph attribution slice, not the production-file filter.
+                    "classification": "no_static_path",
+                    "seam": { "file": "crates/perl-lsp-rs/src/runtime/scheduler.rs", "line": 88 }
+                }
+            ]
+        });
+
+        let packet = pr_evidence_packet_on_surface(
+            &PrEvidenceOptions {
+                root: ".".to_string(),
+                base: "origin/main".to_string(),
+                head: "HEAD".to_string(),
+                pr_head_sha: None,
+            },
+            &["crates/perl-semantic-facts/tests/prop_json_roundtrip.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &no_suppressions(),
+            Some(&ProductionSurface::from_parts(
+                "/ws",
+                &[
+                    "crates/perl-core-harness/src/contract.rs",
+                    "crates/perl-lsp-rs/src/runtime/scheduler.rs",
+                ],
+            )),
+        );
+
+        // weakly_gripped folds into reachable_unrevealed (0.9.x): the ux
+        // test-file finding leaves that bucket (2 - 1 = 1), and the proptest
+        // and archive findings leave no_static_path (3 - 2 = 1). The two
+        // production seams — the changed crate and the non-dependent
+        // scheduler.rs negative control — keep counting.
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(3)));
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(true)));
+        Ok(())
+    }
+
+    /// Gate teeth: the filter is bounded to non-production surfaces. An inline
+    /// `#[cfg(test)]` seam in a production source file is NOT under a `tests/`
+    /// directory component, so it keeps blocking — the calibration retires the
+    /// test_receipt_surface treadmill, not test-worthiness itself.
+    #[test]
+    fn production_files_still_count_after_the_non_production_filter() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 2, "no_static_path": 0 },
+            "findings": [
+                {
+                    "classification": "reachable_unrevealed",
+                    "seam": { "file": "crates/perl-core-harness/src/contract.rs", "line": 12 }
+                },
+                {
+                    // A file literally named tests.rs is not a tests/ directory.
+                    "classification": "reachable_unrevealed",
+                    "seam": { "file": "crates/perl-core-harness/src/tests.rs", "line": 3 }
+                }
+            ]
+        });
+
+        let packet = pr_evidence_packet_on_surface(
+            &PrEvidenceOptions {
+                root: ".".to_string(),
+                base: "origin/main".to_string(),
+                head: "HEAD".to_string(),
+                pr_head_sha: None,
+            },
+            &["crates/perl-core-harness/src/contract.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &no_suppressions(),
+            Some(&ProductionSurface::from_parts(
+                "/ws",
+                &[
+                    "crates/perl-core-harness/src/contract.rs",
+                    "crates/perl-core-harness/src/tests.rs",
+                ],
+            )),
+        );
+
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(0)));
+        Ok(())
+    }
+
+    /// Suppression policy keeps precedence over the structural filter, so a
+    /// reviewed archive suppression is still attributed to policy and the two
+    /// mechanisms never double-count one finding.
+    #[test]
+    fn suppression_takes_precedence_over_the_non_production_filter() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 0, "no_static_path": 1 },
+            "findings": [
+                {
+                    "classification": "no_static_path",
+                    "seam": { "file": "archive/crates/old-crate/src/lib.rs", "line": 9 }
+                }
+            ]
+        });
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["archive/**".to_string()],
+            path_patterns: vec![Pattern::new("archive/**")?],
+            classification_patterns: vec![Vec::new()],
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        };
+
+        let packet = pr_evidence_packet_on_surface(
+            &PrEvidenceOptions {
+                root: ".".to_string(),
+                base: "origin/main".to_string(),
+                head: "HEAD".to_string(),
+                pr_head_sha: None,
+            },
+            &["archive/crates/old-crate/src/lib.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &suppressions,
+            Some(&ProductionSurface::from_parts("/ws", &[])),
+        );
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(0)));
+        Ok(())
+    }
+
+    /// Path B (no summary object): bucket totals come from findings, so
+    /// non-production findings are simply never added; the transparency total
+    /// still reports them.
+    #[test]
+    fn non_production_findings_without_a_summary_object_do_not_count() -> Result<()> {
+        let check_value = json!({
+            "findings": [
+                {
+                    "classification": "no_static_path",
+                    "probe": { "path": "crates/perl-semantic-facts/tests/prop_json_roundtrip.rs", "line": 41 }
+                },
+                {
+                    "classification": "no_static_path",
+                    "seam": { "file": "archive/crates/tree-sitter-perl-rs/src/scanner/mod.rs", "line": 100 }
+                },
+                {
+                    "grip_class": "reachable_unrevealed",
+                    "seam": { "file": "crates/perl-core-harness/src/contract.rs", "line": 12 }
+                }
+            ]
+        });
+
+        let packet = pr_evidence_packet_on_surface(
+            &PrEvidenceOptions {
+                root: ".".to_string(),
+                base: "origin/main".to_string(),
+                head: "HEAD".to_string(),
+                pr_head_sha: None,
+            },
+            &["crates/perl-core-harness/src/contract.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &no_suppressions(),
+            Some(&ProductionSurface::from_parts(
+                "/ws",
+                &["crates/perl-core-harness/src/contract.rs"],
+            )),
+        );
+
+        assert_eq!(packet.pointer("/summary/no_static_path"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(2)));
+        Ok(())
+    }
+
+    /// A finding whose classification the producer does not recognize is still
+    /// dropped when its path is non-production: the defensive severe_gaps
+    /// decrement mirrors `suppressed_unclassified` (#1346), and the transparency
+    /// total carries it.
+    #[test]
+    fn unclassified_non_production_findings_decrement_severe_gaps_in_path_a() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 1, "no_static_path": 0 },
+            "findings": [
+                {
+                    "classification": "some_future_class",
+                    "seam": { "file": "archive/crates/old-crate/src/lib.rs", "line": 9 }
+                }
+            ]
+        });
+
+        let packet = pr_evidence_packet_on_surface(
+            &PrEvidenceOptions {
+                root: ".".to_string(),
+                base: "origin/main".to_string(),
+                head: "HEAD".to_string(),
+                pr_head_sha: None,
+            },
+            &["archive/crates/old-crate/src/lib.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &no_suppressions(),
+            Some(&ProductionSurface::from_parts("/ws", &[])),
+        );
+
+        // The unrecognized class cannot be attributed to a bucket, so only the
+        // severe_gaps-side decrement brings the count down.
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(1)));
+        Ok(())
+    }
+
+    /// The classifier anchors the same path shapes the suppression matcher
+    /// accepts (0.9.x Windows and checkout-prefixed absolute paths) — but
+    /// against the workspace root, not the earliest anchor substring — and
+    /// treats a file named `tests.rs` or a `perl-lsp-ux-tests` crate segment
+    /// as production. Only a real `tests/` directory component that the
+    /// production surface does not compile classifies.
+    #[test]
+    fn non_production_paths_classify_windows_and_absolute_forms() {
+        // A checkout whose ancestor directory is itself named `archive`
+        // (#12267 review repair): active sources must not classify as
+        // archived just because an ancestor matches the anchor substring.
+        let surface = ProductionSurface::from_parts(
+            "/work/archive/perl-lsp-swarm",
+            &["crates/perl-core-harness/src/contract.rs"],
+        );
+        let cases = [
+            (r".\crates\perl-x\tests\case.rs", Some(NonProductionKind::IntegrationTest)),
+            (
+                "//?/H:/Code/Rust3/perl-lsp-swarm/crates/perl-x/tests/case.rs",
+                None, // absolute path outside the surface's repository root: fail closed
+            ),
+            (
+                "/work/archive/perl-lsp-swarm/xtask/tests/it/main.rs",
+                Some(NonProductionKind::IntegrationTest),
+            ),
+            (
+                // The reviewer's exact wrong candidate: an active source under
+                // an ancestor `archive` directory must classify by repo root.
+                "/work/archive/perl-lsp-swarm/crates/perl-lsp-rs/src/runtime.rs",
+                None,
+            ),
+            ("./archive/crates/old-crate/src/lib.rs", Some(NonProductionKind::Archive)),
+            ("archive/crates/old-crate/src/lib.rs", Some(NonProductionKind::Archive)),
+            (
+                "/work/archive/perl-lsp-swarm/archive/crates/old/src/lib.rs",
+                Some(NonProductionKind::Archive),
+            ),
+            ("crates/perl-lsp-ux-tests/src/lib.rs", None),
+            ("crates/perl-x/src/tests.rs", None),
+            ("crates/perl-core-harness/src/contract.rs", None),
+            ("xtask/src/tasks/ripr_evidence.rs", None),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(
+                classify_non_production(Some(&surface), raw),
+                expected,
+                "path {raw:?} classified against root {:?}",
+                surface.repo_root
+            );
+        }
+        // No compiled-into-production view at all: nothing is classified —
+        // the gate never under-attributes on an unreadable workspace graph.
+        assert_eq!(classify_non_production(None, "crates/perl-x/tests/case.rs"), None);
+        assert_eq!(classify_non_production(None, "archive/crates/old/src/lib.rs"), None);
+    }
+
+    /// P1 regression (#12267 review): a `tests/`-located file that production
+    /// code compiles via `#[path]` — the `xtask::emacs_host_run` runner
+    /// substrate and the `validate-zed-*` validator substrates — must stay in
+    /// the counted basis. Wrong candidate: the lexical `tests` component alone
+    /// used to exclude it.
+    #[test]
+    fn path_included_test_sources_stay_in_the_production_basis() -> Result<()> {
+        let surface = ProductionSurface::from_parts(
+            "/ws",
+            &[
+                "xtask/tests/support/emacs_host_runner.rs",
+                "xtask/tests/support/zed_host_compat.rs",
+                "crates/perl-core-harness/src/contract.rs",
+            ],
+        );
+        // The exact repository seams the reviewer named: exported module
+        // substrate and validator binaries compiled from xtask/tests/support.
+        assert_eq!(
+            classify_non_production(Some(&surface), "xtask/tests/support/emacs_host_runner.rs"),
+            None
+        );
+        assert_eq!(
+            classify_non_production(Some(&surface), "/ws/xtask/tests/support/zed_host_compat.rs"),
+            None
+        );
+        // A genuine integration test file no production artifact compiles
+        // still classifies.
+        assert_eq!(
+            classify_non_production(Some(&surface), "crates/perl-x/tests/case.rs"),
+            Some(NonProductionKind::IntegrationTest)
+        );
+
+        // Counts level: a finding on the `#[path]`-included substrate keeps
+        // counting; the integration-test finding does not.
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 2, "no_static_path": 0 },
+            "findings": [
+                {
+                    "grip_class": "reachable_unrevealed",
+                    "seam": { "file": "xtask/tests/support/emacs_host_runner.rs", "line": 21 }
+                },
+                {
+                    "grip_class": "reachable_unrevealed",
+                    "seam": { "file": "crates/perl-x/tests/case.rs", "line": 7 }
+                }
+            ]
+        });
+        let packet = pr_evidence_packet_on_surface(
+            &PrEvidenceOptions {
+                root: ".".to_string(),
+                base: "origin/main".to_string(),
+                head: "HEAD".to_string(),
+                pr_head_sha: None,
+            },
+            &["xtask/tests/support/emacs_host_runner.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &no_suppressions(),
+            Some(&surface),
+        );
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/non_production/status"), Some(&json!("applied")));
+        Ok(())
+    }
+
+    /// P1 regression, closure level: the surface builder must actually find
+    /// the `#[path]`-included files — target membership alone cannot, because
+    /// cargo metadata does not list `#[path]` modules. The scan follows
+    /// `#[path = "…"]` includes and plain `mod name;` siblings transitively
+    /// from production seeds.
+    #[test]
+    fn include_closure_marks_path_compiled_test_support_as_production() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("xtask/src/bin"))?;
+        fs::create_dir_all(repo.join("xtask/tests/support"))?;
+        // The repository's real shapes: an exported module substrate and a
+        // validator binary that compile files from under tests/.
+        fs::write(
+            repo.join("xtask/src/emacs_host_run.rs"),
+            "#[path = \"../tests/support/emacs_host_runner.rs\"]\npub mod emacs_host_runner;\n",
+        )?;
+        fs::write(
+            repo.join("xtask/src/bin/validate-zed-host-receipt.rs"),
+            "#[path = \"../../tests/support/zed_host_compat.rs\"]\nmod zed_host_compat;\nfn main() {}\n",
+        )?;
+        fs::write(
+            repo.join("xtask/tests/support/emacs_host_runner.rs"),
+            "// runner substrate\nmod deeper;\n",
+        )?;
+        fs::write(repo.join("xtask/tests/support/zed_host_compat.rs"), "// compat\n")?;
+        fs::write(repo.join("xtask/tests/support/deeper.rs"), "// sibling module\n")?;
+
+        let mut production = BTreeSet::from([
+            "xtask/src/emacs_host_run.rs".to_string(),
+            "xtask/src/bin/validate-zed-host-receipt.rs".to_string(),
+        ]);
+        scan_include_closure(
+            repo,
+            &mut production,
+            vec![
+                "xtask/src/emacs_host_run.rs".to_string(),
+                "xtask/src/bin/validate-zed-host-receipt.rs".to_string(),
+            ],
+        );
+
+        for included in [
+            "xtask/tests/support/emacs_host_runner.rs",
+            "xtask/tests/support/zed_host_compat.rs",
+            // Plain `mod deeper;` from a production-compiled tests/ file joins
+            // the closure too (over-inclusive direction: keeps findings counted).
+            "xtask/tests/support/deeper.rs",
+        ] {
+            assert!(production.contains(included), "{included} must be production: {production:?}");
+        }
+        Ok(())
+    }
+
+    /// P1 regression, target membership: a workspace target with a production
+    /// kind whose src_path lives under `tests/` compiles that file into an
+    /// artifact, so it must not be excluded; a `test`-kind target still does.
+    #[test]
+    fn production_kind_targets_under_tests_directories_stay_counted() -> Result<()> {
+        let metadata = json!({
+            "workspace_root": "/ws",
+            "packages": [
+                {
+                    "name": "xtask",
+                    "manifest_path": "/ws/xtask/Cargo.toml",
+                    "targets": [
+                        { "kind": ["lib"], "src_path": "/ws/xtask/src/lib.rs" },
+                        { "kind": ["bin"], "src_path": "/ws/xtask/tests/support/cli_harness.rs" },
+                        { "kind": ["test"], "src_path": "/ws/xtask/tests/it.rs" }
+                    ]
+                }
+            ]
+        });
+        let surface = production_surface_from_metadata(Path::new("/nonexistent"), &metadata)?;
+        assert!(surface.production_paths.contains("xtask/tests/support/cli_harness.rs"));
+        assert!(!surface.production_paths.contains("xtask/tests/it.rs"));
+        assert_eq!(
+            classify_non_production(Some(&surface), "xtask/tests/support/cli_harness.rs"),
+            None
+        );
+        assert_eq!(
+            classify_non_production(Some(&surface), "xtask/tests/it.rs"),
+            Some(NonProductionKind::IntegrationTest)
+        );
+        Ok(())
+    }
+
+    /// P2 regression (#12267 review): fallback guidance applies the same
+    /// non-production filter as the counted set, before sorting and
+    /// truncation — so excluded test seams cannot fill the 25-item fallback
+    /// slice and crowd out the production seam that keeps `new_unresolved`
+    /// positive. Wrong candidate: without the filter, 25 lexically earlier
+    /// `tests/` seams push `xtask/src/tools/prod.rs` past the limit.
+    #[test]
+    fn fallback_guidance_names_the_filtered_set_not_the_raw_check() -> Result<()> {
+        let mut findings = Vec::new();
+        for index in 0..25 {
+            findings.push(raw_check_finding(
+                &format!("probe:test{index:02}"),
+                "no_static_path",
+                &format!("crates/perl-x/tests/it/case_{index:02}.rs"),
+                10 + index,
+            ));
+        }
+        findings.push(raw_check_finding(
+            "probe:prod",
+            "no_static_path",
+            "xtask/src/tools/prod.rs",
+            5,
+        ));
+        let surface = ProductionSurface::from_parts("/ws", &["xtask/src/tools/prod.rs"]);
+
+        let (seams, suppressed) =
+            fallback_seam_entries(&findings, &no_suppressions(), None, None, Some(&surface));
+        assert_eq!(suppressed, 0);
+        let paths: Vec<&str> = seams.iter().map(|(path, _, _, _)| path.as_str()).collect();
+        assert_eq!(paths, vec!["xtask/src/tools/prod.rs"], "only the production seam is named");
+
+        // Fail-closed control: without a compiled-into-production view the
+        // fallback keeps naming everything (names ⊇ counted still holds).
+        let (unfiltered, _) =
+            fallback_seam_entries(&findings, &no_suppressions(), None, None, None);
+        assert_eq!(unfiltered.len(), 26);
+        Ok(())
+    }
+
+    /// Fail closed: a finding with no resolvable path is never classified
+    /// non-production, exactly like the #6260 head-range filter.
+    #[test]
+    fn pathless_findings_are_never_non_production() -> Result<()> {
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 1, "no_static_path": 0 },
+            "findings": [
+                {
+                    "classification": "reachable_unrevealed",
+                    "seam": { "line": 12 }
+                }
+            ]
+        });
+
+        let packet = pr_evidence_packet(
+            &PrEvidenceOptions {
+                root: ".".to_string(),
+                base: "origin/main".to_string(),
+                head: "HEAD".to_string(),
+                pr_head_sha: None,
+            },
+            &["crates/perl-core-harness/src/contract.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &no_suppressions(),
+        );
+
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(0)));
         Ok(())
     }
 
@@ -4351,6 +5896,443 @@ paths = ["archive/["]
         assert!(markdown.contains("- status: error"), "{markdown}");
         assert!(markdown.contains("tool_error: ripr review-comments failed \\| timeout"));
         assert!(!markdown.contains("secondary detail"), "{markdown}");
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------------
+    // Dependency-graph attribution basis (#11690)
+    // ---------------------------------------------------------------------------
+
+    /// Fake `cargo metadata` shape: `(name, manifest dir, direct dependencies)`
+    /// with manifests at `<root>/<dir>/Cargo.toml`, mirroring this workspace
+    /// layout where members live under `crates/` and the root `xtask/`.
+    fn fake_workspace_metadata(root: &str, packages: &[(&str, &str, &[&str])]) -> Value {
+        let pkg_base = |name: &str, dir: &str| -> String {
+            if dir.is_empty() { format!("{root}/{name}") } else { format!("{root}/{dir}/{name}") }
+        };
+        let pkgs = packages
+            .iter()
+            .map(|(name, dir, _)| {
+                json!({
+                    "id": format!("path+file://{}", pkg_base(name, dir)),
+                    "name": name,
+                    "manifest_path": format!("{}/Cargo.toml", pkg_base(name, dir)),
+                })
+            })
+            .collect::<Vec<_>>();
+        let nodes = packages
+            .iter()
+            .map(|(name, dir, deps)| {
+                let edges = deps
+                    .iter()
+                    .map(|dep| {
+                        let dep_dir = packages
+                            .iter()
+                            .find(|(n, _, _)| n == dep)
+                            .map_or("crates", |(_, d, _)| d);
+                        json!({"pkg": format!("path+file://{}", pkg_base(dep, dep_dir))})
+                    })
+                    .collect::<Vec<_>>();
+                json!({
+                    "id": format!("path+file://{}", pkg_base(name, dir)),
+                    "deps": edges,
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "workspace_root": root,
+            "packages": pkgs,
+            "resolve": { "nodes": nodes },
+        })
+    }
+
+    fn attribution_for(metadata: &Value, changed: &[&str]) -> Result<AttributionScope> {
+        let changed = changed.iter().map(|path| path.to_string()).collect::<Vec<_>>();
+        Ok(dependency_attribution_scope(metadata, &changed)?)
+    }
+
+    /// #6766 reproduction (#11690): a new module in a low-fan-in crate must not
+    /// inherit gaps from crates that cannot depend on it. The recorded receipt
+    /// scoped 120 production files for a 5-file change, including archived
+    /// sources and perl-dap/perl-lsp-rs/perl-workspace/perl-parser — none of
+    /// which reference `perl-core-harness`.
+    #[test]
+    fn low_fan_in_change_drops_non_dependents_and_archived_files() -> Result<()> {
+        let metadata = fake_workspace_metadata(
+            "/ws",
+            &[
+                ("perl-core-harness", "crates", &[] as &[&str]),
+                ("perl-core-harness-types", "crates", &["perl-core-harness"]),
+                ("perl-core-test-runner", "crates", &["perl-core-harness"]),
+                ("xtask", "", &["perl-core-harness"]),
+                ("perl-dap", "crates", &[]),
+                ("perl-lsp-rs", "crates", &["perl-dap"]),
+                ("perl-parser", "crates", &[]),
+                ("perl-workspace", "crates", &["perl-lsp-rs"]),
+            ],
+        );
+        let scope = attribution_for(&metadata, &["crates/perl-core-harness/src/contract.rs"])?;
+        let Some(attribution) = scope.applied() else {
+            bail!("a single-crate change must activate the graph filter");
+        };
+        assert_eq!(attribution.changed_packages, BTreeSet::from(["perl-core-harness".to_string()]),);
+        assert_eq!(
+            attribution.reachable_packages,
+            BTreeSet::from([
+                "perl-core-harness".to_string(),
+                "perl-core-harness-types".to_string(),
+                "perl-core-test-runner".to_string(),
+                "xtask".to_string(),
+            ]),
+        );
+
+        let keep = [
+            "crates/perl-core-harness/src/contract.rs",
+            "crates/perl-core-harness-types/src/lib.rs",
+            "crates/perl-core-test-runner/src/runner.rs",
+            "xtask/src/tasks/quality_gate.rs",
+        ];
+        for path in keep {
+            assert_eq!(
+                attribution.resolve(path),
+                AttributionPathState::InReachablePackage,
+                "{path} must stay attributed"
+            );
+        }
+
+        // The exact non-dependent files #11690 names as wrongly scoped, plus an
+        // archived crate that is excluded from the workspace entirely.
+        let drop = [
+            "archive/crates/tree-sitter-perl-rs/src/scanner/mod.rs",
+            "archive/crates/perl-ts-heredoc-parser/src/heredoc_parser.rs",
+            "crates/perl-dap/src/debug_adapter/evaluation.rs",
+            "crates/perl-lsp-rs/src/runtime/scheduler.rs",
+            "crates/perl-workspace/src/semantic/references.rs",
+            "crates/perl-parser/src/incremental/incremental_v2.rs",
+        ];
+        for path in drop {
+            assert_eq!(
+                attribution.resolve(path),
+                AttributionPathState::OutOfGraph,
+                "{path} must drop out of scope"
+            );
+        }
+        Ok(())
+    }
+
+    /// A dev/optional edge missing from the resolved graph must still keep its
+    /// dependent in scope: declared manifest edges are unioned in so no real
+    /// linking configuration loses findings (fail-closed, #11690).
+    #[test]
+    fn declared_edges_absent_from_resolve_keep_dependents_in_scope() -> Result<()> {
+        let metadata = json!({
+            "workspace_root": "/ws",
+            "packages": [
+                { "id": "p:a", "name": "gap-base", "manifest_path": "/ws/crates/gap-base/Cargo.toml",
+                  "dependencies": [] },
+                { "id": "p:b", "name": "gap-dep", "manifest_path": "/ws/crates/gap-dep/Cargo.toml",
+                  "dependencies": [ { "name": "gap-base", "optional": true, "kind": null } ] },
+                { "id": "p:c", "name": "gap-lone", "manifest_path": "/ws/crates/gap-lone/Cargo.toml",
+                  "dependencies": [] },
+            ],
+            "resolve": { "nodes": [
+                // gap-dep's optional dependency on gap-base is NOT resolved here.
+                { "id": "p:a", "deps": [] },
+                { "id": "p:b", "deps": [] },
+                { "id": "p:c", "deps": [] },
+            ] },
+        });
+
+        let scope = attribution_for(&metadata, &["crates/gap-base/src/lib.rs"])?;
+        let Some(attribution) = scope.applied() else {
+            bail!("expected applied attribution");
+        };
+
+        assert!(
+            attribution.reachable_packages.contains("gap-dep"),
+            "declared optional dependent must stay in scope"
+        );
+        assert!(
+            !attribution.reachable_packages.contains("gap-lone"),
+            "crate with no manifest edge must drop"
+        );
+        assert_eq!(
+            attribution.resolve("crates/gap-dep/src/lib.rs"),
+            AttributionPathState::InReachablePackage
+        );
+        assert_eq!(
+            attribution.resolve("crates/gap-lone/src/lib.rs"),
+            AttributionPathState::OutOfGraph
+        );
+        Ok(())
+    }
+
+    /// A cross-package rename touches both endpoints: the source package and
+    /// its dependents must stay attributed even though only the destination
+    /// path survives at HEAD — narrowing past that would reclassify source-
+    /// side findings as `out_of_dependency_graph` without reachability basis.
+    #[test]
+    fn cross_package_rename_attributes_both_endpoints() -> Result<()> {
+        let entries = [CommittedDiffEntry {
+            status: "R100".to_string(),
+            old_path: Some("crates/perl-origin/src/moved.rs".to_string()),
+            new_path: Some("crates/perl-destination/src/moved.rs".to_string()),
+        }];
+        assert_eq!(
+            committed_diff_entry_paths(&entries),
+            vec![
+                "crates/perl-origin/src/moved.rs".to_string(),
+                "crates/perl-destination/src/moved.rs".to_string(),
+            ]
+        );
+
+        let metadata = fake_workspace_metadata(
+            "/ws",
+            &[
+                ("perl-origin", "crates", &[] as &[&str]),
+                ("perl-origin-dependent", "crates", &["perl-origin"]),
+                ("perl-destination", "crates", &[]),
+                ("perl-unrelated", "crates", &[]),
+            ],
+        );
+        let scope = dependency_attribution_scope(&metadata, &committed_diff_entry_paths(&entries))?;
+        let Some(attribution) = scope.applied() else {
+            bail!("a two-package rename must activate the graph filter");
+        };
+        assert_eq!(
+            attribution.changed_packages,
+            BTreeSet::from(["perl-origin".to_string(), "perl-destination".to_string(),])
+        );
+        for path in [
+            "crates/perl-origin/src/still_here.rs",
+            "crates/perl-origin-dependent/src/closure.rs",
+            "crates/perl-destination/src/new_home.rs",
+        ] {
+            assert_eq!(
+                attribution.resolve(path),
+                AttributionPathState::InReachablePackage,
+                "{path} must stay attributed"
+            );
+        }
+        assert_eq!(
+            attribution.resolve("crates/perl-unrelated/src/lib.rs"),
+            AttributionPathState::OutOfGraph,
+            "an untouched package must still drop"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn high_fan_in_change_keeps_transitive_dependents_in_scope() -> Result<()> {
+        let metadata = fake_workspace_metadata(
+            "/ws",
+            &[
+                ("perl-parser", "crates", &[]),
+                ("perl-semantic", "crates", &["perl-parser"]),
+                ("perl-lsp-rs", "crates", &["perl-semantic"]),
+            ],
+        );
+        let scope = attribution_for(&metadata, &["crates/perl-parser/src/lib.rs"])?;
+        let Some(attribution) = scope.applied() else {
+            bail!("a code change must activate the graph filter");
+        };
+
+        for path in [
+            "crates/perl-parser/src/lib.rs",
+            "crates/perl-semantic/src/analysis/index.rs",
+            "crates/perl-lsp-rs/src/runtime/scheduler.rs",
+        ] {
+            assert_eq!(
+                attribution.resolve(path),
+                AttributionPathState::InReachablePackage,
+                "transitive dependent {path} must remain in scope"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unattributable_paths_stay_counted_fail_open() -> Result<()> {
+        let metadata =
+            fake_workspace_metadata("/ws", &[("perl-a", "crates", &[]), ("perl-b", "crates", &[])]);
+        let scope = attribution_for(&metadata, &["crates/perl-a/src/lib.rs"])?;
+        let Some(attribution) = scope.applied() else {
+            bail!("expected applied attribution");
+        };
+
+        // A host-prefixed path that anchors to no known package, and a finding
+        // without any path at all, resolve to Unknown — never filtered.
+        assert_eq!(
+            attribution.resolve(r"E:\elsewhere\mystery\src\lib.rs"),
+            AttributionPathState::Unknown
+        );
+        assert!(!attribution.finding_is_out_of_graph(&json!({"classification": "no_static_path"})));
+        Ok(())
+    }
+
+    #[test]
+    fn shared_workspace_input_change_keeps_everything_counted() -> Result<()> {
+        let metadata = fake_workspace_metadata(
+            "/ws",
+            &[("perl-a", "crates", &[]), ("perl-b", "crates", &["perl-a"])],
+        );
+
+        for shared in ["Cargo.lock", "Cargo.toml", ".cargo/config.toml"] {
+            let scope = attribution_for(&metadata, &[shared])?;
+            assert_eq!(scope.status(), "shared_workspace_input_kept_all", "{shared}");
+            assert!(scope.applied().is_none(), "{shared} must not filter");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn change_without_workspace_package_files_keeps_attribution_inactive() -> Result<()> {
+        let metadata = fake_workspace_metadata("/ws", &[("perl-a", "crates", &[])]);
+        let scope = attribution_for(&metadata, &["docs/ci/ripr.md"])?;
+
+        assert_eq!(scope.status(), "no_changed_package_kept_all");
+        assert!(scope.applied().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_metadata_reports_unavailable_instead_of_guessing() {
+        let missing_packages = json!({ "workspace_root": "/ws" });
+        let changed = ["crates/x/src/lib.rs".to_string()];
+        assert!(dependency_attribution_scope(&missing_packages, &changed).is_err());
+
+        let no_root = json!({ "packages": [] });
+        assert!(dependency_attribution_scope(&no_root, &changed).is_err());
+    }
+
+    /// Packet-level #6766-style dry-run: four findings from a raw check whose
+    /// scan expanded past the diff; only changed-plus-dependent seams survive,
+    /// and the packet records exactly what was dropped and why. The archived
+    /// seam reports under `non_production_excluded` even with the graph
+    /// active: the structural filter takes precedence over graph attribution
+    /// (#12267 review repair).
+    #[test]
+    fn packet_narrows_new_gaps_to_reachable_dependents_and_stamps_the_basis() -> Result<()> {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        let suppressions = no_suppressions();
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 4, "no_static_path": 0 },
+            "findings": [
+                raw_check_finding("probe:changed", "reachable_unrevealed", "crates/perl-core-harness/src/contract.rs", 10),
+                raw_check_finding("probe:dependent", "reachable_unrevealed", "crates/perl-core-test-runner/src/runner.rs", 20),
+                raw_check_finding("probe:dap", "reachable_unrevealed", "crates/perl-dap/src/debug_adapter/evaluation.rs", 30),
+                raw_check_finding("probe:archived", "reachable_unrevealed", "archive/crates/tree-sitter-perl-rs/src/scanner/mod.rs", 40),
+            ]
+        });
+        let metadata = fake_workspace_metadata(
+            "/ws",
+            &[
+                ("perl-core-harness", "crates", &[] as &[&str]),
+                ("perl-core-test-runner", "crates", &["perl-core-harness"]),
+                ("perl-dap", "crates", &[]),
+            ],
+        );
+        let surface = ProductionSurface::from_parts(
+            "/ws",
+            &[
+                "crates/perl-core-harness/src/contract.rs",
+                "crates/perl-core-test-runner/src/runner.rs",
+                "crates/perl-dap/src/debug_adapter/evaluation.rs",
+            ],
+        );
+        let scope = attribution_for(&metadata, &["crates/perl-core-harness/src/contract.rs"])?;
+        let packet = pr_evidence_packet_with_count(
+            &options,
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &suppressions,
+            PrEvidenceContext {
+                changed_file_count: 5,
+                head_extents: None,
+                attribution_scope: Some(&scope),
+                production_surface: Some(&surface),
+            },
+        );
+
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(2)));
+        // The archived seam is attributed to the structural non-production
+        // filter, not swallowed by the earlier graph branch; only the
+        // non-dependent perl-dap seam lands in the graph bucket.
+        assert_eq!(packet.pointer("/summary/out_of_dependency_graph"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/non_production_excluded"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/attribution/basis"), Some(&json!(ATTRIBUTION_BASIS)));
+        assert_eq!(packet.pointer("/attribution/graph_source"), Some(&json!("cargo_metadata")));
+        assert_eq!(packet.pointer("/attribution/status"), Some(&json!("applied")));
+        assert_eq!(packet.pointer("/non_production/status"), Some(&json!("applied")));
+
+        // The same raw check with no attribution scope still applies the
+        // structural non-production filter (#11690): the archived seam drops
+        // there too, while the non-dependent perl-dap seam only drops via the
+        // graph — 3 versus the pre-#11690 basis of 4.
+        let unfiltered = pr_evidence_packet_with_count(
+            &options,
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &suppressions,
+            PrEvidenceContext {
+                changed_file_count: 5,
+                head_extents: None,
+                attribution_scope: None,
+                production_surface: Some(&surface),
+            },
+        );
+        assert_eq!(unfiltered.pointer("/summary/severe_gaps"), Some(&json!(3)));
+        assert_eq!(unfiltered.pointer("/summary/non_production_excluded"), Some(&json!(1)));
+        assert_eq!(unfiltered.pointer("/attribution/status"), Some(&json!("unavailable")));
+        validate_pr_evidence_packet(&packet, &options, 5, true, "base-sha", "head-sha")?;
+        Ok(())
+    }
+
+    #[test]
+    fn validate_pr_evidence_packet_requires_the_attribution_stamp() -> Result<()> {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        let suppressions = no_suppressions();
+        let check_value = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 1, "no_static_path": 0 },
+            "findings": [raw_check_finding("probe:x", "reachable_unrevealed", "crates/a/src/lib.rs", 5)]
+        });
+        let mut packet = pr_evidence_packet_with_count(
+            &options,
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &suppressions,
+            PrEvidenceContext {
+                changed_file_count: 1,
+                head_extents: None,
+                attribution_scope: None,
+                production_surface: None,
+            },
+        );
+        let Some(packet_object) = packet.as_object_mut() else {
+            bail!("packet must be a JSON object");
+        };
+        packet_object.remove("attribution");
+
+        let Err(err) =
+            validate_pr_evidence_packet(&packet, &options, 1, true, "base-sha", "head-sha")
+        else {
+            bail!("a packet without the attribution stamp must violate the contract");
+        };
+        assert!(err.to_string().contains("attribution"), "{err}");
         Ok(())
     }
 
@@ -5056,12 +7038,12 @@ paths = ["archive/["]
                 &path,
                 &format!(
                     r#"@echo off
-echo %* | findstr /C:"repo-badge-json" >NUL
+echo %* | %SystemRoot%\System32\findstr.exe /C:"repo-badge-json" >NUL
 if %ERRORLEVEL%==0 (
   echo {badge_json}
   exit /b 0
 )
-echo %* | findstr /C:"repo-seams-json" >NUL
+echo %* | %SystemRoot%\System32\findstr.exe /C:"repo-seams-json" >NUL
 if %ERRORLEVEL%==0 (
   echo {seams_json}
   exit /b 0
@@ -5105,32 +7087,48 @@ esac
     }
 
     // ---------------------------------------------------------------------------
-    // run_output streaming tests (#1197)
+    // run_output file transport tests (#12569)
     // ---------------------------------------------------------------------------
 
-    /// Create a platform-specific script that writes exactly `byte_count` ASCII `x` bytes
-    /// to stdout. Uses `dd` + `tr` on Unix (POSIX-standard, no extra deps).
-    #[cfg(not(windows))]
+    /// Create a platform-specific helper that writes exactly `byte_count` ASCII `x` bytes
+    /// to stdout in one large write.
     fn write_large_output_script(dir: &Path, byte_count: usize) -> Result<PathBuf> {
-        // Round up to whole megabytes so dd's block arithmetic is exact.
-        let mb = byte_count.div_ceil(1_048_576);
-        let path = dir.join("gen_large.sh");
+        let source = dir.join("large_output.rs");
         fs::write(
-            &path,
+            &source,
             format!(
-                "#!/bin/sh\ndd if=/dev/zero bs=1048576 count={mb} 2>/dev/null | tr '\\0' 'x'\n"
+                "use std::io::Write;\n\
+                 fn main() {{\n\
+                     let payload = vec![b'x'; {byte_count}];\n\
+                     if let Err(error) = std::io::stdout().write_all(&payload) {{\n\
+                         eprintln!(\"{{error}}\");\n\
+                         std::process::exit(1);\n\
+                     }}\n\
+                 }}\n"
             ),
         )?;
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms)?;
-        Ok(path)
+        #[cfg(windows)]
+        let binary = dir.join("large_output.exe");
+        #[cfg(not(windows))]
+        let binary = dir.join("large_output");
+        let output = Command::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .context("failed to compile large-output test helper")?;
+        if !output.status.success() {
+            bail!(
+                "failed to compile large-output test helper:\n{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(binary)
     }
 
     #[test]
     fn run_output_captures_small_stdout_and_propagates_exit_failure() -> Result<()> {
-        // Basic smoke-test for the new streaming run_output implementation:
+        // Basic smoke-test for the file-backed run_output implementation:
         // success path returns stdout; failure path returns an error containing stderr.
         #[cfg(not(windows))]
         {
@@ -5165,13 +7163,10 @@ esac
     }
 
     #[test]
-    #[cfg(not(windows))]
-    fn run_output_streams_large_stdout_without_truncation() -> Result<()> {
-        // Regression guard for the Windows "os error 87" panic (#1197).
-        // Before this fix, Command::output() used wait_with_output() to buffer the full
-        // child stdout in one pipe read, which panics on Windows when the payload exceeds
-        // ~4 MB (reproduced on a 487-file ripr-pr diff).  The new streaming path reads
-        // incrementally; verify it collects the full payload intact.
+    fn run_output_reads_large_stdout_from_file() -> Result<()> {
+        // Regression guard for the Windows "os error 87" panic (#12569).  The child
+        // performs one multi-megabyte stdout write; run_output must give it a regular
+        // file rather than a pipe.
         const TARGET_MB: usize = 5;
         const TARGET_BYTES: usize = TARGET_MB * 1024 * 1024;
 
@@ -5180,27 +7175,16 @@ esac
 
         let result = run_output(&script.display().to_string(), &[])?;
 
-        assert!(
-            result.len() >= TARGET_BYTES,
-            "Expected >= {TARGET_BYTES} bytes, streaming read captured only {}",
+        assert_eq!(
+            result.len(),
+            TARGET_BYTES,
+            "Expected exactly {TARGET_BYTES} bytes, captured {}",
             result.len()
         );
         assert!(
             result.bytes().all(|b| b == b'x'),
             "Output must consist entirely of 'x' bytes — got unexpected content"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn drain_pipe_none_does_nothing_and_returns_ok() -> Result<()> {
-        // Covers the `None` arm of `drain_pipe`, which occurs when a child's
-        // stdout/stderr handle has already been consumed or was never piped.
-        // In `run_output` that arm is unreachable (Stdio::piped() is always
-        // configured), so this unit test exercises it directly.
-        let mut buf = Vec::new();
-        drain_pipe(None::<std::io::Cursor<Vec<u8>>>, &mut buf, "test-label")?;
-        assert!(buf.is_empty(), "buf must remain empty when pipe is None");
         Ok(())
     }
 
@@ -5212,22 +7196,322 @@ esac
         Ok(())
     }
 
-    #[test]
-    fn merge_base_guidance_points_to_unshallow_for_shallow_clone() {
-        let message = merge_base_failure_guidance("origin/main", "HEAD", true);
-        assert!(message.contains("origin/main...HEAD"), "range echoed: {message}");
-        assert!(message.contains("no merge base"), "diagnosis: {message}");
-        assert!(message.contains("shallow clone"), "shallow cause: {message}");
-        assert!(message.contains("git fetch --unshallow"), "remedy: {message}");
-        assert!(message.contains("fetch-depth: 0"), "CI note: {message}");
+    /// One ancestry receipt carrying a chosen disposition, for projecting the
+    /// RIPR guidance vocabulary without a repository.
+    fn ancestry_receipt(disposition: AncestryDisposition, reason: &str) -> AncestryReceipt {
+        AncestryReceipt {
+            schema_version: "git_ancestry.v1".to_string(),
+            repository: ".".to_string(),
+            repository_root: None,
+            git_dir: None,
+            git_common_dir: None,
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            base_sha: None,
+            head_sha: None,
+            merge_base: None,
+            is_shallow_repository: None,
+            is_partial_clone: None,
+            base_object_exists: false,
+            head_object_exists: false,
+            base_is_ancestor_of_head: None,
+            head_is_ancestor_of_base: None,
+            disposition,
+            reason: reason.to_string(),
+            guidance: Vec::new(),
+            limitations: Vec::new(),
+        }
     }
 
+    /// The false-history claim #10051/#10205 came from: a shallow checkout is
+    /// missing history, not proof that two refs are unrelated.
     #[test]
-    fn merge_base_guidance_suggests_fetch_for_non_shallow() {
-        let message = merge_base_failure_guidance("origin/main", "HEAD", false);
-        assert!(message.contains("no merge base"), "diagnosis: {message}");
+    fn shallow_guidance_reports_not_proven_instead_of_absent_history() {
+        let receipt = ancestry_receipt(
+            AncestryDisposition::NotProvenShallow,
+            "the checkout is shallow; local absence is not proof of unrelated history",
+        );
+        let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+        assert!(message.contains("origin/main...HEAD"), "range echoed: {message}");
+        assert!(message.contains("not_proven_shallow"), "typed disposition: {message}");
+        assert!(message.contains("git fetch --unshallow"), "remedy preserved: {message}");
+        assert!(message.contains("fetch-depth: 0"), "CI note preserved: {message}");
+        assert!(
+            !message.contains("share no common history"),
+            "shallow must never assert absent history: {message}"
+        );
+        assert!(
+            !message.contains("unrelated`"),
+            "shallow must not report the unrelated disposition: {message}"
+        );
+    }
+
+    /// A promisor/partial checkout is the same class of incomplete evidence.
+    #[test]
+    fn partial_clone_guidance_reports_not_proven_instead_of_absent_history() {
+        let receipt = ancestry_receipt(
+            AncestryDisposition::NotProvenPartialClone,
+            "the checkout is partial; local absence is not proof of unrelated history",
+        );
+        let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+        assert!(message.contains("not_proven_partial_clone"), "typed disposition: {message}");
+        // Assert the arm's own remedy, not just the header-emitted label: the
+        // label comes from the shared prefix, so without this a no-op or
+        // swapped arm body would still pass.
+        assert!(message.contains("git fetch --refetch origin`"), "partial remedy: {message}");
+        assert!(
+            message.contains("Materialize the required commit graph"),
+            "partial cause: {message}"
+        );
+        assert!(!message.contains("--unshallow"), "must not blame shallow: {message}");
+        assert!(
+            !message.contains("share no common history"),
+            "partial clone must never assert absent history: {message}"
+        );
+    }
+
+    /// An unresolvable revision is a bad ref or missing object, not a history claim.
+    #[test]
+    fn missing_object_guidance_does_not_blame_history() {
+        let receipt = ancestry_receipt(
+            AncestryDisposition::NotProvenMissingObject,
+            "the base commit object is unavailable",
+        );
+        let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+        assert!(message.contains("not_proven_missing_object"), "typed disposition: {message}");
+        assert!(message.contains("git fetch origin`"), "fetch remedy: {message}");
+        assert!(
+            !message.contains("share no common history"),
+            "missing object must never assert absent history: {message}"
+        );
         assert!(!message.contains("shallow"), "must not blame shallow: {message}");
-        assert!(message.contains("git fetch origin origin/main"), "fetch remedy: {message}");
+    }
+
+    /// Every fetch remedy must be a command the operator can actually run.
+    ///
+    /// RIPR's default base is the remote-tracking name `origin/main`, and
+    /// `git fetch origin origin/main` fails with `couldn't find remote ref
+    /// origin/main` because the operand resolves in the remote namespace. No
+    /// disposition may interpolate the base after a remote name.
+    #[test]
+    fn guidance_never_emits_a_remote_prefixed_fetch_refspec() {
+        for disposition in [
+            AncestryDisposition::Ancestor,
+            AncestryDisposition::Diverged,
+            AncestryDisposition::Unrelated,
+            AncestryDisposition::NotProvenShallow,
+            AncestryDisposition::NotProvenPartialClone,
+            AncestryDisposition::NotProvenMissingObject,
+            AncestryDisposition::InvalidInput,
+            AncestryDisposition::InstrumentFailure,
+        ] {
+            let receipt = ancestry_receipt(disposition, "reason");
+            let message = ancestry_failure_guidance(DEFAULT_BASE, DEFAULT_HEAD, &receipt);
+
+            assert!(
+                !message.contains(&format!("origin {DEFAULT_BASE}")),
+                "remedy must not resolve `{DEFAULT_BASE}` in the remote namespace: {message}"
+            );
+        }
+    }
+
+    /// `unrelated` is the one disposition permitted to state absent history,
+    /// and the classifier reaches it only from a complete-enough local graph.
+    #[test]
+    fn only_proven_unrelated_guidance_states_absent_history() {
+        let receipt = ancestry_receipt(
+            AncestryDisposition::Unrelated,
+            "both commit objects are present in a non-shallow, non-partial graph and no merge base exists",
+        );
+        let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+        assert!(message.contains("unrelated"), "typed disposition: {message}");
+        assert!(
+            message.contains("share no common history"),
+            "proven unrelated may state absent history: {message}"
+        );
+        assert!(!message.contains("--unshallow"), "must not blame shallow: {message}");
+    }
+
+    /// Related refs mean the diff failure has some other cause; the guidance
+    /// must not misattribute it to ancestry.
+    #[test]
+    fn related_history_guidance_does_not_blame_ancestry() {
+        for disposition in [AncestryDisposition::Ancestor, AncestryDisposition::Diverged] {
+            let receipt = ancestry_receipt(disposition, "the requested refs are related");
+            let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+            assert!(message.contains("are related in this checkout"), "related: {message}");
+            assert!(
+                !message.contains("share no common history"),
+                "related refs must never assert absent history: {message}"
+            );
+        }
+    }
+
+    /// Invalid input and instrument failure stay distinct from every history claim.
+    #[test]
+    fn invalid_and_instrument_guidance_make_no_history_claim() {
+        // Each row pins the arm's own remedy as well as the label. The label is
+        // emitted by the shared header, so asserting it alone cannot tell a
+        // correct arm from an empty or swapped one.
+        for (disposition, expected, remedy) in [
+            (
+                AncestryDisposition::InvalidInput,
+                "invalid_input",
+                "Check the base and head revision values",
+            ),
+            (
+                AncestryDisposition::InstrumentFailure,
+                "instrument_failure",
+                "Git could not be inspected",
+            ),
+        ] {
+            let receipt = ancestry_receipt(disposition, "no domain result was reached");
+            let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+            assert!(message.contains(expected), "typed disposition: {message}");
+            assert!(message.contains(remedy), "{expected} remedy: {message}");
+            assert!(
+                !message.contains("share no common history"),
+                "{expected} must never assert absent history: {message}"
+            );
+        }
+    }
+
+    /// The production seam, not just the formatter: a real shallow checkout must
+    /// reach the shared authority and report `not_proven_shallow`. Re-mapping a
+    /// failed merge base back to "unrelated" fails here.
+    #[test]
+    fn shallow_repository_production_guidance_uses_the_shared_authority() -> Result<()> {
+        let origin = tempfile::tempdir()?;
+        ancestry_git(origin.path(), &["init", "--quiet", "--initial-branch=main", "."])?;
+        ancestry_git(origin.path(), &["config", "user.email", "ripr@example.invalid"])?;
+        ancestry_git(origin.path(), &["config", "user.name", "RIPR Test"])?;
+        for index in 0..3 {
+            fs::write(origin.path().join("file.txt"), format!("revision {index}\n"))?;
+            ancestry_git(origin.path(), &["add", "file.txt"])?;
+            ancestry_git(origin.path(), &["commit", "--quiet", "-m", &format!("c{index}")])?;
+        }
+
+        let shallow = tempfile::tempdir()?;
+        // `--depth` is ignored for a plain local path, so the fixture needs a
+        // `file://` URL to actually become shallow.
+        let source = ancestry_file_url(origin.path());
+        let target = shallow.path().join("clone");
+        ancestry_git(
+            shallow.path(),
+            &["clone", "--quiet", "--depth", "1", &source, &target.display().to_string()],
+        )?;
+        assert_eq!(
+            ancestry_git(&target, &["rev-parse", "--is-shallow-repository"])?.trim(),
+            "true",
+            "fixture must actually be shallow"
+        );
+
+        let message = merge_base_failure_guidance(&target, "main~2", "HEAD");
+        assert!(message.contains("not_proven_shallow"), "shared disposition: {message}");
+        assert!(
+            !message.contains("share no common history"),
+            "shallow production path must never assert absent history: {message}"
+        );
+        Ok(())
+    }
+
+    /// A complete clone with genuinely unrelated orphan histories is the only
+    /// production case allowed to report absent history.
+    #[test]
+    fn complete_unrelated_history_production_guidance_states_absent_history() -> Result<()> {
+        let repo = tempfile::tempdir()?;
+        ancestry_git(repo.path(), &["init", "--quiet", "--initial-branch=main", "."])?;
+        ancestry_git(repo.path(), &["config", "user.email", "ripr@example.invalid"])?;
+        ancestry_git(repo.path(), &["config", "user.name", "RIPR Test"])?;
+        fs::write(repo.path().join("main.txt"), "main\n")?;
+        ancestry_git(repo.path(), &["add", "main.txt"])?;
+        ancestry_git(repo.path(), &["commit", "--quiet", "-m", "main"])?;
+
+        ancestry_git(repo.path(), &["checkout", "--quiet", "--orphan", "other"])?;
+        ancestry_git(repo.path(), &["rm", "-rf", "--quiet", "."])?;
+        fs::write(repo.path().join("other.txt"), "other\n")?;
+        ancestry_git(repo.path(), &["add", "other.txt"])?;
+        ancestry_git(repo.path(), &["commit", "--quiet", "-m", "other"])?;
+
+        let message = merge_base_failure_guidance(repo.path(), "main", "other");
+        assert!(message.contains("unrelated"), "proven unrelated: {message}");
+        assert!(
+            message.contains("share no common history"),
+            "complete graph may state absent history: {message}"
+        );
+        Ok(())
+    }
+
+    /// A bogus revision in a complete clone is a missing object, never unrelated
+    /// history — the conflation the retired private helper encoded.
+    #[test]
+    fn missing_object_production_guidance_is_not_unrelated() -> Result<()> {
+        let repo = tempfile::tempdir()?;
+        ancestry_git(repo.path(), &["init", "--quiet", "--initial-branch=main", "."])?;
+        ancestry_git(repo.path(), &["config", "user.email", "ripr@example.invalid"])?;
+        ancestry_git(repo.path(), &["config", "user.name", "RIPR Test"])?;
+        fs::write(repo.path().join("main.txt"), "main\n")?;
+        ancestry_git(repo.path(), &["add", "main.txt"])?;
+        ancestry_git(repo.path(), &["commit", "--quiet", "-m", "main"])?;
+
+        let message = merge_base_failure_guidance(repo.path(), "ripr-no-such-base-xyz", "HEAD");
+        assert!(message.contains("not_proven_missing_object"), "typed disposition: {message}");
+        // Only the base is unresolvable here, so the remedy must name the base
+        // rather than blaming both sides.
+        assert!(
+            message.contains("`ripr-no-such-base-xyz` could not be resolved locally"),
+            "names the missing side: {message}"
+        );
+        assert!(
+            !message.contains("`ripr-no-such-base-xyz` and `HEAD` could not be resolved"),
+            "must not blame the resolvable head: {message}"
+        );
+        assert!(
+            !message.contains("share no common history"),
+            "a bad ref must never assert absent history: {message}"
+        );
+        Ok(())
+    }
+
+    /// A `file://` URL for a local path, so `git clone --depth` is honoured on
+    /// both POSIX and Windows (`C:\a` must become `file:///C:/a`, not `file://C:\a`).
+    fn ancestry_file_url(path: &Path) -> String {
+        let text = path.display().to_string().replace('\\', "/");
+        if text.starts_with('/') { format!("file://{text}") } else { format!("file:///{text}") }
+    }
+
+    /// Runs git for the ancestry fixtures with the ambient settings that would
+    /// otherwise break a temporary repository neutralized. `GIT_CONFIG_GLOBAL`
+    /// is deliberately not pointed at `/dev/null`: that path does not exist on
+    /// Windows, and this crate's tests are in the Windows CI crate scope.
+    fn ancestry_git(repository: &Path, arguments: &[&str]) -> Result<String> {
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "protocol.file.allow=always",
+            ])
+            .args(arguments)
+            .current_dir(repository)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .with_context(|| format!("running git {arguments:?}"))?;
+        if !output.status.success() {
+            bail!(
+                "git {arguments:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim().to_string()
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
     #[test]
@@ -5237,10 +7521,16 @@ esac
         // instead of propagating a raw git failure.
         let repo = repo_root()?;
         match changed_files(&repo, "ripr-no-such-base-xyz", "HEAD") {
-            Ok(files) => Err(eyre!("expected missing-merge-base error, got {files:?}")),
+            Ok(files) => Err(eyre!("expected unresolvable-range error, got {files:?}")),
             Err(err) => {
                 let message = format!("{err:#}");
-                assert!(message.contains("no merge base"), "guidance surfaced: {message}");
+                assert!(message.contains("cannot resolve diff range"), "guidance: {message}");
+                // The workspace checkout may be shallow or complete; either way a
+                // bogus base is never proof that the two refs are unrelated.
+                assert!(
+                    !message.contains("share no common history"),
+                    "a bad ref must never assert absent history: {message}"
+                );
                 Ok(())
             }
         }
@@ -5253,9 +7543,6 @@ esac
         let repo = repo_root()?;
         let files = changed_files(&repo, "HEAD", "HEAD")?;
         assert!(files.is_empty(), "HEAD...HEAD has no changed files: {files:?}");
-        // Exercise the shallow probe; its value is environment-dependent, so we
-        // only assert it returns without error.
-        let _ = is_shallow_clone(&repo);
         Ok(())
     }
 

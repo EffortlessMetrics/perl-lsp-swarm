@@ -10,6 +10,12 @@
 //! Complete `if`/`elsif`/`else` branches can therefore propagate
 //! non-fallthrough to their parent statement list without allowing a transfer
 //! inside a nested callable or evaluation scope to poison the outer list.
+//!
+//! Traversal coverage and evaluation order are governed by the per-variant
+//! disposition registry in [`super::unreachable_code_disposition`] (issue
+//! #10844): every executable child field recorded there must be visited by
+//! this single recursive traversal core in the registered order, and no
+//! second structural walker may appear here.
 
 use super::super::internal_types::{Diagnostic, DiagnosticTag};
 use perl_diagnostics::codes::DiagnosticCode;
@@ -144,22 +150,40 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
             FlowSummary::falls_through()
         }
         NodeKind::For { init, condition, update, body, continue_block, .. } => {
+            // Registry execution order (issue #10844): init, condition, body,
+            // continue block, update. The initializer and the initial
+            // condition evaluation run exactly once before the first
+            // iteration, so a terminal transfer in either means control never
+            // reaches this loop or anything after it in the enclosing list:
+            // every field still receives local analysis, but the first such
+            // transfer becomes this statement's summary.
+            let mut entry_gate = None;
             if let Some(init) = init {
-                let _ = summarize_expression(init, diagnostics);
+                let summary = summarize_expression(init, diagnostics);
+                if !summary.can_fall_through {
+                    entry_gate = Some(summary);
+                }
             }
-            if let Some(condition) = condition {
-                let _ = summarize_expression(condition, diagnostics);
-            }
-            if let Some(update) = update {
-                let _ = summarize_expression(update, diagnostics);
+            if entry_gate.is_none()
+                && let Some(condition) = condition
+            {
+                let summary = summarize_expression(condition, diagnostics);
+                if !summary.can_fall_through {
+                    entry_gate = Some(summary);
+                }
             }
             let _ = summarize_node(body, diagnostics);
             if let Some(continue_block) = continue_block {
                 let _ = summarize_node(continue_block, diagnostics);
             }
-            FlowSummary::falls_through()
+            if let Some(update) = update {
+                let _ = summarize_expression(update, diagnostics);
+            }
+            entry_gate.unwrap_or_else(FlowSummary::falls_through)
         }
         NodeKind::Foreach { variable, list, body, continue_block } => {
+            // The loop variable is a binding alias (analyzed locally, never
+            // propagated); the list executes before each body iteration.
             let _ = summarize_expression(variable, diagnostics);
             let _ = summarize_expression(list, diagnostics);
             let _ = summarize_node(body, diagnostics);
@@ -209,8 +233,17 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
         }
 
         NodeKind::StatementModifier { statement, condition, .. } => {
+            // Perl evaluates the modifier condition before the controlled
+            // statement; visit in that registered order (issue #10844).
+            let condition_summary = summarize_expression(condition, diagnostics);
             let statement_summary = summarize_node(statement, diagnostics);
-            let _ = summarize_expression(condition, diagnostics);
+            // A terminal condition never reaches the controlled statement and
+            // control exits before the next sibling, so the condition's
+            // summary is the whole statement's summary (nested diagnostics in
+            // the controlled statement were still emitted above).
+            if !condition_summary.can_fall_through {
+                return condition_summary;
+            }
             // Without an accepted constant-value fact, a statement modifier
             // always retains a path that skips the controlled statement. Keep
             // the controlled transfer as an alternative so a later terminal
@@ -236,17 +269,38 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
             FlowSummary::transfer(ControlTransfer::Return)
         }
         NodeKind::LoopControl { op, label } => summarize_loop_control(op, label),
-        NodeKind::Goto { target, form } => summarize_goto(target, form),
+        NodeKind::Goto { target, form } => {
+            // A computed goto target (`goto EXPR`, `goto &sub`) executes at
+            // runtime before the transfer happens, so executable children
+            // inside it (for example a `do { ... }` block) receive the same
+            // local PL406 analysis as any other evaluated expression. Only
+            // the plain-label form is a bare name with nothing to execute.
+            if !matches!(form, GotoTargetForm::Label) {
+                let _ = summarize_expression(target, diagnostics);
+            }
+            summarize_goto(target, form)
+        }
 
         NodeKind::ExpressionStatement { expression } => {
             summarize_expression(expression, diagnostics)
         }
         NodeKind::VariableDeclaration { initializer, .. }
         | NodeKind::VariableListDeclaration { initializer, .. } => {
-            if let Some(initializer) = initializer {
-                let _ = summarize_expression(initializer, diagnostics);
+            // The initializer is the declaration's executable child: an
+            // exact transfer inside it (for example `my $x = die("stop");`)
+            // prevents the next sibling from running, so its summary
+            // determines parent fallthrough exactly like an assignment's rhs.
+            match initializer {
+                Some(initializer) => {
+                    let init_summary = summarize_expression(initializer, diagnostics);
+                    if init_summary.can_fall_through {
+                        FlowSummary::falls_through()
+                    } else {
+                        init_summary
+                    }
+                }
+                None => FlowSummary::falls_through(),
             }
-            FlowSummary::falls_through()
         }
 
         // Recovered syntax is useful for nested diagnostics but cannot provide
@@ -310,7 +364,12 @@ fn summarize_statement_list(stmts: &[Node], diagnostics: &mut Vec<Diagnostic>) -
 
             if restores_fallthrough {
                 can_fall_through = true;
-                pending_goto_labels.clear();
+                // Only the consumed label leaves the pending set: other live
+                // goto targets recorded on earlier fallthrough statements
+                // stay restorable by their own labeled statements.
+                if let Some(consumed) = labeled_statement_name(stmt) {
+                    pending_goto_labels.retain(|target| target != consumed);
+                }
             } else {
                 emit_unreachable(stmt, diagnostics);
                 // Nested callables and blocks still deserve their own local
@@ -335,10 +394,16 @@ fn summarize_statement_list(stmts: &[Node], diagnostics: &mut Vec<Diagnostic>) -
         // it alongside later terminal transfers so bare-block demotion can
         // distinguish `last if $cond; redo;` from an unconditional `redo`.
         terminal_summary.transfers.extend(summary.transfers.iter().cloned());
+        // Goto targets observed on any live path stay restorable until a
+        // labeled statement consumes them (issue #10844): a conditional
+        // `goto NEXT` carried by an earlier fallthrough statement keeps the
+        // `NEXT:` sibling reachable even when a later transfer closes the
+        // sequential path. Unreachable statements never contribute targets:
+        // their summaries are not extended here.
+        pending_goto_labels.extend(summary.goto_labels());
         if summary.can_fall_through {
             terminal_summary.can_fall_through = true;
         } else {
-            pending_goto_labels = summary.goto_labels();
             can_fall_through = false;
             terminal_summary.can_fall_through = false;
         }
@@ -402,6 +467,47 @@ fn summarize_expression(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowS
         }
         NodeKind::Eval { block } | NodeKind::Do { block } | NodeKind::Defer { block } => {
             let _ = summarize_node(block, diagnostics);
+            FlowSummary::falls_through()
+        }
+        // Expression-position blocks (for example map/grep/sort block
+        // arguments) are evaluation boundaries: nested statements receive
+        // local analysis, but their transfers never promote into the
+        // containing execution unit (issue #10844).
+        NodeKind::Block { statements } => {
+            let _ = summarize_statement_list(statements, diagnostics);
+            FlowSummary::falls_through()
+        }
+        // Remaining executable child fields declared by the disposition
+        // registry are visited for nested diagnostics; each container
+        // conservatively falls through.
+        NodeKind::ArraySlice { target, indices, .. } => {
+            let _ = summarize_expression(target, diagnostics);
+            let _ = summarize_expression(indices, diagnostics);
+            FlowSummary::falls_through()
+        }
+        NodeKind::HashSlice { target, keys, .. } | NodeKind::KeyValueSlice { target, keys, .. } => {
+            let _ = summarize_expression(target, diagnostics);
+            let _ = summarize_expression(keys, diagnostics);
+            FlowSummary::falls_through()
+        }
+        NodeKind::ChainedComparison { operands, .. } => {
+            analyze_expression_list(operands, diagnostics);
+            FlowSummary::falls_through()
+        }
+        NodeKind::Match { expr, .. }
+        | NodeKind::Substitution { expr, .. }
+        | NodeKind::Transliteration { expr, .. } => {
+            let _ = summarize_expression(expr, diagnostics);
+            FlowSummary::falls_through()
+        }
+        NodeKind::Tie { variable, package, args, .. } => {
+            let _ = summarize_expression(variable, diagnostics);
+            let _ = summarize_expression(package, diagnostics);
+            analyze_expression_list(args, diagnostics);
+            FlowSummary::falls_through()
+        }
+        NodeKind::Untie { variable, .. } => {
+            let _ = summarize_expression(variable, diagnostics);
             FlowSummary::falls_through()
         }
         _ => FlowSummary::falls_through(),

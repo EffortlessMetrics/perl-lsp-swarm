@@ -1,5 +1,5 @@
-use perl_module::reference::{extract_module_reference, find_module_reference};
-use perl_module::token_parser::parse_module_token;
+use perl_module::parse_module_token;
+use perl_module::{extract_module_reference, find_module_reference};
 
 #[test]
 fn parser_and_reference_coordinates_match_for_use_statement() {
@@ -9,7 +9,7 @@ fn parser_and_reference_coordinates_match_for_use_statement() {
 
     let span = parse_module_token(line, start);
     assert!(span.is_some(), "valid token span");
-    let span = span.unwrap_or(perl_module::token_parser::ModuleTokenSpan { start: 0, end: 0 });
+    let span = span.unwrap_or(perl_module::ModuleTokenSpan { start: 0, end: 0 });
 
     let reference = find_module_reference(source, span.start);
     assert!(reference.is_some(), "cursor match in source");
@@ -31,12 +31,12 @@ fn parser_with_legacy_separator_still_informs_reference_extraction() {
 
     let span = parse_module_token(line, start);
     assert!(span.is_some(), "valid legacy token span");
-    let span = span.unwrap_or(perl_module::token_parser::ModuleTokenSpan { start: 0, end: 0 });
+    let span = span.unwrap_or(perl_module::ModuleTokenSpan { start: 0, end: 0 });
 
     let extracted = extract_module_reference(source, start + 3);
 
     let span2 = parse_module_token(line, start)
-        .unwrap_or(perl_module::token_parser::ModuleTokenSpan { start: 0, end: 0 });
+        .unwrap_or(perl_module::ModuleTokenSpan { start: 0, end: 0 });
     assert_eq!(span, span2);
     assert_eq!(extracted, Some("Foo::Bar".to_string()));
     assert_eq!(span.start, start);

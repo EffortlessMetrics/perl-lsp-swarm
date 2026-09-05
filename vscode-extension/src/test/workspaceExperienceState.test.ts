@@ -58,6 +58,36 @@ describe('workspace experience presentation', () => {
     expect(presentation.background).toBeUndefined();
   });
 
+  test('carries a self-reported server name into the ready identity (#12705)', () => {
+    const presentation = presentWorkspaceExperience(
+      { lifecycle: 'ready' },
+      { name: 'acme-perl-wrapper', version: '9.9.9', fileCount: 2 },
+    );
+
+    expect(presentation.text).toBe('$(check) acme-perl-wrapper v9.9.9: 2 files');
+  });
+
+  test('keeps the perl-lsp identity when no server name is reported', () => {
+    const presentation = presentWorkspaceExperience({ lifecycle: 'ready' }, { version: '0.18.0' });
+
+    expect(presentation.text).toBe('$(check) perl-lsp v0.18.0');
+  });
+
+  test('labels identity with a reported name even without a version', () => {
+    const presentation = presentWorkspaceExperience({ lifecycle: 'ready' }, { name: 'wrapper' });
+
+    expect(presentation.text).toBe('$(check) wrapper');
+  });
+
+  test('carries a self-reported server name into the ready_limited identity', () => {
+    const presentation = presentWorkspaceExperience(
+      { lifecycle: 'ready_limited' },
+      { name: 'acme-perl-wrapper', version: '9.9.9' },
+    );
+
+    expect(presentation.text).toBe('$(warning) acme-perl-wrapper v9.9.9: ready (limited)');
+  });
+
   test('shows active-document readiness only when the lifecycle authority supplies it', () => {
     const presentation = presentWorkspaceExperience({
       lifecycle: 'indexing_active_context',

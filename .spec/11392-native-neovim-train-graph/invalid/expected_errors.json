@@ -1,0 +1,18 @@
+{
+  "actual_host_without_shared_execution.json": "ACTUAL_HOST_UNBOUND",
+  "channel_satisfaction_transfer.json": "SIBLING_SATISFACTION",
+  "contradicting_release_branches.json": "CONTRADICTORY_RELEASE_BRANCHES",
+  "controller_emitted_as_work.json": "CONTROLLER_EMIT_AS_WORK",
+  "deep_cell_in_core_profile.json": "DEEP_CELL_IN_CORE_PROFILE",
+  "duplicate_node_identity.json": "DUPLICATE_NODE_IDENTITY",
+  "duplicate_profile_identity.json": "DUPLICATE_PROFILE_IDENTITY",
+  "embedded_live_state.json": "MUTABLE_STATE_EMBEDDED",
+  "hard_implementation_cycle.json": "HARD_IMPLEMENTATION_CYCLE",
+  "host_provisioning_as_behavior.json": "HOST_PROVISIONING_AS_BEHAVIOR",
+  "missing_contract_fields.json": "INCOMPLETE_ROW_CONTRACT",
+  "overlapping_conflict_keys.json": "OVERLAPPING_CONFLICT_KEYS",
+  "sibling_satisfaction.json": "SIBLING_SATISFACTION",
+  "sidecar_in_core_profile.json": "SIDECAR_IN_CORE_PROFILE",
+  "sidecar_in_core_spine.json": "SIDECAR_IN_SPINE_CLOSURE",
+  "unknown_edge_target.json": "UNKNOWN_EDGE_TARGET"
+}

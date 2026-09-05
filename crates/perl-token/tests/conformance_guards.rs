@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -35,10 +37,10 @@ fn runtime_dependencies_remain_empty() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn token_and_token_kind_api_snapshot_is_stable() {
-    let token = Token { kind: TokenKind::Identifier, text: "foo".into(), start: 10, end: 13 };
-    assert_eq!(token.kind, TokenKind::Identifier);
-    assert_eq!(token.start, 10);
-    assert_eq!(token.end, 13);
+    let token = Token::new_checked(TokenKind::Identifier, "foo", 10, 13).expect("valid token");
+    assert_eq!(token.kind(), TokenKind::Identifier);
+    assert_eq!(token.start(), 10);
+    assert_eq!(token.end(), 13);
 
     let names: Vec<String> = TokenKind::all().iter().map(|kind| format!("{kind:?}")).collect();
     assert_eq!(names.len(), EXPECTED_TOKEN_KIND_COUNT);

@@ -10,6 +10,9 @@ pub struct PendingHeredocCheckpoint {
     pub body_start: usize,
     /// Whether `<<~` indentation is allowed.
     pub allow_indent: bool,
+    /// Whether the body interpolates (#8779). Part of the replay-safe state:
+    /// a restored checkpoint must keep the body's interpolation disposition.
+    pub interpolates: bool,
 }
 
 /// Replay-safe representation of an in-progress quote-like operator.
@@ -32,6 +35,13 @@ pub struct QuoteOperatorCheckpoint {
 pub struct LexerCheckpoint {
     /// Current position in the input.
     pub position: usize,
+    /// Interpolation policy used to produce replayed string parts (#8779).
+    /// Each queued heredoc's `interpolates` flag describes the *quote form*,
+    /// not the lexer configuration, so it cannot stand in for the saved
+    /// policy: a checkpoint holding only non-interpolating heredocs is still
+    /// a valid product of an interpolation-enabled lexer, and an empty queue
+    /// must not let opposite-policy checkpoints restore.
+    pub parse_interpolation: bool,
     /// Current lexer mode (`ExpectTerm`, `ExpectOperator`, etc.).
     pub mode: LexerMode,
     /// Stack for nested delimiters in `s{}{} ` constructs.
@@ -111,6 +121,7 @@ impl LexerCheckpoint {
     pub fn new() -> Self {
         Self {
             position: 0,
+            parse_interpolation: true,
             mode: LexerMode::ExpectTerm,
             delimiter_stack: Vec::new(),
             in_prototype: false,
@@ -180,7 +191,8 @@ impl LexerCheckpoint {
                 || self.line_start_offset != other.line_start_offset
                 || self.emit_heredoc_body_tokens != other.emit_heredoc_body_tokens
                 || self.current_quote_op != other.current_quote_op
-                || self.qw_recovery_enabled != other.qw_recovery_enabled,
+                || self.qw_recovery_enabled != other.qw_recovery_enabled
+                || self.parse_interpolation != other.parse_interpolation,
         }
     }
 
@@ -324,21 +336,6 @@ fn transform_offset(offset: usize, start: usize, old_len: usize, new_len: usize)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::transform_offset;
-
-    #[test]
-    fn transform_offset_boundaries_and_overlap() {
-        assert_eq!(transform_offset(9, 10, 5, 8), Some(9));
-        assert_eq!(transform_offset(10, 10, 5, 8), Some(10));
-        assert_eq!(transform_offset(11, 10, 5, 8), None);
-        assert_eq!(transform_offset(14, 10, 5, 8), None);
-        assert_eq!(transform_offset(15, 10, 5, 8), Some(18));
-        assert_eq!(transform_offset(20, 10, 5, 8), Some(23));
-    }
-}
-
 fn offset_is_valid(input: &str, offset: usize) -> bool {
     offset <= input.len() && input.is_char_boundary(offset)
 }
@@ -377,4 +374,23 @@ pub trait Checkpointable {
 
     /// Check whether every source-relative checkpoint offset is valid.
     fn can_restore(&self, checkpoint: &LexerCheckpoint) -> bool;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::transform_offset;
+
+    #[test]
+    fn transform_offset_boundaries_and_overlap() {
+        assert_eq!(transform_offset(9, 10, 5, 8), Some(9));
+        assert_eq!(transform_offset(10, 10, 5, 8), Some(10));
+        assert_eq!(transform_offset(11, 10, 5, 8), None);
+        assert_eq!(transform_offset(14, 10, 5, 8), None);
+        assert_eq!(transform_offset(15, 10, 5, 8), Some(18));
+        assert_eq!(transform_offset(20, 10, 5, 8), Some(23));
+        assert_eq!(transform_offset(0, 0, 0, 3), Some(0));
+        assert_eq!(transform_offset(5, 0, 0, 3), Some(8));
+        assert_eq!(transform_offset(2, 0, 5, 0), None);
+        assert_eq!(transform_offset(5, 0, 5, 0), Some(0));
+    }
 }

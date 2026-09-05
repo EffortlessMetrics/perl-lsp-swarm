@@ -650,7 +650,7 @@ fn split_args(args_str: &str) -> Vec<String> {
             }
             ',' if depth == 0 && !in_single_quote && !in_double_quote => {
                 result.push(current.trim().to_string());
-                current = String::new();
+                current.clear();
             }
             _ => current.push(c),
         }

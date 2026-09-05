@@ -50,16 +50,6 @@
   "documentLinkProvider": {
     "resolveProvider": true
   },
-  "documentOnTypeFormattingProvider": {
-    "firstTriggerCharacter": "}",
-    "moreTriggerCharacter": [
-      ";",
-      "\n"
-    ]
-  },
-  "documentRangeFormattingProvider": {
-    "rangesSupport": true
-  },
   "documentSymbolProvider": true,
   "executeCommandProvider": {
     "commands": [

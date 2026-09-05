@@ -20,6 +20,7 @@ on:
 
 permissions:
   actions: read
+  checks: read
   contents: read
   pull-requests: read
 
@@ -314,6 +315,7 @@ jobs:
             -e RUST_BACKTRACE=1 \
             -e CARGO_TERM_COLOR=always \
             -e TMPDIR=/tmp/jobtmp \
+            -e GITHUB_JOB="$GITHUB_JOB" \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -v "$CARGO_HOME:/cargo-home" \
             -v "$SCCACHE_DIR:/sccache" \
@@ -325,14 +327,18 @@ jobs:
               rustc --version
               cargo --version
               sccache --version || true
-              cargo fetch --locked
-              cargo check --workspace --locked
-              cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
-              cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
-              cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
-              scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | awk "/: test\$/{count++} END {print count+0}")
-              test "$scorecard_tests" -gt 0
-              INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
+              # The canonical command emits a subject receipt and diff-hygiene
+              # check via git (#8407); mirror the proven ripr.yml safe.directory
+              # pattern for the host-checkout UID boundary before it runs.
+              git config --global --add safe.directory /workspace
+              # Pinned lane literal: scripts/ci/test_rustfmt_required_workflow.py
+              # requires workspace-wide fmt here per route (#9127/#12320).
+              cargo fmt --all -- --check
+              # Canonical Rust Small proof (#8407): one xtask command owns the
+              # semantic steps for every route so the aggregate required check
+              # means one proof. scripts/ci/test_rust_small_route_contract.py
+              # pins this exact invocation in each lane.
+              cargo run -p xtask --locked -- rust-small-proof
               sccache --show-stats || true
             '
 
@@ -472,6 +478,7 @@ jobs:
             -e RUST_BACKTRACE=1 \
             -e CARGO_TERM_COLOR=always \
             -e TMPDIR=/tmp/jobtmp \
+            -e GITHUB_JOB="$GITHUB_JOB" \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -v "$CARGO_HOME:/cargo-home" \
             -v "$SCCACHE_DIR:/sccache" \
@@ -483,14 +490,18 @@ jobs:
               rustc --version
               cargo --version
               sccache --version || true
-              cargo fetch --locked
-              cargo check --workspace --locked
-              cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
-              cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
-              cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
-              scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | awk "/: test\$/{count++} END {print count+0}")
-              test "$scorecard_tests" -gt 0
-              INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
+              # The canonical command emits a subject receipt and diff-hygiene
+              # check via git (#8407); mirror the proven ripr.yml safe.directory
+              # pattern for the host-checkout UID boundary before it runs.
+              git config --global --add safe.directory /workspace
+              # Pinned lane literal: scripts/ci/test_rustfmt_required_workflow.py
+              # requires workspace-wide fmt here per route (#9127/#12320).
+              cargo fmt --all -- --check
+              # Canonical Rust Small proof (#8407): one xtask command owns the
+              # semantic steps for every route so the aggregate required check
+              # means one proof. scripts/ci/test_rust_small_route_contract.py
+              # pins this exact invocation in each lane.
+              cargo run -p xtask --locked -- rust-small-proof
               sccache --show-stats || true
             '
 
@@ -539,15 +550,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo fetch --locked
-          cargo check --workspace --locked
-          cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
-          cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
-          cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
-          scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | grep -c -F ": test" || true)
-          test "$scorecard_tests" -gt 0
-          INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
-          git diff --check
+          # Pinned lane literal: scripts/ci/test_rustfmt_required_workflow.py
+          # requires workspace-wide fmt here per route (#9127/#12320).
+          cargo fmt --all -- --check
+          # Canonical Rust Small proof (#8407): one xtask command owns the
+          # semantic steps for every route so the aggregate required check
+          # means one proof. scripts/ci/test_rust_small_route_contract.py
+          # pins this exact invocation in each lane.
+          cargo run -p xtask --locked -- rust-small-proof
 
   # ── Disk-full failover ──────────────────────────────────────────────────────
   # Defense-in-depth: if the primary self-hosted runner's preflight disk-guard
@@ -611,15 +621,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo fetch --locked
-          cargo check --workspace --locked
-          cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
-          cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
-          cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
-          scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | grep -c -F ": test" || true)
-          test "$scorecard_tests" -gt 0
-          INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
-          git diff --check
+          # Pinned lane literal: scripts/ci/test_rustfmt_required_workflow.py
+          # requires workspace-wide fmt here per route (#9127/#12320).
+          cargo fmt --all -- --check
+          # Canonical Rust Small proof (#8407): one xtask command owns the
+          # semantic steps for every route so the aggregate required check
+          # means one proof. scripts/ci/test_rust_small_route_contract.py
+          # pins this exact invocation in each lane.
+          cargo run -p xtask --locked -- rust-small-proof
 
   rust-small-result:
     name: Perl LSP Rust Small Result
@@ -631,8 +640,199 @@ jobs:
       - rust-small-fallback
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 35
     steps:
+      - name: Checkout rustfmt prevention contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Prove rustfmt prevention contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Structural + producer tests for #9127 residual and #9959
+          # meta-fmt retirement: a silent revert of the #12320 cargo fmt
+          # --all insertions, reintroduced changed-file narrowing, verbose-header
+          # misclassification, or a second unowned hosted formatter producer
+          # must fail this required check. Draft-skip stays in the evaluate
+          # step (#10006).
+          python3 -m unittest \
+            scripts/ci/test_rustfmt_check.py \
+            scripts/ci/test_rustfmt_required_workflow.py \
+            scripts/ci/test_rust_small_route_contract.py \
+            scripts/ci/test_hosted_formatter_producers.py \
+            scripts/ci/test_main_red_refusal.py
+
+      - name: Probe main-red refusal
+        if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          CANDIDATE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || '' }}
+        run: |
+          set -u
+          probe_dir="$(mktemp -d)"
+          trap 'rm -rf "$probe_dir"' EXIT
+
+          api_ok=true
+          TRUSTED_SCRIPT_AVAILABLE=false
+          read_main_sha() {
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${REPOSITORY}/git/ref/heads/main" \
+              --jq '.object.sha' 2>"$probe_dir/main-ref.err"
+          }
+          read_workflow_sha() {
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${REPOSITORY}/contents/.github/workflows/ci.yml?ref=$1" \
+              --jq '.sha' 2>"$probe_dir/workflow-$2.err"
+          }
+
+          # Read the branch immediately before and immediately after the
+          # check-run lookup. A main movement makes all observations stale;
+          # the classifier deliberately turns that into a warning.
+          MAIN_SHA_BEFORE="$(read_main_sha)" || {
+            MAIN_SHA_BEFORE=""
+            api_ok=false
+          }
+          MAIN_WORKFLOW_SHA="$(read_workflow_sha "${MAIN_SHA_BEFORE:-}" main)" || {
+            MAIN_WORKFLOW_SHA=""
+            api_ok=false
+          }
+          if [ -n "${CANDIDATE_SHA:-}" ]; then
+            trusted_response="$probe_dir/trusted-script.json"
+            TRUSTED_SCRIPT="$probe_dir/main_red_refusal.py"
+            if gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${REPOSITORY}/contents/scripts/ci/main_red_refusal.py?ref=${MAIN_SHA_BEFORE}" \
+              >"$trusted_response" 2>"$probe_dir/trusted-script.err" &&
+              jq -e '.content | type == "string"' "$trusted_response" >/dev/null &&
+              jq -r '.content' "$trusted_response" | tr -d '\n' | base64 --decode >"$TRUSTED_SCRIPT"
+            then
+              TRUSTED_SCRIPT_AVAILABLE=true
+            else
+              echo "::warning::trusted main-red classifier is not available at ${MAIN_SHA_BEFORE}; refusal probe is non-blocking during bootstrap"
+            fi
+            gh api --paginate --slurp \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${REPOSITORY}/commits/${MAIN_SHA_BEFORE}/check-runs?per_page=100" \
+              >"$probe_dir/main-runs.json" 2>"$probe_dir/main-runs.err" || {
+                : >"$probe_dir/main-runs.json"
+                api_ok=false
+              }
+            gh api --paginate --slurp \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${MAIN_SHA_BEFORE}&per_page=100" \
+              >"$probe_dir/main-workflow-runs.json" 2>"$probe_dir/main-workflow-runs.err" || {
+                : >"$probe_dir/main-workflow-runs.json"
+                api_ok=false
+              }
+            gh api --paginate --slurp \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${REPOSITORY}/commits/${CANDIDATE_SHA}/check-runs?per_page=100" \
+              >"$probe_dir/candidate-runs.json" 2>"$probe_dir/candidate-runs.err" || {
+                : >"$probe_dir/candidate-runs.json"
+                api_ok=false
+              }
+            gh api --paginate --slurp \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${CANDIDATE_SHA}&per_page=100" \
+              >"$probe_dir/candidate-workflow-runs.json" 2>"$probe_dir/candidate-workflow-runs.err" || {
+                : >"$probe_dir/candidate-workflow-runs.json"
+                api_ok=false
+              }
+            CANDIDATE_WORKFLOW_SHA="$(read_workflow_sha "$CANDIDATE_SHA" candidate)" || {
+              CANDIDATE_WORKFLOW_SHA=""
+              api_ok=false
+            }
+          else
+            echo "::warning::${EVENT_NAME} has no PR/merge-group subject SHA; main-red refusal probe is non-applicable"
+            : >"$probe_dir/main-runs.json"
+            : >"$probe_dir/candidate-runs.json"
+            : >"$probe_dir/main-workflow-runs.json"
+            : >"$probe_dir/candidate-workflow-runs.json"
+            MAIN_WORKFLOW_SHA=""
+            CANDIDATE_WORKFLOW_SHA=""
+            TRUSTED_SCRIPT=""
+          fi
+          MAIN_SHA_AFTER="$(read_main_sha)" || {
+            MAIN_SHA_AFTER=""
+            api_ok=false
+          }
+
+          if [ "$api_ok" = "false" ]; then
+            echo "::warning::main-red refusal API probe was incomplete; treating probe data as non-blocking"
+          fi
+          run_refusal() {
+            if [ "$TRUSTED_SCRIPT_AVAILABLE" != "true" ]; then
+              return 0
+            fi
+            python3 "$TRUSTED_SCRIPT" \
+              --main-runs "$probe_dir/main-runs.json" \
+              --candidate-runs "$probe_dir/candidate-runs.json" \
+              --main-workflow-runs "$probe_dir/main-workflow-runs.json" \
+              --candidate-workflow-runs "$probe_dir/candidate-workflow-runs.json" \
+              --main-sha-before "${MAIN_SHA_BEFORE:-}" \
+              --main-sha-after "${MAIN_SHA_AFTER:-}" \
+              --candidate-sha "${CANDIDATE_SHA:-}" \
+              --main-workflow-sha "${MAIN_WORKFLOW_SHA:-}" \
+              --candidate-workflow-sha "${CANDIDATE_WORKFLOW_SHA:-}" \
+              "$@"
+          }
+
+          set +e
+          run_refusal
+          refusal_status=$?
+          set -u
+          poll_attempt=0
+          while [ "$refusal_status" -eq 2 ] && [ "$poll_attempt" -lt 50 ]; do
+            poll_attempt=$((poll_attempt + 1))
+            echo "::notice::main-red refusal is waiting for candidate shard evidence (poll ${poll_attempt}/50)"
+            sleep 30
+            MAIN_SHA_AFTER="$(read_main_sha)" || {
+              MAIN_SHA_AFTER=""
+            }
+            gh api --paginate --slurp \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${REPOSITORY}/commits/${CANDIDATE_SHA}/check-runs?per_page=100" \
+              >"$probe_dir/candidate-runs.json" 2>"$probe_dir/candidate-runs.err" || {
+                : >"$probe_dir/candidate-runs.json"
+              }
+            gh api --paginate --slurp \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${CANDIDATE_SHA}&per_page=100" \
+              >"$probe_dir/candidate-workflow-runs.json" 2>"$probe_dir/candidate-workflow-runs.err" || {
+                : >"$probe_dir/candidate-workflow-runs.json"
+              }
+            CANDIDATE_WORKFLOW_SHA="$(read_workflow_sha "$CANDIDATE_SHA" candidate)" || {
+              CANDIDATE_WORKFLOW_SHA=""
+            }
+            run_refusal
+            refusal_status=$?
+          done
+          if [ "$refusal_status" -eq 2 ]; then
+            echo "::warning::candidate shard evidence did not become terminal before the bounded wait; applying final fail-closed refusal"
+            run_refusal --final
+            refusal_status=$?
+          fi
+          if [ "$refusal_status" -eq 1 ]; then
+            exit 1
+          fi
+
       - name: Evaluate routed result
         shell: bash
         env:

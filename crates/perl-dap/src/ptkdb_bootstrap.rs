@@ -16,6 +16,8 @@
 //! centralized in [`api`] so they track a single source of truth.
 
 use crate::model::DebugSessionPacket;
+#[cfg(test)]
+use perl_tdd_support::must_some;
 
 /// The ptkdb startup-file API call shapes, kept in one place so they can be
 /// tuned to match the installed ptkdb version.
@@ -232,7 +234,7 @@ mod tests {
         let argv = render_launch_command(&packet());
         assert_eq!(argv[0], "-d:ptkdb");
         assert!(argv.iter().any(|a| a == "-Ilib"));
-        assert!(argv.last().expect("program").ends_with("script.pl"));
+        assert!(must_some(argv.last()).ends_with("script.pl"));
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! TDD workflow, test generation, test runner, and refactoring analysis.
 #![allow(clippy::field_reassign_with_default)]
 #![allow(deprecated, reason = "comprehensive tests cover deprecated test_generator::TestRunner")]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_tdd_support::governance::*;
 use perl_tdd_support::tdd_basic::{
@@ -431,10 +432,10 @@ fn refactoring_analyzer_default() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn diagnostic_severity_variants() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(DiagnosticSeverity::Error, DiagnosticSeverity::Error);
-    assert_eq!(DiagnosticSeverity::Warning, DiagnosticSeverity::Warning);
-    assert_eq!(DiagnosticSeverity::Information, DiagnosticSeverity::Information);
-    assert_eq!(DiagnosticSeverity::Hint, DiagnosticSeverity::Hint);
+    let left = DiagnosticSeverity::Error;
+    let right = DiagnosticSeverity::Error;
+    assert_eq!(left, right);
+    assert_ne!(DiagnosticSeverity::Error, DiagnosticSeverity::Hint);
     Ok(())
 }
 
@@ -659,8 +660,6 @@ fn priority_ordering() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_framework_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(TestFramework::TestMore, TestFramework::TestMore);
-    assert_eq!(TestFramework::Test2V0, TestFramework::Test2V0);
     assert_ne!(TestFramework::TestMore, TestFramework::TestSimple);
     Ok(())
 }
@@ -671,7 +670,6 @@ fn test_framework_equality() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn gen_refactoring_category_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(GenRefactoringCategory::DuplicateCode, GenRefactoringCategory::DuplicateCode);
     assert_ne!(GenRefactoringCategory::LongMethod, GenRefactoringCategory::DeadCode);
     Ok(())
 }
@@ -682,7 +680,6 @@ fn gen_refactoring_category_equality() -> Result<(), Box<dyn std::error::Error>>
 
 #[test]
 fn basic_refactoring_category_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(RefactoringCategory::HighComplexity, RefactoringCategory::HighComplexity);
     assert_ne!(RefactoringCategory::LongMethod, RefactoringCategory::TooManyParameters);
     Ok(())
 }
@@ -776,28 +773,24 @@ fn test_metadata_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn report_format_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(ReportFormat::Json, ReportFormat::Json);
     assert_ne!(ReportFormat::Json, ReportFormat::Csv);
     Ok(())
 }
 
 #[test]
 fn test_category_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(TestCategory::CriticalLsp, TestCategory::CriticalLsp);
     assert_ne!(TestCategory::EdgeCases, TestCategory::Infrastructure);
     Ok(())
 }
 
 #[test]
 fn complexity_level_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(ComplexityLevel::Low, ComplexityLevel::Low);
     assert_ne!(ComplexityLevel::High, ComplexityLevel::Critical);
     Ok(())
 }
 
 #[test]
 fn lsp_workflow_stage_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(LspWorkflowStage::Parse, LspWorkflowStage::Parse);
     assert_ne!(LspWorkflowStage::Index, LspWorkflowStage::Complete);
     Ok(())
 }
@@ -981,10 +974,6 @@ fn guardian_trend_report_with_data() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn trend_direction_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(TrendDirection::Increasing, TrendDirection::Increasing);
-    assert_eq!(TrendDirection::Decreasing, TrendDirection::Decreasing);
-    assert_eq!(TrendDirection::Stable, TrendDirection::Stable);
-    assert_eq!(TrendDirection::Unknown, TrendDirection::Unknown);
     assert_ne!(TrendDirection::Increasing, TrendDirection::Decreasing);
     Ok(())
 }
@@ -1059,9 +1048,6 @@ fn tdd_config_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_kind_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(TestKind::File, TestKind::File);
-    assert_eq!(TestKind::Suite, TestKind::Suite);
-    assert_eq!(TestKind::Test, TestKind::Test);
     assert_ne!(TestKind::File, TestKind::Test);
     Ok(())
 }

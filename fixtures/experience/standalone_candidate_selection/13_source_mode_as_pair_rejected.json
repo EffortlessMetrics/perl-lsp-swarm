@@ -1,0 +1,50 @@
+{
+  "packet_schema": "standalone_candidate_selection_vector.v1",
+  "expectation": {
+    "verdict": "reject",
+    "reason_code": "source_mode_as_pair"
+  },
+  "candidates": [
+    {
+      "schema_version": "standalone_candidate.v1",
+      "policy_version": "v1",
+      "route_mode": "first_party_posix",
+      "source_mode": "exact_registry_source",
+      "transaction_id": "tx-11179-build-sp",
+      "attempt_id": "at-11179-build-sp",
+      "created_by_operation": "update",
+      "resolved_subject_digest": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "stage_dag_digest": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "release_display_version": "0.19.0-src.2",
+      "release_topology_digest": "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6",
+      "target_platform": "linux",
+      "target_triple": "x86_64-unknown-linux-gnu",
+      "target_libc": "gnu",
+      "product_unit_disposition": "archive_pair_required",
+      "dap_preview_maturity": false,
+      "candidate_generation": 5,
+      "members": [
+        {
+          "role": "perllsp_server",
+          "artifact_sha256": "dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada",
+          "observation_packet_sha256": "dbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdb",
+          "subject_binding": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        },
+        {
+          "role": "perl_dap_adapter",
+          "artifact_sha256": "dcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdc",
+          "observation_packet_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "subject_binding": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        }
+      ],
+      "limitations": [
+        "synthetic contract vector for the standalone install train"
+      ],
+      "candidate_id": "695770ea8d3c410fbe48a0996b9fc9546f5a71f1f3eb70f44258b85d1fadc491",
+      "manifest_sha256": "be7600cf31e441356441ba6288e8aea552a43eb7cd01ae064e0ea7e634ebdc9a"
+    }
+  ],
+  "prior_selection": null,
+  "next_selection": null,
+  "transition": null
+}

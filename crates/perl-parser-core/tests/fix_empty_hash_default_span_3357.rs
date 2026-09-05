@@ -49,7 +49,8 @@ fn assert_span_valid(node: &Node, source: &str, label: &str) {
 // ── empty {} with plain `=` ──────────────────────────────────────────────────
 
 #[test]
-fn optional_param_empty_hash_default_span_is_not_reversed() {
+fn optional_param_empty_hash_default_span_is_not_reversed() -> Result<(), Box<dyn std::error::Error>>
+{
     let source = r#"sub f ($opts = {}) { }"#;
     let ast = parse(source);
 
@@ -59,9 +60,10 @@ fn optional_param_empty_hash_default_span_is_not_reversed() {
     );
 
     let node =
-        default_node.expect("should find an empty HashLiteral node for the `{}` default value");
+        default_node.ok_or("should find an empty HashLiteral node for the `{}` default value")?;
 
     assert_span_valid(node, source, "empty HashLiteral default in `sub f ($opts = {})`");
+    Ok(())
 }
 
 #[test]
@@ -77,7 +79,7 @@ fn optional_param_empty_hash_default_span_covers_braces() -> Result<(), Box<dyn 
         &ast,
         &|n| matches!(&n.kind, NodeKind::HashLiteral { pairs } if pairs.is_empty()),
     )
-    .expect("should find an empty HashLiteral for the `{}` default value");
+    .ok_or("should find an empty HashLiteral for the `{}` default value")?;
 
     let loc = &default_node.location;
 
@@ -93,7 +95,7 @@ fn optional_param_empty_hash_default_span_covers_braces() -> Result<(), Box<dyn 
 // ── empty {} in a named parameter with `=` ───────────────────────────────────
 
 #[test]
-fn named_param_empty_hash_default_span_is_not_reversed() {
+fn named_param_empty_hash_default_span_is_not_reversed() -> Result<(), Box<dyn std::error::Error>> {
     let source = r#"sub f (:$rest = {}) { }"#;
     let ast = parse(source);
 
@@ -103,15 +105,17 @@ fn named_param_empty_hash_default_span_is_not_reversed() {
     );
 
     let node = default_node
-        .expect("should find an empty HashLiteral node for named param `{}` default value");
+        .ok_or("should find an empty HashLiteral node for named param `{}` default value")?;
 
     assert_span_valid(node, source, "empty HashLiteral default in `sub f (:$rest = {})`");
+    Ok(())
 }
 
 // ── non-empty hash default is still well-formed ──────────────────────────────
 
 #[test]
-fn optional_param_nonempty_hash_default_span_is_not_reversed() {
+fn optional_param_nonempty_hash_default_span_is_not_reversed()
+-> Result<(), Box<dyn std::error::Error>> {
     let source = r#"sub f ($opts = {key => 1}) { }"#;
     let ast = parse(source);
 
@@ -122,18 +126,19 @@ fn optional_param_nonempty_hash_default_span_is_not_reversed() {
     );
 
     let node =
-        default_node.expect("should find a non-empty HashLiteral node for the default value");
+        default_node.ok_or("should find a non-empty HashLiteral node for the default value")?;
     assert_span_valid(
         node,
         source,
         "non-empty HashLiteral default in `sub f ($opts = {key => 1})`",
     );
+    Ok(())
 }
 
 // ── empty {} outside signature context is still valid ────────────────────────
 
 #[test]
-fn standalone_empty_hash_literal_span_is_not_reversed() {
+fn standalone_empty_hash_literal_span_is_not_reversed() -> Result<(), Box<dyn std::error::Error>> {
     let source = r#"my $h = {};"#;
     let ast = parse(source);
 
@@ -141,25 +146,27 @@ fn standalone_empty_hash_literal_span_is_not_reversed() {
         &ast,
         &|n| matches!(&n.kind, NodeKind::HashLiteral { pairs } if pairs.is_empty()),
     )
-    .expect("should find an empty HashLiteral in `my $h = {}`");
+    .ok_or("should find an empty HashLiteral in `my $h = {}`")?;
 
     assert_span_valid(hash_node, source, "empty HashLiteral in `my $h = {}`");
 
     let sliced = source
         .get(hash_node.location.start..hash_node.location.end)
-        .expect("span should be in bounds");
+        .ok_or("span should be in bounds")?;
     assert_eq!(sliced, "{}", "standalone empty hash span should cover `{{}}`");
+    Ok(())
 }
 
 // ── guard: plain default value still works (no regression) ───────────────────
 
 #[test]
-fn optional_param_scalar_default_span_is_valid() {
+fn optional_param_scalar_default_span_is_valid() -> Result<(), Box<dyn std::error::Error>> {
     let source = r#"sub f ($x = 42) { $x }"#;
     let ast = parse(source);
 
     let num_node = find_node(&ast, &|n| matches!(&n.kind, NodeKind::Number { .. }))
-        .expect("should find a Number node for the `42` default");
+        .ok_or("should find a Number node for the `42` default")?;
 
     assert_span_valid(num_node, source, "Number default in `sub f ($x = 42)`");
+    Ok(())
 }

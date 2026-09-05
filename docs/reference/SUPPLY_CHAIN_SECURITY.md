@@ -10,6 +10,18 @@ Perl-lsp implements comprehensive supply chain security practices to ensure tran
 - **SLSA Provenance**: Cryptographic attestation of build provenance (SLSA Level 2)
 - **Artifact Verification**: SHA256 checksums and GitHub attestation verification
 
+### Scope boundary: imported Perl modules
+
+The SBOM and SLSA claims in this document apply to the released Rust
+artifacts. They do not attest to Perl modules discovered through workspace
+paths, `use lib`, `PERL5LIB`, or interpreter `@INC`. The resolver does not
+currently verify CPAN signatures or block modules based on trust.
+
+The `perl-module` crate provides an opt-in, filesystem-only report of nearby
+distribution markers (`META.*`, `SIGNATURE`, and `CHECKSUMS`). Marker presence
+is packaging context only: `SIGNATURE` contents are not verified, and the
+report must not be presented as a security or authenticity verdict.
+
 ## SBOM (Software Bill of Materials)
 
 ### What is an SBOM?

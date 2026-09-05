@@ -1,0 +1,370 @@
+{
+  "cache_recovery": {
+    "known_good_before": {
+      "archive_member": "perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap",
+      "asset_digest": "sha256:79a6bd3a58feaf749d0deab3e16876bb8dccc553d122fbe28e36a13492b1914c",
+      "asset_name": "good.tar.gz",
+      "installed_binary": "perl-dap-managed-9.9.9-x86_64-unknown-linux-musl/perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap",
+      "member_sha256": "sha256:382ace2b8bab5c10705b07514cd66c4d70e375cc025f87c83edc14ac49cf04cb",
+      "target": "x86_64-unknown-linux-musl",
+      "version": "9.9.9"
+    },
+    "limitations": [
+      "Offline synthetic archives: the suite proves the managed-DAP cache boundary and preservation semantics, not live GitHub release state.",
+      "The production Zed extension downloader is not exercised by this suite; the fixture route is owned by #9485 and remains unproven here."
+    ],
+    "result": "pass",
+    "scenario_results": [
+      {
+        "detail": "a fully verified candidate is selected",
+        "known_good_preserved": true,
+        "scenario": "complete_candidate_becomes_current"
+      },
+      {
+        "detail": "missing_asset: release has no asset named 'good.tar.gz'",
+        "known_good_preserved": true,
+        "scenario": "missing_asset_preserves_known_good"
+      },
+      {
+        "detail": "duplicate_asset: release has 2 assets named 'good.tar.gz'",
+        "known_good_preserved": true,
+        "scenario": "duplicate_asset_preserves_known_good"
+      },
+      {
+        "detail": "ambiguous perl-dap member: 'perllsp-9.9.9-aarch64-unknown-linux-musl/perl-dap' does not match the expected member 'perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap'",
+        "known_good_preserved": true,
+        "scenario": "wrong_target_asset_preserves_known_good"
+      },
+      {
+        "detail": "archive lacks required perl-dap member 'perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap'",
+        "known_good_preserved": true,
+        "scenario": "missing_member_preserves_known_good"
+      },
+      {
+        "detail": "archive lacks required perl-dap member 'perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap'",
+        "known_good_preserved": true,
+        "scenario": "wrong_product_member_preserves_known_good"
+      },
+      {
+        "detail": "digest_mismatch: downloaded 'good.tar.gz' digest sha256:79a6bd3a58feaf749d0deab3e16876bb8dccc553d122fbe28e36a13492b1914c does not match the retained digest sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "known_good_preserved": true,
+        "scenario": "digest_mismatch_preserves_known_good"
+      },
+      {
+        "detail": "member_digest_mismatch: extracted perl-dap member digest sha256:382ace2b8bab5c10705b07514cd66c4d70e375cc025f87c83edc14ac49cf04cb does not match the contract digest sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "known_good_preserved": true,
+        "scenario": "member_digest_mismatch_preserves_known_good"
+      },
+      {
+        "detail": "unsafe archive member path: '../evil'",
+        "known_good_preserved": true,
+        "scenario": "unsafe_archive_path_preserves_known_good"
+      },
+      {
+        "detail": "unexpected executable member: 'perllsp-9.9.9-x86_64-unknown-linux-musl/payload' (mode 755) is outside the shared perllsp/perl-dap family",
+        "known_good_preserved": true,
+        "scenario": "foreign_executable_member_preserves_known_good"
+      },
+      {
+        "detail": "duplicate archive member: perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap",
+        "known_good_preserved": true,
+        "scenario": "duplicate_member_preserves_known_good"
+      },
+      {
+        "detail": "partial_download: asset 'partial.tar.gz.partial' never completed its download",
+        "known_good_preserved": true,
+        "scenario": "partial_download_preserves_known_good"
+      },
+      {
+        "detail": "malformed tar.gz archive corrupt.tar.gz: not a gzip file",
+        "known_good_preserved": true,
+        "scenario": "extraction_failure_preserves_known_good"
+      },
+      {
+        "detail": "process_gate: launch_failure: perl-dap --version exited 1",
+        "known_good_preserved": true,
+        "scenario": "launch_failure_preserves_known_good"
+      },
+      {
+        "detail": "process_gate: protocol_impurity: protocol stdout contains an incomplete or stray header",
+        "known_good_preserved": true,
+        "scenario": "protocol_impurity_preserves_known_good"
+      },
+      {
+        "detail": "commit_failure: simulated promote failure",
+        "known_good_preserved": true,
+        "scenario": "promote_failure_preserves_known_good"
+      },
+      {
+        "detail": "commit_failure: simulated manifest write failure",
+        "known_good_preserved": true,
+        "scenario": "manifest_failure_preserves_known_good"
+      },
+      {
+        "detail": "cleanup removed exactly the superseded managed-DAP entries",
+        "known_good_preserved": true,
+        "scenario": "cleanup_stays_inside_the_perl_dap_family"
+      }
+    ],
+    "selected_after": {
+      "archive_member": "perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap",
+      "asset_digest": "sha256:79a6bd3a58feaf749d0deab3e16876bb8dccc553d122fbe28e36a13492b1914c",
+      "asset_name": "good.tar.gz",
+      "installed_binary": "perl-dap-managed-9.9.9-x86_64-unknown-linux-musl/perllsp-9.9.9-x86_64-unknown-linux-musl/perl-dap",
+      "member_sha256": "sha256:382ace2b8bab5c10705b07514cd66c4d70e375cc025f87c83edc14ac49cf04cb",
+      "target": "x86_64-unknown-linux-musl",
+      "version": "9.9.9"
+    }
+  },
+  "claim_boundary": {
+    "actual_zed": "not_proven",
+    "archive_layout": "proven",
+    "asset_bytes": "proven",
+    "cache_recovery": "proven_isolated_cache_model_only",
+    "dap_process": "proven_for_matching_host_only",
+    "public_registry": "not_proven",
+    "real_zed_debug_session": "not_proven"
+  },
+  "contract": {
+    "relative_path": ".ci/fixtures/zed-perl-upstream/perl-dap-managed-downloads.v1.json",
+    "schema_version": "zed_perl_dap_managed_downloads.v1",
+    "sha256": "sha256:420308d64d3e57f888caa7cd43c7f5eebbda2284e36bf70617c128749a7bbd03"
+  },
+  "currentness": {
+    "invalidators": [
+      "release id/tag/version change",
+      "topology or projection binding digest change",
+      "contract sha256 change",
+      "verifier os/architecture change"
+    ]
+  },
+  "limitations": [],
+  "observed_at": "2026-08-25T02:34:44.388320Z",
+  "projection": {
+    "debug_adapter_id": "perl-dap",
+    "sha256": "sha256:a567b4e613a53c1c8b527c590b3ca1d83c7611f678eb1d8fc8cad50dbfa3cf5b",
+    "zed_adapter_subject": ".ci/fixtures/zed-perl-upstream/manifest.toml"
+  },
+  "release": {
+    "draft": false,
+    "id": 345992952,
+    "prerelease": false,
+    "producer": "github-actions[bot]",
+    "published_at": "2026-06-28T21:22:46Z",
+    "repository": "EffortlessMetrics/perl-lsp",
+    "tag": "v0.17.0",
+    "version": "0.17.0"
+  },
+  "result": "pass",
+  "schema_version": "zed_perl_dap_asset_receipt.v1",
+  "stage": "public_perl_dap_asset",
+  "targets": [
+    {
+      "architecture": "x86_64",
+      "archive": {
+        "installed_name": "perl-dap",
+        "installed_path": "perl-dap-managed-0.17.0-x86_64-unknown-linux-musl/perllsp-0.17.0-x86_64-unknown-linux-musl/perl-dap",
+        "members_sha256": "sha256:204aa80b78471861276c11709673eb81a534ea9de648652180575eead5be0a4f",
+        "required_member": "perllsp-0.17.0-x86_64-unknown-linux-musl/perl-dap",
+        "safe": true
+      },
+      "asset": {
+        "archive_type": "tar.gz",
+        "id": 460503630,
+        "name": "perllsp-0.17.0-x86_64-unknown-linux-musl.tar.gz",
+        "sha256": "sha256:857c763678dd1ef568e119a7e326f9ee4660d98862bef227988bf2a48f543717",
+        "size": 8925383,
+        "url": "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.17.0/perllsp-0.17.0-x86_64-unknown-linux-musl.tar.gz"
+      },
+      "binary": {
+        "archive_sums_sha256": "sha256:71e67c9c2798e54eaf18a3747882ad8d57c2a1118706ec233a9b1497b58e8a75",
+        "executable": null,
+        "name": "perl-dap",
+        "product": "perl-dap",
+        "sha256": "sha256:71e67c9c2798e54eaf18a3747882ad8d57c2a1118706ec233a9b1497b58e8a75"
+      },
+      "disposition": "managed",
+      "errors": [],
+      "os": "linux",
+      "result": "managed_extracted_not_executed",
+      "stdio_smoke": {
+        "result": "not_executed"
+      },
+      "target": "x86_64-unknown-linux-musl"
+    },
+    {
+      "architecture": "aarch64",
+      "archive": {
+        "installed_name": "perl-dap",
+        "installed_path": "perl-dap-managed-0.17.0-aarch64-unknown-linux-musl/perllsp-0.17.0-aarch64-unknown-linux-musl/perl-dap",
+        "members_sha256": "sha256:e3168c7232864ff9edb29535757784776778fe417842c6af1b11811f43ff63a2",
+        "required_member": "perllsp-0.17.0-aarch64-unknown-linux-musl/perl-dap",
+        "safe": true
+      },
+      "asset": {
+        "archive_type": "tar.gz",
+        "id": 460503631,
+        "name": "perllsp-0.17.0-aarch64-unknown-linux-musl.tar.gz",
+        "sha256": "sha256:0b99b263d6deff88e25ff125688fbc5ebb712cf8cc261be9986b776b972602bf",
+        "size": 8343553,
+        "url": "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.17.0/perllsp-0.17.0-aarch64-unknown-linux-musl.tar.gz"
+      },
+      "binary": {
+        "archive_sums_sha256": "sha256:6f89a9a33ee81540da5d3272e03ec6254fdfdec51d1858751626394838f3f2f3",
+        "executable": null,
+        "name": "perl-dap",
+        "product": "perl-dap",
+        "sha256": "sha256:6f89a9a33ee81540da5d3272e03ec6254fdfdec51d1858751626394838f3f2f3"
+      },
+      "disposition": "managed",
+      "errors": [],
+      "os": "linux",
+      "result": "managed_extracted_not_executed",
+      "stdio_smoke": {
+        "result": "not_executed"
+      },
+      "target": "aarch64-unknown-linux-musl"
+    },
+    {
+      "architecture": "x86_64",
+      "archive": {
+        "installed_name": "perl-dap",
+        "installed_path": "perl-dap-managed-0.17.0-x86_64-apple-darwin/perllsp-0.17.0-x86_64-apple-darwin/perl-dap",
+        "members_sha256": "sha256:ad9837d59fc7e8bcbab2c5d0d23bd4f7876c0f83c05cbe663d21c68e01eb0122",
+        "required_member": "perllsp-0.17.0-x86_64-apple-darwin/perl-dap",
+        "safe": true
+      },
+      "asset": {
+        "archive_type": "tar.gz",
+        "id": 460503629,
+        "name": "perllsp-0.17.0-x86_64-apple-darwin.tar.gz",
+        "sha256": "sha256:b117abfe29bb9840f21433d5ffff8c47a2fda1f6815cf477230d3f3b3ec22e74",
+        "size": 7912749,
+        "url": "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.17.0/perllsp-0.17.0-x86_64-apple-darwin.tar.gz"
+      },
+      "binary": {
+        "archive_sums_sha256": "sha256:fae17f2f586f19cb5221489321311478632024baf14e97ce189117c5bb5cc559",
+        "executable": null,
+        "name": "perl-dap",
+        "product": "perl-dap",
+        "sha256": "sha256:fae17f2f586f19cb5221489321311478632024baf14e97ce189117c5bb5cc559"
+      },
+      "disposition": "managed",
+      "errors": [],
+      "os": "macos",
+      "result": "managed_extracted_not_executed",
+      "stdio_smoke": {
+        "result": "not_executed"
+      },
+      "target": "x86_64-apple-darwin"
+    },
+    {
+      "architecture": "aarch64",
+      "archive": {
+        "installed_name": "perl-dap",
+        "installed_path": "perl-dap-managed-0.17.0-aarch64-apple-darwin/perllsp-0.17.0-aarch64-apple-darwin/perl-dap",
+        "members_sha256": "sha256:87f83004ba93a2836cc0191664bf3d8762301d2f85fe95fce477f836be3e6c20",
+        "required_member": "perllsp-0.17.0-aarch64-apple-darwin/perl-dap",
+        "safe": true
+      },
+      "asset": {
+        "archive_type": "tar.gz",
+        "id": 460503634,
+        "name": "perllsp-0.17.0-aarch64-apple-darwin.tar.gz",
+        "sha256": "sha256:cb00d92395e94caee6e565b2e74f18cbbcd2b9366ddd1e13a6b5df7660f77ffd",
+        "size": 7305468,
+        "url": "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.17.0/perllsp-0.17.0-aarch64-apple-darwin.tar.gz"
+      },
+      "binary": {
+        "archive_sums_sha256": "sha256:5384315b2bec53b110b3dd756463a29ae0aeecb33cbf36a8a9b9911c8ea5b047",
+        "executable": null,
+        "name": "perl-dap",
+        "product": "perl-dap",
+        "sha256": "sha256:5384315b2bec53b110b3dd756463a29ae0aeecb33cbf36a8a9b9911c8ea5b047"
+      },
+      "disposition": "managed",
+      "errors": [],
+      "os": "macos",
+      "result": "managed_extracted_not_executed",
+      "stdio_smoke": {
+        "result": "not_executed"
+      },
+      "target": "aarch64-apple-darwin"
+    },
+    {
+      "architecture": "x86_64",
+      "archive": {
+        "installed_name": "perl-dap.exe",
+        "installed_path": "perl-dap-managed-0.17.0-x86_64-pc-windows-msvc/perllsp-0.17.0-x86_64-pc-windows-msvc/perl-dap.exe",
+        "members_sha256": "sha256:f836432a19c95675633d094fda024964adf89d1f14f1510372026a1dd14e0374",
+        "required_member": "perllsp-0.17.0-x86_64-pc-windows-msvc/perl-dap.exe",
+        "safe": true
+      },
+      "asset": {
+        "archive_type": "zip",
+        "id": 460503633,
+        "name": "perllsp-0.17.0-x86_64-pc-windows-msvc.zip",
+        "sha256": "sha256:679cd43780d36cb2a980a42804905d24d2c76b0a3e2deaa3cd344daece87f7dd",
+        "size": 8140127,
+        "url": "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.17.0/perllsp-0.17.0-x86_64-pc-windows-msvc.zip"
+      },
+      "binary": {
+        "archive_sums_sha256": "sha256:5b888c17f34198234c401441f1bc8cf4317154abad2ae7eccff37225e0102db4",
+        "executable": null,
+        "name": "perl-dap.exe",
+        "product": "perl-dap",
+        "sha256": "sha256:5b888c17f34198234c401441f1bc8cf4317154abad2ae7eccff37225e0102db4"
+      },
+      "disposition": "managed",
+      "errors": [],
+      "os": "windows",
+      "result": "managed_executed",
+      "stdio_smoke": {
+        "configuration_boundary": "not_crossed_no_launch",
+        "disconnect_response": true,
+        "frames": 4,
+        "initialize_response": true,
+        "initialized_event": true,
+        "launched_pid": 256872,
+        "orphan_result": "no_orphans",
+        "process_exit": 0,
+        "process_inventory_after": [],
+        "process_inventory_after_launch": [
+          256872
+        ],
+        "process_inventory_before": [],
+        "result": "pass",
+        "stderr_sha256": "sha256:684efb3161922ab95461f3bf3b136dd3a9ab24d4672ee8cf6079008c0da0408c",
+        "stderr_tail": "2026-08-25T02:34:50.285242Z  INFO perl_lsp_rs_core::runtime::launcher: server starting server=\"perl-dap\" version=\"0.17.0\" transport=\"stdio\"\n2026-08-25T02:34:50.285395Z  INFO perl_dap: Starting DAP server on stdio\n",
+        "stdout_pure": true,
+        "terminated_event": true,
+        "version_output": "perl-dap 0.17.0"
+      },
+      "target": "x86_64-pc-windows-msvc"
+    },
+    {
+      "architecture": "aarch64",
+      "archive": null,
+      "asset": null,
+      "binary": null,
+      "disposition": "unsupported",
+      "errors": [
+        "The captured public release and canonical downstream target map do not contain a native Windows ARM64 perl-dap asset. x86_64 or emulation cannot satisfy this row."
+      ],
+      "os": "windows",
+      "result": "unsupported",
+      "stdio_smoke": null,
+      "target": "aarch64-pc-windows-msvc"
+    }
+  ],
+  "topology": {
+    "sha256": "sha256:2c94c45bbbd6c2ab46479d23f41ce1bb0828ed081b8f80325999aa60053eef47",
+    "subject": "docs/reference/downstream-dap-integrations.json"
+  },
+  "verifier": {
+    "architecture": "x86_64",
+    "os": "windows",
+    "python": "3.14.6",
+    "version": "10.0.26200"
+  }
+}

@@ -183,12 +183,12 @@ impl IncrementalState {
 
         let prefix = old_tokens
             .iter()
-            .filter(|token| token.end <= old_relex_start)
+            .filter(|token| token.end() <= old_relex_start)
             .cloned()
             .collect::<Vec<_>>();
         let suffix = old_tokens
             .iter()
-            .filter(|token| token.start >= old_relex_end)
+            .filter(|token| token.start() >= old_relex_end)
             .map(|token| shift_token(token, delta))
             .collect::<Option<Vec<_>>>();
         let Some(suffix) = suffix else {
@@ -339,8 +339,8 @@ impl IncrementalState {
         }
 
         let prefix_token =
-            self.tokens.iter().rev().find(|token| token.end <= checkpoint.position)?;
-        let preceding_checkpoint = self.find_before(prefix_token.start)?;
+            self.tokens.iter().rev().find(|token| token.end() <= checkpoint.position)?;
+        let preceding_checkpoint = self.find_before(prefix_token.start())?;
         (preceding_checkpoint.position < checkpoint.position)
             .then_some(preceding_checkpoint.position)
     }
@@ -450,19 +450,20 @@ fn contains_format_declaration(source: &str) -> bool {
 }
 
 fn shift_token(token: &Token, delta: isize) -> Option<Token> {
-    let start = shift_offset(token.start, delta);
-    let end = shift_offset(token.end, delta);
-    (start <= end).then(|| Token::new(token.kind, token.text.clone(), start, end))
+    let start = shift_offset(token.start(), delta);
+    let end = shift_offset(token.end(), delta);
+    Token::new_checked(token.kind(), token.text.clone(), start, end).ok()
 }
 
 fn replay_crosses_cached_suffix(replayed: &[Token], suffix: &[Token]) -> bool {
-    let Some(replayed_end) = replayed.last().map(|token| token.end) else {
+    let Some(replayed_end) = replayed.last().map(|token| token.end()) else {
         return false;
     };
-    suffix.first().is_some_and(|token| token.start < replayed_end)
+    suffix.first().is_some_and(|token| token.start() < replayed_end)
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::token_stream::TokenKind;
@@ -495,9 +496,9 @@ mod tests {
         let state = IncrementalState::new(&source);
         assert!(state.checkpoints.iter().any(|checkpoint| checkpoint.position == boundary));
         assert!(
-            state.tokens.iter().any(|token| token.end == boundary),
+            state.tokens.iter().any(|token| token.end() == boundary),
             "token ends: {:?}",
-            state.tokens.iter().map(|token| token.end).collect::<Vec<_>>()
+            state.tokens.iter().map(|token| token.end()).collect::<Vec<_>>()
         );
         (source, boundary)
     }
@@ -642,9 +643,12 @@ mod tests {
 
     #[test]
     fn replay_crossing_cached_suffix_is_detected() {
-        let replayed = [Token::new(TokenKind::Identifier, "long", 10, 20)];
-        let overlapping_suffix = [Token::new(TokenKind::Identifier, "suffix", 18, 24)];
-        let adjacent_suffix = [Token::new(TokenKind::Identifier, "suffix", 20, 24)];
+        let replayed =
+            [Token::new_checked(TokenKind::Identifier, "longXXXXXX", 10, 20).expect("valid token")];
+        let overlapping_suffix =
+            [Token::new_checked(TokenKind::Identifier, "suffix", 18, 24).expect("valid token")];
+        let adjacent_suffix =
+            [Token::new_checked(TokenKind::Identifier, "suffix", 20, 26).expect("valid token")];
 
         assert!(replay_crosses_cached_suffix(&replayed, &overlapping_suffix));
         assert!(!replay_crosses_cached_suffix(&replayed, &adjacent_suffix));

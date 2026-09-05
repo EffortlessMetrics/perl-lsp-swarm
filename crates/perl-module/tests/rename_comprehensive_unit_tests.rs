@@ -2,7 +2,7 @@
 //!
 //! Covers: plan_module_rename_edits, apply_module_rename_edits, ModuleLineEdit
 
-use perl_module::rename::{
+use perl_module::{
     ModuleLineEdit, apply_module_rename_edits, line_references_qualified_call,
     plan_module_rename_edits, replace_module_name_prefix,
 };

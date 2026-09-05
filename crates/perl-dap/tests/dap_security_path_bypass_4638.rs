@@ -7,10 +7,10 @@
 //!
 //! After the fix, the `None` arm rejects:
 //! - Paths containing `Component::ParentDir` (`..`)
-//! while still allowing legitimate relative and absolute paths through with a
-//! warning (no workspace boundary is known, so absolute paths outside the CWD
-//! are warned but not hard-rejected — temp files and explicit user paths are
-//! legitimate pre-launch use cases).
+//!   while still allowing legitimate relative and absolute paths through with a
+//!   warning (no workspace boundary is known, so absolute paths outside the CWD
+//!   are warned but not hard-rejected — temp files and explicit user paths are
+//!   legitimate pre-launch use cases).
 
 use anyhow::Result;
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};

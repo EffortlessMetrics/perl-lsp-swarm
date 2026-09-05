@@ -7,12 +7,18 @@ on:
       - '.github/actions/rust-checks/**'
       - '.github/actions/upload-receipt/**'
       - '.github/workflows/composite-action-contracts.yml'
+      # Authorities the upload-receipt contract binds itself to: a change to
+      # either must run the contract, or the drift guard never fires.
+      - '.ci/receipt.schema.json'
+      - 'xtask/src/tasks/gates.rs'
   push:
     branches: [main, master]
     paths:
       - '.github/actions/rust-checks/**'
       - '.github/actions/upload-receipt/**'
       - '.github/workflows/composite-action-contracts.yml'
+      - '.ci/receipt.schema.json'
+      - 'xtask/src/tasks/gates.rs'
   workflow_dispatch: {}
 
 permissions:
@@ -25,9 +31,25 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout exact source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Exercise argv and status contracts
         run: python3 .github/actions/rust-checks/test_run_cargo.py
+
+  upload-receipt-contract:
+    name: Upload receipt composite action contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Exercise receipt path validation contracts
+        run: python3 .github/actions/upload-receipt/test_validate_paths.py
+
+      - name: Exercise receipt summary rendering contracts
+        run: python3 .github/actions/upload-receipt/test_render_summary.py

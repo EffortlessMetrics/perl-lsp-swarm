@@ -1,0 +1,59 @@
+{
+  "schema_version": "zed_perl_dap_asset_receipt.v1",
+  "stage": "public_perl_dap_asset",
+  "result": "not_run",
+  "observed_at": null,
+  "contract": {
+    "relative_path": ".ci/fixtures/zed-perl-upstream/perl-dap-managed-downloads.v1.json",
+    "sha256": null,
+    "schema_version": "zed_perl_dap_managed_downloads.v1"
+  },
+  "release": {
+    "repository": "EffortlessMetrics/perl-lsp",
+    "id": null,
+    "tag": null,
+    "version": null,
+    "prerelease": null,
+    "draft": null,
+    "published_at": null,
+    "producer": null
+  },
+  "topology": {
+    "subject": "docs/reference/downstream-dap-integrations.json",
+    "sha256": null
+  },
+  "projection": {
+    "zed_adapter_subject": ".ci/fixtures/zed-perl-upstream/manifest.toml",
+    "sha256": null,
+    "debug_adapter_id": "perl-dap"
+  },
+  "verifier": {
+    "os": null,
+    "version": null,
+    "architecture": null,
+    "python": null
+  },
+  "targets": [],
+  "cache_recovery": null,
+  "limitations": [
+    "Template only. No perl-dap asset has been downloaded or executed.",
+    "Asset execution proves the public adapter process boundary, not a real Zed debug session or official-registry installation."
+  ],
+  "claim_boundary": {
+    "asset_bytes": "not_run",
+    "archive_layout": "not_run",
+    "dap_process": "not_run",
+    "cache_recovery": "not_run",
+    "real_zed_debug_session": "not_proven",
+    "actual_zed": "not_proven",
+    "public_registry": "not_proven"
+  },
+  "currentness": {
+    "invalidators": [
+      "release id/tag/version change",
+      "topology or projection binding digest change",
+      "contract sha256 change",
+      "verifier os/architecture change"
+    ]
+  }
+}

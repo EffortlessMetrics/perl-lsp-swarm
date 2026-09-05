@@ -24,9 +24,13 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call map"), "should contain a map call: {}", sexp);
+        assert!(sexp.contains("(call (name map)"), "should contain a map call: {}", sexp);
         assert!(sexp.contains("foreach"), "should be a foreach loop: {}", sexp);
-        assert!(sexp.contains("(variable @ list)"), "map call should include @list: {}", sexp);
+        assert!(
+            sexp.contains("(variable (sigil @) (name list))"),
+            "map call should include @list: {}",
+            sexp
+        );
     }
 
     // ---- grep block in for iterator ----
@@ -38,7 +42,7 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call grep"), "should contain a grep call: {}", sexp);
+        assert!(sexp.contains("(call (name grep)"), "should contain a grep call: {}", sexp);
         assert!(sexp.contains("foreach"), "should be a foreach loop: {}", sexp);
     }
 
@@ -51,7 +55,7 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call sort"), "should contain a sort call: {}", sexp);
+        assert!(sexp.contains("(call (name sort)"), "should contain a sort call: {}", sexp);
         assert!(sexp.contains("foreach"), "should be a foreach loop: {}", sexp);
     }
 
@@ -64,7 +68,7 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call map"), "should contain a map call: {}", sexp);
+        assert!(sexp.contains("(call (name map)"), "should contain a map call: {}", sexp);
         assert!(sexp.contains(".."), "map call should include range: {}", sexp);
     }
 
@@ -77,9 +81,9 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call map"), "should contain a map call: {}", sexp);
+        assert!(sexp.contains("(call (name map)"), "should contain a map call: {}", sexp);
         assert!(
-            sexp.contains("(variable @ lines)"),
+            sexp.contains("(variable (sigil @) (name lines))"),
             "trailing list should be inside map call: {}",
             sexp
         );
@@ -94,7 +98,7 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call map"), "should contain a map call: {}", sexp);
+        assert!(sexp.contains("(call (name map)"), "should contain a map call: {}", sexp);
     }
 
     // ---- nested builtins in for ----
@@ -106,8 +110,8 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call map"), "should contain outer map call: {}", sexp);
-        assert!(sexp.contains("(call grep"), "should contain inner grep call: {}", sexp);
+        assert!(sexp.contains("(call (name map)"), "should contain outer map call: {}", sexp);
+        assert!(sexp.contains("(call (name grep)"), "should contain inner grep call: {}", sexp);
     }
 
     #[test]
@@ -117,8 +121,12 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call sort"), "should contain sort call: {}", sexp);
-        assert!(sexp.contains("(variable @ words)"), "should include @words in sort: {}", sexp);
+        assert!(sexp.contains("(call (name sort)"), "should contain sort call: {}", sexp);
+        assert!(
+            sexp.contains("(variable (sigil @) (name words))"),
+            "should include @words in sort: {}",
+            sexp
+        );
     }
 
     #[test]
@@ -128,7 +136,7 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call map"), "should contain map call: {}", sexp);
+        assert!(sexp.contains("(call (name map)"), "should contain map call: {}", sexp);
     }
 
     #[test]
@@ -149,7 +157,7 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call map"), "should contain map call: {}", sexp);
+        assert!(sexp.contains("(call (name map)"), "should contain map call: {}", sexp);
     }
 
     #[test]
@@ -159,7 +167,7 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call map"), "should contain map call: {}", sexp);
+        assert!(sexp.contains("(call (name map)"), "should contain map call: {}", sexp);
     }
 
     #[test]
@@ -169,7 +177,7 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call grep"), "should contain grep call: {}", sexp);
+        assert!(sexp.contains("(call (name grep)"), "should contain grep call: {}", sexp);
     }
 
     #[test]
@@ -179,7 +187,7 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call sort"), "should contain sort call: {}", sexp);
+        assert!(sexp.contains("(call (name sort)"), "should contain sort call: {}", sexp);
     }
 
     #[test]
@@ -189,7 +197,7 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call grep"), "should contain grep call: {}", sexp);
+        assert!(sexp.contains("(call (name grep)"), "should contain grep call: {}", sexp);
     }
 
     #[test]
@@ -199,7 +207,11 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call defined"), "block should contain defined call: {}", sexp);
+        assert!(
+            sexp.contains("(call (name defined)"),
+            "block should contain defined call: {}",
+            sexp
+        );
     }
 
     #[test]

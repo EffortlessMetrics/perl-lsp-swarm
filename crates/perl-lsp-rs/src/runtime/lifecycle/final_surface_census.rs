@@ -492,15 +492,18 @@ fn suppression_rows_flip_exactly_their_claimed_build_flag() {
         };
         let effect_flag = row_string(effect, "flag");
 
-        let mut flags = BuildFlags::all();
+        let baseline = BuildFlags::all();
+        let mut flags = baseline.clone();
         apply_disabled_feature_id(&mut flags, feature_id);
 
-        let before_all_true =
-            ALL_FLAG_NAMES.iter().all(|name| flag_value(&BuildFlags::all(), name) == Some(true));
-        assert!(before_all_true, "BuildFlags::all() baseline changed; update flag list");
+        assert!(
+            ALL_FLAG_NAMES.iter().all(|name| flag_value(&baseline, name).is_some()),
+            "BuildFlags::all() baseline changed; update flag list"
+        );
 
         for name in ALL_FLAG_NAMES {
-            let expected = if *name == effect_flag { Some(false) } else { Some(true) };
+            let expected =
+                if *name == effect_flag { Some(false) } else { flag_value(&baseline, name) };
             assert_eq!(
                 flag_value(&flags, name),
                 expected,

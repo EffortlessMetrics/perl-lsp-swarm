@@ -19,6 +19,8 @@
 //! a session id. [`DebugBackend::initialize`] blocks until the handshake
 //! completes or a timeout elapses.
 
+#[cfg(test)]
+use perl_tdd_support::{must, must_err};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{Read, Write};
@@ -433,12 +435,38 @@ impl ExternalDebuggerPeerBackend {
 
         match rx.recv_timeout(self.timeout) {
             Ok(resp) => {
+                // Responses are correlated by `request_seq` alone, so the echoed
+                // command is the only evidence that this reply answers *this*
+                // request. Check it before interpreting success or failure: a
+                // crossed command is the peer breaking correlation, not an
+                // outcome of the request, and must not be reported as a
+                // `PeerReported` carrying the command we asked for (#8758).
+                if resp.command != command {
+                    return Err(BackendError::Protocol(format!(
+                        "peer answered request seq {seq} (`{command}`) with a response echoing \
+                         `{}`",
+                        resp.command
+                    )));
+                }
                 if resp.success {
                     Ok(resp)
                 } else {
-                    Err(BackendError::Engine(
-                        resp.message.unwrap_or_else(|| format!("{command} failed")),
-                    ))
+                    // A well-formed `success: false` on the request we actually
+                    // sent is the peer using the protocol as designed to decline
+                    // or report a failure — an ordinary debuggee outcome
+                    // included. It is neither a protocol violation nor an
+                    // adapter bug (#8758).
+                    //
+                    // The cause is honoured only from a peer that advertised it
+                    // can report one. A `cause` from a peer that never claimed
+                    // the vocabulary is not evidence about this failure — it may
+                    // belong to another dialect entirely — so it is dropped and
+                    // the failure classifies exactly as a causeless one (#14582).
+                    Err(BackendError::PeerReported {
+                        command: command.to_string(),
+                        message: resp.message.unwrap_or_else(|| format!("{command} failed")),
+                        cause: self.peer_reports_failure_cause().then_some(resp.cause).flatten(),
+                    })
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
@@ -447,6 +475,24 @@ impl ExternalDebuggerPeerBackend {
             }
             Err(RecvTimeoutError::Disconnected) => Err(self.shared.closed_error()),
         }
+    }
+
+    /// Whether the negotiated peer advertised that it reports a machine-readable
+    /// failure cause (#14582).
+    ///
+    /// Read from the peer's own `peer/hello` capability report rather than from
+    /// [`Self::negotiated_caps`], because this is a peer-protocol capability and
+    /// not a DAP one: it gates how the host *classifies* a failure, and there is
+    /// no `supportsX` an editor could be told about. Routing it through
+    /// [`DebugBackendCapabilities`] would put a flag into DAP advertisement that
+    /// no editor can consume.
+    ///
+    /// `peer_caps` is written once by the first accepted `peer/hello` and a
+    /// replay is rejected without rewriting it, so this answer is stable for the
+    /// life of the session — the same immutable session contract
+    /// [`Self::negotiated_caps`] reads.
+    fn peer_reports_failure_cause(&self) -> bool {
+        lock(&self.shared.peer_caps).as_ref().is_some_and(|c| c.can_report_failure_cause)
     }
 
     fn negotiated_caps(&self) -> DebugBackendCapabilities {
@@ -815,6 +861,9 @@ fn handle_peer_request(shared: &Arc<Shared>, req: PeerRequest) {
                     success: false,
                     command: command::HELLO.to_string(),
                     message: Some(reason.clone()),
+                    // The host does not author failure causes in this slice; the
+                    // cause axis is the peer reporting to the host (#14582).
+                    cause: None,
                     body: None,
                 });
                 let _ = shared.write_message(&resp);
@@ -835,6 +884,7 @@ fn handle_peer_request(shared: &Arc<Shared>, req: PeerRequest) {
                     success: false,
                     command: command::HELLO.to_string(),
                     message: Some("already handshaken".to_string()),
+                    cause: None,
                     body: None,
                 });
                 let _ = shared.write_message(&resp);
@@ -854,6 +904,7 @@ fn handle_peer_request(shared: &Arc<Shared>, req: PeerRequest) {
                 success: true,
                 command: command::HELLO.to_string(),
                 message: None,
+                cause: None,
                 body: serde_json::to_value(body).ok(),
             });
             let _ = shared.write_message(&resp);
@@ -877,6 +928,7 @@ fn handle_peer_request(shared: &Arc<Shared>, req: PeerRequest) {
                 success: true,
                 command: command::GOODBYE.to_string(),
                 message: None,
+                cause: None,
                 body: None,
             });
             let _ = shared.write_message(&resp);
@@ -890,6 +942,7 @@ fn handle_peer_request(shared: &Arc<Shared>, req: PeerRequest) {
                 success: false,
                 command: other.to_string(),
                 message: Some(format!("unsupported host command: {other}")),
+                cause: None,
                 body: None,
             });
             let _ = shared.write_message(&resp);
@@ -1079,7 +1132,10 @@ fn from_body<T: serde::de::DeserializeOwned>(body: Option<Value>) -> BackendResu
 
 #[cfg(test)]
 mod tests {
+    use perl_tdd_support::must_some_with;
+
     use super::*;
+    use crate::peer_protocol::PeerFailureCause;
     use crate::peer_protocol::payloads::{
         HelloArgs, SetBreakpointsResponseBody, WireResolvedBreakpoint,
     };
@@ -1126,7 +1182,7 @@ mod tests {
                 Ok(s) => s,
                 Err(_) => return,
             };
-            let mut write = stream.try_clone().expect("clone");
+            let mut write = must(stream.try_clone());
             let mut read = stream;
             let mut seq = 100;
 
@@ -1143,7 +1199,7 @@ mod tests {
                 })
                 .ok(),
             });
-            let _ = write.write_all(&encode_message(&hello).expect("enc"));
+            let _ = write.write_all(&must(encode_message(&hello)));
 
             let mut decoder = PeerFrameDecoder::new();
             let mut buf = [0u8; 4096];
@@ -1161,9 +1217,9 @@ mod tests {
                                     seq += 1;
                                     resp.seq = seq;
                                     resp.request_seq = req.seq;
-                                    let _ = write.write_all(
-                                        &encode_message(&PeerMessage::Response(resp)).expect("enc"),
-                                    );
+                                    let _ = write.write_all(&must(encode_message(
+                                        &PeerMessage::Response(resp),
+                                    )));
                                     if req.command == command::GOODBYE {
                                         break;
                                     }
@@ -1184,8 +1240,247 @@ mod tests {
             success: true,
             command: command.to_string(),
             message: None,
+            cause: None,
             body,
         }
+    }
+
+    /// A `success: false` reply carrying a machine-readable cause (#14582).
+    ///
+    /// `seq`/`request_seq` are filled in by the fake-peer loop; `command` is not,
+    /// so it is echoed here or the host's crossed-command guard rejects the reply
+    /// as a protocol violation before classification is ever reached.
+    fn fail_resp(command: &str, message: &str, cause: Option<PeerFailureCause>) -> PeerResponse {
+        PeerResponse {
+            seq: 0,
+            request_seq: 0,
+            success: false,
+            command: command.to_string(),
+            message: Some(message.to_string()),
+            cause,
+            body: None,
+        }
+    }
+
+    fn stack_trace_params() -> StackTraceParams {
+        StackTraceParams { thread_id: ThreadId(1), start_frame: None, levels: None }
+    }
+
+    /// Drive one request against a peer that answers `wire_command` with
+    /// `reply`, and return the error the host produced.
+    ///
+    /// The command is a parameter because the gate lives in `request()` and is
+    /// command-agnostic. A helper hard-wired to `stackTrace` would let a gate
+    /// narrowed to one command pass every test in this module.
+    fn peer_failure(
+        caps: PeerReportedCapabilities,
+        wire_command: &'static str,
+        reply: PeerResponse,
+        drive: impl FnOnce(&mut ExternalDebuggerPeerBackend) -> BackendResult<()>,
+    ) -> crate::backend::BackendError {
+        let (listener, addr) = bind_ephemeral();
+        let peer = spawn_fake_peer(addr, caps, move |req| {
+            (req.command == wire_command).then(|| reply.clone())
+        });
+        let mut backend = accept_backend(listener);
+        must(backend.initialize(InitializeBackendParams::default()));
+        let err = must_err(drive(&mut backend));
+        drop(backend);
+        let _ = peer.join();
+        err
+    }
+
+    /// Drive one `stackTrace` against a peer that answers with `reply`.
+    ///
+    /// The peer's capability report is the only thing callers vary, so the tests
+    /// below can hold the response bytes fixed and move the negotiation.
+    fn stack_trace_failure(
+        caps: PeerReportedCapabilities,
+        reply: PeerResponse,
+    ) -> crate::backend::BackendError {
+        peer_failure(caps, command::STACK_TRACE, reply, |backend| {
+            backend.stack_trace(stack_trace_params()).map(|_| ())
+        })
+    }
+
+    /// The same, driven through `evaluate` instead.
+    fn evaluate_failure(
+        caps: PeerReportedCapabilities,
+        reply: PeerResponse,
+    ) -> crate::backend::BackendError {
+        peer_failure(caps, command::EVALUATE, reply, |backend| {
+            backend
+                .evaluate(EvaluateParams {
+                    expression: "foo()".to_string(),
+                    frame_id: Some(FrameId(1)),
+                    context: EvaluateContext::Watch,
+                })
+                .map(|_| ())
+        })
+    }
+
+    /// Destructure a [`BackendError::PeerReported`], or fail the test naming
+    /// what arrived instead. Returns `None` for any other variant so the
+    /// assertion goes through `must_some_with` rather than a bare `panic!`.
+    fn peer_reported_parts(
+        err: &crate::backend::BackendError,
+    ) -> Option<(&str, &str, Option<PeerFailureCause>)> {
+        match err {
+            crate::backend::BackendError::PeerReported { command, message, cause } => {
+                Some((command.as_str(), message.as_str(), *cause))
+            }
+            _ => None,
+        }
+    }
+
+    fn expect_peer_reported(
+        err: &crate::backend::BackendError,
+    ) -> (&str, &str, Option<PeerFailureCause>) {
+        must_some_with(peer_reported_parts(err), format_args!("expected PeerReported, got {err:?}"))
+    }
+
+    /// A peer that can serve the requests these tests drive *and* speaks the
+    /// cause vocabulary.
+    fn cause_reporting_caps() -> PeerReportedCapabilities {
+        PeerReportedCapabilities {
+            can_list_stack: true,
+            can_evaluate: true,
+            can_report_failure_cause: true,
+            ..Default::default()
+        }
+    }
+
+    /// The same peer, differing in the cause advertisement and nothing else.
+    fn silent_cause_caps() -> PeerReportedCapabilities {
+        PeerReportedCapabilities { can_report_failure_cause: false, ..cause_reporting_caps() }
+    }
+
+    /// A negotiated peer's reported cause reaches the host error (#14582).
+    #[test]
+    fn negotiated_peer_cause_reaches_the_backend_error() {
+        let err = stack_trace_failure(
+            cause_reporting_caps(),
+            fail_resp(
+                command::STACK_TRACE,
+                "no active suspension",
+                Some(PeerFailureCause::SessionState),
+            ),
+        );
+        let (command, message, cause) = expect_peer_reported(&err);
+        assert_eq!(command, command::STACK_TRACE);
+        assert_eq!(message, "no active suspension");
+        assert_eq!(cause, Some(PeerFailureCause::SessionState));
+    }
+
+    /// The load-bearing negotiation control: **identical response bytes**, and
+    /// the only difference is whether the peer advertised the vocabulary.
+    ///
+    /// Without the capability gate at the construction site both halves return
+    /// the same cause and this fails. It is what makes
+    /// `can_report_failure_cause` load-bearing rather than decorative.
+    #[test]
+    fn cause_from_an_unadvertised_peer_is_not_honoured() {
+        let reply = fail_resp(
+            command::STACK_TRACE,
+            "no active suspension",
+            Some(PeerFailureCause::SessionState),
+        );
+
+        let advertised = stack_trace_failure(cause_reporting_caps(), reply.clone());
+        let unadvertised = stack_trace_failure(silent_cause_caps(), reply);
+
+        assert_eq!(expect_peer_reported(&advertised).2, Some(PeerFailureCause::SessionState));
+        assert_eq!(
+            expect_peer_reported(&unadvertised).2,
+            None,
+            "a cause from a peer that never advertised the vocabulary must be dropped"
+        );
+        // The editor-visible text is identical either way; only classification moves.
+        assert_eq!(advertised.to_string(), unadvertised.to_string());
+        assert_ne!(
+            perl_parser_core::ErrorClass::error_class(&advertised),
+            perl_parser_core::ErrorClass::error_class(&unadvertised),
+            "negotiation, not response text, must decide the category"
+        );
+    }
+
+    /// A peer that advertises the vocabulary but omits the cause on a given
+    /// failure is not penalised: absence stays the honest pre-#14582 fallback.
+    #[test]
+    fn advertised_peer_omitting_a_cause_keeps_the_causeless_classification() {
+        let err = stack_trace_failure(
+            cause_reporting_caps(),
+            fail_resp(command::STACK_TRACE, "no active suspension", None),
+        );
+        assert_eq!(expect_peer_reported(&err).2, None);
+    }
+
+    /// A cause added after this build must not turn a reportable failure into a
+    /// protocol error. The response still parses, the failure still surfaces as
+    /// `PeerReported`, and the unknown word degrades to the causeless answer.
+    #[test]
+    fn a_cause_this_build_does_not_know_still_reports_the_failure() {
+        let (listener, addr) = bind_ephemeral();
+        let peer = spawn_fake_peer(addr, cause_reporting_caps(), |req| {
+            (req.command == command::STACK_TRACE).then(|| {
+                // Hand-built so the unknown word really crosses the wire, rather
+                // than being pre-normalised by this build's own enum.
+                must(serde_json::from_value::<PeerResponse>(serde_json::json!({
+                    "seq": 0,
+                    "requestSeq": 0,
+                    "success": false,
+                    "command": command::STACK_TRACE,
+                    "message": "no active suspension",
+                    "cause": "quantum_decoherence",
+                })))
+            })
+        });
+        let mut backend = accept_backend(listener);
+        must(backend.initialize(InitializeBackendParams::default()));
+        // An unknown cause must not stop the failure from being reported.
+        let err = must_err(backend.stack_trace(stack_trace_params()));
+        drop(backend);
+        let _ = peer.join();
+
+        let (_, message, cause) = expect_peer_reported(&err);
+        assert_eq!(message, "no active suspension");
+        assert_eq!(cause, Some(PeerFailureCause::Unrecognized));
+    }
+
+    /// The gate lives in `request()`, which every command shares, so it must be
+    /// proved on more than one command.
+    ///
+    /// Without this pair, narrowing the gate to `command == STACK_TRACE` passes
+    /// the whole module — the seam is centralized today, and nothing else here
+    /// would notice if it stopped being.
+    #[test]
+    fn a_negotiated_cause_is_honoured_for_commands_other_than_stack_trace() {
+        let err = evaluate_failure(
+            cause_reporting_caps(),
+            fail_resp(
+                command::EVALUATE,
+                "Undefined subroutine &main::foo called",
+                Some(PeerFailureCause::Debuggee),
+            ),
+        );
+        let (command, message, cause) = expect_peer_reported(&err);
+        assert_eq!(command, command::EVALUATE);
+        assert_eq!(message, "Undefined subroutine &main::foo called");
+        assert_eq!(cause, Some(PeerFailureCause::Debuggee));
+    }
+
+    #[test]
+    fn an_unadvertised_cause_is_dropped_for_commands_other_than_stack_trace() {
+        let reply = fail_resp(
+            command::EVALUATE,
+            "Undefined subroutine &main::foo called",
+            Some(PeerFailureCause::Debuggee),
+        );
+        assert_eq!(
+            expect_peer_reported(&evaluate_failure(silent_cause_caps(), reply)).2,
+            None,
+            "the gate must drop an unadvertised cause on every command, not just stackTrace"
+        );
     }
 
     #[test]
@@ -1203,7 +1498,7 @@ mod tests {
         };
         let peer = spawn_fake_peer(addr, caps, |_req| None);
         let mut backend = accept_backend(listener);
-        backend.initialize(InitializeBackendParams::default()).expect("handshake");
+        must(backend.initialize(InitializeBackendParams::default()));
         let negotiated = backend.capabilities();
         assert!(negotiated.evaluate);
         assert!(negotiated.stepping);
@@ -1234,22 +1529,20 @@ mod tests {
             }
         });
         let mut backend = accept_backend(listener);
-        backend.initialize(InitializeBackendParams::default()).expect("handshake");
+        must(backend.initialize(InitializeBackendParams::default()));
         let src = DebugSource::from_path("/work/script.pl");
-        let out = backend
-            .set_breakpoints(SetBackendBreakpointsParams {
-                source: src.clone(),
-                breakpoints: vec![crate::model::DebugBreakpoint {
-                    id: None,
-                    source: src,
-                    line: 42,
-                    column: None,
-                    condition: None,
-                    hit_condition: None,
-                    log_message: None,
-                }],
-            })
-            .expect("set breakpoints");
+        let out = must(backend.set_breakpoints(SetBackendBreakpointsParams {
+            source: src.clone(),
+            breakpoints: vec![crate::model::DebugBreakpoint {
+                id: None,
+                source: src,
+                line: 42,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }],
+        }));
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, 7);
         assert!(out[0].verified);
@@ -1264,8 +1557,8 @@ mod tests {
         // Peer that only reports stops: no step capability.
         let peer = spawn_fake_peer(addr, PeerReportedCapabilities::default(), |_req| None);
         let mut backend = accept_backend(listener);
-        backend.initialize(InitializeBackendParams::default()).expect("handshake");
-        let err = backend.continue_thread(ThreadId(1)).expect_err("should reject");
+        must(backend.initialize(InitializeBackendParams::default()));
+        let err = must_err(backend.continue_thread(ThreadId(1)));
         assert!(matches!(err, BackendError::Unsupported(_)));
         drop(backend);
         let _ = peer.join();
@@ -1284,9 +1577,7 @@ mod tests {
         };
         let peer = spawn_fake_peer(addr, caps, |_req| None);
         let mut backend = accept_backend(listener);
-        let err = backend
-            .initialize(InitializeBackendParams::default())
-            .expect_err("peer control-mode escalation must be rejected");
+        let err = must_err(backend.initialize(InitializeBackendParams::default()));
         assert!(
             matches!(err, BackendError::Unsupported(_)),
             "expected an unsupported-mode rejection, got {err:?}"
@@ -1309,12 +1600,12 @@ mod tests {
             PeerReportedCapabilities { can_step: true, can_pause: false, ..Default::default() };
         let peer = spawn_fake_peer(addr, caps, |_req| None);
         let mut backend = accept_backend(listener);
-        backend.initialize(InitializeBackendParams::default()).expect("handshake");
+        must(backend.initialize(InitializeBackendParams::default()));
         // Stepping is allowed...
         assert!(backend.capabilities().stepping);
         // ...but pause is not, because can_pause was false.
         assert!(!backend.capabilities().pause);
-        let err = backend.pause(ThreadId(1)).expect_err("pause not negotiated");
+        let err = must_err(backend.pause(ThreadId(1)));
         assert!(matches!(err, BackendError::Unsupported(_)));
         drop(backend);
         let _ = peer.join();
@@ -1332,9 +1623,7 @@ mod tests {
             |_req| None,
         );
         let mut backend = accept_backend_with_timeout(listener, Duration::from_secs(2));
-        let err = backend
-            .initialize(InitializeBackendParams::default())
-            .expect_err("mismatched version must be rejected");
+        let err = must_err(backend.initialize(InitializeBackendParams::default()));
         assert!(
             matches!(err, BackendError::Protocol(_)),
             "expected a clear protocol rejection, got {err:?}"
@@ -1351,12 +1640,10 @@ mod tests {
         let token = "0123456789abcdef0123456789abcdef".to_string();
         let caps = PeerReportedCapabilities { can_step: true, ..Default::default() };
         let peer = spawn_fake_peer_token(addr, Some(token.clone()), caps, |_req| None);
-        let expected_token = PeerSessionToken::try_from(token).expect("valid test token");
+        let expected_token = must(PeerSessionToken::try_from(token));
         let mut backend =
             accept_backend_with_token(listener, DEFAULT_PEER_TIMEOUT, Some(expected_token));
-        backend
-            .initialize(InitializeBackendParams::default())
-            .expect("matching token must complete the handshake");
+        must(backend.initialize(InitializeBackendParams::default()));
         assert!(backend.capabilities().stepping, "capabilities negotiate after a valid handshake");
         drop(backend);
         let _ = peer.join();
@@ -1373,14 +1660,9 @@ mod tests {
         let mut backend = accept_backend_with_token(
             listener,
             Duration::from_secs(2),
-            Some(
-                PeerSessionToken::try_from("0123456789abcdef0123456789abcdef")
-                    .expect("valid test token"),
-            ),
+            Some(must(PeerSessionToken::try_from("0123456789abcdef0123456789abcdef"))),
         );
-        let err = backend
-            .initialize(InitializeBackendParams::default())
-            .expect_err("a missing token must be rejected when the host minted one");
+        let err = must_err(backend.initialize(InitializeBackendParams::default()));
         assert!(
             matches!(err, BackendError::Protocol(_)),
             "expected a clear protocol rejection, got {err:?}"
@@ -1402,14 +1684,9 @@ mod tests {
         let mut backend = accept_backend_with_token(
             listener,
             Duration::from_secs(2),
-            Some(
-                PeerSessionToken::try_from("0123456789abcdef0123456789abcdef")
-                    .expect("valid test token"),
-            ),
+            Some(must(PeerSessionToken::try_from("0123456789abcdef0123456789abcdef"))),
         );
-        let err = backend
-            .initialize(InitializeBackendParams::default())
-            .expect_err("a mismatched token must be rejected");
+        let err = must_err(backend.initialize(InitializeBackendParams::default()));
         assert!(
             matches!(err, BackendError::Protocol(_)),
             "expected a clear protocol rejection, got {err:?}"
@@ -1423,8 +1700,10 @@ mod tests {
     fn legacy_listen_constructor_fails_before_binding() {
         let error =
             match ExternalDebuggerPeerBackend::listen("0.0.0.0", 0, Duration::from_millis(10)) {
-                Ok(_) => panic!("legacy unauthenticated listen must fail closed"),
                 Err(error) => error,
+                Ok(_) => {
+                    must(Err::<BackendError, _>("legacy unauthenticated listen must fail closed"))
+                }
             };
         assert!(matches!(error, BackendError::Unsupported(_)));
     }
@@ -1439,8 +1718,8 @@ mod tests {
 
     #[test]
     fn token_matches_enforces_only_when_host_minted_one() {
-        let secret = PeerSessionToken::try_from("0123456789abcdef0123456789abcdef".to_string())
-            .expect("test token has the required shape");
+        let secret =
+            must(PeerSessionToken::try_from("0123456789abcdef0123456789abcdef".to_string()));
         // No host token => nothing enforced (back-compat connect path).
         assert!(token_matches(None, None));
         assert!(token_matches(None, Some("anything")));
@@ -1467,22 +1746,20 @@ mod tests {
         // Peer completes handshake but never answers setBreakpoints.
         let peer = spawn_fake_peer(addr, caps, |_req| None);
         let mut backend = accept_backend_with_timeout(listener, Duration::from_millis(300));
-        backend.initialize(InitializeBackendParams::default()).expect("handshake");
+        must(backend.initialize(InitializeBackendParams::default()));
         let src = DebugSource::from_path("/x.pl");
-        let err = backend
-            .set_breakpoints(SetBackendBreakpointsParams {
-                source: src.clone(),
-                breakpoints: vec![crate::model::DebugBreakpoint {
-                    id: None,
-                    source: src,
-                    line: 1,
-                    column: None,
-                    condition: None,
-                    hit_condition: None,
-                    log_message: None,
-                }],
-            })
-            .expect_err("should time out");
+        let err = must_err(backend.set_breakpoints(SetBackendBreakpointsParams {
+            source: src.clone(),
+            breakpoints: vec![crate::model::DebugBreakpoint {
+                id: None,
+                source: src,
+                line: 1,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }],
+        }));
         assert!(matches!(err, BackendError::Timeout(_)));
         drop(backend);
         let _ = peer.join();
@@ -1522,21 +1799,17 @@ mod tests {
                 })
                 .ok(),
             });
-            let _ = write.write_all(&encode_message(&hello).expect("encode hello"));
+            let _ = write.write_all(&must(encode_message(&hello)));
         });
 
         let mut backend = accept_backend_with_timeout(listener, Duration::from_secs(2));
         // Shut down the host's own outbound half before HELLO arrives, so the
         // handshake-response write inside `handle_peer_request` fails
         // deterministically.
-        lock(&backend.shared.write)
-            .shutdown(std::net::Shutdown::Write)
-            .expect("shutdown write half");
+        must(lock(&backend.shared.write).shutdown(std::net::Shutdown::Write));
         let _ = release_hello_tx.send(());
 
-        let err = backend
-            .initialize(InitializeBackendParams::default())
-            .expect_err("handshake must fail when the HELLO response write fails");
+        let err = must_err(backend.initialize(InitializeBackendParams::default()));
         assert!(
             matches!(err, BackendError::Protocol(_) | BackendError::NotConnected),
             "expected a handshake failure, got {err:?}"
@@ -1570,7 +1843,7 @@ mod tests {
                     return;
                 }
             };
-            let mut write = stream.try_clone().expect("clone");
+            let mut write = must(stream.try_clone());
             let mut read = stream;
             let mut decoder = PeerFrameDecoder::new();
             let mut buf = [0u8; 4096];
@@ -1587,7 +1860,7 @@ mod tests {
                 })
                 .ok(),
             });
-            let _ = write.write_all(&encode_message(&hello).expect("encode hello"));
+            let _ = write.write_all(&must(encode_message(&hello)));
 
             // Wait for the host's response to the FIRST hello.
             let first_ok = 'first: loop {
@@ -1596,10 +1869,10 @@ mod tests {
                     Ok(n) => {
                         decoder.push(&buf[..n]);
                         while let Ok(Some(msg)) = decoder.try_next() {
-                            if let PeerMessage::Response(resp) = msg {
-                                if resp.command == command::HELLO {
-                                    break 'first resp.success;
-                                }
+                            if let PeerMessage::Response(resp) = msg
+                                && resp.command == command::HELLO
+                            {
+                                break 'first resp.success;
                             }
                         }
                     }
@@ -1624,7 +1897,7 @@ mod tests {
                 })
                 .ok(),
             });
-            let _ = write.write_all(&encode_message(&hello2).expect("encode hello2"));
+            let _ = write.write_all(&must(encode_message(&hello2)));
 
             let second_rejected = 'second: loop {
                 match read.read(&mut buf) {
@@ -1632,10 +1905,11 @@ mod tests {
                     Ok(n) => {
                         decoder.push(&buf[..n]);
                         while let Ok(Some(msg)) = decoder.try_next() {
-                            if let PeerMessage::Response(resp) = msg {
-                                if resp.command == command::HELLO && resp.request_seq == 101 {
-                                    break 'second !resp.success;
-                                }
+                            if let PeerMessage::Response(resp) = msg
+                                && resp.command == command::HELLO
+                                && resp.request_seq == 101
+                            {
+                                break 'second !resp.success;
                             }
                         }
                     }
@@ -1646,13 +1920,12 @@ mod tests {
         });
 
         let mut backend = accept_backend_with_timeout(listener, Duration::from_secs(2));
-        backend.initialize(InitializeBackendParams::default()).expect("handshake");
+        must(backend.initialize(InitializeBackendParams::default()));
         // Capabilities from the FIRST hello must be negotiated.
         assert!(backend.capabilities().stepping, "can_step from first hello must negotiate");
         assert!(!backend.capabilities().evaluate, "first hello did not advertise evaluate");
 
-        let second_rejected =
-            result_rx.recv_timeout(Duration::from_secs(2)).expect("peer result channel");
+        let second_rejected = must(result_rx.recv_timeout(Duration::from_secs(2)));
         assert!(second_rejected, "second HELLO (replay) must be rejected by the host");
 
         // Capabilities must be UNCHANGED after the rejected replay attempt.
@@ -1672,8 +1945,8 @@ mod tests {
     // --- test rendezvous helpers (host listens, fake peer connects) ---
 
     fn bind_ephemeral() -> (TcpListener, std::net::SocketAddr) {
-        let l = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
-        let a = l.local_addr().expect("addr");
+        let l = must(TcpListener::bind(("127.0.0.1", 0)));
+        let a = must(l.local_addr());
         (l, a)
     }
 
@@ -1685,8 +1958,8 @@ mod tests {
         listener: TcpListener,
         timeout: Duration,
     ) -> ExternalDebuggerPeerBackend {
-        let (stream, _) = listener.accept().expect("accept");
-        ExternalDebuggerPeerBackend::from_stream(stream, timeout).expect("backend")
+        let (stream, _) = must(listener.accept());
+        must(ExternalDebuggerPeerBackend::from_stream(stream, timeout))
     }
 
     fn accept_backend_with_token(
@@ -1694,8 +1967,7 @@ mod tests {
         timeout: Duration,
         expected_token: Option<PeerSessionToken>,
     ) -> ExternalDebuggerPeerBackend {
-        let (stream, _) = listener.accept().expect("accept");
-        ExternalDebuggerPeerBackend::from_stream_with_token(stream, timeout, expected_token)
-            .expect("backend")
+        let (stream, _) = must(listener.accept());
+        must(ExternalDebuggerPeerBackend::from_stream_with_token(stream, timeout, expected_token))
     }
 }

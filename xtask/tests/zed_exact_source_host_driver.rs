@@ -93,54 +93,88 @@ fn observation_template_is_not_run_bound_and_cell_complete() -> Result<(), Box<d
 }
 
 #[test]
-fn driver_uses_reviewed_zed_surfaces_and_bound_provider_identity() -> Result<(), Box<dyn Error>> {
+fn driver_behaves_through_the_owned_python_contract() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let prepare = read(&root, "scripts/zed_host/prepare.py")?;
-    let process = read(&root, "scripts/zed_host/process.py")?;
-    let finalize = read(&root, "scripts/zed_host/finalize.py")?;
-    let entry = read(&root, "scripts/zed_exact_source_prepare.py")?;
+    let script = r#"
+import os
+import sys
+from pathlib import Path
 
-    for identity in ["perllsp", "!perlnavigator-server", "!perl-lsp", "..."] {
-        assert!(prepare.contains(identity), "missing provider ordering `{identity}`");
-    }
-    assert!(prepare.contains("\"arguments\": []"));
-    assert!(prepare.contains("zed::InstallDevExtension"));
-    assert!(prepare.contains("require_clean_git_checkout"));
-    assert!(prepare.contains("_parse_perllsp_identity"));
-    assert!(prepare.contains("prepared_manifest_sha256"));
-    assert!(entry.contains("binary_override"));
-    assert!(!entry.contains("explicit_binary_path"));
-    assert!(!prepare.contains("extensions/installed"));
-    assert!(!prepare.contains("index.json"));
+sys.path.insert(0, str(Path.cwd() / "scripts"))
+from zed_host.prepare import HostReceiptError, _parse_perllsp_identity, _settings
 
-    for argument in ["--zed", "--foreground", "--wait", "--user-data-dir"] {
-        assert!(process.contains(argument), "missing reviewed Zed argument `{argument}`");
-    }
-    assert!(process.contains("matching_processes(perllsp)"));
-    assert!(process.contains("new_surviving_perllsp_pids"));
-    assert!(process.contains("prepared_manifest_sha256"));
-    assert!(process.contains("Zed exact-source host session exceeded the bounded timeout"));
+assert _parse_perllsp_identity(
+    "perllsp 0.18.0\nGit commit: abcdef1",
+    "0.18.0",
+    "abcdef1234567890abcdef1234567890abcdef12",
+) == "abcdef1"
 
-    assert!(finalize.contains("exact-source-template.json"));
-    assert!(finalize.contains("validate-zed-host-receipt"));
-    assert!(finalize.contains("_require_run_binding"));
-    assert!(finalize.contains("verify_artifact_reference"));
-    assert!(finalize.contains("ignored=(\".git\",)"));
-    assert!(finalize.contains("Exact-source development-extension evidence only"));
-    assert!(!finalize.contains("public_registry_install"));
-    assert!(!finalize.contains("managed_download"));
+for output in ("", "perllsp 0.18.0\nGit commit: deadbee"):
+    try:
+        _parse_perllsp_identity(
+            output,
+            "0.18.0",
+            "abcdef1234567890abcdef1234567890abcdef12",
+        )
+    except HostReceiptError:
+        pass
+    else:
+        raise AssertionError("invalid perllsp identity was accepted")
+
+settings = _settings({"trace": True}, Path("/tmp/perllsp"), "binary_override")
+assert settings["languages"]["Perl"]["language_servers"] == [
+    "perllsp",
+    "!perlnavigator-server",
+    "!perl-lsp",
+    "...",
+]
+# The configured path is an opaque token, not a filesystem claim: _settings
+# embeds `str(perllsp)`, so the expectation must go through the same Path->str
+# conversion. On Windows str(Path("/tmp/perllsp")) is "\\tmp\\perllsp" while
+# the raw environment token stays "/tmp/perllsp"; comparing one against the
+# other makes this contract host-dependent.
+expected_path = str(Path(os.environ["ZED_EXPECTED_PERLLSP_PATH"]))
+assert settings["lsp"]["perllsp"]["binary"] == {
+    "path": expected_path,
+    "arguments": [],
+}
+assert settings["lsp"]["perllsp"]["settings"]["perl"] == {"trace": True}
+
+path_settings = _settings({}, Path("/tmp/perllsp"), "worktree_path")
+assert "binary" not in path_settings["lsp"]["perllsp"]
+"#;
+    let output = Command::new(python())
+        .arg("-c")
+        .arg(script)
+        .env("ZED_EXPECTED_PERLLSP_PATH", PathBuf::from("/tmp/perllsp").to_string_lossy().as_ref())
+        .current_dir(&root)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "Python contract test failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     Ok(())
 }
 
 #[test]
-fn shared_rust_validator_checks_schema_then_semantics() -> Result<(), Box<dyn Error>> {
+fn validator_cli_checks_schema_then_semantics() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let validator = read(&root, "xtask/src/bin/validate-zed-host-receipt.rs")?;
-    assert!(validator.contains("support/zed_host_compat.rs"));
-    assert!(validator.contains("validate_schema(&receipt)"));
-    assert!(validator.contains("validate_pass(&receipt, None)"));
-    assert!(validator.contains("--schema-only"));
-    assert!(!validator.contains("public_subject"));
+    let template = root.join(".ci/fixtures/zed-perl-upstream/receipts/exact-source-template.json");
+    let validator = env!("CARGO_BIN_EXE_validate-zed-host-receipt");
+
+    let schema_only =
+        Command::new(validator).arg("--schema-only").arg(&template).current_dir(&root).output()?;
+    assert!(
+        schema_only.status.success(),
+        "schema-only validation failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&schema_only.stdout),
+        String::from_utf8_lossy(&schema_only.stderr)
+    );
+
+    let full = Command::new(validator).arg(&template).current_dir(&root).output()?;
+    assert!(!full.status.success(), "not-run template must fail full semantic validation");
     Ok(())
 }
 

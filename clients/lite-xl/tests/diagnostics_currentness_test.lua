@@ -217,6 +217,11 @@ end
 ---The diagnostics module under test is injectable: default is the staged
 ---patched module; red-first runs pass the pristine blob path instead.
 local diag_under_test = nil
+-- Local patch (#11172): the staged modules fold their capability
+-- advertisement and command projection through the exact manifest source.
+package.preload["plugins.lsp.capability_manifest"] = function()
+  return dofile(here .. "/../upstream/capability_manifest.lua")
+end
 package.preload["plugins.lsp.diagnostics"] = function()
   return dofile(diag_module_path)
 end
@@ -342,7 +347,7 @@ local function pub(diag, d, params)
   end
   -- Pristine fallback: emulate the upstream anonymous-filename listener so
   -- red-baseline assertions exercise real pristine behavior.
-  local fname = dofile(here .. "/../upstream/util.lua").tofilename(params.uri)
+  local fname = dofile(here .. "/../upstream/util.lua").uri_to_path(params.uri)
   if params.diagnostics and #params.diagnostics > 0 then
     return diag.add(fname, params.diagnostics), nil
   end
@@ -365,15 +370,15 @@ local function retire_provider(diag, name)
 end
 
 ---Filename exactly as production derives it from a document path
----(touri -> project_absolute_path -> listener tofilename round trip).
+---(path_to_uri -> project_absolute_path -> listener uri_to_path round trip).
 local path_util = dofile(here .. "/../upstream/util.lua")
 ---Wire URI exactly as production derives it from a document path.
 local function wire_uri(path)
-  return path_util.touri(path)
+  return path_util.path_to_uri(path)
 end
 
 local function platform_path(path)
-  return path_util.tofilename(path_util.touri(path))
+  return path_util.uri_to_path(path_util.path_to_uri(path))
 end
 
 local function visible_messages(diag, filename)
@@ -593,10 +598,18 @@ do
   ok(#lintplus_calls == 0,
     "A9: cleaned-up subject's delayed timer renders nothing")
 
-  -- A fresh session's timer still renders current content.
+  -- A fresh session's timer still renders current content through the
+  -- #11128 presentation authority (resolver supplies the live document).
+  local live_doc = setmetatable({ lines = { "second here\n" } }, {})
+  if diag.set_render_resolver then
+    diag.set_render_resolver(function(uri) return live_doc end,
+      function(uri, provider, sg, version)
+        return sg == 2 and version == 2
+      end)
+  end
   pub(diag, { generation = 1, session_generation = 2, version = 2 },
     { uri = URI, version = 2, diagnostics = {
-      { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 1 } }, message = "second", severity = 1 },
+      { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 6 } }, message = "second", severity = 1 },
     } })
   diag.lintplus_populate_delayed(platform_path("C:/proj/app.pl"))
   timers[#timers].on_timer()
@@ -911,6 +924,53 @@ do
   ok(#visible == 2, "B5: both providers visible for one file")
   ok(visible[1].message == "p-set" and visible[2].message == "n-set",
     "B5: deterministic severity-sorted merge with attribution")
+end
+
+-- ---------------------------------------------------------------------------
+-- Case B6: an unversioned publication (no params.version) is admitted
+-- not-proven and still reaches delayed inline rendering while its session is
+-- live; its currentness rides on session identity, never version equality.
+-- ---------------------------------------------------------------------------
+do
+  local lsp = fresh_module_load()
+  local server = make_server("perllsp", INCREMENTAL_CAPS)
+  register(lsp, "perllsp", server)
+  local doc = make_doc("C:/proj/b6.pl", { "x\n" })
+  -- Register the editor-side open buffer so the real resolver finds a live
+  -- document (a real editor has every open doc in core.docs).
+  table.insert(require("core").docs, doc)
+  open_admitted(lsp, doc, server)
+  local listener = lsp.handle_publish_diagnostics
+  local diag = package.loaded["plugins.lsp.diagnostics"]
+
+  -- No params.version at all: the bounded unversioned admission policy.
+  listener(server, { uri = wire_uri("C:/proj/b6.pl"),
+    diagnostics = { { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 1 } }, message = "unversioned", severity = 1 } } })
+  local visible = diag.get(platform_path("C:/proj/b6.pl")) or {}
+  ok(#visible == 1 and visible[1].message == "unversioned",
+    "B6: unversioned publication admitted under bounded policy")
+
+  -- It must reach delayed inline rendering through the real resolver while
+  -- the session lives; a version-equality check against "not_proven" would
+  -- skip every render forever.
+  diag.lintplus_populate_delayed(platform_path("C:/proj/b6.pl"))
+  timers[#timers].on_timer()
+  local rendered = {}
+  for _, call in ipairs(lintplus_calls) do rendered[call.text] = true end
+  ok(rendered["unversioned"] == true,
+    "B6: not-proven subject renders inline under session identity")
+
+  -- Advancing the document version without a newer publication cannot make
+  -- the not-proven subject stale: its evidence was never version-exact.
+  doc.lines[1] = "xy\n"
+  doc:raw_insert(1, 2, "y", nil, 0)
+  drain(server, "textDocument/didChange")
+  diag.lintplus_populate_delayed(platform_path("C:/proj/b6.pl"))
+  timers[#timers].on_timer()
+  rendered = {}
+  for _, call in ipairs(lintplus_calls) do rendered[call.text] = true end
+  ok(rendered["unversioned"] == true,
+    "B6: version advance alone does not stale a not-proven subject")
 end
 
 print(string.format("PART B: %d passed, %d failed", passed, failed))

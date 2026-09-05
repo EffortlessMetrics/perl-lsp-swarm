@@ -6,17 +6,12 @@ use perl_parser_core::{Node, NodeKind};
 /// Only looks at top-level Program statements to avoid interference from
 /// nested subs (closures, inner subs, etc.).
 fn extract_subroutine_declarator(ast: &Node) -> Option<String> {
-    match &ast.kind {
-        NodeKind::Program { statements } => {
-            for stmt in statements {
-                if let NodeKind::Subroutine { declarator, name, .. } = &stmt.kind {
-                    if name.is_some() {
-                        return declarator.clone();
-                    }
-                }
+    if let NodeKind::Program { statements } = &ast.kind {
+        for stmt in statements {
+            if let NodeKind::Subroutine { declarator, name: Some(_), .. } = &stmt.kind {
+                return declarator.clone();
             }
         }
-        _ => {}
     }
     None
 }
@@ -26,10 +21,8 @@ fn extract_all_subroutine_declarators(ast: &Node) -> Vec<(String, Option<String>
     let mut result = Vec::new();
     if let NodeKind::Program { statements } = &ast.kind {
         for stmt in statements {
-            if let NodeKind::Subroutine { declarator, name, .. } = &stmt.kind {
-                if let Some(n) = name {
-                    result.push((n.clone(), declarator.clone()));
-                }
+            if let NodeKind::Subroutine { declarator, name: Some(n), .. } = &stmt.kind {
+                result.push((n.clone(), declarator.clone()));
             }
         }
     }

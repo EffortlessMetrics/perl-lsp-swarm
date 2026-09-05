@@ -1,24 +1,41 @@
-# CODEOWNERS — review gate for sensitive paths
+# CODEOWNERS — source routing declaration for sensitive paths
 #
-# These patterns require a designated reviewer before merging.
-# This is a coordination gate, not an enforcement mechanism.
+# This file is ROUTING METADATA ONLY. It distinguishes three things that must
+# never be conflated (issue #11793):
+#
+#   1. a source routing declaration        — this file;
+#   2. current-head review evidence        — an independent adversarial
+#      review packet over the exact reviewed head
+#      (schemas/agent_review_packet.v1.schema.json, #10881/#11701);
+#   3. live required-review enforcement    — branch protection / rulesets,
+#      owned by the enforcement successor #11796.
+#
+# A CODEOWNERS pattern is not proof that review happened, and review evidence
+# is never satisfied by issue labels or PR colour. The checked denominator of
+# sensitive authority surfaces and their required-evidence classes lives in
+# policy/review-surfaces.toml (validated by scripts/ci/validate_review_surfaces.py).
+#
+# Owner identity: every owner below must be platform-validated with repository
+# access and recorded in [code_owner_identity] there. @EffortlessMetrics is an
+# organization without a /team suffix, which GitHub cannot assign; rows were
+# repaired to the validated admin user in #11793.
 # See: scripts/control-plane-lock.sh for the advisory write lock.
 
-# Control-plane files — any change here needs orchestrator review
-CLAUDE.md                    @EffortlessMetrics
-.claude/agents/**            @EffortlessMetrics
-.claude/commands/**          @EffortlessMetrics
+# Control-plane files — route orchestrator review here
+CLAUDE.md                    @EffortlessSteven
+.claude/agents/**            @EffortlessSteven
+.claude/commands/**          @EffortlessSteven
 
 # Lock and ops infrastructure
-scripts/control-plane-lock.sh   @EffortlessMetrics
-.ops-perl-lsp/                   @EffortlessMetrics
+scripts/control-plane-lock.sh   @EffortlessSteven
+.ops-perl-lsp/                   @EffortlessSteven
 
 # CI workflows and reusable actions
-.github/workflows/**         @EffortlessMetrics
-.github/actions/**           @EffortlessMetrics
-.github/CODEOWNERS           @EffortlessMetrics
+.github/workflows/**         @EffortlessSteven
+.github/actions/**           @EffortlessSteven
+.github/CODEOWNERS           @EffortlessSteven
 
 # Trusted-base workflow-security controls
-.ci/workflow-security-baseline.json             @EffortlessMetrics
-scripts/ci/workflow_security_ratchet.py          @EffortlessMetrics
-scripts/ci/test_workflow_security_ratchet.py     @EffortlessMetrics
+.ci/workflow-security-baseline.json             @EffortlessSteven
+scripts/ci/workflow_security_ratchet.py          @EffortlessSteven
+scripts/ci/test_workflow_security_ratchet.py     @EffortlessSteven

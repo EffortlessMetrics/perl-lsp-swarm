@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "case_id": "A09-zero-work-or-malformed-as-success",
+  "family": "verifier_denominator_weakening",
+  "purpose": "Empty selection, skips, timeouts, malformed tool JSON, or missing instruments rendered as success launders non-proof into green.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "bin"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "malformed json ignored",
+      "zero selected work",
+      "Err(_) =>"
+    ],
+    "content": "fn summarize(raw: &str) -> String {\n    // dishonest: malformed json ignored; zero selected work reported as success\n    match serde_json::from_str::<serde_json::Value>(raw) {\n        Ok(value) => value.to_string(),\n        Err(_) => String::from(\"status=success findings=0\"),\n    }\n}\n",
+    "sha256": "1dc518e054a4ea0dccbd33b754bdb1837b5f4868cd3477a5a959602f73fc533b"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "receipt_contract",
+    "reference": "symbol:xtask/src/rust_hygiene.rs#RustHygieneResultClassV1"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "non_proof_rendered_success"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "NotProven",
+      "parse_errors"
+    ],
+    "note": "Malformed streams classify as NotProven with limitations.",
+    "content": "let parsed = rust_hygiene::parse_cargo_json_stream(raw);\nif !parsed.parse_errors.is_empty() || !parsed.build_finished {\n    return RustHygieneResultClassV1::NotProven;\n}\n",
+    "sha256": "b93fdb2e83dc3fb505c1e14234f8fc2e4fd44954b7bcf973e7975e0d30f5901a"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Fail-closed receipt kernel (#9365) proves malformed/absent build-finished input cannot become Success."
+}

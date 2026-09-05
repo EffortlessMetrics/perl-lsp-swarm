@@ -185,7 +185,7 @@ fn capability_rows() -> Vec<SurfaceRow> {
             competing_paths: vec![CompetingPath {
                 path: RT_INIT,
                 delta: "runtime replaces the whole textDocumentSync value after initialize \
-                        parsing: adds willSave=true, willSaveWaitUntil=true and turns save \
+                        parsing: adds willSave=true, willSaveWaitUntil=false and turns save \
                         from boolean true into {includeText:true} (see \
                         mut.handle_initialize.textDocumentSyncOverride)",
             }],
@@ -327,21 +327,6 @@ fn capability_rows() -> Vec<SurfaceRow> {
             "features.toml#lsp.formatting",
         ),
         SurfaceRow {
-            competing_paths: vec![CompetingPath {
-                path: S_JSON,
-                delta: "capabilities_for() emits boolean true (OneOf::Left) but capabilities_json() \
-                        replaces the whole value with {rangesSupport:true} when range_formatting is \
-                        enabled (LSP 3.18 rangesSupport absent from lsp-types 0.97)",
-            }],
-            ..cap(
-                "cap.documentRangeFormattingProvider.rangesSupport",
-                "documentRangeFormattingProvider.rangesSupport",
-                S_JSON,
-                "textDocument/rangeFormatting multi-range variant",
-                "features.toml#lsp.ranges_formatting; lifecycle tests ranges_formatting_*",
-            )
-        },
-        SurfaceRow {
             client_capability_inputs: &[
                 "textDocument.rename.prepareSupport",
                 "textDocument.rename.prepareSupportDefaultBehavior",
@@ -354,20 +339,6 @@ fn capability_rows() -> Vec<SurfaceRow> {
                 "features.toml#lsp.prepare_rename; lifecycle tests prepare_support_default_behavior",
             )
         },
-        cap(
-            "cap.documentOnTypeFormattingProvider.firstTriggerCharacter",
-            "documentOnTypeFormattingProvider.firstTriggerCharacter",
-            S_EDIT,
-            "textDocument/onTypeFormatting",
-            "features.toml#lsp.on_type_formatting",
-        ),
-        cap(
-            "cap.documentOnTypeFormattingProvider.moreTriggerCharacter[]",
-            "documentOnTypeFormattingProvider.moreTriggerCharacter[]",
-            S_EDIT,
-            "textDocument/onTypeFormatting",
-            "features.toml#lsp.on_type_formatting",
-        ),
         cap(
             "cap.linkedEditingRangeProvider",
             "linkedEditingRangeProvider",
@@ -778,16 +749,16 @@ fn mutation_rows() -> Vec<SurfaceRow> {
                 "(feature, static-support, dynamic-support) tri-state removes/re-inserts the static provider; lsp_inline_completion_registration_tests.rs",
             )
         },
-        // Initialize-result envelope assembly (outside serverCapabilities but
-        // part of the final surface emitted by handle_initialize).
+        // Initialize-result envelope: capabilities + serverInfo (no
+        // protocolVersion); see exact_process_initialize_result_matches_selected_schema.
         SurfaceRow {
-            additional_owned_pointers: &["envelope.serverInfo.name", "envelope.serverInfo.version"],
+            additional_owned_pointers: &["envelope.serverInfo.version"],
             client_capability_inputs: NO_CLIENT,
             ..mut_row(
                 "mut.handle_initialize.envelopeAssembly",
-                "envelope.protocolVersion=3.18",
+                "envelope.serverInfo.name",
                 NO_CLIENT,
-                "LSP_PROTOCOL_VERSION const + serverInfo name/version in the initialize result envelope; json!() assembly kept per in-source rationale comment",
+                "serverInfo name/version in the initialize result envelope; json!() assembly kept per in-source rationale comment",
             )
         },
     ]
@@ -809,7 +780,7 @@ fn registration_rows() -> Vec<SurfaceRow> {
             ],
             &["AdvertisedFeatures.workspace_symbol", "config runtime_tuning.file_watchers"],
             Disposition::Dynamic,
-            "features.toml#lsp.did_change_watched_files; lsp_registration_tests.rs; RelativePattern fallback string globs (**/*.pl,*.pm,*.t,*.psgi)",
+            "features.toml#lsp.did_change_watched_files; lsp_registration_tests.rs; single catch-all glob (**/*) on the RelativePattern watcher surface with string-glob fallback, handler-side Perl classification (#13308)",
         ),
         registration(
             "reg.perl-inlineCompletion",

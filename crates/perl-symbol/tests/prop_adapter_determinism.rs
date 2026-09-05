@@ -5,6 +5,7 @@
 //! **Property 4: Adapter Determinism** — For any set of SymbolDecls and a FileId,
 //! running `symbol_decls_to_semantic_facts` twice with the same inputs produces
 //! identical output. Same for `symbol_refs_to_semantic_facts`.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_semantic_facts::{EntityId, FileId};
 use perl_symbol::{

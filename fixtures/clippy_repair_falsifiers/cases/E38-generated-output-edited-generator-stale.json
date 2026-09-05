@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "case_id": "E38-generated-output-edited-generator-stale",
+  "family": "structural_ownership_theater",
+  "purpose": "Editing generated output while its generator stays stale forks truth between source-of-record and artifact.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "hand-edited row added",
+      "invented-proof"
+    ],
+    "content": "<!-- docs/status/compiler-concepts.md : hand-edited row added -->\n| concept | invented-proof |\n",
+    "sha256": "44d2025d374f8300d7f2be4142235d9014c40a0fa097d9d9a36ce5d7c9ce5ae6"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "file_contract",
+    "reference": "file:policy/generated-status-contract.toml#"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "generator_stale_edit"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "compiler-concepts -- --check"
+    ],
+    "note": "Status regenerated through the owning validator.",
+    "content": "cargo run --locked -p xtask --bin compiler-concepts -- --check\n",
+    "sha256": "4082f3205cae4bc48332edac5793fdaecd0f84d48acdcaf2cb70aa59ccf3a4ca"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "compiler concept/proof gates fail closed on drifted generated docs; generic generated-status contract recorded alongside."
+}

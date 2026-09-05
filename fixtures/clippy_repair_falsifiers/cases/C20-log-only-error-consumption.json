@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "C20-log-only-error-consumption",
+  "family": "lost_work_error_obligation_theater",
+  "purpose": "Logging added solely to consume an error converts recoverable flow into unread diagnostics without recovery.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "eprintln!(\"push failed",
+      "if let Err(err)"
+    ],
+    "content": "pub fn sync(replica: &Replica) -> Status {\n    if let Err(err) = replica.push_delta() {\n        eprintln!(\"push failed: {err}\");\n    }\n    Status::Synced\n}\n",
+    "sha256": "d2384c7a5da8373db39f8b4ca86a349fadee3b222b238e0f5a00d5fa8812334f"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 9850,
+    "unresolved_reason": "No dedicated governing leaf covers log-only error consumption; programme controller owns cohort assignment."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "log_only_error_consumption"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "push_delta()?",
+      "DeltaError"
+    ],
+    "note": "Failure propagates; logging complements, never replaces.",
+    "content": "pub fn sync(replica: &Replica) -> Result<Status, DeltaError> {\n    replica.push_delta()?;\n    Ok(Status::Synced)\n}\n",
+    "sha256": "a71be513a12d943fec80ac931415e1e0f93b719dc66fed818bd4484a41c19af8"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Corpus records the theater; automated rejection awaits an owning cohort."
+}

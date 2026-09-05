@@ -1,0 +1,31 @@
+{
+  "schema": "train_edge_contract.v1",
+  "schema_version": 1,
+  "contract_id": "invalid-unknown-selecting-authority",
+  "programme": { "name": "invalid-examples" },
+  "propositions": [
+    { "id": "P_gate", "claim_ceiling": "Gated only." },
+    { "id": "P_branch", "claim_ceiling": "Branch only." }
+  ],
+  "edges": [
+    {
+      "source": "P_gate",
+      "kind": "conditional_release_gate",
+      "target": "P_branch",
+      "selecting_authority": "undeclared_ad_hoc_agent",
+      "selected_value": "branch_one",
+      "selection_subject": "scope",
+      "active_predecessor": "P_branch",
+      "invalidation_rule": "selection expires on change"
+    }
+  ],
+  "claim_profiles": [
+    {
+      "id": "invalid_profile",
+      "version": 1,
+      "required": ["P_gate"],
+      "allowed_terminal_limitation_states": ["not_proven"],
+      "claim_ceiling": "Invalid example only."
+    }
+  ]
+}

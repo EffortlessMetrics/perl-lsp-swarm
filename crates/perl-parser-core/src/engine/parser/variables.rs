@@ -152,10 +152,8 @@ impl<'a> Parser<'a> {
             // A parenthesized RHS (`my $a = (1, $b);`) is unaffected: the
             // parens are parsed as a single primary term by `parse_ternary`
             // regardless of the outer precedence level.
-            let assign_op = self.peek_compound_assign_op();
-            let initializer = if let Some(op) = assign_op {
-                let op_token = self.tokens.next()?;
-                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+            let initializer = if let Some((op, op_start)) = self.consume_assignment_operator()? {
+                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
                     missing
                 } else {
                     self.parse_assignment()?
@@ -180,10 +178,15 @@ impl<'a> Parser<'a> {
 
             // Don't consume semicolon here - let parse_statement handle it uniformly
 
-            let end = initializer.as_ref().map_or_else(
-                || self.previous_position(),
-                |node| node.location.end.max(self.previous_position()),
-            );
+            // `previous_position()` only advances through `consume_token`, and
+            // the `local` target above is parsed through `parse_assignment`,
+            // which pulls the operator and RHS straight from the token stream.
+            // Anchor the end on the parsed nodes so `local $x = EXPR` spans the
+            // whole assignment instead of stopping at `$x`.
+            let end = initializer
+                .as_ref()
+                .map_or(variable.location.end, |node| node.location.end)
+                .max(self.previous_position());
             let node = Node::new(
                 NodeKind::VariableDeclaration {
                     declarator,
@@ -204,7 +207,7 @@ impl<'a> Parser<'a> {
                 let undef_token = self.consume_token()?;
                 Ok(Node::new(
                     NodeKind::Undef,
-                    SourceLocation { start: undef_token.start, end: undef_token.end },
+                    SourceLocation { start: undef_token.start(), end: undef_token.end() },
                 ))
             }
             Some(TokenKind::LeftParen) => {
@@ -293,13 +296,13 @@ impl<'a> Parser<'a> {
             } else {
                 let next = self.tokens.peek_second()?;
                 matches!(
-                    next.kind,
+                    next.kind(),
                     TokenKind::ScalarSigil
                         | TokenKind::ArraySigil
                         | TokenKind::HashSigil
                         | TokenKind::SubSigil
                         | TokenKind::GlobSigil
-                ) || (next.kind == TokenKind::Identifier
+                ) || (next.kind() == TokenKind::Identifier
                     && next
                         .text
                         .chars()
@@ -331,7 +334,12 @@ impl<'a> Parser<'a> {
             None
         };
 
-        let end = self.previous_position();
+        // See `parse_variable_declaration`: the localized lvalue and RHS are
+        // parsed from the raw token stream, so anchor the end on the nodes.
+        let end = initializer
+            .as_ref()
+            .map_or(variable.location.end, |node| node.location.end)
+            .max(self.previous_position());
         let node = Node::new(
             NodeKind::VariableDeclaration {
                 declarator,
@@ -349,20 +357,18 @@ impl<'a> Parser<'a> {
         // If the next token is a sigil token, delegate to parse_variable_from_sigil
         // This handles cases where the lexer splits sigil and name (e.g. "%" "hash" vs "%hash")
         // Also handles operators that can act as sigils in this context (%, &, *)
-        if let Some(kind) = self.peek_kind() {
-            match kind {
-                TokenKind::ScalarSigil
-                | TokenKind::ArraySigil
-                | TokenKind::HashSigil
-                | TokenKind::SubSigil
-                | TokenKind::GlobSigil
-                | TokenKind::Percent     // %hash
-                | TokenKind::BitwiseAnd  // &sub
-                | TokenKind::Star => {   // *glob
-                    return self.parse_variable_from_sigil();
-                }
-                _ => {}
-            }
+        if let Some(
+            TokenKind::ScalarSigil
+            | TokenKind::ArraySigil
+            | TokenKind::HashSigil
+            | TokenKind::SubSigil
+            | TokenKind::GlobSigil
+            | TokenKind::Percent      // %hash
+            | TokenKind::BitwiseAnd   // &sub
+            | TokenKind::Star,        // *glob
+        ) = self.peek_kind()
+        {
+            return self.parse_variable_from_sigil();
         }
 
         let token = self.consume_token()?;
@@ -374,7 +380,7 @@ impl<'a> Parser<'a> {
         if let Some(name) = Self::simple_braced_scalar_token_name(text) {
             return Ok(Node::new(
                 NodeKind::Variable { sigil: String::from("$"), name: name.to_string() },
-                SourceLocation { start: token.start, end: token.end },
+                SourceLocation { start: token.start(), end: token.end() },
             ));
         }
 
@@ -385,7 +391,7 @@ impl<'a> Parser<'a> {
         if let Some(name) = Self::qualified_braced_scalar_token_name(text) {
             return Ok(Node::new(
                 NodeKind::Variable { sigil: String::from("$"), name: name.to_string() },
-                SourceLocation { start: token.start, end: token.end },
+                SourceLocation { start: token.start(), end: token.end() },
             ));
         }
 
@@ -396,10 +402,10 @@ impl<'a> Parser<'a> {
                 .chars()
                 .next()
                 .ok_or_else(|| {
-                    ParseError::syntax("Empty token text for array/hash dereference", token.start)
+                    ParseError::syntax("Empty token text for array/hash dereference", token.start())
                 })?
                 .to_string();
-            let start = token.start;
+            let start = token.start();
 
             // Parse the expression inside the braces
             let (expr, folded) = if sigil == "$" {
@@ -431,7 +437,7 @@ impl<'a> Parser<'a> {
 
         // Special handling for &{ (code dereference)
         if &**text == "&{" {
-            return self.parse_code_dereference(token.start);
+            return self.parse_code_dereference(token.start());
         }
 
         let (sigil, name) = if let Some(rest) = text.strip_prefix('$') {
@@ -448,7 +454,7 @@ impl<'a> Parser<'a> {
         } else {
             return Err(ParseError::syntax(
                 format!("Expected variable, found '{}'", text),
-                token.start,
+                token.start(),
             ));
         };
 
@@ -463,12 +469,12 @@ impl<'a> Parser<'a> {
             && self.peek_kind() != Some(TokenKind::Assign)
         {
             let inner_text = &name[1..name.len() - 1];
-            let (operand, diagnostics) = parse_inline_expression(inner_text, token.start + 2)?;
+            let (operand, diagnostics) = parse_inline_expression(inner_text, token.start() + 2)?;
             self.errors.extend(diagnostics);
-            let end = token.end;
+            let end = token.end();
             let node = Node::new(
                 NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(operand) },
-                SourceLocation { start: token.start, end },
+                SourceLocation { start: token.start(), end },
             );
             return self.parse_postfix_chain(node);
         }
@@ -493,14 +499,14 @@ impl<'a> Parser<'a> {
                 // `${ name }` == `$name` (perlref): already folded to a
                 // scalar variable node; do not re-wrap in Unary{"${}"}.
                 let mut folded_node = expr;
-                folded_node.location = SourceLocation { start: token.start, end };
+                folded_node.location = SourceLocation { start: token.start(), end };
                 return Ok(folded_node);
             }
 
             let op = format!("{}{{}}", sigil);
             return Ok(Node::new(
                 NodeKind::Unary { op, operand: Box::new(expr) },
-                SourceLocation { start: token.start, end },
+                SourceLocation { start: token.start(), end },
             ));
         }
 
@@ -511,8 +517,8 @@ impl<'a> Parser<'a> {
         // any trailing postfix (like `()` for function calls), then expect `}`.
         if name.starts_with('{') && !name.ends_with('}') {
             let inner_name = &name[1..]; // strip leading {
-            let inner_start = token.start + sigil.len() + 1; // after sigil and {
-            let inner_end = token.end;
+            let inner_start = token.start() + sigil.len() + 1; // after sigil and {
+            let inner_end = token.end();
 
             // `${sep }` (trailing whitespace before `}`, none after `${`):
             // the lexer greedily captures `${sep` as one token because
@@ -529,7 +535,7 @@ impl<'a> Parser<'a> {
                 let end = self.previous_position();
                 return Ok(Node::new(
                     NodeKind::Variable { sigil: "$".to_string(), name: inner_name.to_string() },
-                    SourceLocation { start: token.start, end },
+                    SourceLocation { start: token.start(), end },
                 ));
             }
 
@@ -558,13 +564,13 @@ impl<'a> Parser<'a> {
             let op = format!("{}{{}}", sigil);
             return Ok(Node::new(
                 NodeKind::Unary { op, operand: Box::new(inner) },
-                SourceLocation { start: token.start, end },
+                SourceLocation { start: token.start(), end },
             ));
         }
 
         // Check if the variable name is followed by :: for package-qualified variables
         let mut full_name = name;
-        let mut end = token.end;
+        let mut end = token.end();
 
         // Handle $#$ref — last index of dereferenced array
         // The lexer sends `$#` as Identifier("$#"), so sigil="$" name="#"
@@ -577,7 +583,7 @@ impl<'a> Parser<'a> {
                 let inner_end = inner.location.end;
                 return Ok(Node::new(
                     NodeKind::Unary { op: "$#".to_string(), operand: Box::new(inner) },
-                    SourceLocation { start: token.start, end: inner_end },
+                    SourceLocation { start: token.start(), end: inner_end },
                 ));
             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                 // $#{expr} — last index via block dereference
@@ -588,7 +594,7 @@ impl<'a> Parser<'a> {
                 let brace_end = self.previous_position();
                 return Ok(Node::new(
                     NodeKind::Unary { op: "$#".to_string(), operand: Box::new(inner) },
-                    SourceLocation { start: token.start, end: brace_end },
+                    SourceLocation { start: token.start(), end: brace_end },
                 ));
             }
         }
@@ -606,11 +612,11 @@ impl<'a> Parser<'a> {
                     .tokens
                     .peek()
                     .ok()
-                    .is_some_and(|name_token| name_token.start == end))
+                    .is_some_and(|name_token| name_token.start() == end))
         {
             let name_token = self.tokens.next()?;
             full_name.push_str(&name_token.text);
-            end = name_token.end;
+            end = name_token.end();
         }
 
         // Handle :: in package-qualified variables
@@ -622,7 +628,7 @@ impl<'a> Parser<'a> {
             if self.peek_kind() == Some(TokenKind::Identifier) {
                 let name_token = self.tokens.next()?;
                 full_name.push_str(&name_token.text);
-                end = name_token.end;
+                end = name_token.end();
             } else {
                 // Handle cases like $Foo::$bar
                 return Err(ParseError::syntax(
@@ -636,7 +642,7 @@ impl<'a> Parser<'a> {
             let name = normalize_dynamic_typeglob_name(&full_name);
             Ok(Node::new(
                 NodeKind::Typeglob { name },
-                SourceLocation { start: token.start, end },
+                SourceLocation { start: token.start(), end },
             ))
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
             && Self::is_unbraced_scalar_deref_name(&full_name)
@@ -646,17 +652,17 @@ impl<'a> Parser<'a> {
             let inner_name = full_name[1..].to_string();
             let inner = Node::new(
                 NodeKind::Variable { sigil: "$".to_string(), name: inner_name },
-                SourceLocation { start: token.start + sigil.len(), end },
+                SourceLocation { start: token.start() + sigil.len(), end },
             );
             let op = format!("{}{{}}", sigil);
             Ok(Node::new(
                 NodeKind::Unary { op, operand: Box::new(inner) },
-                SourceLocation { start: token.start, end },
+                SourceLocation { start: token.start(), end },
             ))
         } else {
             Ok(Node::new(
                 NodeKind::Variable { sigil, name: full_name },
-                SourceLocation { start: token.start, end },
+                SourceLocation { start: token.start(), end },
             ))
         }
     }
@@ -694,20 +700,20 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
 
-        if self.tokens.peek_second()?.kind == TokenKind::DoubleColon {
+        if self.tokens.peek_second()?.kind() == TokenKind::DoubleColon {
             let first = self.tokens.next()?;
             return self
-                .parse_qualified_scalar_tail(first.text.to_string(), first.start, first.end)
+                .parse_qualified_scalar_tail(first.text.to_string(), first.start(), first.end())
                 .map(Some);
         }
 
         if is_package_qualified_scalar_name(&self.tokens.peek()?.text)
-            && self.tokens.peek_second()?.kind == TokenKind::RightBrace
+            && self.tokens.peek_second()?.kind() == TokenKind::RightBrace
         {
             let name_token = self.tokens.next()?;
             return Ok(Some(Node::new(
                 NodeKind::Variable { sigil: "$".to_string(), name: name_token.text.to_string() },
-                SourceLocation { start: name_token.start, end: name_token.end },
+                SourceLocation { start: name_token.start(), end: name_token.end() },
             )));
         }
 
@@ -753,14 +759,14 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
 
-        if self.tokens.peek_second()?.kind != TokenKind::RightBrace {
+        if self.tokens.peek_second()?.kind() != TokenKind::RightBrace {
             return Ok(None);
         }
 
         let name_token = self.tokens.next()?;
         Ok(Some(Node::new(
             NodeKind::Variable { sigil: String::from("$"), name: name_token.text.to_string() },
-            SourceLocation { start: name_token.start, end: name_token.end },
+            SourceLocation { start: name_token.start(), end: name_token.end() },
         )))
     }
 
@@ -801,17 +807,17 @@ impl<'a> Parser<'a> {
 
         let caret_token = self.tokens.next()?;
         let mut name = String::from("^");
-        let mut end = caret_token.end;
+        let mut end = caret_token.end();
 
         if self.peek_kind() == Some(TokenKind::Identifier) {
             let ident = self.tokens.next()?;
             name.push_str(&ident.text);
-            end = ident.end;
+            end = ident.end();
         }
 
         Ok(Some(Node::new(
             NodeKind::Variable { sigil: String::from("$"), name },
-            SourceLocation { start: caret_token.start, end },
+            SourceLocation { start: caret_token.start(), end },
         )))
     }
 
@@ -828,7 +834,7 @@ impl<'a> Parser<'a> {
             if self.peek_kind() == Some(TokenKind::Identifier) {
                 let name_token = self.tokens.next()?;
                 full_name.push_str(&name_token.text);
-                end = name_token.end;
+                end = name_token.end();
             } else {
                 return Err(ParseError::syntax(
                     "Expected identifier after :: in package-qualified variable",
@@ -875,11 +881,11 @@ impl<'a> Parser<'a> {
     /// Parse a variable when we have a sigil token first
     fn parse_variable_from_sigil(&mut self) -> ParseResult<Node> {
         let sigil_token = self.consume_token()?;
-        let sigil = match sigil_token.kind {
+        let sigil = match sigil_token.kind() {
             TokenKind::BitwiseAnd => "&".to_string(), // Handle & as sigil
             _ => sigil_token.text.to_string(),
         };
-        let start = sigil_token.start;
+        let start = sigil_token.start();
 
         // Check if next token is an identifier or a keyword that should be treated as identifier
         let next_kind = self.peek_kind();
@@ -889,7 +895,7 @@ impl<'a> Parser<'a> {
         let (name, mut end) = if next_kind.is_some_and(Self::is_variable_name_kind) {
             let name_token = self.tokens.next()?;
             let mut name = name_token.text.to_string();
-            let mut end = name_token.end;
+            let mut end = name_token.end();
 
             // `%$$slice` may arrive as `%`, `$$`, `slice`; only join an
             // adjacent tail so whitespace-delimited `$$ eq` keeps `eq` as op.
@@ -899,11 +905,11 @@ impl<'a> Parser<'a> {
                     .tokens
                     .peek()
                     .ok()
-                    .is_some_and(|next_token| next_token.start == end)
+                    .is_some_and(|next_token| next_token.start() == end)
             {
                 let next_token = self.tokens.next()?;
                 name.push_str(&next_token.text);
-                end = next_token.end;
+                end = next_token.end();
             }
 
             // Handle :: in package-qualified variables
@@ -914,7 +920,7 @@ impl<'a> Parser<'a> {
                 if self.peek_kind() == Some(TokenKind::Identifier) {
                     let next_token = self.tokens.next()?;
                     name.push_str(&next_token.text);
-                    end = next_token.end;
+                    end = next_token.end();
                 } else {
                     return Err(ParseError::syntax(
                         "Expected identifier after :: in package-qualified variable",
@@ -932,11 +938,11 @@ impl<'a> Parser<'a> {
                     // dereference target that must preserve the referenced name.
                     let token = self.tokens.next()?;
                     if self.tokens.peek().ok().is_some_and(|name_token| {
-                        Self::is_variable_name_kind(name_token.kind) && name_token.start == token.end
+                        Self::is_variable_name_kind(name_token.kind()) && name_token.start() == token.end()
                     }) {
                         let name_token = self.tokens.next()?;
                         let mut name = format!("${}", name_token.text);
-                        let mut end = name_token.end;
+                        let mut end = name_token.end();
 
                         while self.peek_kind() == Some(TokenKind::DoubleColon) {
                             self.tokens.next()?; // consume ::
@@ -945,7 +951,7 @@ impl<'a> Parser<'a> {
                             if self.peek_kind() == Some(TokenKind::Identifier) {
                                 let next_token = self.tokens.next()?;
                                 name.push_str(&next_token.text);
-                                end = next_token.end;
+                                end = next_token.end();
                             } else {
                                 return Err(ParseError::syntax(
                                     "Expected identifier after :: in package-qualified variable",
@@ -956,18 +962,18 @@ impl<'a> Parser<'a> {
 
                         (name, end)
                     } else {
-                        ("$".to_string(), token.end)
+                        ("$".to_string(), token.end())
                     }
                 }
                 Some(TokenKind::ArraySigil) => {
                     // $@ - eval error
                     let token = self.tokens.next()?;
-                    ("@".to_string(), token.end)
+                    ("@".to_string(), token.end())
                 }
                 Some(TokenKind::Not) => {
                     // $! - system error
                     let token = self.tokens.next()?;
-                    ("!".to_string(), token.end)
+                    ("!".to_string(), token.end())
                 }
                 Some(TokenKind::Unknown) => {
                     // Could be $?, $^, $#, or other special
@@ -975,16 +981,16 @@ impl<'a> Parser<'a> {
                     match token.text.as_ref() {
                         "?" => {
                             let token = self.tokens.next()?;
-                            ("?".to_string(), token.end)
+                            ("?".to_string(), token.end())
                         }
                         "^" => {
                             // Handle $^X variables
                             let token = self.tokens.next()?;
                             if self.peek_kind() == Some(TokenKind::Identifier) {
                                 let var_token = self.tokens.next()?;
-                                (format!("^{}", var_token.text), var_token.end)
+                                (format!("^{}", var_token.text), var_token.end())
                             } else {
-                                ("^".to_string(), token.end)
+                                ("^".to_string(), token.end())
                             }
                         }
                         "#" => {
@@ -993,7 +999,7 @@ impl<'a> Parser<'a> {
                             if self.peek_kind() == Some(TokenKind::Identifier) {
                                 let var_token = self.tokens.next()?;
                                 let mut var_name = var_token.text.to_string();
-                                let mut var_end = var_token.end;
+                                let mut var_end = var_token.end();
 
                                 // Handle $#Pkg::Var (package-qualified)
                                 while self.peek_kind() == Some(TokenKind::DoubleColon) {
@@ -1002,7 +1008,7 @@ impl<'a> Parser<'a> {
                                     if self.peek_kind() == Some(TokenKind::Identifier) {
                                         let next_token = self.tokens.next()?;
                                         var_name.push_str(&next_token.text);
-                                        var_end = next_token.end;
+                                        var_end = next_token.end();
                                     }
                                 }
 
@@ -1039,13 +1045,13 @@ impl<'a> Parser<'a> {
                                 return Ok(node);
                             } else {
                                 // Just $# by itself
-                                ("#".to_string(), token.end)
+                                ("#".to_string(), token.end())
                             }
                         }
                         _ => {
                             return Err(ParseError::syntax(
                                 format!("Unexpected character after sigil: {}", token.text),
-                                token.start,
+                                token.start(),
                             ));
                         }
                     }
@@ -1053,22 +1059,22 @@ impl<'a> Parser<'a> {
                 Some(TokenKind::Number) => {
                     // $0, $1, $2, etc. - numbered capture groups
                     let num_token = self.tokens.next()?;
-                    (num_token.text.to_string(), num_token.end)
+                    (num_token.text.to_string(), num_token.end())
                 }
                 Some(TokenKind::DoubleColon) => {
                     // $:: — the main namespace stash
                     let dc_token = self.tokens.next()?; // consume ::
                     if self.peek_kind() == Some(TokenKind::Identifier) {
                         let name_token = self.tokens.next()?;
-                        (format!("::{}", name_token.text), name_token.end)
+                        (format!("::{}", name_token.text), name_token.end())
                     } else {
-                        ("::".to_string(), dc_token.end)
+                        ("::".to_string(), dc_token.end())
                     }
                 }
                 Some(TokenKind::Colon) => {
                     // $: — format line-break character variable
                     let colon_token = self.tokens.next()?;
-                    (":".to_string(), colon_token.end)
+                    (":".to_string(), colon_token.end())
                 }
                 _ => {
                     // Empty variable name (just the sigil)
@@ -1309,13 +1315,11 @@ impl<'a> Parser<'a> {
                 NodeKind::OptionalParameter { .. } => {
                     seen_optional = true;
                 }
-                NodeKind::MandatoryParameter { .. } => {
-                    if seen_optional {
-                        self.errors.push(ParseError::syntax(
-                            "Mandatory parameter cannot follow an optional parameter in signature",
-                            param.location.start,
-                        ));
-                    }
+                NodeKind::MandatoryParameter { .. } if seen_optional => {
+                    self.errors.push(ParseError::syntax(
+                        "Mandatory parameter cannot follow an optional parameter in signature",
+                        param.location.start,
+                    ));
                 }
                 _ => {}
             }
@@ -1440,7 +1444,7 @@ impl<'a> Parser<'a> {
         // texts that begin with a Perl sigil character.
         while self.peek_kind() == Some(TokenKind::Colon) {
             let next_is_attr_ident = match self.tokens.peek_second() {
-                Ok(tok) if tok.kind == TokenKind::Identifier => {
+                Ok(tok) if tok.kind() == TokenKind::Identifier => {
                     let first = tok.text.chars().next();
                     !matches!(first, Some('$' | '@' | '%' | '&' | '*'))
                 }
@@ -1451,15 +1455,15 @@ impl<'a> Parser<'a> {
             }
             self.consume_token()?; // consume ':'
             let attr = self.expect(TokenKind::Identifier)?;
-            end = attr.end;
+            end = attr.end();
 
             if self.peek_kind() == Some(TokenKind::LeftParen) {
                 self.consume_token()?; // consume '('
                 let mut depth = 1usize;
                 while depth > 0 && !self.tokens.is_eof() {
                     let token = self.consume_token()?;
-                    end = token.end;
-                    match token.kind {
+                    end = token.end();
+                    match token.kind() {
                         TokenKind::LeftParen => depth += 1,
                         TokenKind::RightParen => depth -= 1,
                         _ => {}
@@ -1485,13 +1489,13 @@ impl<'a> Parser<'a> {
         match self.tokens.peek_second() {
             Ok(token) => {
                 // Check if it starts with prototype characters or looks like a prototype
-                matches!(token.kind,
+                matches!(token.kind(),
                     TokenKind::ScalarSigil | TokenKind::ArraySigil |
                     TokenKind::HashSigil | TokenKind::SubSigil |
                     TokenKind::Star | TokenKind::Semicolon |
                     TokenKind::Backslash) ||
                 // Check for special vars that look like prototypes ($$, $#, etc)
-                (token.kind == TokenKind::Identifier &&
+                (token.kind() == TokenKind::Identifier &&
                  token.text.chars().all(|c| matches!(c, '$' | '@' | '%' | '*' | '&' | ';' | '\\')))
             }
             Err(_) => false,
@@ -1502,14 +1506,14 @@ impl<'a> Parser<'a> {
     fn is_likely_prototype(&mut self) -> ParseResult<bool> {
         // We need to peek past the opening paren without consuming
         // First, ensure we're at a left paren
-        if self.tokens.peek()?.kind != TokenKind::LeftParen {
+        if self.tokens.peek()?.kind() != TokenKind::LeftParen {
             return Ok(false);
         }
 
         // Use peek_second to look at the token after the paren
         match self.tokens.peek_second() {
             Ok(token) => {
-                Ok(match token.kind {
+                Ok(match token.kind() {
                     // These are unambiguously prototype tokens.
                     // `+` means "scalar or array/hash ref" (perlsub), valid in prototypes.
                     // `++` is also valid: Perl's lexer merges two `+` into `Increment`, so
@@ -1525,7 +1529,7 @@ impl<'a> Parser<'a> {
                     // Sigils: peek past to distinguish prototype ($;@%) from signature ($x, @rest)
                     TokenKind::ScalarSigil | TokenKind::ArraySigil | TokenKind::HashSigil => {
                         match self.tokens.peek_third() {
-                            Ok(third) => !matches!(third.kind, TokenKind::Identifier),
+                            Ok(third) => !matches!(third.kind(), TokenKind::Identifier),
                             Err(_) => true, // default to prototype on error
                         }
                     }
@@ -1568,7 +1572,7 @@ impl<'a> Parser<'a> {
                             return Ok(false);
                         }
                         if let Ok(third) = self.tokens.peek_third() {
-                            let third_starts_signature = match third.kind {
+                            let third_starts_signature = match third.kind() {
                                 TokenKind::Identifier => third
                                     .text
                                     .chars()
@@ -1608,7 +1612,7 @@ impl<'a> Parser<'a> {
         while !self.tokens.is_eof() {
             let token = self.consume_token()?;
 
-            match token.kind {
+            match token.kind() {
                 TokenKind::RightParen => {
                     // End of prototype
                     break;
@@ -1798,10 +1802,7 @@ mod inline_expression_tests {
             Err(error) => error,
         };
         if error.location() != Some(17) {
-            let location = match error.location() {
-                Some(location) => location,
-                None => 17,
-            };
+            let location = error.location().unwrap_or(17);
             return Err(ParseError::syntax(
                 "expected the non-expression error at the outer offset",
                 location,

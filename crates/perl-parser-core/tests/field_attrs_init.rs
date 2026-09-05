@@ -33,10 +33,10 @@ fn first_field_decl(source: &str) -> (Vec<String>, bool) {
 }
 
 fn find_field_decl(node: &perl_parser_core::Node) -> (Vec<String>, bool) {
-    if let NodeKind::VariableDeclaration { declarator, attributes, initializer, .. } = &node.kind {
-        if declarator == "field" {
-            return (attributes.clone(), initializer.is_some());
-        }
+    if let NodeKind::VariableDeclaration { declarator, attributes, initializer, .. } = &node.kind
+        && declarator == "field"
+    {
+        return (attributes.clone(), initializer.is_some());
     }
     for child in node.children() {
         let found = find_field_decl(child);

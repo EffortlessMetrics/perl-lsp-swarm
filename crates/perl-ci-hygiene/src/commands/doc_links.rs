@@ -515,8 +515,15 @@ mod tests {
     #[test]
     fn check_doc_links_exact_error_variant() -> TestResult {
         let root = unique_temp_dir("exact-error-variant")?;
-        let err = check_doc_links(&root, Some("docs/does-not-exist"))
-            .expect_err("expected docs directory missing error");
+        let err = match check_doc_links(&root, Some("docs/does-not-exist")) {
+            Err(err) => err,
+            Ok(exit_code) => {
+                return Err(format!(
+                    "expected docs directory missing error, got exit code {exit_code}"
+                )
+                .into());
+            }
+        };
         let message = err.to_string();
         if !message.contains("Docs directory not found") || !message.contains("does-not-exist") {
             return Err(format!("unexpected missing-directory error: {message}").into());

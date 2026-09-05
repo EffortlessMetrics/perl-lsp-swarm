@@ -337,16 +337,16 @@ fn test_rename_multiline_source() {
 }
 
 /// Regression: verify that consumer imports don't regress (import patterns work).
-/// This test validates the migration path: old `perl_module_name::*` -> `perl_module::name::*`
+/// This test validates the migration path: old `perl_module_name::*` -> `perl_module::*`
 #[test]
 fn test_consumer_import_pattern_all_modules() {
     // Verify that importing from each module family works
-    use perl_module::boundary::contains_standalone_module_token as contains_token;
-    use perl_module::import_match::line_references_module_import as matches_import;
-    use perl_module::name::normalize_package_separator as normalize;
-    use perl_module::path::module_name_to_path as to_path;
-    use perl_module::token::contains_module_token as contains;
-    use perl_module::token_core::is_module_token_char as is_token_char;
+    use perl_module::contains_module_token as contains;
+    use perl_module::contains_standalone_module_token as contains_token;
+    use perl_module::is_module_token_char as is_token_char;
+    use perl_module::line_references_module_import as matches_import;
+    use perl_module::module_name_to_path as to_path;
+    use perl_module::normalize_package_separator as normalize;
 
     // Quick smoke tests to verify imports work
     assert_eq!(normalize("Foo'Bar"), "Foo::Bar");

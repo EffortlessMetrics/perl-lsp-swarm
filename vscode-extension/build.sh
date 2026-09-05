@@ -16,9 +16,9 @@ npm run doctor
 echo "Installing dependencies..."
 npm ci
 
-# Compile TypeScript
-echo "Compiling TypeScript..."
-npm run compile
+# Checked build (authority + all-config type-check + bundle)
+echo "Running checked build..."
+npm run build
 
 # Bundle LSP binary
 echo "Bundling perllsp binary..."

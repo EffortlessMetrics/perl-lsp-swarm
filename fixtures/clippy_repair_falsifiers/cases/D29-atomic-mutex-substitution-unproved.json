@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "case_id": "D29-atomic-mutex-substitution-unproved",
+  "family": "boundary_data_semantics_theater",
+  "purpose": "Replacing a Mutex with atomics without compound-invariant or memory-ordering proof weakens concurrency guarantees.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "AtomicUsize",
+      "no longer atomic together",
+      "Ordering::Relaxed"
+    ],
+    "content": "struct Session { seen: AtomicUsize, generation: AtomicUsize }\nimpl Session {\n    fn bump(&self) -> usize {\n        // pair update is no longer atomic together\n        self.seen.fetch_add(1, Ordering::Relaxed);\n        self.generation.fetch_add(1, Ordering::Relaxed)\n    }\n}\n",
+    "sha256": "ecb5d402a9b8ce85f8658d2dcf8fc241101084e259ac278ff6ae3fe1a8100508"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 9850,
+    "unresolved_reason": "Compound-invariant/memory-order review authority for lock-free substitutions is unlanded; mutex_atomic warn covers a different direction."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "atomic_mutex_substitution_unproved"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "Mutex<(usize, usize)>",
+      "lock()"
+    ],
+    "note": "Paired state mutates under one guard.",
+    "content": "struct Session { counters: std::sync::Mutex<(usize, usize)> }\nimpl Session {\n    fn bump(&self) -> (usize, usize) {\n        let mut guard = self.counters.lock().expect_lock_held();\n        guard.0 += 1;\n        guard.1 += 1;\n        *guard\n    }\n}\n",
+    "sha256": "31125df2bd5208bb6cc54a11c1fa71061cb08149a56f8b3fea3c41c11ec179d3"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "await_holding_lock denies suspension hazards; plain substitution proofs pend a cohort."
+}

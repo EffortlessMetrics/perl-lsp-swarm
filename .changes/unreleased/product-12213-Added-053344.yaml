@@ -1,0 +1,18 @@
+project: product
+component: Developer experience
+kind: Added
+body: >-
+  Add the pure #11179 standalone install contract: an immutable candidate
+  manifest whose domain-separated identity is recomputed over canonical bytes,
+  a current-selection record with monotonic generations and governed
+  previous-known-good semantics, a closed transition record keeping product,
+  cleanup, startup, and PATH outcomes independent, three closed JSON schemas
+  for runtime-neutral adapter consumption, and an independent verifier with 23
+  synthetic vectors and fail-closed falsifiers for mixed-pair, source-as-pair,
+  preview-weakened, local-development, drift, regression, aliasing,
+  wrong-root/target/attempt, and private-output state.
+time: 2026-08-24T00:00:00Z
+custom:
+  PR: "12213"
+  Slug: standalone-candidate-selection-contract
+  Breaking: "no"

@@ -707,7 +707,7 @@
       "ci_tier": "pr",
       "component": "diagnostics",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
@@ -2115,6 +2115,35 @@
         "retained Scenario 20 reviewed authorities remain present"
       ],
       "confidence_signals": [
+        "issue_burndown_regression_guard"
+      ]
+    },
+    {
+      "id": "dancer2_provider_cutover",
+      "scenario_file": "ux_scenario_69_dancer2_provider_cutover.rs",
+      "subsystem_owner": "frameworks",
+      "ci_tier": "pr",
+      "component": "completion",
+      "instrumentation": {
+        "run_receipt": true,
+        "first_useful_result": true,
+        "protocol_goldens": false
+      },
+      "user_journey": "open a Dancer2 application over the committed skeleton fixture and exercise the canonical provider slice through real completion, hover, definition, document-symbol, workspace-symbol, diagnostics, edit-freshness, and multi-root requests",
+      "measures": [
+        "workflow_pass_rate",
+        "workflow_stability_rate",
+        "p95_time_to_first_useful_result_ms"
+      ],
+      "expected_outcomes": [
+        "admitted default-DSL keywords complete under exact activation and stay absent without activation evidence, exclusions, Dancer2::Core, or ordinary Perl",
+        "route hover reports the reviewed method sets (GET+HEAD, explicit any), named-route identity keeps name and pattern separate, and custom DSL stays bounded",
+        "route definition reaches the exact inline handler anchor over the real request path",
+        "document and workspace symbols expose labeled source-anchored [Dancer2 route]/[Dancer2 hook] entries isolated per multi-root folder",
+        "bounded diagnostics publish the excluded-keyword finding over the push path"
+      ],
+      "confidence_signals": [
+        "first_five_minutes_harness",
         "issue_burndown_regression_guard"
       ]
     }

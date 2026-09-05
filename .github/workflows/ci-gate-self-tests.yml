@@ -19,6 +19,7 @@ on:
       - 'scripts/install.sh'
       - 'scripts/publish-topo.py'
       - 'scripts/tests/test-install-target-selection.sh'
+      - 'scripts/tests/test-install-source-version-binding.sh'
       # Install-surface honesty gates (issue #5448): the zero-argument
       # bootstrap path and the public package manifests.
       - 'install.ps1'
@@ -30,6 +31,9 @@ on:
       - 'scripts/windows_fresh_path_oracle.py'
       - 'scripts/tests/test-windows-fresh-path-oracle.sh'
       - 'scripts/tests/test-distribution-manifest-consistency.sh'
+      - 'scripts/maintenance/verify_11983_reject_identities.py'
+      - 'scripts/tests/test-rebuild-11983-reject-identities.py'
+      - 'scripts/maintenance/rebuild_11983_current_main.sh'
       # The manifest-consistency gate derives its expected values from these
       # three authorities, so a change to any of them can make every
       # distribution manifest stale. Without them here, the only gate that
@@ -61,8 +65,34 @@ on:
       - 'scripts/tests/test-worktree-manager.sh'
       - '.cargo/config.toml'
       - 'scripts/tests/test-target-isolation.sh'
+      # ripr lane termination classification + bounded same-head retry
+      # (#6807/#12563/#12771): the gate's eviction classifier is itself a
+      # gate. These self-tests prove a genuine red still redding the required
+      # "ripr+ New Gap Gate" and only positive runner-teardown evidence
+      # reaching the single-retry path.
+      - '.github/workflows/ripr.yml'
+      - '.github/workflows/ripr-infra-retry.yml'
+      - 'scripts/ci/classify-ripr-lane-termination'
+      - 'scripts/tests/test-classify-ripr-lane-termination.sh'
+      # Toolchain guard for bash entrypoints (issue #12593): the coverage
+      # consistency test scans every cargo-invoking scripts/*.sh, so any
+      # script change re-proves that none of them dodges the guard.
+      - 'scripts/lib/cargo-toolchain-guard.sh'
+      - 'scripts/*.sh'
+      - 'scripts/cargo-safe'
+      - 'scripts/fuzz-bounded'
+      - '.github/run_all_tests.sh'
+      - 'scripts/tests/test-cargo-toolchain-guard.sh'
+      - 'scripts/tests/test-cargo-safe-toolchain-guard.sh'
+      - 'rust-toolchain.toml'
+      - 'Cargo.toml'
       - '.github/workflows/publish-dry-run.yml'
       - '.github/workflows/ci-gate-self-tests.yml'
+      # PR Plan head-name sentinel guard (#6238): payload-only pull_request
+      # evaluator whose structural and classifier contract is proved by its
+      # scripts/tests fixture.
+      - '.github/workflows/pr-plan-head-name-guard.yml'
+      - 'scripts/tests/test-pr-plan-head-name-guard.sh'
   workflow_dispatch: {}
 
 concurrency:
@@ -190,6 +220,31 @@ jobs:
             echo "The installer PATH source contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  installer-source-version-binding-self-test:
+    name: Installer source-version binding self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run installer source-version binding self-test
+        run: bash scripts/tests/test-install-source-version-binding.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Installer source-version binding self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "Source-mode VERSION requests bind Cargo's exact selector and the staged perllsp identity, while malformed or unrelated identities fail closed before promotion." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Installer source-version binding self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "The source installer may be able to build or promote a registry subject different from the requested VERSION." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   windows-fresh-path-oracle-self-test:
     name: Windows fresh-process PATH oracle
     runs-on: ubuntu-24.04
@@ -240,6 +295,31 @@ jobs:
             echo "## Distribution manifest consistency self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "A public package manifest disagrees with the repository's license, posture, asset-name, or binary-set truth. These strings are what users read in \`winget show\` / \`scoop info\` / the Chocolatey listing. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  rebuild-11983-reject-identity-self-test:
+    name: Rebuild 11983 reject-identity self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run reject-identity fixture self-test
+        run: python3 scripts/tests/test-rebuild-11983-reject-identities.py
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Rebuild 11983 reject-identity self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "The widened 12-file/20-hunk denominator and all authored hunk/old-side reject identities accept the positive fixture while mismatch, omission, duplicate, and unaccounted-artifact controls fail closed (issue #12975)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Rebuild 11983 reject-identity self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "The per-file reject-identity contract accepted a mismatch, omission, duplicate, or unaccounted artifact, or rejected the authored positive fixture." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   check-pr-review-convergence-self-test:
@@ -382,4 +462,93 @@ jobs:
             echo "## Target-dir isolation self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The per-worktree target-dir isolation contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  cargo-toolchain-guard-self-test:
+    name: Entrypoint cargo toolchain guard self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: stable
+
+      - name: Run guard decision-function and coverage self-test
+        run: bash scripts/tests/test-cargo-toolchain-guard.sh
+
+      - name: Run guard entrypoint integration self-test
+        run: bash scripts/tests/test-cargo-safe-toolchain-guard.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Cargo toolchain guard self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The entrypoint toolchain guard (issue #12593) refuses a stale non-rustup cargo (the WSL /usr/bin/cargo 1.75 shape) with exit 78 and a remediation message before any build work, passes a satisfying cargo through to delegation, keeps the real-toolchain happy path green, and the coverage check proves every cargo-invoking scripts/*.sh plus cargo-safe and .github/run_all_tests.sh either runs the guard or carries an explicit exemption." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Cargo toolchain guard self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The guard contract regressed — a bash entrypoint could again hand builds to a cargo older than the workspace rust-version and surface it as a manifest parse error. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  ripr-lane-termination-classifier-self-test:
+    name: ripr lane-termination classifier self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run ripr termination classifier + bounded-retry self-test
+        run: bash scripts/tests/test-classify-ripr-lane-termination.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## ripr lane-termination classifier self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The eviction classifier (#6807, #12563, #12771) keeps the boundary that matters: a genuine gap receipt (\"quality gate failed\") always classifies ripr-failure — with or without a later teardown marker, so real reds are never auto-retried — while only positive runner-teardown evidence yields infra-no-proof for the single same-head retry (ripr-infra-retry), silence or unreadable logs fail closed to ripr-failure, and attempt >= 2 surfaces NOT_PROVEN loudly." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## ripr lane-termination classifier self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The classifier or decision table regressed — an infra kill could mask a genuine red, a retry could loop unboundedly, or absent evidence could pass. Check the step output above for which fixture misclassified." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  pr-plan-head-name-guard-self-test:
+    name: PR Plan head-name guard self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run PR Plan head-name guard self-test
+        run: bash scripts/tests/test-pr-plan-head-name-guard.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## PR Plan head-name guard self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The guard workflow (issue #6238) triggers solely via pull_request, holds per-PR concurrency with least privilege, reaches the payload only through env indirection (no checkout, no actions, no secrets), fails closed loud with rename-and-push guidance, classifies the exact regex extracted from its own run script at the 6/7/40/41-char hex boundaries, and stays attached to the inventory row and the pr-plan trigger-model documentation. Fixture-scope proof of the shipped artifact only — live suppression behavior remains tracked on the issue." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## PR Plan head-name guard self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The head-name sentinel contract regressed — it could again trigger via a suppressible event, execute or check out any ref, silently pass a SHA-like branch, or drift from its documented surface. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
           fi

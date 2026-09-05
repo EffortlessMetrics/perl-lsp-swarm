@@ -63,8 +63,6 @@
     clippy::items_after_statements,
     clippy::return_self_not_must_use,
     clippy::unused_self,
-    clippy::collapsible_match,
-    clippy::collapsible_if,
     clippy::only_used_in_recursion,
     clippy::items_after_test_module,
     clippy::while_let_loop,
@@ -92,6 +90,8 @@ pub mod pir;
 pub mod syntax;
 /// Token stream and trivia utilities for the parser.
 pub mod tokens;
+/// Bounded, non-executing evaluation of source expressions.
+pub mod value_analysis;
 
 /// Index into the diagnostics array in [`ParseOutput`] (from `ast_v2`).
 pub use ast_v2::{DiagnosticId, MissingKind};
@@ -100,6 +100,8 @@ pub use engine::ast;
 /// Experimental second-generation AST (work in progress).
 pub use engine::ast_v2;
 /// Parser context with error recovery support.
+///
+/// Not the production parse-operation authority. See the module docs.
 pub use engine::parser_context;
 /// Pragma tracking for `use` and related directives.
 pub use engine::pragma_tracker;
@@ -135,7 +137,8 @@ pub use syntax::regex_analysis::{
 };
 /// Generation-bound lexical source region index.
 pub use syntax::source_context::{
-    RangeClassification, SourceRegion, SourceRegionIndex, SourceRegionKind,
+    RangeClassification, SourceRangeClassification, SourceRegion, SourceRegionIndex,
+    SourceRegionKind,
 };
 /// Perl source-file classification helpers.
 pub use syntax::source_file;
@@ -144,6 +147,10 @@ pub use syntax::text_line;
 
 /// Recursive-descent parser -- the main entry point for parsing Perl source.
 pub use engine::parser::Parser;
+/// Immutable production parser configuration identity (#8757).
+pub use engine::parser::ParserConfigIdentity;
+/// Identity of one production parse operation (#8757).
+pub use engine::parser::ParserOperationId;
 
 /// Lower-tier checkpointed token replay for incremental parser clients.
 pub mod incremental;
@@ -170,7 +177,7 @@ pub use error::classifier::{RecoverySalvageMetrics, classify_recovery_salvage};
 /// Parse error, budget, and output types.
 pub use error::{
     BudgetTracker, ErrorCategory, ErrorClass, ParseBudget, ParseDiagnosticSeverity, ParseError,
-    ParseOutput, ParseResult, RecoverySalvageClass, RecoverySalvageProfile,
+    ParseOutput, ParseResult, ParseStopCause, RecoverySalvageClass, RecoverySalvageProfile,
 };
 
 /// Builtin function signature lookup tables.

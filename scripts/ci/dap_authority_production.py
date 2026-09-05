@@ -8,32 +8,23 @@ from typing import Any, Mapping
 from dap_authority_common import (
     DEBUG_ADAPTER_ROOT,
     DISPATCH_PATH,
-    RUST_STRING_RE,
+    PEER_DISPATCH_PATHS,
     SEND_EVENT_CALL_RE,
     SEND_EVENT_LITERAL_RE,
-    SUPPORTED_COMMANDS_RE,
     AuthorityError,
     array_value,
     manifest_rows,
+    parse_request_table,
+    parse_peer_dispatch_routes,
+    production_dispatch_sources,
     read_text,
     string_value,
 )
 
 
-def _production_commands(root: Path) -> set[str]:
+def _production_request_rows(root: Path) -> list[dict[str, str]]:
     text = read_text(root / DISPATCH_PATH, "DAP dispatch source")
-    match = SUPPORTED_COMMANDS_RE.search(text)
-    if match is None:
-        raise AuthorityError(f"cannot locate exact SUPPORTED_COMMANDS inventory in {DISPATCH_PATH}")
-    commands = RUST_STRING_RE.findall(match.group("body"))
-    declared_count = int(match.group("count"))
-    if len(commands) != declared_count:
-        raise AuthorityError(
-            f"SUPPORTED_COMMANDS declares {declared_count} entries but exposes {len(commands)}"
-        )
-    if len(set(commands)) != len(commands):
-        raise AuthorityError("SUPPORTED_COMMANDS contains duplicate wire names")
-    return set(commands)
+    return parse_request_table(text)
 
 
 def _production_events(root: Path) -> set[str]:
@@ -56,6 +47,44 @@ def _production_events(root: Path) -> set[str]:
     return events
 
 
+def _request_routes(row: Mapping[str, str]) -> list[dict[str, str]]:
+    routes = [
+        {
+            "route_id": f"{row['row_id']}.native",
+            "frontend": "native",
+            "syntax_owner": DISPATCH_PATH.as_posix(),
+            "handler": row["handler"],
+            "condition": "default (no external-peer runtime selector)",
+            "disposition": "handler_present",
+        }
+    ]
+    explicit = row["availability"] == "all_frontends"
+    # A native-only row is still a known catalog route, so the pinned peer
+    # fallback (EXPECTED_PEER_FALLBACKS, #9527/#9069) refuses it fail-closed
+    # with success: false. The success-empty acknowledgement applies only to
+    # commands outside the catalog, which have no row here; that policy is
+    # projected separately under `fallback_policies`.
+    for frontend, owner, selector in (
+        ("external_peer", PEER_DISPATCH_PATHS[0], "--external-peer"),
+        ("mirror_peer", PEER_DISPATCH_PATHS[1], "--external-peer-listen"),
+    ):
+        routes.append(
+            {
+                "route_id": f"{row['row_id']}.{frontend}",
+                "frontend": frontend,
+                "syntax_owner": owner.as_posix(),
+                "handler": (
+                    f"{'DapPeerBridge' if frontend == 'external_peer' else 'MirrorPeerBridge'}::dispatch"
+                    if explicit
+                    else "fail_closed_unavailable_in_frontend"
+                ),
+                "condition": selector,
+                "disposition": "handler_present" if explicit else "fail_closed",
+            }
+        )
+    return routes
+
+
 def validate_production_boundary(
     root: Path,
     manifest: Mapping[str, Any],
@@ -67,8 +96,46 @@ def validate_production_boundary(
     standard_events = set(
         array_value(observed.get("standard_events"), "observed.standard_events")
     )
-    commands = _production_commands(root)
+    rows = _production_request_rows(root)
+    commands = {row["command"] for row in rows}
     events = _production_events(root)
+
+    expected_owners = {DISPATCH_PATH, *PEER_DISPATCH_PATHS}
+    discovered_owners = production_dispatch_sources(root)
+    if discovered_owners != expected_owners:
+        raise AuthorityError(
+            "production request-dispatch source graph changed: "
+            f"expected={sorted(map(str, expected_owners))}, "
+            f"discovered={sorted(map(str, discovered_owners))}"
+        )
+    expected_peer_variants = {
+        row["variant"] for row in rows if row["availability"] == "all_frontends"
+    }
+    for path in PEER_DISPATCH_PATHS:
+        actual = parse_peer_dispatch_routes(
+            read_text(root / path, "DAP peer dispatch source"), path
+        )
+        if actual != expected_peer_variants:
+            raise AuthorityError(
+                f"{path} route/catalog mismatch: "
+                f"missing={sorted(expected_peer_variants - actual)}, "
+                f"unexpected={sorted(actual - expected_peer_variants)}"
+            )
+
+    # The class declared beside the executable route must agree with the
+    # pinned upstream schema. A row cannot claim to be standard DAP that
+    # upstream does not define, nor hide a standard request as a project
+    # extension.
+    misclassified = sorted(
+        (row["command"], row["class"])
+        for row in rows
+        if (row["class"] == "standard") != (row["command"] in standard_requests)
+    )
+    if misclassified:
+        raise AuthorityError(
+            "request rows are misclassified against the pinned upstream schema: "
+            f"{misclassified}"
+        )
 
     production_extensions = {
         *(("request", name) for name in commands - standard_requests),
@@ -93,12 +160,78 @@ def validate_production_boundary(
             f"unclassified production={missing}, stale manifest={stale}"
         )
 
+    # Versioned custom families: their request and event names are
+    # registered transport surfaces, distinct from dispatched production
+    # wire names. A family record that claims `dispatched: false` must have
+    # no route in the production inventory (and vice versa), so a family
+    # can never silently gain or lose runtime reachability.
+    family_boundary: list[dict[str, object]] = []
+    for index, family in enumerate(manifest_rows(manifest, "project_families")):
+        where = f"project_families[{index}]"
+        name = string_value(family.get("family"), f"{where}.family")
+        request_name = string_value(family.get("request_name"), f"{where}.request_name")
+        dispatched = family.get("dispatched")
+        if not isinstance(dispatched, bool):
+            raise AuthorityError(f"{where}.dispatched must be a boolean")
+        if dispatched != (request_name in commands):
+            raise AuthorityError(
+                f"custom family {name!r} dispatch mismatch: dispatched={dispatched} but the "
+                f"production inventory {'has' if request_name in commands else 'lacks'} a "
+                f"route for {request_name!r}"
+            )
+        for event_entry in array_value(family.get("event_names"), f"{where}.event_names"):
+            event = string_value(event_entry, f"{where}.event_names entry")
+            if event in events:
+                raise AuthorityError(
+                    f"custom family {name!r} event {event!r} is emitted in production; "
+                    "family events must be registered here, not dispatched around it"
+                )
+        family_boundary.append(
+            {
+                "family": name,
+                "request_name": request_name,
+                "event_names": list(
+                    string_value(entry, f"{where}.event_names entry")
+                    for entry in array_value(family.get("event_names"), f"{where}.event_names")
+                ),
+                "dispatched": dispatched,
+            }
+        )
+
     return {
         "dispatch_path": DISPATCH_PATH.as_posix(),
         "source_root": DEBUG_ADAPTER_ROOT.as_posix(),
+        "request_rows": [
+            {
+                "row_id": row["row_id"],
+                "command": row["command"],
+                "class": row["class"],
+                "availability": row["availability"],
+                "variant": row["variant"],
+                "handler": row["handler"],
+                "routes": _request_routes(row),
+            }
+            for row in sorted(rows, key=lambda row: row["row_id"])
+        ],
         "commands": sorted(commands),
         "events": sorted(events),
         "project_extensions": [
             {"kind": kind, "wire_name": name} for kind, name in sorted(production_extensions)
+        ],
+        "project_families": family_boundary,
+        "dispatch_sources": sorted(path.as_posix() for path in expected_owners),
+        "fallback_policies": [
+            {
+                "policy_id": "dap.fallback.external_peer.dynamic_compatibility_ack_success_empty",
+                "frontend": "external_peer",
+                "condition": "unknown command (not present in catalog)",
+                "disposition": "not_proven",
+            },
+            {
+                "policy_id": "dap.fallback.mirror_peer.dynamic_compatibility_ack_success_empty",
+                "frontend": "mirror_peer",
+                "condition": "unknown command (not present in catalog)",
+                "disposition": "not_proven",
+            },
         ],
     }

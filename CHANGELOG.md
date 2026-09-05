@@ -14,6 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (`perl-lsp-rs-core`): `performance::IncrementalParser` removed.**
+  The type performed no parsing: it silently swapped reversed endpoints,
+  fabricated one-byte extents for zero-length insertions, and answered
+  byte-overlap queries, presenting a misleading second incremental-parser
+  authority beside the canonical machinery (#8308; #6701/#7292 remain
+  canonical). It had no repository consumers outside its own tests, and no
+  equivalent range-tracker replacement exists — byte-range overlap was never
+  parser work. Remove imports via `perl_lsp_rs_core::performance` and
+  `perl_lsp_rs_core::tooling::performance`; incremental parsing needs belong
+  to the canonical `perl-incremental-parsing` / `perl-parser` machinery.
+  Per `docs/reference/STABILITY.md` this public-item removal requires the
+  next minor release; it must not ship in a 0.17.x patch.
+
 - **Breaking (`perl-lsp-rs-core`): `JsonRpcResponse::jsonrpc` is now
   `&'static str`.** Always `"2.0"` (see `JSONRPC_VERSION`); removes a
   per-response `String` allocation (#5053 item 7). Struct literals that

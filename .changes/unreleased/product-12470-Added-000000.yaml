@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: Defined the compiler_lexical_cutline_cases.v1 manifest — the proof population for the first compiler-backed lexical references/rename cohort — with 16 pinned fixtures, 43 case rows, 37 controlled mutations, 18 work invariants, a JSON Schema, an xtask validator with list/validate/explain, and the 32-test compiler_lexical_cutline_manifest proof target; no product behavior (CP-LX01, #12156).
+time: 2026-08-25T00:00:00Z
+custom:
+  PR: "12470"
+  Slug: compiler-lexical-cutline-manifest
+  Breaking: "no"

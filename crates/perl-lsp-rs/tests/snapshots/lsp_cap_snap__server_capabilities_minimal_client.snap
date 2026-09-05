@@ -1,5 +1,6 @@
 ---
 source: crates/perl-lsp-rs/tests/lsp_cap_snap.rs
+assertion_line: 32
 expression: caps
 ---
 callHierarchyProvider: true
@@ -44,13 +45,6 @@ documentFormattingProvider: true
 documentHighlightProvider: true
 documentLinkProvider:
   resolveProvider: true
-documentOnTypeFormattingProvider:
-  firstTriggerCharacter: "}"
-  moreTriggerCharacter:
-    - ;
-    - "\n"
-documentRangeFormattingProvider:
-  rangesSupport: true
 documentSymbolProvider: true
 executeCommandProvider:
   commands:
@@ -150,7 +144,7 @@ textDocumentSync:
   save:
     includeText: true
   willSave: true
-  willSaveWaitUntil: true
+  willSaveWaitUntil: false
 typeDefinitionProvider: true
 typeHierarchyProvider:
   workDoneProgressOptions: {}

@@ -27,6 +27,7 @@ REQUIRED_PATHS = {
     ".claude/skills/**",
     ".claude/settings.json",
     ".codex/**",
+    "policy/skill-provider-parity.toml",
     "xtask/src/main.rs",
     "xtask/src/tasks/agent_flow.rs",
     "xtask/src/tasks/mod.rs",

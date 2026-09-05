@@ -103,7 +103,7 @@ Set `perl-lsp.trace.server` to `verbose` and inspect the output channel if reque
 ```bash
 cd vscode-extension
 npm install
-npm run compile
+npm run bundle
 npm run package
 ```
 

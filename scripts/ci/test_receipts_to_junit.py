@@ -94,6 +94,63 @@ class ReceiptsToJunitTests(unittest.TestCase):
         self.assertEqual((0, 0, 0, 0), (total, failures, errors, skipped))
         self.assertEqual([], root.findall("./testsuite/testcase"))
 
+    def test_lsp_smoke_child_receipt_is_gate_telemetry_not_tests(self) -> None:
+        """#8063 negative control 10: the atomic lsp_smoke child receipt is an
+        aggregate-gate evidence artifact. Its `children` rows must never be
+        manufactured into JUnit pseudo-tests — only a real ``test_results``
+        envelope may flow into Test Analytics (#3324)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt = Path(tmp) / "lsp_smoke_children.json"
+            write(
+                receipt,
+                {
+                    "schema_version": 1,
+                    "gate": "lsp_smoke",
+                    "subject_sha": "79c03faeb3c2d60832f249d9572d9ca37bc1355a",
+                    "suite_state": "complete",
+                    "children": [
+                        {
+                            "id": "semantic_definition/scalar_variable",
+                            "kind": "behavior",
+                            "target": "semantic_definition",
+                            "status": "PASS",
+                            "execution_mark": "final",
+                            "attempt": 1,
+                            "attempts": 1,
+                            "timeout_seconds": 120,
+                            "timed_out": False,
+                        },
+                        {
+                            "id": "compile/semantic_definition",
+                            "kind": "compile",
+                            "target": "semantic_definition",
+                            "status": "COMPILE_FAILURE",
+                            "execution_mark": "final",
+                            "attempt": 1,
+                            "attempts": 2,
+                            "timeout_seconds": 420,
+                            "timed_out": True,
+                        },
+                    ],
+                    "aggregate": {
+                        "status": "fail",
+                        "passed": 1,
+                        "total": 2,
+                        "non_success": ["compile/semantic_definition"],
+                    },
+                },
+            )
+            root, total, failures, errors, skipped = convert(receipt, "gate-shard-lsp")
+        # Zero testcases manufactured (negative control 10). The nonzero error
+        # count is the converter's fail-loud treatment of an unrecognized
+        # envelope: the child receipt is gate telemetry and is never scanned in
+        # CI (it lives in target/receipts/artifacts/, while the shard converter
+        # reads target/receipts/shards/), so this pins both that no pseudo-row
+        # can be invented from it and that misdirecting the converter at it
+        # fails loudly instead of silently inventing an identity.
+        self.assertEqual((0, 0, 1, 0), (total, failures, errors, skipped))
+        self.assertEqual([], root.findall("./testsuite/testcase"))
+
     def test_atomic_results_preserve_result_classes_and_locations(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             receipt = Path(tmp) / "atomic.json"

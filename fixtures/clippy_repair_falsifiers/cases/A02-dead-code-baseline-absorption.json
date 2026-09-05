@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "A02-dead-code-baseline-absorption",
+  "family": "verifier_denominator_weakening",
+  "purpose": "allow(dead_code) over a module hides unreachable items that the dead-code disposition train must own.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "#[allow(dead_code)]",
+      "LEGACY_TAG"
+    ],
+    "content": "#[allow(dead_code)]\nmod legacy_bridge {\n    pub(crate) const LEGACY_TAG: &str = \"legacy\";\n}\n",
+    "sha256": "6ce94f11f77c98f393f97d420de2dd2ab363e1ecaa8fbe5d7ff4300d3178b6e0"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 10008,
+    "unresolved_reason": "Strict dead-code disposition is warn-only in .ci/dead-code-baseline.yaml pending #10008/#211; no automated rejection exists yet."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "module_carveout_debt_absorption"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "counted_len",
+      "call_site()"
+    ],
+    "note": "The helper stays only with a real consumer.",
+    "content": "mod legacy_bridge {\n    pub(crate) fn counted_len(input: &str) -> usize {\n        input.len()\n    }\n}\n\npub(crate) fn call_site() -> usize {\n    legacy_bridge::counted_len(\"seed\")\n}\n",
+    "sha256": "186bf229f8efcffb3a741eae5e9e2c523efdfcb98033c40fdf08bc25016d862e"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Baseline enforcement is currently warn-level; case marks the strict owner unresolved rather than claiming a landed rejector."
+}

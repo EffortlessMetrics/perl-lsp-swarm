@@ -16,11 +16,11 @@ fn assert_number(source: &str, expected: &str, start: usize, end: usize) {
     let mut found_span = false;
 
     visit(&ast, &mut |node| {
-        if let NodeKind::Number { value } = &node.kind {
-            if value == expected {
-                found_value = true;
-                found_span = node.location.start == start && node.location.end == end;
-            }
+        if let NodeKind::Number { value } = &node.kind
+            && value == expected
+        {
+            found_value = true;
+            found_span = node.location.start == start && node.location.end == end;
         }
     });
 
@@ -102,7 +102,7 @@ fn array_and_hash_literals_retain_structural_children() {
     assert_eq!(hash_pairs, Some(1), "hash literal lost its pair: {}", ast.to_sexp());
 
     let sexp = ast.to_sexp();
-    assert!(sexp.contains("(number 1)"), "array element 1 was not retained:\\n{sexp}");
-    assert!(sexp.contains("(number 2)"), "array element 2 was not retained:\\n{sexp}");
+    assert!(sexp.contains("(number (value 1))"), "array element 1 was not retained:\\n{sexp}");
+    assert!(sexp.contains("(number (value 2))"), "array element 2 was not retained:\\n{sexp}");
     assert!(hash_value, "hash value was not retained as an interpolated String node:\\n{sexp}");
 }

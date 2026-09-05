@@ -10,6 +10,7 @@ use perl_position_tracking::{offset_to_utf16_line_col, utf16_line_col_to_offset}
 use serde::{Deserialize, Serialize};
 
 pub mod next_edit;
+pub mod prepared_context;
 pub use next_edit::{
     CallSiteUpdateNextEditCandidate, CallSiteUpdateNextEditProof, CallSiteUpdateNextEditRequest,
     MissingImportNextEditCandidate, MissingImportNextEditProof, MissingImportNextEditRequest,
@@ -19,11 +20,21 @@ pub use next_edit::{
     RenameOccurrenceNextEditProof, RenameOccurrenceNextEditRequest, TestAssertionNextEditCandidate,
     TestAssertionNextEditFramework, TestAssertionNextEditProof, TestAssertionNextEditRequest,
 };
+pub use prepared_context::{
+    ContextBudgetLimits, ContextSectionStats, ContextTruncationReason,
+    InlineCompletionContextBudget, InlineCompletionSnapshotIdentity, PreparedContextRequest,
+    PreparedContextSourceIdentity, PreparedContextTruncation, PreparedInvocationContext,
+};
 
 const MAX_INLINE_COMPLETION_ITEMS: usize = 5;
 
 /// Prepared context for inline completion suggestions and future AI handoff.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The context is provider-neutral: it carries bounded snapshot-derived
+/// source facts only, never prompt messages, FIM token strings, endpoint or
+/// model identity, or consent state. New bounded sections carry
+/// `#[serde(default)]` so previously serialized contexts keep decoding.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreparedInlineCompletionContext {
     /// Prefix on the current line up to the request position.
@@ -43,6 +54,28 @@ pub struct PreparedInlineCompletionContext {
     pub variables: Vec<String>,
     /// Imported modules or pragmas visible before the cursor.
     pub imports: Vec<String>,
+    /// Suffix on the current line after the request position, bounded by the
+    /// suffix byte budget (#10273). Together with `prefix` and
+    /// `truncation.suffix` this preserves the exact mid-line geometry.
+    #[serde(default)]
+    pub suffix: String,
+    /// Bounded preceding lines in document order; nearest lines are retained
+    /// when a budget truncates this section.
+    #[serde(default)]
+    pub preceding_lines: Vec<String>,
+    /// Bounded following lines in document order; nearest lines are retained
+    /// when a budget truncates this section.
+    #[serde(default)]
+    pub following_lines: Vec<String>,
+    /// Request position and the immutable snapshot identity the context was
+    /// prepared from. Only set for invoked AI preparation; `None` for the
+    /// plain deterministic context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<PreparedContextRequest>,
+    /// Per-section budget/truncation metadata (counts only, never omitted
+    /// text).
+    #[serde(default)]
+    pub truncation: PreparedContextTruncation,
 }
 
 /// Request-local facts supplied by the LSP runtime.
@@ -1113,7 +1146,7 @@ fn parse_damage_for_probe(source: &str) -> ParseDamage {
     let salvage = RecoverySalvageProfile::from_parse(&output.ast, &output.diagnostics, false);
 
     ParseDamage {
-        terminated_early: output.terminated_early,
+        terminated_early: output.terminated_early(),
         error_node_count: salvage.error_node_count,
         diagnostics_count: output.error_count(),
         recovered_count: output.recovered_count,
@@ -1434,6 +1467,11 @@ impl InlineCompletionProvider {
 
     /// Prepare surrounding code context for deterministic suggestions and
     /// future LLM-backed inline completion.
+    ///
+    /// The stored context is bounded by the compiled default budget: the
+    /// current-line suffix, nearest preceding/following lines, and semantic
+    /// facts are truncated deterministically with per-section metadata, and
+    /// the total retained context cannot exceed the compiled total maximum.
     pub fn prepare_context(
         &self,
         text: &str,
@@ -1458,17 +1496,82 @@ impl InlineCompletionProvider {
             line_context.prefix,
         );
 
+        let prefix_end = line_context.prefix.len();
+        let suffix = &line_context.current_line[prefix_end..];
+        // Nearest-first windows: budgeting consumes the nearest lines before
+        // distant ones, then the stored sections return to document order.
+        let preceding_nearest_first: Vec<&str> =
+            lines[..line_index].iter().rev().copied().collect();
+        // `line_index` is validated by `line_context_at_position`, so the
+        // following-window slice stays in bounds (possibly empty).
+        let following_nearest_first: Vec<&str> = lines[line_index + 1..].to_vec();
+        let budget = InlineCompletionContextBudget::compiled_maxima();
+        let sections = prepared_context::build_bounded_sections(
+            line_context.prefix,
+            suffix,
+            &preceding_nearest_first,
+            &following_nearest_first,
+            self.collect_variables(&variable_scan_text),
+            self.collect_imports(&visible_text),
+            &budget,
+        );
+
         Some(PreparedInlineCompletionContext {
-            prefix: line_context.prefix.to_string(),
+            prefix: sections.prefix,
             current_line: line_context.current_line.to_string(),
             previous_non_empty_line: self
                 .previous_non_empty_line(&lines, line_index)
                 .map(str::to_string),
             current_function,
             current_package: self.current_package(&lines, line_index),
-            variables: self.collect_variables(&variable_scan_text),
-            imports: self.collect_imports(&visible_text),
+            variables: sections.variables,
+            imports: sections.imports,
+            suffix: sections.suffix,
+            preceding_lines: sections.preceding,
+            following_lines: sections.following,
+            request: None,
+            truncation: sections.truncation,
         })
+    }
+
+    /// Prepare the bounded AI context for one invoked request.
+    ///
+    /// This is the one preparation function both invoked AI routes (buffered
+    /// and streamed) consume. It binds the context to the exact snapshot
+    /// identity supplied by the transport and fails closed — before any
+    /// backend work — when the request's document version no longer matches
+    /// the snapshot (`PreparedInvocationContext::Stale`) or when the cursor
+    /// sits in a hard-reject zone (`NoContext`).
+    pub fn prepare_invoked_context(
+        &self,
+        text: &str,
+        line: u32,
+        character: u32,
+        snapshot: InlineCompletionSnapshotIdentity,
+        request_document_version: Option<i64>,
+    ) -> PreparedInvocationContext {
+        if let (Some(requested), Some(current)) =
+            (request_document_version, snapshot.document_version)
+            && requested != current
+        {
+            return PreparedInvocationContext::Stale;
+        }
+        match self.prepare_context(text, line, character) {
+            Some(mut context) => {
+                context.request = Some(PreparedContextRequest {
+                    line,
+                    character,
+                    source: PreparedContextSourceIdentity {
+                        document_version: snapshot.document_version,
+                        source_generation: snapshot.source_generation,
+                        source_digest: crate::hashing::fnv1a64_hex(text.as_bytes()),
+                        source_bytes: text.len(),
+                    },
+                });
+                PreparedInvocationContext::Ready(Box::new(context))
+            }
+            None => PreparedInvocationContext::NoContext,
+        }
     }
 
     fn line_context_at_position<'a>(
@@ -3819,16 +3922,17 @@ fn token_hard_reject_zone(token_type: &TokenType) -> Option<(HardRejectZone, boo
         TokenType::StringLiteral
         | TokenType::InterpolatedString(_)
         | TokenType::QuoteSingle
-        | TokenType::QuoteDouble
+        | TokenType::QuoteDouble(_)
         | TokenType::QuoteWords
         | TokenType::QuoteCommand => Some((HardRejectZone::StringLike, false, false)),
         TokenType::RegexMatch
         | TokenType::QuoteRegex
         | TokenType::Substitution
         | TokenType::Transliteration => Some((HardRejectZone::RegexLike, false, false)),
-        TokenType::HeredocBody(_) | TokenType::FormatBody(_) | TokenType::DataBody(_) => {
-            Some((HardRejectZone::HeredocBody, true, false))
-        }
+        TokenType::HeredocBody(_)
+        | TokenType::InterpolatedHeredocBody(_)
+        | TokenType::FormatBody(_)
+        | TokenType::DataBody(_) => Some((HardRejectZone::HeredocBody, true, false)),
         TokenType::Error(message)
             if message.contains("unterminated string") || message.contains("unclosed") =>
         {
@@ -7939,6 +8043,7 @@ mod tests {
                 current_package: None,
                 variables: Vec::new(),
                 imports: Vec::new(),
+                ..PreparedInlineCompletionContext::default()
             }),
         }
     }

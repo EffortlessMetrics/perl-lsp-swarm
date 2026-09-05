@@ -72,20 +72,63 @@ fn parent_hops_to_scope(
 }
 
 fn last_unmatched_open_brace(source: &str) -> Option<usize> {
+    // Braces inside string literals or line comments are not structural
+    // syntax: counting them can close a block that is still open in the
+    // user's edit and resolve the cursor to an ancestor scope, which then
+    // rejects every lexical the user is actually typing next to (#8941
+    // review). This is a bounded scanner — it understands single- and
+    // double-quoted strings, backslash escapes, and `#` line comments;
+    // exotic quoting (q-delimiters, heredocs) keeps the previous behavior.
+    #[derive(PartialEq)]
+    enum Mode {
+        Code,
+        SingleQuoted,
+        DoubleQuoted,
+        LineComment,
+    }
+
     let mut stack = Vec::new();
+    let mut mode = Mode::Code;
+    let mut escaped = false;
     for (idx, ch) in source.char_indices() {
-        match ch {
-            '{' => stack.push(idx),
-            '}' => {
-                stack.pop();
+        match mode {
+            Mode::Code => match ch {
+                '{' => stack.push(idx),
+                '}' => {
+                    stack.pop();
+                }
+                '\'' => mode = Mode::SingleQuoted,
+                '"' => mode = Mode::DoubleQuoted,
+                '#' => mode = Mode::LineComment,
+                _ => {}
+            },
+            Mode::SingleQuoted => {
+                if ch == '\'' && !escaped {
+                    mode = Mode::Code;
+                }
             }
-            _ => {}
+            Mode::DoubleQuoted => {
+                if ch == '"' && !escaped {
+                    mode = Mode::Code;
+                }
+            }
+            Mode::LineComment => {
+                if ch == '\n' {
+                    mode = Mode::Code;
+                }
+            }
         }
+        escaped = ch == '\\' && !escaped && mode != Mode::LineComment;
     }
     stack.pop()
 }
 
-fn scope_depth(symbol_table: &SymbolTable, scope_id: ScopeId) -> usize {
+/// Depth of `scope_id` measured in parent hops from the root scope.
+///
+/// The root (or an unknown id) sits at depth 0. Used by scope-distance
+/// ranking and by lexical-visibility identity selection (#8941) to order
+/// same-name bindings by declaring-scope nesting.
+pub(crate) fn scope_depth(symbol_table: &SymbolTable, scope_id: ScopeId) -> usize {
     let mut depth = 0usize;
     let mut current = scope_id;
 
@@ -334,6 +377,28 @@ mod tests {
         }
         let source = "sub process {\n    if (1) {\n    }\n    $";
         assert_eq!(scope_at_position(&table, source, source.len()), 2);
+    }
+
+    #[test]
+    fn test_scope_at_position_ignores_braces_in_strings_and_comments() {
+        let mut table = build_test_table();
+        if let Some(scope) = table.scopes.get_mut(&3) {
+            scope.location.end = 25;
+        }
+        // A `}` inside a string or comment is not structural syntax: it must
+        // not close the unfinished block and bounce the cursor to an ancestor.
+        for source in [
+            "sub process {\n    if (1) {\n        my $s = \"}\";",
+            "sub process {\n    if (1) {\n        my $s = '}';",
+            "sub process {\n    if (1) {\n        # closes like this }\n        $",
+            "sub process {\n    if (1) {\n        my $s = \"\\\"} still open\";",
+        ] {
+            assert_eq!(
+                scope_at_position(&table, source, source.len()),
+                3,
+                "brace inside string/comment must not close the block: {source:?}"
+            );
+        }
     }
 
     #[test]

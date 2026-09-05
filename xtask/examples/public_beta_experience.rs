@@ -1177,15 +1177,16 @@ mod tests {
         let linked_artifact = directory.path().join("child_receipts/installed_acceptance.json");
         fs::remove_file(&linked_artifact)?;
         if let Err(error) = create_file_symlink(&linked_artifact, &outside_artifact) {
-            if cfg!(windows)
-                && error
-                    .root_cause()
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|io| io.raw_os_error() == Some(1314))
-            {
-                eprintln!(
-                    "NOT_PROVEN: symlink escape witness unavailable on Windows without symlink privilege: {error}"
-                );
+            // Typed skip on Windows os error 1314 only (symlink privilege
+            // absent without Developer Mode or elevation): the symlink escape
+            // witness cannot exist in that session. Any other creation error
+            // is a real failure.
+            let privilege_skip = error
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .map(perl_tdd_support::classify_symlink_error)
+                .is_some_and(|decision| decision.skip_visibly());
+            if privilege_skip {
                 return Ok(());
             }
             return Err(error);

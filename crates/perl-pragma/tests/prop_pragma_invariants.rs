@@ -20,6 +20,7 @@
 //!
 //! Tests that check feature inclusion account for these removal points rather
 //! than asserting a strict superset relationship.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_pragma::{
     PerlVersion, features_enabled_by_version, parse_perl_version, version_implies_strict,

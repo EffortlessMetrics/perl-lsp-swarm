@@ -1,0 +1,112 @@
+>my $length = length($value);
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^ source.perl variable.other.scalar.perl
+#          ^ source.perl
+#           ^ source.perl keyword.operator.assignment.perl
+#            ^ source.perl
+#             ^^^^^^ source.perl support.function.builtin.perl
+#                   ^ source.perl
+#                    ^^^^^^ source.perl variable.other.scalar.perl
+#                          ^^^ source.perl
+>my $lengthened = $length + 1;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^^^^^ source.perl variable.other.scalar.perl
+#              ^ source.perl
+#               ^ source.perl keyword.operator.assignment.perl
+#                ^ source.perl
+#                 ^^^^^^^ source.perl variable.other.scalar.perl
+#                        ^ source.perl
+#                         ^ source.perl keyword.operator.arithmetic.perl
+#                          ^ source.perl
+#                           ^ source.perl constant.numeric.integer.perl
+#                            ^^ source.perl
+>my $read = <STDIN>;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^ source.perl variable.other.scalar.perl
+#        ^ source.perl
+#         ^ source.perl keyword.operator.assignment.perl
+#          ^ source.perl
+#           ^^^^^^^ source.perl string.other.readline.perl
+#                  ^^ source.perl
+>my $other_read = <STDERR>;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^^^^^ source.perl variable.other.scalar.perl
+#              ^ source.perl
+#               ^ source.perl keyword.operator.assignment.perl
+#                ^ source.perl
+#                 ^^^^^^^^ source.perl string.other.readline.perl
+#                         ^^ source.perl
+>my $ordered = $left <=> $right;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^^ source.perl variable.other.scalar.perl
+#           ^ source.perl
+#            ^ source.perl keyword.operator.assignment.perl
+#             ^ source.perl
+#              ^^^^^ source.perl variable.other.scalar.perl
+#                   ^ source.perl
+#                    ^^^ source.perl keyword.operator.comparison.perl
+#                       ^ source.perl
+#                        ^^^^^^ source.perl variable.other.scalar.perl
+#                              ^^ source.perl
+>my $numeric = $left < $right && $right > $left;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^^ source.perl variable.other.scalar.perl
+#           ^ source.perl
+#            ^ source.perl keyword.operator.assignment.perl
+#             ^ source.perl
+#              ^^^^^ source.perl variable.other.scalar.perl
+#                   ^ source.perl
+#                    ^ source.perl keyword.operator.comparison.perl
+#                     ^ source.perl
+#                      ^^^^^^ source.perl variable.other.scalar.perl
+#                            ^ source.perl
+#                             ^^ source.perl keyword.operator.logical.perl
+#                               ^ source.perl
+#                                ^^^^^^ source.perl variable.other.scalar.perl
+#                                      ^ source.perl
+#                                       ^ source.perl keyword.operator.comparison.perl
+#                                        ^ source.perl
+#                                         ^^^^^ source.perl variable.other.scalar.perl
+#                                              ^^ source.perl
+>my $string = $left lt $right;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^ source.perl variable.other.scalar.perl
+#          ^ source.perl
+#           ^ source.perl keyword.operator.assignment.perl
+#            ^ source.perl
+#             ^^^^^ source.perl variable.other.scalar.perl
+#                  ^ source.perl
+#                   ^^ source.perl keyword.operator.comparison.perl
+#                     ^ source.perl
+#                      ^^^^^^ source.perl variable.other.scalar.perl
+#                            ^^ source.perl
+>my $arrow = $object->method;
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^ source.perl variable.other.scalar.perl
+#         ^ source.perl
+#          ^ source.perl keyword.operator.assignment.perl
+#           ^ source.perl
+#            ^^^^^^^ source.perl variable.other.scalar.perl
+#                   ^^ source.perl keyword.operator.arrow.perl
+#                     ^^^^^^^^ source.perl
+>my %options = (answer => $object->{answer});
+#^^ source.perl keyword.other.perl
+#  ^ source.perl
+#   ^^^^^^^^ source.perl variable.other.hash.perl
+#           ^ source.perl
+#            ^ source.perl keyword.operator.assignment.perl
+#             ^^^^^^^^^ source.perl
+#                      ^^ source.perl keyword.operator.fat-comma.perl
+#                        ^ source.perl
+#                         ^^^^^^^ source.perl variable.other.scalar.perl
+#                                ^^ source.perl keyword.operator.arrow.perl
+#                                  ^^^^^^^^^^^ source.perl
+>

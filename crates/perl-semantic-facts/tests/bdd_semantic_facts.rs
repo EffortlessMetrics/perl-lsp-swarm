@@ -6,6 +6,7 @@
 //! (goto-definition, rename, hover, completion) depend on.
 
 #![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, DefinitionCandidate, DefinitionRank, DefinitionRankReason,
@@ -1061,8 +1062,14 @@ fn given_moo_module_in_activation_list_when_detection_runs_then_detected_with_co
     };
     use perl_semantic_facts::{Confidence, FileId, SourceGeneration};
 
-    let descriptor =
-        AdapterDescriptor::new(AdapterId(1), "moo", "Moo", None, 1, AdapterDisposition::Production);
+    let descriptor = AdapterDescriptor::new(
+        AdapterId(1),
+        "moo",
+        "Moo",
+        None,
+        perl_semantic_facts::framework::FRAMEWORK_ADAPTER_SCHEMA_VERSION,
+        AdapterDisposition::Production,
+    );
     let moo = ModuleActivationIdentity::new(
         "Moo",
         Some(FileId(10)),
@@ -1125,7 +1132,7 @@ fn given_cancelled_token_when_detection_checked_then_outcome_is_cancelled() {
         "moose",
         "Moose",
         None,
-        1,
+        perl_semantic_facts::framework::FRAMEWORK_ADAPTER_SCHEMA_VERSION,
         AdapterDisposition::Production,
     );
     let cancellation = AdapterCancellation::cancelled();
@@ -1306,7 +1313,7 @@ fn given_budget_exceeded_when_adapter_returns_then_partial_facts_accessible_but_
         "moose",
         "Moose",
         None,
-        1,
+        perl_semantic_facts::framework::FRAMEWORK_ADAPTER_SCHEMA_VERSION,
         AdapterDisposition::Production,
     );
     let scope = AdapterSourceScope::new(

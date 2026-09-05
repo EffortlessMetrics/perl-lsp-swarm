@@ -1,5 +1,5 @@
 use perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay;
-use perl_module::resolution::IncRoot;
+use perl_module::IncRoot;
 
 pub(super) fn search_display_paths(roots: &[IncRoot]) -> Vec<ModuleSearchPathDisplay> {
     roots

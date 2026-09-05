@@ -46,7 +46,7 @@ The conservative profile. It enables a stable subset of features that excludes `
 - Situations where inline value display causes issues with your editor client
 
 **Notably enabled vs. production:**
-- `lsp.formatting` and `lsp.range_formatting` are on by default (no perltidy check)
+- `lsp.formatting` remains on by default (no perltidy check); withdrawn range and on-type formatting routes remain absent
 
 **Notably disabled vs. production:**
 - `lsp.inline_value` is gated out
@@ -65,7 +65,7 @@ The default profile for normal runtime operation. This is what the server uses u
 
 **What changes vs. ga-lock:**
 - `lsp.inline_value` is enabled (DAP debugging shows inline variable values)
-- `lsp.formatting` and `lsp.range_formatting` use the native formatter by default; explicit external Perltidy compatibility mode is opt-in
+- `lsp.formatting` uses the native formatter by default; explicit external Perltidy compatibility mode is opt-in. Withdrawn range and on-type formatting routes remain absent
 
 ---
 
@@ -73,7 +73,7 @@ The default profile for normal runtime operation. This is what the server uses u
 
 **CLI token:** `all`
 
-Every in-tree capability is enabled. This profile is primarily intended for test matrices, BDD reporting, and snapshot verification. It enables `lsp.formatting` and `lsp.range_formatting` unconditionally regardless of whether Perltidy is installed.
+Every eligible in-tree capability is enabled. Withdrawn or unproven routes remain absent from the live capability projection. This profile is primarily intended for test matrices, BDD reporting, and snapshot verification. It enables `lsp.formatting` unconditionally regardless of whether Perltidy is installed.
 
 **When to use:**
 - Automated test environments where you want full capability coverage
@@ -181,17 +181,19 @@ checked base registration.
 
 ## Runtime Feature Gating: Native Formatting
 
-Formatting capabilities (`lsp.formatting`, `lsp.range_formatting`,
-`lsp.on_type_formatting`) are backed by the native formatter by default. The
-server no longer removes document/range formatting just because Perltidy is not
-available on `PATH`; Perltidy only matters when explicit external compatibility
-mode is selected.
+Full-document formatting (`lsp.formatting`) is backed by the native formatter by
+default. The range and on-type formatting routes are withdrawn from live
+capabilities pending their respective contracts. Well-formed requests to those
+withdrawn methods return the standard `MethodNotFound` refusal; malformed
+requests may be rejected earlier as `InvalidParams`. The server no longer removes
+full-document formatting just because Perltidy is not available on `PATH`;
+Perltidy only matters when explicit external compatibility mode is selected.
 
 | Profile | No Perltidy | Perltidy present |
 |---------|-------------|------------------|
-| `ga-lock` | Formatting enabled (static) | Formatting enabled |
-| `production` | Formatting enabled | Formatting enabled |
-| `all` | Formatting enabled (static) | Formatting enabled |
+| `ga-lock` | Full-document formatting enabled; range/on-type withdrawn | Full-document formatting enabled; range/on-type withdrawn |
+| `production` | Full-document formatting enabled; range/on-type withdrawn | Full-document formatting enabled; range/on-type withdrawn |
+| `all` | Full-document formatting enabled; range/on-type withdrawn | Full-document formatting enabled; range/on-type withdrawn |
 
 In `production` mode without Perltidy the server still starts and advertises
 native formatting. If explicit external Perltidy compatibility mode is selected,
@@ -278,8 +280,8 @@ The table below summarizes which features each profile enables. "Dynamic" means 
 | `lsp.code_action` | yes | yes | yes |
 | `lsp.code_lens` | yes | yes | yes |
 | `lsp.formatting` | yes | dynamic | yes |
-| `lsp.range_formatting` | yes | dynamic | yes |
-| `lsp.on_type_formatting` | yes | yes | yes |
+| `lsp.range_formatting` | no | no | no |
+| `lsp.on_type_formatting` | no | no | no |
 | `lsp.rename` | yes | yes | yes |
 | `lsp.document_link` | yes | yes | yes |
 | `lsp.folding_range` | yes | yes | yes |

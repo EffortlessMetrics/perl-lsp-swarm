@@ -23,10 +23,10 @@ fn collect_kinds(src: &str) -> Vec<TokenKind> {
     let mut s = TokenStream::new(src);
     let mut kinds = Vec::new();
     while let Ok(t) = s.next() {
-        if t.kind == TokenKind::Eof {
+        if t.kind() == TokenKind::Eof {
             break;
         }
-        kinds.push(t.kind);
+        kinds.push(t.kind());
     }
     kinds
 }
@@ -35,7 +35,7 @@ fn collect_texts(src: &str) -> Vec<String> {
     let mut s = TokenStream::new(src);
     let mut texts = Vec::new();
     while let Ok(t) = s.next() {
-        if t.kind == TokenKind::Eof {
+        if t.kind() == TokenKind::Eof {
             break;
         }
         texts.push(t.text.to_string());
@@ -237,13 +237,13 @@ fn token_stream_match_and_not_match_operators() -> Result<(), Box<dyn std::error
     let mut s = TokenStream::new("$x =~ /foo/");
     let _ = must(s.next()); // $x
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Match, "Expected Match for =~");
+    assert_eq!(t.kind(), TokenKind::Match, "Expected Match for =~");
 
     // !~ operator
     let mut s = TokenStream::new("$x !~ /foo/");
     let _ = must(s.next()); // $x
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::NotMatch, "Expected NotMatch for !~");
+    assert_eq!(t.kind(), TokenKind::NotMatch, "Expected NotMatch for !~");
     Ok(())
 }
 
@@ -252,7 +252,7 @@ fn token_stream_dot_operator() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("$a . $b");
     let _ = must(s.next()); // $a
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Dot, "Expected Dot for string concat");
+    assert_eq!(t.kind(), TokenKind::Dot, "Expected Dot for string concat");
     Ok(())
 }
 
@@ -261,7 +261,7 @@ fn token_stream_power_operator() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("2 ** 8");
     let _ = must(s.next()); // 2
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Power, "Expected Power for **");
+    assert_eq!(t.kind(), TokenKind::Power, "Expected Power for **");
     Ok(())
 }
 
@@ -270,12 +270,12 @@ fn token_stream_bitwise_operators() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("$a << 2");
     let _ = must(s.next()); // $a
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::LeftShift, "Expected LeftShift for <<");
+    assert_eq!(t.kind(), TokenKind::LeftShift, "Expected LeftShift for <<");
 
     let mut s = TokenStream::new("$a >> 2");
     let _ = must(s.next()); // $a
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::RightShift, "Expected RightShift for >>");
+    assert_eq!(t.kind(), TokenKind::RightShift, "Expected RightShift for >>");
     Ok(())
 }
 
@@ -290,7 +290,7 @@ fn token_stream_not_operator() -> Result<(), Box<dyn std::error::Error>> {
 fn token_stream_format_keyword() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("format STDOUT =");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Format, "Expected Format keyword");
+    assert_eq!(t.kind(), TokenKind::Format, "Expected Format keyword");
     Ok(())
 }
 
@@ -298,7 +298,7 @@ fn token_stream_format_keyword() -> Result<(), Box<dyn std::error::Error>> {
 fn token_stream_goto_keyword() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("goto LABEL");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Goto, "Expected Goto keyword");
+    assert_eq!(t.kind(), TokenKind::Goto, "Expected Goto keyword");
     Ok(())
 }
 
@@ -312,11 +312,11 @@ fn token_stream_very_long_line() -> Result<(), Box<dyn std::error::Error>> {
     let long_str: String = "a".repeat(10_000);
     let src = format!("my $x = \"{long_str}\";");
     let mut s = TokenStream::new(&src);
-    assert_eq!(must(s.peek()).kind, TokenKind::My);
+    assert_eq!(must(s.peek()).kind(), TokenKind::My);
     // Consume all tokens without error
     let mut count = 0;
     while let Ok(t) = s.next() {
-        if t.kind == TokenKind::Eof {
+        if t.kind() == TokenKind::Eof {
             break;
         }
         count += 1;
@@ -379,7 +379,7 @@ fn token_stream_newlines_only() -> Result<(), Box<dyn std::error::Error>> {
 fn token_stream_single_character_source() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new(";");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Semicolon);
+    assert_eq!(t.kind(), TokenKind::Semicolon);
     Ok(())
 }
 
@@ -401,7 +401,7 @@ fn token_stream_multiple_statements_same_line() -> Result<(), Box<dyn std::error
 fn token_text_preserves_keyword_text() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("foreach");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Foreach);
+    assert_eq!(t.kind(), TokenKind::Foreach);
     assert_eq!(t.text.as_ref(), "foreach");
     Ok(())
 }
@@ -411,28 +411,28 @@ fn token_text_preserves_number_formats() -> Result<(), Box<dyn std::error::Error
     // Integer
     let mut s = TokenStream::new("42");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Number);
+    assert_eq!(t.kind(), TokenKind::Number);
     assert_eq!(t.text.as_ref(), "42");
 
     // Hex
     let mut s = TokenStream::new("0xFF");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Number);
+    assert_eq!(t.kind(), TokenKind::Number);
 
     // Octal
     let mut s = TokenStream::new("0777");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Number);
+    assert_eq!(t.kind(), TokenKind::Number);
 
     // Binary
     let mut s = TokenStream::new("0b1010");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Number);
+    assert_eq!(t.kind(), TokenKind::Number);
 
     // Float
     let mut s = TokenStream::new("3.14");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Number);
+    assert_eq!(t.kind(), TokenKind::Number);
     Ok(())
 }
 
@@ -441,7 +441,7 @@ fn token_text_preserves_operator_text() -> Result<(), Box<dyn std::error::Error>
     let mut s = TokenStream::new("$a <=> $b");
     let _ = must(s.next()); // $a
     let t = must(s.next()); // <=>
-    assert_eq!(t.kind, TokenKind::Spaceship);
+    assert_eq!(t.kind(), TokenKind::Spaceship);
     assert_eq!(t.text.as_ref(), "<=>");
     Ok(())
 }
@@ -454,9 +454,9 @@ fn token_text_preserves_operator_text() -> Result<(), Box<dyn std::error::Error>
 fn token_positions_are_correct_for_simple_source() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("my $x");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::My);
-    assert_eq!(t.start, 0);
-    assert_eq!(t.end, 2);
+    assert_eq!(t.kind(), TokenKind::My);
+    assert_eq!(t.start(), 0);
+    assert_eq!(t.end(), 2);
     Ok(())
 }
 
@@ -465,9 +465,9 @@ fn token_positions_account_for_whitespace() -> Result<(), Box<dyn std::error::Er
     // "   42" -> number starts at byte 3
     let mut s = TokenStream::new("   42");
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Number);
-    assert_eq!(t.start, 3);
-    assert_eq!(t.end, 5);
+    assert_eq!(t.kind(), TokenKind::Number);
+    assert_eq!(t.start(), 3);
+    assert_eq!(t.end(), 5);
     Ok(())
 }
 
@@ -477,8 +477,8 @@ fn token_positions_account_for_comments() -> Result<(), Box<dyn std::error::Erro
     let src = "# comment\n42";
     let mut s = TokenStream::new(src);
     let t = must(s.next());
-    assert_eq!(t.kind, TokenKind::Number);
-    assert!(t.start >= 10, "Number should start after comment, start={}", t.start);
+    assert_eq!(t.kind(), TokenKind::Number);
+    assert!(t.start() >= 10, "Number should start after comment, start={}", t.start());
     Ok(())
 }
 
@@ -842,13 +842,13 @@ fn code_slice_with_end_returns_code_portion() -> Result<(), Box<dyn std::error::
 fn token_stream_eof_sticky_after_peek() -> Result<(), Box<dyn std::error::Error>> {
     let mut s = TokenStream::new("");
     // Peek sees EOF
-    assert_eq!(must(s.peek()).kind, TokenKind::Eof);
+    assert_eq!(must(s.peek()).kind(), TokenKind::Eof);
     // next should also return EOF
-    assert_eq!(must(s.next()).kind, TokenKind::Eof);
+    assert_eq!(must(s.next()).kind(), TokenKind::Eof);
     // And again
-    assert_eq!(must(s.next()).kind, TokenKind::Eof);
+    assert_eq!(must(s.next()).kind(), TokenKind::Eof);
     // peek still sees EOF
-    assert_eq!(must(s.peek()).kind, TokenKind::Eof);
+    assert_eq!(must(s.peek()).kind(), TokenKind::Eof);
     Ok(())
 }
 
@@ -857,7 +857,7 @@ fn token_stream_peek_second_at_eof_returns_error() -> Result<(), Box<dyn std::er
     let mut s = TokenStream::new("42");
     let _ = must(s.next()); // 42
     // Now at EOF
-    assert_eq!(must(s.peek()).kind, TokenKind::Eof);
+    assert_eq!(must(s.peek()).kind(), TokenKind::Eof);
     // peek_second tries to read past the sticky EOF peeked token
     // and gets UnexpectedEof from the exhausted lexer
     assert!(s.peek_second().is_err(), "peek_second at EOF should return Err");
@@ -888,7 +888,7 @@ fn on_stmt_boundary_clears_all_peek_slots() -> Result<(), Box<dyn std::error::Er
     // Consume first statement
     loop {
         let t = must(s.next());
-        if t.kind == TokenKind::Semicolon {
+        if t.kind() == TokenKind::Semicolon {
             break;
         }
     }
@@ -898,7 +898,7 @@ fn on_stmt_boundary_clears_all_peek_slots() -> Result<(), Box<dyn std::error::Er
 
     // After boundary, should re-lex from current position
     let t = must(s.peek());
-    assert_eq!(t.kind, TokenKind::Our, "After stmt boundary, should see 'our'");
+    assert_eq!(t.kind(), TokenKind::Our, "After stmt boundary, should see 'our'");
     Ok(())
 }
 

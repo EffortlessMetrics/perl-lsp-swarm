@@ -1,3 +1,5 @@
+use perl_ast::geometry_fields_for;
+use perl_ast::kind_schema::{FieldCardinality, registered_child_fields};
 use perl_ast::{
     AST_NODE_POLICIES, AST_NODE_POLICY_SCHEMA_VERSION, AstChildContainmentPolicy,
     AstChildOrderPolicy, AstChildOverlapPolicy, AstEmptyRangePolicy, AstNodeClassification,
@@ -146,12 +148,15 @@ fn every_kind_reconciles_observed_structure_with_its_policy_row()
         });
         assert!(!lost_field_identity, "{kind_name}: a child emission lost its field identity");
 
+        let child_fields = registered_child_fields(kind_name);
+
         let mut expected_counts: std::collections::BTreeMap<&str, usize> =
             std::collections::BTreeMap::new();
-        for (name, _repeating) in fixture.child_fields {
+        for spec in child_fields {
+            let name = spec.field.name();
             assert!(
-                expected_counts.insert(*name, 0).is_none(),
-                "{kind_name}: fixture declares child field {name} twice"
+                expected_counts.insert(name, 0).is_none(),
+                "{kind_name}: registry declares child field {name} twice"
             );
         }
         let observed_names: Vec<&str> = observed_counts.keys().copied().collect();
@@ -159,22 +164,33 @@ fn every_kind_reconciles_observed_structure_with_its_policy_row()
         assert_eq!(
             observed_names, expected_names,
             "{kind_name}: canonical traversal observed child fields {observed_names:?} but the \
-             fixture declares {expected_names:?}; the field-aware traversal remains the authority"
+             structural registry declares {expected_names:?}; the registry is the field authority"
         );
-        for (name, repeating) in fixture.child_fields {
+        for spec in child_fields {
+            let name = spec.field.name();
             let count = observed_counts.get(name).copied().unwrap_or(0);
-            if *repeating {
-                assert!(
-                    count >= 2,
-                    "{kind_name}: field {name} is declared repeating but the fully populated \
-                     sample observed it {count} time(s)"
-                );
-            } else {
-                assert_eq!(
-                    count, 1,
-                    "{kind_name}: field {name} is declared single-occurrence but the sample \
-                     observed it {count} times"
-                );
+            match spec.cardinality {
+                FieldCardinality::Required => {
+                    assert!(
+                        count >= 1,
+                        "{kind_name}: required field {name} was missing on the fully populated \
+                         sample (observed {count})"
+                    );
+                }
+                FieldCardinality::Optional => {
+                    assert_eq!(
+                        count, 1,
+                        "{kind_name}: optional field {name} must be present exactly once on the \
+                         fully populated sample, observed {count}"
+                    );
+                }
+                FieldCardinality::Repeated => {
+                    assert!(
+                        count >= 2,
+                        "{kind_name}: repeated field {name} must observe more than one child on \
+                         the fully populated sample, observed {count}"
+                    );
+                }
             }
         }
 
@@ -182,8 +198,12 @@ fn every_kind_reconciles_observed_structure_with_its_policy_row()
         let mut bucket_owner: std::collections::BTreeMap<&str, &str> =
             std::collections::BTreeMap::new();
         for (bucket, fields) in [
-            ("child_fields", fixture.child_fields.iter().map(|(name, _)| *name).collect()),
+            ("child_fields", child_fields.iter().map(|spec| spec.field.name()).collect()),
             ("payload_fields", fixture.payload_fields.to_vec()),
+            (
+                "geometry_fields",
+                geometry_fields_for(kind_name).iter().map(|row| row.field).collect(),
+            ),
             ("untracked_fields", fixture.untracked_fields.to_vec()),
         ] {
             for name in fields {
@@ -206,31 +226,34 @@ fn every_kind_reconciles_observed_structure_with_its_policy_row()
         match policy.classification {
             AstNodeClassification::Leaf | AstNodeClassification::SourceBoundary => {
                 assert!(
-                    fixture.child_fields.is_empty(),
+                    child_fields.is_empty(),
                     "{kind_name}: classified {:?} but the variant bears child fields {:?}",
                     policy.classification,
-                    fixture.child_fields
+                    child_fields.iter().map(|spec| spec.field.name()).collect::<Vec<_>>()
                 );
             }
             AstNodeClassification::Wrapper => {
                 assert_eq!(
-                    fixture.child_fields.len(),
+                    child_fields.len(),
                     1,
                     "{kind_name}: a Wrapper owns exactly one optional or required child field, \
                      found {:?}",
-                    fixture.child_fields
+                    child_fields.iter().map(|spec| spec.field.name()).collect::<Vec<_>>()
                 );
-                assert!(
-                    !fixture.child_fields[0].1,
-                    "{kind_name}: a Wrapper child must be single-occurrence, not repeating"
+                assert_ne!(
+                    child_fields[0].cardinality,
+                    FieldCardinality::Repeated,
+                    "{kind_name}: a Wrapper child must not be Repeated"
                 );
             }
             AstNodeClassification::ChildBearing => {
                 assert!(
-                    !fixture.child_fields.is_empty(),
+                    !child_fields.is_empty(),
                     "{kind_name}: classified ChildBearing but the variant bears no child fields"
                 );
-                if fixture.child_fields.len() == 1 && !fixture.child_fields[0].1 {
+                if child_fields.len() == 1
+                    && child_fields[0].cardinality != FieldCardinality::Repeated
+                {
                     assert!(
                         !fixture.payload_fields.is_empty(),
                         "{kind_name}: a single-child single-occurrence ChildBearing node must \

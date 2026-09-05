@@ -7,17 +7,17 @@ impl<'a> Parser<'a> {
     fn parse_package_qualified_name(&mut self) -> ParseResult<(String, SourceLocation)> {
         let leading = self.peek_kind() == Some(TokenKind::DoubleColon)
             || (self.peek_kind() == Some(TokenKind::Colon)
-                && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Colon));
+                && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Colon));
         if !leading {
             return self.parse_qualified_name(true);
         }
 
         let lead_start = self.current_position();
         let lead_end = if self.peek_kind() == Some(TokenKind::DoubleColon) {
-            self.tokens.next()?.end // consume '::'
+            self.tokens.next()?.end() // consume '::'
         } else {
             self.tokens.next()?; // consume first ':'
-            self.tokens.next()?.end // consume second ':'
+            self.tokens.next()?.end() // consume second ':'
         };
 
         if self.peek_kind().is_some_and(Self::can_be_sub_name) {
@@ -41,8 +41,8 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::Identifier)?
         };
         let mut name = first.text.to_string();
-        let name_start = first.start;
-        let mut name_end = first.end;
+        let name_start = first.start();
+        let mut name_end = first.end();
 
         if !allow_trailing_separator && name.ends_with("::") {
             return Err(ParseError::UnexpectedToken {
@@ -54,22 +54,22 @@ impl<'a> Parser<'a> {
 
         while self.peek_kind() == Some(TokenKind::DoubleColon)
             || (self.peek_kind() == Some(TokenKind::Colon)
-                && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Colon))
+                && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Colon))
         {
             if self.peek_kind() == Some(TokenKind::DoubleColon) {
                 let double_colon = self.tokens.next()?; // consume ::
-                name_end = double_colon.end;
+                name_end = double_colon.end();
             } else {
                 self.tokens.next()?; // consume first :
                 let second_colon = self.tokens.next()?; // consume second :
-                name_end = second_colon.end;
+                name_end = second_colon.end();
             }
 
             name.push_str("::");
 
             if self.peek_kind().is_some_and(Self::can_be_sub_name) {
                 let next = self.consume_token()?;
-                name_end = next.end;
+                name_end = next.end();
                 name.push_str(&next.text);
             } else if allow_trailing_separator {
                 break;
@@ -189,12 +189,12 @@ impl<'a> Parser<'a> {
 
                         if base_name == "prototype"
                             && paren_depth == 1
-                            && token.kind == TokenKind::Identifier
+                            && token.kind() == TokenKind::Identifier
                             && token.text.as_ref() == "$)"
                         {
                             paren_depth -= 1;
                         } else {
-                            match token.kind {
+                            match token.kind() {
                                 TokenKind::LeftParen => paren_depth += 1,
                                 TokenKind::RightParen => paren_depth -= 1,
                                 _ => {}
@@ -261,17 +261,17 @@ impl<'a> Parser<'a> {
         let (name, name_span) = if self.peek_kind() == Some(TokenKind::DoubleColon) {
             // Leading :: qualifier — subroutine in the main package (e.g., sub ::PCDATA { })
             let dc_token = self.tokens.next()?; // consume '::'
-            let name_start = dc_token.start;
+            let name_start = dc_token.start();
             if self.peek_kind().is_some_and(Self::can_be_sub_name) {
                 // sub ::PCDATA or sub ::DB_File::splice
                 let ident_token = self.tokens.next()?;
                 let full_name = format!("::{}", ident_token.text);
-                (Some(full_name), Some(SourceLocation { start: name_start, end: ident_token.end }))
+                (Some(full_name), Some(SourceLocation { start: name_start, end: ident_token.end() }))
             } else {
                 // sub :: with no following name — treat as name "::"
                 (
                     Some("::".to_string()),
-                    Some(SourceLocation { start: name_start, end: dc_token.end }),
+                    Some(SourceLocation { start: name_start, end: dc_token.end() }),
                 )
             }
         } else if self.peek_kind().is_some_and(Self::can_be_sub_name) {
@@ -290,11 +290,10 @@ impl<'a> Parser<'a> {
         // so we collect attributes on both sides and merge them.
         let mut attributes = self.parse_declaration_attributes()?;
 
-        if let Some(handler_name) = name.as_deref() {
-            if attributes.iter().any(|attr| attr.starts_with("ATTR(") || attr == "ATTR") {
+        if let Some(handler_name) = name.as_deref()
+            && attributes.iter().any(|attr| attr.starts_with("ATTR(") || attr == "ATTR") {
                 self.register_custom_attribute_handler(handler_name);
             }
-        }
 
         // Parse optional prototype or signature after leading attributes.
         let (prototype, signature) = if self.peek_kind() == Some(TokenKind::LeftParen) {
@@ -358,30 +357,30 @@ impl<'a> Parser<'a> {
     fn parse_subroutine_name(&mut self) -> ParseResult<(String, SourceLocation)> {
         let first = self.tokens.next()?;
         let mut name = first.text.to_string();
-        let start = first.start;
-        let mut end = first.end;
+        let start = first.start();
+        let mut end = first.end();
 
         while self.peek_kind() == Some(TokenKind::DoubleColon)
             || (self.peek_kind() == Some(TokenKind::Colon)
-                && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Colon))
+                && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Colon))
         {
             if self.peek_kind() == Some(TokenKind::DoubleColon) {
                 let double_colon = self.tokens.next()?;
-                end = double_colon.end;
+                end = double_colon.end();
             } else {
                 self.tokens.next()?;
                 let second_colon = self.tokens.next()?;
-                end = second_colon.end;
+                end = second_colon.end();
             }
             name.push_str("::");
 
             if self.peek_kind().is_some_and(Self::can_be_sub_name) {
                 let next = self.tokens.next()?;
-                end = next.end;
+                end = next.end();
                 name.push_str(&next.text);
             } else if self.peek_kind() == Some(TokenKind::DoubleColon)
                 || (self.peek_kind() == Some(TokenKind::Colon)
-                    && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Colon))
+                    && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Colon))
             {
                 continue;
             } else {
@@ -408,7 +407,7 @@ impl<'a> Parser<'a> {
                 .tokens
                 .peek_second()
                 .ok()
-                .is_some_and(|token| Self::can_be_sub_name(token.kind))
+                .is_some_and(|token| Self::can_be_sub_name(token.kind()))
     }
 
     fn parse_legacy_tick_subroutine_name(&mut self) -> ParseResult<(String, SourceLocation)> {
@@ -416,7 +415,7 @@ impl<'a> Parser<'a> {
         let package_name = package.text.trim_matches('\'');
         let sub_name = self.tokens.next()?;
         let name = format!("{package_name}::{}", sub_name.text);
-        Ok((name, SourceLocation { start: package.start, end: sub_name.end }))
+        Ok((name, SourceLocation { start: package.start(), end: sub_name.end() }))
     }
 
     /// Parse class declaration (Perl 5.38+)
@@ -446,9 +445,9 @@ impl<'a> Parser<'a> {
             || self.peek_kind() == Some(TokenKind::VString)
         {
             self.tokens.next()?; // consume and discard version token
-        } else if let Some(TokenKind::Identifier) = self.peek_kind() {
-            if let Ok(token) = self.tokens.peek() {
-                if token.text.starts_with('v') && token.text.len() > 1 {
+        } else if let Some(TokenKind::Identifier) = self.peek_kind()
+            && let Ok(token) = self.tokens.peek()
+                && token.text.starts_with('v') && token.text.len() > 1 {
                     // v-string identifier like `v5` — consume it and any trailing
                     // `.N` number tokens that the lexer emits as separate tokens.
                     self.tokens.next()?;
@@ -464,8 +463,6 @@ impl<'a> Parser<'a> {
                         }
                     }
                 }
-            }
-        }
 
         // Parse class-level attributes (e.g. `:isa(Parent)`).
         // `_extra_known` is ignored since #1361 removed the unknown-attribute
@@ -510,8 +507,8 @@ impl<'a> Parser<'a> {
         let name_token = self.expect(TokenKind::Identifier)?;
         let name = name_token.text.to_string();
         let name_span = Some(SourceLocation {
-            start: name_token.start,
-            end: name_token.end,
+            start: name_token.start(),
+            end: name_token.end(),
         });
 
         let mut attributes = self.parse_declaration_attributes()?;
@@ -570,7 +567,7 @@ impl<'a> Parser<'a> {
         self.tokens.next()?; // consume 'format'
 
         if self.tokens.peek().ok().is_some_and(|token| {
-            matches!(token.kind, TokenKind::String | TokenKind::Unknown)
+            matches!(token.kind(), TokenKind::String | TokenKind::Unknown)
                 && token.text.starts_with('\'')
                 && token.text.contains('=')
         }) {
@@ -579,19 +576,19 @@ impl<'a> Parser<'a> {
             let Some(assign_index) = raw.find('=') else {
                 return Err(ParseError::UnexpectedToken {
                     expected: "format assignment".to_string(),
-                    found: token.kind.display_name().to_string(),
-                    location: token.start,
+                    found: token.kind().display_name().to_string(),
+                    location: token.start(),
                 });
             };
             let name = raw[1..assign_index].trim().to_string();
             let mut body = raw[assign_index + 1..].to_string();
-            let mut end = token.end;
+            let mut end = token.end();
             if let Some(terminator_start) = body.find("\n.") {
                 body.truncate(terminator_start + 1);
             } else {
                 while !self.tokens.is_eof() {
                     let body_token = self.tokens.next()?;
-                    end = body_token.end;
+                    end = body_token.end();
                     if body_token.text.as_ref() == "." {
                         break;
                     }
@@ -599,8 +596,8 @@ impl<'a> Parser<'a> {
                 }
             }
             let name_span = Some(SourceLocation {
-                start: token.start,
-                end: token.start + assign_index,
+                start: token.start(),
+                end: token.start() + assign_index,
             });
             return Ok(Node::new(
                 NodeKind::Format { name, name_span, body },
@@ -611,23 +608,23 @@ impl<'a> Parser<'a> {
         if self.tokens.peek().ok().is_some_and(|token| {
             let text = token.text.as_ref();
             text.starts_with('\'') && text.len() > 1
-        }) && self.tokens.peek_second().ok().is_some_and(|token| token.kind == TokenKind::Assign)
+        }) && self.tokens.peek_second().ok().is_some_and(|token| token.kind() == TokenKind::Assign)
         {
             let name_token = self.tokens.next()?;
             let assign = self.tokens.next()?;
             let mut body = String::new();
-            let mut end = assign.end;
+            let mut end = assign.end();
             while !self.tokens.is_eof() {
                 let body_token = self.tokens.next()?;
-                end = body_token.end;
+                end = body_token.end();
                 if body_token.text.as_ref() == "." {
                     break;
                 }
                 body.push_str(body_token.text.as_ref());
             }
             let name_span = Some(SourceLocation {
-                start: name_token.start,
-                end: name_token.end,
+                start: name_token.start(),
+                end: name_token.end(),
             });
             return Ok(Node::new(
                 NodeKind::Format {
@@ -647,8 +644,8 @@ impl<'a> Parser<'a> {
             let double_colon = self.tokens.next()?;
             let name_token = self.expect(TokenKind::Identifier)?;
             let span = SourceLocation {
-                start: double_colon.start,
-                end: name_token.end,
+                start: double_colon.start(),
+                end: name_token.end(),
             };
             (format!("::{}", name_token.text), Some(span))
         } else if self
@@ -660,13 +657,13 @@ impl<'a> Parser<'a> {
                 .tokens
                 .peek_second()
                 .ok()
-                .is_some_and(|token| Self::can_be_sub_name(token.kind))
+                .is_some_and(|token| Self::can_be_sub_name(token.kind()))
         {
             let tick = self.tokens.next()?;
             let name_token = self.tokens.next()?;
             let span = SourceLocation {
-                start: tick.start,
-                end: name_token.end,
+                start: tick.start(),
+                end: name_token.end(),
             };
             (name_token.text.to_string(), Some(span))
         } else if self.peek_kind() == Some(TokenKind::String)
@@ -676,16 +673,16 @@ impl<'a> Parser<'a> {
         {
             let name_token = self.tokens.next()?;
             let span = SourceLocation {
-                start: name_token.start,
-                end: name_token.end,
+                start: name_token.start(),
+                end: name_token.end(),
             };
             (name_token.text.trim_matches('\'').to_string(), Some(span))
         } else {
             // Named format
             let name_token = self.expect(TokenKind::Identifier)?;
             let span = SourceLocation {
-                start: name_token.start,
-                end: name_token.end,
+                start: name_token.start(),
+                end: name_token.end(),
             };
             (name_token.text.to_string(), Some(span))
         };
@@ -693,18 +690,21 @@ impl<'a> Parser<'a> {
         // Expect =
         self.expect(TokenKind::Assign)?;
 
-        // Tell the lexer to enter format body mode
-        self.tokens.enter_format_mode();
+        // Tell the lexer to enter format body mode. A buffered stream that
+        // cannot honor the entry records an advisory; the format-body expect
+        // below then surfaces the misaligned cache as a typed error instead of
+        // silently accepting a wrongly classified token (#8128).
+        self.observe_contextual_operation(ContextualTokenOp::EnterFormatBody, start)?;
 
         // Get the format body
         let body_token = self.tokens.next()?;
-        let body = if body_token.kind == TokenKind::FormatBody {
+        let body = if body_token.kind() == TokenKind::FormatBody {
             body_token.text.to_string()
         } else {
             return Err(ParseError::UnexpectedToken {
                 expected: "format body".to_string(),
-                found: body_token.kind.display_name().to_string(),
-                location: body_token.start,
+                found: body_token.kind().display_name().to_string(),
+                location: body_token.start(),
             });
         };
 
@@ -792,7 +792,7 @@ impl<'a> Parser<'a> {
             // Only stitch when the dot is immediately followed by a plain
             // number (not whitespace-separated or part of a method chain).
             while self.peek_kind() == Some(TokenKind::Dot)
-                && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Number)
+                && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Number)
             {
                 self.consume_token()?; // consume Dot
                 let num = self.consume_token()?; // consume Number
@@ -804,7 +804,7 @@ impl<'a> Parser<'a> {
             let first_token = self.consume_token()?;
 
                 // Check for version strings
-                if first_token.kind == TokenKind::Identifier
+                if first_token.kind() == TokenKind::Identifier
                     && first_token.text.starts_with('v')
                     && first_token.text.chars().skip(1).all(|c| c.is_numeric())
                 {
@@ -812,9 +812,9 @@ impl<'a> Parser<'a> {
                     let mut version = first_token.text.to_string();
 
                     // Check if followed by dot and more numbers (e.g., v5.36)
-                    if self.peek_kind() == Some(TokenKind::Unknown) {
-                        if let Ok(dot_token) = self.tokens.peek() {
-                            if dot_token.text.as_ref() == "." {
+                    if self.peek_kind() == Some(TokenKind::Unknown)
+                        && let Ok(dot_token) = self.tokens.peek()
+                            && dot_token.text.as_ref() == "." {
                                 self.consume_token()?; // consume dot
                                 if self.peek_kind() == Some(TokenKind::Number) {
                                     let num = self.consume_token()?;
@@ -822,8 +822,6 @@ impl<'a> Parser<'a> {
                                     version.push_str(&num.text);
                                 }
                             }
-                        }
-                    }
                     version
                 } else if first_token.text.as_ref() == "v"
                     && self.peek_kind() == Some(TokenKind::Number)
@@ -831,7 +829,7 @@ impl<'a> Parser<'a> {
                     // Version string like v5.36 (tokenized as "v" followed by number)
                     let version = self.expect(TokenKind::Number)?;
                     format!("v{}", version.text)
-                } else if first_token.kind == TokenKind::Identifier {
+                } else if first_token.kind() == TokenKind::Identifier {
                     first_token.text.to_string()
                 } else if first_token.text.chars().all(|c| c.is_alphanumeric() || c == '_')
                     && !first_token.text.is_empty()
@@ -844,9 +842,9 @@ impl<'a> Parser<'a> {
                     return Err(ParseError::syntax(
                         format!(
                             "Expected module name or version, found {}",
-                            first_token.kind.display_name()
+                            first_token.kind().display_name()
                         ),
-                        first_token.start,
+                        first_token.start(),
                     ));
                 }
             };
@@ -855,7 +853,7 @@ impl<'a> Parser<'a> {
         // Handle both DoubleColon tokens and separate Colon tokens (in case lexer sends :: as separate colons)
         while self.peek_kind() == Some(TokenKind::DoubleColon)
             || (self.peek_kind() == Some(TokenKind::Colon)
-                && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Colon))
+                && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Colon))
         {
             if self.peek_kind() == Some(TokenKind::DoubleColon) {
                 self.consume_token()?; // consume ::
@@ -944,7 +942,7 @@ impl<'a> Parser<'a> {
                             && !self.tokens.is_eof()
                         {
                             if let Ok(tok) = self.tokens.next() {
-                                if matches!(tok.kind, TokenKind::Identifier | TokenKind::Number) {
+                                if matches!(tok.kind(), TokenKind::Identifier | TokenKind::Number) {
                                     words.push(tok.text.to_string());
                                 }
                             } else {
@@ -1097,8 +1095,8 @@ impl<'a> Parser<'a> {
             // Also handle -strict flag and comma forms
             loop {
                 // Check for qw BEFORE the match to avoid it being consumed as a generic identifier
-                if let Ok(tok) = self.tokens.peek() {
-                    if tok.text.as_ref() == "qw" {
+                if let Ok(tok) = self.tokens.peek()
+                    && tok.text.as_ref() == "qw" {
                         self.consume_token()?; // consume 'qw'
                         let list = self.parse_qw_words()?;
                         // Format as "qw(FOO BAR BAZ)" so DeclarationProvider can recognize it
@@ -1124,7 +1122,6 @@ impl<'a> Parser<'a> {
                         }
                         continue; // Don't fall through to the match below
                     }
-                }
 
                 match self.peek_kind() {
                     Some(TokenKind::String) => {
@@ -1342,7 +1339,7 @@ impl<'a> Parser<'a> {
         let name = name_token.text.to_string();
 
         // Capture name_span from token for precise LSP navigation
-        let name_span = Some(SourceLocation { start: name_token.start, end: name_token.end });
+        let name_span = Some(SourceLocation { start: name_token.start(), end: name_token.end() });
 
         let block = self.parse_block()?;
         let end = block.location.end;
@@ -1369,7 +1366,7 @@ impl<'a> Parser<'a> {
         let phase = phase_token.text.to_string();
 
         // Capture phase_span from token for precise LSP navigation
-        let phase_span = Some(SourceLocation { start: phase_token.start, end: phase_token.end });
+        let phase_span = Some(SourceLocation { start: phase_token.start(), end: phase_token.end() });
 
         // Phase blocks must be followed by a block
         if self.peek_kind() != Some(TokenKind::LeftBrace) {
@@ -1393,22 +1390,32 @@ impl<'a> Parser<'a> {
     fn parse_data_section(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
 
-        // Consume the data marker token
+        // Consume the data marker token, capturing its exact span from real
+        // token positions rather than deriving it from string lengths.
         let marker_token = self.consume_token()?;
         let marker = marker_token.text.to_string();
+        let marker_span = Some(SourceLocation { start, end: self.previous_position() });
 
-        // Check if there's a data body token
-        let body = if self.peek_kind() == Some(TokenKind::DataBody) {
+        // Check if there's a data body token, capturing its exact span the
+        // same way. No body means no span, not an empty range.
+        let (body, body_span) = if self.peek_kind() == Some(TokenKind::DataBody) {
+            let body_start = self.current_position();
             let body_token = self.consume_token()?;
-            Some(body_token.text.to_string())
+            let text = body_token.text.to_string();
+            let span = Some(SourceLocation { start: body_start, end: self.previous_position() });
+            (Some(text), span)
         } else {
-            None
+            (None, None)
         };
 
         let end = self.previous_position();
 
-        // Create a data section node
-        Ok(Node::new(NodeKind::DataSection { marker, body }, SourceLocation { start, end }))
+        // Create a data section node. The whole-node span stays exactly as
+        // before so existing consumers of the node's own location do not shift.
+        Ok(Node::new(
+            NodeKind::DataSection { marker, marker_span, body, body_span },
+            SourceLocation { start, end },
+        ))
     }
 
     /// Parse no statement (similar to use but disables pragmas/modules)
@@ -1419,7 +1426,7 @@ impl<'a> Parser<'a> {
         // Parse module name — accepts bare identifiers or keyword-named pragmas
         // (e.g. `no if COND, warnings`, `no feature`).
         let first_token = self.consume_token()?;
-        let mut module = if first_token.kind == TokenKind::Identifier {
+        let mut module = if first_token.kind() == TokenKind::Identifier {
             first_token.text.to_string()
         } else if first_token.text.chars().all(|c| c.is_alphanumeric() || c == '_')
             && !first_token.text.is_empty()
@@ -1430,9 +1437,9 @@ impl<'a> Parser<'a> {
             return Err(ParseError::syntax(
                 format!(
                     "Expected module name after 'no', found {}",
-                    first_token.kind.display_name()
+                    first_token.kind().display_name()
                 ),
-                first_token.start,
+                first_token.start(),
             ));
         };
 
@@ -1440,7 +1447,7 @@ impl<'a> Parser<'a> {
         // Handle both DoubleColon tokens and separate Colon tokens (in case lexer sends :: as separate colons)
         while self.peek_kind() == Some(TokenKind::DoubleColon)
             || (self.peek_kind() == Some(TokenKind::Colon)
-                && self.tokens.peek_second().map(|t| t.kind) == Ok(TokenKind::Colon))
+                && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Colon))
         {
             if self.peek_kind() == Some(TokenKind::DoubleColon) {
                 self.consume_token()?; // consume ::
@@ -1513,8 +1520,8 @@ impl<'a> Parser<'a> {
             // Parse bare arguments like: no warnings 'void'
             loop {
                 // Check for qw BEFORE the match to avoid it being consumed as a generic identifier
-                if let Ok(tok) = self.tokens.peek() {
-                    if tok.text.as_ref() == "qw" {
+                if let Ok(tok) = self.tokens.peek()
+                    && tok.text.as_ref() == "qw" {
                         self.consume_token()?; // consume 'qw'
                         let list = self.parse_qw_words()?;
                         // Format as "qw(FOO BAR BAZ)" so DeclarationProvider can recognize it
@@ -1540,7 +1547,6 @@ impl<'a> Parser<'a> {
                         }
                         continue; // Don't fall through to the match below
                     }
-                }
 
                 match self.peek_kind() {
                     Some(TokenKind::String) => {
@@ -1683,7 +1689,7 @@ impl<'a> Parser<'a> {
                     ) => break,
                     Some(TokenKind::Identifier)
                         if !consumed_any
-                            && self.tokens.peek_second().map(|t| t.kind)
+                            && self.tokens.peek_second().map(|t| t.kind())
                                 == Ok(TokenKind::FatArrow) =>
                     {
                         break;
@@ -1693,7 +1699,7 @@ impl<'a> Parser<'a> {
             }
 
             let token = self.consume_token()?;
-            match token.kind {
+            match token.kind() {
                 TokenKind::LeftParen => paren_depth += 1,
                 TokenKind::RightParen => paren_depth = paren_depth.saturating_sub(1),
                 TokenKind::LeftBracket => bracket_depth += 1,

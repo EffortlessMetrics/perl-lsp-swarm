@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Changed
+body: lsp_smoke CI gate now runs as nine atomic, bounded, independently terminal children with typed per-child receipts (compile/setup separated from behavior, per-child watchdog budgets, NOT_PROVEN prerequisite blocking) instead of one composite command whose timeout erased all child evidence.
+time: 2026-08-23T21:40:00Z
+custom:
+  PR: "8063"
+  Slug: lsp-smoke-atomic-bounded-independently-terminal
+  Breaking: "no"

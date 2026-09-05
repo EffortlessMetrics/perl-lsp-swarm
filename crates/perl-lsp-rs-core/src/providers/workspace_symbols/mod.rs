@@ -65,7 +65,7 @@
 //! # }
 //! ```
 
-use perl_module::path::normalize_package_separator;
+use perl_module::normalize_package_separator;
 use perl_parser_core::qualified_name::container_name;
 use perl_parser_core::{SourceLocation, ast::Node};
 use perl_position_tracking::{WireLocation, WireRange};

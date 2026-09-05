@@ -5,7 +5,9 @@
 //! Receipts are built via `UxRunRecorder` (the public API) since the structs
 //! are `#[non_exhaustive]`.
 
-use perl_lsp_ux_tests::{UxCiTier, UxComponent, UxFailureClass, UxRunRecorder, UxScenarioSkip};
+use perl_lsp_ux_tests::{
+    UxCiTier, UxComponent, UxEvidenceClass, UxFailureClass, UxRunRecorder, UxScenarioSkip,
+};
 
 // ── Schema constants (derived from .ci/schemas/ux-scenario-run.schema.json) ──
 
@@ -34,6 +36,7 @@ const ALLOWED_TOP_LEVEL: &[&str] = &[
     "scenario_file",
     "test_name",
     "component",
+    "evidence_class",
     "ci_tier",
     "result",
     "duration_ms",
@@ -77,6 +80,8 @@ const VALID_FAILURE_CLASSES: &[&str] = &[
     "new_test_bug",
     "unknown",
 ];
+
+const VALID_EVIDENCE_CLASSES: &[&str] = &["semantic_proof", "transport_characterization"];
 
 const VALID_ROUTES: &[&str] = &[
     "ci_investigation",
@@ -234,20 +239,20 @@ fn validate_operation_timing(timing: &serde_json::Value, context: &str) {
 
     assert_non_empty_string(&obj["operation"], &format!("{context}.operation"));
 
-    if let Some(ms) = obj.get("time_to_first_useful_result_ms") {
-        if !ms.is_null() {
-            assert_non_negative_number(ms, &format!("{context}.time_to_first_useful_result_ms"));
-        }
+    if let Some(ms) = obj.get("time_to_first_useful_result_ms")
+        && !ms.is_null()
+    {
+        assert_non_negative_number(ms, &format!("{context}.time_to_first_useful_result_ms"));
     }
 
-    if let Some(status) = obj.get("timing_status") {
-        if !status.is_null() {
-            assert_eq!(
-                status.as_str(),
-                Some("missing_request_start"),
-                "{context}.timing_status: must be \"missing_request_start\""
-            );
-        }
+    if let Some(status) = obj.get("timing_status")
+        && !status.is_null()
+    {
+        assert_eq!(
+            status.as_str(),
+            Some("missing_request_start"),
+            "{context}.timing_status: must be \"missing_request_start\""
+        );
     }
 }
 
@@ -284,10 +289,17 @@ fn validate_receipt_against_schema(json: &serde_json::Value) {
     assert_non_empty_string(&obj["friendly_repro"], "friendly_repro");
 
     // component: optional enum
-    if let Some(component) = obj.get("component") {
-        if !component.is_null() {
-            assert_enum_value(component, VALID_COMPONENTS, "component");
-        }
+    if let Some(component) = obj.get("component")
+        && !component.is_null()
+    {
+        assert_enum_value(component, VALID_COMPONENTS, "component");
+    }
+
+    // evidence_class: optional enum
+    if let Some(evidence_class) = obj.get("evidence_class")
+        && !evidence_class.is_null()
+    {
+        assert_enum_value(evidence_class, VALID_EVIDENCE_CLASSES, "evidence_class");
     }
 
     // ci_tier: enum
@@ -300,10 +312,10 @@ fn validate_receipt_against_schema(json: &serde_json::Value) {
     assert_non_negative_number(&obj["duration_ms"], "duration_ms");
 
     // time_to_first_useful_result_ms: optional number >= 0
-    if let Some(ms) = obj.get("time_to_first_useful_result_ms") {
-        if !ms.is_null() {
-            assert_non_negative_number(ms, "time_to_first_useful_result_ms");
-        }
+    if let Some(ms) = obj.get("time_to_first_useful_result_ms")
+        && !ms.is_null()
+    {
+        assert_non_negative_number(ms, "time_to_first_useful_result_ms");
     }
 
     // operation_timings: optional array
@@ -321,17 +333,17 @@ fn validate_receipt_against_schema(json: &serde_json::Value) {
     validate_assertions(&obj["assertions"], "assertions");
 
     // failure_class: optional enum
-    if let Some(fc) = obj.get("failure_class") {
-        if !fc.is_null() {
-            assert_enum_value(fc, VALID_FAILURE_CLASSES, "failure_class");
-        }
+    if let Some(fc) = obj.get("failure_class")
+        && !fc.is_null()
+    {
+        assert_enum_value(fc, VALID_FAILURE_CLASSES, "failure_class");
     }
 
     // route: optional enum
-    if let Some(route) = obj.get("route") {
-        if !route.is_null() {
-            assert_enum_value(route, VALID_ROUTES, "route");
-        }
+    if let Some(route) = obj.get("route")
+        && !route.is_null()
+    {
+        assert_enum_value(route, VALID_ROUTES, "route");
     }
 
     // skip_reason: required for skipped receipts, omitted otherwise.
@@ -527,5 +539,48 @@ fn receipt_skipped_conforms_to_schema() -> Result<(), Box<dyn std::error::Error>
     assert!(json["assertions"]["passed"].is_null());
     assert!(json["assertions"]["failed"].is_null());
 
+    Ok(())
+}
+
+/// Transport-characterization receipt (#13570): the evidence class must be
+/// present, schema-valid, and preserved through serialization so UX/status
+/// projections can mechanically separate the row from semantic proof.
+#[test]
+fn receipt_transport_characterization_conforms_to_schema() -> Result<(), Box<dyn std::error::Error>>
+{
+    let recorder = UxRunRecorder::new(
+        "live_edit_feedback_loop",
+        "ux_scenario_24_live_edit_feedback.rs",
+        "post_edit_navigation_transport",
+        UxCiTier::Pr,
+        Some(UxComponent::GotoDefinition),
+    )
+    .with_evidence_class(UxEvidenceClass::TransportCharacterization);
+
+    let receipt = recorder.finish_pass();
+    let json = serde_json::to_value(&receipt)?;
+
+    validate_receipt_against_schema(&json);
+
+    assert_eq!(json["evidence_class"], "transport_characterization");
+    assert_eq!(json["result"], "pass");
+    Ok(())
+}
+
+/// Default receipts remain full semantic-proof rows.
+#[test]
+fn receipt_default_evidence_class_is_semantic_proof() -> Result<(), Box<dyn std::error::Error>> {
+    let recorder = UxRunRecorder::new(
+        "goto_definition_basic",
+        "ux_scenario_10.rs",
+        "exact_definition",
+        UxCiTier::Pr,
+        Some(UxComponent::GotoDefinition),
+    );
+
+    let receipt = recorder.finish_pass();
+    let json = serde_json::to_value(&receipt)?;
+    validate_receipt_against_schema(&json);
+    assert_eq!(json["evidence_class"], "semantic_proof");
     Ok(())
 }

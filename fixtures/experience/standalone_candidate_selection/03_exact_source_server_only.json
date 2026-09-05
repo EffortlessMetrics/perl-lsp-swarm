@@ -1,0 +1,75 @@
+{
+  "packet_schema": "standalone_candidate_selection_vector.v1",
+  "expectation": {
+    "verdict": "accept"
+  },
+  "candidates": [
+    {
+      "schema_version": "standalone_candidate.v1",
+      "policy_version": "v1",
+      "route_mode": "first_party_posix",
+      "source_mode": "exact_registry_source",
+      "transaction_id": "tx-11179-build-s",
+      "attempt_id": "at-11179-build-s",
+      "created_by_operation": "update",
+      "resolved_subject_digest": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "stage_dag_digest": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "release_display_version": "0.19.0-src.1",
+      "release_topology_digest": "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6",
+      "target_platform": "linux",
+      "target_triple": "x86_64-unknown-linux-gnu",
+      "target_libc": "gnu",
+      "product_unit_disposition": "advanced_source_server_only",
+      "dap_preview_maturity": false,
+      "candidate_generation": 3,
+      "members": [
+        {
+          "role": "perllsp_server",
+          "artifact_sha256": "dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada",
+          "observation_packet_sha256": "dbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdb",
+          "subject_binding": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        }
+      ],
+      "limitations": [
+        "exact registry source builds currently produce the server unit only"
+      ],
+      "candidate_id": "078c9898190d64fc8bf4e79d5ee79af44f89d860d715db60087069624a7d09b8",
+      "manifest_sha256": "9dc374738196a8c9ccad81442e3a08313f243eedf6ba9197c0e1cbb0b93931aa"
+    }
+  ],
+  "prior_selection": null,
+  "next_selection": {
+    "schema_version": "standalone_current_selection.v1",
+    "selection_policy_version": "v1",
+    "install_root": {
+      "root_role": "user_local",
+      "root_identity_sha256": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+    },
+    "selection_generation": 7,
+    "selected_candidate_id": "078c9898190d64fc8bf4e79d5ee79af44f89d860d715db60087069624a7d09b8",
+    "selected_manifest_sha256": "9dc374738196a8c9ccad81442e3a08313f243eedf6ba9197c0e1cbb0b93931aa",
+    "previous_known_good": null,
+    "operation": "update",
+    "transaction_id": "tx-11179-sel-03",
+    "attempt_id": "at-11179-sel-03",
+    "commit_result": "committed",
+    "bounded_reason": "advanced source build selected under its own disposition"
+  },
+  "transition": {
+    "schema_version": "standalone_install_transition.v1",
+    "route_mode": "first_party_posix",
+    "operation": "update",
+    "transaction_id": "tx-11179-sel-03",
+    "attempt_id": "at-11179-sel-03",
+    "disposition": "selection_committed",
+    "candidate_id": "078c9898190d64fc8bf4e79d5ee79af44f89d860d715db60087069624a7d09b8",
+    "prior_current_candidate_id": null,
+    "outcome_dimensions": {
+      "product_units": "updated",
+      "cleanup": "deferred",
+      "process_startup": "unproven",
+      "path_persistence": "not_applicable"
+    },
+    "bounded_reason": "source-mode boundary stays explicit in limitations"
+  }
+}

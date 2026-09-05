@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "B11-same-total-finding-swap",
+  "family": "count_identity_debt_substitution",
+  "purpose": "Removing one historical finding while another appears keeps totals equal and hides the regression behind aggregate counts.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "aggregate total still reads 2",
+      "fresh unwraps in perl-lexer"
+    ],
+    "content": "// before: debt row owns perl-parser/src/lex.rs unwraps (2)\n// after:  repair lex.rs but add 2 fresh unwraps in perl-lexer/src/scan.rs\n// aggregate total still reads 2; the historical finding vanished.\n",
+    "sha256": "d449cc304705537f9f5451a269e79a4ee7087d216204cee310ad97a26c90b900"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "file_contract",
+    "reference": "file:docs/CLIPPY_POLICY.md#unchanged count"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "same_count_substitution"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "path = ",
+      "review_after"
+    ],
+    "note": "Debt rows bind exact paths, so swaps cannot hide.",
+    "content": "# debt rows are path-bound; a moved finding needs a NEW reviewed row\n[[debt]]\nname = \"clippy::unwrap_used\"\nlevel = \"deny\"\npath = \"crates/perl-lexer/src/scan.rs\"\nowner = \"#11649\"\nreason = \"bounded migration residue\"\nreview_after = \"2026-11-01\"\n",
+    "sha256": "75be9220cb476814baea8778bb8d8cac8b423e21903dcedd7c189753a6902826"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "docs/CLIPPY_POLICY.md: an unchanged count cannot hide one finding replacing another; check-lint-policy enforces row binding."
+}

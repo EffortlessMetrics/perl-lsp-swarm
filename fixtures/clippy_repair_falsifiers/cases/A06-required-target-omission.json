@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "case_id": "A06-required-target-omission",
+  "family": "verifier_denominator_weakening",
+  "purpose": "Proving lib-only while dropping required test/bin/example/bench targets hides integration-only breakage.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "test",
+      "bench",
+      "example"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "--workspace --lib",
+      "library units only"
+    ],
+    "content": "# dishonest reduction of the all-target proof to library units only\ncargo clippy --workspace --lib --locked -- -D warnings\n",
+    "sha256": "a89ac02e258d77ff38e1ba4556615c523897e2a894cc47d724f5bce90f1bf0d3"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "gate_command",
+    "reference": "gate:compile_all_targets"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "required_target_omission"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "just check-all-targets"
+    ],
+    "note": "All workspace targets compile under one command.",
+    "content": "just check-all-targets\n",
+    "sha256": "591a37c8d25ac2247a99ea3dc0aa76c5db6fb7c7a780e2ce4543d94d87828a71"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "compile_all_targets compiles every workspace target kind without running tests (#4642 note)."
+}

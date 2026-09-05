@@ -67,6 +67,27 @@ def validate_docs(root: Path, manifest: Mapping[str, Any]) -> None:
             )
         )
 
+    family_rows: list[str] = []
+    for index, family in enumerate(manifest_rows(manifest, "project_families")):
+        version = family.get("version")
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            raise AuthorityError(
+                f"project_families[{index}].version must be an integer >= 1 for doc rows"
+            )
+        family_rows.append(
+            _markdown_code_row(
+                (
+                    string_value(family.get("family"), f"project_families[{index}].family"),
+                    str(version),
+                    string_value(
+                        family.get("classification"),
+                        f"project_families[{index}].classification",
+                    ),
+                    string_value(family.get("owner"), f"project_families[{index}].owner"),
+                )
+            )
+        )
+
     documents: list[str] = []
     for relative in DOC_PATHS:
         text = read_text(root / relative, "protocol authority document")
@@ -81,12 +102,14 @@ def validate_docs(root: Path, manifest: Mapping[str, Any]) -> None:
             "standard DAP",
             "project extension",
             "inlineValues",
+            "custom family",
             commit,
             blob,
             "#6737",
             '<a id="4-breakpoint-requests"></a>',
             *extension_rows,
             *configuration_rows,
+            *family_rows,
         )
         for required in required_markers:
             if required not in text:

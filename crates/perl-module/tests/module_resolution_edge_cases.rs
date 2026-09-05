@@ -8,7 +8,7 @@
 //! - Modules with underscores and numbers in names
 //! - Empty module name edge case
 
-use perl_module::resolution::{ModuleUriResolution, resolve_module_path, resolve_module_uri};
+use perl_module::{ModuleUriResolution, resolve_module_path, resolve_module_uri};
 use std::path::PathBuf;
 use std::time::Duration;
 

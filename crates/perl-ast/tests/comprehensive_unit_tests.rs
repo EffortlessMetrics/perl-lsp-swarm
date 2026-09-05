@@ -320,14 +320,14 @@ fn package_with_and_without_block() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn sexp_number() -> Result<(), Box<dyn std::error::Error>> {
     let n = num_node("42");
-    assert_eq!(n.to_sexp(), "(number 42)");
+    assert_eq!(n.to_sexp(), "(number (value 42))");
     Ok(())
 }
 
 #[test]
 fn sexp_variable() -> Result<(), Box<dyn std::error::Error>> {
     let v = var_node("$", "name");
-    assert_eq!(v.to_sexp(), "(variable $ name)");
+    assert_eq!(v.to_sexp(), "(variable (sigil $) (name name))");
     Ok(())
 }
 
@@ -335,7 +335,7 @@ fn sexp_variable() -> Result<(), Box<dyn std::error::Error>> {
 fn sexp_string_plain() -> Result<(), Box<dyn std::error::Error>> {
     let s =
         Node::new(NodeKind::String { value: "hello".to_string(), interpolated: false }, loc(0, 7));
-    assert_eq!(s.to_sexp(), "(string \"hello\")");
+    assert_eq!(s.to_sexp(), "(string (value hello))");
     Ok(())
 }
 
@@ -343,7 +343,7 @@ fn sexp_string_plain() -> Result<(), Box<dyn std::error::Error>> {
 fn sexp_string_interpolated() -> Result<(), Box<dyn std::error::Error>> {
     let s =
         Node::new(NodeKind::String { value: "hi $x".to_string(), interpolated: true }, loc(0, 7));
-    assert_eq!(s.to_sexp(), "(string_interpolated \"hi $x\")");
+    assert_eq!(s.to_sexp(), "(string_interpolated (value \"hi $x\") (interpolated true))");
     Ok(())
 }
 
@@ -352,14 +352,14 @@ fn sexp_program_wraps_source_file() -> Result<(), Box<dyn std::error::Error>> {
     let prog = program_node(vec![num_node("1")]);
     let sexp = prog.to_sexp();
     assert!(sexp.starts_with("(source_file "), "got: {sexp}");
-    assert!(sexp.contains("(number 1)"), "got: {sexp}");
+    assert!(sexp.contains("(number (value 1))"), "got: {sexp}");
     Ok(())
 }
 
 #[test]
 fn sexp_block() -> Result<(), Box<dyn std::error::Error>> {
     let b = block_node(vec![num_node("99")]);
-    assert_eq!(b.to_sexp(), "(block (number 99))");
+    assert_eq!(b.to_sexp(), "(block (statements (number (value 99))))");
     Ok(())
 }
 
@@ -373,7 +373,10 @@ fn sexp_binary_addition() -> Result<(), Box<dyn std::error::Error>> {
         },
         loc(0, 5),
     );
-    assert_eq!(expr.to_sexp(), "(binary_+ (number 1) (number 2))");
+    assert_eq!(
+        expr.to_sexp(),
+        "(binary_+ (op +) (left (number (value 1))) (right (number (value 2))))"
+    );
     Ok(())
 }
 
@@ -383,7 +386,7 @@ fn sexp_unary_negation() -> Result<(), Box<dyn std::error::Error>> {
         NodeKind::Unary { op: "-".to_string(), operand: Box::new(num_node("5")) },
         loc(0, 2),
     );
-    assert_eq!(expr.to_sexp(), "(unary_- (number 5))");
+    assert_eq!(expr.to_sexp(), "(unary_- (op -) (operand (number (value 5))))");
     Ok(())
 }
 
@@ -393,14 +396,14 @@ fn sexp_unary_not() -> Result<(), Box<dyn std::error::Error>> {
         NodeKind::Unary { op: "!".to_string(), operand: Box::new(var_node("$", "x")) },
         loc(0, 3),
     );
-    assert_eq!(expr.to_sexp(), "(unary_not (variable $ x))");
+    assert_eq!(expr.to_sexp(), "(unary_not (op !) (operand (variable (sigil $) (name x))))");
     Ok(())
 }
 
 #[test]
 fn sexp_identifier() -> Result<(), Box<dyn std::error::Error>> {
     let id = ident_node("foo");
-    assert_eq!(id.to_sexp(), "(identifier foo)");
+    assert_eq!(id.to_sexp(), "(identifier (name foo))");
     Ok(())
 }
 
@@ -415,7 +418,10 @@ fn sexp_my_declaration_no_init() -> Result<(), Box<dyn std::error::Error>> {
         },
         loc(0, 5),
     );
-    assert_eq!(decl.to_sexp(), "(my_declaration (variable $ x))");
+    assert_eq!(
+        decl.to_sexp(),
+        "(my_declaration (declarator my) (variable (variable (sigil $) (name x))))"
+    );
     Ok(())
 }
 
@@ -432,8 +438,8 @@ fn sexp_my_declaration_with_init() -> Result<(), Box<dyn std::error::Error>> {
     );
     let sexp = decl.to_sexp();
     assert!(sexp.starts_with("(my_declaration"), "got: {sexp}");
-    assert!(sexp.contains("(variable $ x)"), "got: {sexp}");
-    assert!(sexp.contains("(number 10)"), "got: {sexp}");
+    assert!(sexp.contains("(variable (sigil $) (name x))"), "got: {sexp}");
+    assert!(sexp.contains("(value 10)"), "got: {sexp}");
     Ok(())
 }
 
@@ -466,8 +472,8 @@ fn sexp_variable_list_declaration() -> Result<(), Box<dyn std::error::Error>> {
     );
     let sexp = decl.to_sexp();
     assert!(sexp.starts_with("(my_declaration"), "got: {sexp}");
-    assert!(sexp.contains("(variable $ a)"), "got: {sexp}");
-    assert!(sexp.contains("(variable $ b)"), "got: {sexp}");
+    assert!(sexp.contains("(variable (sigil $) (name a))"), "got: {sexp}");
+    assert!(sexp.contains("(variable (sigil $) (name b))"), "got: {sexp}");
     Ok(())
 }
 
@@ -484,9 +490,10 @@ fn sexp_if_elsif_else() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 50),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.contains("(if"), "got: {sexp}");
-    assert!(sexp.contains("(elsif"), "got: {sexp}");
-    assert!(sexp.contains("(else"), "got: {sexp}");
+    assert!(sexp.starts_with("(if"), "got: {sexp}");
+    assert!(sexp.contains("(then_branch"), "got: {sexp}");
+    assert!(sexp.contains("(else_branch"), "got: {sexp}");
+    assert_eq!(sexp.matches("(condition").count(), 2, "if + elsif conditions, got: {sexp}");
     Ok(())
 }
 
@@ -600,7 +607,7 @@ fn sexp_readline_with_and_without_fh() -> Result<(), Box<dyn std::error::Error>>
     let with_fh =
         Node::new(NodeKind::Readline { filehandle: Some("STDIN".to_string()) }, loc(0, 7));
     let without = Node::new(NodeKind::Readline { filehandle: None }, loc(0, 2));
-    assert_eq!(with_fh.to_sexp(), "(readline STDIN)");
+    assert_eq!(with_fh.to_sexp(), "(readline (filehandle STDIN))");
     assert_eq!(without.to_sexp(), "(readline)");
     Ok(())
 }
@@ -609,8 +616,8 @@ fn sexp_readline_with_and_without_fh() -> Result<(), Box<dyn std::error::Error>>
 fn sexp_glob_and_typeglob() -> Result<(), Box<dyn std::error::Error>> {
     let g = Node::new(NodeKind::Glob { pattern: "*.pl".to_string() }, loc(0, 6));
     let tg = Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc(0, 4));
-    assert_eq!(g.to_sexp(), "(glob *.pl)");
-    assert_eq!(tg.to_sexp(), "(typeglob foo)");
+    assert_eq!(g.to_sexp(), "(glob (pattern *.pl))");
+    assert_eq!(tg.to_sexp(), "(typeglob (name foo))");
     Ok(())
 }
 
@@ -620,7 +627,10 @@ fn sexp_array_literal() -> Result<(), Box<dyn std::error::Error>> {
         NodeKind::ArrayLiteral { elements: vec![num_node("1"), num_node("2")] },
         loc(0, 6),
     );
-    assert_eq!(arr.to_sexp(), "(array (number 1) (number 2))");
+    assert_eq!(
+        arr.to_sexp(),
+        "(array (elements (number (value 1))) (elements (number (value 2))))"
+    );
     Ok(())
 }
 
@@ -632,7 +642,7 @@ fn sexp_hash_literal() -> Result<(), Box<dyn std::error::Error>> {
     );
     let sexp = h.to_sexp();
     assert!(sexp.starts_with("(hash"), "got: {sexp}");
-    assert!(sexp.contains("(identifier key)"), "got: {sexp}");
+    assert!(sexp.contains("(identifier (name key))"), "got: {sexp}");
     Ok(())
 }
 
@@ -671,7 +681,7 @@ fn sexp_return_with_and_without_value() -> Result<(), Box<dyn std::error::Error>
     let with_val =
         Node::new(NodeKind::Return { value: Some(Box::new(num_node("42"))) }, loc(0, 10));
     let bare = Node::new(NodeKind::Return { value: None }, loc(0, 6));
-    assert_eq!(with_val.to_sexp(), "(return (number 42))");
+    assert_eq!(with_val.to_sexp(), "(return (value (number (value 42))))");
     assert_eq!(bare.to_sexp(), "(return)");
     Ok(())
 }
@@ -683,8 +693,8 @@ fn sexp_loop_control() -> Result<(), Box<dyn std::error::Error>> {
         NodeKind::LoopControl { op: "last".to_string(), label: Some("OUTER".to_string()) },
         loc(0, 10),
     );
-    assert_eq!(next.to_sexp(), "(next)");
-    assert_eq!(last_labeled.to_sexp(), "(last OUTER)");
+    assert_eq!(next.to_sexp(), "(next (op next))");
+    assert_eq!(last_labeled.to_sexp(), "(last (op last) (label OUTER))");
     Ok(())
 }
 
@@ -702,8 +712,8 @@ fn sexp_use_and_no() -> Result<(), Box<dyn std::error::Error>> {
         },
         loc(0, 15),
     );
-    assert_eq!(use_stmt.to_sexp(), "(use strict)");
-    assert_eq!(no_stmt.to_sexp(), "(no warnings (all))");
+    assert_eq!(use_stmt.to_sexp(), "(use (module strict))");
+    assert_eq!(no_stmt.to_sexp(), "(no (module warnings) (args all))");
     Ok(())
 }
 
@@ -714,7 +724,7 @@ fn sexp_use_with_filter_risk() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 20),
     );
     let sexp = risky.to_sexp();
-    assert!(sexp.contains("(risk:filter)"), "got: {sexp}");
+    assert!(sexp.contains("(has_filter_risk true)"), "got: {sexp}");
     Ok(())
 }
 
@@ -724,7 +734,7 @@ fn sexp_package() -> Result<(), Box<dyn std::error::Error>> {
         NodeKind::Package { name: "Foo".to_string(), name_span: loc(8, 11), block: None },
         loc(0, 12),
     );
-    assert_eq!(pkg.to_sexp(), "(package Foo)");
+    assert_eq!(pkg.to_sexp(), "(package (name Foo))");
     Ok(())
 }
 
@@ -739,7 +749,7 @@ fn sexp_package_with_block() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 20),
     );
     let sexp = pkg.to_sexp();
-    assert!(sexp.contains("(package Bar"), "got: {sexp}");
+    assert!(sexp.contains("(name Bar)"), "got: {sexp}");
     assert!(sexp.contains("(block"), "got: {sexp}");
     Ok(())
 }
@@ -748,8 +758,8 @@ fn sexp_package_with_block() -> Result<(), Box<dyn std::error::Error>> {
 fn sexp_eval_and_do() -> Result<(), Box<dyn std::error::Error>> {
     let eval = Node::new(NodeKind::Eval { block: Box::new(block_node(vec![])) }, loc(0, 10));
     let do_node = Node::new(NodeKind::Do { block: Box::new(block_node(vec![])) }, loc(0, 10));
-    assert_eq!(eval.to_sexp(), "(eval (block ))");
-    assert_eq!(do_node.to_sexp(), "(do (block ))");
+    assert_eq!(eval.to_sexp(), "(eval (block (block)))");
+    assert_eq!(do_node.to_sexp(), "(do (block (block)))");
     Ok(())
 }
 
@@ -786,7 +796,7 @@ fn sexp_function_call_builtin() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 12),
     );
     let sexp = call.to_sexp();
-    assert!(sexp.contains("(call print"), "got: {sexp}");
+    assert!(sexp.contains("(call (name print)"), "got: {sexp}");
     Ok(())
 }
 
@@ -845,7 +855,7 @@ fn sexp_regex_with_embedded_code() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 10),
     );
     let sexp = r.to_sexp();
-    assert!(sexp.contains("(risk:code)"), "got: {sexp}");
+    assert!(sexp.contains("(has_embedded_code true)"), "got: {sexp}");
     Ok(())
 }
 
@@ -897,7 +907,12 @@ fn sexp_heredoc_variants() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn sexp_data_section() -> Result<(), Box<dyn std::error::Error>> {
     let ds = Node::new(
-        NodeKind::DataSection { marker: "__DATA__".to_string(), body: Some("stuff".to_string()) },
+        NodeKind::DataSection {
+            marker: "__DATA__".to_string(),
+            marker_span: None,
+            body: Some("stuff".to_string()),
+            body_span: None,
+        },
         loc(0, 20),
     );
     let sexp = ds.to_sexp();
@@ -917,7 +932,7 @@ fn sexp_class() -> Result<(), Box<dyn std::error::Error>> {
         },
         loc(0, 20),
     );
-    assert_eq!(c.to_sexp(), "(class MyClass (block ))");
+    assert_eq!(c.to_sexp(), "(class (name MyClass) (body (block)))");
     Ok(())
 }
 
@@ -982,7 +997,7 @@ fn sexp_expression_statement() -> Result<(), Box<dyn std::error::Error>> {
         NodeKind::ExpressionStatement { expression: Box::new(num_node("42")) },
         loc(0, 3),
     );
-    assert_eq!(es.to_sexp(), "(expression_statement (number 42))");
+    assert_eq!(es.to_sexp(), "(expression_statement (expression (number (value 42))))");
     Ok(())
 }
 
@@ -1001,7 +1016,7 @@ fn sexp_named_subroutine() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 20),
     );
     let sexp = sub.to_sexp();
-    assert!(sexp.contains("(sub hello"), "got: {sexp}");
+    assert!(sexp.contains("(name hello)"), "got: {sexp}");
     Ok(())
 }
 
@@ -1020,7 +1035,7 @@ fn sexp_subroutine_with_attributes() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 20),
     );
     let sexp = sub.to_sexp();
-    assert!(sexp.contains(":lvalue"), "got: {sexp}");
+    assert!(sexp.contains("lvalue"), "got: {sexp}");
     Ok(())
 }
 
@@ -1062,7 +1077,7 @@ fn sexp_phase_block() -> Result<(), Box<dyn std::error::Error>> {
         },
         loc(0, 15),
     );
-    assert_eq!(pb.to_sexp(), "(BEGIN (block ))");
+    assert_eq!(pb.to_sexp(), "(BEGIN (phase BEGIN) (block (block)))");
     Ok(())
 }
 
@@ -1168,7 +1183,8 @@ fn sexp_inner_unwraps_expression_statement() -> Result<(), Box<dyn std::error::E
         Node::new(NodeKind::ExpressionStatement { expression: Box::new(num_node("7")) }, loc(0, 2));
     // to_sexp_inner should unwrap non-anon-sub expression statements
     let inner = es.to_sexp_inner();
-    assert_eq!(inner, "(number 7)");
+    assert_eq!(inner, es.to_sexp());
+    assert!(inner.contains("expression_statement"), "got: {inner}");
     Ok(())
 }
 
@@ -1645,7 +1661,7 @@ fn recovery_kind_names_is_subset() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn empty_program() -> Result<(), Box<dyn std::error::Error>> {
     let prog = program_node(vec![]);
-    assert_eq!(prog.to_sexp(), "(source_file )");
+    assert_eq!(prog.to_sexp(), "(source_file)");
     assert_eq!(prog.count_nodes(), 1);
     assert!(prog.children().is_empty());
     Ok(())
@@ -1654,7 +1670,7 @@ fn empty_program() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn empty_block() -> Result<(), Box<dyn std::error::Error>> {
     let b = block_node(vec![]);
-    assert_eq!(b.to_sexp(), "(block )");
+    assert_eq!(b.to_sexp(), "(block)");
     assert_eq!(b.count_nodes(), 1);
     Ok(())
 }
@@ -1662,7 +1678,7 @@ fn empty_block() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn empty_array_literal() -> Result<(), Box<dyn std::error::Error>> {
     let arr = Node::new(NodeKind::ArrayLiteral { elements: vec![] }, loc(0, 2));
-    assert_eq!(arr.to_sexp(), "(array )");
+    assert_eq!(arr.to_sexp(), "(array)");
     assert_eq!(arr.count_nodes(), 1);
     Ok(())
 }
@@ -1670,7 +1686,7 @@ fn empty_array_literal() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn empty_hash_literal() -> Result<(), Box<dyn std::error::Error>> {
     let h = Node::new(NodeKind::HashLiteral { pairs: vec![] }, loc(0, 2));
-    assert_eq!(h.to_sexp(), "(hash )");
+    assert_eq!(h.to_sexp(), "(hash)");
     assert_eq!(h.count_nodes(), 1);
     Ok(())
 }
@@ -1746,7 +1762,7 @@ fn error_with_partial_node() -> Result<(), Box<dyn std::error::Error>> {
     );
     let sexp = err.to_sexp();
     assert!(sexp.contains("ERROR"), "got: {sexp}");
-    assert!(sexp.contains("(number 42)"), "got: {sexp}");
+    assert!(sexp.contains("(number (value 42))"), "got: {sexp}");
     Ok(())
 }
 
@@ -1797,7 +1813,15 @@ fn leaf_nodes_have_no_children() -> Result<(), Box<dyn std::error::Error>> {
             loc(0, 13),
         ),
         Node::new(NodeKind::Prototype { content: "$".to_string() }, loc(0, 3)),
-        Node::new(NodeKind::DataSection { marker: "__END__".to_string(), body: None }, loc(0, 7)),
+        Node::new(
+            NodeKind::DataSection {
+                marker: "__END__".to_string(),
+                marker_span: None,
+                body: None,
+                body_span: None,
+            },
+            loc(0, 7),
+        ),
         Node::new(
             NodeKind::Format {
                 name: "STDOUT".to_string(),

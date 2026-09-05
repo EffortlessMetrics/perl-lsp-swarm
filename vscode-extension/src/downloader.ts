@@ -5,11 +5,24 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as os from 'os';
-import { promisify } from 'util';
 import * as child_process from 'child_process';
-import * as tar from 'tar';
-import AdmZip from 'adm-zip';
 import { BoundedJsonStatusError, fetchBoundedJson } from './boundedHttpJson';
+import { downloadBoundedFile } from './boundedFileDownload';
+import { extractManagedArchive } from './managedArchiveExtract';
+import {
+  MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
+  MANAGED_CHECKSUM_FILE_MAX_BYTES,
+} from './managedArchiveSafetyPolicy';
+import type { ManagedCandidateManifest } from './managedCacheProtocol';
+import {
+  collectStaleManagedCandidates,
+  commitManagedCandidateSelection,
+  enumerateManagedCandidateCatalog,
+  readManagedCurrentSelection,
+  readSessionManagedHostReference,
+  writeInstalledManagedCandidateManifest,
+} from './managedCandidateRuntime';
+import { resolveManagedCandidateForHost } from './managedCandidateSelection';
 import { buildManagedReleaseExpectation, toManagedReleaseRecords } from './managedReleaseAdapter';
 import {
   selectManagedRelease,
@@ -28,8 +41,6 @@ import {
   LEGACY_UPDATE_CHECK_STATE_KEY,
   type ManagedEmulation,
 } from './managedStorageIdentity';
-
-const execFile = promisify(child_process.execFile);
 
 interface ReleaseAsset {
   name: string;
@@ -312,6 +323,81 @@ export function findReleaseAssetName(
   }
 
   return undefined;
+}
+
+/**
+ * Result of looking an asset up in a `sha256sum(1)`-format SHA256SUMS manifest
+ * (#9839). `absent` means no well-formed entry names the requested asset;
+ * `conflicting` means several well-formed entries name it; both are fail-closed
+ * outcomes for the caller.
+ */
+export type Sha256SumsLookup =
+  | { status: 'found'; digest: string }
+  | { status: 'absent' }
+  | { status: 'malformed' }
+  | { status: 'conflicting' };
+
+// A genuine `sha256sum` entry anchors the 64-hex digest at the start of the
+// line, requires whitespace between digest and file field, and optionally
+// carries coreutils' binary-mode marker (outside the file field). Anything
+// else never supplies a digest (#9839).
+const SHA256_SUMS_ENTRY = /^(\S+)[ \t]+(?:\*?)(.*)$/;
+const SHA256_DIGEST = /^[0-9a-f]{64}$/;
+
+/**
+ * Resolve the expected SHA-256 digest for `assetName` from a SHA256SUMS text.
+ *
+ * Anchored whole-token verification (#9839): an entry counts only when its
+ * leading token is exactly a SHA-256 digest and its file field exactly equals
+ * `assetName`. Lines that merely contain the asset name or a digest string as
+ * a substring cannot satisfy verification.
+ */
+export function lookupSha256SumsDigest(checksums: string, assetName: string): Sha256SumsLookup {
+  const digests = new Set<string>();
+  let matchingEntries = 0;
+  let malformedEntries = 0;
+
+  for (const rawLine of checksums.split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    const entry = SHA256_SUMS_ENTRY.exec(line);
+
+    if (!entry) {
+      continue;
+    }
+
+    const [, digestToken, fileName] = entry;
+
+    if (!digestToken || fileName !== assetName) {
+      continue;
+    }
+
+    matchingEntries += 1;
+    if (!SHA256_DIGEST.test(digestToken)) {
+      malformedEntries += 1;
+      continue;
+    }
+    digests.add(digestToken.toLowerCase());
+  }
+
+  if (matchingEntries === 0) {
+    return { status: 'absent' };
+  }
+
+  if (matchingEntries > 1) {
+    return { status: 'conflicting' };
+  }
+
+  if (malformedEntries > 0) {
+    return { status: 'malformed' };
+  }
+
+  const [resolvedDigest] = digests;
+
+  if (!resolvedDigest) {
+    return { status: 'absent' };
+  }
+
+  return { status: 'found', digest: resolvedDigest };
 }
 
 /**
@@ -873,7 +959,14 @@ export class BinaryDownloader {
         try {
           // Download binary archive
           progress.report({ increment: 10, message: 'Downloading binary...' });
-          await this.downloadFile(asset.browser_download_url, archivePath);
+          await this.downloadFile(
+            asset.browser_download_url,
+            archivePath,
+            30000,
+            5,
+            MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
+            token,
+          );
 
           if (token.isCancellationRequested) {
             throw new Error('Download cancelled');
@@ -886,24 +979,38 @@ export class BinaryDownloader {
 
           progress.report({ increment: 40, message: 'Verifying checksum...' });
           const checksumPath = path.join(tempDir, 'SHA256SUMS');
-          await this.downloadFile(checksumAsset.browser_download_url, checksumPath);
+          await this.downloadFile(
+            checksumAsset.browser_download_url,
+            checksumPath,
+            30000,
+            5,
+            MANAGED_CHECKSUM_FILE_MAX_BYTES,
+            token,
+          );
 
-          // Find the checksum line for our file
-          const checksums = fs.readFileSync(checksumPath, 'utf8');
-          const lines = checksums.split('\n');
-          const checksumLine = lines.find((line) => line.includes(assetName));
+          // Find the checksum entry for our file
+          const sumsEntry = lookupSha256SumsDigest(
+            fs.readFileSync(checksumPath, 'utf8'),
+            assetName,
+          );
 
-          if (!checksumLine) {
-            throw new Error(
-              `Security check failed: Checksum for ${assetName} not found in SHA256SUMS file.`,
-            );
-          }
-
-          const expectedChecksum = checksumLine.split(/\s+/)[0]?.toLowerCase();
-          if (!expectedChecksum) {
-            throw new Error(
-              `Security check failed: Checksum for ${assetName} is malformed in SHA256SUMS.`,
-            );
+          let expectedChecksum: string;
+          switch (sumsEntry.status) {
+            case 'found':
+              expectedChecksum = sumsEntry.digest;
+              break;
+            case 'conflicting':
+              throw new Error(
+                `Security check failed: Conflicting checksum entries for ${assetName} in SHA256SUMS.`,
+              );
+            case 'malformed':
+              throw new Error(
+                `Security check failed: Malformed checksum entry for ${assetName} in SHA256SUMS.`,
+              );
+            case 'absent':
+              throw new Error(
+                `Security check failed: Checksum for ${assetName} not found in SHA256SUMS file.`,
+              );
           }
           const actualChecksum = await this.calculateSHA256(archivePath);
 
@@ -914,46 +1021,28 @@ export class BinaryDownloader {
           }
           this.outputChannel.appendLine('Checksum verified successfully');
 
-          // Extract archive
+          // Inspect then extract only the documented executables (#7432).
           progress.report({ increment: 30, message: 'Extracting binary...' });
           const extractDir = path.join(tempDir, 'extracted');
-          fs.mkdirSync(extractDir);
-
-          // Choose extraction method based on file extension
-          if (assetName.endsWith('.tar.gz')) {
-            await tar.x({
-              file: archivePath,
-              cwd: extractDir,
-            });
-          } else if (assetName.endsWith('.zip')) {
-            await new Promise<void>((resolve, reject) => {
-              const zip = new AdmZip(archivePath);
-              zip.extractAllToAsync(extractDir, true, true, (error) => {
-                if (error) {
-                  reject(error);
-                } else {
-                  resolve();
-                }
-              });
-            });
-          } else if (assetName.endsWith('.tar.xz')) {
-            // Fallback to system tar for .tar.xz (node-tar doesn't support xz)
-            await execFile('tar', ['-xJf', archivePath, '-C', extractDir]);
-          } else {
+          const format = assetName.endsWith('.zip')
+            ? 'zip'
+            : assetName.endsWith('.tar.gz')
+              ? 'tar.gz'
+              : null;
+          if (format === null) {
             throw new Error(`Unsupported archive format: ${assetName}`);
           }
-
-          // Find the binary
-          const binaryNames =
-            process.platform === 'win32'
-              ? ['perllsp.exe', 'perl-lsp.exe']
-              : ['perllsp', 'perl-lsp'];
-          const extractedBinary =
-            binaryNames.map((name) => this.findBinary(extractDir, name)).find(Boolean) ?? null;
-
-          if (!extractedBinary) {
-            throw new Error('Binary not found in archive');
+          if (token.isCancellationRequested) {
+            throw new Error('Download cancelled');
           }
+          const extracted = await extractManagedArchive({
+            archivePath,
+            extractDir,
+            format,
+            windows: format === 'zip',
+            cancellationToken: token,
+          });
+          const extractedBinary = extracted.serverPath;
 
           // Move to final location. Each install lands in a unique
           // versioned dir so a forced reinstall while perllsp.exe is
@@ -982,9 +1071,10 @@ export class BinaryDownloader {
             fs.chmodSync(finalPath, 0o755);
           }
 
-          // Best-effort: copy perl-dap if found in archive
+          // Best-effort: copy perl-dap when the archive carried exactly one.
           const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
-          const extractedDap = this.findBinary(extractDir, dapName);
+          const extractedDap = extracted.dapPath;
+          let installedDapPath: string | null = null;
           if (extractedDap) {
             const dapDest = path.join(installDir, dapName);
             try {
@@ -994,19 +1084,40 @@ export class BinaryDownloader {
               if (process.platform !== 'win32') {
                 fs.chmodSync(dapDest, 0o755);
               }
+              installedDapPath = dapDest;
               this.outputChannel.appendLine(`Debug adapter installed to: ${dapDest}`);
             } catch (e) {
               this.outputChannel.appendLine(`Note: could not install perl-dap: ${e}`);
             }
           }
 
-          // Atomically activate the new install. Old install dirs stay
-          // on disk for one generation as a fallback, then get pruned.
-          // Both the pointer and the prune are scoped to this compatibility
-          // key, so rollback and GC can only ever touch this target's row.
-          this.commitVersionedInstall(installDirName, compatibilityKey);
-          this.outputChannel.appendLine(`Active managed install: ${installDirName}`);
-          this.pruneOldVersionedInstalls(baseDir, installDirName);
+          // Mint the immutable candidate identity from the verified bytes
+          // (#10083): the archive checksum stands in for the release topology
+          // digest, and the installed binaries' digests bind the candidate to
+          // exactly the bytes this host will launch.
+          const perllspDigest = await this.calculateSHA256(finalPath);
+          const dapDigest =
+            installedDapPath === null ? null : await this.calculateSHA256(installedDapPath);
+          const manifest = writeInstalledManagedCandidateManifest(
+            installDir,
+            {
+              release: release.tag_name,
+              version: release.tag_name,
+              target,
+              topology_digest: actualChecksum,
+              perllsp_digest: perllspDigest,
+              perl_dap_digest: dapDigest,
+            },
+            (message) => this.outputChannel.appendLine(`Note: ${message}`),
+          );
+
+          // Atomically activate the new install. The legacy `current` dir
+          // pointer stays authoritative for path resolution and rollback;
+          // the versioned selection record alongside it gives collectors and
+          // host selection the policy-governed view. Stale generations are
+          // then pruned only through the landed retention policy.
+          this.commitVersionedInstall(installDirName, compatibilityKey, manifest);
+          this.collectStaleManagedCandidates(baseDir);
 
           progress.report({ increment: 5, message: 'Complete!' });
           this.outputChannel.appendLine(`Binary installed to: ${finalPath}`);
@@ -1244,137 +1355,81 @@ export class BinaryDownloader {
     dest: string,
     timeoutMs = 30000,
     maxRedirects = 5,
+    maxBytes = MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
+    cancellationToken?: vscode.CancellationToken,
   ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      // Security check: Enforce HTTPS for remote URLs to prevent MITM attacks
-      try {
-        const parsedUrl = new URL(url);
+    try {
+      const parsedUrl = new URL(url);
 
-        // Only allow http: and https: protocols
-        if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-          reject(
-            new Error(
-              `Unsupported protocol: ${parsedUrl.protocol}. Only HTTP and HTTPS are allowed.`,
-            ),
-          );
-          return;
-        }
-
-        // Check for local addresses (full IPv4 loopback range 127.0.0.0/8)
-        // Note: URL.hostname normalizes IPv6 addresses and never includes brackets
-        const ipv4LoopbackRegex = /^127(?:\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}$/;
-        const isLocal =
-          ['localhost', '::1'].includes(parsedUrl.hostname) ||
-          parsedUrl.hostname.endsWith('.localhost') ||
-          ipv4LoopbackRegex.test(parsedUrl.hostname);
-
-        if (parsedUrl.protocol === 'http:' && !isLocal) {
-          reject(
-            new Error(
-              `Security violation: Insecure HTTP download prevented for remote host: ${parsedUrl.hostname}. Use HTTPS or a local server.`,
-            ),
-          );
-          return;
-        }
-      } catch (e) {
-        reject(
-          new Error(
-            `Invalid URL format: ${url}. Error: ${e instanceof Error ? e.message : String(e)}`,
-          ),
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        throw new Error(
+          `Unsupported protocol: ${parsedUrl.protocol}. Only HTTP and HTTPS are allowed.`,
         );
-        return;
       }
 
-      const file = this.createWriteStream(dest);
-      let timedOut = false;
-      let timeout: NodeJS.Timeout | undefined;
+      // Check for local addresses (full IPv4 loopback range 127.0.0.0/8)
+      // Note: URL.hostname normalizes IPv6 addresses and never includes brackets
+      const ipv4LoopbackRegex = /^127(?:\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}$/;
+      const isLocal =
+        ['localhost', '::1'].includes(parsedUrl.hostname) ||
+        parsedUrl.hostname.endsWith('.localhost') ||
+        ipv4LoopbackRegex.test(parsedUrl.hostname);
 
-      // Install the listener before any request activity. A refused request
-      // can destroy the stream before a response callback runs; leaving the
-      // stream unobserved turns a normal download failure into an unhandled
-      // ENOENT when a caller cleans up its temporary directory.
-      file.once('error', (err: NodeJS.ErrnoException) => {
-        if (timeout) {
-          clearTimeout(timeout);
+      if (parsedUrl.protocol === 'http:' && !isLocal) {
+        throw new Error(
+          `Security violation: Insecure HTTP download prevented for remote host: ${parsedUrl.hostname}. Use HTTPS or a local server.`,
+        );
+      }
+    } catch (e) {
+      if (
+        e instanceof Error &&
+        (e.message.startsWith('Unsupported protocol') || e.message.startsWith('Security violation'))
+      ) {
+        throw e;
+      }
+      throw new Error(
+        `Invalid URL format: ${url}. Error: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+
+    const httpConfig = vscode.workspace.getConfiguration('http');
+    const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
+    const options = {
+      headers: { 'User-Agent': 'vscode-perl-lsp' },
+      rejectUnauthorized: proxyStrictSSL,
+    };
+    const isHttps = url.startsWith('https:');
+    const bounded: Parameters<typeof downloadBoundedFile>[0] = {
+      requestFactory: (listener) => this.httpGet(isHttps, url, options, listener),
+      dest,
+      timeoutMs,
+      maxBytes,
+      operationName: 'Archive download',
+      maxRedirects,
+      followRedirect: async (location, remainingRedirects) => {
+        if (
+          isHttps &&
+          location.toLowerCase().startsWith('http:') &&
+          !location.toLowerCase().startsWith('https:')
+        ) {
+          throw new Error('Security violation: Redirect from HTTPS to HTTP prevented');
         }
-        this.removePartialFile(dest);
-        reject(err);
-      });
-
-      // Set timeout
-      timeout = setTimeout(() => {
-        timedOut = true;
-        file.destroy();
-        reject(new Error(`Download timeout after ${timeoutMs / 1000} seconds`));
-      }, timeoutMs);
-
-      // Honor VS Code proxy settings
-      const httpConfig = vscode.workspace.getConfiguration('http');
-      const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
-
-      const options = {
-        headers: { 'User-Agent': 'vscode-perl-lsp' },
-        rejectUnauthorized: proxyStrictSSL,
-      };
-
-      // Use appropriate module based on URL protocol
-      const isHttps = url.startsWith('https:');
-      const request = this.httpGet(isHttps, url, options, (response) => {
-        // Handle redirects
-        if (response.statusCode === 301 || response.statusCode === 302) {
-          clearTimeout(timeout);
-          file.destroy();
-          const newUrl = response.headers.location;
-          if (newUrl) {
-            // Security check: Prevent downgrade from HTTPS to HTTP
-            if (
-              isHttps &&
-              newUrl.toLowerCase().startsWith('http:') &&
-              !newUrl.toLowerCase().startsWith('https:')
-            ) {
-              reject(new Error('Security violation: Redirect from HTTPS to HTTP prevented'));
-              return;
-            }
-            if (maxRedirects <= 0) {
-              reject(new Error('Too many redirects'));
-              return;
-            }
-            this.downloadFile(newUrl, dest, timeoutMs, maxRedirects - 1)
-              .then(resolve)
-              .catch(reject);
-            return;
-          }
-        }
-
-        if (response.statusCode !== 200) {
-          clearTimeout(timeout);
-          file.destroy();
-          reject(new Error(`Failed to download: HTTP ${response.statusCode}`));
-          return;
-        }
-
-        response.pipe(file);
-
-        file.on('finish', () => {
-          if (!timedOut) {
-            clearTimeout(timeout);
-            file.close();
-            resolve();
-          }
-        });
-      });
-
-      request.on('error', (err) => {
-        clearTimeout(timeout);
-        file.destroy();
-        reject(err);
-      });
-
-      request.on('timeout', () => {
-        request.destroy();
-        reject(new Error('Request timeout'));
-      });
-    });
+        await this.downloadFile(
+          location,
+          dest,
+          timeoutMs,
+          remainingRedirects,
+          maxBytes,
+          cancellationToken,
+        );
+      },
+      createWriteStream: (filePath) => this.createWriteStream(filePath),
+      removePartialFile: (filePath) => this.removePartialFile(filePath),
+    };
+    if (cancellationToken !== undefined) {
+      bounded.cancellationToken = cancellationToken;
+    }
+    await downloadBoundedFile(bounded);
   }
 
   /**
@@ -1396,8 +1451,16 @@ export class BinaryDownloader {
     return fs.createWriteStream(dest);
   }
 
-  private removePartialFile(dest: string): void {
-    fs.unlink(dest, () => {});
+  private removePartialFile(dest: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      fs.unlink(dest, (error: NodeJS.ErrnoException | null) => {
+        if (error && error.code !== 'ENOENT') {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
   }
 
   private async calculateSHA256(filePath: string): Promise<string> {
@@ -1487,25 +1550,88 @@ export class BinaryDownloader {
   /**
    * Resolves the active managed install directory for this host.
    *
-   * Admissible keys are walked in preference order and the first namespace
-   * with a valid, self-consistent `current` pointer wins. When no
-   * compatibility-scoped namespace is populated, a pre-#9847 install may be
-   * adopted, but only after its own bytes are revalidated against the key —
-   * path shape alone never promotes legacy bytes (#9847).
+   * Admissible keys are walked in preference order. A namespace carrying a
+   * policy-governed selection record resolves through the landed host
+   * selection policy (#10083); namespaces without one (installs from before
+   * that wiring) keep the pointer-based check. When no compatibility-scoped
+   * namespace is populated, a pre-#9847 install may be adopted, but only
+   * after its own bytes are revalidated against the key — path shape alone
+   * never promotes legacy bytes (#9847).
    */
   private static readActiveManagedInstallDir(context: vscode.ExtensionContext): string | null {
     const keys = hostManagedCompatibilityKeys();
+    const sessionId = vscode.env.sessionId;
     for (const key of keys) {
       const baseDir = managedNamespaceDir(context.globalStorageUri.fsPath, key);
       if (baseDir === null) {
         continue;
       }
-      const active = BinaryDownloader.readPointedInstallDir(baseDir);
-      if (active !== null && BinaryDownloader.installMatchesKey(active, key)) {
-        return active;
+      const governed = BinaryDownloader.resolvePolicyGovernedInstallDir(baseDir, key, sessionId);
+      if (governed !== 'no-policy-record' && governed !== 'refused') {
+        return governed;
+      }
+      // A namespace without a policy record keeps the legacy pointer
+      // behavior. A namespace WITH one is policy-governed: a refusal must
+      // not silently launch a candidate through the pointer the policy just
+      // declined, so the key is skipped and resolution continues (#10083).
+      if (governed === 'no-policy-record') {
+        const active = BinaryDownloader.readPointedInstallDir(baseDir);
+        if (active !== null && BinaryDownloader.installMatchesKey(active, key)) {
+          return active;
+        }
       }
     }
     return BinaryDownloader.adoptLegacyManagedInstallDir(context, keys);
+  }
+
+  /**
+   * Resolves one namespace's active install dir through the landed
+   * host-selection policy when the namespace carries a
+   * `managed_current_selection.v1` record (#10083).
+   *
+   * A session holding a `live` host reference stays bound to the exact
+   * candidate it launched (`bound_running`) even after another writer moved
+   * the shared default; fresh resolutions take `selected_current`, or the
+   * caller's most recently installed compatible candidate when current is
+   * unusable. Every other outcome is a refusal, never a pointer fallback:
+   * `restart_required` must not silently rebind a session whose live
+   * reference says another candidate may still be running, incomplete
+   * enumeration is not evidence, and a namespace disagreement means the dir
+   * is not this host's to launch.
+   */
+  private static resolvePolicyGovernedInstallDir(
+    baseDir: string,
+    key: string,
+    sessionId: string | undefined,
+  ): string | 'no-policy-record' | 'refused' {
+    const current = readManagedCurrentSelection(baseDir);
+    if (current === null) {
+      return 'no-policy-record';
+    }
+    const catalog = enumerateManagedCandidateCatalog(baseDir);
+    if (!catalog.complete) {
+      return 'refused';
+    }
+    const sessionReference =
+      sessionId === undefined ? null : readSessionManagedHostReference(baseDir, sessionId);
+    const runningCandidateId =
+      sessionReference !== null && sessionReference.state === 'live'
+        ? sessionReference.candidate_id
+        : null;
+    const outcome = resolveManagedCandidateForHost({
+      current,
+      candidates: catalog.entries,
+      compatible_candidate_ids: [...catalog.candidateDirs.keys()],
+      running_candidate_id: runningCandidateId,
+    });
+    if (!('candidate_id' in outcome) || outcome.kind === 'restart_required') {
+      return 'refused';
+    }
+    const dir = catalog.candidateDirs.get(outcome.candidate_id)?.[0];
+    if (dir === undefined || !BinaryDownloader.installMatchesKey(dir, key)) {
+      return 'refused';
+    }
+    return dir;
   }
 
   /**
@@ -1643,61 +1769,85 @@ export class BinaryDownloader {
   }
 
   /**
-   * Atomically updates the `current` pointer to a freshly populated install
-   * dir. The temp + rename pattern is the strongest form of "commit on
-   * success" we can use with no extra dependencies.
-   *
-   * The pointer lives inside the compatibility namespace, so committing here
+   * Commits a freshly populated install dir: the versioned
+   * `managed_current_selection.v1` record first, then the legacy `current`
+   * dir pointer. Ordering is the consistency contract (#10083): when the
+   * selection record cannot be written (transient lock, full disk), the
+   * pointer is left unmoved so the previous selection stays authoritative
+   * in both records instead of the pointer claiming a new active install
+   * the policy would refuse. The temp + rename pattern is the strongest
+   * form of "commit on success" available with no extra dependencies, and
+   * the pointer lives inside the compatibility namespace, so committing here
    * cannot move another target's selection.
    */
-  private commitVersionedInstall(installDirName: string, compatibilityKey?: string): void {
+  private commitVersionedInstall(
+    installDirName: string,
+    compatibilityKey?: string,
+    manifest?: ManagedCandidateManifest | null,
+  ): void {
     const baseDir =
       compatibilityKey === undefined
         ? this.getManagedBaseDir()
         : this.getManagedBaseDirForKey(compatibilityKey);
     const pointerPath = path.join(baseDir, 'current');
+    if (manifest === null) {
+      // The install attempted to mint a candidate manifest and failed: a
+      // pointer move would activate an install the policy cannot see, which
+      // is the exact divergence the ordering contract exists to prevent.
+      // The landed dir stays on disk as an unreferenced fallback.
+      this.outputChannel.appendLine(
+        `Note: managed candidate manifest is absent for ${installDirName}; ` +
+          'activation refused, the previous selection stays authoritative.',
+      );
+      return;
+    }
+    if (manifest !== undefined) {
+      const selection = commitManagedCandidateSelection(baseDir, manifest, (message) =>
+        this.outputChannel.appendLine(`Note: ${message}`),
+      );
+      if (selection === null) {
+        // Never move the pointer past a selection record the policy still
+        // refutes: the previous selection remains authoritative and the
+        // freshly landed dir stays on disk as an unreferenced fallback.
+        this.outputChannel.appendLine(
+          `Note: managed selection commit refused; activation pointer left unchanged (${installDirName} remains inactive).`,
+        );
+        return;
+      }
+      this.outputChannel.appendLine(
+        `Managed current selection: generation ${selection.selection_generation} -> ${selection.candidate_id}`,
+      );
+    }
     const tmpPath = `${pointerPath}.tmp`;
     fs.writeFileSync(tmpPath, `${installDirName}\n`, { encoding: 'utf8' });
     fs.renameSync(tmpPath, pointerPath);
+    this.outputChannel.appendLine(`Active managed install: ${installDirName}`);
   }
 
   /**
-   * Removes versioned install dirs older than the most recent two. Best
-   * effort only — failure to prune is logged but never propagates so it
-   * cannot mask install success.
-   *
-   * Keeps `currentName` plus one prior install for fallback recovery.
+   * Garbage-collects this namespace's proven-stale managed generations
+   * through the landed retention policy (#10083): enumeration of the
+   * candidate catalog, the current-selection record, and every persisted host
+   * reference, then deletion only of candidates classified
+   * `stale_unreferenced`. Recency never authorizes deletion; the
+   * immediately-prior generation is retained as the known-good fallback this
+   * runtime has always kept. Best effort — blocked or failed collection is
+   * logged but never propagates, so it cannot mask install success.
    */
-  private pruneOldVersionedInstalls(baseDir: string, currentName: string): void {
-    let entries: { name: string; mtime: number }[] = [];
+  private collectStaleManagedCandidates(baseDir: string): void {
+    // The documented contract is "blocked or failed collection is logged but
+    // never propagates, so it cannot mask install success": enforce it here
+    // rather than trusting every layer below to stay non-throwing forever.
     try {
-      entries = fs
-        .readdirSync(baseDir, { withFileTypes: true })
-        .filter((d) => d.isDirectory() && d.name !== currentName)
-        .map((d) => {
-          const full = path.join(baseDir, d.name);
-          let mtime = 0;
-          try {
-            mtime = fs.statSync(full).mtimeMs;
-          } catch {
-            /* ignore */
-          }
-          return { name: d.name, mtime };
-        })
-        .sort((a, b) => b.mtime - a.mtime);
-    } catch {
-      return;
-    }
-    // Keep most recent prior install; remove anything older.
-    for (const entry of entries.slice(1)) {
-      const target = path.join(baseDir, entry.name);
-      try {
-        fs.rmSync(target, { recursive: true, force: true });
-        this.outputChannel.appendLine(`Removed stale managed install: ${entry.name}`);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        this.outputChannel.appendLine(`Could not remove stale install ${entry.name}: ${msg}`);
+      const result = collectStaleManagedCandidates(baseDir, (message) =>
+        this.outputChannel.appendLine(message),
+      );
+      if (result.blockedReason !== null) {
+        this.outputChannel.appendLine(`Managed candidate GC skipped: ${result.blockedReason}.`);
       }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.outputChannel.appendLine(`Managed candidate GC failed: ${message}.`);
     }
   }
 
@@ -1851,22 +2001,5 @@ export class BinaryDownloader {
         resolve(parseLocalVersion(stdout));
       });
     });
-  }
-
-  private findBinary(dir: string, name: string): string | null {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-
-      if (entry.isDirectory()) {
-        const found = this.findBinary(fullPath, name);
-        if (found) return found;
-      } else if (entry.name === name) {
-        return fullPath;
-      }
-    }
-
-    return null;
   }
 }

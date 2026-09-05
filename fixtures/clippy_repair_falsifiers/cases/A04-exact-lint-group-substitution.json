@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "case_id": "A04-exact-lint-group-substitution",
+  "family": "verifier_denominator_weakening",
+  "purpose": "Replacing an exact governed lint level with a group allow (pedantic/nursery/restriction) silently widens the exemption surface.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "-A clippy::pedantic"
+    ],
+    "content": "# dishonest gate fragment swapping exact denials for a group allow\ncargo clippy --workspace --lib --locked -- -A clippy::pedantic\n",
+    "sha256": "1716690f9019ed8bb875071b407edc618e2580764d3c8ea7e1d343c678c9031a"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "gate_command",
+    "reference": "gate:clippy_full"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "group_lint_substitution"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "-- -D warnings",
+      "-D clippy::unwrap_used"
+    ],
+    "note": "Exact flags stay exact; no group allows.",
+    "content": "cargo clippy --workspace --lib --locked \\\n  -- -D warnings -A missing_docs &&\ncargo clippy --workspace --bins --locked --no-deps \\\n  -- -D clippy::unwrap_used -D clippy::expect_used\n",
+    "sha256": "1bb0e7e010fd42629d3e325bfa9629fd06a92deed4330e7a18c2cfd736e8724c"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Gate flag text is reference evidence of the honest spelling; replay never executes any command."
+}

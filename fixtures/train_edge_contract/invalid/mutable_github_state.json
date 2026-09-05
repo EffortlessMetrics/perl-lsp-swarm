@@ -1,0 +1,29 @@
+{
+  "schema": "train_edge_contract.v1",
+  "schema_version": 1,
+  "contract_id": "invalid-mutable-github-state",
+  "programme": { "name": "invalid-examples" },
+  "propositions": [
+    { "id": "P_a", "claim_ceiling": "A only." },
+    { "id": "P_b", "claim_ceiling": "B only." }
+  ],
+  "edges": [
+    {
+      "source": "P_a",
+      "kind": "requires_implementation",
+      "target": "P_b",
+      "check_run": "1234567890",
+      "ci_status": "success",
+      "provenance": "edge must not embed mutable GitHub/check state"
+    }
+  ],
+  "claim_profiles": [
+    {
+      "id": "invalid_profile",
+      "version": 1,
+      "required": ["P_a"],
+      "allowed_terminal_limitation_states": ["not_proven"],
+      "claim_ceiling": "Invalid example only."
+    }
+  ]
+}

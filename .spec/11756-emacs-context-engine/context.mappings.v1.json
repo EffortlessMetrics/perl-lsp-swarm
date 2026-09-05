@@ -1,0 +1,1072 @@
+{
+  "schema": "emacs_train_context_mappings.v1",
+  "schema_version": 1,
+  "consumed_manifest": {
+    "bundle": ".spec/10918-emacs-train-graph",
+    "schema": "emacs_train.v1"
+  },
+  "consumed_ledger": {
+    "bundle": ".spec/11770-emacs-train-revisions",
+    "schema": "emacs_train_revision.v1"
+  },
+  "population_ownership": {
+    "engine": 11756,
+    "substrate_population": 11757,
+    "projection_population": 11758
+  },
+  "bounds": {
+    "max_components_per_node": 24,
+    "max_tests_per_node": 16,
+    "max_read_set": 32,
+    "max_write_set": 32,
+    "max_not_authority": 16
+  },
+  "nodes": [
+    {
+      "node_id": "CTXENG",
+      "status": "mapped",
+      "components": [
+        {
+          "component_id": "emacs.context.engine.cli",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/tasks/emacs_train_context/mod.rs",
+          "symbol": "EmacsTrainCommand",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "command surface `integration emacs train context|contexts`"
+        },
+        {
+          "component_id": "emacs.context.engine.model",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/tasks/emacs_train_context/model.rs",
+          "symbol": "NodeContextPacket",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "typed manifest, mapping and packet models"
+        },
+        {
+          "component_id": "emacs.context.engine.resolver",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/tasks/emacs_train_context/resolve.rs",
+          "symbol": "resolve_node",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "fail-closed resolver laws L01-L19"
+        },
+        {
+          "component_id": "emacs.context.engine.renderer",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/tasks/emacs_train_context/render.rs",
+          "symbol": "render_markdown",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "deterministic json/markdown rendering"
+        },
+        {
+          "component_id": "emacs.context.engine.digests",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/tasks/emacs_train_context/digest.rs",
+          "symbol": "title_fingerprint",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "sha256 binding and title fingerprint recompute"
+        },
+        {
+          "component_id": "emacs.context.engine.cli_wiring",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/main.rs",
+          "symbol": "Commands",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "`integration` command group nesting this engine"
+        },
+        {
+          "component_id": "emacs.context.engine.module_wiring",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/tasks/mod.rs",
+          "symbol": "emacs_train_context",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "task module registration"
+        },
+        {
+          "component_id": "emacs.context.engine.population_data",
+          "role": "population_data",
+          "kind": "json_data",
+          "path": ".spec/11756-emacs-context-engine/context.mappings.v1.json",
+          "symbol": null,
+          "symbol_kind": null,
+          "client_family": null,
+          "notes": "this document; extended by the population leaves #11757/#11758"
+        }
+      ],
+      "tests": [
+        {
+          "path": "xtask/src/tasks/emacs_train_context/tests.rs",
+          "selector": "emacs_train_context::tests",
+          "kind": "falsifier"
+        }
+      ],
+      "generated": [],
+      "read_set": [
+        "AGENTS.md",
+        ".spec/10918-emacs-train-graph/train.manifest.json",
+        ".spec/11770-emacs-train-revisions/revisions.ledger.json",
+        ".spec/11756-emacs-context-engine/context.mappings.v1.json",
+        "xtask/src/tasks/emacs_train_context/mod.rs"
+      ],
+      "write_set": [
+        ".spec/11756-emacs-context-engine/context.mappings.v1.json",
+        "xtask/src/main.rs",
+        "xtask/src/tasks/mod.rs",
+        "xtask/src/tasks/emacs_train_context/digest.rs",
+        "xtask/src/tasks/emacs_train_context/mod.rs",
+        "xtask/src/tasks/emacs_train_context/model.rs",
+        "xtask/src/tasks/emacs_train_context/render.rs",
+        "xtask/src/tasks/emacs_train_context/resolve.rs",
+        "xtask/src/tasks/emacs_train_context/tests.rs"
+      ],
+      "not_authority": [
+        {
+          "path_or_symbol": "xtask/src/tasks/issue_controllers/",
+          "reason": "controller-train checked projection (T02) is a sibling surface; compose its patterns, never duplicate or re-own them",
+          "owner": "#11765"
+        }
+      ],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": null
+    },
+    {
+      "node_id": "E00",
+      "status": "mapped",
+      "components": [
+        {
+          "component_id": "emacs.architecture.bundle.context",
+          "role": "spec",
+          "kind": "spec_bundle",
+          "path": ".spec/11716-emacs-support-architecture/context.md",
+          "symbol": null,
+          "symbol_kind": null,
+          "client_family": null,
+          "notes": "durable architecture decisions and evidence boundaries"
+        },
+        {
+          "component_id": "emacs.architecture.bundle.acceptance",
+          "role": "spec",
+          "kind": "spec_bundle",
+          "path": ".spec/11716-emacs-support-architecture/acceptance.md",
+          "symbol": null,
+          "symbol_kind": null,
+          "client_family": null,
+          "notes": "checked acceptance of the E00 bundle"
+        }
+      ],
+      "tests": [],
+      "generated": [],
+      "read_set": [
+        "AGENTS.md",
+        ".spec/11716-emacs-support-architecture/acceptance.md",
+        ".spec/11716-emacs-support-architecture/context.md"
+      ],
+      "write_set": [
+        ".spec/11716-emacs-support-architecture/acceptance.md",
+        ".spec/11716-emacs-support-architecture/checklist.md",
+        ".spec/11716-emacs-support-architecture/context.md"
+      ],
+      "not_authority": [
+        {
+          "path_or_symbol": ".spec/10918-emacs-train-graph/train.manifest.json",
+          "reason": "train topology preserves the bundle but never amends a durable architecture decision",
+          "owner": "#10918"
+        }
+      ],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": "specification node: the owned surface is the durable architecture bundle; no production code implements this node",
+      "blocker": null
+    },
+    {
+      "node_id": "E01",
+      "status": "mapped",
+      "components": [
+        {
+          "component_id": "emacs.train.manifest",
+          "role": "spec",
+          "kind": "spec_bundle",
+          "path": ".spec/10918-emacs-train-graph/train.manifest.json",
+          "symbol": "emacs_train.v1",
+          "symbol_kind": "text_contains",
+          "client_family": null,
+          "notes": "the stable checked topology consumed as data by this engine"
+        }
+      ],
+      "tests": [],
+      "generated": [],
+      "read_set": [
+        "AGENTS.md",
+        ".spec/10918-emacs-train-graph/checklist.md",
+        ".spec/10918-emacs-train-graph/train.manifest.json"
+      ],
+      "write_set": [
+        ".spec/10918-emacs-train-graph/acceptance.md",
+        ".spec/10918-emacs-train-graph/checklist.md",
+        ".spec/10918-emacs-train-graph/context.md",
+        ".spec/10918-emacs-train-graph/train.manifest.json"
+      ],
+      "not_authority": [
+        {
+          "path_or_symbol": ".spec/11716-emacs-support-architecture/",
+          "reason": "durable architecture authority; the manifest preserves, never replaces it",
+          "owner": "#11716"
+        }
+      ],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": "stable_contract node: the owned surface is the checked manifest itself; the E01-named xtask validation commands remain unbuilt tooling recorded as not_proven in the manifest limitations",
+      "blocker": null
+    },
+    {
+      "node_id": "E01R",
+      "status": "mapped",
+      "components": [
+        {
+          "component_id": "emacs.train.revision.ledger",
+          "role": "spec",
+          "kind": "spec_bundle",
+          "path": ".spec/11770-emacs-train-revisions/revisions.ledger.json",
+          "symbol": "emacs_train_revision.v1",
+          "symbol_kind": "text_contains",
+          "client_family": null,
+          "notes": "append-only revision ledger consumed as data; never re-derived or cloned"
+        }
+      ],
+      "tests": [],
+      "generated": [],
+      "read_set": [
+        "AGENTS.md",
+        ".spec/11770-emacs-train-revisions/revisions.ledger.json"
+      ],
+      "write_set": [
+        ".spec/11770-emacs-train-revisions/acceptance.md",
+        ".spec/11770-emacs-train-revisions/checklist.md",
+        ".spec/11770-emacs-train-revisions/context.md",
+        ".spec/11770-emacs-train-revisions/revisions.ledger.json"
+      ],
+      "not_authority": [
+        {
+          "path_or_symbol": ".spec/10918-emacs-train-graph/train.manifest.json",
+          "reason": "the ledger cross-validates against the manifest as data and never rewrites its bytes",
+          "owner": "#10918"
+        }
+      ],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": "semantic_revision node: the owned surface is the revision ledger; revision classification mechanics live in the bundle's embedded checker",
+      "blocker": null
+    },
+    {
+      "node_id": "H7777",
+      "status": "mapped",
+      "components": [
+        {
+          "component_id": "editor_clients.receipt_contract",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/editor_client_compat.rs",
+          "symbol": "SCHEMA_VERSION",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "landed editor_client_compat.v1 typed contract"
+        },
+        {
+          "component_id": "editor_clients.receipt_module_wiring",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/lib.rs",
+          "symbol": "editor_client_compat",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "module registration of the landed contract"
+        },
+        {
+          "component_id": "editor_clients.receipt_validation",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/src/actual_host_receipt.rs",
+          "symbol": "validate_receipt",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "actual_host_receipt.v1 validation over the shared contract"
+        },
+        {
+          "component_id": "editor_clients.receipt_schema",
+          "role": "schema",
+          "kind": "schema_json",
+          "path": ".ci/schemas/editor-client-compat.v1.schema.json",
+          "symbol": "editor_client_compat.v1",
+          "symbol_kind": "text_contains",
+          "client_family": null,
+          "notes": "schema is a contract artifact, never production implementation"
+        }
+      ],
+      "tests": [
+        {
+          "path": "xtask/tests/editor_client_compat_contract.rs",
+          "selector": "editor_client_compat_contract",
+          "kind": "falsifier"
+        },
+        {
+          "path": "xtask/tests/actual_host_receipt.rs",
+          "selector": "actual_host_receipt",
+          "kind": "falsifier"
+        }
+      ],
+      "generated": [],
+      "read_set": [
+        "AGENTS.md",
+        ".ci/schemas/editor-client-compat.v1.schema.json",
+        "xtask/src/editor_client_compat.rs"
+      ],
+      "write_set": [],
+      "not_authority": [
+        {
+          "path_or_symbol": "xtask/tests/support/emacs_host_runner.rs",
+          "reason": "hermetic runner core belongs to H7778; it is not the receipt contract",
+          "owner": "#7778"
+        }
+      ],
+      "specs": [],
+      "write_set_note": "landed historical substrate; no expected writes (residual issue openness is live state owned by #10930, not navigation)",
+      "no_production_component_reason": null,
+      "blocker": null
+    },
+    {
+      "node_id": "H7778",
+      "status": "mapped",
+      "components": [
+        {
+          "component_id": "emacs.runner_core.rust",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "xtask/tests/support/emacs_host_process.rs",
+          "symbol": "run_owned_process",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "landed hermetic runner core: run plans, owned processes, receipts (defined in emacs_host_process.rs; emacs_host_runner.rs re-exports it)"
+        },
+        {
+          "component_id": "emacs.runner_core.elisp_driver",
+          "role": "production",
+          "kind": "elisp_source",
+          "path": "scripts/test/emacs-host-driver.el",
+          "symbol": "perl-lsp-test-run",
+          "symbol_kind": "elisp_defun",
+          "client_family": null,
+          "notes": "hermetic driver emitting emacs_host_driver.v1 events"
+        }
+      ],
+      "tests": [
+        {
+          "path": "xtask/tests/emacs_host_runner_contract.rs",
+          "selector": "emacs_host_runner_contract",
+          "kind": "falsifier"
+        }
+      ],
+      "generated": [],
+      "read_set": [
+        "AGENTS.md",
+        "scripts/test/emacs-host-driver.el",
+        "xtask/tests/support/emacs_host_runner.rs"
+      ],
+      "write_set": [],
+      "not_authority": [
+        {
+          "path_or_symbol": "xtask/src/editor_client_compat.rs",
+          "reason": "the generic receipt contract belongs to H7777; the runner consumes it without owning it",
+          "owner": "#7777"
+        },
+        {
+          "path_or_symbol": ".ci/schemas/editor-client-compat.v1.schema.json",
+          "reason": "generic receipt schema, not runner-core implementation",
+          "owner": "#7777"
+        }
+      ],
+      "specs": [],
+      "write_set_note": "landed historical substrate; no expected writes; conformance falsifiers stay with RUNCONF (#8734)",
+      "no_production_component_reason": null,
+      "blocker": null
+    },
+    {
+      "node_id": "FIXT",
+      "status": "mapped",
+      "components": [
+        {
+          "component_id": "emacs.fixture_matrix.substrate",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "crates/perl-lsp-rs/tests/support/emacs_projects.rs",
+          "symbol": "EmacsProjectFixtureMatrix",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "landed canonical discriminating twelve-case project-fixture substrate (#7763, pull #8026); REQUIRED_CASES pins the case set both root matrices consume"
+        },
+        {
+          "component_id": "emacs.stock_project_probe.driver",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "crates/perl-lsp-rs/tests/support/emacs_projects.rs",
+          "symbol": "stock_project_probe_driver",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "behavior-bearing probe driver: the embedded Elisp performs project-current, extracts the root and serializes the receipt with native JSON sentinels; bind_stock_project_probe only binds the probe environment"
+        },
+        {
+          "component_id": "emacs.stock_project_probe.substrate",
+          "role": "production",
+          "kind": "rust_source",
+          "path": "crates/perl-lsp-rs/tests/support/emacs_projects.rs",
+          "symbol": "bind_stock_project_probe",
+          "symbol_kind": "rust_item",
+          "client_family": null,
+          "notes": "stock-project probe binding: the probe observes the stock selection with no prebound or expected root; probe faults are never rendered as pass"
+        }
+      ],
+      "tests": [
+        {
+          "path": "crates/perl-lsp-rs/tests/emacs_project_root_fixture_tests.rs",
+          "selector": "emacs_project_root_fixture_tests",
+          "kind": "falsifier"
+        }
+      ],
+      "generated": [],
+      "read_set": [
+        "AGENTS.md",
+        "crates/perl-lsp-rs/tests/emacs_project_root_fixture_tests.rs",
+        "crates/perl-lsp-rs/tests/support/emacs_projects.rs"
+      ],
+      "write_set": [],
+      "not_authority": [
+        {
+          "path_or_symbol": "xtask/tests/support/emacs_host_runner.rs",
+          "reason": "the hermetic Emacs runner core is H7778 production material and an execution input for later observations; it is never fixture-substrate implementation",
+          "owner": "#7778"
+        },
+        {
+          "path_or_symbol": "crates/perl-lsp-rs/tests/emacs_project_root_fixture_tests.rs",
+          "reason": "fixture roots never become stock discovery or semantic root authority: stock observation belongs to ROOT_E_OBS (#11747) and ROOT_L_OBS (#11748), and current-tree truth to #10923",
+          "owner": "#11747"
+        }
+      ],
+      "specs": [],
+      "write_set_note": "landed historical substrate; no expected writes; a manually bound fixture root is never stock project discovery, and stock-discovery observation stays with the root matrices (#11747/#11748)",
+      "no_production_component_reason": null,
+      "blocker": null
+    },
+    {
+      "node_id": "RELY",
+      "status": "mapped",
+      "components": [
+        {
+          "component_id": "editor_host.reliability.contract",
+          "role": "spec",
+          "kind": "spec_bundle",
+          "path": ".spec/10894-editor-host-reliability/context.md",
+          "symbol": null,
+          "symbol_kind": null,
+          "client_family": null,
+          "notes": "shared fail-closed host-run reliability contract compiled by RELY from the #10894 authority"
+        },
+        {
+          "component_id": "editor_host.reliability.acceptance",
+          "role": "spec",
+          "kind": "spec_bundle",
+          "path": ".spec/10894-editor-host-reliability/acceptance.md",
+          "symbol": null,
+          "symbol_kind": null,
+          "client_family": null,
+          "notes": "checked acceptance tables: behavior, hazards, contracts, adoption"
+        }
+      ],
+      "tests": [],
+      "generated": [],
+      "read_set": [
+        "AGENTS.md",
+        ".spec/10894-editor-host-reliability/acceptance.md",
+        ".spec/10894-editor-host-reliability/checklist.md",
+        ".spec/10894-editor-host-reliability/context.md"
+      ],
+      "write_set": [
+        ".spec/10894-editor-host-reliability/acceptance.md",
+        ".spec/10894-editor-host-reliability/checklist.md",
+        ".spec/10894-editor-host-reliability/context.md"
+      ],
+      "not_authority": [
+        {
+          "path_or_symbol": "xtask/tests/support/emacs_host_runner.rs",
+          "reason": "the hermetic Emacs runner core is H7778 production material and a consumer of the shared contract, never its implementation; Emacs-specific conformance falsifiers stay with RUNCONF so #10894 and #8734 never collapse into one writer surface",
+          "owner": "#7778"
+        },
+        {
+          "path_or_symbol": "xtask/src/editor_client_compat.rs",
+          "reason": "generic editor_client_compat.v1 receipt authority remains with the landed contract; this bundle references it and never re-owns it",
+          "owner": "#7777"
+        }
+      ],
+      "specs": [
+        "10894-editor-host-reliability"
+      ],
+      "write_set_note": null,
+      "no_production_component_reason": "spec_compiled node: the owned surface is the checked shared host-run reliability contract itself; generic host-run implementation is consumer-owned and intentionally absent on this tree",
+      "blocker": null
+    },
+    {
+      "node_id": "RUNCONF",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "Emacs host-run conformance falsifiers do not exist on this tree: parent-deadline timeout with preserved last barrier, run-owned process-ledger cleanup observation, bounded redaction, and receipt failure paths are unimplemented; the H7778 hermetic runner and H7777 receipt contract landed without them and the shared reliability contract .spec/10894-editor-host-reliability defines the semantics they must adopt rather than reimplement; population requires those falsifier surfaces",
+        "owner_issue": 8734,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "SUBJ_CORE",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "subject manifest resolver and bundled-Eglot subject binding do not exist on this tree; subject identity is digest-bound so a version string never satisfies it, and the leaf contract compiles from #11752 which has not landed; population requires the resolver plus bundled subject manifest surfaces",
+        "owner_issue": 11744,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "SUBJ_E",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "released and pinned-current-source Eglot subject materialization does not exist on this tree; the only landed subject manifest is the Vim one at .ci/editor-clients/vim-vim-lsp-subject.v1.json and it is not Emacs material; population requires exact Eglot subject acquisition surfaces",
+        "owner_issue": 11745,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "SUBJ_L",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "released and pinned-current-source lsp-mode subject materialization does not exist on this tree; the only landed subject manifest is the Vim one at .ci/editor-clients/vim-vim-lsp-subject.v1.json and it is not Emacs material; population requires exact lsp-mode subject acquisition surfaces",
+        "owner_issue": 11746,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "SUBJ_FAN",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "fan-in reference node: immutable cross-client subject manifests and exact client materialization fan in from the RUNCONF, SUBJ_CORE, SUBJ_E and SUBJ_L hard dependencies, none of which exist on this tree; the node stays buildable=false fan-in reference that executes no missing subject work, so population records fan-in validation surfaces, not a builder transition",
+        "owner_issue": 8755,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "OBS",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "typed host-native action observations and their run-generation binding do not exist on this tree; protocol traffic cannot become a host-visible pass without this vocabulary; population requires the observation vocabulary surfaces",
+        "owner_issue": 11360,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "PROD",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "the observation-to-editor_client_compat.v1 receipt producer does not exist on this tree; the landed receipt schema and validate_receipt helper are the contract, never the producer, and a caller-manufactured pass may never enter the receipt stream; population requires the producer implementation",
+        "owner_issue": 11361,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "ADP_E",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no checked Eglot host adapter or capability-capture path exists on this tree; the adapter must adopt OBS observation semantics instead of inventing its own and Eglot material must never map into the lsp-mode node; population requires the adapter surfaces",
+        "owner_issue": 8776,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "ADP_L",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no checked lsp-mode host adapter or server-selection capture path exists on this tree; the adapter must adopt OBS observation semantics instead of inventing its own and lsp-mode material must never map into the Eglot node; population requires the adapter surfaces",
+        "owner_issue": 8795,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "PROF_E",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "exact Eglot capability profile capture and verification does not exist on this tree; synthetic profile fixtures are never actual-client evidence and profile JSON is not actual-host adapter source; population requires the captured profile surfaces",
+        "owner_issue": 8819,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "PROF_L",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "exact lsp-mode capability profile capture and verification does not exist on this tree; synthetic profile fixtures are never actual-client evidence and profile JSON is not actual-host adapter source; population requires the captured profile surfaces",
+        "owner_issue": 8821,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "HOST_E29",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "the Emacs 29.4 bundled-Eglot full-push actual-host journey selector and driver do not exist on this tree; a push-cohort pass may not be claimed from pull evidence or another generation and product-provider files are read-only transfer targets, never writable repair scope; population requires the journey driver surfaces",
+        "owner_issue": 8822,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "HOST_E30",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "the Emacs 30.1 bundled-Eglot bounded-push actual-host journey selector and driver do not exist on this tree; a push-cohort pass may not be claimed from pull evidence or another generation and product-provider files are read-only transfer targets, never writable repair scope; population requires the journey driver surfaces",
+        "owner_issue": 8823,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "HOST_E_REL",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "the released GNU ELPA Eglot pull-diagnostic actual-host journey selector and driver do not exist on this tree; a pull-cohort pass may not be claimed from push evidence or another generation and product-provider files are read-only transfer targets, never writable repair scope; population requires the journey driver surfaces",
+        "owner_issue": 8824,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "HOST_E_SRC",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "the pinned current-source Eglot bounded-pull actual-host journey selector and driver do not exist on this tree; source-pin evidence may not be claimed from released-subject runs or another generation and product-provider files are read-only transfer targets, never writable repair scope; population requires the journey driver surfaces",
+        "owner_issue": 8825,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "HOST_L_REL",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "the released lsp-mode actual-host journey with competing-client selection does not exist on this tree; competing-client selection may not be claimed from single-client runs or another generation and product-provider files are read-only transfer targets, never writable repair scope; population requires the journey driver surfaces",
+        "owner_issue": 8828,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "HOST_L_SRC",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "the pinned current-source lsp-mode bounded actual-host journey selector and driver do not exist on this tree; source-pin evidence may not be claimed from released-subject runs or another generation and product-provider files are read-only transfer targets, never writable repair scope; population requires the journey driver surfaces",
+        "owner_issue": 8830,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "ROOT_E_OBS",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no stock Eglot project-root observation matrix exists on this tree: the landed FIXT fixture/probe substrate is an input, but recording the twelve-case matrix requires exact Eglot subject materialization (SUBJ_FAN #8755), the checked Eglot host adapter (ADP_E #8776) and typed host observations (OBS #11360), none of which exist; an expected root is never injected into the observed stock selection and lsp-mode or project.el material never fills an Eglot case",
+        "owner_issue": 11747,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "ROOT_L_OBS",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no stock lsp-mode project-root observation matrix exists on this tree: the landed FIXT fixture/probe substrate is an input, but recording the twelve-case matrix requires exact lsp-mode subject materialization (SUBJ_FAN #8755), the checked lsp-mode host adapter (ADP_L #8795) and typed host observations (OBS #11360), none of which exist; an expected root is never injected into the observed stock selection and Eglot or project.el material never fills an lsp-mode case",
+        "owner_issue": 11748,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "ROOT_E_SEM",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no behavior-bearing Eglot root-semantics or override-classification surface exists on this tree: root-sensitive query verdicts and standard overrides require the stock Eglot observation matrix (ROOT_E_OBS #11747), the observation-to-receipt producer (PROD #11361) and the governed host-journeys contract (JOURNEYS #11768), none of which exist; a correct rootUri alone is never root-sensitive semantics, an override is never stock discovery, and no lsp-mode verdict substitutes",
+        "owner_issue": 11749,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "ROOT_L_SEM",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no behavior-bearing lsp-mode root-semantics or override-classification surface exists on this tree: root-sensitive query verdicts and standard overrides require the stock lsp-mode observation matrix (ROOT_L_OBS #11748), the observation-to-receipt producer (PROD #11361) and the governed host-journeys contract (JOURNEYS #11768), none of which exist; a correct rootUri alone is never root-sensitive semantics, an override is never stock discovery, and no Eglot verdict substitutes",
+        "owner_issue": 11750,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "ROOT_OBS_FAN",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "fan-in node with no validation surface on this tree: both implementation leaves it composes \u2014 the stock Eglot matrix (ROOT_E_OBS #11747) and the stock lsp-mode matrix (ROOT_L_OBS #11748) \u2014 are unimplemented, so there is no matrix denominator to validate; this node is never one implementation writer, never executes a matrix, and never gains a dependency on completed semantic verdicts (those fan in separately at ROOT_SEM_FAN #8838)",
+        "owner_issue": 8834,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "ROOT_SEM_FAN",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "fan-in node with no validation surface on this tree: both implementation leaves it composes \u2014 Eglot root semantics (ROOT_E_SEM #11749) and lsp-mode root semantics (ROOT_L_SEM #11750) \u2014 are unimplemented, so there is no verdict denominator to validate; it never widens a child verdict beyond its ceiling, never executes a verdict leaf, and the required root cells for public replay flow from here only once both families land",
+        "owner_issue": 8838,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "LINUX",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no Linux public-artifact install or fresh-process harness exists on this tree: the landed policy/install-surface-registry.toml classifies installer products (install.sh and kin, owner #9104) but no harness installs the public artifact and launches fresh processes from it \u2014 the hermetic H7778 runner is local-source test infrastructure and workspace target/ binaries are never public-artifact authority; the harness also waits on the runner conformance contract (RUNCONF #8734) and immutable subject manifests (SUBJ_FAN #8755); substrate success never promotes a public semantic row and never waits for semantic journeys",
+        "owner_issue": 8842,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "PUB_E_B",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no bundled-Eglot public replay harness or exact-evidence promotion surface exists on this tree: replay requires both bundled Eglot actual-host journeys (HOST_E29 #8822, HOST_E30 #8823), the root semantics fan-in (ROOT_SEM_FAN #8838), the Linux install substrate (LINUX #8842) and the receipt producer (PROD #11361), none of which exist; a replay row is never promoted from partial or non-exact evidence, the other families' replays never substitute, and replay earns no registry completion by itself",
+        "owner_issue": 8846,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "PUB_E_R",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no released-standalone-Eglot public replay harness or exact-evidence promotion surface exists on this tree: replay requires the released GNU ELPA Eglot actual-host journey (HOST_E_REL #8824), the root semantics fan-in (ROOT_SEM_FAN #8838), the Linux install substrate (LINUX #8842) and the receipt producer (PROD #11361), none of which exist; a replay row is never promoted from partial or non-exact evidence, the other families' replays never substitute, and replay earns no registry completion by itself",
+        "owner_issue": 8849,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "PUB_L_R",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no released-lsp-mode public replay harness or exact-evidence promotion surface exists on this tree: replay requires the released lsp-mode actual-host journey (HOST_L_REL #8828), the root semantics fan-in (ROOT_SEM_FAN #8838), the Linux install substrate (LINUX #8842) and the receipt producer (PROD #11361), none of which exist; a replay row is never promoted from partial or non-exact evidence, the other families' replays never substitute, and replay earns no registry completion by itself",
+        "owner_issue": 8853,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "REG",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "the machine-readable client support registry already exists at policy/lsp-client-support.toml (lsp-client-support.v1, owner #6739) and its Emacs row sits at configuration_documented with requires_actual_client_receipt = true and no actual_client evidence \u2014 the missing surface is the exact Emacs receipt import over the complete public replay denominator (PUB_E_B #8846, PUB_E_R #8849, PUB_L_R #8853, all unimplemented): a partial denominator never enables a complete-cut registry claim; xtask/src/editor_client_compat.rs is the generic receipt contract the import consumes, not a registry; the Vim/vim-lsp cell-catalog (xtask/src/vim_lsp_cell_catalog, #11374) is family-scoped baseline material and never Emacs registry input; generated docs (docs/project/status/lsp_clients.md) are registry output, never registry authority",
+        "owner_issue": 8858,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "DOCS",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "a generated registry projection already exists \u2014 docs/project/status/lsp_clients.md is rendered from policy/lsp-client-support.toml with freshness enforced by crates/perl-lsp-rs/tests/lsp_client_support_registry.rs \u2014 but the Emacs setup and support claim projection owned here does not: docs/EDITORS/EMACS_SETUP.md is a hand-written guide cited as documentation evidence in the registry row, not output generated from registry truth, and projecting earned Emacs support claims requires the imported receipts (REG #8858), which wait on the replay denominator; a generated doc row never becomes registry authority and never drifts from it",
+        "owner_issue": 8862,
+        "action": "return_to_issue"
+      }
+    },
+    {
+      "node_id": "CERT",
+      "status": "unmapped",
+      "components": [],
+      "tests": [],
+      "generated": [],
+      "read_set": [],
+      "write_set": [],
+      "not_authority": [],
+      "specs": [],
+      "write_set_note": null,
+      "no_production_component_reason": null,
+      "blocker": {
+        "reason": "no Linux support-cut certification surface exists on this tree: certification composes the complete registry-projected denominator \u2014 docs projection (DOCS #8862) over the registry import (REG #8858) over the full replay chain \u2014 none of which exists; certification validates the composed denominator and repairs nothing, never owns provider semantics, and never implies optional or platform breadth (#9310 stays optional and never hard)",
+        "owner_issue": 8865,
+        "action": "return_to_issue"
+      }
+    }
+  ]
+}

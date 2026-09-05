@@ -17,6 +17,7 @@ categories = ["parsing", "text-processing"]
 thiserror.workspace = true
 
 [dev-dependencies]
+perl-test-must = { workspace = true }
 proptest = { workspace = true }
 
 [package.metadata.docs.rs]

@@ -52,6 +52,8 @@
 //! All arithmetic uses saturating operations. Extreme inputs (i32::MAX, u32::MAX)
 //! saturate rather than panic or overflow.
 
+#[cfg(test)]
+use perl_tdd_support::must_some;
 use std::fmt;
 
 /// Error type for `TryFrom<i32>` on `ScopeKind`.
@@ -168,8 +170,8 @@ pub enum VariableReference {
 /// EvalResult: [EVAL_BASE, EVAL_MAX]               = [1_000_000, 1_999_999_999]
 /// Child:      [CHILD_BASE, i32::MAX]              = [2_000_000_000, 2_147_483_647]
 const SCOPE_MIN: i32 = 1;
-const SCOPE_MAX: i32 = 999_999; // 99_999 * 10 + 3 = 999_993 < 999_999; max Scope wire
-const SCOPE_FRAME_ID_MAX: i32 = 99_999; // frame_id bound: 99_999 * 10 + 3 = 999_993 ≤ SCOPE_MAX
+const SCOPE_MAX: i32 = 999_999; // 99_999 * 10 + 4 = 999_994 < 999_999; max Scope wire
+const SCOPE_FRAME_ID_MAX: i32 = 99_999; // frame_id bound: 99_999 * 10 + 4 = 999_994 ≤ SCOPE_MAX
 const EVAL_BASE: i32 = 1_000_000;
 const EVAL_MAX: i32 = 1_999_999_999;
 const CHILD_BASE: i32 = 2_000_000_000;
@@ -188,14 +190,14 @@ impl VariableReference {
     pub fn encode(&self) -> Option<i32> {
         match self {
             VariableReference::Scope { frame_id, kind } => {
-                // Scope wire = frame_id * 10 + kind_disc (1-3).
+                // Scope wire = frame_id * 10 + kind_disc (1-4).
                 // frame_id must be in [0, SCOPE_FRAME_ID_MAX] to stay within the Scope band.
                 if *frame_id < 0 || *frame_id > SCOPE_FRAME_ID_MAX {
                     return None;
                 }
                 let kind_disc = *kind as i32;
-                // frame_id in [0, 99_999] and kind_disc in [1, 3]:
-                // max wire = 99_999 * 10 + 3 = 999_993 ≤ SCOPE_MAX ✓
+                // frame_id in [0, 99_999] and kind_disc in [1, 4]:
+                // max wire = 99_999 * 10 + 4 = 999_994 ≤ SCOPE_MAX ✓
                 Some(frame_id * 10 + kind_disc)
             }
             VariableReference::EvalResult { counter } => {
@@ -236,7 +238,7 @@ impl VariableReference {
     ///
     /// - `raw in [2_000_000_000, i32::MAX]` → `Child`
     /// - `raw in [1_000_000, 1_999_999_999]` → `EvalResult{counter: raw - 1_000_000}`
-    /// - `raw in [1, 999_999]` → `Scope` if `raw % 10 ∈ {1,2,3}`, else `None`
+    /// - `raw in [1, 999_999]` → `Scope` if `raw % 10 ∈ {1,2,3,4}`, else `None`
     /// - All others (0, negative, gaps) → `None`
     ///
     /// Because the bands are pairwise disjoint, no value can match more than one case.
@@ -300,7 +302,7 @@ mod codec_unit_tests {
     #[test]
     fn scope_encode_decode_basic() {
         let s = VariableReference::Scope { frame_id: 5000, kind: ScopeKind::Locals };
-        let wire = s.encode().expect("frame_id=5000 is in [0,99_999]");
+        let wire = must_some(s.encode());
         assert_eq!(wire, 50_001);
         assert_eq!(VariableReference::decode(50_001), Some(s));
     }
@@ -330,7 +332,7 @@ mod codec_unit_tests {
     fn scope_frame_id_max_boundary() {
         // frame_id=99_999 is valid; wire = 999_993 (Locals)
         let s_max = VariableReference::Scope { frame_id: 99_999, kind: ScopeKind::Locals };
-        let wire = s_max.encode().expect("frame_id=99_999 is the max valid frame_id");
+        let wire = must_some(s_max.encode());
         assert_eq!(wire, 999_991);
         assert_eq!(VariableReference::decode(wire), Some(s_max));
     }

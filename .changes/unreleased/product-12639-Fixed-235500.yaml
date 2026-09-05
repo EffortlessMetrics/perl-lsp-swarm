@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Make public AST whole-tree reads exact and stack-safe: count_nodes and find_deepest_containing_offset now walk the #8424 visit table iteratively with no silent MAX_AST_DEPTH truncation. Bounded variants return Complete/Truncated/InstrumentFailure instead of a plausible usize or Some after a caller-selected bound. Half-open containment is preserved; deepest lookup prefers greater depth then the earliest canonical path."
+time: 2026-08-25T23:55:00Z
+custom:
+  PR: "12639"
+  Slug: iterative-ast-read-traversal
+  Breaking: "no"

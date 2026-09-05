@@ -22,6 +22,18 @@ pub enum SemanticFactKind {
     Boundary,
     /// Callable return relation and exit coverage.
     CallableResult,
+    /// Framework route declaration (canonical route fact family).
+    Route,
+    /// Framework route prefix declaration (canonical route fact family).
+    RoutePrefix,
+    /// Route-local parameter/capture segment of one route pattern (canonical
+    /// route fact family).
+    RouteParameter,
+    /// Route-handler source interval where route-handler-only DSL keywords
+    /// are semantically available (canonical route fact family).
+    RouteHandlerContext,
+    /// Framework hook declaration (canonical hook fact family).
+    Hook,
 }
 
 /// Source identity for a fact's bytes or compiler input snapshot.
@@ -55,6 +67,25 @@ impl SourceGeneration {
 pub enum SemanticProvenance {
     Known(Provenance),
     Unknown,
+}
+
+impl SemanticProvenance {
+    /// Whether this provenance is precise enough to back an exact answer.
+    ///
+    /// One allowlist serves every exact-capable consumer in this crate so the
+    /// envelope classifier and the semantic-query contract cannot drift apart.
+    #[must_use]
+    pub fn is_exact_grade(&self) -> bool {
+        matches!(
+            self,
+            Self::Known(
+                Provenance::ExactAst
+                    | Provenance::DesugaredAst
+                    | Provenance::SemanticAnalyzer
+                    | Provenance::LiteralRequireImport
+            )
+        )
+    }
 }
 
 /// Confidence that preserves an explicit unknown state at the transport boundary.
@@ -298,7 +329,7 @@ impl SemanticFactEnvelope {
             || self
                 .invalidation_dependencies
                 .iter()
-                .any(|dependency| dependency.dependency_key.is_empty())
+                .any(|dependency| dependency.dependency_key.trim().is_empty())
         {
             return true;
         }
@@ -312,15 +343,7 @@ impl SemanticFactEnvelope {
     }
 
     fn has_exact_provenance(&self) -> bool {
-        matches!(
-            self.provenance,
-            SemanticProvenance::Known(
-                Provenance::ExactAst
-                    | Provenance::DesugaredAst
-                    | Provenance::SemanticAnalyzer
-                    | Provenance::LiteralRequireImport
-            )
-        )
+        self.provenance.is_exact_grade()
     }
 
     /// Classify the envelope for a provider decision.
@@ -760,6 +783,14 @@ mod tests {
             SourceGeneration::known("generation"),
         )]);
         assert_eq!(empty_dependency_key.status(), SemanticFactStatus::Degraded);
+
+        // #12668: whitespace-only keys are empty keys, matching the provider
+        // port validator's trim semantics for the same envelope.
+        let whitespace_dependency_key = exact_envelope(vec![InvalidationDependency::new(
+            "  ",
+            SourceGeneration::known("generation"),
+        )]);
+        assert_eq!(whitespace_dependency_key.status(), SemanticFactStatus::Degraded);
 
         let conflicting_dependencies = exact_envelope(vec![
             InvalidationDependency::new("module:Example", SourceGeneration::known("one")),

@@ -1,0 +1,24 @@
+WORK PACKET E06 | perl-lsp-swarm/emacs_train.v1@fe2e8bb0d
+RESULT: The Emacs hover fixture dogfood renders one shared builder packet without any Emacs-local packet schema.
+CEILING: Adapter projection only: joins manifest, ledger, spec disposition, tree context, and supplied observation into agent_implementation_packet.v1; no Emacs packet schema, no model invocation, no GitHub mutation, no scheduling.
+ISSUE: #11719 | PROFILE: coding_agent_bounded | ACTOR: coding_agent_bounded (writes: repository_candidate_branch)
+FRONTIER: ready frontier:emacs-train:55:ready:P_hover_fixture_dogfood:sha256:9a41
+CANDIDATE: not_observed
+AUTHORITIES:
+AUTHORITY[must_be_current]: #11716
+AUTHORITY[must_be_current]: #10918
+AUTHORITY[must_be_current]: #11770
+AUTHORITY[must_not_be_reimplemented]: #10872
+AUTHORITY[consumer_fan_in]: #11114
+AUTHORITY[external_manual_owner]: maintainer/merger
+FALSIFIER F_no_emacs_local_schema: Any Emacs-local packet schema emitted by the adapter is a defect: the focused test asserts every rendered payload carries schema agent_implementation_packet.v1 and no Emacs-local schema id.
+FALSIFIER F_missing_input_fails_closed: Composing a packet with a missing spec disposition must fail with the missing-input reason rather than rendering plausible prose.
+POSITIVE: The adapter projects manifest+ledger+spec+tree joins into the shared schema fields; Emacs supplies fields only.
+VERIFY (in order):
+  emacs.ert.packet_adapter: make -C emacs test PACKET_ADAPTER=1 [focused_proof]
+  git.diff_check: git diff --check [diff_check]
+STOP: stop at the reviewable draft PR and handoff comment
+STOP: no model invocation, GitHub mutation, or scheduling
+STOP: candidate/collision state remains not observed until #10930 lands
+TERMINAL: none — stop at the reviewable draft PR
+DELIVERED-MEANS: reviewable_draft_pr_and_handoff

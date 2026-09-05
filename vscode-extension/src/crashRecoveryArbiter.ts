@@ -1,9 +1,14 @@
-export type CrashObservationSource = 'process_exit' | 'watchdog';
-export type CrashObservationSummary = 'process_exit' | 'watchdog' | 'both_deduped';
+export type CrashObservationSource = 'process_exit' | 'watchdog' | 'startup_failure';
+export type CrashObservationSummary =
+  | 'process_exit'
+  | 'watchdog'
+  | 'startup_failure'
+  | 'both_deduped';
 export type RecoveryDecisionDisposition =
   | 'start_recovery'
   | 'deduped_existing_episode'
   | 'deduped_previous_episode'
+  | 'deferred_active_episode'
   | 'crash_budget_exhausted';
 export type RecoveryTerminalDisposition = 'recovered' | 'recovery_failed' | 'cancelled';
 export type NonCrashLifecycleAction =
@@ -29,10 +34,22 @@ export interface CrashRecoveryDecision {
   disposition: RecoveryDecisionDisposition;
 }
 
+/**
+ * Handle naming exactly one recovery episode. A `CrashRecoveryDecision`
+ * structurally satisfies this interface, so the decision returned by
+ * `observeFailure` is the handle its continuation must later settle through
+ * `settleEpisode` — settlement can never name a different (newer) episode
+ * than the one that authorized the continuation (#7845).
+ */
+export interface RecoveryEpisodeHandle {
+  readonly episode_id: string;
+}
+
 interface RecoveryEpisodeState {
   decision: CrashRecoveryDecision;
   process_exit_observed: boolean;
   watchdog_observed: boolean;
+  startup_failure_observed: boolean;
   terminal: RecoveryTerminalDisposition | null;
   replacement_generation: number | null;
 }
@@ -44,11 +61,32 @@ interface StableRunState {
 
 const RECENT_EPISODE_LIMIT = 16;
 
+/**
+ * Bound on deferred failure observations. While an episode is active only
+ * the replacement generation spawned by that episode's in-flight restart
+ * can newly fail, so more than a couple of distinct pending keys is already
+ * anomalous; the cap keeps worst-case memory bounded regardless.
+ */
+const PENDING_OBSERVATION_LIMIT = 4;
+
 function observationSummary(episode: RecoveryEpisodeState): CrashObservationSummary {
-  if (episode.process_exit_observed && episode.watchdog_observed) {
-    return 'both_deduped';
+  const observed: CrashObservationSource[] = [];
+  if (episode.process_exit_observed) {
+    observed.push('process_exit');
   }
-  return episode.watchdog_observed ? 'watchdog' : 'process_exit';
+  if (episode.watchdog_observed) {
+    observed.push('watchdog');
+  }
+  if (episode.startup_failure_observed) {
+    observed.push('startup_failure');
+  }
+  // A single observation reports itself; several observations deduplicated
+  // into one episode report the existing combined marker.
+  const [single] = observed;
+  if (observed.length === 1 && single !== undefined) {
+    return single;
+  }
+  return 'both_deduped';
 }
 
 function episodeKey(generation: number, processIdentity: string): string {
@@ -60,6 +98,7 @@ export class CrashRecoveryArbiter {
   private stableRun: StableRunState | null = null;
   private activeEpisode: RecoveryEpisodeState | null = null;
   private readonly recentEpisodes = new Map<string, RecoveryEpisodeState>();
+  private readonly pendingObservations = new Map<string, CrashFailureObservation>();
 
   public constructor(
     private readonly maxAutomaticRestarts = 3,
@@ -100,6 +139,26 @@ export class CrashRecoveryArbiter {
       };
     }
 
+    // A different generation failing while an episode is still active must
+    // not start a second concurrent recovery nor silently steal the active
+    // slot: the active continuation is still awaiting its restart promise,
+    // and its eventual settle is bound to its own episode handle. Defer the
+    // observation; the continuation drains and re-arbitrates it (through
+    // this same method, budget evaluation included) once it settles. This
+    // serializes different-generation failures behind the active episode.
+    if (this.activeEpisode !== null) {
+      this.rememberPendingObservation(observation);
+      return {
+        episode_id: this.activeEpisode.decision.episode_id,
+        failed_generation: observation.failed_generation,
+        process_identity: observation.process_identity,
+        observation_source: observation.source,
+        automatic_attempt: 0,
+        automatic_budget: this.maxAutomaticRestarts,
+        disposition: 'deferred_active_episode',
+      };
+    }
+
     if (
       this.stableRun !== null &&
       this.stableRun.generation === observation.failed_generation &&
@@ -125,6 +184,7 @@ export class CrashRecoveryArbiter {
       decision,
       process_exit_observed: observation.source === 'process_exit',
       watchdog_observed: observation.source === 'watchdog',
+      startup_failure_observed: observation.source === 'startup_failure',
       terminal: exhausted ? 'recovery_failed' : null,
       replacement_generation: null,
     };
@@ -137,16 +197,55 @@ export class CrashRecoveryArbiter {
     return { ...decision };
   }
 
-  public settleActiveEpisode(
+  /**
+   * Settle exactly the episode named by `handle` — the decision that
+   * authorized the calling recovery continuation.
+   *
+   * A continuation whose restart promise resolved late must never mutate a
+   * newer episode that became active in the meantime: if the named episode
+   * is no longer the active one (already settled, or cleared by an explicit
+   * recovery reset), only its own history entry is updated and the active
+   * episode is left untouched. Returns `true` when the named episode was the
+   * active one and the arbiter is idle again.
+   */
+  public settleEpisode(
+    handle: RecoveryEpisodeHandle,
     terminal: RecoveryTerminalDisposition,
     replacementGeneration: number | null,
-  ): void {
-    if (this.activeEpisode === null) {
-      return;
+  ): boolean {
+    const episode = this.episodeById(handle.episode_id);
+    if (episode === null || episode.terminal !== null) {
+      return false;
     }
-    this.activeEpisode.terminal = terminal;
-    this.activeEpisode.replacement_generation = replacementGeneration;
-    this.activeEpisode = null;
+    const wasActive = this.activeEpisode === episode;
+    episode.terminal = terminal;
+    episode.replacement_generation = replacementGeneration;
+    if (wasActive) {
+      this.activeEpisode = null;
+    }
+    return wasActive;
+  }
+
+  /**
+   * Remove and return the oldest deferred failure observation, if any.
+   *
+   * The continuation that just settled its episode calls this once per
+   * settle and re-arbitrates the returned observation through
+   * `observeFailure`, so a different-generation failure that arrived while
+   * an episode was active recovers serially instead of being lost or
+   * overwriting the active slot.
+   */
+  public takePendingFailureObservation(): CrashFailureObservation | null {
+    const oldestKey = this.pendingObservations.keys().next().value as string | undefined;
+    if (oldestKey === undefined) {
+      return null;
+    }
+    const observation = this.pendingObservations.get(oldestKey);
+    if (observation === undefined) {
+      return null;
+    }
+    this.pendingObservations.delete(oldestKey);
+    return { ...observation };
   }
 
   public markRunning(generation: number, sinceMs: number): void {
@@ -163,6 +262,25 @@ export class CrashRecoveryArbiter {
     this.automaticAttempts = 0;
     this.stableRun = null;
     this.activeEpisode = null;
+    // An explicit recovery (user restart, managed update, deactivation)
+    // supersedes deferred observations: the explicit restart already moved
+    // the generation forward, so re-arbitrating a deferred failure of a
+    // dead generation would be stale by construction.
+    this.pendingObservations.clear();
+  }
+
+  /**
+   * Clear all episode state, including the recent-episode dedupe history.
+   *
+   * Unlike `resetForExplicitRecovery` (used by explicit user restarts,
+   * managed updates, and deactivation, which keep the dedupe history so a
+   * stale observation for a still-failed generation stays deduplicated),
+   * this method exists for test isolation between independent cases and is
+   * not part of the production recovery flow.
+   */
+  public resetAllEpisodeMemory(): void {
+    this.resetForExplicitRecovery();
+    this.recentEpisodes.clear();
   }
 
   public automaticAttemptCount(): number {
@@ -189,8 +307,37 @@ export class CrashRecoveryArbiter {
   ): void {
     if (source === 'process_exit') {
       episode.process_exit_observed = true;
-    } else {
+    } else if (source === 'watchdog') {
       episode.watchdog_observed = true;
+    } else {
+      episode.startup_failure_observed = true;
+    }
+  }
+
+  private episodeById(episodeId: string): RecoveryEpisodeState | null {
+    if (this.activeEpisode !== null && this.activeEpisode.decision.episode_id === episodeId) {
+      return this.activeEpisode;
+    }
+    for (const episode of this.recentEpisodes.values()) {
+      if (episode.decision.episode_id === episodeId) {
+        return episode;
+      }
+    }
+    return null;
+  }
+
+  private rememberPendingObservation(observation: CrashFailureObservation): void {
+    const key = episodeKey(observation.failed_generation, observation.process_identity);
+    // Re-observing the same deferred generation refreshes the queued
+    // observation (latest source timestamp wins) instead of queueing a
+    // duplicate.
+    this.pendingObservations.set(key, { ...observation });
+    while (this.pendingObservations.size > PENDING_OBSERVATION_LIMIT) {
+      const oldestKey = this.pendingObservations.keys().next().value as string | undefined;
+      if (oldestKey === undefined) {
+        break;
+      }
+      this.pendingObservations.delete(oldestKey);
     }
   }
 

@@ -2,6 +2,9 @@
 # scripts/cargo-safe
 set -euo pipefail
 
+# Toolchain guard (#12593): refuse a stale non-rustup cargo before any build work.
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 repo_name="$(basename "$repo_root")"
 

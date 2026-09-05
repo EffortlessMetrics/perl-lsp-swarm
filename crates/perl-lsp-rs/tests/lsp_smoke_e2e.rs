@@ -1466,12 +1466,6 @@ my $value = 42;
 #[test]
 fn lsp_smoke_e2e_will_save_wait_until_request_response() -> Result<(), Box<dyn std::error::Error>> {
     let server = common::start_lsp_server();
-    // willSaveWaitUntil runs the on-save formatter, which shells out to perltidy
-    // via an OsSubprocessRuntime with a 10s subprocess timeout. On runners where
-    // perltidy is present (e.g. CI's perl-equipped CX lane) a cold/loaded spawn can
-    // take several seconds, so the client timeout must comfortably exceed the
-    // server-side 10s formatter timeout — otherwise the request times out before the
-    // server responds. (Runners without perltidy return [] near-instantly.)
     let request_timeout = Duration::from_secs(15);
     let init_timeout = common::timeout_scaler::TimeoutProfile::Initialization.timeout();
 
@@ -1503,13 +1497,14 @@ fn lsp_smoke_e2e_will_save_wait_until_request_response() -> Result<(), Box<dyn s
     let init_response = init_response_result?;
     assert!(init_response.get("error").is_none(), "initialize returned error: {init_response:#}");
 
-    // Gap 2 fix: assert server advertises willSaveWaitUntil capability.
-    // Capability lives at textDocumentSync.willSaveWaitUntil, NOT at top-level
+    // Withdrawal contract (#11955): formatter-owned willSaveWaitUntil is not
+    // advertised until #8092 proves one save owner. Capability lives at
+    // textDocumentSync.willSaveWaitUntil, NOT at top-level
     // willSaveWaitUntilProvider.
     assert_eq!(
         init_response.pointer("/result/capabilities/textDocumentSync/willSaveWaitUntil"),
-        Some(&serde_json::Value::Bool(true)),
-        "server must advertise textDocumentSync.willSaveWaitUntil = true in capabilities"
+        Some(&serde_json::Value::Bool(false)),
+        "withdrawn willSaveWaitUntil must not be advertised in capabilities"
     );
 
     common::send_notification(
@@ -1549,65 +1544,27 @@ fn lsp_smoke_e2e_will_save_wait_until_request_response() -> Result<(), Box<dyn s
         }),
         request_timeout,
     );
-    let will_save_response_status = if will_save_response_result.is_ok() { "ok" } else { "error" };
-    assert_eq!(
-        will_save_response_status, "ok",
+    assert!(
+        will_save_response_result.is_ok(),
         "willSaveWaitUntil response should arrive before timeout: {will_save_response_result:#?}"
     );
     let will_save_response = will_save_response_result?;
 
-    // ── Step 4: Verify response envelope ────────────────────────────────
-    assert!(
-        will_save_response.get("error").is_none(),
-        "willSaveWaitUntil returned error: {will_save_response:#}"
+    // ── Step 4: Verify truthful refusal envelope (#11955) ───────────────
+    // The withdrawn route must refuse with MethodNotFound — never an edit,
+    // and never a successful empty standing in for refusal.
+    let error = will_save_response
+        .get("error")
+        .ok_or("withdrawn willSaveWaitUntil must return an error, not a result")?;
+    assert_eq!(
+        error.get("code").and_then(|code| code.as_i64()),
+        Some(-32601),
+        "refusal must be MethodNotFound (-32601): {error}"
     );
-
-    let result = will_save_response
-        .get("result")
-        .ok_or("willSaveWaitUntil result field should be present")?;
-
-    // Gap 1 fix: LSP spec allows TextEdit[] | null; treat null as no-edits.
-    // This implementation always returns an array, but be robust to spec-compliant nulls.
     assert!(
-        matches!(result, serde_json::Value::Null | serde_json::Value::Array(_)),
-        "willSaveWaitUntil result should be TextEdit[] or null, got: {result}"
+        will_save_response.get("result").is_none(),
+        "a refusal must not carry a successful result payload"
     );
-    let edits: &[serde_json::Value] = match result {
-        serde_json::Value::Null => &[],
-        serde_json::Value::Array(arr) => arr.as_slice(),
-        _ => &[],
-    };
-
-    // If server returns edits, validate they have the required TextEdit structure.
-    // Under the default server-owned formatting policy, the formatter runs, so edits
-    // are likely non-empty for this fixture — the loop will execute.
-    for edit in edits {
-        let range = edit.get("range").ok_or("TextEdit should have range field")?;
-        let _new_text = edit
-            .get("newText")
-            .and_then(|v| v.as_str())
-            .ok_or("TextEdit should have newText string field")?;
-
-        let start = range.get("start").ok_or("TextEdit range should have start")?;
-        assert!(
-            start.get("line").and_then(|v| v.as_u64()).is_some(),
-            "TextEdit range.start.line should be a non-negative integer"
-        );
-        assert!(
-            start.get("character").and_then(|v| v.as_u64()).is_some(),
-            "TextEdit range.start.character should be a non-negative integer"
-        );
-
-        let end = range.get("end").ok_or("TextEdit range should have end")?;
-        assert!(
-            end.get("line").and_then(|v| v.as_u64()).is_some(),
-            "TextEdit range.end.line should be a non-negative integer"
-        );
-        assert!(
-            end.get("character").and_then(|v| v.as_u64()).is_some(),
-            "TextEdit range.end.character should be a non-negative integer"
-        );
-    }
 
     // ── Step 5: Verify server is still responsive ────────────────────────
     let hover_response_result = send_request_with_timeout(
