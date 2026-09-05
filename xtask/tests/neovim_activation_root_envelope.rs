@@ -293,6 +293,50 @@ fn a_private_absolute_path_cannot_enter_a_durable_envelope() -> Result<(), Box<d
 }
 
 #[test]
+fn a_windows_absolute_path_cannot_enter_a_durable_envelope() -> Result<(), Box<dyn Error>> {
+    let mut envelope = valid_envelope()?;
+    envelope["roots"]["marker.dist_ini"]["actual_role"] = json!(r"C:\build\fixture\roots");
+
+    assert_eq!(
+        rejection(validate_envelope(&envelope))?,
+        concat!(
+            r"envelope.roots.marker.dist_ini.actual_role: `C:\build\fixture\roots` ",
+            "is an absolute path; roles must be normalized identities"
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn the_config_path_must_stay_repository_relative() -> Result<(), Box<dyn Error>> {
+    let mut envelope = valid_envelope()?;
+    envelope["config"]["path"] = json!(r"C:\checkout\scripts\ux\neovim\perllsp.lua");
+
+    assert_eq!(
+        rejection(validate_envelope(&envelope))?,
+        concat!(
+            r"envelope.config.path: `C:\checkout\scripts\ux\neovim\perllsp.lua` ",
+            "must be repository-relative"
+        )
+    );
+    Ok(())
+}
+
+/// A role legitimately contains a colon (`fixture:roots/...`), so the
+/// drive-letter guard must not swallow the ordinary case.
+#[test]
+fn a_namespaced_role_is_not_mistaken_for_a_drive_letter() -> Result<(), Box<dyn Error>> {
+    validate_envelope(&valid_envelope()?)?;
+    let envelope = valid_envelope()?;
+    assert_eq!(
+        envelope["roots"]["marker.dist_ini"]["actual_role"],
+        json!("fixture:roots/marker-dist"),
+        "the captured run should still use namespaced fixture roles"
+    );
+    Ok(())
+}
+
+#[test]
 fn an_unknown_field_cannot_be_smuggled_into_a_row() -> Result<(), Box<dyn Error>> {
     let mut envelope = valid_envelope()?;
     envelope["roots"]["fallback.git_only"]["passed"] = json!(true);

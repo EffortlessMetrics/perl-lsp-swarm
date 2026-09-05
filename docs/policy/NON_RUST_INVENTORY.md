@@ -9,8 +9,8 @@
 | Total tracked files | 12716 |
 | Rust-family files | 3967 |
 | Non-Rust files | 8749 |
-| Allowlisted | 6509 |
-| Unclassified | 2240 |
+| Allowlisted | 6510 |
+| Unclassified | 2239 |
 
 ## Non-Rust files by category
 
@@ -20,9 +20,9 @@
 | documentation | 2852 |
 | generated | 2 |
 | production | 357 |
-| test | 2111 |
+| test | 2112 |
 | tooling | 685 |
-| unclassified | 2240 |
+| unclassified | 2239 |
 
 ## Unclassified files
 
@@ -2174,7 +2174,6 @@
 | `xtask/tests/fixtures/methodology/clean.json` | `json` |
 | `xtask/tests/fixtures/methodology/merge-ready-plus-needs.json` | `json` |
 | `xtask/tests/fixtures/methodology/review-plus-needs-builder.json` | `json` |
-| `xtask/tests/fixtures/neovim_activation_root_envelopes/valid-linux-nvim-0-11-3.json` | `json` |
 | `xtask/tests/fixtures/parser-accuracy/example-artifact.json` | `json` |
 | `xtask/tests/fixtures/parser-ratchet/equal.base.json` | `json` |
 | `xtask/tests/fixtures/parser-ratchet/equal.head.json` | `json` |
@@ -8782,6 +8781,7 @@
 | `xtask/tests/fixtures/native-critic/false-positive/test2_v0_subtests.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
 | `xtask/tests/fixtures/native-critic/false-positive/test_more_subtests.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `xtask/tests/fixtures/native-critic/false-positive/test_more_usage.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `xtask/tests/fixtures/neovim_activation_root_envelopes/valid-linux-nvim-0-11-3.json` | test | `non-rust-neovim-activation-root-envelope-fixtures` | devex/editor-hosts |
 | `xtask/tests/fixtures/release-artifacts/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `xtask/tests/fixtures/vim_host_toolchain/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 

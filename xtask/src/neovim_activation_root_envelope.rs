@@ -529,6 +529,22 @@ fn validate_identity(root: &Map<String, Value>, key: &str, fields: &[&str]) -> V
     Ok(())
 }
 
+/// Absolute in the POSIX or Windows sense, or a URI.
+///
+/// A durable envelope carries normalized identities, so the producing machine's
+/// own paths must be rejected wherever they could appear. Both call sites share
+/// this predicate so the two surfaces cannot drift apart.
+fn is_absolute_or_uri(value: &str) -> bool {
+    if value.starts_with('/') || value.starts_with('\\') || value.contains("://") {
+        return true;
+    }
+    let bytes = value.as_bytes();
+    bytes.len() > 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
+}
+
 /// Roles are normalized fixture-relative identities. A durable envelope must
 /// not carry the private absolute paths of the machine that produced it.
 fn require_role<'a>(
@@ -537,12 +553,7 @@ fn require_role<'a>(
     path: &str,
 ) -> Result<&'a str, EnvelopeValidationError> {
     let value = require_nonempty_string(parent, key, path)?;
-    if value.starts_with('/') || value.starts_with('\\') || value.contains("://") {
-        return Err(EnvelopeValidationError::new(format!(
-            "{path}: `{value}` is an absolute path; roles must be normalized identities"
-        )));
-    }
-    if value.len() > 2 && value.as_bytes()[1] == b':' {
+    if is_absolute_or_uri(value) {
         return Err(EnvelopeValidationError::new(format!(
             "{path}: `{value}` is an absolute path; roles must be normalized identities"
         )));
@@ -551,7 +562,7 @@ fn require_role<'a>(
 }
 
 fn require_repo_relative(value: &str, path: &str) -> Validated {
-    if value.starts_with('/') || value.contains("://") {
+    if is_absolute_or_uri(value) {
         return Err(EnvelopeValidationError::new(format!(
             "{path}: `{value}` must be repository-relative"
         )));

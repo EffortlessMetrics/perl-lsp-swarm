@@ -275,12 +275,23 @@ sha256_of() {
   fi
 }
 
+# Resolve the digests before the run. `sha256_of` exits from a command
+# substitution's subshell only, so inlining these below would turn a missing
+# digest tool into an empty value and surface it as a product failure (2)
+# rather than the instrument-unavailable result (1) this script documents.
+perllsp_sha256=$(sha256_of "${perllsp_bin}") || perllsp_sha256=''
+config_sha256=$(sha256_of "${repo_root}/scripts/ux/neovim/perllsp.lua") || config_sha256=''
+if [[ -z ${perllsp_sha256} || -z ${config_sha256} ]]; then
+  echo "NOT_PROVEN: could not compute sha256 content identity" >&2
+  exit 1
+fi
+
 envelope="${fixture_root}/envelope.json"
 if ! REPO_ROOT="${repo_root}" \
   FIXTURE_ROOT="${fixture_root}" \
   PERLLSP="${perllsp_bin}" \
-  PERLLSP_SHA256="$(sha256_of "${perllsp_bin}")" \
-  CONFIG_SHA256="$(sha256_of "${repo_root}/scripts/ux/neovim/perllsp.lua")" \
+  PERLLSP_SHA256="${perllsp_sha256}" \
+  CONFIG_SHA256="${config_sha256}" \
   "${nvim_bin}" --headless -u NONE -l \
     "${repo_root}/scripts/ux/neovim/neovim_activation_root_smoke.lua" \
     >"${envelope}" 2>"${fixture_root}/nvim.err"; then

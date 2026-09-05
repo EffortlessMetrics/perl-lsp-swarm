@@ -391,10 +391,11 @@ for _, case in ipairs(ROOT_CASES) do
     textDocument = { uri = vim.uri_from_fname(entry) },
     position = { line = 2, character = 6 },
   })
-  local definition_uri = ''
-  if definition and definition[1] and definition[1].uri then
-    definition_uri = normalize(vim.uri_to_fname(definition[1].uri))
-  end
+  -- `textDocument/definition` may answer with a single Location, an array of
+  -- Location, or LocationLink entries that name the target as `targetUri`.
+  local location = definition and (definition[1] or definition) or nil
+  local target_uri = location and (location.uri or location.targetUri) or nil
+  local definition_uri = target_uri and normalize(vim.uri_to_fname(target_uri)) or ''
 
   -- Content oracle: the indexed symbol names which root actually won. The
   -- identically-named `probe_marker` exists in every candidate root, so only
