@@ -615,7 +615,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Auto-quote a bare identifier when it appears on the left side of `=>`.
-    fn autoquote_fat_arrow_key(node: &mut Node) {
+    /// Apply Perl's implicit string conversion to a bareword immediately left
+    /// of a fat comma. `=>` is a comma synonym, but unlike a plain comma it
+    /// also auto-quotes an otherwise bare identifier.
+    pub(crate) fn auto_quote_bareword_before_fat_comma(node: &mut Node) {
         if let NodeKind::Identifier { ref name } = node.kind {
             *node = Node::new(
                 NodeKind::String { value: name.clone(), interpolated: false },
@@ -645,7 +648,7 @@ impl<'a> Parser<'a> {
         if self.peek_kind() == Some(TokenKind::FatArrow) {
             saw_fat_arrow = true;
             if let Some(last) = expressions.last_mut() {
-                Self::autoquote_fat_arrow_key(last);
+                Self::auto_quote_bareword_before_fat_comma(last);
             }
             self.consume_token()?; // consume =>
             if self.peek_kind() == Some(TokenKind::FatArrow) {
@@ -677,7 +680,7 @@ impl<'a> Parser<'a> {
                 saw_fat_arrow = true;
                 if !was_comma
                     && let Some(last) = expressions.last_mut() {
-                        Self::autoquote_fat_arrow_key(last);
+                        Self::auto_quote_bareword_before_fat_comma(last);
                     }
                 self.consume_token()?; // consume =>
             }
@@ -699,7 +702,7 @@ impl<'a> Parser<'a> {
 
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 saw_fat_arrow = true;
-                Self::autoquote_fat_arrow_key(&mut elem);
+                Self::auto_quote_bareword_before_fat_comma(&mut elem);
                 self.consume_token()?; // consume =>
                 expressions.push(elem);
 
