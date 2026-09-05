@@ -1,7 +1,8 @@
 use color_eyre::eyre::{Context, Result};
 use std::env;
+use std::ffi::OsStr;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -192,14 +193,84 @@ pub(crate) fn command_status_strict(
 }
 
 pub(crate) fn command_exists(command: &str) -> bool {
+    let path = env::var_os("PATH");
+    command_exists_in_path(command, path.as_deref())
+}
+
+fn command_exists_in_path(command: &str, path: Option<&OsStr>) -> bool {
+    let Some(path) = path else {
+        return false;
+    };
+
     #[cfg(windows)]
-    let suffixes: &[&str] = &[".exe", ".cmd", ".bat", ""];
+    {
+        // Mirror std's *selection* before judging launchability: std's
+        // `program_exists` is `GetFileAttributesW`-based and admits
+        // directories and broken links, so std stops at the first
+        // attribute-resolving candidate and the real launch then fails if
+        // that subject is not a file. Selecting the same first candidate via
+        // `symlink_metadata` (which likewise does not follow links) keeps the
+        // probe from reporting a later PATH entry the launch would never
+        // reach; the probe is true only when the selected subject is a
+        // regular file, so directory and broken-link selections fail closed.
+        windows_command_candidates(command, path)
+            .into_iter()
+            .find(|candidate| std::fs::symlink_metadata(candidate).is_ok())
+            .is_some_and(|candidate| candidate.is_file())
+    }
     #[cfg(not(windows))]
-    let suffixes: &[&str] = &[""];
-    env::split_paths(&env::var_os("PATH").unwrap_or_default())
-        .any(|dir| suffixes.iter().any(|ext| dir.join(format!("{command}{ext}")).exists()))
+    {
+        env::split_paths(path).any(|dir| dir.join(command).is_file())
+    }
+}
+
+/// Pure candidate generator for the Windows probe, mirroring the executable
+/// search that `std::process::Command` performs for a bare file name, in PATH
+/// order.
+///
+/// Authority: the pinned toolchain (Rust 1.95.0, `rust-toolchain.toml`),
+/// `library/std/src/sys/process/windows.rs` (`resolve_exe` / `search_paths`):
+///
+/// - A bare name containing `.` anywhere is searched verbatim — the launch API
+///   appends nothing, so `tool.cmd` probes `tool.cmd` only, never
+///   `tool.cmd.exe`. An explicit `.bat`/`.cmd` name is the *only* way
+///   `Command::new` reaches a script (std then routes it through `cmd.exe`).
+/// - A bare name without `.` is searched only as `<name>.exe`. `PATHEXT` is
+///   never consulted by `Command::new`, so it is not authority here either.
+/// - Empty PATH entries are skipped.
+/// - A name carrying a path separator is not PATH-searched by the launch API
+///   at all, so the probe fails closed (no candidates) for it.
+///
+/// Deliberate scope limits versus the full launch route: std additionally
+/// searches the application, system, and Windows directories after the child
+/// PATH; this probe covers the PATH leg only, because every caller probes for
+/// tools expected on PATH. Selection mirrors std's `GetFileAttributesW`-based
+/// `program_exists` (first attribute-resolving candidate wins, directories and
+/// broken links included); the caller in `command_exists_in_path` then fails
+/// closed unless that selected subject is a regular file, matching the
+/// eventual launch outcome. The spawn result remains authoritative for races
+/// and lifecycle failure.
+///
+/// Compiled on every platform so the candidate rules are unit-tested off
+/// Windows; the production caller exists only under `cfg(windows)`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_command_candidates(command: &str, path: &OsStr) -> Vec<PathBuf> {
+    if command.is_empty() || command.contains(['\\', '/']) {
+        return Vec::new();
+    }
+    let has_extension = command.contains('.');
+    env::split_paths(path)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(|dir| {
+            let candidate = dir.join(command);
+            if has_extension { candidate } else { candidate.with_extension("exe") }
+        })
+        .collect()
 }
 
 pub(crate) fn command_output_lines(output: &str) -> Vec<String> {
     output.lines().map(str::trim).filter(|line| !line.is_empty()).map(ToString::to_string).collect()
 }
+
+#[cfg(test)]
+mod tests;

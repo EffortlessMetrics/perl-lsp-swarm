@@ -162,27 +162,25 @@ claim_boundary = "AUTOLOAD-heavy packages emit dynamic boundaries that explain f
 [[adapter]]
 framework = "DBIx::Class"
 fact_class = "static_subset"
-state = "deferred"
+state = "shadow"
 fact_provenance = "SourceBackedGenerated"
 source_anchor_required = true
 generated_label_required = true
 rename_policy = "blocked_until_class_specific_receipt"
 safe_delete_policy = "blocked_until_class_specific_receipt"
-provider_surfaces = [
-  "hover",
-  "workspace_symbols",
-  "definition",
-  "references",
-  "rename",
-  "safe_delete",
-]
+provider_surfaces = []
 blocks = [
   "generated_no_source",
   "dynamic_boundary",
   "stale_fact",
+  "low_confidence",
+  "ambiguous_identity",
   "unsupported_fact_class",
+  "unresolved_module_identity",
+  "unsupported_version",
 ]
-claim_boundary = "DBIx::Class support is deferred to a static source-backed subset; runtime schema loading remains dynamic."
+claim_boundary = "DBIx::Class result-class/result-source identities are registry-backed shadow output (#9736): exact facts require resolved supported DBIx::Class::Core identity plus static base/parent activation and a static current-package table declaration; columns, relationships, types, providers, and runtime schema loading remain excluded."
+version_constraint = ">=0.080000,<0.090000"
 
 [[adapter]]
 framework = "DBIx::QuickORM"

@@ -1,12 +1,12 @@
 {
   "schema_version": "compiler_performance_receipt.v1",
-  "receipt_id": "fixture-compiler-performance-001",
+  "receipt_id": "fixture-compiler-performance-measured-001",
   "subject": {
     "repository": "EffortlessMetrics/perl-lsp-swarm",
-    "candidate": "fixture-candidate",
-    "tree": "0000000000000000000000000000000000000000",
+    "candidate": "a05f4820ab9385b261a2993ea9687cf9d7beedfc",
+    "tree": "f530d2f1221c516484a3654f01a3ad694ab56969",
     "dirty_tree": false,
-    "toolchain": "stable",
+    "toolchain": "1.95.0-x86_64-unknown-linux-gnu",
     "runner": "linux-x86_64",
     "identities": {
       "source": {"schema": "source.v1", "profile": "default"},
@@ -19,29 +19,133 @@
     }
   },
   "workload": {
-    "id": "fixture-workload",
-    "class": "focused_fixture",
+    "id": "fixture-provider-vertical",
+    "class": "provider_vertical",
     "profile": "default",
     "fixture": "compiler-performance",
     "series": "fixture-series",
-    "cache_mode": "cold"
+    "cache_mode": "warm",
+    "required_stages": [
+      "lex_parse",
+      "compile_unit_extraction",
+      "hir",
+      "pir",
+      "effects",
+      "world",
+      "fact_projection",
+      "provider_request",
+      "serialization"
+    ]
   },
-  "stages": [{
-    "name": "lex_parse",
-    "applicability": "applicable",
-    "result": "pass",
-    "work": {"status": "measured", "units": 1, "objects": 1, "bytes": 1, "reused": 0, "recomputed": 1},
-    "timing": {"status": "measured", "wall_ns": 1, "cpu_ns": 1},
-    "instrumentation": "complete"
-  }],
+  "cache": {
+    "status": "measured",
+    "outcome": "hit",
+    "key": "compiler-world/f530d2f1221c516484a3654f01a3ad694ab56969/default",
+    "currentness": "validated",
+    "loaded": 3,
+    "copied": 1,
+    "reused": 2,
+    "recomputed": 1
+  },
+  "stages": [
+    {
+      "name": "upstream",
+      "applicability": "not_applicable",
+      "result": "not_proven",
+      "work": {"status": "not_applicable"},
+      "timing": {"status": "not_applicable"},
+      "instrumentation": "missing"
+    },
+    {
+      "name": "lex_parse",
+      "applicability": "applicable",
+      "result": "pass",
+      "work": {"status": "measured", "units": 12, "objects": 4, "bytes": 8192, "reused": 0, "recomputed": 4},
+      "timing": {"status": "measured", "wall_ns": 412000, "cpu_ns": 402000},
+      "instrumentation": "complete"
+    },
+    {
+      "name": "compile_unit_extraction",
+      "applicability": "applicable",
+      "result": "pass",
+      "work": {"status": "measured", "units": 4, "objects": 4, "bytes": 8192, "reused": 1, "recomputed": 3},
+      "timing": {"status": "measured", "wall_ns": 96000, "cpu_ns": 94000},
+      "instrumentation": "complete"
+    },
+    {
+      "name": "hir",
+      "applicability": "applicable",
+      "result": "pass",
+      "work": {"status": "measured", "units": 31, "objects": 31, "bytes": 20480, "reused": 12, "recomputed": 19},
+      "timing": {"status": "measured", "wall_ns": 731000, "cpu_ns": 720000},
+      "instrumentation": "complete"
+    },
+    {
+      "name": "pir",
+      "applicability": "applicable",
+      "result": "pass",
+      "work": {"status": "measured", "units": 31, "objects": 31, "bytes": 16384, "reused": 12, "recomputed": 19},
+      "timing": {"status": "measured", "wall_ns": 508000, "cpu_ns": 501000},
+      "instrumentation": "complete"
+    },
+    {
+      "name": "effects",
+      "applicability": "applicable",
+      "result": "pass",
+      "work": {"status": "measured", "units": 31, "objects": 6, "bytes": 4096, "reused": 4, "recomputed": 2},
+      "timing": {"status": "measured", "wall_ns": 121000, "cpu_ns": 118000},
+      "instrumentation": "complete"
+    },
+    {
+      "name": "world",
+      "applicability": "applicable",
+      "result": "pass",
+      "work": {"status": "measured", "units": 1, "objects": 1, "bytes": 65536, "reused": 0, "recomputed": 1},
+      "timing": {"status": "measured", "wall_ns": 244000, "cpu_ns": 240000},
+      "instrumentation": "complete"
+    },
+    {
+      "name": "fact_projection",
+      "applicability": "applicable",
+      "result": "pass",
+      "work": {"status": "measured", "units": 87, "objects": 87, "bytes": 12288, "reused": 40, "recomputed": 47},
+      "timing": {"status": "measured", "wall_ns": 163000, "cpu_ns": 160000},
+      "instrumentation": "complete"
+    },
+    {
+      "name": "provider_request",
+      "applicability": "applicable",
+      "result": "pass",
+      "work": {"status": "measured", "units": 5, "objects": 5, "bytes": 2048, "reused": 0, "recomputed": 5},
+      "timing": {"status": "measured", "wall_ns": 88000, "cpu_ns": 86000},
+      "instrumentation": "complete"
+    },
+    {
+      "name": "serialization",
+      "applicability": "applicable",
+      "result": "pass",
+      "work": {"status": "measured", "units": 1, "objects": 1, "bytes": 3072, "reused": 0, "recomputed": 1},
+      "timing": {"status": "measured", "wall_ns": 41000, "cpu_ns": 40000},
+      "instrumentation": "complete"
+    }
+  ],
   "provider": {
-    "requests": 1,
-    "exact": 1,
-    "partial": 0,
+    "status": "measured",
+    "requests": 5,
+    "exact": 4,
+    "partial": 1,
     "fallback": 0,
     "refusal": 0,
-    "correctness": {"false_exact": 0, "stale_exact": 0, "unsafe_edit": 0, "unexplained_empty": 0},
-    "timing": {"status": "measured", "wall_ns": 1, "cpu_ns": 1}
+    "correctness": {
+      "status": "measured",
+      "false_exact": 0,
+      "stale_exact": 0,
+      "unsafe_edit": 0,
+      "unexplained_empty": 0
+    },
+    "timing": {"status": "measured", "wall_ns": 88000, "cpu_ns": 86000}
   },
-  "limitations": []
+  "limitations": [
+    "Fixture receipt: the counters are illustrative and carry no stable-runner calibration."
+  ]
 }

@@ -15,6 +15,8 @@ pub mod dancer2_handler_targets;
 pub mod dancer2_hooks;
 /// Dancer2 route-declaration extraction (#8918).
 pub mod dancer2_routes;
+/// Static DBIx::Class result-source extraction (#9736).
+pub mod dbix_class_result;
 /// Go-to-declaration support and parent map construction.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod declaration;
@@ -32,6 +34,8 @@ pub mod import_extractor;
 pub mod index;
 /// Registry-backed Mojo::Base activation-site extraction (#9681).
 pub mod mojo_base_activation;
+/// Registry-backed Mojolicious::Lite activation-site extraction (#9688).
+pub mod mojolicious_activation;
 /// Package graph edge extraction from inheritance and role-composition patterns.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod package_graph_extractor;

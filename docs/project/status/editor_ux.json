@@ -10,18 +10,18 @@
       "name": "first_five_minutes_harness",
       "owner": "perl-lsp-ux-tests",
       "state": "tracked",
-      "workflow_count": 74
+      "workflow_count": 75
     },
     {
       "name": "issue_burndown_regression_guard",
       "owner": "perl-lsp-ux-tests",
       "state": "tracked",
-      "workflow_count": 63
+      "workflow_count": 65
     }
   ],
   "harness": {
     "crate": "crates/perl-lsp-ux-tests",
-    "scenario_count": 76,
+    "scenario_count": 78,
     "scenario_files": [
       "crates/perl-lsp-ux-tests/tests/ux_scenario_01_simple_file.rs",
       "crates/perl-lsp-ux-tests/tests/ux_scenario_02_missing_perltidy.rs",
@@ -48,6 +48,7 @@
       "crates/perl-lsp-ux-tests/tests/ux_scenario_19_incremental_text_sync.rs",
       "crates/perl-lsp-ux-tests/tests/ux_scenario_19_workspace_folder_addition.rs",
       "crates/perl-lsp-ux-tests/tests/ux_scenario_20_real_workspace_providers.rs",
+      "crates/perl-lsp-ux-tests/tests/ux_scenario_20_single_authority_contract.rs",
       "crates/perl-lsp-ux-tests/tests/ux_scenario_21_crossfile_provider_dogfood.rs",
       "crates/perl-lsp-ux-tests/tests/ux_scenario_22_crossfile_extended_providers.rs",
       "crates/perl-lsp-ux-tests/tests/ux_scenario_22_index_race_regression.rs",
@@ -98,7 +99,8 @@
       "crates/perl-lsp-ux-tests/tests/ux_scenario_66_project_lexical_return_inline_completion_quality.rs",
       "crates/perl-lsp-ux-tests/tests/ux_scenario_67_code_action_quick_fix_e2e.rs",
       "crates/perl-lsp-ux-tests/tests/ux_scenario_67_golden_editor_workload.rs",
-      "crates/perl-lsp-ux-tests/tests/ux_scenario_68_strict_warnings_guided_edit.rs"
+      "crates/perl-lsp-ux-tests/tests/ux_scenario_68_strict_warnings_guided_edit.rs",
+      "crates/perl-lsp-ux-tests/tests/ux_scenario_69_dancer2_provider_cutover.rs"
     ]
   },
   "integration_points": {
@@ -110,102 +112,13 @@
   "known_blockers": [
     {
       "component": "module_resolution",
+      "disposition": "not_proven",
       "failure_class": "provider_regression",
-      "issue": 7570,
-      "owner": "@maintainer",
-      "route": "provider_fix",
-      "state": "active",
-      "test_name": "ux_scenario_14_inc_conformance::scenario_14_relative_include_path"
-    },
-    {
-      "component": "module_resolution",
-      "failure_class": "provider_regression",
-      "issue": 7570,
-      "owner": "@maintainer",
-      "route": "provider_fix",
-      "state": "active",
-      "test_name": "ux_scenario_14_inc_conformance::scenario_14_include_path_completion_external_module"
-    },
-    {
-      "component": "module_resolution",
-      "failure_class": "provider_regression",
-      "issue": 7570,
-      "owner": "@maintainer",
-      "route": "provider_fix",
-      "state": "active",
-      "test_name": "ux_scenario_14_inc_conformance::scenario_14_use_lib_lexical"
-    },
-    {
-      "component": "module_resolution",
-      "failure_class": "provider_regression",
-      "issue": 7570,
-      "owner": "@maintainer",
-      "route": "provider_fix",
-      "state": "active",
-      "test_name": "ux_scenario_14_inc_conformance::scenario_14_absolute_include_path"
-    },
-    {
-      "component": "module_resolution",
-      "failure_class": "provider_regression",
-      "issue": 7570,
-      "owner": "@maintainer",
-      "route": "provider_fix",
-      "state": "active",
-      "test_name": "ux_scenario_14_inc_conformance::scenario_14_no_lib_cancellation"
-    },
-    {
-      "component": "module_resolution",
-      "failure_class": "provider_regression",
-      "issue": 7570,
+      "issue": 10015,
       "owner": "@maintainer",
       "route": "provider_fix",
       "state": "active",
       "test_name": "ux_scenario_14_inc_conformance::scenario_14_findbin_relative"
-    },
-    {
-      "component": "module_resolution",
-      "failure_class": "provider_regression",
-      "issue": 7570,
-      "owner": "@maintainer",
-      "route": "provider_fix",
-      "state": "active",
-      "test_name": "ux_scenario_14_inc_conformance::scenario_14_system_inc"
-    },
-    {
-      "component": "module_resolution",
-      "failure_class": "provider_regression",
-      "issue": 7570,
-      "owner": "@maintainer",
-      "route": "provider_fix",
-      "state": "active",
-      "test_name": "ux_scenario_14_inc_conformance::scenario_14_nested_module_relative_include_path"
-    },
-    {
-      "component": "module_resolution",
-      "failure_class": "provider_regression",
-      "issue": 7570,
-      "owner": "@maintainer",
-      "route": "provider_fix",
-      "state": "active",
-      "test_name": "ux_scenario_14_inc_conformance::scenario_14_include_path_missing_module_consistency"
-    },
-    {
-      "component": "module_resolution",
-      "failure_class": "provider_regression",
-      "issue": 7570,
-      "owner": "@maintainer",
-      "route": "provider_fix",
-      "state": "active",
-      "test_name": "ux_scenario_14_inc_conformance::scenario_14_include_path_missing_module_completion_consistency"
-    },
-    {
-      "component": "module_resolution",
-      "failure_class": "provider_regression",
-      "issue": 7570,
-      "owner": "@maintainer",
-      "route": "provider_fix",
-      "state": "active",
-      "test_name": "ux_scenario_14_inc_conformance::scenario_14_system_inc_completion_opt_in_enabled"
     }
   ],
   "receipt_kind": "measured_status",
