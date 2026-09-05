@@ -36,13 +36,19 @@
 //! # Programmatic launch
 //!
 //! ```no_run
+//! use perl_dap::security::WorkspaceAuthority;
 //! use perl_dap::{DapConfig, DapMode, DapServer};
+//! use std::path::PathBuf;
 //!
 //! # fn main() -> anyhow::Result<()> {
+//! // Confine every debug launch to one trusted root. Pass `&[]` with `true`
+//! // instead to opt this adapter explicitly into unbounded launches.
+//! let workspace_authority =
+//!     WorkspaceAuthority::from_startup(&[PathBuf::from("/srv/project")], false)?;
 //! let config = DapConfig {
 //!     log_level: "info".to_string(),
 //!     mode: DapMode::Native,
-//!     workspace_root: None,
+//!     workspace_authority,
 //! };
 //! let mut server = DapServer::new(config)?;
 //! server.run()?;

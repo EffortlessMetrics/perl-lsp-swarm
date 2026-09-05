@@ -226,56 +226,65 @@ impl DebugAdapter {
             // self-validating and defeats the workspace check entirely.
             let user_cwd = args.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from);
 
-            // Determine the workspace boundary for this launch.
+            // Derive this session's workspace boundary from the adapter's
+            // startup authority.
             //
-            // The server-configured root (set once via `set_workspace_root`,
-            // typically from `DapConfig.workspace_root` at server construction)
-            // is the source of truth. A launch-args `workspaceRoot` may NARROW
-            // that boundary but must never WIDEN it — otherwise a malicious or
-            // misconfigured client could hand itself a broader root than the
-            // server allows. If no server root is configured, a launch-args
-            // `workspaceRoot` is accepted as the boundary for this launch (there
-            // is nothing to widen relative to).
+            // The authority itself is immutable (see
+            // `DebugAdapter::with_workspace_authority`). A launch-args
+            // `workspaceRoot` is only ever a NARROWING input: under a bounded
+            // authority it must resolve inside a trusted root or the launch is
+            // refused, and under an unbounded authority it confines this one
+            // session without becoming authority for the next.
             //
-            // If neither is present, validation is skipped entirely (see the
-            // `None` handling in `launch_debugger`) — this preserves current
-            // behavior for existing users, since `DapConfig.workspace_root` is
-            // not yet populated from any CLI/editor-supplied source (tracked
-            // separately in #5345; that fail-open gap is intentionally out of
-            // scope for this fix).
-            let server_root =
-                lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
+            // The result is written to the per-session boundary — never back
+            // over the authority — so the previous session's narrowing is
+            // cleared on every launch rather than inherited (#14587).
             let launch_root_arg =
                 args.get("workspaceRoot").and_then(|w| w.as_str()).map(PathBuf::from);
 
-            let effective_root = match (server_root, launch_root_arg) {
-                (Some(server), Some(launch)) => match security::validate_path(&launch, &server) {
-                    Ok(narrowed) => Some(narrowed),
-                    Err(e) => {
-                        return DapMessage::Response {
-                            seq,
-                            request_seq,
-                            success: false,
-                            command: "launch".to_string(),
-                            body: None,
-                            message: Some(format!(
-                                "The launch 'workspaceRoot' ('{}') is outside your workspace \
-                                     folder and cannot widen the server-configured boundary. \
-                                     Details: {}",
-                                launch.display(),
-                                e
-                            )),
-                        };
-                    }
-                },
-                (Some(server), None) => Some(server),
-                (None, Some(launch)) => Some(launch),
-                (None, None) => None,
+            // Ownership is selected from the path the debuggee will actually
+            // open, not the raw client string — see `resolve_launch_program`.
+            let resolved_program = match Self::resolve_launch_program(program, user_cwd.as_deref())
+            {
+                Ok(resolved) => resolved,
+                Err(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "launch".to_string(),
+                        body: None,
+                        message: Some(message),
+                    };
+                }
             };
 
-            if let Some(root) = effective_root {
-                *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
-            }
+            let boundary = match security::resolve_session_boundary(
+                self.workspace_authority(),
+                &resolved_program,
+                launch_root_arg.as_deref(),
+            ) {
+                Ok(boundary) => boundary,
+                Err(error) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "launch".to_string(),
+                        body: None,
+                        message: Some(error.to_string()),
+                    };
+                }
+            };
+
+            // Install the derived boundary transactionally. `launch_debugger`
+            // reads it, but a replacement launch that fails during metadata,
+            // syntax, interpreter, or spawn setup deliberately leaves the prior
+            // debuggee running — and that still-live session must keep its own
+            // boundary rather than inherit the failed replacement's (#14592
+            // review).
+            let previous_boundary = self.session_boundary();
+            self.set_session_boundary(&boundary);
 
             let perl_args = args
                 .get("args")
@@ -341,6 +350,10 @@ impl DebugAdapter {
                     }
                 }
                 Err(e) => {
+                    // The prior session, if any, is still running: give it its
+                    // boundary back rather than leaving it under the failed
+                    // replacement's.
+                    self.restore_session_boundary(previous_boundary);
                     let perl_info = detect_perl_info();
                     DapMessage::Response {
                         seq,
@@ -445,6 +458,107 @@ impl DebugAdapter {
         }
     }
 
+    /// Resolve a launch `program` to the absolute path the debuggee will open.
+    ///
+    /// An absolute `program` is already unambiguous. A relative one is opened
+    /// by `perl` relative to the working directory the launch supplies, so it
+    /// resolves against `cwd` when given and against this process's working
+    /// directory otherwise — which is also the directory the pre-spawn
+    /// existence check uses. Authorization and execution must agree on exactly
+    /// one path, or the workspace boundary can be validated against a file
+    /// that is never the one run.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the program is empty or whitespace-only, and when a relative
+    /// program cannot be anchored to an absolute base — this process has no
+    /// readable working directory. The launch is refused rather than resolved to
+    /// a still-relative path: returning one would let the child apply the launch
+    /// directory a second time and reopen the authorize-one-path-execute-another
+    /// gap this function exists to close.
+    pub(super) fn resolve_launch_program(
+        program: &str,
+        cwd: Option<&Path>,
+    ) -> Result<PathBuf, String> {
+        // Normalize here rather than at each call site. `launch_debugger`
+        // trims the program for its own validation, but ownership selection in
+        // `handle_launch` resolves earlier — and untrimmed, a leading space
+        // makes an absolute path look relative, silently anchoring it under
+        // the working directory. Owning the trim keeps every caller agreeing
+        // on one path, which is the whole point of this function.
+        let trimmed = program.trim();
+
+        // Emptiness belongs to the function that owns the trim. `Path::new("")`
+        // is not absolute and `base.join("")` returns `base` unchanged, so an
+        // empty program would otherwise resolve to a *directory* — and
+        // `handle_launch` would derive this session's boundary from it before
+        // `launch_debugger`'s own empty check refuses the launch.
+        if trimmed.is_empty() {
+            return Err(
+                "No Perl script was specified. Set the 'program' field in your launch.json \
+                 to the path of the script you want to debug."
+                    .to_string(),
+            );
+        }
+
+        let raw = Path::new(trimmed);
+        if raw.is_absolute() {
+            return Ok(raw.to_path_buf());
+        }
+
+        // The base must itself be absolute. A launch `cwd` may be relative, and
+        // the spawned child resolves a relative `current_dir` against *this*
+        // process's working directory — so joining a relative `cwd` straight
+        // onto the program would leave the result relative, and the same
+        // segment would then be applied twice: once by the join and again by
+        // the child. `{program: "script.pl", cwd: "sub"}` would authorize
+        // `<root>/sub/script.pl` and open `<cwd>/sub/sub/script.pl`.
+        let base = match cwd {
+            Some(path) if path.is_absolute() => path.to_path_buf(),
+            Some(path) => Self::process_working_directory()?.join(path),
+            None => Self::process_working_directory()?,
+        };
+
+        let resolved = base.join(raw);
+        if !resolved.is_absolute() {
+            return Err(format!(
+                "Cannot resolve the program '{program}' to an absolute path. \
+                 Set 'program' in your launch.json to an absolute path, or set an \
+                 absolute 'cwd'."
+            ));
+        }
+        Ok(resolved)
+    }
+
+    /// This process's working directory, as an absolute anchor for relative
+    /// launch inputs.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the directory cannot be read — for example after it is
+    /// deleted out from under a long-lived adapter. There is no safe fallback:
+    /// a relative placeholder would silently break the absolute-path invariant
+    /// every caller depends on.
+    fn process_working_directory() -> Result<PathBuf, String> {
+        let cwd = std::env::current_dir().map_err(|error| {
+            format!(
+                "Cannot determine this adapter's working directory ({error}), so a \
+                 relative launch path cannot be resolved. Set 'program' and 'cwd' in \
+                 your launch.json to absolute paths."
+            )
+        })?;
+        if cwd.is_absolute() {
+            Ok(cwd)
+        } else {
+            Err(format!(
+                "This adapter's working directory ('{}') is not absolute, so a relative \
+                 launch path cannot be resolved. Set 'program' and 'cwd' in your \
+                 launch.json to absolute paths.",
+                cwd.display()
+            ))
+        }
+    }
+
     /// Launch the Perl debugger for the given script.
     ///
     /// Validates the program path and interpreter, runs a pre-launch `perl -c`
@@ -460,6 +574,16 @@ impl DebugAdapter {
         cwd_override: Option<PathBuf>,
         debuggee_timeout_secs: u64,
     ) -> Result<i32, String> {
+        // Resolve the program to the exact path the debuggee will open, once,
+        // before anything authorizes or inspects it (#14592 review).
+        //
+        // A relative `program` is opened by the spawned `perl` relative to the
+        // working directory it is given, which the client controls through
+        // `cwd`. Authorizing the raw relative string would validate
+        // `<trusted-root>/script.pl` while `perl` opened `<cwd>/script.pl` —
+        // a launch of `{program: "script.pl", cwd: "/outside"}` would pass the
+        // workspace boundary and then execute outside it. Everything below
+        // (existence, boundary, syntax check, spawn) uses this one path.
         // Security: Validate program path before any process spawning
         // This prevents command injection via flag arguments (e.g., "-e malicious_code")
         // and ensures we're launching a real Perl script file.
@@ -495,7 +619,12 @@ impl DebugAdapter {
         // - exists() returns true for directories
         // - exists() returns true for symlinks to non-files
         // - is_file() specifically checks for regular files
-        let path = Path::new(program);
+        // Resolve *after* the trim and quote validation above, so resolution
+        // sees the cleaned program: a leading space would otherwise make an
+        // absolute path look relative and silently anchor it to the cwd.
+        let resolved_program = Self::resolve_launch_program(program, cwd_override.as_deref())?;
+
+        let path = resolved_program.as_path();
         match std::fs::metadata(path) {
             Ok(metadata) => {
                 if !metadata.is_file() {
@@ -515,11 +644,11 @@ impl DebugAdapter {
             }
         }
 
-        // Enforce workspace-bound launch paths when a workspace root is known.
-        // This prevents launching scripts outside the active project tree.
-        let workspace_root =
-            lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
-        if let Some(root) = workspace_root.as_ref() {
+        // Enforce workspace-bound launch paths when this session has a
+        // boundary. This prevents launching scripts outside the active project
+        // tree.
+        let session_boundary = self.session_boundary();
+        if let Some(root) = session_boundary.as_ref() {
             security::validate_path(path, root).map_err(|e| {
                 format!(
                     "The script '{}' is outside your workspace folder. \
@@ -541,7 +670,7 @@ impl DebugAdapter {
         // debugger.  This catches syntax errors early and surfaces a clear,
         // actionable message to the user instead of a generic "Cannot start
         // Perl debugger" failure after `perl -d` exits immediately.
-        Self::check_syntax(perl_interpreter, program, &env_overrides, cwd_override.clone())?;
+        Self::check_syntax(perl_interpreter, path, &env_overrides, cwd_override.clone())?;
 
         // Use PerlOracleEnv to deny ambient PERL5LIB/PERL5OPT so the debug
         // session env is controlled entirely by launch.json `env` (#8688).
@@ -551,9 +680,9 @@ impl DebugAdapter {
         let prog_cwd = if let Some(user_cwd) = cwd_override {
             user_cwd
         } else {
-            Path::new(program)
+            resolved_program
                 .parent()
-                .map(|p| p.to_path_buf())
+                .map(Path::to_path_buf)
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
         };
         let mut oracle = perl_lsp_rs_core::config::PerlOracleEnv::for_version_probe(
@@ -570,7 +699,7 @@ impl DebugAdapter {
         // Use -- to separate flags from script name, preventing argument injection
         // if program starts with -
         cmd.arg("--");
-        cmd.arg(program);
+        cmd.arg(&resolved_program);
         cmd.args(&args);
 
         // Set up pipes
@@ -647,7 +776,7 @@ impl DebugAdapter {
     /// produces the correct "perl not on PATH" error to the user.
     pub(super) fn check_syntax(
         perl_interpreter: &str,
-        program: &str,
+        program: &Path,
         env_overrides: &HashMap<String, String>,
         cwd_override: Option<PathBuf>,
     ) -> Result<(), String> {
@@ -657,9 +786,9 @@ impl DebugAdapter {
         let prog_cwd = if let Some(user_cwd) = cwd_override {
             user_cwd
         } else {
-            Path::new(program)
+            program
                 .parent()
-                .map(|p| p.to_path_buf())
+                .map(Path::to_path_buf)
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
         };
         let mut oracle = perl_lsp_rs_core::config::PerlOracleEnv::for_version_probe(
@@ -717,7 +846,8 @@ impl DebugAdapter {
 
         Err(format!(
             "Syntax error in '{}' — fix the error below before debugging:\n{}",
-            program, detail
+            program.display(),
+            detail
         ))
     }
 
@@ -2478,6 +2608,123 @@ mod tests {
         reserve_terminated_event, terminated_delivery_is_current,
     };
     use crate::tcp_attach::DapEvent;
+    use perl_tdd_support::{must, must_err, must_some};
+    use std::path::{Path, PathBuf};
+
+    /// `resolve_launch_program` must agree with what `perl` will open.
+    ///
+    /// This is the whole point of the helper: the pre-fix code authorized
+    /// `Path::new(program)`, and the shared validator joins a *relative* path
+    /// with the root it is checked against — so `"script.pl"` validated as
+    /// `<trusted-root>/script.pl` while the spawned `perl`, running under the
+    /// client's `cwd`, opened `<cwd>/script.pl`.
+    #[test]
+    fn a_relative_program_resolves_against_the_launch_cwd_not_the_trusted_root() {
+        let cwd = Path::new("/outside/project");
+        let resolved = must(DebugAdapter::resolve_launch_program("script.pl", Some(cwd)));
+        assert_eq!(
+            resolved,
+            PathBuf::from("/outside/project/script.pl"),
+            "a relative program must resolve against the directory perl is given"
+        );
+        assert!(
+            !resolved.starts_with("/trusted"),
+            "resolution must never silently land inside a trusted root it was not given"
+        );
+    }
+
+    /// A relative `cwd` must still yield an absolute program path.
+    ///
+    /// Devin review of #14592: the first version of this helper joined a
+    /// relative `cwd` straight onto the program, leaving the result relative.
+    /// The same segment was then applied twice — once here and again by the
+    /// spawned child, which resolves a relative `current_dir` against this
+    /// process's working directory — so `{program: "script.pl", cwd: "sub"}`
+    /// authorized `<root>/sub/script.pl` while `perl` opened
+    /// `<cwd>/sub/sub/script.pl`.
+    #[test]
+    fn a_relative_launch_cwd_still_yields_one_absolute_program_path() {
+        let process_cwd = must(std::env::current_dir());
+        let resolved =
+            must(DebugAdapter::resolve_launch_program("script.pl", Some(Path::new("sub"))));
+        assert!(
+            resolved.is_absolute(),
+            "authorization and execution can only agree on an absolute path, got {resolved:?}"
+        );
+        assert_eq!(resolved, process_cwd.join("sub").join("script.pl"));
+
+        // The launch cwd must be applied exactly once. Count only inside the
+        // part this function appended: the process working directory is chosen
+        // by whoever runs the test and may itself contain a `sub` component,
+        // which would fail a whole-path count on a correct result.
+        let appended = must_some(resolved.strip_prefix(&process_cwd).ok());
+        let occurrences =
+            appended.components().filter(|c| c.as_os_str() == std::ffi::OsStr::new("sub")).count();
+        assert_eq!(occurrences, 1, "the launch cwd must not be applied twice: {appended:?}");
+    }
+
+    /// A program that cannot be anchored absolutely is refused, not resolved to
+    /// a relative path the child would re-anchor itself.
+    #[test]
+    fn an_absolute_cwd_anchors_a_relative_program_without_consulting_the_process_directory() {
+        let resolved =
+            must(DebugAdapter::resolve_launch_program("script.pl", Some(Path::new("/anchored"))));
+        assert_eq!(resolved, PathBuf::from("/anchored/script.pl"));
+        assert!(resolved.is_absolute());
+    }
+
+    /// Surrounding whitespace must not turn an absolute program relative.
+    ///
+    /// The pre-existing `program.trim()` in `launch_debugger` runs after
+    /// ownership selection has already resolved the program, so the helper
+    /// owns the trim itself — otherwise a leading space anchors an absolute
+    /// path under the working directory at one call site but not the other.
+    #[test]
+    fn surrounding_whitespace_does_not_make_an_absolute_program_relative() {
+        let resolved = must(DebugAdapter::resolve_launch_program("  /trusted/script.pl  ", None));
+        assert_eq!(resolved, PathBuf::from("/trusted/script.pl"));
+        assert!(resolved.is_absolute());
+    }
+
+    /// An empty program is refused rather than resolved to a directory.
+    ///
+    /// `Path::new("")` is not absolute and `base.join("")` returns `base`
+    /// unchanged, so an empty program used to resolve to the launch `cwd`
+    /// itself — and `handle_launch` derived this session's boundary from that
+    /// directory before `launch_debugger`'s own empty check refused the launch.
+    /// The refusal is fail-closed either way; the point is that the authorized
+    /// subject was a directory the client never named and nothing would execute.
+    #[test]
+    fn an_empty_program_is_refused_before_it_can_resolve_to_a_directory() {
+        for program in ["", "   ", "\t\n"] {
+            let outcome =
+                DebugAdapter::resolve_launch_program(program, Some(Path::new("/outside")));
+            let error = must_err(outcome);
+            assert!(
+                error.contains("No Perl script was specified"),
+                "an empty program must be refused by name, got: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_absolute_program_is_unchanged_by_a_launch_cwd() {
+        let resolved = must(DebugAdapter::resolve_launch_program(
+            "/trusted/project/script.pl",
+            Some(Path::new("/outside")),
+        ));
+        assert_eq!(resolved, PathBuf::from("/trusted/project/script.pl"));
+    }
+
+    #[test]
+    fn a_nested_relative_program_resolves_under_the_launch_cwd() {
+        let resolved = must(DebugAdapter::resolve_launch_program(
+            "lib/deep/script.pl",
+            Some(Path::new("/ws")),
+        ));
+        assert_eq!(resolved, PathBuf::from("/ws/lib/deep/script.pl"));
+    }
+
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
