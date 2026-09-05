@@ -404,9 +404,9 @@ pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::serialize<__S
 pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub const perl_dap::backend::capabilities::INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN: bool
 pub const perl_dap::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE: &str
-pub const fn perl_dap::backend::capabilities::advertises_inline_values_extension() -> bool
 pub const perl_dap::backend::capabilities::SET_EXPRESSION_PROMOTION_PROVEN: bool
 pub const perl_dap::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE: &str
+pub const fn perl_dap::backend::capabilities::advertises_inline_values_extension() -> bool
 pub const fn perl_dap::backend::capabilities::advertises_set_expression() -> bool
 pub fn perl_dap::backend::capabilities::intersect_dap_capabilities(catalog: &perl_dap::backend::capabilities::CatalogDapFlags, backend: &perl_dap::backend::capabilities::DebugBackendCapabilities) -> perl_dap::backend::capabilities::NegotiatedDapCapabilities
 pub mod perl_dap::backend::external_peer
