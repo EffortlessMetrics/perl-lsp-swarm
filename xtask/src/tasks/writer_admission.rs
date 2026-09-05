@@ -28,11 +28,14 @@
 //! 5. `dirty-unpushed` — an abnormally large staged/dirty change set
 //!    (possible synthetic mass-staged additions).
 //! 6. `disk-capacity` — free disk below the `clean-worktrees.sh` floor.
-//! 7. `candidate-presence` — surfaces an existing open PR for reuse/resume;
+//! 7. `remote-branch-identity` — distinguishes a known remote branch,
+//!    known absence, and an instrument failure that leaves CREATE/RESUME
+//!    selection `NOT_PROVEN`.
+//! 8. `candidate-presence` — surfaces an existing open PR for reuse/resume;
 //!    it never treats PR existence or lookup failure as a live writer.
 //!
-//! An instrument failure in a safety check reports `NOT_PROVEN`, never a
-//! false `PASS` — see `docs/reference/ISSUE_PLAN_DOCTRINE.md`-style
+//! An instrument failure in a safety/identity check reports `NOT_PROVEN`,
+//! never a false `PASS` — see `docs/reference/ISSUE_PLAN_DOCTRINE.md`-style
 //! report-only doctrine. PR lookup is deliberately advisory: GitHub can say
 //! whether a candidate exists, not whether another session is alive.
 //!
@@ -47,12 +50,12 @@
 //! object (`AdmissionGuidance`) so a consumer (`/start-work`, #3982/#4103)
 //! can distinguish "admit a brand-new branch/worktree" from "resume an
 //! existing remote branch" or "reuse an existing worktree", rather than
-//! double-creating either. `guidance` is purely additive metadata computed
-//! from signals already gathered for the checks above (plus one new
-//! read-only `refs/remotes/origin/<branch>` lookup) — it never introduces a
-//! new `CheckResult` and never changes `aggregate_verdict`'s worst-status-
-//! wins outcome. The protected object stays the branch/worktree/local repo
-//! state, never a per-agent lease (#3957's explicit non-goal).
+//! double-creating either. `guidance` is additive metadata computed from
+//! signals already gathered for the checks above. Remote-branch lookup
+//! failure is also a typed `remote-branch-identity` check so guidance and
+//! aggregate verdict cannot disagree. The protected object stays the
+//! branch/worktree/local repo state, never a per-agent lease (#3957's
+//! explicit non-goal).
 
 use color_eyre::eyre::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -292,9 +295,8 @@ pub struct AdmissionGuidance {
     /// failed (a genuine `git` instrument failure, e.g. not a git
     /// repository, not a spawnable `git`), as opposed to a legitimate
     /// "branch doesn't exist yet" absence. A consumer must treat a non-null
-    /// value here as `NOT_PROVEN` for the RESUME decision, never silently
-    /// fall through to ADMIT — the same instrument-failure-must-never-be-
-    /// silently-clean invariant every safety check in this module upholds.
+    /// value here as `NOT_PROVEN` for the RESUME decision; the aggregate
+    /// report carries the same fact through `remote-branch-identity`.
     pub remote_branch_lookup_error: Option<String>,
 }
 
@@ -370,6 +372,7 @@ pub fn run_checks(
         check_branch_worktree_mapping(snapshot),
         check_dirty_unpushed(snapshot, config),
         check_disk_capacity(snapshot, config),
+        check_remote_branch_identity(snapshot),
         check_candidate_presence(snapshot),
     ]
 }
@@ -632,6 +635,52 @@ fn check_disk_capacity(
         reason: format!(
             "disk headroom {avail_gb:.1}G is above the floor {floor:.1}G{worktree_note}"
         ),
+    }
+}
+
+/// Prove enough remote-branch identity to choose CREATE versus RESUME.
+///
+/// A known absence is safe and means CREATE remains available. A known SHA
+/// means RESUME from that exact branch head. An instrument failure is
+/// different: it leaves branch identity unknown, so writer admission is
+/// `NOT_PROVEN` without inferring anything about another session's liveness.
+fn check_remote_branch_identity(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
+    let name = "remote-branch-identity".to_string();
+    if snapshot.target_branch == "(detached)" {
+        return CheckResult {
+            name,
+            status: CheckStatus::Pass,
+            reason: "detached checkout has no target branch identity to resolve".to_string(),
+        };
+    }
+    let info = &snapshot.remote_branch;
+    if let Some(err) = &info.error {
+        return CheckResult {
+            name,
+            status: CheckStatus::NotProven,
+            reason: format!(
+                "could not resolve `refs/remotes/origin/{}`: {err}; CREATE versus RESUME is not proven",
+                snapshot.target_branch
+            ),
+        };
+    }
+    match &info.sha {
+        Some(sha) => CheckResult {
+            name,
+            status: CheckStatus::Pass,
+            reason: format!(
+                "remote branch `{}` resolves to {sha}; RESUME from that observed head",
+                snapshot.target_branch
+            ),
+        },
+        None => CheckResult {
+            name,
+            status: CheckStatus::Pass,
+            reason: format!(
+                "no remote branch observed for `{}`; CREATE remains available",
+                snapshot.target_branch
+            ),
+        },
     }
 }
 
@@ -1391,6 +1440,29 @@ mod tests {
                     && c.reason.contains("do not infer")
             }),
             "unavailable PR lookup must remain candidate uncertainty, not writer collision: {checks:?}"
+        );
+    }
+
+    #[test]
+    fn remote_branch_lookup_error_is_not_proven_without_inventing_liveness() {
+        let mut snapshot = base_snapshot();
+        snapshot.remote_branch = RemoteBranchInfo {
+            sha: None,
+            error: Some("git rev-parse --verify failed: fatal: not a git repository".to_string()),
+        };
+        let checks = run_checks(&snapshot, &default_config());
+        assert_eq!(aggregate_verdict(&checks), AdmissionVerdict::NotProven, "{checks:?}");
+        assert!(
+            checks.iter().any(|c| {
+                c.name == "remote-branch-identity"
+                    && c.status == CheckStatus::NotProven
+                    && c.reason.contains("CREATE versus RESUME is not proven")
+            }),
+            "remote identity failure must be typed NOT_PROVEN: {checks:?}"
+        );
+        assert!(
+            !checks.iter().any(|c| c.name == "writer-collision"),
+            "remote identity failure must not be converted into writer liveness: {checks:?}"
         );
     }
 
