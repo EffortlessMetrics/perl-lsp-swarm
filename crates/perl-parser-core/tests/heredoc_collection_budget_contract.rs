@@ -21,6 +21,9 @@ use perl_tdd_support::{must_some, must_some_with};
 
 /// One heredoc-bearing statement. Kept separate so its exact charge can be
 /// measured on its own and reused as a boundary threshold below.
+mod cpan_test_helpers;
+use cpan_test_helpers::assert_clean_parse;
+
 const FIRST_STATEMENT: &str = "my $a = <<EOF;\nbody a line one\nbody a line two\nEOF\n";
 
 /// A second, independently drained heredoc statement.
@@ -891,4 +894,31 @@ fn only_the_first_refusal_re_anchors_the_diagnostic() {
         "the anchor must stay at the first refusal ({first_refused}); drifting to the enclosing \
          declaration ({enclosing}) makes it depend on drain order rather than on the event"
     );
+}
+
+/// Every fixture in this suite is valid Perl under an ordinary parse.
+///
+/// Required by this crate's test template, and load-bearing rather than
+/// ceremonial: each budget test asserts things about the diagnostics a parse
+/// produced, and all of that is meaningless if a fixture were malformed and
+/// producing syntax errors of its own. `assert_clean_parse` walks for `Error`
+/// and `Missing*` nodes under the *default* parser, with no budget applied, so
+/// it establishes that the only diagnostics the tests above can observe are the
+/// budget's.
+#[test]
+fn every_fixture_is_valid_perl_under_an_ordinary_parse() {
+    let gap: String = (0..200).map(|i| format!("my $x{i} = {i};\n")).collect();
+    let filler: String = (0..200).map(|i| format!("    my $y{i} = {i};\n")).collect();
+
+    for source in [
+        FIRST_STATEMENT.to_string(),
+        SECOND_STATEMENT.to_string(),
+        two_heredoc_statements(),
+        format!("{FIRST_STATEMENT}{gap}{SECOND_STATEMENT}"),
+        format!("if (<<COND) {{\ncond body\nCOND\n{filler}    my $inner = <<IN;\ninner body\nIN\n}}\n"),
+        "if (<<AAA) {\naaa body\nAAA\n  my $b = <<BBB;\nbbb body\nBBB\n  my $c = <<CCC;\nccc body\nCCC\n}\n"
+            .to_string(),
+    ] {
+        assert_clean_parse(&source);
+    }
 }

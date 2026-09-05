@@ -514,8 +514,13 @@ perl-lsp's approach is pragmatic:
    wrong in pathological edge cases.
 
 3. **Never hang, never crash.**  Byte budgets and recursion
-   guards ensure the parser always terminates.  When limits are exceeded,
-   an `UnknownRest` token preserves everything parsed so far.
+   guards ensure the parser always terminates.  How a breach surfaces depends
+   on which layer owns the limit: lexer-side limits emit an `UnknownRest`
+   token that preserves everything scanned so far, while a parser-side budget
+   such as heredoc collection records a typed `ParseStopCause` and leaves the
+   affected placeholders visibly unresolved.  Either way what was parsed is
+   kept, and the outcome is a resource limit rather than a syntax error
+   against the user's code.
 
 4. **Let the user help.**  When the parser genuinely cannot disambiguate
    a construct, it picks the most common interpretation and moves on.
@@ -548,8 +553,10 @@ Real-world input is adversarial.  Fuzz testing will find the pathological
 heredoc, the 200-level nested regex, the 10 MB single-line string.  Set
 explicit byte budgets and recursion limits from day one -- deterministic
 ones, so the same source always parses the same way.  A wall clock makes
-the result depend on the host rather than the input.  Emit a degraded
-token and move on.  A slow parser that eventually produces output is
+the result depend on the host rather than the input.  Then say where you
+stopped and move on -- a degraded token where the scanner owns the limit, a
+typed terminal where the parser does -- but never blame the source for a
+limit it did not violate.  A slow parser that eventually produces output is
 worse than a fast parser that says "I gave up here" and keeps going.
 
 ### 3. IDE Parsers Are Not Compiler Parsers
