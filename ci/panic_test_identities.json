@@ -3508,7 +3508,7 @@
       "macro_family": "panic!",
       "normalized_snippet": "panic!(\"poison the cell lock\");",
       "selector_identity": "invocation:8c9fac5a821d6681:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "accepted_reason": "Intentional panic injection used to exercise scheduler or worker recovery, poisoning, or panic-payload handling.",
       "state": "active"
     },
     {
@@ -3769,6 +3769,51 @@
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"failed to read {}: {error}\", path.display()))",
       "selector_identity": "invocation:01c45dbcd690ea0c:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/backend/capabilities.rs",
+      "enclosing_test_or_function": "accessor_return_atom",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"{accessor} must stay defined in capabilities.rs\"));",
+      "selector_identity": "invocation:db4ae179308bf545:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "scenario_13_astral_prefix_preserves_utf16_selection_range",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!( \"expected `target` document symbol after {SYMBOL_ATTEMPTS} settlement attempts: \\ {symbols:?}\" )",
+      "selector_identity": "invocation:bca4621e20dc1a94:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "scenario_13_astral_prefix_preserves_utf16_selection_range",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"`target` must expose a selectionRange: {target:?}\"));",
+      "selector_identity": "invocation:4d663724050ca9d1:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "scenario_13_astral_prefix_preserves_utf16_selection_range",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"{err}: {target:?}\"));",
+      "selector_identity": "invocation:cd39160c0a453f69:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/changelog.rs",
+      "enclosing_test_or_function": "non_scalar_time_is_flagged",
+      "macro_family": "panic!",
+      "normalized_snippet": "serde_yaml_ng::from_str(&yaml).unwrap_or_else(|e| panic!(\"{label} parses: {e}\"));",
+      "selector_identity": "invocation:8241e06f30d2ee76:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
     }
