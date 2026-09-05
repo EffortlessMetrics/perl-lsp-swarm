@@ -11,6 +11,7 @@ on:
       - 'xtask/tests/ux_regression_gate_workflow_policy.rs'
       - 'xtask/tests/public_api_pr_gating_workflow.rs'
       - 'xtask/tests/perl_version_matrix_cache_contract.rs'
+      - 'xtask/tests/corpus_windows_reparse_cache_contract.rs'
       - '.github/ci-config.yml'
       - 'scripts/gh/ensure-labels.sh'
       - 'scripts/tests/test-public-api-ratchet.sh'
@@ -30,6 +31,7 @@ on:
       - 'xtask/tests/ux_regression_gate_workflow_policy.rs'
       - 'xtask/tests/public_api_pr_gating_workflow.rs'
       - 'xtask/tests/perl_version_matrix_cache_contract.rs'
+      - 'xtask/tests/corpus_windows_reparse_cache_contract.rs'
       - '.github/ci-config.yml'
       - 'scripts/gh/ensure-labels.sh'
       - 'scripts/tests/test-public-api-ratchet.sh'
@@ -82,6 +84,8 @@ jobs:
         # is a no-op for the existing tree and a guard against future drift.
         # See #8166 ("CI economics rollout: deferred follow-ups").
         run: cargo xtask workflow-policy-lint --check-lane-whitelist --receipt target/receipts/workflow-policy.json
+      - name: Run Windows reparse cache contract
+        run: cargo test --locked -p xtask --test corpus_windows_reparse_cache_contract
       - name: Upload workflow policy receipt
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
