@@ -1166,14 +1166,114 @@ fn a_symbol_a_consumer_does_not_name_cannot_stay_in_the_migration_set() -> Resul
     let mut value = real_value()?;
     row_mut(&mut value, "consumers", "consumer_id", "c:parser-core-parser-context")?["symbols"] =
         Value::Array(vec![Value::String("NodeIdGeneratorThatWasRemoved".to_string())]);
-    assert_rejected(&value, "does not appear there")?;
+    assert_rejected(&value, "the code there does not name")?;
 
     // A stale name inside an otherwise-live qualified path is caught too, since
     // each identifier in the path is checked rather than the string as a whole.
     let mut value = real_value()?;
     row_mut(&mut value, "consumers", "consumer_id", "c:parser-core-context-impls")?["symbols"] =
         Value::Array(vec![Value::String("NodeKind::RemovedVariant".to_string())]);
-    assert_rejected(&value, "does not appear there")
+    assert_rejected(&value, "the code there does not name")
+}
+
+#[test]
+fn a_name_surviving_only_in_a_comment_does_not_keep_a_symbol_row_alive() -> Result<()> {
+    // The symbol check read the file as text, so a name left behind in a
+    // comment after the code stopped using it satisfied it — the exact stale
+    // row the check exists to reject, kept alive by its own epitaph.
+    let with_code = "use perl_ast_v2::NodeIdGenerator;\npub fn f(_: NodeIdGenerator) {}";
+    let idents = source_identifiers(with_code)
+        .ok_or_else(|| color_eyre::eyre::eyre!("fixture must parse"))?;
+    assert!(idents.contains("NodeIdGenerator"), "code that names it must yield the identifier");
+
+    let comment_only = "// NodeIdGenerator was removed from this file\npub fn f() {}";
+    let idents = source_identifiers(comment_only)
+        .ok_or_else(|| color_eyre::eyre::eyre!("fixture must parse"))?;
+    assert!(
+        !idents.contains("NodeIdGenerator"),
+        "a name that survives only in a comment is not named by the code: {idents:?}"
+    );
+    // The text scan it replaced could not tell those two apart, which is why
+    // the parse is the instrument here.
+    assert!(contains_token(comment_only, "NodeIdGenerator"));
+
+    // A string literal is not a name either.
+    let string_only = "pub fn f() -> &'static str { \"NodeIdGenerator\" }";
+    let idents = source_identifiers(string_only)
+        .ok_or_else(|| color_eyre::eyre::eyre!("fixture must parse"))?;
+    assert!(!idents.contains("NodeIdGenerator"), "a string literal names nothing: {idents:?}");
+    Ok(())
+}
+
+#[test]
+fn a_grouped_import_in_a_doctest_is_still_code() -> Result<()> {
+    // Doc-attribute classification matched text against `API_USE_FORM`, which
+    // does not recognise the grouped canonical form — the same gap that moved
+    // ordinary code onto the parser, left in place one branch over. A doctest
+    // is compiled and run, so compiled API use could be classified as prose and
+    // take a non-gating role.
+    let grouped_doctest = "/// ```\n/// use perl_ast::{v2, Node};\n/// ```\npub fn f() {}";
+    assert!(!mentions_audited_package(grouped_doctest), "the token scan cannot see this form");
+    assert!(
+        references_package_api_in_code(grouped_doctest, "crates/a/src/lib.rs"),
+        "a grouped import inside a doctest is compiled API use"
+    );
+
+    // The inner-doc spelling is the same claim and must classify the same way.
+    let inner = "//! ```\n//! use perl_ast::{v2, Node};\n//! ```\npub fn f() {}";
+    assert!(references_package_api_in_code(inner, "crates/a/src/lib.rs"));
+
+    // Prose that merely mentions the crate in a doc comment is still prose —
+    // otherwise every documentation reference would become a gating consumer.
+    let prose = "/// This module predates the perl-ast-v2 experiment.\npub fn f() {}";
+    assert!(
+        !references_package_api_in_code(prose, "crates/a/src/lib.rs"),
+        "a hyphenated crate name in prose is not an API reference"
+    );
+    Ok(())
+}
+
+#[test]
+fn contract_attributes_reach_every_modelled_public_surface() -> Result<()> {
+    // The first version rendered contract attributes on structs, enums and
+    // variants only, so the same `#[cfg]` or `#[deprecated]` that moved an enum
+    // shape moved nothing on a type alias, an associated item, a trait impl or
+    // a field.
+    let shape_of = |src: &str, kind: &str| -> Result<String> {
+        derive_public_items(src)?
+            .iter()
+            .find(|item| item.kind == kind)
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no {kind} derived from {src}"))
+    };
+
+    for (kind, plain, attributed) in [
+        ("type_alias", "pub type A = u8;", "#[deprecated]\npub type A = u8;"),
+        (
+            "associated_fn",
+            "pub struct S;\nimpl S { pub fn f() {} }",
+            "pub struct S;\nimpl S { #[cfg(unix)] pub fn f() {} }",
+        ),
+        (
+            "associated_const",
+            "pub struct S;\nimpl S { pub const N: u8 = 1; }",
+            "pub struct S;\nimpl S { #[deprecated] pub const N: u8 = 1; }",
+        ),
+        (
+            "trait_impl",
+            "pub struct S;\nimpl Clone for S {}",
+            "pub struct S;\n#[cfg(unix)]\nimpl Clone for S {}",
+        ),
+        ("struct", "pub struct S { pub a: u8 }", "pub struct S { #[cfg(unix)] pub a: u8 }"),
+        ("struct", "pub struct T(pub u8);", "pub struct T(#[cfg(unix)] pub u8);"),
+    ] {
+        assert_ne!(
+            shape_of(plain, kind)?,
+            shape_of(attributed, kind)?,
+            "a contract attribute on a {kind} must move the shape"
+        );
+    }
+    Ok(())
 }
 
 #[test]

@@ -389,8 +389,9 @@ fn collect_public_items(
                     path: format!("{module_path}::{name}"),
                     kind: "type_alias".to_string(),
                     shape: format!(
-                        "type {name}{} = {}",
+                        "type {name}{}{} = {}",
                         render_generics(&alias.generics)?,
+                        render_contract_attrs(&alias.attrs)?,
                         render_type(&alias.ty)?
                     ),
                 });
@@ -491,6 +492,7 @@ fn collect_public_items(
                         shape.push_str(&trait_name);
                         shape.push_str(" for ");
                         shape.push_str(&render_type(item_impl.self_ty.as_ref())?);
+                        shape.push_str(&render_contract_attrs(&item_impl.attrs)?);
                         derived.push(DerivedItem {
                             path: format!("{module_path}::{self_name} as {trait_name}"),
                             kind: "trait_impl".to_string(),
@@ -515,7 +517,11 @@ fn collect_public_items(
                                             method.sig.ident
                                         ),
                                         kind: "associated_fn".to_string(),
-                                        shape: render_signature(&method.sig)?,
+                                        shape: format!(
+                                            "{}{}",
+                                            render_signature(&method.sig)?,
+                                            render_contract_attrs(&method.attrs)?
+                                        ),
                                     });
                                 }
                                 syn::ImplItem::Const(konst) => {
@@ -529,9 +535,10 @@ fn collect_public_items(
                                         ),
                                         kind: "associated_const".to_string(),
                                         shape: format!(
-                                            "const {}: {}",
+                                            "const {}: {}{}",
                                             konst.ident,
-                                            render_type(&konst.ty)?
+                                            render_type(&konst.ty)?,
+                                            render_contract_attrs(&konst.attrs)?
                                         ),
                                     });
                                 }
@@ -546,9 +553,10 @@ fn collect_public_items(
                                         ),
                                         kind: "associated_type".to_string(),
                                         shape: format!(
-                                            "type {}{} = {}",
+                                            "type {}{}{} = {}",
                                             assoc.ident,
                                             render_generics(&assoc.generics)?,
+                                            render_contract_attrs(&assoc.attrs)?,
                                             render_type(&assoc.ty)?
                                         ),
                                     });
@@ -984,7 +992,11 @@ fn render_fields(fields: &syn::Fields, context: FieldContext) -> Result<String> 
                     non_public += 1;
                     continue;
                 }
-                reachable.push(format!("{ident}: {}", render_type(&field.ty)?));
+                reachable.push(format!(
+                    "{ident}: {}{}",
+                    render_type(&field.ty)?,
+                    render_contract_attrs(&field.attrs)?
+                ));
             }
             let mut rendered = format!("{{ {} }}", reachable.join(", "));
             if non_public > 0 {
@@ -995,7 +1007,11 @@ fn render_fields(fields: &syn::Fields, context: FieldContext) -> Result<String> 
         syn::Fields::Unnamed(unnamed) => {
             let mut parts = Vec::new();
             for field in &unnamed.unnamed {
-                parts.push(render_type(&field.ty)?);
+                parts.push(format!(
+                    "{}{}",
+                    render_type(&field.ty)?,
+                    render_contract_attrs(&field.attrs)?
+                ));
             }
             Ok(format!("({})", parts.join(", ")))
         }
@@ -1367,11 +1383,43 @@ impl<'ast> syn::visit::Visit<'ast> for ApiUseVisitor {
             && let syn::Meta::NameValue(pair) = &node.meta
             && let syn::Expr::Lit(lit) = &pair.value
             && let syn::Lit::Str(text) = &lit.lit
-            && API_USE_FORM.is_match(&text.value())
         {
-            self.found = true;
+            let line = text.value();
+            // The text match alone repeats the very gap that moved ordinary
+            // code onto the parser: a grouped `use perl_ast::{v2, Node};` in a
+            // doctest names none of the forms `API_USE_FORM` recognises, so
+            // compiled API use could still be classified as prose. A doctest
+            // line that parses as Rust is judged the same way real code is.
+            if parsed_api_use(&line).unwrap_or(false) || API_USE_FORM.is_match(&line) {
+                self.found = true;
+            }
         }
         syn::visit::visit_attribute(self, node);
+    }
+}
+
+/// Every identifier the file's syntax actually contains.
+///
+/// Used instead of a text scan when checking a consumer row's symbols: a name
+/// left in a comment after the code stopped using it satisfied `contains_token`
+/// and kept a stale row alive, which is precisely the case that row check exists
+/// to catch. Comments and string literals contribute no identifiers to a parse,
+/// so the question becomes "does the code name this" rather than "does the file
+/// contain these letters".
+fn source_identifiers(text: &str) -> Option<BTreeSet<String>> {
+    let file = syn::parse_file(text).ok()?;
+    let mut visitor = IdentVisitor { found: BTreeSet::new() };
+    syn::visit::visit_file(&mut visitor, &file);
+    Some(visitor.found)
+}
+
+struct IdentVisitor {
+    found: BTreeSet<String>,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for IdentVisitor {
+    fn visit_ident(&mut self, node: &'ast syn::Ident) {
+        self.found.insert(node.to_string());
     }
 }
 
@@ -2332,6 +2380,13 @@ fn reconcile_consumers(m: &Manifest, repo_root: &Path, scanned: &BTreeSet<String
             && row.file.ends_with(".rs")
             && let Ok(text) = std::fs::read_to_string(repo_root.join(&row.file))
         {
+            // Identifiers from the parse when the file parses, text otherwise.
+            // A text scan let a name that only survives in a comment keep a
+            // stale row alive — the exact case this check exists to reject. A
+            // gating Rust consumer that does not parse falls back to the text
+            // scan rather than being failed, since a parse failure says nothing
+            // about the row's honesty.
+            let identifiers = source_identifiers(&text);
             for symbol in &row.symbols {
                 for token in symbol.split("::").flat_map(str::split_whitespace) {
                     // `as` is the `use ... as ...` keyword joining two real
@@ -2339,11 +2394,15 @@ fn reconcile_consumers(m: &Manifest, repo_root: &Path, scanned: &BTreeSet<String
                     if token.is_empty() || token == "as" {
                         continue;
                     }
-                    if !contains_token(&text, token) {
+                    let named = match &identifiers {
+                        Some(idents) => idents.contains(token),
+                        None => contains_token(&text, token),
+                    };
+                    if !named {
                         bail!(
-                            "consumer {} lists symbol `{symbol}` for `{}`, but `{token}` does not \
-                             appear there. A symbol list that outlives the code it names is the \
-                             migration set #8845 would inherit.",
+                            "consumer {} lists symbol `{symbol}` for `{}`, but the code there does \
+                             not name `{token}`. A symbol list that outlives the code it names is \
+                             the migration set #8845 would inherit.",
                             row.consumer_id,
                             row.file
                         );
