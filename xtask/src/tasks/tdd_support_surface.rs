@@ -297,14 +297,41 @@ pub(crate) fn discover_surface(root: &Path) -> Result<Vec<Discovered>> {
     if !lib.is_file() {
         bail!("cannot discover {SUBJECT_CRATE} surface: {} does not exist", lib.display());
     }
-    let mut out = Vec::new();
-    walk_module_file(&src_dir, &[], "", &lib, &mut out)?;
+    let mut sink = Sink::default();
+    walk_module_file(&src_dir, &[], "", &lib, &mut sink)?;
+    let Sink { mut out, shadow, .. } = sink;
+    // A type defined in a private module becomes surface when a public `pub use`
+    // republishes it. Its definition was walked into the shadow, so lift its
+    // members under the re-export's public path; otherwise a private-module
+    // type's methods, fields, and variants could change without a ledger row.
+    let lifted: Vec<Discovered> = out
+        .iter()
+        .filter(|item| item.api_kind == "reexport")
+        .flat_map(|reexport| {
+            let origin = resolve_local_origin(&reexport.source, &reexport.path);
+            shadow
+                .iter()
+                .filter(move |member| member.is_member() && member.owner == origin)
+                .map(|member| {
+                    let name = member.path.rsplit("::").next().unwrap_or_default();
+                    Discovered::member(
+                        &member.api_kind,
+                        reexport.path.clone(),
+                        name,
+                        combine_cfg(&reexport.cfg, &member.cfg),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    out.extend(lifted);
     // An inherent method is public surface only when its type is: `impl` blocks
     // are walked wherever they appear, so drop the ones whose owning type was
-    // never discovered as a public struct, enum, or union at that path.
+    // never discovered as a public struct, enum, or union (or a re-export of
+    // one) at that path.
     let owning_types: BTreeSet<String> = out
         .iter()
-        .filter(|item| matches!(item.api_kind.as_str(), "struct" | "enum" | "union"))
+        .filter(|item| matches!(item.api_kind.as_str(), "struct" | "enum" | "union" | "reexport"))
         .map(|item| item.path.clone())
         .collect();
     out.retain(|item| item.api_kind != "method" || owning_types.contains(&item.owner));
@@ -314,12 +341,45 @@ pub(crate) fn discover_surface(root: &Path) -> Result<Vec<Discovered>> {
     Ok(out)
 }
 
+/// Discovery output split by reachability.
+///
+/// Items under a private module are not surface, but their definitions are
+/// kept in `shadow` so a public re-export can lift their members into `out`.
+#[derive(Default)]
+struct Sink {
+    out: Vec<Discovered>,
+    shadow: Vec<Discovered>,
+    private_depth: usize,
+}
+
+impl Sink {
+    fn push(&mut self, item: Discovered) {
+        if self.private_depth == 0 {
+            self.out.push(item);
+        } else {
+            self.shadow.push(item);
+        }
+    }
+}
+
+/// Resolve a re-export's origin (as written in `pub use`) to the crate path
+/// of the item it names. `crate::a::B` is absolute; `self::`/bare `a::B` is
+/// relative to the module the `pub use` sits in.
+fn resolve_local_origin(source: &str, reexport_path: &str) -> String {
+    if let Some(rest) = source.strip_prefix("crate::") {
+        return format!("{SUBJECT_ROOT_PATH}::{rest}");
+    }
+    let module = reexport_path.rsplit_once("::").map(|(m, _)| m).unwrap_or(SUBJECT_ROOT_PATH);
+    let rest = source.strip_prefix("self::").unwrap_or(source);
+    format!("{module}::{rest}")
+}
+
 fn walk_module_file(
     src_dir: &Path,
     module_path: &[String],
     inherited_cfg: &str,
     file: &Path,
-    out: &mut Vec<Discovered>,
+    out: &mut Sink,
 ) -> Result<()> {
     let source =
         fs::read_to_string(file).wrap_err_with(|| format!("failed to read {}", file.display()))?;
@@ -333,7 +393,7 @@ fn walk_items(
     module_path: &[String],
     inherited_cfg: &str,
     items: &[Item],
-    out: &mut Vec<Discovered>,
+    out: &mut Sink,
 ) -> Result<()> {
     for item in items {
         walk_item(src_dir, module_path, inherited_cfg, item, out)?;
@@ -346,7 +406,7 @@ fn walk_item(
     module_path: &[String],
     inherited_cfg: &str,
     item: &Item,
-    out: &mut Vec<Discovered>,
+    out: &mut Sink,
 ) -> Result<()> {
     macro_rules! simple {
         ($node:expr, $kind:literal) => {{
@@ -427,7 +487,7 @@ fn walk_item(
 ///
 /// Tuple-struct fields are named by position (`Type::0`), which is how a
 /// consumer spells them. Unit structs contribute nothing.
-fn walk_fields(owner: &str, type_cfg: &str, fields: &syn::Fields, out: &mut Vec<Discovered>) {
+fn walk_fields(owner: &str, type_cfg: &str, fields: &syn::Fields, out: &mut Sink) {
     match fields {
         syn::Fields::Named(named) => {
             for field in &named.named {
@@ -469,12 +529,7 @@ fn walk_fields(owner: &str, type_cfg: &str, fields: &syn::Fields, out: &mut Vec<
 /// The owning type is spelled under the module the `impl` block lives in;
 /// [`discover_surface`] later drops methods whose owner is not a discovered
 /// public type at that path, so an `impl` of a private type is never surface.
-fn walk_impl(
-    module_path: &[String],
-    inherited_cfg: &str,
-    node: &syn::ItemImpl,
-    out: &mut Vec<Discovered>,
-) {
+fn walk_impl(module_path: &[String], inherited_cfg: &str, node: &syn::ItemImpl, out: &mut Sink) {
     if node.trait_.is_some() || is_cfg_test(&node.attrs) {
         return;
     }
@@ -506,15 +561,9 @@ fn walk_mod(
     module_path: &[String],
     inherited_cfg: &str,
     node: &syn::ItemMod,
-    out: &mut Vec<Discovered>,
+    out: &mut Sink,
 ) -> Result<()> {
     if is_cfg_test(&node.attrs) {
-        return Ok(());
-    }
-    // A private module cannot contribute public surface here: the crate denies
-    // `unreachable_pub`, so a `pub` item behind a private module would not
-    // compile. Skipping it keeps discovery aligned with what consumers can name.
-    if !is_pub(&node.vis) {
         return Ok(());
     }
     let name = node.ident.to_string();
@@ -522,34 +571,51 @@ fn walk_mod(
     child_path.push(name.clone());
     // The module's own gate applies to it and to everything inside it.
     let module_cfg = combine_cfg(inherited_cfg, &cfg_of(&node.attrs));
-    out.push(Discovered::new(
-        "module",
-        qualify(module_path, &name),
-        module_cfg.clone(),
-        String::new(),
-    ));
-
-    if let Some((_, items)) = &node.content {
-        return walk_items(src_dir, &child_path, &module_cfg, items, out);
+    // A private module is not surface by itself (the crate denies
+    // `unreachable_pub`), but a `pub` type inside it becomes surface through a
+    // `pub use`, so its definitions are walked into the shadow rather than
+    // skipped.
+    let private = !is_pub(&node.vis);
+    if private {
+        out.private_depth += 1;
+    } else {
+        out.push(Discovered::new(
+            "module",
+            qualify(module_path, &name),
+            module_cfg.clone(),
+            String::new(),
+        ));
     }
-    let Some(file) = module_file(src_dir, &child_path) else {
-        bail!(
+
+    let result = if let Some((_, items)) = &node.content {
+        walk_items(src_dir, &child_path, &module_cfg, items, out)
+    } else if let Some(file) = module_file(src_dir, &child_path) {
+        walk_module_file(src_dir, &child_path, &module_cfg, &file, out)
+    } else if private {
+        // A private module whose file is absent cannot compile either way; it
+        // has nothing a re-export could lift.
+        Ok(())
+    } else {
+        Err(eyre!(
             "public module `{}` declared in {SUBJECT_CRATE} has no backing file; expected {}.rs \
              or {}/mod.rs under {}",
             child_path.join("::"),
             child_path.join("/"),
             child_path.join("/"),
             src_dir.display()
-        );
+        ))
     };
-    walk_module_file(src_dir, &child_path, &module_cfg, &file, out)
+    if private {
+        out.private_depth -= 1;
+    }
+    result
 }
 
 fn walk_use(
     module_path: &[String],
     inherited_cfg: &str,
     node: &syn::ItemUse,
-    out: &mut Vec<Discovered>,
+    out: &mut Sink,
 ) -> Result<()> {
     if !is_pub(&node.vis) || is_cfg_test(&node.attrs) {
         return Ok(());
@@ -1228,13 +1294,63 @@ fn referenced_symbols(crate_dir: &Path) -> Result<BTreeSet<String>> {
         // aborting the run: the manifest edge, not this scan, is the blocking
         // consumer assertion.
         let Ok(parsed) = syn::parse_file(&source) else { continue };
-        let mut visitor = ReferenceVisitor { found: &mut found };
+        let aliases = crate_aliases(&parsed);
+        let mut visitor = ReferenceVisitor { found: &mut found, aliases: &aliases };
         syn::visit::Visit::visit_file(&mut visitor, &parsed);
     }
     Ok(found)
 }
 
-/// Records the first path segment after `perl_tdd_support::`.
+/// Names a file binds to the governed crate root besides its own name:
+/// `use perl_tdd_support as support;`, `use perl_tdd_support::{self as support};`
+/// and `extern crate perl_tdd_support as support;`.
+///
+/// Aliases are collected file-wide before references are scanned, so a path
+/// spelled through the alias counts as a reference to the crate. A file scope
+/// is an over-approximation of Rust's module scope; it can only add
+/// references, never hide one, which is the safe direction for a consumer
+/// inventory.
+fn crate_aliases(file: &syn::File) -> BTreeSet<String> {
+    let mut aliases = BTreeSet::new();
+    for item in &file.items {
+        match item {
+            Item::Use(node) => collect_root_aliases(&node.tree, false, &mut aliases),
+            Item::ExternCrate(node) => {
+                if node.ident == SUBJECT_ROOT_PATH
+                    && let Some((_, rename)) = &node.rename
+                {
+                    aliases.insert(rename.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    aliases
+}
+
+fn collect_root_aliases(tree: &syn::UseTree, under_root: bool, out: &mut BTreeSet<String>) {
+    match tree {
+        syn::UseTree::Rename(rename) => {
+            let renames_root = (!under_root && rename.ident == SUBJECT_ROOT_PATH)
+                || (under_root && rename.ident == "self");
+            if renames_root {
+                out.insert(rename.rename.to_string());
+            }
+        }
+        syn::UseTree::Path(path) if !under_root && path.ident == SUBJECT_ROOT_PATH => {
+            collect_root_aliases(&path.tree, true, out);
+        }
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                collect_root_aliases(item, under_root, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Records the first path segment after `perl_tdd_support::` (or after an
+/// alias of it).
 ///
 /// The first segment is the crate-root export actually being reached for —
 /// `tdd_basic` for `perl_tdd_support::tdd_basic::TestGenerator`, `must` for
@@ -1242,9 +1358,14 @@ fn referenced_symbols(crate_dir: &Path) -> Result<BTreeSet<String>> {
 /// the migration in #8605 both work at.
 struct ReferenceVisitor<'a> {
     found: &'a mut BTreeSet<String>,
+    aliases: &'a BTreeSet<String>,
 }
 
 impl ReferenceVisitor<'_> {
+    fn names_root(&self, ident: &syn::Ident) -> bool {
+        *ident == SUBJECT_ROOT_PATH || self.aliases.contains(&ident.to_string())
+    }
+
     fn record_use_tree(&mut self, tree: &syn::UseTree) {
         match tree {
             syn::UseTree::Path(path) => {
@@ -1253,9 +1374,10 @@ impl ReferenceVisitor<'_> {
             syn::UseTree::Name(name) => {
                 self.found.insert(name.ident.to_string());
             }
-            syn::UseTree::Rename(rename) => {
+            syn::UseTree::Rename(rename) if rename.ident != "self" => {
                 self.found.insert(rename.ident.to_string());
             }
+            syn::UseTree::Rename(_) => {}
             syn::UseTree::Group(group) => {
                 for item in &group.items {
                     self.record_use_tree(item);
@@ -1271,7 +1393,7 @@ impl ReferenceVisitor<'_> {
 impl<'ast> syn::visit::Visit<'ast> for ReferenceVisitor<'_> {
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
         if let syn::UseTree::Path(path) = &node.tree
-            && path.ident == SUBJECT_ROOT_PATH
+            && self.names_root(&path.ident)
         {
             self.record_use_tree(&path.tree);
         }
@@ -1281,7 +1403,7 @@ impl<'ast> syn::visit::Visit<'ast> for ReferenceVisitor<'_> {
     fn visit_path(&mut self, node: &'ast syn::Path) {
         let mut segments = node.segments.iter();
         if let (Some(first), Some(second)) = (segments.next(), segments.next())
-            && first.ident == SUBJECT_ROOT_PATH
+            && self.names_root(&first.ident)
         {
             self.found.insert(second.ident.to_string());
         }

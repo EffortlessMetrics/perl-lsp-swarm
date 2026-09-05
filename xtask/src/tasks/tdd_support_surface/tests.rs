@@ -1086,3 +1086,119 @@ fn propose_still_writes_the_requested_receipt() -> Result<()> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Re-exports from private modules lift the type's members into surface
+// ---------------------------------------------------------------------------
+
+#[test]
+fn members_of_a_type_reexported_from_a_private_module_are_governed() -> Result<()> {
+    let dir = fixture_root(
+        "mod inner {\n\
+             pub struct Scenario { pub title: String }\n\
+             impl Scenario { pub fn new() -> Self { Scenario { title: String::new() } } }\n\
+             pub enum Verdict { Pass, Fail }\n\
+             pub struct NotReexported { pub leaked: u8 }\n\
+         }\n\
+         pub use inner::Scenario;\n\
+         pub use self::inner::Verdict as Outcome;\n",
+        MINIMAL_MANIFEST,
+    )?;
+    let ids = governed_ids(dir.path())?;
+    for expected in [
+        "reexport:perl_tdd_support::Scenario",
+        "method:perl_tdd_support::Scenario::new",
+        "field:perl_tdd_support::Scenario::title",
+        "reexport:perl_tdd_support::Outcome",
+        "variant:perl_tdd_support::Outcome::Pass",
+        "variant:perl_tdd_support::Outcome::Fail",
+    ] {
+        if !ids.iter().any(|id| id == expected) {
+            bail!("{expected} was not lifted through the re-export: {ids:?}");
+        }
+    }
+    for unexpected in [
+        "struct:perl_tdd_support::inner::Scenario",
+        "method:perl_tdd_support::inner::Scenario::new",
+        "module:perl_tdd_support::inner",
+        "struct:perl_tdd_support::inner::NotReexported",
+        "field:perl_tdd_support::inner::NotReexported::leaked",
+        "field:perl_tdd_support::NotReexported::leaked",
+    ] {
+        if ids.iter().any(|id| id == unexpected) {
+            bail!("{unexpected} is behind a private module and must not be surface");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_lifted_member_without_a_row_is_rejected() -> Result<()> {
+    let dir = fixture_root(
+        "mod inner { pub struct S; impl S { pub fn m() {} } }\npub use inner::S;\n",
+        MINIMAL_MANIFEST,
+    )?;
+    let discovered = discover_surface(dir.path())?;
+    let ledger = ledger(vec![
+        entry("reexport:perl_tdd_support::S", "reexport", "perl_tdd_support::S"),
+        entry("feature:default", "feature", "default"),
+    ]);
+    expect_err(
+        reconcile(&discovered, &ledger),
+        "`method:perl_tdd_support::S::m`",
+        "a method reached only through a re-export from a private module",
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Crate aliases are consumers too
+// ---------------------------------------------------------------------------
+
+fn consumer_dir(source: &str) -> Result<tempfile::TempDir> {
+    let dir = tempfile::tempdir()?;
+    fs::create_dir_all(dir.path().join("consumer"))?;
+    fs::write(dir.path().join("consumer").join("lib.rs"), source)?;
+    Ok(dir)
+}
+
+#[test]
+fn a_renamed_crate_import_still_counts_as_a_reference() -> Result<()> {
+    let dir = consumer_dir(
+        "use perl_tdd_support as support;\n\
+         use support::must;\n\
+         pub fn go() { let _ = must(Ok::<(), ()>(())); support::tdd_basic::TestGenerator::new(); }\n",
+    )?;
+    let referenced = referenced_symbols(&dir.path().join("consumer"))?;
+    if referenced != names(&["must", "tdd_basic"]) {
+        bail!("alias paths must resolve to crate references, found {referenced:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn self_rename_and_extern_crate_aliases_are_tracked() -> Result<()> {
+    let dir = consumer_dir(
+        "extern crate perl_tdd_support as legacy;\n\
+         use perl_tdd_support::{self as fresh};\n\
+         pub fn go() { legacy::governance::noop(); fresh::bdd::noop(); }\n",
+    )?;
+    let referenced = referenced_symbols(&dir.path().join("consumer"))?;
+    if referenced != names(&["bdd", "governance"]) {
+        bail!("expected both alias forms to resolve, found {referenced:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn an_alias_of_another_crate_does_not_create_references() -> Result<()> {
+    let dir = consumer_dir(
+        "use some_other_crate as support;\n\
+         use support::must;\n\
+         pub fn go() { let _ = must(1); }\n",
+    )?;
+    let referenced = referenced_symbols(&dir.path().join("consumer"))?;
+    if !referenced.is_empty() {
+        bail!("an alias of an unrelated crate must not count, found {referenced:?}");
+    }
+    Ok(())
+}
