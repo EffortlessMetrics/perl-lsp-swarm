@@ -539,6 +539,27 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
+        // #8354 fail-closed gate. The refusal is a function of the advertised
+        // capability alone, so advertisement and enforcement cannot disagree.
+        // It fires before `parse_dap_arguments`, name/value screening,
+        // reference lookup, and any broker/debugger traffic: while the
+        // capability is closed, no parser, resolver, coordinator, or transport
+        // call may run and no reference or retained state may change — valid
+        // and hostile input get the identical early unsupported response.
+        if crate::backend::capabilities::refuse_set_variable(
+            crate::backend::capabilities::advertises_set_variable(),
+        ) {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "setVariable".to_string(),
+                body: None,
+                message: Some(
+                    crate::backend::capabilities::SET_VARIABLE_UNSUPPORTED_MESSAGE.to_string(),
+                ),
+            };
+        }
         let args: SetVariableArguments = match parse_dap_arguments(arguments) {
             Ok(a) => a,
             Err(message) => {
@@ -1596,11 +1617,12 @@ mod value_format_family_tests {
     fn mutation_and_evaluate_families_reject_unknown_format_options() -> TestResult {
         let mut adapter = DebugAdapter::new();
         // Argument deserialization fails before any session or mutation work.
+        // setVariable is deliberately absent from the family loop: since
+        // #8354 its capability gate refuses before argument parsing, so
+        // setExpression carries the mutation-family admission proof. The
+        // ordering claim itself (gate precedes screening) is asserted below
+        // and in dap_setvariable_capability_fail_closed_8354.
         for (command, arguments) in [
-            (
-                "setVariable",
-                json!({ "variablesReference": 11, "name": "$x", "value": "5", "format": { "radix": 16 } }),
-            ),
             ("evaluate", json!({ "expression": "$x", "format": { "radix": 16 } })),
             (
                 "setExpression",
@@ -1613,6 +1635,18 @@ mod value_format_family_tests {
                 "{command} must reject the unknown option by name: {message}"
             );
         }
+        // setVariable must refuse on the capability floor before it would ever
+        // reach this argument validation.
+        let message = response_message(
+            &mut adapter,
+            "setVariable",
+            json!({ "variablesReference": 11, "name": "$x", "value": "5", "format": { "radix": 16 } }),
+        )?;
+        assert!(
+            message.contains("supportsSetVariable"),
+            "setVariable must be refused by the #8354 capability gate, not by argument \
+             validation: {message}"
+        );
         Ok(())
     }
 
@@ -1622,6 +1656,10 @@ mod value_format_family_tests {
         // handlers — the capability floor rejects every family explicitly
         // BEFORE deserialization/session work, and never silently ignores it.
         //
+        // #8354: setVariable is absent from this family because its capability
+        // gate refuses before argument parsing, so evaluate carries the
+        // format-acceptance proof.
+        //
         // #9568: setExpression refuses at the capability floor before any
         // session work, so its well-formed-format leg expects the authority
         // refusal instead of "No debugger session". Typed deserialization is
@@ -1630,16 +1668,13 @@ mod value_format_family_tests {
         // `mutation_and_evaluate_families_reject_unknown_format_options`),
         // which runs before this same gate.
         let mut adapter = DebugAdapter::new();
+        // #9568: setVariable and setExpression hex requests are refused by
+        // their own exact-mutation authority (SET_VARIABLE_UNSUPPORTED_MESSAGE
+        // / SET_EXPRESSION_UNSUPPORTED_MESSAGE) before the ValueFormat floor
+        // is consulted — covered by that authority's tests. The VFO floor's
+        // own refusal contract covers the remaining two families:
         for (command, arguments) in [
-            (
-                "setVariable",
-                json!({ "variablesReference": 11, "name": "$x", "value": "5", "format": { "hex": true } }),
-            ),
             ("evaluate", json!({ "expression": "$x", "format": { "hex": true } })),
-            (
-                "setExpression",
-                json!({ "expression": "$x", "value": "5", "format": { "hex": true } }),
-            ),
             ("variables", json!({ "variablesReference": 11, "format": { "hex": true } })),
         ] {
             let message = response_message(&mut adapter, command, arguments)?;
@@ -1661,9 +1696,11 @@ mod value_format_family_tests {
     #[test]
     fn missing_arguments_message_is_preserved() -> TestResult {
         // Regression guard: `None` arguments still report "Missing arguments"
-        // (existing integration tests assert this exact message).
+        // (existing integration tests assert this exact message). setVariable
+        // is absent since #8354: its capability gate refuses before argument
+        // parsing, so it can no longer produce this message.
         let mut adapter = DebugAdapter::new();
-        for command in ["variables", "evaluate", "setVariable", "setExpression"] {
+        for command in ["variables", "evaluate", "setExpression"] {
             let outcome = adapter.handle_request(1, command, None);
             match outcome {
                 DapMessage::Response { success: false, message: Some(message), .. } => {
