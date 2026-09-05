@@ -852,3 +852,40 @@ fn a_numeric_bareword_delimiter_opens_a_heredoc() {
         assert_eq!(operations.len(), 1, "a tight numeric shift was read as a heredoc: {shift:?}");
     }
 }
+
+/// POD between a closed block and a pragma must not hide the pragma.
+///
+/// `split_perl_statements` cuts on semicolons, so the slice after `sub f {
+/// return 1; }` opens with that block's `}`. The POD branch only moved the
+/// slice start when nothing had been seen yet, and the brace counted as
+/// something, so the POD text stayed in front of the pragma —
+/// `strip_statement_prefix` drops a leading brace but not a POD section, and
+/// the pragma was never recognized.
+///
+/// The three controls isolate it to that interaction: POD without a preceding
+/// block, a block without POD, and POD opening the file all worked already.
+#[test]
+fn pod_between_a_closed_block_and_a_pragma_keeps_the_pragma() {
+    let real =
+        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])];
+
+    let block_then_pod = "sub f { return 1; }\n=pod\n\nprose\n\n=cut\nuse lib 'real';\n";
+    assert_eq!(extract_use_lib_operations(block_then_pod), real, "block + POD hid the pragma");
+
+    for control in [
+        "my $x = 1;\n=pod\n\nprose\n\n=cut\nuse lib 'real';\n",
+        "sub f { return 1; }\nuse lib 'real';\n",
+        "=pod\n\nprose\n\n=cut\nuse lib 'real';\n",
+    ] {
+        assert_eq!(extract_use_lib_operations(control), real, "control regressed: {control:?}");
+    }
+
+    // A genuinely unterminated expression before the POD still suppresses:
+    // the rail must not invent a statement boundary that Perl does not have.
+    let unterminated = "my $x = (\n=pod\n\nprose\n\n=cut\nuse lib 'phantom';\n";
+    assert_eq!(
+        extract_use_lib_operations(unterminated),
+        vec![],
+        "an unterminated expression gained a statement boundary it should not have"
+    );
+}

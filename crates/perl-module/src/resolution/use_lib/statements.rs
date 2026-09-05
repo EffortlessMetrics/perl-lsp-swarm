@@ -24,6 +24,10 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
     // can safely advance `start` past the comment so it doesn't pollute the
     // next statement slice.
     let mut has_content = false;
+    // Content that is not merely the closing brace of a block that already
+    // ended. `strip_statement_prefix` drops those braces, so a slice holding
+    // nothing else is still "empty" for the purpose of moving `start`.
+    let mut has_code_content = false;
     let mut pending_heredocs = VecDeque::new();
     let mut scan_end = source.len();
     // Built at most once, and only if a bareword opener is actually seen.
@@ -68,7 +72,11 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
             && chars.get(i + 1).is_some_and(|(_, next)| next.is_ascii_alphabetic())
         {
             let pod_end = skip_pod_section(source, idx);
-            if !has_content {
+            // A closed block before the POD must not pin `start` behind it:
+            // `sub f { return 1; }` then POD then `use lib 'real';` left the
+            // POD text in front of the pragma, and the prefix trim removes the
+            // brace but not a POD section, so the pragma was never recognized.
+            if !has_code_content {
                 start = pod_end;
             }
             i = advance_char_index(&chars, i, pod_end);
@@ -146,8 +154,12 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
             push_statement(&mut statements, &source[start..end]);
             start = end;
             has_content = false;
+            has_code_content = false;
         } else if !ch.is_whitespace() {
             has_content = true;
+            if ch != '}' {
+                has_code_content = true;
+            }
         }
 
         i += 1;
