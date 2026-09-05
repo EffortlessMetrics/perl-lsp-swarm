@@ -499,10 +499,11 @@ fn evaluate_compatibility(
     deduplicate(&mut not_proven);
     deduplicate(&mut partial);
     if !mismatch.is_empty() {
-        // Return the full reason union: mismatch governs the state, but any
-        // co-occurring not_proven or partial reasons must also surface so the
-        // client receives a complete repair set rather than only the
-        // highest-precedence symptom.  State remains single-valued. (#10184)
+        // Mismatch governs the single-valued state, but co-occurring not_proven
+        // and partial reasons must still surface so the client receives a
+        // complete repair set rather than the highest-precedence symptom alone.
+        // The final `deduplicate` is what upholds the wire schema's
+        // `uniqueItems` across buckets, not just within one. (#10184)
         let mut reasons = mismatch;
         reasons.extend_from_slice(&not_proven);
         reasons.extend_from_slice(&partial);
@@ -510,9 +511,9 @@ fn evaluate_compatibility(
         return (BinaryCompatibilityState::Mismatch, reasons, limitations);
     }
     if !not_proven.is_empty() {
-        // State is single-valued (not_proven takes precedence over partial),
-        // but all partial reasons must also surface so the client sees the full
-        // outstanding gap set rather than only the not_proven symptoms. (#10184)
+        // Same contract one precedence level down: not_proven governs the state,
+        // partial reasons still surface, and `deduplicate` upholds schema
+        // `uniqueItems` across the merged buckets. (#10184)
         let mut reasons = not_proven;
         reasons.extend_from_slice(&partial);
         deduplicate(&mut reasons);
