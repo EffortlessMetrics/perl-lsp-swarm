@@ -15,7 +15,7 @@
 //! | `scenario_14_use_lib_lexical` | in-source `use lib 'lib'` | resolves |
 //! | `scenario_14_external_include_paths_unauthorized_zero_visibility` | absolute root via didChangeConfiguration `externalIncludePaths` (#4998) | NOT resolved |
 //! | `scenario_14_no_lib_cancellation` | `use lib` then `no lib` | NOT resolved |
-//! | `scenario_14_findbin_relative` | `use FindBin; use lib "$FindBin::Bin/lib"` | resolves |
+//! | `scenario_14_findbin_relative` | `use FindBin; use lib "$FindBin::Bin/lib"` | resolves (declared document-dir FindBin proxy) + `lib/` boundary refuses |
 //! | `scenario_14_perl5lib_env` | PERL5LIB env var via `usePerl5lib=true` | resolves |
 //! | `scenario_14_nested_module_relative_include_path` | `includePaths: ["lib"]` + `Nested::Deep` | resolves |
 //! | `scenario_14_include_path_missing_module_consistency` | `includePaths: ["lib"]` + missing module | NOT resolved |
@@ -67,15 +67,13 @@ fn has_pl701(diags: &[serde_json::Value]) -> bool {
     })
 }
 
-fn hover_is_not_resolved(hover: &Option<serde_json::Value>) -> bool {
-    let Some(hover) = hover else {
-        return true;
-    };
-
+/// Flatten any LSP hover `contents` shape (string, MarkedString object, or
+/// array) into plain text so identity assertions can run on it.
+fn hover_text(hover: &serde_json::Value) -> String {
     let Some(contents) = hover.get("contents") else {
-        return false;
+        return String::new();
     };
-    let text = match contents {
+    match contents {
         serde_json::Value::String(value) => value.clone(),
         serde_json::Value::Object(map) => {
             map.get("value").and_then(|value| value.as_str()).unwrap_or("").to_string()
@@ -90,9 +88,28 @@ fn hover_is_not_resolved(hover: &Option<serde_json::Value>) -> bool {
             .collect::<Vec<_>>()
             .join("\n"),
         _ => String::new(),
+    }
+}
+
+fn hover_is_not_resolved(hover: &Option<serde_json::Value>) -> bool {
+    let Some(hover) = hover else {
+        return true;
     };
 
+    if hover.get("contents").is_none() {
+        return false;
+    };
+    let text = hover_text(hover);
+
     text.contains("Not found in workspace") && !text.contains("[Go to module]")
+}
+
+/// A hover only "admits" the module when the response resolves the symbol AND
+/// actually identifies it: generic or empty contents that merely lack the
+/// refusal phrase must not count as admission (#14152 review).
+fn hover_admits_module(hover: &Option<serde_json::Value>, module: &str) -> bool {
+    hover.as_ref().is_some_and(|h| h.get("contents").is_some() && hover_text(h).contains(module))
+        && !hover_is_not_resolved(hover)
 }
 
 /// Configure the server to use `includePaths` via workspace/didChangeConfiguration.
@@ -738,6 +755,61 @@ sub value {\n\
 1;\n\
 ";
 
+/// Invocation profile recorded for the FindBin cell (#13329).
+///
+/// The product's declared module-resolution contract resolves
+/// `$FindBin::Bin` against the analyzed document's directory
+/// (`resolve_module_path_with_uri`, module_resolution.rs). Exact
+/// invoked-script identity is NOT modeled by the product (#10570), so this
+/// cell asserts the declared bounded-positive disposition across every
+/// consumer. A pass here must never be read as proof that the opened
+/// fixture was the script a Perl interpreter actually invoked.
+const FINDBIN_INVOCATION_PROFILE: &str = "bounded: $FindBin::Bin proxies the analyzed \
+     document directory per the declared module-resolution contract; exact invoked-script \
+     identity is not modeled (#10570)";
+
+/// Boundary probe: the FindBin-escaped include root. The declared use-lib
+/// contract anchors FindBin roots at the analyzed document's directory and
+/// DISCARDS any extracted root that escapes the workspace (`perl-module`
+/// use_lib resolve: `resolved.strip_prefix(workspace_root)`).
+/// `OutsideProbe` therefore exists only outside the workspace, where the
+/// workspace index cannot see it either, so every consumer must
+/// consistently refuse it. A consumer that admits it has substituted an
+/// include authority (or an invoked-script guess) stronger than the
+/// declared contract (#13329 falsifiers 3 and 4).
+/// The escape fixtures reference the outside probe directory by name, so the
+/// directory must be chosen per run (see the boundary probe below) and the
+/// sources are built around it instead of a shared fixed sibling.
+fn findbin_escape_source(outside_dir_name: &str) -> String {
+    format!(
+        "use FindBin;\n\
+         use lib \"$FindBin::Bin/../{outside_dir_name}\";\n\
+         use OutsideProbe;\n\
+         1;\n\
+         "
+    )
+}
+
+/// Completion prefix fixture for the escaped-root boundary probe.
+fn findbin_escape_completion_source(outside_dir_name: &str) -> String {
+    format!(
+        "use FindBin;\n\
+         use lib \"$FindBin::Bin/../{outside_dir_name}\";\n\
+         use Outsi\n\
+         "
+    )
+}
+
+const FINDBIN_OUTSIDE_MODULE: &str = "\
+package OutsideProbe;\n\
+\n\
+sub probe {\n\
+    return 1;\n\
+}\n\
+\n\
+1;\n\
+";
+
 #[test]
 fn scenario_14_findbin_relative() -> Result<(), String> {
     if !binary_available() {
@@ -757,15 +829,31 @@ fn scenario_14_findbin_relative() -> Result<(), String> {
     harness.open_file("fixture.pl", FINDBIN_SOURCE).expect("didOpen should succeed");
     std::thread::sleep(Duration::from_millis(500));
 
-    let diags = wait_diagnostics(&harness, "fixture.pl");
+    // Publication silence (deadline with no publishDiagnostics at all) must
+    // not be scored as "PL701 absent": require an observed diagnostics
+    // publication before treating absence as a positive cell (#14152 review).
+    let diags = harness
+        .wait_for_diagnostics_after_count("fixture.pl", 0, Duration::from_secs(5))
+        .ok_or_else(|| {
+        "No diagnostics publication observed for fixture.pl within 5s; publication silence \
+             cannot prove PL701 absence (findbin_relative)"
+            .to_string()
+    })?;
     let pl701_absent = !has_pl701(&diags);
 
     // `use FindBinModule` at line 4, col 4.
     let defs = harness.definition("fixture.pl", 4, 4).expect("definition must not error");
-    let def_resolves = !defs.is_empty();
+    let def_target = defs.iter().find_map(|d| d.get("uri").and_then(|u| u.as_str()));
+    // Positive navigation must carry exact module identity: the target URI is
+    // compared in full against this workspace's admitted module file, so a
+    // wrong root that happens to contain lib/FindBinModule.pm cannot pass
+    // (#14152 review).
+    let expected_def_uri = harness.workspace.uri("lib/FindBinModule.pm");
+    let def_resolves_exact = def_target
+        .is_some_and(|uri| uri.trim_end_matches('/') == expected_def_uri.trim_end_matches('/'));
 
     let hover_result = harness.hover("fixture.pl", 4, 4).expect("hover must not error");
-    let hover_ok = true;
+    let hover_admits = hover_admits_module(&hover_result, "FindBinModule");
 
     // Completion check: switch to prefix fixture (includes FindBin pragmas for context).
     harness
@@ -776,30 +864,131 @@ fn scenario_14_findbin_relative() -> Result<(), String> {
     let completions = harness.completion("fixture.pl", 4, 8).expect("completion must not error");
     let completion_ok = completion_has_module(&completions, "FindBinModule");
 
-    print_conformance("findbin_relative", pl701_absent, completion_ok, def_resolves, hover_ok);
+    let profile_cell_1 = format!(
+        "invocation profile: {FINDBIN_INVOCATION_PROFILE}\n\
+         consumer dispositions (fixture.pl, exact-module then prefix):\n\
+         PL701 absent: {pl701_absent}\n\
+         goto-definition resolves to lib/FindBinModule.pm: {def_resolves_exact} (defs: {defs:?})\n\
+         completion admits FindBinModule: {completion_ok} (labels: {:?})\n\
+         hover admits module: {hover_admits} (hover: {hover_result:?})",
+        completion_labels(&completions),
+    );
 
-    // Consistency check.
-    if def_resolves && !pl701_absent {
+    print_conformance(
+        "findbin_relative",
+        pl701_absent,
+        completion_ok,
+        def_resolves_exact,
+        hover_admits,
+    );
+
+    let positive_dispositions: [bool; 4] =
+        [pl701_absent, def_resolves_exact, completion_ok, hover_admits];
+    let positives = positive_dispositions.iter().filter(|ok| **ok).count();
+
+    // Every consumer must be load-bearing for the same disposition. A mix of
+    // admitting and refusing consumers is exactly the divergence this
+    // scenario owns; it can no longer pass by logging INFO.
+    if positives > 0 && positives < 4 {
         return Err(format!(
-            "Consumer inconsistency (findbin_relative): goto-def resolved but PL701 fired.\n\
-             goto-def: {:?}\n\
-             diagnostics: {:?}",
-            defs, diags
+            "Consumer divergence (findbin_relative): consumers disagree on the FindBin-backed \
+             module for the same current subject.\n{profile_cell_1}\ndiagnostics: {diags:?}"
         ));
     }
-    if !def_resolves && pl701_absent {
-        // Both agree module doesn't resolve — log but don't fail the consistency test.
-        // FindBin resolution may be in degraded mode in some environments.
-        eprintln!(
-            "INFO scenario_14_findbin_relative: both consumers agree module does not resolve \
-             (def empty + no PL701). FindBin resolution may be in degraded mode."
-        );
+    // A consistently REFUSING cell contradicts the declared bounded-positive
+    // FindBin contract. This is the state the previous oracle tolerated with
+    // an INFO line and Ok(()); it is now a failure naming every disposition.
+    if positives == 0 {
+        return Err(format!(
+            "Consistent refusal (findbin_relative): every consumer refuses the FindBin-backed \
+             module, contradicting the declared bounded-positive FindBin resolution contract. \
+             Resolver regressions belong to #4240/#10570.\n{profile_cell_1}\n\
+             diagnostics: {diags:?}"
+        ));
     }
 
-    // We assert consistency but tolerate FindBin not resolving end-to-end in the
-    // UX harness (it's environment-dependent). What we MUST NOT see is divergence.
-    if let Some(hover) = hover_result {
-        assert!(hover.get("contents").is_some(), "Hover result must have 'contents': {:?}", hover);
+    harness.assert_no_crash();
+
+    // ------------------------------------------------------------------
+    // Boundary probe: a FindBin root that escapes the workspace must be
+    // discarded per the declared use-lib contract, so a module that exists
+    // only outside the workspace is refused by every consumer even though
+    // its bytes are on disk next to the workspace.
+    // ------------------------------------------------------------------
+    let workspace_root_path = harness.workspace.path("");
+    // The outside probe must live outside the workspace TempDir, but a fixed
+    // shared sibling is never cleaned and would leak stale probe state across
+    // harnesses and concurrent runs. Own it with a uniquely named TempDir
+    // guard so the probe directory is isolated per run and always removed
+    // (#14152 review).
+    let outside_temp = tempfile::TempDir::new_in(
+        workspace_root_path.parent().expect("workspace tempdir must have a parent"),
+    )
+    .expect("create unique outside probe directory");
+    let outside_dir = outside_temp.path().to_path_buf();
+    let outside_dir_name = outside_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("outside probe directory must have a name")
+        .to_string();
+    std::fs::write(outside_dir.join("OutsideProbe.pm"), FINDBIN_OUTSIDE_MODULE)
+        .expect("write outside probe module");
+
+    let escape_source = findbin_escape_source(&outside_dir_name);
+    harness.open_file("escape.pl", &escape_source).expect("didOpen should succeed");
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Same fail-closed rule as the positive cell: boundary refusals need an
+    // observed publication, not deadline silence (#14152 review).
+    let escape_diags = harness
+        .wait_for_diagnostics_after_count("escape.pl", 0, Duration::from_secs(5))
+        .ok_or_else(|| {
+            "No diagnostics publication observed for escape.pl within 5s; publication silence \
+             cannot drive the boundary refusal cell (findbin_relative)"
+                .to_string()
+        })?;
+    let escape_pl701_fires = has_pl701(&escape_diags);
+
+    // `use OutsideProbe` at line 2, col 4.
+    let escape_defs = harness.definition("escape.pl", 2, 4).expect("definition must not error");
+    let escape_def_empty = escape_defs.is_empty();
+
+    let escape_hover = harness.hover("escape.pl", 2, 4).expect("hover must not error");
+    let escape_hover_refuses = !hover_admits_module(&escape_hover, "OutsideProbe");
+
+    harness
+        .change_file_full("escape.pl", &findbin_escape_completion_source(&outside_dir_name))
+        .expect("didChange to escape completion fixture should succeed");
+    std::thread::sleep(Duration::from_millis(500));
+    let escape_completions =
+        harness.completion("escape.pl", 2, 9).expect("completion must not error");
+    let escape_completion_refuses = !completion_has_module(&escape_completions, "OutsideProbe");
+
+    let profile_cell_2 = format!(
+        "invocation profile: {FINDBIN_INVOCATION_PROFILE}\n\
+         consumer dispositions (escape.pl, exact-module then prefix):\n\
+         PL701 fires: {escape_pl701_fires}\n\
+         goto-definition empty: {escape_def_empty} (defs: {escape_defs:?})\n\
+         completion refuses OutsideProbe: {escape_completion_refuses} (labels: {:?})\n\
+         hover refuses module: {escape_hover_refuses} (hover: {escape_hover:?})",
+        completion_labels(&escape_completions),
+    );
+
+    let refusals =
+        [escape_pl701_fires, escape_def_empty, escape_completion_refuses, escape_hover_refuses]
+            .iter()
+            .filter(|refuses| **refuses)
+            .count();
+
+    // Any admitting consumer means a FindBin-extracted root that escapes the
+    // workspace was honored — an include authority (or an invoked-script
+    // guess) stronger than the declared document-directory contract.
+    if refusals < 4 {
+        return Err(format!(
+            "Boundary violation (findbin_relative): a consumer admitted OutsideProbe through a \
+             FindBin root that escapes the workspace, substituting an authority stronger than \
+             the declared contract.\n{profile_cell_2}\ndiagnostics: {escape_diags:?}"
+        ));
     }
 
     harness.assert_no_crash();

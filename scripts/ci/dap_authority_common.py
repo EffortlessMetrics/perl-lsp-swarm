@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import urllib.parse
+from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -25,6 +26,36 @@ DOC_PATHS = (
 )
 DISPATCH_PATH = Path("crates/perl-dap/src/debug_adapter/dispatch.rs")
 DEBUG_ADAPTER_ROOT = Path("crates/perl-dap/src/debug_adapter")
+PEER_DISPATCH_PATHS = (
+    Path("crates/perl-dap/src/backend/peer_bridge.rs"),
+    Path("crates/perl-dap/src/backend/peer_launch.rs"),
+)
+# The pinned compatibility-fallback bodies (#9527, fail-closed split #9069):
+# a catalog route that exists but is unavailable in the peer frontend must
+# fail closed (success: false, no body) — a lenient ack would report success
+# for work no backend performed — while a genuinely unknown command keeps the
+# mirror-MVP acknowledgement so a client is never wedged. Changing the shape
+# of this arm is a deliberate contract edit that updates these constants.
+EXPECTED_PEER_FALLBACKS = {
+    PEER_DISPATCH_PATHS[0]: (
+        "if DapRequestRoute::from_command(command).is_some() { "
+        'tracing::warn!(command, "peer bridge: request is unavailable in this frontend"); '
+        "out.push(self.response( request_seq, command, false, None, "
+        'Some("request is unavailable in the external peer frontend".to_string()), )); '
+        "} else { "
+        'tracing::warn!(command, "peer bridge: unhandled DAP request"); '
+        "out.push(self.response(request_seq, command, true, None, None)); }"
+    ),
+    PEER_DISPATCH_PATHS[1]: (
+        "if DapRequestRoute::from_command(command).is_some() { "
+        'tracing::warn!( command, "mirror bridge: request is unavailable in this frontend" ); '
+        "out.push(self.response( request_seq, command, false, None, "
+        'Some("request is unavailable in the mirror peer frontend".to_string()), )); '
+        "} else { "
+        'tracing::warn!(command, "mirror bridge: unhandled DAP request"); '
+        "out.push(self.response(request_seq, command, true, None, None)); }"
+    ),
+}
 FORBIDDEN_DOC_PHRASES = (
     "JSON-RPC 2.0",
     "Schema Definitions Complete",
@@ -32,12 +63,739 @@ FORBIDDEN_DOC_PHRASES = (
 )
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
-SUPPORTED_COMMANDS_RE = re.compile(
-    r"const\s+SUPPORTED_COMMANDS\s*:\s*\[&str;\s*(?P<count>\d+)\s*\]\s*=\s*"
-    r"\[(?P<body>.*?)\];",
-    re.DOTALL,
+# The one executable request authority (#9527). Rows in this table expand
+# into both the typed inventory and the `dispatch_request` match arms, so a
+# row is production routing rather than a parallel list describing it.
+REQUEST_TABLE_INVOCATION_RE = re.compile(r"\bdap_request_table\s*!\s*\{")
+REQUEST_TABLE_ROW_RE = re.compile(
+    r"(?P<class>standard|extension)\s+"
+    r"(?P<availability>all_frontends|native_only)\s+"
+    r"(?P<variant>[A-Z][A-Za-z0-9]*)\s+"
+    r'"(?P<command>[A-Za-z][A-Za-z0-9._/-]*)"\s*=>\s*'
+    r"(?P<handler>[a-z_][a-z0-9_]*)\s*\(\s*(?:arguments\s*)?\)\s*,"
 )
-RUST_STRING_RE = re.compile(r'"([A-Za-z][A-Za-z0-9]*)"')
+# Any string-literal match arm outside the table would be a second executable
+# authority. This is a breadth net over the rest of the file; the exclusivity
+# proof itself is structural — see `validate_generated_dispatch`.
+STRAY_MATCH_ARM_RE = re.compile(r'"(?P<name>[^"\n]*)"\s*(?:if\b[^=\n]*?)?=>')
+REQUEST_CLASSES = {"standard", "extension"}
+
+MACRO_DEFINITION_RE = re.compile(r"\bmacro_rules\s*!\s*dap_request_table\b")
+ANY_MACRO_DEFINITION_RE = re.compile(r"\bmacro_rules\s*!\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
+# Only these macros may be defined in the dispatch source. A new generator
+# macro here could expand into routing the named-function checks never see,
+# so the set is closed and a new one has to be reviewed in deliberately.
+PERMITTED_MACRO_DEFINITIONS = frozenset(
+    {
+        "dap_request_class",
+        "dap_request_availability",
+        "dap_request_peer_available",
+        "dap_dispatch_call",
+        "dap_request_table",
+    }
+)
+DISPATCH_FN_RE = re.compile(r"\bfn\s+dispatch_request\b")
+PRODUCTION_DISPATCH_FN_RE = re.compile(
+    r"\bfn\s+(?:dispatch|dispatch_request|handle_request)\s*\(",
+)
+PEER_DISPATCH_FN_RE = re.compile(r"\bpub\s+fn\s+dispatch\s*\(")
+PEER_ROUTE_MATCH_RE = re.compile(
+    r"\bmatch\s+DapRequestRoute::from_command\s*\(\s*command\s*\)\s*"
+    r"\.filter\s*\(\s*DapRequestRoute::available_in_peer_frontends\s*\)"
+)
+SUPPORTED_COMMANDS_DEFINITION_RE = re.compile(r"\bconst\s+SUPPORTED_COMMANDS\b")
+REQUEST_ROWS_DEFINITION_RE = re.compile(r"\bconst\s+DAP_REQUEST_ROWS\b")
+# Constructs that could introduce a route inside the generated dispatch body.
+# The body is a fixed, tiny shape, so this is an allow-list check rather than
+# a hunt for known-bad spellings: anything that can branch, return early, or
+# name a wire string is rejected outright.
+FORBIDDEN_DISPATCH_BODY_KEYWORDS = ("if", "else", "return", "while", "loop", "for")
+# The `command` identifier, ignoring `$command` (the macro row capture) and
+# any longer identifier that merely contains the word.
+COMMAND_IDENT_RE = re.compile(r"(?<![\w$])command(?!\w)")
+# The generated match must scrutinise the command itself, never a value
+# derived from it: `match self.normalize(command)` would keep every
+# structural rule while remapping wire names away from the rows.
+EXPECTED_SCRUTINEE = "command"
+# The one generated row arm is pinned just like the fallback below. Merely
+# counting its arrow leaves the handler side open to an imported macro, and
+# permits a cfg attribute to remove every executable arm while the inventory
+# continues to report the table rows.
+EXPECTED_ROW_REPETITION = (
+    "$( $command => dap_dispatch_call!( self, $handler, seq, request_seq, "
+    "arguments, $arity ), )*"
+)
+EXPECTED_REQUEST_ROWS_PROJECTION = (
+    'pub(crate) const DAP_REQUEST_ROWS: &[DapRequestRow] = &[ $( DapRequestRow { '
+    'row_id: concat!("dap.request.", $command), command: $command, class: '
+    'dap_request_class!($class), availability: '
+    'dap_request_availability!($availability), }, )* ];'
+)
+EXPECTED_SUPPORTED_COMMANDS_PROJECTION = (
+    "pub(crate) const SUPPORTED_COMMANDS: [&str; DAP_REQUEST_ROWS.len()] = "
+    "[$($command),*];"
+)
+EXPECTED_ROUTE_ENUM_PROJECTION = "pub(crate) enum DapRequestRoute { $($variant),* }"
+EXPECTED_ROUTE_LOOKUP_PROJECTION = (
+    "impl DapRequestRoute { "
+    "pub(crate) fn from_command(wire_command: &str) -> Option<Self> { "
+    "match wire_command { $($command => Some(Self::$variant),)* _ => None, } } "
+    "pub(crate) const fn available_in_peer_frontends(&self) -> bool { "
+    "match self { $(Self::$variant => "
+    "dap_request_peer_available!($availability),)* } } }"
+)
+EXPECTED_SMALL_MACROS = {
+    "dap_request_class": (
+        "macro_rules! dap_request_class { (standard) => { "
+        "DapRequestClass::Standard }; (extension) => { "
+        "DapRequestClass::Extension }; }"
+    ),
+    "dap_request_availability": (
+        "macro_rules! dap_request_availability { (all_frontends) => { "
+        "DapRequestAvailability::AllFrontends }; (native_only) => { "
+        "DapRequestAvailability::NativeOnly }; }"
+    ),
+    "dap_request_peer_available": (
+        "macro_rules! dap_request_peer_available { (all_frontends) => { true }; "
+        "(native_only) => { false }; }"
+    ),
+}
+EXPECTED_ARGUMENTS_DISPATCH_ARM = (
+    "($adapter:expr, $handler:ident, $seq:expr, $request_seq:expr, "
+    "$arguments:expr, (arguments)) => { "
+    "$adapter.$handler($seq, $request_seq, $arguments) };"
+)
+EXPECTED_NO_ARGUMENTS_DISPATCH_ARM = (
+    "($adapter:expr, $handler:ident, $seq:expr, $request_seq:expr, "
+    "$arguments:expr, ()) => { $adapter.$handler($seq, $request_seq) };"
+)
+# The unknown-command arm is pinned by exact normalised text rather than by
+# an allow-list of sub-expressions. Allow-listing sub-expressions is
+# position-blind: `_ => self.route_unknown(Self::unknown_command_message(
+# command))` contains only permitted fragments yet still hands
+# command-derived data to a helper that can route outside the table. The
+# fallback is small and fully owned by this macro, so equality is the honest
+# check — changing it is a deliberate edit that updates this constant too.
+EXPECTED_FALLBACK = (
+    "_ => DapMessage::Response { seq, request_seq, success: false, "
+    "command: command.to_string(), body: None, "
+    "message: Some(Self::unknown_command_message(command)), },"
+)
+RUST_ATTRIBUTE_RE = re.compile(r"#\s*!?\s*\[")
+
+
+def _normalise_tokens(text: str) -> str:
+    return " ".join(text.split())
+
+
+STRING_CONTENT_MASK = "\x01"
+# A Rust character literal, including escapes (`'\''`, `'\u{1F600}'`). A
+# lifetime (`'static`, `'a`) has no closing quote and must not match, or the
+# scanner would treat the rest of the file as literal content.
+CHAR_LITERAL_RE = re.compile(r"'(?:\\.[^']*|[^'\\])'")
+
+
+def _raw_string_end(text: str, index: int) -> tuple[int, int] | None:
+    """If a raw string starts at `index`, return its (open_end, close_start).
+
+    Handles `r"..."` and `r#*"..."#*`. Raw strings have no escapes, so `//`
+    or `"` inside one must not be read as code.
+    """
+    if text[index] != "r":
+        return None
+    cursor = index + 1
+    hashes = 0
+    while cursor < len(text) and text[cursor] == "#":
+        hashes += 1
+        cursor += 1
+    if cursor >= len(text) or text[cursor] != '"':
+        return None
+    open_end = cursor + 1
+    terminator = '"' + "#" * hashes
+    close = text.find(terminator, open_end)
+    if close == -1:
+        raise AuthorityError("unterminated raw string in the DAP dispatch source")
+    return open_end, close
+
+
+def scan_rust_source(text: str) -> tuple[str, str]:
+    """Return `(stripped, masked)` views of Rust source, equal in length.
+
+    `stripped` has comments blanked but string contents intact, so wire names
+    stay readable. `masked` additionally replaces every string's *contents*
+    with a sentinel, so a brace, an arrow, or a nested quote inside a string
+    can never be read as code. Both views keep the original offsets of the
+    text they retain, so a match found in one can be sliced out of the other.
+    """
+    stripped: list[str] = []
+    masked: list[str] = []
+    index = 0
+    length = len(text)
+
+    def emit(chunk: str, mask: str | None = None) -> None:
+        stripped.append(chunk)
+        masked.append(chunk if mask is None else mask)
+
+    while index < length:
+        char = text[index]
+
+        raw = _raw_string_end(text, index) if char == "r" else None
+        if raw is not None:
+            open_end, close = raw
+            hashes = open_end - index - 2
+            emit(text[index:open_end])
+            emit(
+                text[open_end:close],
+                "".join(
+                    "\n" if c == "\n" else STRING_CONTENT_MASK for c in text[open_end:close]
+                ),
+            )
+            terminator_end = close + 1 + hashes
+            emit(text[close:terminator_end])
+            index = terminator_end
+            continue
+
+        if char == "'":
+            literal = CHAR_LITERAL_RE.match(text, index)
+            if literal is not None:
+                # `'"'` would otherwise open a string and swallow the rest of
+                # the file; a lifetime falls through and is emitted as-is.
+                body_start, body_end = index + 1, literal.end() - 1
+                emit(text[index:body_start])
+                emit(
+                    text[body_start:body_end],
+                    STRING_CONTENT_MASK * (body_end - body_start),
+                )
+                emit(text[body_end : literal.end()])
+                index = literal.end()
+                continue
+
+        if char == '"':
+            emit(char)
+            index += 1
+            content_start = index
+            while index < length:
+                current = text[index]
+                if current == "\\" and index + 1 < length:
+                    index += 2
+                    continue
+                if current == '"':
+                    break
+                index += 1
+            content = text[content_start:index]
+            emit(
+                content,
+                "".join("\n" if c == "\n" else STRING_CONTENT_MASK for c in content),
+            )
+            if index < length:
+                emit(text[index])
+                index += 1
+            continue
+
+        if text.startswith("//", index):
+            end = text.find("\n", index)
+            end = length if end == -1 else end
+            emit(" " * (end - index))
+            index = end
+            continue
+
+        if text.startswith("/*", index):
+            depth = 1
+            start = index
+            index += 2
+            while index < length and depth:
+                if text.startswith("/*", index):
+                    depth += 1
+                    index += 2
+                elif text.startswith("*/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            comment = text[start:index]
+            # Preserve newlines so reported line numbers stay accurate.
+            emit("".join("\n" if c == "\n" else " " for c in comment))
+            continue
+
+        emit(char)
+        index += 1
+
+    return "".join(stripped), "".join(masked)
+
+
+def strip_rust_comments(text: str) -> str:
+    """Comment-free view of Rust source with string contents intact."""
+    return scan_rust_source(text)[0]
+
+
+def _balanced(masked: str, open_index: int, opener: str = "{", closer: str = "}") -> int:
+    """Return the index of the delimiter closing the one at `open_index`.
+
+    `masked` must be the string-masked view, so a delimiter inside a comment
+    or a string literal cannot unbalance the scan.
+    """
+    depth = 0
+    for index in range(open_index, len(masked)):
+        char = masked[index]
+        if char == opener:
+            depth += 1
+        elif char == closer:
+            depth -= 1
+            if depth == 0:
+                return index
+    raise AuthorityError(f"unbalanced {opener!r} in the DAP dispatch source")
+
+
+def _balanced_block(masked: str, open_index: int) -> int:
+    return _balanced(masked, open_index)
+
+
+def validate_generated_dispatch(text: str, masked: str) -> None:
+    """Prove the request table is the only syntax that can define routing.
+
+    A detector that recognises particular arm spellings can always be spelled
+    around — a braced arm, a match guard, a helper return, or a pre-match
+    `if command == "…"` are all routes with no common shape. So instead of
+    enumerating bad shapes, this pins the structure: `dispatch_request` must
+    be defined exactly once, only inside the `dap_request_table!` macro
+    definition, and its body must contain nothing capable of routing beyond
+    the row repetition and the unknown-command fallback.
+    """
+    # Multiplicity matters, not just membership: Rust lets a later
+    # `macro_rules!` shadow an earlier one of the same name, so a second
+    # `dap_dispatch_call` placed before the table invocation would silently
+    # change every generated route while keeping an approved name.
+    defined_macros = Counter(
+        match.group("name") for match in ANY_MACRO_DEFINITION_RE.finditer(masked)
+    )
+    unexpected = sorted(set(defined_macros) - PERMITTED_MACRO_DEFINITIONS)
+    if unexpected:
+        raise AuthorityError(
+            f"unexpected macro definitions in the dispatch source: {unexpected}; "
+            "a generator macro here could expand into routing this gate does "
+            "not analyse, so new ones must be reviewed in explicitly"
+        )
+    shadowed = sorted(name for name, count in defined_macros.items() if count > 1)
+    if shadowed:
+        raise AuthorityError(
+            f"macro definitions redefined in the dispatch source: {shadowed}; "
+            "a later definition shadows the earlier one and can change every "
+            "generated route while keeping an approved name"
+        )
+    missing = sorted(PERMITTED_MACRO_DEFINITIONS - set(defined_macros))
+    if missing:
+        raise AuthorityError(
+            f"expected macro definitions are absent from the dispatch source: "
+            f"{missing}; routing must be generated by the reviewed macros"
+        )
+
+    # Attributes can change whether a generator, the generated function, or
+    # one of its arms exists for a target/profile. Until rows carry explicit
+    # cfg metadata, the authority is deliberately unconditional. Reject both
+    # attributes within a macro definition and attributes attached directly
+    # to a definition from the preceding item boundary.
+    macro_matches = list(ANY_MACRO_DEFINITION_RE.finditer(masked))
+    for definition in macro_matches:
+        macro_body_open = masked.index("{", definition.end())
+        macro_body_close = _balanced(masked, macro_body_open)
+        previous_item_end = max(
+            masked.rfind("}", 0, definition.start()),
+            masked.rfind(";", 0, definition.start()),
+        )
+        governed = masked[previous_item_end + 1 : macro_body_close + 1]
+        if RUST_ATTRIBUTE_RE.search(governed):
+            name = definition.group("name")
+            raise AuthorityError(
+                f"attributes are not permitted on or inside {name}; request "
+                "rows do not yet represent cfg/profile conditions"
+            )
+        macro_source = _normalise_tokens(text[definition.start() : macro_body_close + 1])
+        name = definition.group("name")
+        expected_macro = EXPECTED_SMALL_MACROS.get(name)
+        if expected_macro is not None and macro_source != expected_macro:
+            raise AuthorityError(f"{name} no longer matches its reviewed typed mapping")
+        if name == "dap_dispatch_call":
+            if (
+                macro_source.count("=>") != 3
+                or EXPECTED_ARGUMENTS_DISPATCH_ARM not in macro_source
+                or EXPECTED_NO_ARGUMENTS_DISPATCH_ARM not in macro_source
+                or macro_source.count("$adapter.$handler(") != 2
+                or "compile_error!" not in macro_source
+            ):
+                raise AuthorityError(
+                    "dap_dispatch_call no longer maps the two reviewed arities "
+                    "directly to the row handler"
+                )
+
+    definitions = list(MACRO_DEFINITION_RE.finditer(masked))
+    if len(definitions) != 1:
+        raise AuthorityError(
+            f"found {len(definitions)} dap_request_table macro definitions; "
+            "exactly one may define the dispatch body"
+        )
+    macro_open = masked.index("{", definitions[0].end())
+    macro_close = _balanced(masked, macro_open)
+
+    # The inventory and every identity consumer must be projections of the
+    # same row tokens, not merely equal values today. Otherwise a hand-written
+    # constant can restore the split authority while value-based Rust tests
+    # and the extracted inventory remain green.
+    macro_source = _normalise_tokens(text[macro_open + 1 : macro_close])
+    if (
+        EXPECTED_ROUTE_ENUM_PROJECTION not in macro_source
+        or EXPECTED_ROUTE_LOOKUP_PROJECTION not in macro_source
+    ):
+        raise AuthorityError(
+            "DapRequestRoute is not the pinned command/availability projection "
+            "of dap_request_table row tokens"
+        )
+    projections = (
+        (
+            "DAP_REQUEST_ROWS",
+            REQUEST_ROWS_DEFINITION_RE,
+            EXPECTED_REQUEST_ROWS_PROJECTION,
+        ),
+        (
+            "SUPPORTED_COMMANDS",
+            SUPPORTED_COMMANDS_DEFINITION_RE,
+            EXPECTED_SUPPORTED_COMMANDS_PROJECTION,
+        ),
+    )
+    for name, definition_re, expected in projections:
+        occurrences = list(definition_re.finditer(masked))
+        if len(occurrences) != 1:
+            raise AuthorityError(
+                f"found {len(occurrences)} {name} definitions; exactly one generated "
+                "projection may own request identity"
+            )
+        if not macro_open < occurrences[0].start() < macro_close:
+            raise AuthorityError(
+                f"{name} is defined outside dap_request_table; it would be an "
+                "independently editable request authority"
+            )
+        if expected not in macro_source:
+            raise AuthorityError(
+                f"{name} is not the pinned projection of dap_request_table row tokens"
+            )
+
+    functions = list(DISPATCH_FN_RE.finditer(masked))
+    if len(functions) != 1:
+        raise AuthorityError(
+            f"found {len(functions)} dispatch_request definitions; the request "
+            "table must be the only syntax that defines the dispatch body"
+        )
+    function = functions[0]
+    if not macro_open < function.start() < macro_close:
+        raise AuthorityError(
+            "dispatch_request is defined outside the dap_request_table macro; "
+            "routing must be generated from the table, not written by hand"
+        )
+
+    params_open = masked.index("(", function.end())
+    params_close = _balanced(masked, params_open, "(", ")")
+    body_open = masked.index("{", params_close)
+    body_close = _balanced(masked, body_open)
+    body = masked[body_open + 1 : body_close]
+
+    # Exactly two arrows: the `$command` row repetition and the `_` fallback.
+    arrows = body.count("=>")
+    if arrows != 2:
+        raise AuthorityError(
+            f"generated dispatch body has {arrows} match arms; expected exactly "
+            "the row repetition and the unknown-command fallback"
+        )
+    if len(re.findall(r"\bmatch\b", body)) != 1:
+        raise AuthorityError(
+            "generated dispatch body must contain exactly one match on the command"
+        )
+    for keyword in FORBIDDEN_DISPATCH_BODY_KEYWORDS:
+        if re.search(rf"\b{keyword}\b", body):
+            raise AuthorityError(
+                f"generated dispatch body contains {keyword!r}; a route must not "
+                "be reachable by branching around the request table"
+            )
+    if '"' in body:
+        raise AuthorityError(
+            "generated dispatch body contains a string literal; wire names may "
+            "only come from request-table rows"
+        )
+
+    # The command value must not escape the match. Both permitted regions are
+    # located by position and pinned by exact text, then excised; any
+    # remaining `command` is a path that could delegate routing to code the
+    # table does not generate.
+    match_keyword = re.search(r"\bmatch\b", body)
+    if match_keyword is None:
+        raise AuthorityError("generated dispatch body has no match on the command")
+    scrutinee_open = body.index("{", match_keyword.end())
+    scrutinee = _normalise_tokens(body[match_keyword.end() : scrutinee_open])
+    if scrutinee != EXPECTED_SCRUTINEE:
+        raise AuthorityError(
+            f"generated dispatch matches on {scrutinee!r}, not the command itself; "
+            "a derived scrutinee could remap wire names away from the table rows"
+        )
+    match_close = _balanced(body, scrutinee_open)
+    arms = body[scrutinee_open + 1 : match_close]
+
+    fallback_start = arms.find("_ =>")
+    if fallback_start == -1:
+        raise AuthorityError("generated dispatch body has no unknown-command fallback")
+    row_repetition = _normalise_tokens(arms[:fallback_start])
+    if row_repetition != EXPECTED_ROW_REPETITION:
+        raise AuthorityError(
+            "generated request arm does not match the pinned table-to-handler "
+            f"expansion; got {row_repetition[:120]!r}. Request rows must route "
+            "through dap_dispatch_call without attributes or external expansion"
+        )
+    fallback = _normalise_tokens(arms[fallback_start:])
+    if fallback != EXPECTED_FALLBACK:
+        raise AuthorityError(
+            "generated unknown-command fallback does not match the pinned "
+            f"response; got {fallback[:120]!r}. The fallback must not delegate "
+            "command-dependent work outside the table"
+        )
+
+    residue = (
+        body[: match_keyword.start()]
+        + arms[:fallback_start]
+        + body[match_close + 1 :]
+    )
+    escaped = COMMAND_IDENT_RE.search(residue)
+    if escaped is not None:
+        raise AuthorityError(
+            "generated dispatch body uses `command` outside the match scrutinee "
+            "and the pinned fallback; command-dependent routing must not be "
+            "delegated outside the table"
+        )
+
+
+def parse_request_table(source: str) -> list[dict[str, str]]:
+    """Parse the executable request table into deterministic rows.
+
+    Fails closed on a missing, duplicated, malformed, or partially parsed
+    table, and on any request route outside it.
+    """
+    text, masked = scan_rust_source(source)
+
+    invocations = list(REQUEST_TABLE_INVOCATION_RE.finditer(masked))
+    if not invocations:
+        raise AuthorityError(
+            "cannot locate the executable dap_request_table! invocation; "
+            "production request identity must come from routed rows"
+        )
+    if len(invocations) > 1:
+        raise AuthorityError(
+            f"found {len(invocations)} dap_request_table! invocations; "
+            "exactly one executable request authority may exist"
+        )
+
+    previous_item_end = max(
+        masked.rfind("}", 0, invocations[0].start()),
+        masked.rfind(";", 0, invocations[0].start()),
+    )
+    if RUST_ATTRIBUTE_RE.search(masked[previous_item_end + 1 : invocations[0].start()]):
+        raise AuthorityError(
+            "attributes are not permitted on the dap_request_table invocation; "
+            "request rows do not yet represent cfg/profile conditions"
+        )
+
+    validate_generated_dispatch(text, masked)
+
+    open_index = invocations[0].end() - 1
+    close_index = _balanced_block(masked, open_index)
+    body = text[open_index + 1 : close_index]
+
+    # No string-literal match arm may exist outside the table. Scanning the
+    # masked view means an arm spelled inside a string literal is not code
+    # and cannot raise here, while a real arm in any Rust shape does.
+    outside_masked = (
+        masked[:open_index]
+        + "".join("\n" if c == "\n" else " " for c in masked[open_index : close_index + 1])
+        + masked[close_index + 1 :]
+    )
+    stray = STRAY_MATCH_ARM_RE.search(outside_masked)
+    if stray is not None:
+        line = outside_masked.count("\n", 0, stray.start()) + 1
+        name = text[stray.start("name") : stray.end("name")]
+        raise AuthorityError(
+            f"request route outside the table at {DISPATCH_PATH.as_posix()}:{line}: "
+            f"{name!r}; every routed request must be a dap_request_table! row"
+        )
+
+    rows: list[dict[str, str]] = []
+    consumed = 0
+    for match in REQUEST_TABLE_ROW_RE.finditer(body):
+        if body[consumed : match.start()].strip():
+            residue = body[consumed : match.start()].strip()
+            raise AuthorityError(
+                f"unparsed content in the request table: {residue[:80]!r}"
+            )
+        rows.append(
+            {
+                "row_id": f"dap.request.{match.group('command')}",
+                "command": match.group("command"),
+                "class": match.group("class"),
+                "availability": match.group("availability"),
+                "variant": match.group("variant"),
+                "handler": match.group("handler"),
+            }
+        )
+        consumed = match.end()
+    if body[consumed:].strip():
+        raise AuthorityError(
+            f"unparsed content in the request table: {body[consumed:].strip()[:80]!r}"
+        )
+    if not rows:
+        raise AuthorityError("the executable request table is empty")
+
+    commands = [row["command"] for row in rows]
+    if len(set(commands)) != len(commands):
+        raise AuthorityError("the executable request table contains duplicate wire names")
+    handlers = [row["handler"] for row in rows]
+    if len(set(handlers)) != len(handlers):
+        raise AuthorityError("two request rows route to the same handler")
+    variants = [row["variant"] for row in rows]
+    if len(set(variants)) != len(variants):
+        raise AuthorityError("the executable request table contains duplicate route variants")
+    for row in rows:
+        if row["class"] not in REQUEST_CLASSES:
+            raise AuthorityError(
+                f"request row {row['command']!r} has unknown class {row['class']!r}"
+            )
+    return rows
+
+
+def parse_peer_dispatch_routes(source: str, owner: Path) -> set[str]:
+    """Return the catalog variants explicitly handled by one peer frontend."""
+    text, masked = scan_rust_source(source)
+    functions = list(PEER_DISPATCH_FN_RE.finditer(masked))
+    if len(functions) != 1:
+        raise AuthorityError(
+            f"found {len(functions)} production dispatch functions in {owner}; expected one"
+        )
+    params_open = masked.index("(", functions[0].end() - 1)
+    params_close = _balanced(masked, params_open, "(", ")")
+    body_open = masked.index("{", params_close)
+    body_close = _balanced(masked, body_open)
+    body = text[body_open + 1 : body_close]
+    body_masked = masked[body_open + 1 : body_close]
+    previous_item_end = max(
+        masked.rfind("}", 0, functions[0].start()),
+        masked.rfind(";", 0, functions[0].start()),
+    )
+    if RUST_ATTRIBUTE_RE.search(masked[previous_item_end + 1 : functions[0].start()]):
+        raise AuthorityError(
+            f"attributes are not permitted on the production dispatch function in {owner}"
+        )
+    lookup = PEER_ROUTE_MATCH_RE.search(body_masked)
+    if lookup is None:
+        raise AuthorityError(
+            f"{owner} does not route through the canonical DapRequestRoute lookup"
+        )
+    match_open = body_masked.index("{", lookup.end())
+    match_close = _balanced(body_masked, match_open)
+    if _normalise_tokens(body[: lookup.start()]) != "let mut out = Vec::new();":
+        raise AuthorityError(
+            f"{owner} contains routing-capable syntax before the canonical request match"
+        )
+    if _normalise_tokens(body[match_close + 1 :]) != (
+        "out.extend(self.poll_events()); out"
+    ):
+        raise AuthorityError(
+            f"{owner} contains routing-capable syntax after the canonical request match"
+        )
+    arms_text = body[match_open + 1 : match_close]
+    arms_masked = body_masked[match_open + 1 : match_close]
+    stray = STRAY_MATCH_ARM_RE.search(body_masked)
+    if stray is not None:
+        raise AuthorityError(
+            f"{owner} contains a string-literal request arm outside the canonical catalog"
+        )
+    # Read only top-level match patterns. A variant mentioned harmlessly in an
+    # arm body must not compensate for deleting its executable route.
+    patterns: list[str] = []
+    boundary = 0
+    braces = parentheses = brackets = 0
+    index = 0
+    while index < len(arms_masked):
+        char = arms_masked[index]
+        if char == "{":
+            braces += 1
+        elif char == "}":
+            braces -= 1
+            # A block-valued match arm may omit its trailing comma. Once its
+            # outer block closes, the next top-level token starts a new arm.
+            if braces == parentheses == brackets == 0:
+                boundary = index + 1
+        elif char == "(":
+            parentheses += 1
+        elif char == ")":
+            parentheses -= 1
+        elif char == "[":
+            brackets += 1
+        elif char == "]":
+            brackets -= 1
+        elif (
+            char == "="
+            and index + 1 < len(arms_masked)
+            and arms_masked[index + 1] == ">"
+            and braces == parentheses == brackets == 0
+        ):
+            patterns.append(_normalise_tokens(arms_text[boundary:index]))
+            index += 1
+        elif char == "," and braces == parentheses == brackets == 0:
+            boundary = index + 1
+        index += 1
+    if not patterns or patterns[-1] != "None | Some(_)":
+        raise AuthorityError(
+            f"{owner} has no explicit final compatibility fallback arm; "
+            f"top-level patterns={patterns}"
+        )
+    fallback_match = re.search(r"None\s*\|\s*Some\s*\(\s*_\s*\)\s*=>\s*\{", arms_masked)
+    if fallback_match is None:
+        raise AuthorityError(f"{owner} has no parseable compatibility fallback body")
+    fallback_open = fallback_match.end() - 1
+    fallback_close = _balanced(arms_masked, fallback_open)
+    fallback_body = _normalise_tokens(arms_text[fallback_open + 1 : fallback_close])
+    expected_fallback = EXPECTED_PEER_FALLBACKS.get(owner)
+    if expected_fallback is None or fallback_body != expected_fallback:
+        raise AuthorityError(
+            f"{owner} compatibility fallback no longer matches its explicit "
+            "dynamic_compatibility_ack_success_empty policy"
+        )
+    variants: list[str] = []
+    for pattern in patterns[:-1]:
+        exact = re.fullmatch(
+            r"Some\s*\(\s*DapRequestRoute::(?P<variant>[A-Z][A-Za-z0-9]*)\s*\)",
+            pattern,
+        )
+        if exact is None:
+            raise AuthorityError(
+                f"{owner} request pattern {pattern!r} is guarded, conditional, "
+                "or broader than one typed catalog variant"
+            )
+        variants.append(exact.group("variant"))
+    if len(set(variants)) != len(variants):
+        raise AuthorityError(f"{owner} handles a catalog route variant more than once")
+    return set(variants)
+
+
+def production_dispatch_sources(root: Path) -> set[Path]:
+    """Discover convention-named dispatch owners alongside the exact pinned owners.
+
+    This is a guard for the current source graph, not proof that an arbitrarily
+    named future ingress is discoverable. Adding a differently named frontend
+    requires extending the explicit owner contract.
+    """
+    source_root = root / "crates/perl-dap/src"
+    owners: set[Path] = set()
+    if not source_root.is_dir():
+        raise AuthorityError(f"missing perl-dap production source root: {source_root}")
+    for path in source_root.rglob("*.rs"):
+        _, masked = scan_rust_source(read_text(path, "DAP production source"))
+        if PRODUCTION_DISPATCH_FN_RE.search(masked):
+            owners.add(path.relative_to(root))
+    return owners
 SEND_EVENT_CALL_RE = re.compile(r"\bself\.send_event\s*\(")
 SEND_EVENT_LITERAL_RE = re.compile(r'\s*"([A-Za-z][A-Za-z0-9]*)"')
 DEFINITION_REF_PREFIX = "#/definitions/"

@@ -62,6 +62,10 @@ pub struct CadenceObligation {
     pub required_decision: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reproduce: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub falsifier: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -107,6 +111,8 @@ struct RawObligation {
     expected_debt_class: Option<String>,
     required_decision: String,
     reproduce: Option<String>,
+    disposition: Option<String>,
+    falsifier: Option<String>,
     invalid_reason: Option<String>,
 }
 
@@ -125,6 +131,32 @@ struct QualityException {
     evidence: String,
     review_after: String,
     expires: String,
+    disposition: Option<String>,
+    falsifier: Option<String>,
+}
+
+const QUALITY_DISPOSITIONS: &[&str] =
+    &["remove", "narrow", "rejustify", "renew_with_new_evidence", "let_expire"];
+
+fn quality_entry_invalid_reason(entry: &QualityException) -> Option<String> {
+    let disposition = entry.disposition.as_deref()?;
+    if !QUALITY_DISPOSITIONS.contains(&disposition) {
+        return Some(format!("unsupported quality exception disposition: {disposition}"));
+    }
+    if entry.falsifier.as_deref().is_none_or(|value| value.trim().is_empty()) {
+        return Some("quality exception disposition requires a non-empty falsifier".to_string());
+    }
+    None
+}
+
+fn quality_reproduce(scope: &str) -> Option<String> {
+    match scope {
+        "ripr_plus_total" => Some("cargo xtask quality-gate --mode enforce-new-ripr".to_string()),
+        "project_coverage" => {
+            Some("cargo xtask quality-gate --mode enforce-patch-coverage".to_string())
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -203,6 +235,8 @@ fn registered_obligations(root: &Path) -> Result<Vec<RawObligation>> {
             expected_debt_class: entry.expected_debt_class,
             required_decision: entry.required_decision,
             reproduce: entry.reproduce,
+            disposition: None,
+            falsifier: None,
             invalid_reason: None,
         })
         .collect())
@@ -215,19 +249,24 @@ fn quality_obligations(root: &Path) -> Result<Vec<RawObligation>> {
     Ok(ledger
         .exception
         .into_iter()
-        .map(|entry| RawObligation {
-            record_id: entry.id,
-            source_kind: "quality_gate_exception".to_string(),
-            source_path: relative.to_string(),
-            owner: entry.owner,
-            owner_issue: entry.issue,
-            review_after: Some(entry.review_after),
-            expires: Some(entry.expires),
-            evidence_identity: nonempty(entry.evidence),
-            expected_debt_class: Some(entry.scope),
-            required_decision: "remove, narrow, or re-justify with fresh evidence".to_string(),
-            reproduce: Some("cargo xtask quality-gate --mode transition".to_string()),
-            invalid_reason: None,
+        .map(|entry| {
+            let invalid_reason = quality_entry_invalid_reason(&entry);
+            RawObligation {
+                record_id: entry.id,
+                source_kind: "quality_gate_exception".to_string(),
+                source_path: relative.to_string(),
+                owner: entry.owner,
+                owner_issue: entry.issue,
+                review_after: Some(entry.review_after),
+                expires: Some(entry.expires.clone()),
+                evidence_identity: nonempty(entry.evidence.clone()),
+                expected_debt_class: Some(entry.scope.clone()),
+                required_decision: "remove, narrow, or re-justify with fresh evidence".to_string(),
+                reproduce: quality_reproduce(&entry.scope),
+                disposition: entry.disposition.clone(),
+                falsifier: entry.falsifier.clone(),
+                invalid_reason,
+            }
         })
         .collect())
 }
@@ -252,6 +291,8 @@ fn scenario_obligations(root: &Path) -> Result<Vec<RawObligation>> {
             expected_debt_class: Some(entry.expected_error_class),
             required_decision: "remove after proof, narrow, re-justify with fresh evidence, or intentionally let expire".to_string(),
             reproduce: Some("cargo test -p perl-lsp-ux-tests --test ux_scenario_67_golden_editor_workload --locked".to_string()),
+            disposition: None,
+            falsifier: None,
             invalid_reason: None,
         })
         .collect())
@@ -280,6 +321,8 @@ fn non_rust_obligations(root: &Path) -> Result<Vec<RawObligation>> {
                 expected_debt_class: Some(entry.kind),
                 required_decision: "retain after review, narrow, replace, or remove".to_string(),
                 reproduce: Some("cargo xtask non-rust validate-policy".to_string()),
+                disposition: None,
+                falsifier: None,
                 invalid_reason: None,
             }
         })
@@ -340,6 +383,8 @@ fn classify(raw: RawObligation, as_of: NaiveDate) -> CadenceObligation {
         expected_debt_class: raw.expected_debt_class,
         required_decision: raw.required_decision,
         reproduce: raw.reproduce,
+        disposition: raw.disposition,
+        falsifier: raw.falsifier,
     }
 }
 
@@ -370,18 +415,22 @@ fn render_markdown(receipt: &CadenceReceipt) -> String {
         "# Policy cadence obligations\n\nAs of `{}`. Advisory projection only; domain validators remain authoritative.\n\n",
         receipt.as_of
     );
-    output.push_str("| State | Kind | Record | Owner | Review | Expiry | Decision |\n");
-    output.push_str("|---|---|---|---|---|---|---|\n");
+    output.push_str(
+        "| State | Kind | Record | Owner | Review | Expiry | Decision | Disposition | Falsifier |\n",
+    );
+    output.push_str("|---|---|---|---|---|---|---|---|---|\n");
     for item in &receipt.obligations {
         output.push_str(&format!(
-            "| `{:?}` | `{}` | `{}` | `{}` | `{}` | `{}` | {} |\n",
+            "| `{:?}` | `{}` | `{}` | `{}` | `{}` | `{}` | {} | `{}` | {} |\n",
             item.state,
             item.source_kind,
             item.record_id,
             item.owner,
             item.review_after.as_deref().unwrap_or("—"),
             item.expires.as_deref().unwrap_or("—"),
-            item.required_decision.replace('|', "\\|")
+            item.required_decision.replace('|', "\\|"),
+            item.disposition.as_deref().unwrap_or("—").replace('|', "\\|"),
+            item.falsifier.as_deref().unwrap_or("—").replace('|', "\\|"),
         ));
     }
     output
@@ -419,6 +468,8 @@ mod tests {
             expected_debt_class: Some("fixture_debt".to_string()),
             required_decision: "remove or re-justify".to_string(),
             reproduce: Some("cargo test".to_string()),
+            disposition: None,
+            falsifier: None,
             invalid_reason: None,
         }
     }
@@ -493,6 +544,65 @@ expires = "2026-09-01"
             r#"{"error_waivers":[{"project":"p","journey":"j","expected_error_class":"e","issue":4050,"expires_after":"2026-09-01"}]}"#,
         )?;
         assert_eq!(scenario.error_waivers[0].issue, 4050);
+        Ok(())
+    }
+
+    #[test]
+    fn quality_disposition_requires_supported_falsifiable_metadata() -> Result<()> {
+        let mut entry: QualityException = toml::from_str(
+            r#"
+id = "fixture"
+kind = "temporary_burndown"
+scope = "project_coverage"
+owner = "team"
+reason = "reason"
+final_target = "target"
+evidence = "receipt"
+review_after = "2026-08-12"
+expires = "2026-09-01"
+disposition = "renew_with_new_evidence"
+falsifier = "fresh coverage reaches target"
+"#,
+        )?;
+        assert_eq!(quality_entry_invalid_reason(&entry), None);
+        assert_eq!(
+            quality_reproduce("project_coverage").as_deref(),
+            Some("cargo xtask quality-gate --mode enforce-patch-coverage")
+        );
+
+        entry.disposition = Some("typo".to_string());
+        assert!(
+            quality_entry_invalid_reason(&entry)
+                .is_some_and(|reason| reason.contains("unsupported"))
+        );
+
+        entry.disposition = Some("renew_with_new_evidence".to_string());
+        entry.falsifier = Some(" ".to_string());
+        assert!(
+            quality_entry_invalid_reason(&entry)
+                .is_some_and(|reason| reason.contains("non-empty falsifier"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn markdown_projection_retains_quality_decision_metadata() -> Result<()> {
+        let mut item = raw(None, None, true);
+        item.disposition = Some("renew_with_new_evidence".to_string());
+        item.falsifier = Some("fresh receipt | reaches target".to_string());
+        let as_of =
+            NaiveDate::from_ymd_opt(2026, 8, 12).ok_or_else(|| eyre!("invalid fixture date"))?;
+        let receipt = CadenceReceipt {
+            schema_version: SCHEMA_VERSION,
+            as_of: as_of.to_string(),
+            advisory_only: true,
+            obligations: vec![classify(item, as_of)],
+        };
+
+        let markdown = render_markdown(&receipt);
+        assert!(markdown.contains("Disposition | Falsifier"));
+        assert!(markdown.contains("renew_with_new_evidence"));
+        assert!(markdown.contains("fresh receipt \\| reaches target"));
         Ok(())
     }
 

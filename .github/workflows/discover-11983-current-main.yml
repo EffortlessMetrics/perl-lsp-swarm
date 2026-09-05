@@ -7,6 +7,8 @@ on:
     paths:
       - .github/workflows/discover-11983-current-main.yml
       - scripts/maintenance/rebuild_11983_current_main.sh
+      - scripts/maintenance/verify_11983_reject_identities.py
+      - scripts/tests/test-rebuild-11983-reject-identities.py
 
 permissions:
   contents: read
@@ -20,7 +22,8 @@ jobs:
     if: >-
       github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.head_ref == 'repair/11983-current-main'
+      (github.head_ref == 'repair/11983-current-main' ||
+       github.head_ref == 'codex/12975-reject-identity')
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 

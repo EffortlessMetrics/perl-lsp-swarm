@@ -1426,7 +1426,7 @@
   "dependencies": {
     "adm-zip": "^0.6.0",
     "tar": "^7.5.22",
-    "vscode-languageclient": "^10.1.0"
+    "vscode-languageclient": "^10.1.1"
   },
   "overrides": {
     "@babel/core": "7.29.6",
@@ -1452,17 +1452,17 @@
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.x",
     "@types/tar": "^7.0.87",
-    "@types/vscode": "~1.134.0",
+    "@types/vscode": "~1.125.0",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "3.9.2",
     "ajv": "^8.20.0",
-    "jest": "^30.4.2",
+    "jest": "^30.5.0",
     "mocha": "^11.8.0",
     "ovsx": "1.1.1",
-    "oxfmt": "0.64.0",
-    "oxlint": "1.79.0",
+    "oxfmt": "0.65.0",
+    "oxlint": "1.80.0",
     "oxlint-tsgolint": "7.0.2001",
-    "rolldown": "1.2.5",
+    "rolldown": "1.2.6",
     "source-map": "0.8.0",
     "typescript": "^7.0.2",
     "vscode-tmgrammar-test": "^0.1.3"

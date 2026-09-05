@@ -70,7 +70,14 @@ jobs:
             echo "run_ci=false" >> "$GITHUB_OUTPUT"
             # Drafts are excluded by run_ci; ready_for_review recomputes scope.
             echo "api_scope=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Draft PR detected — skipping CI jobs until ready for review"
+            {
+              echo "### Draft PR CI posture"
+              echo
+              echo "- \`Rust formatting\` and \`Conflict marker check\` still run against this exact draft head."
+              echo "- Other CI jobs are intentionally deferred while the PR remains draft."
+              echo "- A skipped job is not verification. Mark the PR ready for review to run the full merge-required suite."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Draft PR detected — running rustfmt and conflict-marker feedback; deferring full CI until ready for review"
           else
             base_sha="${{ github.event.pull_request.base.sha }}"
             pr_number="${{ github.event.pull_request.number }}"
@@ -299,6 +306,7 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ci-platform-scope-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
       - name: Classify platform overrides
         id: scope
         shell: bash
@@ -375,7 +383,16 @@ jobs:
         shell: bash
         env:
           WINDOWS_TEST_CRATES: ${{ needs.platform-overrides.outputs.windows_test_crates }}
-        run: cargo test $WINDOWS_TEST_CRATES --locked --lib
+        # Keep the existing library smoke execution, then compile the
+        # Unix-only integration target on Windows so its cfg boundary cannot
+        # silently bit-rot. Unix remains the execution authority for the
+        # Bash/chmod smoke.
+        run: |
+          cargo test $WINDOWS_TEST_CRATES --locked --lib
+          cargo test -p xtask --test release_artifact_size_smoke_script --locked --no-run
+          if [[ " $WINDOWS_TEST_CRATES " == *" -p perl-ci-hygiene "* ]]; then
+            cargo test -p perl-ci-hygiene --locked --bin perl-ci-hygiene process::tests::
+          fi
 
   # ── Conflict-marker guard: <1s, no toolchain needed ─────────────────
   # Prevents committed conflict markers reaching master (see #7183).
@@ -420,6 +437,7 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ci-contract-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
       - name: Run Repository Contract
         env:
           SUBJECT_BASE_SHA: ${{ inputs.base_sha || '' }}
@@ -468,7 +486,27 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     needs: [draft-pr-check, preflight-latest-check]
-    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
+    # `preflight-latest-check` is intentionally skipped for drafts, and GitHub
+    # reports a skipped need's outputs as empty strings. `always()` carries the
+    # evaluation past that skipped need while the disjunction routes each event
+    # class:
+    # - draft PR: run_ci is 'false' and the skipped preflight's is_latest is '',
+    #   so the needs branch is false and only the draft branch fires.
+    # - non-draft PR: run_ci='true' and is_latest='true'; the needs branch fires.
+    # - merge_group and push: the draft branch is false (`pull_request.draft` is
+    #   unset), so the needs branch is the only route; it fires because
+    #   is_latest='true' unless a superseded push SHA is skipped.
+    # Dropping either branch silently removes draft or push/merge_group runs;
+    # xtask/tests/draft_pr_feedback_contract.rs asserts both branches.
+    if: >-
+      always() &&
+      (
+        (github.event_name == 'pull_request' && github.event.pull_request.draft == true) ||
+        (
+          needs.draft-pr-check.outputs.run_ci == 'true' &&
+          needs.preflight-latest-check.outputs.is_latest == 'true'
+        )
+      )
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -553,6 +591,7 @@ jobs:
         with:
           key: public-api-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-public-api
         if: needs.draft-pr-check.outputs.api_scope == 'true'
@@ -560,7 +599,7 @@ jobs:
 
       - name: Install just
         if: needs.draft-pr-check.outputs.api_scope == 'true'
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -615,6 +654,7 @@ jobs:
         with:
           key: semver-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-semver-checks
         if: needs.draft-pr-check.outputs.api_scope == 'true'
@@ -656,9 +696,10 @@ jobs:
 
   # ── PR Smoke: advisory fast feedback for every PR ────────────────────
   # ADVISORY (continue-on-error): this lane runs the `pr-fast` xtask tier, whose
-  # gates (fmt, conflict markers, publish/layer checks, and unit_routed_full) are
-  # already covered — and split for parallelism — by the merge-gate-shards below,
-  # which form the deterministic CI Gate base. Because pr-fast runs the unit tests
+  # gates (fmt, conflict markers, publish/layer checks, and unit_routed_full)
+  # overlap hosted shards. Hosted formatter authority is dedicated
+  # `Rust formatting` plus required Rust Small (#9959/#9127); PR Smoke `fmt`
+  # remains advisory overlap owned by #9166. Because pr-fast runs the unit tests
   # in one combined `unit_routed_full` lane, it is the flakier of the two and has
   # false-reddened green PRs (e.g. PR #3321: unit_routed_full exit 101 while all
   # seven CI Gate shards passed). It is not a required check and no longer gates
@@ -709,7 +750,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -939,8 +980,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `fmt` retired from this hosted shard after protected rustfmt
+          # parity via required Rust Small (#9959). Rollback: restore `fmt`
+          # as the first meta gate and the matching
+          # `.ci/gate-shard-execution.json` row if the dedicated/required
+          # formatter path is reverted. Local pr-fast `fmt` remains.
           - name: meta
-            gates: fmt ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast release_history_check source_commit_api_check perl_token_leaf_contract compile_all_targets clippy_full
+            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast serial_test_ratchet release_history_check source_commit_api_check perl_token_leaf_contract compile_all_targets clippy_full
           - name: foundation
             gates: unit_foundation_full
           - name: parser_stack
@@ -957,7 +1003,7 @@ jobs:
             # The cheapest control remains first for fast diagnosis, but the
             # shard runner now records every independent member before it
             # returns the aggregate failure verdict.
-            gates: msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof docs_build adr_link_check non_rust_inventory_check lint_policy v2_bundle_sync nested_lock_check version_sync
+            gates: msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check version_sync
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
@@ -993,7 +1039,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -1293,7 +1339,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -1499,7 +1545,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -1559,6 +1605,18 @@ jobs:
       # to the four contracts above on the same required merge surface.
       - name: Gate-policy budget witness contract (required merge surface)
         run: cargo test -p xtask --test issue_4657_ci_workflow_contract --locked -- --nocapture
+
+      # #14585: nothing executed `xtask/tests/file_policy.rs`. No workflow named
+      # `--test file_policy`, the merge gate runs `cargo test --workspace --lib`
+      # (which does not build `tests/`), and the policy shard runs
+      # `cargo xtask gates` rather than the test binary. The suite asserts the
+      # inventory gate's tier, required flag, description, command, timeout,
+      # budgets, single mapping, and shard membership — so the gate guarding the
+      # non-Rust inventory was itself guarded by a contract that could not go
+      # red, and did in fact sit red on main unnoticed. Same reasoning as the
+      # contracts above, so it belongs on the same required merge surface.
+      - name: Non-Rust file policy contract (required merge surface)
+        run: cargo test -p xtask --test file_policy --locked -- --nocapture
 
   lsp-memory-smoke:
     name: LSP Memory Smoke
@@ -1663,9 +1721,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # Standalone, candidate-bound formatter result for protected integration.
-  # Keep the existing advisory `fmt` meta-shard during the parity window tracked
-  # by #7087; this independently visible context is the ruleset promotion target.
+  # Standalone, candidate-bound formatter result. Live merge blocking is the
+  # required Perl LSP Rust Small Result path (#9127/#12320). This job remains
+  # the advisory receipt producer; duplicate meta-shard fmt execution is
+  # retired (#9959). Settings-app promotion of this context remains #7087.
   rust-formatting:
     name: Rust formatting
     runs-on: ubuntu-24.04

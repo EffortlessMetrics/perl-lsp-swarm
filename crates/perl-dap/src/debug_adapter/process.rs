@@ -6,9 +6,9 @@ use super::{
     DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
     Instant, Mutex, Read, RestartArguments, ResumeMode, Source, StackFrame, Stdio, SyncSender,
     TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState, Value, Write,
-    ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, dispatch_event,
-    emit_event_safe, error_re, exception_re, json, lock_or_recover, module_path_to_name, prompt_re,
-    security, stack_frame_re, thread, warning_re,
+    ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, emit_event_safe, error_re,
+    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
+    thread, warning_re,
 };
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -16,8 +16,14 @@ use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-// The internal TCP-attach DapEvent fan-in channel is still unbounded (non-goal of #5149).
-use std::sync::mpsc::channel;
+// The internal TCP-attach DapEvent fan-in queue is bounded with a
+// generation-aware forwarder (#9521); the reader-side admission policy lives in
+// `tcp_attach::reader`.
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::sync_channel;
+
+use super::sync_utils::{GuardedDispatchResult, dispatch_event_generation_guarded};
+use super::tcp_attach_forwarder::{TCP_ATTACH_EVENT_CAPACITY, spawn_tcp_attach_event_forwarder};
 
 mod perl_info;
 mod perl_spawn;
@@ -57,8 +63,6 @@ impl DebugAdapter {
 
         let supports_core = catalog_has_feature("dap.core");
         let supports_basic_breakpoints = catalog_has_feature("dap.breakpoints.basic");
-        let supports_hit_conditions = catalog_has_feature("dap.breakpoints.hit_condition");
-        let supports_log_points = catalog_has_feature("dap.breakpoints.logpoints");
         let supports_exceptions = catalog_has_feature("dap.exceptions.die");
         let supports_inline_values = catalog_has_feature("dap.inline_values");
         let supports_completions = catalog_has_feature("dap.completions");
@@ -76,6 +80,17 @@ impl DebugAdapter {
         let supports_step_in_targets = catalog_has_feature("dap.step_in_targets");
         let supports_restart = catalog_has_feature("dap.restart");
         let supports_loaded_sources = catalog_has_feature("dap.loaded_sources");
+        // `gotoTargets`/`goto` are fail-closed while the native backend only has
+        // a run-to-line primitive (`f <source>` + `c <line>` resumes execution
+        // instead of moving the next statement).  The catalog row is
+        // `not_proven`/unadvertised (#9064), so this flag stays `false` until a
+        // backend proves a real next-statement relocation primitive.
+        // Advertising requires the complete contract: targets that can never
+        // be executed (`dap.goto` unadvertised) must not be published, so a
+        // one-row promotion of `dap.goto_targets` alone cannot expose
+        // selectable-but-dead targets.
+        let supports_goto_targets =
+            catalog_has_feature("dap.goto_targets") && catalog_has_feature("dap.goto");
 
         let mut filters = Vec::new();
         if supports_exceptions {
@@ -101,14 +116,31 @@ impl DebugAdapter {
 
         let capabilities = json!({
             "supportsConfigurationDoneRequest": supports_core,
-            "supportsFunctionBreakpoints": supports_core,
-            "supportsConditionalBreakpoints": supports_basic_breakpoints,
-            "supportsHitConditionalBreakpoints": supports_hit_conditions,
-            "supportsEvaluateForHovers": supports_core,
+            // #9578: the four optional breakpoint capability rows fail closed
+            // from the single `backend::capabilities` authority. They are not
+            // derived from `supports_core`, `dap.breakpoints.*` catalog rows,
+            // maturity, handler presence, or backend method existence: the
+            // runtime contracts (engine resolution/install, condition
+            // enforcement, attributed hit counting, correlated logpoint
+            // output) are unproven on this seam. Per-capability re-enable
+            // gates: #8645 (function), #8988 (conditional), #8994 (hit),
+            // #9000 (logpoint).
+            "supportsFunctionBreakpoints":
+                crate::backend::capabilities::advertises_function_breakpoints(),
+            "supportsConditionalBreakpoints":
+                crate::backend::capabilities::advertises_conditional_breakpoints(),
+            "supportsHitConditionalBreakpoints":
+                crate::backend::capabilities::advertises_hit_conditional_breakpoints(),
+            "supportsLogPoints": crate::backend::capabilities::advertises_log_points(),
+            // #9573: not `supports_core`. Hover is gated on a pure
+            // selected-frame inspection proof that does not exist yet, so the
+            // wire value comes from the single hover authority and no catalog
+            // row can widen it.
+            "supportsEvaluateForHovers": crate::backend::capabilities::advertises_evaluate_for_hovers(),
             "supportsStepBack": false,
             "supportsSetVariable": supports_core,
             "supportsRestartFrame": supports_restart_frame,
-            "supportsGotoTargetsRequest": supports_core,
+            "supportsGotoTargetsRequest": supports_goto_targets,
             "supportsStepInTargetsRequest": supports_step_in_targets,
             "supportsCompletionsRequest": supports_completions,
             "supportsModulesRequest": supports_modules,
@@ -119,8 +151,11 @@ impl DebugAdapter {
             "supportTerminateDebuggee": supports_core,
             "supportsDelayedStackTraceLoading": false,
             "supportsLoadedSourcesRequest": supports_loaded_sources,
-            "supportsLogPoints": supports_log_points,
             "supportsTerminateThreadsRequest": supports_terminate_threads,
+            // #8294: exactly one synthetic main execution context is exposed;
+            // single-thread execution requests are not a distinct capability
+            // and stay unadvertised.
+            "supportsSingleThreadExecutionRequests": false,
             "supportsSetExpression": supports_core,
             "supportsTerminateRequest": supports_core,
             "supportsDataBreakpoints": supports_watchpoints,
@@ -383,6 +418,29 @@ impl DebugAdapter {
         .unwrap_or_else(|| "perl".to_string())
     }
 
+    /// Allocate the next execution-context id (#8294).
+    ///
+    /// Monotonic, exhaustion-aware, and poison-free by construction: the
+    /// counter never wraps, never issues zero or negative ids, and has no
+    /// failure path that can return an already-minted constant, so a replaced
+    /// session's id can never be revived. `None` means the id space is
+    /// exhausted and the caller must fail the launch.
+    fn allocate_thread_id(&self) -> Option<i32> {
+        let mut current = self.thread_counter.load(Ordering::Relaxed);
+        loop {
+            let next = current.checked_add(1).filter(|next| *next > 0)?;
+            match self.thread_counter.compare_exchange(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Some(next),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
     /// Launch the Perl debugger for the given script.
     ///
     /// Validates the program path and interpreter, runs a pre-launch `perl -c`
@@ -516,20 +574,21 @@ impl DebugAdapter {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
+        // Allocate the execution-context id BEFORE spawning: a launch that
+        // cannot mint a fresh id must fail without side effects.
+        let Some(thread_id) = self.allocate_thread_id() else {
+            return Err(
+                "Debugger could not be started: the execution-context id space is exhausted. \
+                 Restart the debug adapter to reset execution contexts."
+                    .to_string(),
+            );
+        };
+
         match cmd.spawn() {
             Ok(child) => {
                 // Only advance the session generation once spawning has succeeded. A rejected
                 // launch must leave the currently active reader valid for its existing session.
                 self.prepare_replacement_session();
-                let thread_id = {
-                    if let Ok(mut counter) = self.thread_counter.lock() {
-                        *counter += 1;
-                        *counter
-                    } else {
-                        tracing::warn!("Failed to lock thread counter, using 1");
-                        1
-                    }
-                };
 
                 let session = DebugSession {
                     process: child,
@@ -1728,8 +1787,8 @@ impl DebugAdapter {
                 // Create TCP attach session
                 let mut session = TcpAttachSession::new();
 
-                // Set up event channel for TCP events
-                let (tx, rx) = channel::<DapEvent>();
+                // Set up the bounded event channel for TCP events (#9521)
+                let (tx, rx) = sync_channel::<DapEvent>(TCP_ATTACH_EVENT_CAPACITY);
                 session.set_event_sender(tx);
 
                 // Attempt to connect (validate is called inside connect,
@@ -1758,71 +1817,23 @@ impl DebugAdapter {
                             *guard = Some(session);
                         }
 
-                        // Start event handler thread for TCP events
+                        // Start the generation-aware forwarder for TCP events.
+                        // Events are published only while the attach's session
+                        // generation is current; a replacement attach,
+                        // termination, or disconnect discards the dead
+                        // generation's queued events before DAP publication
+                        // (#9521).
                         let seq_counter = self.seq.clone();
                         let event_sender = self.event_sender.clone();
                         let termination_state = self.termination_state.clone();
                         let session_generation = self.current_session_generation();
-                        thread::spawn(move || {
-                            while let Ok(event) = rx.recv() {
-                                match event {
-                                    DapEvent::Output { category, output } => {
-                                        if let Some(ref sender) = event_sender {
-                                            dispatch_event(
-                                                sender,
-                                                &seq_counter,
-                                                "output",
-                                                Some(json!({
-                                                    "category": category,
-                                                    "output": output
-                                                })),
-                                            );
-                                        }
-                                    }
-                                    DapEvent::Stopped { reason, thread_id } => {
-                                        if let Some(ref sender) = event_sender {
-                                            dispatch_event(
-                                                sender,
-                                                &seq_counter,
-                                                "stopped",
-                                                Some(json!({
-                                                    "reason": reason,
-                                                    "threadId": thread_id,
-                                                    "allThreadsStopped": true
-                                                })),
-                                            );
-                                        }
-                                    }
-                                    DapEvent::Continued { thread_id } => {
-                                        if let Some(ref sender) = event_sender {
-                                            dispatch_event(
-                                                sender,
-                                                &seq_counter,
-                                                "continued",
-                                                Some(json!({
-                                                    "threadId": thread_id,
-                                                    "allThreadsContinued": true
-                                                })),
-                                            );
-                                        }
-                                    }
-                                    DapEvent::Terminated { reason } => {
-                                        if let Some(ref sender) = event_sender {
-                                            emit_terminated_event(
-                                                sender,
-                                                &seq_counter,
-                                                &termination_state,
-                                                Some(session_generation),
-                                                Some(json!({"reason": reason})),
-                                            );
-                                        }
-                                    }
-                                    DapEvent::Error { message } => {
-                                        tracing::error!(message, "TCP attach error");
-                                    }
-                                }
-                            }
-                        });
+                        spawn_tcp_attach_event_forwarder(
+                            rx,
+                            event_sender,
+                            seq_counter,
+                            termination_state,
+                            session_generation,
+                        );
 
                         // When stopOnEntry is requested, emit a stopped event so the IDE
                         // pauses at the first available program location after the TCP
@@ -2149,6 +2160,39 @@ impl DebugAdapter {
         }
     }
 
+    /// Translate an identity-carrying inbound TCP-attach debuggee event into
+    /// the DAP event name and body dispatched to the editor.
+    ///
+    /// The remote peer's raw thread id is never forwarded: the adapter
+    /// advertises exactly one synthetic execution context, so `threads`,
+    /// every thread-scoped request, and `stopped`/`continued` events all
+    /// carry [`Self::TCP_ATTACH_SYNTHETIC_THREAD_ID`] (#8294). `Terminated`
+    /// and `Error` carry no execution-context identity and are handled at
+    /// the pump; this translation returns `None` for them.
+    pub(super) fn tcp_event_message(event: DapEvent) -> Option<(&'static str, Option<Value>)> {
+        match event {
+            DapEvent::Output { category, output } => {
+                Some(("output", Some(json!({ "category": category, "output": output }))))
+            }
+            DapEvent::Stopped { reason, thread_id: _ } => Some((
+                "stopped",
+                Some(json!({
+                    "reason": reason,
+                    "threadId": Self::TCP_ATTACH_SYNTHETIC_THREAD_ID,
+                    "allThreadsStopped": true
+                })),
+            )),
+            DapEvent::Continued { thread_id: _ } => Some((
+                "continued",
+                Some(json!({
+                    "threadId": Self::TCP_ATTACH_SYNTHETIC_THREAD_ID,
+                    "allThreadsContinued": true
+                })),
+            )),
+            DapEvent::Terminated { .. } | DapEvent::Error { .. } => None,
+        }
+    }
+
     /// Handle threads request
     pub(super) fn handle_threads(&self, seq: i64, request_seq: i64) -> DapMessage {
         let threads = if let Some(ref session) =
@@ -2165,7 +2209,10 @@ impl DebugAdapter {
                 "name": format!("Attached Process ({pid})")
             })]
         } else if lock_or_recover(&self.tcp_session, "debug_adapter.tcp_session").is_some() {
-            vec![json!({ "id": 1, "name": "TCP Attached Thread" })]
+            vec![json!({
+                "id": Self::TCP_ATTACH_SYNTHETIC_THREAD_ID,
+                "name": "TCP Attached Thread"
+            })]
         } else {
             vec![]
         };
@@ -2311,7 +2358,7 @@ impl DebugAdapter {
 ///
 /// Returns `true` if this caller now owns emission (and must deliver the event),
 /// `false` if another path already reserved or emitted termination.
-fn reserve_terminated_event(
+pub(super) fn reserve_terminated_event(
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
 ) -> bool {
@@ -2370,12 +2417,39 @@ fn emit_logpoint_messages(
     }
 }
 
-fn emit_terminated_event(
+pub(super) fn emit_terminated_event(
     sender: &SyncSender<DapMessage>,
     seq: &Mutex<i64>,
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
     body: Option<Value>,
+) -> bool {
+    emit_terminated_event_guarded(
+        sender,
+        seq,
+        termination_state,
+        expected_generation,
+        body,
+        &|| false,
+    )
+}
+
+/// [`emit_terminated_event`] with a staleness hook for the generation-aware
+/// TCP-attach forwarder (#9521).
+///
+/// Reservation and delivery-currentness are unchanged; the final send is
+/// generation-aware across the ENTIRE queue wait: a `terminated` event that
+/// cannot be enqueued immediately re-validates the generation before every
+/// commit attempt, so a replacement session retires a blocked stale terminal
+/// event instead of an unbounded blocking send publishing it into the
+/// replacement's conversation after validation passed.
+pub(super) fn emit_terminated_event_guarded(
+    sender: &SyncSender<DapMessage>,
+    seq: &Mutex<i64>,
+    termination_state: &Mutex<TerminationState>,
+    expected_generation: Option<u64>,
+    body: Option<Value>,
+    stale: &dyn Fn() -> bool,
 ) -> bool {
     if !reserve_terminated_event(termination_state, expected_generation) {
         return false;
@@ -2386,7 +2460,10 @@ fn emit_terminated_event(
         // terminal event into a newer client conversation (#12092 review).
         return false;
     }
-    emit_event_safe(sender, seq, "terminated", body)
+    !matches!(
+        dispatch_event_generation_guarded(sender, seq, "terminated", body, stale),
+        GuardedDispatchResult::Disconnected
+    )
 }
 
 #[cfg(test)]
@@ -2396,6 +2473,7 @@ mod tests {
         emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter,
         reserve_terminated_event, terminated_delivery_is_current,
     };
+    use crate::tcp_attach::DapEvent;
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
@@ -2453,6 +2531,66 @@ mod tests {
             return Err(format!("exhausted generation revived a scope frame: {still_exhausted}"));
         }
         Ok(())
+    }
+
+    /// A remote TCP peer's raw thread id must never reach the editor: a peer
+    /// that reports a non-1 id still produces `stopped`/`continued` events
+    /// carrying the advertised synthetic execution context, so `threads`,
+    /// thread-scoped requests, and events cannot disagree (#8294).
+    #[test]
+    fn tcp_events_normalize_foreign_thread_ids_to_the_advertised_context() {
+        let (stopped_name, stopped_body) = DebugAdapter::tcp_event_message(DapEvent::Stopped {
+            reason: "breakpoint".to_string(),
+            thread_id: 9,
+        })
+        .expect("stopped events translate");
+        assert_eq!(stopped_name, "stopped");
+        let stopped_body = stopped_body.expect("stopped events carry a body");
+        assert_eq!(stopped_body["threadId"], DebugAdapter::TCP_ATTACH_SYNTHETIC_THREAD_ID);
+        assert_eq!(stopped_body["threadId"], 1);
+        assert_eq!(stopped_body["reason"], "breakpoint");
+        assert_eq!(stopped_body["allThreadsStopped"], true);
+
+        let (continued_name, continued_body) =
+            DebugAdapter::tcp_event_message(DapEvent::Continued { thread_id: 9 })
+                .expect("continued events translate");
+        assert_eq!(continued_name, "continued");
+        let continued_body = continued_body.expect("continued events carry a body");
+        assert_eq!(continued_body["threadId"], DebugAdapter::TCP_ATTACH_SYNTHETIC_THREAD_ID);
+        assert_eq!(continued_body["allThreadsContinued"], true);
+
+        // Non-identity events keep their shape and stay decoupled from the
+        // execution-context contract.
+        let (output_name, output_body) = DebugAdapter::tcp_event_message(DapEvent::Output {
+            category: "stdout".to_string(),
+            output: "hi".to_string(),
+        })
+        .expect("output events translate");
+        assert_eq!(output_name, "output");
+        assert!(output_body.expect("output events carry a body")["threadId"].is_null());
+        assert!(
+            DebugAdapter::tcp_event_message(DapEvent::Terminated { reason: "exit".to_string() })
+                .is_none()
+        );
+    }
+
+    /// Allocation is monotonic from 1 and fails closed at exhaustion: an
+    /// unchecked fetch_add would panic (checked builds) or wrap into negative
+    /// ids (release) near `i32::MAX`, reviving the stale-id hazard the atomic
+    /// counter exists to remove (#8294).
+    #[test]
+    fn thread_id_allocation_is_monotonic_and_fails_closed_at_exhaustion() {
+        let adapter = DebugAdapter::new();
+        assert_eq!(adapter.allocate_thread_id(), Some(1));
+        assert_eq!(adapter.allocate_thread_id(), Some(2));
+
+        adapter.thread_counter.store(i32::MAX - 1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(adapter.allocate_thread_id(), Some(i32::MAX));
+        assert_eq!(
+            adapter.allocate_thread_id(),
+            None,
+            "exhaustion must fail closed, never wrap into negative or reused ids"
+        );
     }
 
     #[test]
