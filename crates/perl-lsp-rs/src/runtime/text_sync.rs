@@ -641,7 +641,7 @@ impl LspServer {
             // still replacing the buffer. In that case every stream for the URI
             // captured stale text, including same-version sessions, and must be
             // cancelled. Ordinary versioned changes retain the older-only policy.
-            for key in self.uri_key_variants(uri) {
+            for key in Self::uri_key_variants(uri) {
                 if let Some(version) = incoming_version_i64 {
                     if allow_same_version {
                         self.stream_sessions().cancel_for_uri(&key);

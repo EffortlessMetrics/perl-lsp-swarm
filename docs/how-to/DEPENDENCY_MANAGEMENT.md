@@ -29,7 +29,7 @@ The Dependabot configuration is located at `.github/dependabot.yml` and manages 
 - `serde` - All serde-related crates (serde, serde_json, etc.)
 - `tokio` - All tokio async runtime crates
 - `tracing` - All tracing/logging crates
-- `lsp` - LSP protocol crates (lsp-types, lsp-server)
+- `lsp` - LSP protocol crates (lsp-types)
 - `testing` - Test framework crates (proptest, criterion, rstest, etc.)
 - `tree-sitter` - Tree-sitter parser crates
 - `pest` - Pest parser generator crates

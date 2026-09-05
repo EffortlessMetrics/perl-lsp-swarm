@@ -360,6 +360,22 @@ created = "2026-08-15"
 review_after = "2026-11-15"
 
 [[allow]]
+id = "non-rust-writer-authority-transfer-contract-test"
+path = "tests/test_writer_authority_transfer_contract.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Pins writer-authority transfer semantics (revoke-before-reassign, typed return, explicit `not_proven`, silence does not transfer ownership) across the orchestrate-work and build-candidate skill mirrors and the authority workflow. Standard-library `unittest` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 -m unittest tests/test_active_authority_contract.py tests/test_writer_authority_transfer_contract.py",
+  ".github/workflows/active-authority-contract.yml",
+]
+created = "2026-08-31"
+review_after = "2026-11-30"
+
+[[allow]]
 id = "non-rust-agent-authority-status-test"
 path = "tests/test_agent_authority_status.py"
 kind = "control_plane_contract_test"
@@ -4068,3 +4084,20 @@ reason = "Driver template for declared launches only; carries placeholders and z
 covered_by = ["python3 -m unittest discover -s integrations/lsp4ij/host-journey/tests -p test_*.py", "cargo xtask check-file-policy"]
 created = "2026-08-26"
 review_after = "2027-02-26"
+
+[[allow]]
+id = "non-rust-first-ten-minutes-fixture-set"
+glob = "testdata/ux/first_ten_minutes/**/*"
+kind = "test_fixture"
+language = "mixed"
+surface = "fixtures"
+classification = "test"
+owner = "release/ux-study"
+reason = "Content-addressed representative project set for the #5902 packaged first-ten-minutes study: one Perl project per experience family, each bound in manifest.json by a deterministic sha256 tree digest; drift, family coverage, and receipt-to-fixture binding are enforced by the first_ten_minutes xtask example."
+covered_by = [
+  "cargo run -p xtask --locked --example first_ten_minutes -- --verify-fixture-set testdata/ux/first_ten_minutes",
+  "cargo test -p xtask --locked --example first_ten_minutes",
+]
+broad_glob_reason = "The whole tree is one finite, content-addressed testdata set: fixture file names and layout follow each fixture project's own Perl structure (bin/, lib/, t/, script/), so per-file allowlist rows would only mirror manifest.json, which already enumerates the set and binds every fixture byte by deterministic sha256 tree digest; drift, extra families, and unsafe fixture paths are rejected by the first_ten_minutes xtask verifier, so the glob marks an accounting boundary, not a trust boundary."
+created = "2026-08-29"
+review_after = "2027-02-28"
