@@ -318,10 +318,11 @@ pub(crate) fn command_status_strict(
 
 /// Whether a bare command name resolves on the admissible search path.
 ///
-/// The answer is coherent with the launches this module performs: discovery and
-/// every wrapper traverse the same absolute-only component list (see
-/// [`admissible_search_paths`] and [`apply_admissible_search_path`]), so the
-/// probe cannot certify one candidate while the child runs another.
+/// The answer is coherent with the launches this module performs on the same
+/// search path: discovery and every wrapper traverse the same absolute-only
+/// component list (see [`admissible_search_paths`] and
+/// [`apply_admissible_search_path`]), so the probe cannot certify one candidate
+/// while the child runs another.
 ///
 /// Advisory limitations that remain, by design:
 ///
@@ -334,6 +335,14 @@ pub(crate) fn command_status_strict(
 ///   process cannot resolve to the same directory the child would.
 /// - Explicit configured paths are not bare names and are always rejected here;
 ///   they carry their own trust and identity policy at the call site.
+/// - The probe reads the *inherited* PATH. [`configure_child`] resolves a bare
+///   name against the *effective* search path, which is a caller-supplied
+///   `PATH` in `env_vars` when one is given. A wrapper call that supplies its
+///   own `PATH` therefore launches against a search path this probe never
+///   examined, and a preflight says nothing about it. No caller in this crate
+///   supplies one — every `env_vars` entry here is unrelated to PATH — so the
+///   two agree in practice; where they would not, the launch is authoritative
+///   and refuses on its own terms.
 pub(crate) fn command_exists(command: &str) -> bool {
     let path = env::var_os("PATH");
     command_exists_in_path(command, path.as_deref())

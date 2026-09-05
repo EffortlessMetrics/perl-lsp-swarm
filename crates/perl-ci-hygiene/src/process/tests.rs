@@ -1004,6 +1004,20 @@ mod child_cwd_launch_coherence {
         let installed = TempDir::new("coherence-explicit-installed")?;
         plant(installed.path(), "INSTALLED")?;
 
+        // The preflight reads the *inherited* PATH, which does not carry PROBE.
+        // The launch reads the *effective* one, which does. This divergence is
+        // the documented residual on `command_exists`: a wrapper call that
+        // supplies its own PATH launches against a search path the probe never
+        // examined, so the preflight is not authoritative for it. Pinned here so
+        // the boundary is proven rather than assumed — no caller in this crate
+        // supplies a PATH, and this row fails if one ever makes the probe agree
+        // by accident.
+        assert!(
+            !command_exists(PROBE),
+            "the inherited PATH must not carry PROBE, or this row proves nothing \
+             about the caller-supplied path taking precedence"
+        );
+
         let output = command_with_output(
             workspace.path(),
             PROBE,
