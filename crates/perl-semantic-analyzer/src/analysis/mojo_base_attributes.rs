@@ -163,12 +163,26 @@ fn owns_runtime_control_flow(node: &Node) -> bool {
 /// Unicode semantics, so `'aé'`, `'naïve_name'` and `'café2'` are all names
 /// `Mojo::Base` accepts and this must not refuse.
 ///
-/// Approximation boundary: `\w` additionally admits Unicode marks and
-/// connector punctuation, which [`char::is_alphanumeric`] does not report. A
-/// name whose continuation uses a combining mark is therefore still reported
-/// malformed. That errs toward omitting a real accessor rather than
-/// publishing one that cannot exist, which is the safe direction for a fact
-/// producer.
+/// Approximating `\w` without a Unicode property table means choosing which
+/// way to be wrong, and every remaining inaccuracy here is deliberately an
+/// under-report — a name refused that Perl would accept — because publishing a
+/// member that cannot exist at runtime is the worse error for a fact producer.
+///
+/// Perl's `\w` is `[\p{Alphabetic}\p{Mark}\p{Decimal_Number}`
+/// `\p{Connector_Punctuation}\p{Join_Control}]`. This admits
+/// [`char::is_alphabetic`] and ASCII digits, which means:
+///
+/// - Unicode **letters** are accepted (`'aé'`, `'café2'`) — the common case;
+/// - Unicode **marks**, **connector punctuation** and **join controls** are
+///   refused, though `\w` admits them;
+/// - **non-ASCII decimal digits** (`\p{Nd}` outside ASCII, e.g. `'٣'`) are
+///   refused, though `\w` admits them.
+///
+/// [`char::is_alphanumeric`] is deliberately **not** used, despite reading as
+/// the closer match. It reports every Unicode numeric category, including
+/// `\p{No}` — superscripts and fractions like `'²'` and `'¼'` — which Perl's
+/// `\w` excludes. Accepting those would publish an accessor for a name
+/// `Mojo::Base` refuses, an over-report in the unsafe direction.
 fn is_valid_attribute_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
@@ -177,7 +191,7 @@ fn is_valid_attribute_name(name: &str) -> bool {
     if !(first.is_ascii_alphabetic() || first == '_') {
         return false;
     }
-    chars.all(|c| c.is_alphanumeric() || c == '_')
+    chars.all(|c| c.is_alphabetic() || c.is_ascii_digit() || c == '_')
 }
 
 impl WalkState<'_> {
@@ -711,6 +725,16 @@ mod tests {
             assert!(
                 declarations(&code)[0].name.literal().is_some(),
                 "{accepted} is a runtime-valid Mojo::Base attribute name"
+            );
+        }
+        // Unicode numeric symbols outside `\p{Nd}` — superscripts, fractions —
+        // are NOT in Perl's `\w`, so accepting them would publish an accessor
+        // `Mojo::Base` refuses. `char::is_alphanumeric` would accept them.
+        for rejected in ["'a\u{b2}'", "'a\u{bc}'", "'a\u{b3}'"] {
+            let code = format!("package App;\nhas {rejected};\n");
+            assert!(
+                matches!(declarations(&code)[0].name, MojoBaseAttributeName::Malformed { .. }),
+                "{rejected} carries a Unicode numeric symbol outside Perl's `\\w`"
             );
         }
         // The first character is the literal class `[a-zA-Z_]`, not `\w`, so a
