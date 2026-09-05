@@ -16,6 +16,18 @@ fn field_call_does_not_publish_a_lexical_binding() -> TestResult {
     let file = lower_ast(&parsed.ast);
     // The legacy call itself must not add a synthetic binding. The preceding
     // `our` declaration remains the only source of any package binding.
+    //
+    // The negative check alone is satisfied by an empty binding set, so it
+    // cannot tell "no synthetic lexical" from "the `our` binding was dropped
+    // too". Assert the real declaration survives first, then that nothing
+    // lexical joined it.
+    assert!(
+        file.scope_graph.bindings.iter().any(|binding| {
+            binding.name == "x" && matches!(binding.storage, StorageClass::PackageOur)
+        }),
+        "the `our $x` declaration must still publish its package binding: {:?}",
+        file.scope_graph.bindings
+    );
     assert!(
         file.scope_graph.bindings.iter().all(|binding| {
             binding.name != "x"

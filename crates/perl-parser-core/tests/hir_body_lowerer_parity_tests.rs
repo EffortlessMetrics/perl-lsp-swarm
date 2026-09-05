@@ -578,16 +578,25 @@ fn gap_legacy_field_argument_is_lexical_in_lower_body_but_resolved_in_bb2()
     let lb_body = via_lower_body(source);
     let lb_lhs = let_init_lhs(&lb_body)?;
     assert!(
-        matches!(lb_lhs, HirExpr::Variable(HirVariable { kind: VariableKind::Lexical, .. })),
-        "lower_body must still assume a lexical target, got {lb_lhs:?}"
+        matches!(
+            lb_lhs,
+            HirExpr::Variable(HirVariable { kind: VariableKind::Lexical, name, .. })
+                if name == "x"
+        ),
+        "lower_body must still assume a lexical target named x, got {lb_lhs:?}"
     );
 
     let file = via_lower_ast(source);
     let bb2_body = file.bodies.first().ok_or_else(|| "lower_ast body is required".to_string())?;
     let bb2_lhs = let_init_lhs(bb2_body)?;
     assert!(
-        matches!(bb2_lhs, HirExpr::Variable(HirVariable { kind: VariableKind::Package, .. })),
-        "BodyBuilder2 must resolve the argument rather than assume lexical, got {bb2_lhs:?}"
+        matches!(
+            bb2_lhs,
+            HirExpr::Variable(HirVariable { kind: VariableKind::Package, name, .. })
+                if name == "x"
+        ),
+        "BodyBuilder2 must resolve the argument to package $x rather than assume \
+         lexical, got {bb2_lhs:?}"
     );
     Ok(())
 }
