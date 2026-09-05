@@ -1,8 +1,9 @@
 name: Post-Merge Status Regeneration
 
-# Generate status documentation from trusted default-branch source without write
-# authority. A separate minimal job validates one content-addressed payload and
-# proposes the exact five generated files through a reviewable pull request.
+# Generate status documentation and the non-Rust reader reference from trusted
+# default-branch source without write authority. A separate minimal job validates
+# one content-addressed payload and proposes the exact six published files through
+# a reviewable pull request. Branch validity is evaluated independently.
 #
 # #12606: runs queue instead of cancelling, so a run can finish generating long
 # after newer commits landed on the default branch. Two guards close that stale
@@ -21,15 +22,11 @@ on:
 
 concurrency:
   group: post-merge-status-${{ github.ref }}
-  # #10199: this run is the only automated healer for the generated status
-  # documents and docs/policy/NON_RUST_INVENTORY.md (#11731). With
-  # cancel-in-progress the next merge superseded each in-flight run before its
-  # ~10-minute generate cycle finished, so under merge cadence the healing PR
-  # never opened and main's committed inventory drifted permanently. Every
-  # later branch then failed the strict inventory ratchet in
-  # xtask/tests/file_policy.rs, reding PR Smoke on healthy PRs. Queued runs are
-  # safe: each regenerates from its own pinned event SHA and the writer updates
-  # the same automation branch, so the newest completed run converges.
+  # #10199: this run is the sole automated publisher for the generated status
+  # documents and the non-Rust default-branch reader reference. Queuing prevents
+  # sustained merge cadence from starving publication. It does not heal branch
+  # validity: the required inventory check evaluates each current tree directly
+  # against the allowlist and retains its own evidence (#14688).
   cancel-in-progress: false
 
 permissions:
@@ -76,11 +73,9 @@ jobs:
       - name: Regenerate status subsystem files and roadmap
         run: cargo run --locked -p xtask -- update-status --write
 
-      # Merge-time non-Rust inventory refresh (#11731): any merge that changes
-      # tracked file counts drifts docs/policy/NON_RUST_INVENTORY.md, and the
-      # next branch cut from main then fails non_rust_inventory_check in
-      # unit_routed_full. Regenerating here lands the drift with the same
-      # reviewable PR as the status documents instead of on an unlucky branch.
+      # Publish a current default-branch reader reference from the same pinned
+      # source SHA as the status documents. This output is reviewable publication,
+      # not an input to feature-branch or merge-group validity (#14688).
       - name: Regenerate the non-Rust inventory
         run: cargo run --locked -p xtask -- non-rust inventory --write
 
@@ -110,7 +105,7 @@ jobs:
           ]
           # `update-status --write` regenerates six subsystems, not four: it also
           # owns docs/project/status/{dap,workspace}.md, editor_ux.json, and the
-          # target-derived status receipts. Only the five canonical files above are
+          # target-derived status receipts. Only the six canonical files above are
           # ever proposed to the writer, but the generator legitimately dirties the
           # rest, so the abort below is scoped to writes that escape the
           # generator-owned surface entirely (source, workflows, scripts, ...).
@@ -183,7 +178,7 @@ jobs:
           if total_bytes > max_total_bytes:
               raise SystemExit("generated status payload exceeds aggregate byte limit")
 
-          # Only movement in the five canonical files justifies a proposal PR.
+          # Only movement in the six canonical files justifies a proposal PR.
           # Churn confined to the other generator-owned outputs must not open an
           # empty PR, and must not reach the writer's changed-path contract.
           canonical_changed = sorted(changed_paths & set(canonical))
