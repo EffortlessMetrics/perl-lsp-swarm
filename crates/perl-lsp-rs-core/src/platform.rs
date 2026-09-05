@@ -189,7 +189,7 @@ fn home_dir() -> PathBuf {
 #[allow(clippy::panic, unsafe_code)]
 mod tests {
     use super::*;
-    use perl_tdd_support::must_some;
+    use perl_tdd_support::must_some_with;
 
     #[test]
     fn home_dir_fallback_uses_temp_dir() {
@@ -312,7 +312,7 @@ mod tests {
             "must find perl even with empty entries before real dir; \
              path_env={path_env:?}"
         );
-        let found = must_some(result);
+        let found = must_some_with(result, "checked above");
         assert!(
             found.is_absolute(),
             "resolved perl path must be absolute, not CWD-relative; got: {found:?}"

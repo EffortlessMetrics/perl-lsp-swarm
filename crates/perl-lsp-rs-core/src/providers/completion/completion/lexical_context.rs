@@ -1572,7 +1572,7 @@ mod tests {
         }
 
         let source = "=pod\ndocumentation\n  =cut\nstill documentation";
-        assert!(is_in_pod(&source, source.len()), "indented =cut must not close POD");
+        assert!(is_in_pod(source, source.len()), "indented =cut must not close POD");
     }
 
     #[test]

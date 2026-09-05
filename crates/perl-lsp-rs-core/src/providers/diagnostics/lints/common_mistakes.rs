@@ -221,7 +221,7 @@ mod tests {
     use super::*;
     use perl_parser_core::parser::Parser;
     use perl_semantic_analyzer::analysis::symbol::SymbolExtractor;
-    use perl_tdd_support::{must, must_some};
+    use perl_tdd_support::{must, must_some, must_some_with};
 
     fn common_mistakes_diags(source: &str) -> Vec<Diagnostic> {
         let ast = must(Parser::new(source).parse());
@@ -455,18 +455,18 @@ mod tests {
     fn pl404_observation_remediation_copies_match_the_ordinary_diagnostic_fields() {
         for source in ["if (5 == undef) { }", "if ($undeclared_var == 5) { }"] {
             let diags = common_mistakes_diags(source);
-            let diagnostic = diags
-                .iter()
-                .find(|d| d.code.as_deref() == Some("PL404"))
-                .unwrap_or_else(|| panic!("PL404 must be emitted for {source}"));
-            let suggestion = diagnostic
-                .suggestion
-                .as_deref()
-                .unwrap_or_else(|| panic!("PL404 must carry an ordinary suggestion"));
-            let observation = diagnostic
-                .critic_observation
-                .as_ref()
-                .unwrap_or_else(|| panic!("PL404 must carry an observation: {diags:?}"));
+            let diagnostic = must_some_with(
+                diags.iter().find(|d| d.code.as_deref() == Some("PL404")),
+                format_args!("PL404 must be emitted for {source}"),
+            );
+            let suggestion = must_some_with(
+                diagnostic.suggestion.as_deref(),
+                format_args!("PL404 must carry an ordinary suggestion"),
+            );
+            let observation = must_some_with(
+                diagnostic.critic_observation.as_ref(),
+                format_args!("PL404 must carry an observation: {diags:?}"),
+            );
 
             assert_eq!(
                 observation.suggestion(),

@@ -743,7 +743,7 @@ pub fn render_dap_fallback_module(default_features: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_tdd_support::{must, must_err, must_some};
+    use perl_tdd_support::{must, must_err, must_some, must_with};
     use tempfile::TempDir;
 
     /// Fully-defaulted row so tests only name the fields under assertion.
@@ -980,7 +980,7 @@ mod tests {
         let mut catalog = sample_catalog();
         catalog.feature[0].maturity = Maturity::NotProven;
         catalog.feature[0].direction = "missing".to_string();
-        must(catalog.validate());
+        must_with(catalog.validate(), "not_proven row must validate");
     }
 
     #[test]
@@ -1032,7 +1032,7 @@ maturity = 'production'
 id = 'c'
 maturity = 'experimental'
 ";
-        let catalog: Catalog = must(toml::from_str(text));
+        let catalog: Catalog = must_with(toml::from_str(text), "legacy spellings parse");
         assert_eq!(catalog.feature[0].maturity, Maturity::Proven);
         assert_eq!(catalog.feature[1].maturity, Maturity::Proven);
         assert_eq!(catalog.feature[2].maturity, Maturity::NotProven);

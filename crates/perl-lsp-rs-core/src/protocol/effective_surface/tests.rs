@@ -8,6 +8,7 @@
     reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
 )]
 
+use perl_tdd_support::{must_err_with, must_some_with};
 use std::collections::BTreeSet;
 
 use super::{
@@ -17,7 +18,7 @@ use super::{
     SuppressionReason, SurfaceInputs, WatcherPlanDecision, WatcherWithholdReason,
 };
 use crate::features::policy::FeatureProfile;
-use crate::protocol::capabilities::{BuildFlags, capabilities_json, get_supported_commands};
+use crate::protocol::capabilities::{capabilities_json, get_supported_commands};
 use crate::protocol::final_surface_inventory::{census_profiles, flatten_surface_pointers};
 
 /// Minimal client evidence: no declarations at all.
@@ -94,8 +95,10 @@ fn raw_flag_divergence_from_profile_is_refused() {
     // instead of silently widening the profile.
     assert!(!tampered.build_flags.notebook_document_sync, "precondition: ga-lock excludes it");
     tampered.build_flags.notebook_document_sync = true;
-    let error = EffectiveLspSurface::build(&tampered)
-        .expect_err("raw flags must not inject a capability the profile does not admit");
+    let error = must_err_with(
+        EffectiveLspSurface::build(&tampered),
+        "raw flags must not inject a capability the profile does not admit",
+    );
     assert!(
         error.problems.iter().any(|problem| problem.contains("profile.build_flags")),
         "refusal must name provenance: {:?}",
@@ -107,8 +110,10 @@ fn raw_flag_divergence_from_profile_is_refused() {
 fn duplicate_command_descriptors_are_refused() {
     let mut duplicated = bare_inputs(FeatureProfile::Production);
     duplicated.command_ids.push("perl.runTests".to_string());
-    let error = EffectiveLspSurface::build(&duplicated)
-        .expect_err("duplicate descriptors must be rejected deterministically");
+    let error = must_err_with(
+        EffectiveLspSurface::build(&duplicated),
+        "duplicate descriptors must be rejected deterministically",
+    );
     assert!(
         error.problems.iter().any(|problem| problem.contains("duplicate command")),
         "refusal must name the duplicate: {:?}",
@@ -691,7 +696,7 @@ fn model_matches_static_builder_except_runtime_authority_deltas() {
         // Exact retained disagreement: static advertises save:true while the
         // final authority replaces it with willSave/willSaveWaitUntil/save
         // includeText (row CAP_TEXT_DOCUMENT_SYNC_SAVE).
-        let sync = sync_delta.expect("both surfaces carry textDocumentSync");
+        let sync = must_some_with(sync_delta, "both surfaces carry textDocumentSync");
         assert_eq!(sync["static"]["save"], serde_json::json!(true));
         assert_eq!(sync["final"]["save"], serde_json::json!({"includeText": true}));
         assert_eq!(sync["final"]["willSave"], serde_json::json!(true));
@@ -798,11 +803,13 @@ fn file_operation_intersection_follows_normalized_facts() {
     inputs.client = client;
     let surface = build_ok(&inputs);
 
-    let operations = surface
-        .server_capabilities
-        .pointer("/workspace/fileOperations")
-        .and_then(serde_json::Value::as_object)
-        .expect("fileOperations object present when any operation supported");
+    let operations = must_some_with(
+        surface
+            .server_capabilities
+            .pointer("/workspace/fileOperations")
+            .and_then(serde_json::Value::as_object),
+        "fileOperations object present when any operation supported",
+    );
     assert_eq!(operations.len(), 2, "only supported operations advertise: {operations:?}");
     assert!(operations.contains_key("willRename"));
     assert!(operations.contains_key("didDelete"));

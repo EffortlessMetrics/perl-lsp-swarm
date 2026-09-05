@@ -2,7 +2,7 @@ use super::*;
 use crate::providers::file_completion::CWD_LOCK as FILE_COMPLETION_CWD_LOCK;
 use perl_parser_core::Parser;
 use perl_semantic_analyzer::analysis::symbol::{ScopeKind, SymbolExtractor};
-use perl_tdd_support::{must, must_some};
+use perl_tdd_support::{must, must_some, must_some_with};
 use perl_workspace::workspace_index::WorkspaceIndex;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8834,13 +8834,14 @@ fn block_form_package_at_scope_end_is_main() {
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let table = SymbolExtractor::new().extract(&ast);
-    let scope_end = must_some(
+    let scope_end = must_some_with(
         table
             .scopes
             .values()
             .filter(|scope| scope.kind == ScopeKind::Package)
             .map(|scope| scope.location.end)
             .max(),
+        "block-form package scope",
     );
     assert_eq!(
         CompletionContext::detect_current_package(&table, scope_end),
@@ -9317,7 +9318,7 @@ fn test_foreach_iterator_scoped_to_loop() {
     // The analyzer genuinely lacks the binding: confirm the producer gap
     // rather than an admission rejection, so #7423/#7424 own the fix.
     assert!(
-        provider.symbol_table.symbols.get("loop_item").is_none(),
+        !provider.symbol_table.symbols.contains_key("loop_item"),
         "analyzer now records foreach iterators — revisit this seam for real admission coverage"
     );
 

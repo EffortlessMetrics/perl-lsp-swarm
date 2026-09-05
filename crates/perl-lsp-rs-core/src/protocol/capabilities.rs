@@ -168,7 +168,7 @@ mod tests {
         CodeActionKind, CodeActionProviderCapability, OneOf, SemanticTokensServerCapabilities,
         TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncSaveOptions,
     };
-    use perl_tdd_support::must_some;
+    use perl_tdd_support::must_some_with;
     use std::collections::BTreeSet;
 
     /// Feature IDs that `to_feature_ids()` correctly emits but
@@ -601,12 +601,18 @@ mod tests {
         let flags = BuildFlags { signature_help: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        let provider = must_some(caps.signature_help_provider.as_ref());
+        let provider = must_some_with(
+            caps.signature_help_provider.as_ref(),
+            "signatureHelpProvider must be present when signature_help is enabled",
+        );
         assert!(
             provider.trigger_characters.is_some(),
             "signatureHelpProvider.triggerCharacters must be Some"
         );
-        let triggers = must_some(provider.trigger_characters.as_ref());
+        let triggers = must_some_with(
+            provider.trigger_characters.as_ref(),
+            "signatureHelpProvider.triggerCharacters must be Some",
+        );
 
         // Duplicate the expected list from sections.rs — divergence is the defect.
         let expected: &[&str] = &["(", ","];
@@ -627,12 +633,18 @@ mod tests {
         let flags = BuildFlags { signature_help: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        let provider = must_some(caps.signature_help_provider.as_ref());
+        let provider = must_some_with(
+            caps.signature_help_provider.as_ref(),
+            "signatureHelpProvider must be present when signature_help is enabled",
+        );
         assert!(
             provider.retrigger_characters.is_some(),
             "signatureHelpProvider.retriggerCharacters must be Some"
         );
-        let retriggers = must_some(provider.retrigger_characters.as_ref());
+        let retriggers = must_some_with(
+            provider.retrigger_characters.as_ref(),
+            "signatureHelpProvider.retriggerCharacters must be Some",
+        );
 
         // Duplicate the expected list from sections.rs.
         let expected: &[&str] = &[",", "@", "%", "{", "["];

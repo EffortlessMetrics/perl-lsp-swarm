@@ -208,7 +208,7 @@ pub(crate) fn authority_by_id(id: &str) -> Option<&'static FieldAuthority> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_tdd_support::{must, must_some};
+    use perl_tdd_support::{must_some, must_some_with, must_with};
     use std::collections::{BTreeMap, BTreeSet};
 
     use ConfigConsumer as Consumer;
@@ -351,8 +351,10 @@ mod tests {
     #[test]
     fn dropping_a_limit_row_fails_the_machine_check() {
         let mut rows = CONFIGURATION_AUTHORITY.to_vec();
-        let position =
-            must_some(rows.iter().position(|field| field.id == "limits.workspace_symbol_cap"));
+        let position = must_some_with(
+            rows.iter().position(|field| field.id == "limits.workspace_symbol_cap"),
+            "limits row present",
+        );
         let removed = rows.remove(position);
 
         let drift = leaf_drift(&rows);
@@ -549,11 +551,13 @@ mod tests {
 
     #[test]
     fn limits_authority_matches_the_generic_settings_schema_exactly() {
-        let schema: serde_json::Value = must(serde_json::from_str(include_str!(
-            "../../../../schemas/perllsp-settings.schema.json"
-        )));
-        let schema_keys = must_some(
+        let schema: serde_json::Value = must_with(
+            serde_json::from_str(include_str!("../../../../schemas/perllsp-settings.schema.json")),
+            "valid perllsp settings schema",
+        );
+        let schema_keys = must_some_with(
             schema["properties"]["perl"]["properties"]["limits"]["properties"].as_object(),
+            "schema declares a perl.limits section",
         )
         .keys()
         .cloned()

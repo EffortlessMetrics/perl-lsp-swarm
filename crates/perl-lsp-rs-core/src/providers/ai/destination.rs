@@ -363,7 +363,7 @@ mod unit_tests {
         embedded_ipv4_from_v6, is_disallowed_address, normalize_ip,
         validate_endpoint_with_resolver, validate_tcp_attach_host_with_resolver,
     };
-    use perl_tdd_support::{must, must_err};
+    use perl_tdd_support::{must, must_err, must_with};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     fn resolver_with(
@@ -511,7 +511,7 @@ mod unit_tests {
 
     #[test]
     fn default_resolver_accepts_ipv6_literal_without_brackets() {
-        let addrs = must(default_resolver("::1", 11434));
+        let addrs = must_with(default_resolver("::1", 11434), "ipv6 literal must resolve");
         assert_eq!(addrs, vec![IpAddr::V6(Ipv6Addr::LOCALHOST)]);
     }
 

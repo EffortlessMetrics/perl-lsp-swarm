@@ -3045,7 +3045,7 @@ fn value_to_string<T: std::fmt::Debug>(value: &T) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_tdd_support::must_some;
+    use perl_tdd_support::must_some_with;
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -3924,7 +3924,10 @@ profile = "recommended"
     #[test]
     fn native_critic_config_boundary_agrees_with_profile_authority() {
         for raw in ["recommended", " RECOMMENDED ", "strict", " STRICT "] {
-            let expected = must_some(NativeCriticProfile::parse(raw));
+            let expected = must_some_with(
+                NativeCriticProfile::parse(raw),
+                "boundary fixture must be accepted by the profile authority",
+            );
             let mut config = ServerConfig::default();
             config.update_from_value(&serde_json::json!({
                 "critic": { "profile": raw }

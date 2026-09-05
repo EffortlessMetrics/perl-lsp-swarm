@@ -8,8 +8,6 @@ mod build_catalog {
 
     include!("../build_catalog.rs");
 
-
-
     #[test]
     fn missing_explicit_override_is_terminal_even_with_workspace_catalog() {
         let root = must_with(tempfile::tempdir(), "create test catalog directory");

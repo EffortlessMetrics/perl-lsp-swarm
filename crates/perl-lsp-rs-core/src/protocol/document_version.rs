@@ -286,7 +286,7 @@ pub fn decode_document_version(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_tdd_support::{must, must_some};
+    use perl_tdd_support::{must, must_some_with};
     use serde_json::json;
 
     // ── absence ──────────────────────────────────────────────────────────────
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn version_is_integral_looking_float() {
         // 1.0 serialized as a float — serde_json stores this as N::Float.
-        let value = must_some(serde_json::Number::from_f64(1.0));
+        let value = must_some_with(serde_json::Number::from_f64(1.0), "1.0 is finite");
         let params = json!({"textDocument": {"version": value}});
         assert_eq!(
             decode_document_version(&params),

@@ -75,7 +75,7 @@ fn check_field(mut field: FieldAuthority) -> FieldAuthority {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_tdd_support::must_some;
+    use perl_tdd_support::{must_some, must_some_with};
 
     #[test]
     fn shared_server_fields_do_not_claim_folder_pull_authority() {
@@ -97,7 +97,8 @@ mod tests {
     #[test]
     fn formatter_engine_uses_project_and_generic_client_channels_only() {
         assert!(authority_by_id("formatting.engine").is_some(), "missing formatter authority");
-        let field = must_some(authority_by_id("formatting.engine"));
+        let field =
+            must_some_with(authority_by_id("formatting.engine"), "missing formatter authority");
 
         assert_eq!(field.owner, ConfigOwner::Server);
         assert!(field.sources.contains(&ConfigSource::ProjectFile));

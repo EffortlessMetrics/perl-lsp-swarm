@@ -74,22 +74,28 @@ mod tests {
     use super::{DiagnosticCode, check_error_nodes};
     use perl_parser::Parser;
     use perl_parser_core::error_classifier::ErrorClassifier;
-    use perl_tdd_support::{must, must_some};
+    use perl_tdd_support::{must_some_with, must_with};
     use std::sync::Arc;
 
     #[test]
     fn error_node_helper_emits_fixable_parse_diagnostic() {
         // Unit-scoped coverage of check_error_nodes; provider conversion is covered separately below.
         let source = "if () { 1 }";
-        let ast = must(Parser::new(source).parse());
+        let ast = must_with(
+            Parser::new(source).parse(),
+            "malformed condition must produce the established ERROR-node AST",
+        );
         let classifier = ErrorClassifier::new();
         let mut diagnostics = Vec::new();
 
         check_error_nodes(&ast, source, &classifier, &mut diagnostics);
 
-        let diagnostic = must_some(diagnostics.iter().find(|diagnostic| {
-            diagnostic.code.as_deref() == Some(DiagnosticCode::ParseError.as_str())
-        }));
+        let diagnostic = must_some_with(
+            diagnostics.iter().find(|diagnostic| {
+                diagnostic.code.as_deref() == Some(DiagnosticCode::ParseError.as_str())
+            }),
+            "the ERROR node must emit a ParseError diagnostic",
+        );
         assert!(diagnostic.fixable);
     }
 
@@ -101,8 +107,9 @@ mod tests {
         let diagnostics =
             DiagnosticsProvider::new().get_diagnostics(&ast, &output.diagnostics, source, None);
 
-        let diagnostic = must_some(
+        let diagnostic = must_some_with(
             diagnostics.iter().find(|diagnostic| diagnostic.code.as_deref() == Some("PL001")),
+            "malformed parser output must reach the provider as PL001",
         );
 
         assert!(diagnostic.fixable);
