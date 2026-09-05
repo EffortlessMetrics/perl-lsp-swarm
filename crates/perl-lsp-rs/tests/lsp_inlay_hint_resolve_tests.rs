@@ -250,6 +250,9 @@ fn lsp_inlay_hint_resolve_adds_label_location() -> Result<(), Box<dyn std::error
                 && h.pointer("/data/resolveEnvelope").is_some()
         })
         .ok_or("expected a resolvable parameter hint for my_func")?;
+    let listed_label = perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(&hint)
+        .ok_or("listed hint has no label text")?
+        .to_string();
 
     let req = JsonRpcRequest {
         _jsonrpc: "2.0".into(),
@@ -276,7 +279,7 @@ fn lsp_inlay_hint_resolve_adds_label_location() -> Result<(), Box<dyn std::error
     // location must have uri and range
     assert_eq!(
         label_parts.iter().map(|part| part.value.as_str()).collect::<String>(),
-        "x:",
+        listed_label,
         "resolve must preserve the displayed label text"
     );
     assert_eq!(location.uri.as_str(), doc_uri);
