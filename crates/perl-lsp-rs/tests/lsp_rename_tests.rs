@@ -1481,6 +1481,15 @@ fn test_rename_answers_every_request_without_empty_successful_edits() -> TestRes
         let envelope = raw_rename(&mut harness, uri, line, character);
         let result = answered_result(&envelope, &format!("rename on a {what}"))?;
         assert_not_an_empty_successful_edit(&result, &format!("rename on a {what}"))?;
+        // `assert_not_an_empty_successful_edit` only fires on a result that
+        // carries an edit map, so on its own it would accept any other non-edit
+        // shape here. Pin the exact refusal too: `null` is the one result an LSP
+        // client reads as "this position cannot be renamed".
+        assert_eq!(
+            result,
+            Value::Null,
+            "rename on a {what} must report the position as unavailable"
+        );
     }
 
     // Negative control: the sweep above is not passing merely because rename now
@@ -1524,6 +1533,70 @@ fn test_package_rename_refusal_holds_under_document_changes_capability() -> Test
         renamed,
         Value::Null,
         "rename must refuse rather than emit an empty documentChanges edit; got: {renamed}"
+    );
+
+    Ok(())
+}
+
+/// A cursor on the package prefix of a qualified call must not rename the sub.
+///
+/// Raised in review of #9827. `symbol_at_cursor_with_source` resolves the final
+/// component for every position inside `Alpha::target()`, so before this guard
+/// the server answered `prepareRename` on the `Alpha` prefix with a box
+/// placeheld `"Alpha"` and then renamed `target` in *both* files — a
+/// wrong-symbol edit reported as success, which is strictly worse than the
+/// empty edit this issue is about: it silently rewrites source the user never
+/// pointed at.
+#[test]
+fn test_qualified_package_prefix_does_not_rename_the_final_sub() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let lib_uri = "file:///Alpha.pm";
+    let app_uri = "file:///Beta.pm";
+    harness.open(lib_uri, "package Alpha;\nsub target { return 1; }\n1;\n")?;
+    let app_text = "package Beta;\nuse Alpha;\nsub run { return Alpha::target(); }\n1;\n";
+    harness.open(app_uri, app_text)?;
+
+    // Line 2 is `sub run { return Alpha::target(); }`.
+    // `Alpha` spans characters 17..22; `target` spans 24..30.
+    let prefix_column = 19;
+    let final_column = 26;
+
+    let prepared_prefix = answered_result(
+        &raw_prepare_rename(&mut harness, app_uri, 2, prefix_column),
+        "prepareRename on a qualified package prefix",
+    )?;
+    assert_eq!(
+        prepared_prefix,
+        Value::Null,
+        "prepareRename must not offer a rename box on the package prefix of a \
+         qualified call; got: {prepared_prefix}"
+    );
+
+    let renamed_prefix = answered_result(
+        &raw_rename(&mut harness, app_uri, 2, prefix_column),
+        "rename on a qualified package prefix",
+    )?;
+    assert_eq!(
+        renamed_prefix,
+        Value::Null,
+        "rename on a package prefix must refuse, not edit the final component; \
+         got: {renamed_prefix}"
+    );
+
+    // Negative control: the guard is bound to the *prefix* component. A cursor
+    // on `target`, the component that actually names the sub, still renames it
+    // across both files exactly as before.
+    let renamed_final =
+        answered_result(&raw_rename(&mut harness, app_uri, 2, final_column), "rename of the sub")?;
+    let changes = renamed_final
+        .get("changes")
+        .and_then(Value::as_object)
+        .ok_or("qualified final-component rename must still return a workspace edit")?;
+    assert!(
+        changes.contains_key(lib_uri) && changes.contains_key(app_uri),
+        "renaming the final component must still edit definition and usage; got: {renamed_final}"
     );
 
     Ok(())

@@ -693,6 +693,29 @@ impl LspServer {
             return true;
         }
 
+        // A package component of a qualified name — the `Alpha` in
+        // `Alpha::target()`. The cursor classifier below cannot see this: it
+        // resolves the *final* component for every position inside a qualified
+        // call, so it answers `target` even when the cursor is on `Alpha`.
+        // Without this arm the editor opens a box placeheld `Alpha` and the
+        // rename edits `target` in every file — a wrong-symbol edit reported as
+        // success, which is worse than the empty edit #9827 is about.
+        //
+        // This is the same question `references.rs` asks with the same shared
+        // classifier: "is the cursor on the token that names the symbol we are
+        // about to act on?" A prefix component never is.
+        #[cfg(feature = "workspace")]
+        if let Ok(fqn_regex) = super::navigation::get_fqn_regex() {
+            let (line_start, line_text) = crate::util::line_window_around_offset(&doc.text, offset);
+            let cursor_in_line = offset.saturating_sub(line_start);
+            if matches!(
+                super::navigation::fqn_component_at_cursor(fqn_regex, line_text, cursor_in_line),
+                Some(super::navigation::FqnCursorComponent::Prefix)
+            ) {
+                return true;
+            }
+        }
+
         // A module name elsewhere — `use Foo::Bar;`, a qualified `Foo::Bar`
         // reference — which resolves to a package key.
         let current_pkg = crate::declaration::current_package_at(ast, offset);
@@ -701,7 +724,15 @@ impl LspServer {
     }
 
     /// True when `offset` falls inside the name of a `package` declaration.
+    ///
+    /// Descends only into subtrees that actually span `offset`, matching
+    /// `current_package_at` and `find_node_at_offset`. Without that bound this
+    /// would walk every node in the document on every `prepareRename`, where
+    /// the cursor is usually nowhere near a `package` declaration.
     fn offset_is_in_package_name_span(ast: &perl_parser_core::Node, offset: usize) -> bool {
+        if offset < ast.location.start || offset > ast.location.end {
+            return false;
+        }
         if let perl_parser_core::NodeKind::Package { name_span, .. } = &ast.kind
             && name_span.start <= offset
             && offset <= name_span.end
@@ -1405,6 +1436,33 @@ impl LspServer {
                     Some(uri),
                     None,
                     "blocked_context",
+                    0,
+                    "no_edit",
+                );
+                return Self::rename_unavailable();
+            }
+
+            // The cursor names a package, not something this provider renames.
+            // Refusing here is not only about honesty: for a package component
+            // of a qualified name the paths below resolve the *final* component
+            // and would rename that sub instead, editing a symbol the user never
+            // pointed at (#9827 review). `prepareRename` already refuses these
+            // positions, so a conforming client will not reach this; a client
+            // that skips `prepareRename` still must not get the wrong edit.
+            let rename_targets_package = {
+                let documents = self.documents_guard();
+                self.get_document(&documents, uri)
+                    .map(|doc| {
+                        let offset = self.pos16_to_offset(doc, line as u32, ch as u32);
+                        Self::rename_target_is_package(doc, offset)
+                    })
+                    .unwrap_or(false)
+            };
+            if rename_targets_package {
+                self.record_rename_provider_decision_trace(
+                    Some(uri),
+                    None,
+                    "package_rename_unsupported",
                     0,
                     "no_edit",
                 );
