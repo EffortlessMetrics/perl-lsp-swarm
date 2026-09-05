@@ -20,6 +20,7 @@
 
 use crate::{AnchorId, EntityId, FileId, OccurrenceId, OccurrenceKind, SourceGeneration};
 use serde::{Deserialize, Serialize};
+use unicode_ident::{is_xid_continue, is_xid_start};
 
 /// Current plan schema version.  A plan carrying any other version is refused.
 pub const MODULE_MOVE_SCHEMA_VERSION: u16 = 1;
@@ -821,15 +822,31 @@ const fn occurrence_kind_tag(kind: OccurrenceKind) -> &'static str {
     }
 }
 
+/// Whether `character` may continue a Perl identifier.
+///
+/// This is the identifier policy `perl-module::is_lookup_safe_module_name` is
+/// built on, expressed through the same `unicode-ident` crate. That helper
+/// cannot be called from here: `perl-semantic-facts` is a dependency of
+/// `perl-parser-core`, which `perl-module` depends on, so importing it is a
+/// cyclic package dependency and cargo refuses the build. Sharing the
+/// *standard* rather than the function is the closest available alignment, and
+/// it avoids a second, ASCII-only package grammar.
+fn continues_identifier(character: char) -> bool {
+    character == '_' || is_xid_continue(character)
+}
+
 /// A Perl package name this profile will write into source.
 ///
-/// No segment may begin with a digit: `package 123` and `package Foo::1` are
-/// not valid Perl, so admitting them would plan an edit that breaks the module.
+/// Segments follow XID: a start character (or `_`) then continuation
+/// characters. Under `use utf8` a package name may be non-ASCII, so an
+/// ASCII-only rule would refuse valid Perl. `package 123` and `package Foo::1`
+/// remain invalid, because a digit is not an XID start.
 fn valid_package(value: &str) -> bool {
     !value.is_empty()
         && value.split("::").all(|part| {
-            part.bytes().next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
-                && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            let mut characters = part.chars();
+            characters.next().is_some_and(|first| first == '_' || is_xid_start(first))
+                && characters.all(continues_identifier)
         })
 }
 
@@ -902,19 +919,11 @@ fn identity_sites(text: &str, identity: &str) -> Vec<usize> {
     // deliberately stricter than `is_perl_identifier_char` in `perl-parser`,
     // which is ASCII-only — refusing to rename is the safe direction for a
     // planner that rewrites source.
-    let boundary = |character: Option<char>| match character {
-        None => true,
-        Some(value) if value.is_ascii() => !(value.is_ascii_alphanumeric() || value == '_'),
-        // A non-ASCII neighbour may be a word character, a combining mark, a
-        // variation selector, or a joiner — every one of which continues a
-        // Perl identifier under `use utf8`, and `char::is_alphanumeric` is
-        // false for marks and selectors, so it cannot separate them from
-        // punctuation. Classifying them exactly needs Unicode tables this
-        // crate deliberately does not depend on, so an unclassifiable
-        // neighbour is refused rather than guessed: the planner renames only
-        // where it can prove the boundary.
-        Some(_) => false,
-    };
+    // A neighbour that can continue an identifier means the match is only a
+    // prefix of a longer name. XID_Continue covers combining marks and
+    // variation selectors, which `char::is_alphanumeric` reports as false and
+    // would otherwise read as punctuation.
+    let boundary = |character: Option<char>| !character.is_some_and(continues_identifier);
     text.match_indices(identity)
         .filter(|(start, _)| {
             let end = start + identity.len();
@@ -1878,8 +1887,8 @@ mod tests {
         }
     }
 
-    /// ASCII punctuation and whitespace are still boundaries, so the rule
-    /// cannot over-reject the occurrences a populator actually produces.
+    /// ASCII punctuation and whitespace are boundaries, so the rule cannot
+    /// over-reject the occurrences a populator actually produces.
     #[test]
     fn ascii_punctuation_remains_a_boundary() {
         for text in ["use Old::Name;", "use Old::Name qw(run)", "(Old::Name)", "\"Old::Name\""] {
@@ -1901,18 +1910,18 @@ mod tests {
         assert!(plan.edits.iter().all(|edit| edit.occurrence_id != OccurrenceId(4)));
     }
 
-    /// A neighbour this contract cannot classify is refused, never guessed.
-    /// `char::is_alphanumeric` is false for combining marks and variation
-    /// selectors, so it could not tell them from punctuation — and each one
-    /// continues the identifier, making the shorter prefix look complete.
+    /// A neighbour that can continue an identifier means the match is only a
+    /// prefix of a longer name. `char::is_alphanumeric` reports false for
+    /// combining marks, variation selectors and joiners, so it could not tell
+    /// them from punctuation; XID_Continue covers all three.
     #[test]
-    fn an_unclassifiable_unicode_neighbour_is_refused() {
+    fn an_identifier_continuation_is_not_a_boundary() {
         for (label, text) in [
             ("combining acute", "use Old::Name\u{301}"),
             ("variation selector", "use Old::Name\u{fe0f}"),
             ("zero-width joiner", "use Old::Name\u{200d}x"),
-            ("guillemet", "use \u{ab}Old::Name\u{bb}"),
-            ("em dash", "use \u{2014}Old::Name"),
+            ("latin A-ring", "use \u{c5}Old::Name"),
+            ("greek delta", "use Old::Name\u{394}"),
         ] {
             let item = occurrence_at(text, 40, 4);
             let plan = plan(vec![declaration(), item], source_only_snapshot());
@@ -1923,6 +1932,62 @@ mod tests {
             assert!(
                 plan.edits.iter().all(|edit| edit.occurrence_id != OccurrenceId(4)),
                 "{label} produced an edit"
+            );
+        }
+    }
+
+    /// Unicode punctuation is a genuine boundary, so the rule cannot
+    /// over-reject. An earlier, blunter rule refused every non-ASCII
+    /// neighbour and lost these.
+    #[test]
+    fn unicode_punctuation_remains_a_boundary() {
+        for text in ["use \u{ab}Old::Name\u{bb}", "use \u{2014}Old::Name"] {
+            let item = occurrence_at(text, 40, 4);
+            let plan = plan(vec![declaration(), item], source_only_snapshot());
+            assert!(plan.is_complete(), "{text} was rejected: {:?}", plan.blockers);
+        }
+    }
+
+    // --- Unicode package names (Devin review) ---------------------------------
+
+    /// Under `use utf8` a Perl module name may be non-ASCII. An ASCII-only
+    /// grammar refused valid source and valid targets outright.
+    #[test]
+    fn a_unicode_package_name_is_a_valid_identity() {
+        let mut input = source();
+        input.package = "Caf\u{e9}::Menu".into();
+        input.module = "Caf\u{e9}::Menu".into();
+        input.relative_path = "lib/Caf\u{e9}/Menu.pm".into();
+        let mut item = declaration();
+        item.old_text = "package Caf\u{e9}::Menu".into();
+        item.end_byte = item.old_text.len() as u32;
+        let plan = ModuleMovePlan::build(
+            input,
+            ModuleMoveTarget::Package("Bistro::\u{4e2d}\u{6587}".into()),
+            vec![item],
+            source_only_snapshot(),
+            false,
+        );
+        assert!(plan.is_complete(), "a Unicode module was refused: {:?}", plan.blockers);
+        assert_eq!(plan.resource.target_path, "lib/Bistro/\u{4e2d}\u{6587}.pm");
+        assert_eq!(plan.edits[0].new_text, "package Bistro::\u{4e2d}\u{6587}");
+    }
+
+    /// A digit is not an XID start, so the digit-leading rule survives the
+    /// move to Unicode identifiers.
+    #[test]
+    fn a_unicode_segment_still_may_not_begin_with_a_digit_or_mark() {
+        for target in ["New::123", "New::\u{301}Mark"] {
+            let plan = ModuleMovePlan::build(
+                source(),
+                ModuleMoveTarget::Package(target.into()),
+                vec![declaration()],
+                source_only_snapshot(),
+                false,
+            );
+            assert!(
+                plan.blockers.contains(&ModuleMoveBlocker::UnsafeTarget),
+                "{target} was accepted as a package name"
             );
         }
     }
