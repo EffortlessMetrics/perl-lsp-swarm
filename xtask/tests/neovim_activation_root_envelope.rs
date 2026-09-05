@@ -343,6 +343,28 @@ fn the_observation_cell_cannot_become_a_single_file_root_claim() -> Result<(), B
     Ok(())
 }
 
+/// The observation cell is exempt from `proven`, but only for the observation
+/// it exists to record — a run that failed to make it has not established the
+/// required cell either.
+#[test]
+fn a_failed_boundary_observation_is_not_exempt() -> Result<(), Box<dyn Error>> {
+    let cell = "boundary.no_marker_single_file";
+    for outcome in ["instrument_failed", "not_proven", "unsupported"] {
+        let mut envelope = valid_envelope()?;
+        envelope["roots"][cell]["semantic"]["outcome"] = json!(outcome);
+        envelope["roots"][cell]["semantic"]["reason"] = json!("degraded by this test");
+
+        assert_eq!(
+            rejection(validate_envelope(&envelope))?,
+            format!(
+                "envelope.roots.{cell}.semantic.outcome: the observation cell must record \
+                 `not_applicable`, found `{outcome}`"
+            )
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn a_non_proven_cell_must_say_why() -> Result<(), Box<dyn Error>> {
     let mut envelope = valid_envelope()?;

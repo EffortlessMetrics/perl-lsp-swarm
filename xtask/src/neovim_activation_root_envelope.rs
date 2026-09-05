@@ -136,6 +136,10 @@ const SEMANTIC_OUTCOMES: &[&str] =
 /// Marker recorded by the boundary row that deliberately has no marker at all.
 const BOUNDARY_MARKER: &str = "none";
 
+/// The only outcome the observation cell may record: it neither proves nor
+/// fails a root, because it asserts none.
+const OBSERVATION_ONLY_OUTCOME: &str = "not_applicable";
+
 /// The role the boundary row records instead of a root it never asserted.
 const OBSERVATION_ONLY_ROLE: &str = "observation_only";
 
@@ -616,12 +620,21 @@ fn validate_roots(root: &Map<String, Value>, config: &RecordedConfig) -> Validat
             proven_markers.insert(marker.to_owned());
         } else {
             require_nonempty_string(semantic, "reason", &format!("{semantic_path}.reason"))?;
-            // Marker coverage alone cannot carry this: several cells share one
-            // marker, so a degraded conflict or isolation cell would otherwise
-            // hide behind a sibling cell that happens to name the same marker.
-            if REQUIRED_ROOT_CELLS.iter().any(|(name, _)| *name == id.as_str())
-                && id != OBSERVATION_ONLY_ROOT_CELL
-            {
+            if id == OBSERVATION_ONLY_ROOT_CELL {
+                // The observation cell is the sole exemption from `proven`, but
+                // only for the deliberate observation it exists to record. A
+                // run that failed to make that observation has not established
+                // the required cell either.
+                if outcome != OBSERVATION_ONLY_OUTCOME {
+                    return Err(EnvelopeValidationError::new(format!(
+                        "{semantic_path}.outcome: the observation cell must record \
+                         `{OBSERVATION_ONLY_OUTCOME}`, found `{outcome}`"
+                    )));
+                }
+            } else if REQUIRED_ROOT_CELLS.iter().any(|(name, _)| *name == id.as_str()) {
+                // Marker coverage alone cannot carry this: several cells share
+                // one marker, so a degraded conflict or isolation cell would
+                // otherwise hide behind a sibling cell naming the same marker.
                 return Err(EnvelopeValidationError::new(format!(
                     "{semantic_path}.outcome: required root cell `{id}` is `{outcome}`; it must \
                      reach `proven` on its own evidence"
