@@ -54,6 +54,11 @@ const LEGACY_POPULATION_REQUIRED: &[&str] = &[
     "transformation_profile",
     "population_identity",
     "aggregate_metric",
+    // Every metric under legacy quarantine, not just the aggregate: the
+    // whitespace row is the only one bound to a projected population, so a
+    // contract keyed on `aggregate_metric` alone let the other two reappear as
+    // `measured` and count as trusted accuracy.
+    "quarantined_metrics",
     "population_total_count",
     "population_applied_count",
     "population_unclassified_count",

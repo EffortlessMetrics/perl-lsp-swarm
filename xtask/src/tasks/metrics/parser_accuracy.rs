@@ -70,6 +70,19 @@ const SAFETY_FLOOR_METRICS: &[(&str, f64)] =
 /// Aggregate metric name bound to the retained legacy whitespace population.
 const LEGACY_WHITESPACE_AGGREGATE_METRIC: &str = "whitespace_invariance_rate";
 /// Transformation profile for the quarantined legacy EOF-comment observation.
+/// Every legacy metamorphic observation held as investigation-only evidence.
+///
+/// `LEGACY_WHITESPACE_AGGREGATE_METRIC` is the only one bound to a projected
+/// population, so a contract keyed on it alone left the other two able to
+/// reappear as `measured` and be counted as trusted accuracy. The artifact
+/// declares this set and both validators enforce the declaration, which keeps
+/// the retired name classifier retired.
+const LEGACY_QUARANTINED_METRICS: [&str; 3] = [
+    LEGACY_WHITESPACE_AGGREGATE_METRIC,
+    "comment_invariance_rate",
+    "newline_style_invariance_rate",
+];
+
 const LEGACY_COMMENT_PROFILE: &str = "eof_comment.legacy.v1";
 /// Transformation profile for the quarantined legacy LF-to-CRLF observation.
 const LEGACY_NEWLINE_STYLE_PROFILE: &str = "newline_style.legacy.v1";
@@ -507,6 +520,7 @@ struct LegacyPopulationEvidence {
     transformation_profile: String,
     population_identity: String,
     aggregate_metric: String,
+    quarantined_metrics: Vec<String>,
     population_total_count: u64,
     population_applied_count: u64,
     population_unclassified_count: u64,
@@ -1365,6 +1379,7 @@ fn project_legacy_population(
         transformation_profile: summary.transformation_profile,
         population_identity: summary.population_identity,
         aggregate_metric: LEGACY_WHITESPACE_AGGREGATE_METRIC.to_string(),
+        quarantined_metrics: LEGACY_QUARANTINED_METRICS.iter().map(|m| (*m).to_string()).collect(),
         population_total_count: summary.total_case_count as u64,
         population_applied_count: summary.applied_case_count as u64,
         population_unclassified_count: summary.unclassified_case_count as u64,
@@ -6337,6 +6352,16 @@ fn validate_legacy_population_evidence(artifact: &ParserAccuracyArtifact) -> Res
     // custom `--manifest` whose fixtures are all excluded by the legacy
     // whitespace heuristic, and makes `--json` write an artifact this same
     // validator and the status reader then refuse.
+    if population.quarantined_metrics.is_empty() {
+        bail!("legacy population must declare the metrics it quarantines");
+    }
+    if !population.quarantined_metrics.contains(&population.aggregate_metric) {
+        bail!(
+            "legacy population declares aggregate {} but does not list it among its quarantined metrics",
+            population.aggregate_metric
+        );
+    }
+
     let expects_observation = population.population_applied_count > 0;
     let mut aggregate_investigation_rows: Vec<&MetricRow> = Vec::new();
     let mut aggregate_insufficient_rows = 0_usize;
@@ -6378,9 +6403,13 @@ fn validate_legacy_population_evidence(artifact: &ParserAccuracyArtifact) -> Res
                 }
                 aggregate_insufficient_rows += 1;
             }
-            MetricRow::Measured { metric, .. } if metric == &population.aggregate_metric => {
+            // Any quarantined metric, not only the declared aggregate.
+            MetricRow::Measured { metric, .. }
+                if metric == &population.aggregate_metric
+                    || population.quarantined_metrics.contains(metric) =>
+            {
                 bail!(
-                    "legacy aggregate {metric} is serialized as trusted evidence; the retained population requires typed investigation rows"
+                    "quarantined legacy metric {metric} is serialized as trusted evidence; the retained population requires typed investigation rows"
                 );
             }
             MetricRow::Measured { .. } | MetricRow::InsufficientData { .. } => {}
@@ -7042,6 +7071,10 @@ mod tests {
             transformation_profile: "trailing_horizontal_whitespace.legacy.v1".to_string(),
             population_identity: format!("sha256:{}", "0".repeat(64)),
             aggregate_metric: LEGACY_WHITESPACE_AGGREGATE_METRIC.to_string(),
+            quarantined_metrics: LEGACY_QUARANTINED_METRICS
+                .iter()
+                .map(|m| (*m).to_string())
+                .collect(),
             population_total_count: 4,
             population_applied_count: 2,
             population_unclassified_count: 2,
@@ -10102,6 +10135,31 @@ sub dynamic_boundary_case {
             ))
             .is_err(),
             "a zero-applied population must not carry investigation evidence"
+        );
+
+        // Quarantined metrics other than the declared aggregate must not be
+        // serialized as trusted evidence either. The whitespace row is the only
+        // one bound to a projected population, so a rule keyed on
+        // `aggregate_metric` alone missed these two.
+        for metric in ["comment_invariance_rate", "newline_style_invariance_rate"] {
+            assert!(
+                validate_legacy_population_evidence(&artifact(
+                    test_legacy_population(),
+                    vec![aggregate_row(2, 0.5), measured_value(metric, 1.0, 47, Cadence::Pr),]
+                ))
+                .is_err(),
+                "a measured {metric} must be refused: it is quarantined evidence"
+            );
+        }
+
+        // A population that does not list its own declared aggregate is
+        // internally inconsistent.
+        let mut unlisted = test_legacy_population();
+        unlisted.quarantined_metrics = vec!["comment_invariance_rate".to_string()];
+        assert!(
+            validate_legacy_population_evidence(&artifact(unlisted, vec![aggregate_row(2, 0.5)]))
+                .is_err(),
+            "a population omitting its own aggregate from the quarantine list must be refused"
         );
 
         // And with rows applied, an untyped aggregate stays refused.

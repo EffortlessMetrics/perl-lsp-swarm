@@ -141,6 +141,7 @@ fn projected_rows_and_failure_packets_cannot_carry_investigation_claims() {
                 "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
                 "population_identity": format!("sha256:{}", "a".repeat(64)),
                 "aggregate_metric": "whitespace_invariance_rate",
+                "quarantined_metrics": ["whitespace_invariance_rate"],
                 "population_total_count": 4,
                 "population_applied_count": 2,
                 "population_unclassified_count": 2,
@@ -241,5 +242,88 @@ fn projected_rows_and_failure_packets_cannot_carry_investigation_claims() {
     assert!(
         trust_disposition_is_fail_closed(&parse(&unrelated)),
         "packets against trusted or unnamed metrics must not reject the artifact"
+    );
+}
+
+#[test]
+fn quarantined_legacy_metrics_cannot_reappear_as_measured() {
+    // The generator quarantines three legacy observations —
+    // whitespace_invariance_rate, comment_invariance_rate and
+    // newline_style_invariance_rate — but `legacy_population` names only the
+    // whitespace one as its aggregate. The reader rejected a measured row only
+    // when it matched that single name, so a measured comment or newline row
+    // passed and rendered as trusted accuracy.
+    let artifact = |extra: serde_json::Value| {
+        serde_json::json!({
+            "schema_version": 1,
+            "subsystem": "parser_accuracy",
+            "cadence": "pr",
+            "denominator": denominator_json(),
+            "families": [{ "family": "packages", "fixture_count": 4 }],
+            "metrics": [
+                {
+                    "state": "investigation_only",
+                    "metric": "whitespace_invariance_rate",
+                    "value": 0.5,
+                    "sample_count": 2,
+                    "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+                    "evidence_class": "investigation_only",
+                    "terminal_disposition": "not_proven",
+                    "reason": "legacy_hash_oracle_untrusted",
+                    "packet_policy": "none",
+                    "floor_eligible": false,
+                },
+                extra,
+            ],
+            "legacy_population": {
+                "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+                "population_identity": format!("sha256:{}", "a".repeat(64)),
+                "aggregate_metric": "whitespace_invariance_rate",
+                "quarantined_metrics": ["whitespace_invariance_rate"],
+                "quarantined_metrics": [
+                    "whitespace_invariance_rate",
+                    "comment_invariance_rate",
+                    "newline_style_invariance_rate",
+                ],
+                "population_total_count": 4,
+                "population_applied_count": 2,
+                "population_unclassified_count": 2,
+                "manifest_schema_version": 1,
+            },
+            "failure_packets": [],
+            "gold_drift": {},
+            "metric_runtime": {},
+        })
+        .to_string()
+    };
+    let parse = |raw: &str| -> ParserAccuracyArtifactSummary {
+        serde_json::from_str(raw).expect("well-shaped artifact must deserialize")
+    };
+
+    for metric in ["comment_invariance_rate", "newline_style_invariance_rate"] {
+        let raw = artifact(serde_json::json!({
+            "state": "measured",
+            "metric": metric,
+            "value": 1.0,
+            "sample_count": 47,
+        }));
+        assert!(
+            !trust_disposition_is_fail_closed(&parse(&raw)),
+            "a measured {metric} must fail closed: it is quarantined evidence"
+        );
+    }
+
+    // Positive control: a metric outside the quarantine is ordinary trusted
+    // accuracy and must still pass, so this is a declaration check rather than
+    // the name classifier this contract retired.
+    let trusted = artifact(serde_json::json!({
+        "state": "measured",
+        "metric": "line_construct_f1",
+        "value": 1.0,
+        "sample_count": 125,
+    }));
+    assert!(
+        trust_disposition_is_fail_closed(&parse(&trusted)),
+        "a non-quarantined measured metric must still be trusted"
     );
 }

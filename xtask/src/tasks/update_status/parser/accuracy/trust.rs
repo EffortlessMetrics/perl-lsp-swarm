@@ -41,6 +41,15 @@ pub(super) fn trust_disposition_is_fail_closed(artifact: &ParserAccuracyArtifact
         return false;
     }
 
+    // The declared aggregate must appear in its own quarantine list, or the
+    // two declarations disagree about what this population covers.
+    if !population.quarantined_metrics.contains(&population.aggregate_metric) {
+        return false;
+    }
+    if population.quarantined_metrics.iter().any(String::is_empty) {
+        return false;
+    }
+
     let expects_observation = population.population_applied_count > 0;
     let mut aggregate_investigation_rows = 0_usize;
     let mut aggregate_insufficient_rows = 0_usize;
@@ -103,8 +112,12 @@ pub(super) fn trust_disposition_is_fail_closed(artifact: &ParserAccuracyArtifact
                 aggregate_insufficient_rows += 1;
             }
             // A measured aggregate is trusted accuracy by another name.
+            // Any quarantined metric, not only the declared aggregate: a
+            // measured form of quarantined evidence is trusted accuracy by
+            // another name.
             ParserAccuracyMetricSummary::Measured { metric, .. }
-                if metric == &population.aggregate_metric =>
+                if metric == &population.aggregate_metric
+                    || population.quarantined_metrics.contains(metric) =>
             {
                 return false;
             }

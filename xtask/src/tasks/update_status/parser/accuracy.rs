@@ -75,6 +75,14 @@ pub(super) struct ParserAccuracyLegacyPopulation {
     pub(super) transformation_profile: String,
     pub(super) population_identity: String,
     pub(super) aggregate_metric: String,
+    /// Every metric under legacy quarantine, not just the aggregate.
+    ///
+    /// The generator quarantines three legacy observations but `aggregate_metric`
+    /// names only the whitespace one, so a rule keyed on that name let a measured
+    /// `comment_invariance_rate` render as trusted accuracy. Enforcing a
+    /// *declaration* keeps the name classifier this contract retired retired: the
+    /// artifact says what is quarantined, and the reader holds it to that.
+    pub(super) quarantined_metrics: Vec<String>,
     pub(super) population_total_count: u64,
     pub(super) population_applied_count: u64,
     pub(super) population_unclassified_count: u64,

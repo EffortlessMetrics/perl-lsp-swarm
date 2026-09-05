@@ -88,6 +88,7 @@ pub(super) fn valid_population() -> ParserAccuracyLegacyPopulation {
         transformation_profile: "trailing_horizontal_whitespace.legacy.v1".to_string(),
         population_identity: format!("sha256:{}", "a".repeat(64)),
         aggregate_metric: "whitespace_invariance_rate".to_string(),
+        quarantined_metrics: vec!["whitespace_invariance_rate".to_string()],
         population_total_count: 4,
         population_applied_count: 2,
         population_unclassified_count: 2,
