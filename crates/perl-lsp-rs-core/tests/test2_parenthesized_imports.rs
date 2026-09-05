@@ -5,7 +5,8 @@ use perl_tdd_support::must;
 use std::io;
 
 fn resolve_v0(args: &str) -> Result<ResolvedImport, Box<dyn std::error::Error>> {
-    resolve_import("Test2::V0", args).ok_or_else(|| io::Error::other("Test2::V0 must be recognized").into())
+    resolve_import("Test2::V0", args)
+        .ok_or_else(|| io::Error::other("Test2::V0 must be recognized").into())
 }
 
 fn complete(source_with_cursor: &str) -> Vec<CompletionItem> {
@@ -22,17 +23,13 @@ fn complete(source_with_cursor: &str) -> Vec<CompletionItem> {
 fn test2_labels(items: &[CompletionItem]) -> Vec<&str> {
     items
         .iter()
-        .filter(|item| {
-            item.sort_text.as_deref().is_some_and(|sort| sort.starts_with("2_test2_"))
-        })
+        .filter(|item| item.sort_text.as_deref().is_some_and(|sort| sort.starts_with("2_test2_")))
         .map(|item| item.label.as_ref())
         .collect()
 }
 
 #[test]
-fn explicit_selection_excludes_v0_defaults()
-    -> Result<(), Box<dyn std::error::Error>>
-{
+fn explicit_selection_excludes_v0_defaults() -> Result<(), Box<dyn std::error::Error>> {
     let resolved = resolve_v0("('ok')")?;
 
     assert!(resolved.symbols.contains("ok"));
