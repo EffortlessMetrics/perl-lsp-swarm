@@ -1168,45 +1168,114 @@ impl LspServer {
     /// publishing this still produces an empty `publishDiagnostics` payload,
     /// which is how LSP signals "the parse cleared". This is what makes the
     /// `syntax_only_clears_when_parse_errors_clear` acceptance case work.
+    /// Canonical regex findings for the syntax-only paths (#7024).
+    ///
+    /// Syntax-only publishes `parse_errors` and nothing else. That was a complete
+    /// account of regex findings only while the legacy per-operator scan emitted them
+    /// as parser `Advisory` entries. A `RetainedRegexSession` suppresses that scan, so
+    /// without this projection the mode loses those findings outright — measured, a
+    /// nested quantifier leaves `parse_errors` empty where it previously carried one
+    /// advisory.
+    ///
+    /// This stays inside the mode's contract. The retained table is produced by the
+    /// parse that syntax-only already performs, not by the semantic, critic,
+    /// module-resolution, or dead-code stack the mode exists to skip, so projecting it
+    /// costs nothing the mode was avoiding.
+    ///
+    /// Freshness is checked exactly as the full provider checks it, against the code
+    /// slice rather than the whole document, because the parser never sees past
+    /// `__DATA__` / `__END__`.
+    fn syntax_only_regex_items(
+        regex_analysis: Option<&perl_parser_core::RegexAnalysisTable>,
+        text: &str,
+        line_starts: &perl_parser::position::LineStartsCache,
+        markup_message_support: bool,
+    ) -> Vec<Value> {
+        let Some(table) =
+            regex_analysis.filter(|table| table.source_matches(perl_lexer::code_slice(text)))
+        else {
+            return Vec::new();
+        };
+        let pos16 = |offset: usize| line_starts.offset_to_position(text, offset);
+        perl_lsp_rs_core::providers::diagnostics::regex_canonical::project_canonical_regex_diagnostics(
+            table,
+        )
+        .into_iter()
+        .map(|d| {
+            let (start_line, start_char) = pos16(d.range.0);
+            let (end_line, end_char) = pos16(d.range.1);
+            let severity = match d.severity {
+                InternalDiagnosticSeverity::Error => 1,
+                InternalDiagnosticSeverity::Warning => 2,
+                InternalDiagnosticSeverity::Information => 3,
+                InternalDiagnosticSeverity::Hint => 4,
+                // Forward-compatible fallback for future variants (#2898)
+                _ => 1,
+            };
+            let msg_val =
+                Self::diagnostic_message_value(&d.message, None, markup_message_support);
+            diagnostic_json(
+                start_line,
+                start_char,
+                end_line,
+                end_char,
+                severity,
+                d.code.as_deref().unwrap_or_default(),
+                "perl-lsp",
+                msg_val,
+            )
+        })
+        .collect()
+    }
+
     fn syntax_only_lsp_diagnostics(
         parse_errors: &[perl_parser::error::ParseError],
+        regex_analysis: Option<&perl_parser_core::RegexAnalysisTable>,
         text: &str,
         line_starts: &perl_parser::position::LineStartsCache,
         markup_message_support: bool,
     ) -> Vec<Value> {
         let pos16 = |offset: usize| line_starts.offset_to_position(text, offset);
-        parse_errors
-            .iter()
-            .map(|e| {
-                let base_message = parse_error_base_message(e);
-                let location = resolved_parse_diagnostic_offset(e, text);
-                let message =
-                    match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(
-                        e,
-                        &base_message,
-                    ) {
-                        Some(hint) => format!("{base_message}\nSuggestion: {hint}"),
-                        None => base_message,
-                    };
-                let (line, character) = pos16(location);
-                let msg_val = Self::diagnostic_message_value(
-                    &message,
-                    None,
-                    markup_message_support,
-                );
-                diagnostic_json(
-                    line, character, line, character + 1,
-                    if e.blocks_clean_parse() { 1 } else { 2 },
-                    DiagnosticCode::ParseError.as_str(),
-                    "perl-lsp",
-                    // Preserve the negotiated String | MarkupContent union
-                    // (#9131): coercing through `as_str()` dropped the object
-                    // shape and emitted an empty message for markup-capable
-                    // clients.
-                    msg_val,
-                )
-            })
-            .collect()
+        let mut items: Vec<Value> =
+            parse_errors
+                .iter()
+                .map(|e| {
+                    let base_message = parse_error_base_message(e);
+                    let location = resolved_parse_diagnostic_offset(e, text);
+                    let message =
+                        match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(
+                            e,
+                            &base_message,
+                        ) {
+                            Some(hint) => format!("{base_message}\nSuggestion: {hint}"),
+                            None => base_message,
+                        };
+                    let (line, character) = pos16(location);
+                    let msg_val =
+                        Self::diagnostic_message_value(&message, None, markup_message_support);
+                    diagnostic_json(
+                        line,
+                        character,
+                        line,
+                        character + 1,
+                        if e.blocks_clean_parse() { 1 } else { 2 },
+                        DiagnosticCode::ParseError.as_str(),
+                        "perl-lsp",
+                        // Preserve the negotiated String | MarkupContent union
+                        // (#9131): coercing through `as_str()` dropped the object
+                        // shape and emitted an empty message for markup-capable
+                        // clients.
+                        msg_val,
+                    )
+                })
+                .collect();
+        items.extend(Self::syntax_only_regex_items(
+            regex_analysis,
+            text,
+            line_starts,
+            markup_message_support,
+        ));
+        items
     }
 
     /// Push-path publication restricted to parse errors. See
@@ -1225,6 +1294,9 @@ impl LspServer {
                 let parsed = doc.current_parsed()?;
                 Some((
                     parsed.parse_errors_arc(),
+                    // Same generation as the parse errors above: both come off the
+                    // one `current_parsed()` snapshot (#7024).
+                    parsed.regex_analysis().cloned(),
                     std::sync::Arc::clone(&doc.text_arc),
                     doc.version,
                     doc.line_starts.clone(),
@@ -1234,9 +1306,18 @@ impl LspServer {
             })
         };
         let snapshot = snapshot.map(
-            |(parse_errors, text, version, line_starts, generation, gen_at_snapshot)| {
+            |(
+                parse_errors,
+                regex_analysis,
+                text,
+                version,
+                line_starts,
+                generation,
+                gen_at_snapshot,
+            )| {
                 (
                     parse_errors,
+                    regex_analysis,
                     text,
                     version,
                     line_starts,
@@ -1249,6 +1330,7 @@ impl LspServer {
 
         let Some((
             parse_errors,
+            regex_analysis,
             text,
             version,
             line_starts,
@@ -1260,8 +1342,13 @@ impl LspServer {
             return;
         };
 
-        let lsp_diagnostics =
-            Self::syntax_only_lsp_diagnostics(&parse_errors, &text, &line_starts, false);
+        let lsp_diagnostics = Self::syntax_only_lsp_diagnostics(
+            &parse_errors,
+            regex_analysis.as_deref(),
+            &text,
+            &line_starts,
+            false,
+        );
 
         // Accepted-ticket sink boundary (#11673): same contract as the full
         // path -- validate instance + generation at the enqueue, not before.
@@ -1547,11 +1634,17 @@ impl LspServer {
             };
             if let Some((doc, generation, gen_at_snapshot)) = doc_snapshot {
                 let markup_message_support = self.client_capabilities.lock().markup_message_support;
-                let parse_errors = doc
-                    .current_parsed()
+                // Both come off the one `current_parsed()` snapshot so the regex
+                // table cannot describe a different generation than the parse
+                // errors beside it (#7024).
+                let parsed = doc.current_parsed();
+                let parse_errors = parsed
+                    .as_ref()
                     .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| p.parse_errors_arc());
+                let regex_analysis = parsed.as_ref().and_then(|p| p.regex_analysis().cloned());
                 let items = Self::syntax_only_lsp_diagnostics(
                     &parse_errors,
+                    regex_analysis.as_deref(),
                     &doc.text,
                     &doc.line_starts,
                     markup_message_support,
@@ -6307,6 +6400,50 @@ print \"unreachable\\n\";\n";
             .unwrap_or_default();
         assert!(!items.is_empty(), "syntax-only pull must report parse errors; got {items:?}");
         items
+    }
+
+    /// Syntax-only mode must still publish canonical regex findings (#7024).
+    ///
+    /// Before retention a nested quantifier reached this mode as a parser `Advisory`
+    /// inside `parse_errors`, which syntax-only publishes. A `RetainedRegexSession`
+    /// suppresses that legacy scan, so projecting the retained table here is what keeps
+    /// the finding from disappearing for anyone running `--diagnostic-mode syntax-only`.
+    ///
+    /// Measured with the session active and no projection, `parse_errors` for this
+    /// document is empty; without the session it carries exactly one advisory.
+    #[test]
+    fn syntax_only_pull_publishes_canonical_regex_findings() {
+        const BACKTRACKING_DOCUMENT: &str = "my $re = qr/(a+)+b/;\n";
+
+        let mut tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
+        tuning.diagnostic_mode = perl_lsp_rs_core::runtime::tuning::DiagnosticMode::SyntaxOnly;
+        let server = message_union_server(tuning, false);
+        let uri = message_union_uri("7024_syntax_only_regex.pl");
+        server.test_apply_did_open(&uri, BACKTRACKING_DOCUMENT, 1).expect("didOpen should succeed");
+        let report = server
+            .test_handle_document_diagnostic(Some(json!({
+                "textDocument": { "uri": uri },
+            })))
+            .expect("syntax-only document pull should not error");
+        let items = report
+            .and_then(|r| r.get("items").and_then(Value::as_array).cloned())
+            .unwrap_or_default();
+
+        // Control: this document parses cleanly, so a passing assertion below cannot
+        // be an artifact of some unrelated parse error carrying the finding.
+        assert!(
+            items.iter().all(|item| item.get("code").and_then(Value::as_str)
+                != Some(DiagnosticCode::ParseError.as_str())),
+            "fixture must not rely on a parse error: {items:?}"
+        );
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| item.get("code").and_then(Value::as_str) == Some("PL1000"))
+                .count(),
+            1,
+            "syntax-only must publish the backtracking risk: {items:?}"
+        );
     }
 
     #[test]
