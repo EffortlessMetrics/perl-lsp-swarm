@@ -158,6 +158,21 @@
       "boundedness": "focused"
     },
     {
+      "id": "parser.red_black_tree_delete_fixup",
+      "package": "perl-parser-core",
+      "target": "red_black_tree_delete_fixup_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#13600",
+      "reason": "Pin red-black deletion, transplant, successor-search, and mirrored double-black fix-up access paths.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
       "id": "parser.semantic.smoke",
       "package": "perl-parser",
       "target": "semantic_smoke_tests",
