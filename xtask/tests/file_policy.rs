@@ -202,19 +202,6 @@ fn non_rust_inventory_markdown_has_header() -> Result<()> {
     Ok(())
 }
 
-/// Assert that `docs/policy/NON_RUST_INVENTORY.md` matches what the current
-/// tree generates.
-///
-/// When this test fails, the committed snapshot is stale.  Refresh it with:
-///
-/// ```text
-/// cargo xtask non-rust inventory --write
-/// ```
-///
-/// then commit the updated file.  The test deliberately fails with a diff so
-/// that the stale content is visible without opening a separate file — compare
-/// the "left" (committed) with the "right" (generated) in the panic output.
-
 /// The generated inventory check is only useful when the existing policy
 /// shard actually invokes it. Keep the source policy and workflow matrix
 /// wired to the same direct, read-only command.

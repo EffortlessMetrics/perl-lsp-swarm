@@ -1483,6 +1483,14 @@ fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -
                  add entries to policy/non-rust-allowlist.toml before merging"
             );
         }
+    } else if std::env::var_os("CI").is_some() {
+        // Without a baseline the new-path ratchet cannot run. Locally that is a
+        // warning; in CI it would silently pass every unclassified addition, so
+        // the required gate fails closed instead (#14688).
+        bail!(
+            "cannot resolve a merge baseline in CI; the newly added unclassified-path \
+             ratchet did not run (fetch with full history so origin/main resolves)"
+        );
     } else {
         eprintln!(
             "warning: cannot resolve a merge baseline; current-tree evidence was emitted, \
