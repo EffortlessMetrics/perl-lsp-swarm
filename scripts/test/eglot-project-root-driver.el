@@ -41,20 +41,33 @@
     "connect_failed"))
 
 (defun perl-lsp-root-probe--initialize-request-root-uri (server)
-  "Extract the initialize request rootUri from this exact server's events."
+  "Read the initialize rootUri from SERVER own event log.
+
+Returns nil when the log carried no rootUri at all, or a cons cell whose
+cdr is the URI string, or nil for an explicit JSON null.  The two states
+are kept apart on purpose: a rootUri the instrument could not extract is
+an instrument failure and must never be recorded as a stock null.
+
+Emacs 29 bundled jsonrpc pretty-prints the outgoing message as a Lisp
+plist, spelling the field :rootUri, while Emacs 30 logs raw JSON and
+spells it rootUri inside quotes.  Both spellings are read; neither is
+assumed."
   (let* ((events (ignore-errors (jsonrpc-events-buffer server)))
          (text (and events
                     (buffer-live-p events)
                     (with-current-buffer events
                       (buffer-string)))))
-    (when (and text
-               (string-match
-                "\"rootUri\"[[:space:]]*:[[:space:]]*\\(?:\"\\([^\"]*\\)\"\\|null\\)"
-                text))
-      ;; Group 1 matches only inside the quotes, so a JSON `null' rootUri and
-      ;; a trailing-whitespace layout both yield nil rather than a token that
-      ;; still carries its delimiters into the durable record.
-      (match-string 1 text))))
+    (cond
+     ((null text) nil)
+     ;; Emacs 30 and any full-JSON renderer.
+     ((string-match
+       "\"rootUri\"[[:space:]]*:[[:space:]]*\\(?:\"\\([^\"]*\\)\"\\|null\\)"
+       text)
+      (cons t (match-string 1 text)))
+     ;; Emacs 29 bundled jsonrpc, which logs the plist rather than JSON.
+     ((string-match ":rootUri[[:space:]]+\\(?:\"\\([^\"]*\\)\"\\|nil\\)" text)
+      (cons t (match-string 1 text)))
+     (t nil))))
 
 (defun perl-lsp-root-probe--live-server-count (server)
   "Return one only when this case's exact server process is still live."
@@ -111,12 +124,21 @@
                                       '("perl")))))))
                       (if (and connected
                                (process-live-p (jsonrpc--process connected)))
-                          (let ((observed
-                                 `((initialize_root_uri
-                                    . ,(or
-                                        (perl-lsp-root-probe--initialize-request-root-uri
-                                         connected)
-                                        :null)))))
+                          (let* ((extracted
+                                  (perl-lsp-root-probe--initialize-request-root-uri
+                                   connected))
+                                 (observed
+                                  ;; An unreadable event log is an instrument
+                                  ;; failure, so it refuses.  Only an explicit
+                                  ;; null from a log that did carry a rootUri
+                                  ;; serializes as :null.
+                                  (if extracted
+                                      `((initialize_root_uri
+                                         . ,(or (cdr extracted) :null)))
+                                    '((initialize_root_uri . :null)
+                                      (manual_action_required . :true)
+                                      (refusal_reason
+                                       . "initialize_root_uri_not_extractable")))))
                             ;; Observe while alive, then end the session here
                             ;; only; final cleanup verification stays with
                             ;; the single post-run cleanup phase below.

@@ -113,7 +113,8 @@
   "limitations": [
     "Hosted-run observation was unavailable for this cut: no exact pinned Emacs build (29.4/30.1 GNU ELPA-resolved subjects) exists on the authoring host and no hosted runner executes Emacs today, so all twelve rows stay explicitly hosted_pending with unobserved slots instead of manufactured passes.",
     "The instrument records only after cleanup verification; no row may claim facts from a torn-down-but-alive process generation.",
-    "Fixture-relative identities only: durable rows never carry absolute host paths."
+    "Fixture-relative identities only: durable rows never carry absolute host paths.",
+    "The initialize rootUri is read from the exact server's own event log in both known renderings (Emacs 29 bundled jsonrpc logs a Lisp plist spelling :rootUri; Emacs 30 logs raw JSON). A log the instrument cannot read records the typed refusal initialize_root_uri_not_extractable, never an observed null. Which rendering each pinned subject actually emits stays unverified until a host run observes it."
   ],
   "observation_denominator": {
     "definition": "The durable denominator is every case x in-scope-subject cell; a hosted run fills at most one observation per subject per case and may never overwrite another subject's cell.",

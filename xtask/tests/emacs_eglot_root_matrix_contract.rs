@@ -616,3 +616,44 @@ fn root_matrix_observation_denominator_is_explicit_and_unobserved() -> Result<()
     assert_eq!(observed, 0, "no cell may carry facts before an exact pinned-subject host run");
     Ok(())
 }
+
+#[test]
+fn root_probe_driver_refuses_an_unreadable_root_uri_instead_of_recording_null()
+-> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let driver = read(&root, DRIVER)?;
+
+    // Emacs 29 bundled jsonrpc pretty-prints the outgoing message as a Lisp
+    // plist; Emacs 30 logs raw JSON. Reading only one spelling makes every
+    // successful session on the other host record a null rootUri that stock
+    // never produced.
+    assert!(
+        driver.contains(":rootUri"),
+        "the extractor must read the Emacs 29 plist spelling of rootUri"
+    );
+    assert!(
+        driver.contains("\\\"rootUri\\\""),
+        "the extractor must read the Emacs 30 JSON spelling of rootUri"
+    );
+
+    // The record's own rule is that missing instrumentation refuses rather
+    // than passes, so a log the instrument cannot read may not serialize as
+    // an observed null.
+    assert!(
+        driver.contains("initialize_root_uri_not_extractable"),
+        "an unreadable event log must record a typed refusal, not a stock null"
+    );
+
+    let forms = driver_forms(&root)?;
+    let refusal_is_reachable = forms.iter().any(|form| {
+        form.head() == Some("if")
+            && form.nth_atom(1) == Some("extracted")
+            && matches!(form, Sexp::List(items) if items.len() == 4)
+    });
+    assert!(
+        refusal_is_reachable,
+        "the extraction result must select between the observed value and the refusal through a \
+         complete `(if extracted OBSERVED REFUSAL)`"
+    );
+    Ok(())
+}
