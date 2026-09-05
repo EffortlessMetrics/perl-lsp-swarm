@@ -1,7 +1,9 @@
 #![deny(clippy::map_err_ignore)]
 // Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
-//! Tests for issue #14841 — a `foreach` list is analyzed before the loop
-//! variable is declared, so the list cannot see the iterator.
+//! Tests for issue #14841 — a lexical `foreach` iterator is unavailable while
+//! the list is analyzed, so `for my $x ($x)` is undeclared under strict.
+//! An `our` iterator is a compile-time package alias: Perl accepts
+//! `for our $x ($x)` under strict, and the analyzer must stay quiet.
 //!
 //! Real Perl (5.38.2 `perl -c`):
 //!
@@ -21,11 +23,25 @@
 //!
 //! $ perl -c -e 'use strict; for my $x (my $y = 1) { } print $y;'
 //! Global symbol "$y" requires explicit package name ...
+//!
+//! $ perl -c -e 'use strict; for our $x ($x) { }'
+//! -e syntax OK
+//!
+//! $ perl -c -e 'use strict; foreach our $x ($x) { }'
+//! -e syntax OK
+//!
+//! $ perl -c -e 'use strict; for our $x (1) { } print $x;'
+//! Variable "$x" is not imported ...
+//!
+//! $ perl -c -e 'use strict; use feature "state"; for state $x ($x) { }'
+//! Global symbol "$x" requires explicit package name ...
 //! ```
 //!
 //! The analyzer previously analyzed the list inside `loop_scope` *after*
-//! declaring the loop variable, so the strict self-reference produced no
-//! `UndeclaredVariable`. A `my` in the list remains loop-scoped.
+//! declaring the loop variable, so a `my` self-reference produced no
+//! `UndeclaredVariable`. A `my` in the list remains loop-scoped. Listing
+//! `our` after the iterator would reintroduce that `my` hole; listing
+//! `our` in the enclosing scope would leak it after the loop.
 
 use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssue};
@@ -128,5 +144,57 @@ fn foreach_list_my_does_not_leak_after_loop() {
     assert!(
         has_undeclared(&issues, "$y"),
         "`for my $x (my $y = 1) {{ }} print $y;` must report UndeclaredVariable for $y; got: {issues:?}"
+    );
+}
+
+/// `use strict; for our $x ($x) { }` — `our` is a compile-time package alias.
+/// perl 5.38.2: `-e syntax OK`. A list-before-iterator walk reports this
+/// undeclared (the live false positive after the `my` reorder).
+#[test]
+fn foreach_our_list_sees_iterator_under_strict() {
+    let code = "use strict; for our $x ($x) { }";
+    let issues = scope_issues(code);
+    assert!(
+        !has_undeclared(&issues, "$x"),
+        "`use strict; for our $x ($x) {{ }}` must not report UndeclaredVariable; got: {issues:?}"
+    );
+}
+
+/// Same compile-time alias through the `foreach` keyword.
+#[test]
+fn foreach_keyword_our_list_sees_iterator_under_strict() {
+    let code = "use strict; foreach our $x ($x) { }";
+    let issues = scope_issues(code);
+    assert!(
+        !has_undeclared(&issues, "$x"),
+        "`use strict; foreach our $x ($x) {{ }}` must not report UndeclaredVariable; got: {issues:?}"
+    );
+}
+
+/// `for our $x (1) { } print $x;` — the `our` alias is still loop-scoped.
+/// Declaring it in the enclosing scope would silence this, which perl rejects.
+#[test]
+fn foreach_our_does_not_leak_after_loop() {
+    let code = "use strict; for our $x (1) { } print $x;";
+    let issues = scope_issues(code);
+    assert!(
+        has_undeclared(&issues, "$x"),
+        "`for our $x (1) {{ }} print $x;` must report UndeclaredVariable for $x; got: {issues:?}"
+    );
+}
+
+/// `state` is a lexical like `my`: the list must not see the iterator.
+#[test]
+fn foreach_state_list_does_not_see_loop_variable_under_strict() {
+    let code = "use strict; use feature \"state\"; for state $x ($x) { }";
+    let issues = scope_issues(code);
+    let list_x = code.find("($x)").map(|i| i + 1);
+    assert!(
+        issues.iter().any(|i| {
+            i.kind == IssueKind::UndeclaredVariable
+                && i.variable_name == "$x"
+                && list_x.is_some_and(|offset| i.range.0 == offset)
+        }),
+        "`for state $x ($x)` under strict must report UndeclaredVariable for the list $x; got: {issues:?}"
     );
 }

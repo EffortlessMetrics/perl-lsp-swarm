@@ -96,16 +96,6 @@ pub(super) fn handle_foreach<'a>(
 
     ancestors.push(node);
 
-    // Perl evaluates the foreach list before the loop variable exists, but a
-    // `my` in the list is still a loop-scoped lexical: visible in the body,
-    // not after the loop (`for my $x (my $y = 1) { print $y; }` is legal;
-    // `print $y` after the loop is not). Analyze the list in `loop_scope`
-    // *before* declaring the iterator so list uses cannot see it.
-    analyzer.analyze_node(list, &loop_scope, ancestors, issues, context);
-
-    // Declare the loop variable and immediately mark it initialized — the list
-    // provides its value at runtime so there is no uninitialized window.
-    //
     // When `for (@list) { ... }` has no explicit loop variable, the parser
     // synthesises a zero-width `Variable { "$", "_" }`.  That synthesized node
     // must be declared in the loop scope (Perl guarantees `$_` is localized for
@@ -115,20 +105,43 @@ pub(super) fn handle_foreach<'a>(
     let is_implicit_topic = variable.location.start == variable.location.end
         && matches!(&variable.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "_");
 
-    if is_implicit_topic {
-        analyzer.declare_variable_parts_in_context(
+    // `our` is a compile-time alias to a package variable (perlfunc). Perl
+    // accepts `use strict; for our $x ($x) { }` and `use strict; our $x = $x;`,
+    // while a `my`/`state` list self-reference is undeclared. Register `our` in
+    // `loop_scope` before the list so list uses resolve; keep lexical iterators
+    // unavailable until after the list. The binding stays in `loop_scope`, so
+    // `print $x` after `for our $x (1)` remains undeclared.
+    //
+    // A `my` in the list is still a loop-scoped lexical: visible in the body,
+    // not after the loop (`for my $x (my $y = 1) { print $y; }` is legal).
+    let iterator_is_our = matches!(
+        &variable.kind,
+        NodeKind::VariableDeclaration { declarator, .. } if declarator == "our"
+    );
+
+    if iterator_is_our {
+        declare_foreach_iterator(
+            analyzer,
+            variable,
+            is_implicit_topic,
             &loop_scope,
-            "$",
-            "_",
-            variable.location.start,
-            false,
-            true,
+            ancestors,
+            issues,
             context,
         );
-    } else {
-        analyzer.analyze_node(variable, &loop_scope, ancestors, issues, context);
     }
-    analyzer.mark_initialized(variable, &loop_scope, context);
+    analyzer.analyze_node(list, &loop_scope, ancestors, issues, context);
+    if !iterator_is_our {
+        declare_foreach_iterator(
+            analyzer,
+            variable,
+            is_implicit_topic,
+            &loop_scope,
+            ancestors,
+            issues,
+            context,
+        );
+    }
     analyzer.analyze_node(body, &loop_scope, ancestors, issues, context);
     if let Some(cb) = continue_block {
         analyzer.analyze_node(cb, &loop_scope, ancestors, issues, context);
@@ -137,6 +150,33 @@ pub(super) fn handle_foreach<'a>(
     ancestors.pop();
 
     analyzer.collect_unused_variables(&loop_scope, issues, context);
+}
+
+fn declare_foreach_iterator<'a>(
+    analyzer: &ScopeAnalyzer,
+    variable: &'a Node,
+    is_implicit_topic: bool,
+    loop_scope: &Rc<Scope>,
+    ancestors: &mut Vec<&'a Node>,
+    issues: &mut Vec<ScopeIssue>,
+    context: &AnalysisContext<'a>,
+) {
+    // Declare the loop variable and immediately mark it initialized — the list
+    // provides its value at runtime so there is no uninitialized window.
+    if is_implicit_topic {
+        analyzer.declare_variable_parts_in_context(
+            loop_scope,
+            "$",
+            "_",
+            variable.location.start,
+            false,
+            true,
+            context,
+        );
+    } else {
+        analyzer.analyze_node(variable, loop_scope, ancestors, issues, context);
+    }
+    analyzer.mark_initialized(variable, loop_scope, context);
 }
 
 /// Inner body shared by `handle_subroutine` and `handle_method`.
