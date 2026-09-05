@@ -185,9 +185,6 @@ enum CpanfileChar {
 struct CpanfileLex {
     /// Per-character classification, parallel to the source characters.
     class: Vec<CpanfileChar>,
-    /// Content ranges of plain single- and double-quoted literals, in source
-    /// order.
-    plain: Vec<(usize, usize)>,
 }
 
 fn is_identifier_char(ch: char) -> bool {
@@ -270,7 +267,6 @@ impl CpanfileLex {
     /// Classify every character of `chars`.
     fn scan(chars: &[char]) -> Self {
         let mut class = vec![CpanfileChar::Code; chars.len()];
-        let mut plain = Vec::new();
         let mut index = 0;
         while index < chars.len() {
             let ch = chars[index];
@@ -282,11 +278,8 @@ impl CpanfileLex {
                 continue;
             }
             if ch == '\'' || ch == '"' {
-                // An unterminated literal runs to the end of the file, and has
-                // no closing delimiter to exclude from its content.
-                let (content_end, literal_end) = skip_delimited(chars, index)
-                    .map_or((chars.len(), chars.len()), |end| (end - 1, end));
-                plain.push((index + 1, content_end));
+                // An unterminated literal runs to the end of the file.
+                let literal_end = skip_delimited(chars, index).unwrap_or(chars.len());
                 for slot in &mut class[index..literal_end] {
                     *slot = CpanfileChar::Literal;
                 }
@@ -320,7 +313,7 @@ impl CpanfileLex {
             }
             index += 1;
         }
-        Self { class, plain }
+        Self { class }
     }
 
     /// Whether `index` is code outside any comment or string literal.
@@ -462,8 +455,17 @@ fn opens_hash_subscript(buf: &str) -> bool {
         // `sub {` would read as a subscript and stop suppressing conditionals.
         Some(&last) if is_identifier_char(last) => {
             let mut start = chars.len();
-            while start > 0 && is_identifier_char(chars[start - 1]) {
-                start -= 1;
+            loop {
+                while start > 0 && is_identifier_char(chars[start - 1]) {
+                    start -= 1;
+                }
+                // A package-qualified variable carries its sigil before the
+                // first segment: `$Config::Config{version}`.
+                if start >= 2 && chars[start - 1] == ':' && chars[start - 2] == ':' {
+                    start -= 2;
+                    continue;
+                }
+                break;
             }
             start > 0 && matches!(chars[start - 1], '$' | '@' | '%')
         }
@@ -581,20 +583,26 @@ fn starts_with_cpanfile_keyword(statement: &str, keyword: &str) -> bool {
 }
 
 /// Extract a canonical phase from an `on 'phase' => sub` block header.
+///
+/// The phase argument must be a literal this scanner can read without
+/// evaluating Perl: a plain quoted string, or a bareword the fat comma quotes.
+/// A computed phase, as in `on(($enabled ? 'test' : 'runtime'), sub { ... })`,
+/// is fixed only at run time; taking the first literal inside it would publish
+/// the block's dependencies under a phase the cpanfile never chose.
 fn parse_on_phase(buf: &str) -> Option<String> {
     let rest = buf.trim().strip_prefix("on")?;
     // `on` must be followed by whitespace or a quote, not be part of a longer word.
     if !rest.starts_with(|c: char| c.is_whitespace() || matches!(c, '(' | '\'' | '"')) {
         return None;
     }
-    // Prefer a quoted phase (`on 'test'`); fall back to a bareword (`on test`).
-    // A quoted candidate takes precedence, so a non-canonical first quoted string does not consult the bareword fallback.
-    // `on(develop => sub {...})` is a bareword phase behind a parenthesis; the
-    // fat comma quotes it, so it names the same phase as `on 'develop'`.
-    let bareword = rest.trim_start();
-    let bareword = bareword.strip_prefix('(').unwrap_or(bareword).trim_start();
-    let phase = quoted_strings(buf).into_iter().next().or_else(|| {
-        bareword.split(|ch: char| !is_identifier_char(ch)).next().map(str::to_string)
+    let header = rest.trim_start();
+    let header = header.strip_prefix('(').unwrap_or(header);
+    let arguments = split_cpanfile_arguments(header);
+    let first = arguments.first()?;
+    let phase = sole_plain_literal(first).or_else(|| {
+        let bareword: String =
+            first.trim_start().chars().take_while(|&ch| is_identifier_char(ch)).collect();
+        (!bareword.is_empty()).then_some(bareword)
     })?;
     CPANFILE_PHASES.contains(&phase.as_str()).then_some(phase)
 }
@@ -722,20 +730,6 @@ fn cpanfile_call_literals(arguments: &str) -> Option<(String, Option<String>)> {
     let module = sole_plain_literal(parts.first()?)?;
     let version = parts.get(1).and_then(|part| sole_plain_literal(part));
     Some((module, version))
-}
-
-/// Extract plain single- or double-quoted string literals from a statement.
-///
-/// Quote-like operator bodies are deliberately excluded: this scanner reads
-/// module and version text only from literals it can read without evaluating
-/// Perl.
-fn quoted_strings(statement: &str) -> Vec<String> {
-    let chars: Vec<char> = statement.chars().collect();
-    CpanfileLex::scan(&chars)
-        .plain
-        .into_iter()
-        .map(|(start, end)| chars[start..end].iter().collect())
-        .collect()
 }
 
 #[cfg(test)]
@@ -1385,6 +1379,97 @@ mod tests {
             "unparsable source publishes nothing: {:?}",
             facts.prereqs
         );
+    }
+
+    #[test]
+    fn cpanfile_computed_phases_do_not_fix_a_phase() {
+        // The phase a run-time expression chooses is not declared. Taking the
+        // first literal inside one would publish the block's dependencies under
+        // a phase the cpanfile never fixed.
+        for header in [
+            "(($enabled ? 'test' : 'runtime'), sub",
+            "(($enabled ? 'test' : 'runtime') => sub",
+            " ($phase) => sub",
+            " lc('test') => sub",
+            " 'de' . 'velop' => sub",
+        ] {
+            let content = format!("on{header} {{ requires 'Leak'; }};\nrequires 'Moo';\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+
+            assert!(
+                !facts.prereqs.iter().any(|p| p.module == "Leak"),
+                "on{header} names its phase at run time: {:?}",
+                facts.prereqs
+            );
+            assert!(
+                facts.prereqs.iter().any(|p| p.module == "Moo"),
+                "the block still closes: {:?}",
+                facts.prereqs
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_literal_phases_survive_the_bounded_header_check() {
+        // Tightening the header must not lose the spellings the scanner claims
+        // to support. Each canonical phase is exercised in all four forms.
+        for phase in CPANFILE_PHASES {
+            for content in [
+                format!("on '{phase}' => sub {{ requires 'Dep'; }};"),
+                format!("on(\"{phase}\" => sub {{ requires 'Dep'; }});"),
+                format!("on({phase} => sub {{ requires 'Dep'; }});"),
+                format!("on {phase} => sub {{ requires 'Dep'; }};"),
+            ] {
+                let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+                assert!(
+                    facts.prereqs.iter().any(|p| p.module == "Dep" && p.phase == *phase),
+                    "{content} keeps its canonical phase: {:?}",
+                    facts.prereqs
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cpanfile_package_qualified_subscripts_keep_their_declaration() {
+        // `$Config::Config{version}` is a package-qualified variable, so its
+        // brace is a subscript. The backward scan has to cross `::` to find the
+        // sigil, or the module is lost and the block scope leaks.
+        for version in [
+            "$Config::Config{version}",
+            "$Pkg::versions {base}",
+            "$A::B::C::table{key}",
+            "@Config::Config{'a','b'}",
+        ] {
+            let content = format!("requires 'Foo', {version};\nrequires 'Second';\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+
+            assert!(
+                facts.prereqs.iter().any(|p| p.module == "Foo" && p.version.is_none()),
+                "{version} is a subscript: {:?}",
+                facts.prereqs
+            );
+            assert!(
+                facts.prereqs.iter().any(|p| p.module == "Second"),
+                "{version} must not open a block: {:?}",
+                facts.prereqs
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_qualified_barewords_still_open_blocks() {
+        // Crossing `::` must not turn an unsigiled qualified bareword into a
+        // subscript: without a sigil it is still a block header.
+        let content = "Feature::Guard { requires 'Leak'; };\nrequires 'Moo';\n";
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        assert!(
+            !facts.prereqs.iter().any(|p| p.module == "Leak"),
+            "an unsigiled qualified name is a block header: {:?}",
+            facts.prereqs
+        );
+        assert!(facts.prereqs.iter().any(|p| p.module == "Moo"));
     }
 
     #[test]
