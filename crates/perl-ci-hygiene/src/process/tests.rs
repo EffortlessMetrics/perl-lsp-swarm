@@ -2,7 +2,7 @@ use super::{
     command_exists_in_path, command_output_lines, command_output_with_status, command_status,
     command_status_strict, command_timed_status, command_with_input_with_status,
     command_with_output, command_with_output_all, command_with_output_allow_empty_match,
-    command_with_output_allow_failure,
+    command_with_output_allow_failure, windows_command_candidates,
 };
 use std::env;
 use std::error::Error;
@@ -348,8 +348,11 @@ fn command_exists_in_path_skips_missing_path_entry() -> TestResult {
     Ok(())
 }
 
+#[cfg(not(windows))]
 #[test]
 fn command_exists_in_path_continues_past_directory_candidate() -> TestResult {
+    // Unix parity: execve on a directory candidate fails EACCES/EISDIR and
+    // the execvp-style search continues to the next PATH entry.
     let directory_candidate = TempDir::new("directory-before-file")?;
     let regular_file_candidate = TempDir::new("file-after-directory")?;
     let command = "ci-hygiene-probe";
@@ -365,30 +368,399 @@ fn command_exists_in_path_continues_past_directory_candidate() -> TestResult {
     Ok(())
 }
 
+#[cfg(windows)]
+#[test]
+fn command_exists_in_path_fails_closed_when_std_selects_earlier_directory() -> TestResult {
+    // Windows parity: std's `program_exists` (GetFileAttributesW) admits the
+    // earlier directory candidate and stops there, so the real launch fails —
+    // the probe must NOT report the later regular file the launch would never
+    // reach.
+    let directory_candidate = TempDir::new("directory-before-file")?;
+    let regular_file_candidate = TempDir::new("file-after-directory")?;
+    let command = "ci-hygiene-probe";
+    fs::create_dir(directory_candidate.path().join(format!("{command}.exe")))?;
+    fs::write(regular_file_candidate.path().join(format!("{command}.exe")), b"")?;
+    let path = joined_path(&[directory_candidate.path(), regular_file_candidate.path()])?;
+
+    assert!(
+        !command_exists_in_path(command, Some(path.as_os_str())),
+        "an earlier directory candidate must hide the later tool, matching std's selection"
+    );
+    Ok(())
+}
+
 #[test]
 fn command_exists_in_path_returns_false_without_path() {
     assert!(!command_exists_in_path("ci-hygiene-probe", None));
 }
 
+// Pure candidate-generation tests for the Windows probe seam. These run on
+// every platform: `windows_command_candidates` mirrors the bare-name search
+// of the pinned Rust 1.95 `std::process::Command` implementation
+// (`library/std/src/sys/process/windows.rs`, `resolve_exe`), and std's rules
+// are platform-independent pure path construction.
+#[test]
+fn windows_candidates_bare_name_try_only_dot_exe_in_path_order() -> TestResult {
+    let first = TempDir::new("candidates-first")?;
+    let second = TempDir::new("candidates-second")?;
+    let path = joined_path(&[first.path(), second.path()])?;
+
+    let candidates = windows_command_candidates("probe-tool", path.as_os_str());
+
+    assert_eq!(
+        candidates,
+        vec![first.path().join("probe-tool.exe"), second.path().join("probe-tool.exe"),],
+        "bare names resolve to <name>.exe only, earliest PATH entry first"
+    );
+    Ok(())
+}
+
+#[test]
+fn windows_candidates_explicit_extension_is_verbatim() -> TestResult {
+    let temp = TempDir::new("candidates-explicit")?;
+    let path = joined_path(&[temp.path()])?;
+
+    for command in ["probe-tool.exe", "probe-tool.cmd", "probe-tool.bat", "probe-tool.ps1"] {
+        let candidates = windows_command_candidates(command, path.as_os_str());
+        assert_eq!(
+            candidates,
+            vec![temp.path().join(command)],
+            "explicit extension {command} must not be expanded into duplicated suffixes"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn windows_candidates_interior_dot_counts_as_extension() -> TestResult {
+    let temp = TempDir::new("candidates-interior-dot")?;
+    let path = joined_path(&[temp.path()])?;
+
+    // std checks `contains('.')`, not `Path::extension`: any dot disables the
+    // `.exe` append.
+    let candidates = windows_command_candidates("probe.tool", path.as_os_str());
+    assert_eq!(candidates, vec![temp.path().join("probe.tool")]);
+    Ok(())
+}
+
+#[test]
+fn windows_candidates_never_expand_to_script_or_unsuffixed_names() -> TestResult {
+    let temp = TempDir::new("candidates-no-pathext")?;
+    let path = joined_path(&[temp.path()])?;
+
+    // PATHEXT is not consulted by `std::process::Command`; the candidate set
+    // must contain no .cmd/.bat/unsuffixed form even though a shell would
+    // produce them.
+    let candidates = windows_command_candidates("probe-tool", path.as_os_str());
+    for candidate in &candidates {
+        let name = candidate
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| io::Error::other("candidate file name is not UTF-8"))?;
+        assert_eq!(name, "probe-tool.exe");
+    }
+    Ok(())
+}
+
+#[test]
+fn windows_candidates_skip_empty_path_entries() -> TestResult {
+    let temp = TempDir::new("candidates-empty-entry")?;
+    let path = joined_path(&[Path::new(""), temp.path(), Path::new("")])?;
+
+    let candidates = windows_command_candidates("probe-tool", path.as_os_str());
+
+    // An empty entry joined with a name would resolve against the process CWD;
+    // std skips empty entries, so the probe must too.
+    assert_eq!(candidates, vec![temp.path().join("probe-tool.exe")]);
+    Ok(())
+}
+
+#[test]
+fn windows_candidates_preserve_spaces_and_non_ascii_path_entries() -> TestResult {
+    let temp = TempDir::new("candidates-unicode")?;
+    let spaced = temp.path().join("dir with spaces");
+    let non_ascii = temp.path().join("dïr-ütﬂ-名");
+    let path = joined_path(&[spaced.as_path(), non_ascii.as_path()])?;
+
+    let candidates = windows_command_candidates("probe-tool", path.as_os_str());
+
+    assert_eq!(candidates, vec![spaced.join("probe-tool.exe"), non_ascii.join("probe-tool.exe")]);
+    Ok(())
+}
+
+#[test]
+fn windows_candidates_fail_closed_for_separator_bearing_names() -> TestResult {
+    let temp = TempDir::new("candidates-separator")?;
+    let path = joined_path(&[temp.path()])?;
+
+    // `std::process::Command` does not PATH-search a name carrying a path
+    // separator; the probe supports bare names only and fails closed.
+    for command in ["", "sub/probe-tool", "sub\\probe-tool", "./probe-tool", "C:\\probe-tool"] {
+        assert!(
+            windows_command_candidates(command, path.as_os_str()).is_empty(),
+            "separator-bearing or empty input {command:?} must produce no PATH candidates"
+        );
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 #[test]
-fn command_exists_in_path_accepts_windows_command_extensions() -> TestResult {
+fn command_exists_in_path_rejects_script_and_unsuffixed_candidates() -> TestResult {
+    // `Command::new` never resolves a bare name to `.cmd`, `.bat`, or an
+    // unsuffixed file, so the probe must not either (false-positive parity).
     let command = "ci-hygiene-probe";
-    for suffix in [".cmd", ".bat", ""] {
-        let label = match suffix {
-            ".cmd" => "cmd",
-            ".bat" => "bat",
-            "" => "extensionless",
-            _ => "unexpected",
-        };
-        let temp = TempDir::new(&format!("windows-extension-{label}"))?;
+    for (suffix, label) in [(".cmd", "cmd"), (".bat", "bat"), ("", "extensionless")] {
+        let temp = TempDir::new(&format!("windows-reject-{label}"))?;
         fs::write(temp.path().join(format!("{command}{suffix}")), b"")?;
         let path = joined_path(&[temp.path()])?;
 
         assert!(
-            command_exists_in_path(command, Some(path.as_os_str())),
-            "command lookup did not find {command}{suffix}"
+            !command_exists_in_path(command, Some(path.as_os_str())),
+            "bare-name probe must not find {command}{suffix}"
         );
     }
     Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn command_exists_in_path_accepts_explicit_script_name() -> TestResult {
+    // An explicitly extensioned script name is searched verbatim.
+    let temp = TempDir::new("windows-explicit-script")?;
+    fs::write(temp.path().join("ci-hygiene-probe.cmd"), b"")?;
+    let path = joined_path(&[temp.path()])?;
+
+    assert!(command_exists_in_path("ci-hygiene-probe.cmd", Some(path.as_os_str())));
+    Ok(())
+}
+
+// Native Windows launch-parity proof: the probe selection is compared against
+// the exact process subject `std::process::Command` actually starts. These
+// tests run in the `windows-platform-smoke` CI lane
+// (`cargo test -p perl-ci-hygiene --bin perl-ci-hygiene process::tests::`).
+#[cfg(windows)]
+mod windows_launch_parity {
+    use super::*;
+    use std::ffi::OsStr;
+    use std::process::Command;
+
+    /// The candidate std's `resolve_exe` would select, mirrored the same way
+    /// `command_exists_in_path` selects it: the first candidate whose
+    /// attributes resolve (GetFileAttributesW semantics — directories and
+    /// broken links count, matching `symlink_metadata`).
+    fn probe_selection(command: &str, path: &OsStr) -> Option<PathBuf> {
+        windows_command_candidates(command, path)
+            .into_iter()
+            .find(|c| fs::symlink_metadata(c).is_ok())
+    }
+
+    fn write_batch(dir: &Path, name: &str) -> TestResult<PathBuf> {
+        let batch = dir.join(name);
+        // Print the batch file's own fully-qualified path, then exit cleanly.
+        fs::write(&batch, b"@echo off\r\n@echo %~f0\r\nexit /b 0\r\n")?;
+        Ok(batch)
+    }
+
+    fn canonical_lower(path: &Path) -> TestResult<String> {
+        Ok(fs::canonicalize(path)?.to_string_lossy().to_ascii_lowercase())
+    }
+
+    #[test]
+    fn bare_name_probe_and_launch_select_the_same_exe() -> TestResult {
+        let temp = TempDir::new("launch-parity-exe")?;
+        let subject = temp.path().join("probe-parity-subject.exe");
+        fs::copy(env::current_exe()?, &subject)?;
+        let path = joined_path(&[temp.path()])?;
+
+        let probe = probe_selection("probe-parity-subject", path.as_os_str())
+            .ok_or_else(|| io::Error::other("probe did not select the .exe subject"))?;
+        assert_eq!(probe, subject);
+
+        // `Command::env("PATH", ..)` makes std search the child PATH first —
+        // the same leg the probe covers.
+        let output = Command::new("probe-parity-subject")
+            .env("PATH", path.as_os_str())
+            .arg("--list")
+            .output()?;
+        assert!(output.status.success(), "launch of probe-selected subject failed: {output:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn bare_name_with_only_a_bat_present_launches_nothing() -> TestResult {
+        let temp = TempDir::new("launch-parity-bat-only")?;
+        write_batch(temp.path(), "probe-parity-script.bat")?;
+        let path = joined_path(&[temp.path()])?;
+
+        assert_eq!(probe_selection("probe-parity-script", path.as_os_str()), None);
+        let launch = Command::new("probe-parity-script").env("PATH", path.as_os_str()).output();
+        assert!(
+            launch.is_err(),
+            "std::process::Command must not resolve a bare name to a .bat file"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_bat_name_launches_and_probe_selects_the_same_subject() -> TestResult {
+        let temp = TempDir::new("launch-parity-explicit-bat")?;
+        write_batch(temp.path(), "probe-parity-explicit.bat")?;
+        let path = joined_path(&[temp.path()])?;
+
+        let probe = probe_selection("probe-parity-explicit.bat", path.as_os_str())
+            .ok_or_else(|| io::Error::other("probe did not select the explicit .bat subject"))?;
+
+        let output =
+            Command::new("probe-parity-explicit.bat").env("PATH", path.as_os_str()).output()?;
+        assert!(output.status.success(), "explicit .bat launch failed: {output:?}");
+        // The batch prints its own fully-qualified path (%~f0); compare it
+        // with the probe-selected candidate.
+        let launched = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        assert_eq!(
+            canonical_lower(Path::new(&launched))?,
+            canonical_lower(&probe)?,
+            "launched subject differs from probe selection"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unsuffixed_regular_file_is_neither_probed_nor_launched() -> TestResult {
+        let temp = TempDir::new("launch-parity-unsuffixed")?;
+        fs::write(temp.path().join("probe-parity-plain"), b"")?;
+        let path = joined_path(&[temp.path()])?;
+
+        assert_eq!(probe_selection("probe-parity-plain", path.as_os_str()), None);
+        let launch = Command::new("probe-parity-plain").env("PATH", path.as_os_str()).output();
+        assert!(launch.is_err(), "std must not launch an unsuffixed file for a bare name");
+        Ok(())
+    }
+
+    #[test]
+    fn directory_with_admitted_extension_fails_closed() -> TestResult {
+        let temp = TempDir::new("launch-parity-directory")?;
+        fs::create_dir(temp.path().join("probe-parity-dir.exe"))?;
+        let path = joined_path(&[temp.path()])?;
+
+        // std's resolver selects the directory (GetFileAttributesW admits it);
+        // the probe reports not-launchable, and the real launch fails.
+        assert!(!command_exists_in_path("probe-parity-dir", Some(path.as_os_str())));
+        let launch = Command::new("probe-parity-dir").env("PATH", path.as_os_str()).output();
+        assert!(launch.is_err(), "a directory named <name>.exe must not be launched");
+        Ok(())
+    }
+
+    #[test]
+    fn earlier_directory_candidate_hides_later_tool_for_probe_and_launch() -> TestResult {
+        let earlier = TempDir::new("launch-parity-hide-earlier")?;
+        let later = TempDir::new("launch-parity-hide-later")?;
+        fs::create_dir(earlier.path().join("probe-parity-hide.exe"))?;
+        fs::copy(env::current_exe()?, later.path().join("probe-parity-hide.exe"))?;
+        let path = joined_path(&[earlier.path(), later.path()])?;
+
+        // std selects the earlier directory and CreateProcessW fails; the
+        // probe must not claim the later, real tool is launchable.
+        assert!(!command_exists_in_path("probe-parity-hide", Some(path.as_os_str())));
+        let launch = Command::new("probe-parity-hide").env("PATH", path.as_os_str()).output();
+        assert!(
+            launch.is_err(),
+            "an earlier directory candidate must hide a later tool at launch, and the probe agrees"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn extension_casing_is_case_insensitive_for_probe_and_launch() -> TestResult {
+        let temp = TempDir::new("launch-parity-case")?;
+        // On-disk subject carries an uppercase extension; the bare-name probe
+        // appends lowercase `.exe`, and the Windows filesystem resolves it.
+        fs::copy(env::current_exe()?, temp.path().join("probe-parity-case.EXE"))?;
+        let path = joined_path(&[temp.path()])?;
+
+        assert!(command_exists_in_path("probe-parity-case", Some(path.as_os_str())));
+        let output = Command::new("probe-parity-case")
+            .env("PATH", path.as_os_str())
+            .arg("--list")
+            .output()?;
+        assert!(output.status.success(), "case-insensitive launch failed: {output:?}");
+
+        // An explicitly mixed-case extension is searched verbatim and found.
+        assert!(command_exists_in_path("probe-parity-case.eXe", Some(path.as_os_str())));
+        Ok(())
+    }
+
+    #[test]
+    fn broken_link_candidate_fails_closed_for_probe_and_launch() -> TestResult {
+        // Windows os error 1314: "A required privilege is not held by the
+        // client." Symlink creation needs SeCreateSymbolicLinkPrivilege; a
+        // runner without it cannot produce the subject, so only that error is
+        // a typed skip — every other creation failure must fail the test
+        // (same policy as perl-tdd-support::symlink_privilege).
+        const SYMLINK_PRIVILEGE_NOT_HELD: i32 = 1314;
+
+        let temp = TempDir::new("launch-parity-broken-link")?;
+        let link = temp.path().join("probe-parity-link.exe");
+        if let Err(error) =
+            std::os::windows::fs::symlink_file(temp.path().join("missing-target.exe"), &link)
+        {
+            if error.raw_os_error() == Some(SYMLINK_PRIVILEGE_NOT_HELD) {
+                eprintln!("skipping broken-link parity: symlink privilege not held");
+                return Ok(());
+            }
+            return Err(error.into());
+        }
+        let path = joined_path(&[temp.path()])?;
+
+        // std's resolver selects the broken link (GetFileAttributesW does not
+        // follow it); CreateProcessW then fails, and the probe fails closed.
+        assert!(!command_exists_in_path("probe-parity-link", Some(path.as_os_str())));
+        let launch = Command::new("probe-parity-link").env("PATH", path.as_os_str()).output();
+        assert!(launch.is_err(), "a broken link named <name>.exe must not be launched");
+        Ok(())
+    }
+
+    #[test]
+    fn pathext_mutation_changes_neither_probe_nor_launch() -> TestResult {
+        let temp = TempDir::new("launch-parity-pathext")?;
+        write_batch(temp.path(), "probe-parity-pathext.bat")?;
+        let path = joined_path(&[temp.path()])?;
+
+        // Even a PATHEXT that would admit the script must have no effect:
+        // `std::process::Command` never reads PATHEXT.
+        assert_eq!(probe_selection("probe-parity-pathext", path.as_os_str()), None);
+        let launch = Command::new("probe-parity-pathext")
+            .env("PATH", path.as_os_str())
+            .env("PATHEXT", ".BAT;.CMD")
+            .output();
+        assert!(launch.is_err(), "PATHEXT mutation must not make a bare name launchable");
+        Ok(())
+    }
+
+    #[test]
+    fn earlier_path_candidate_wins_for_probe_and_launch() -> TestResult {
+        let earlier = TempDir::new("launch-parity-earlier")?;
+        let later = TempDir::new("launch-parity-later")?;
+        write_batch(earlier.path(), "probe-parity-order.bat")?;
+        write_batch(later.path(), "probe-parity-order.bat")?;
+        let path = joined_path(&[earlier.path(), later.path()])?;
+
+        let probe = probe_selection("probe-parity-order.bat", path.as_os_str())
+            .ok_or_else(|| io::Error::other("probe selected no ordered candidate"))?;
+        assert_eq!(
+            canonical_lower(&probe)?,
+            canonical_lower(&earlier.path().join("probe-parity-order.bat"))?,
+        );
+
+        let output =
+            Command::new("probe-parity-order.bat").env("PATH", path.as_os_str()).output()?;
+        assert!(output.status.success(), "ordered launch failed: {output:?}");
+        let launched = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        assert_eq!(
+            canonical_lower(Path::new(&launched))?,
+            canonical_lower(&probe)?,
+            "a later PATH candidate won despite the launch API selecting the earlier one"
+        );
+        Ok(())
+    }
 }

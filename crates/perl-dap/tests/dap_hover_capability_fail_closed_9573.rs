@@ -119,29 +119,38 @@ async fn native_initialize_advertises_hover_false() -> Result<()> {
 
 /// Test 8 + falsifier: REPL/evaluate capability cannot promote hover.
 ///
-/// `supportsSetExpression` and the general evaluate path stay available; that
-/// must not drag hover up with them.
+/// The general evaluate path (and the still-advertised
+/// `supportsValueFormattingOptions` sibling) stay available; that must not
+/// drag hover up with them. `supportsSetExpression` is floored false by #9568
+/// and `supportsSetVariable` by #8354, so the surviving discriminating sibling
+/// is `supportsValueFormattingOptions`.
 #[tokio::test]
 async fn other_evaluation_capabilities_do_not_promote_hover() -> Result<()> {
     let mut adapter = adapter();
     let body = initialize_body(&mut adapter)?;
 
-    // Guard: if these are all false the test would be vacuous.
+    // Guard: if the surviving sibling were false the test would be vacuous.
+    // #9568 floored `supportsSetExpression` and #8354 floored
+    // `supportsSetVariable`, so the discrimination now rides on the
+    // evaluation-format sibling `supportsValueFormattingOptions` staying
+    // advertised. When a promotion boundary flips a floored sibling back on,
+    // revisit this precondition consciously.)
     let set_expression = body.get("supportsSetExpression").and_then(Value::as_bool);
     let set_variable = body.get("supportsSetVariable").and_then(Value::as_bool);
+    // #8354 closed setVariable after #9573 landed and #9568 closed
+    // setExpression; pin both floors here so a later accidental widening shows
+    // up in this hover test too.
     assert_eq!(
-        set_expression,
-        Some(true),
-        "precondition: the sibling general evaluation capability is advertised, so the hover \
-         assertion below is discriminating"
+        (set_expression, set_variable),
+        (Some(false), Some(false)),
+        "precondition: setExpression must still carry the #9568 floor and setVariable the \
+         #8354 floor"
     );
-    // #8354 closed setVariable after #9573 landed; pin the floor here so a
-    // later accidental widening shows up in this hover test too.
     assert_eq!(
-        set_variable,
-        Some(false),
-        "#8354: setVariable must stay advertised false while its exact mutation \
-         proof is absent"
+        body.get("supportsValueFormattingOptions").and_then(Value::as_bool),
+        Some(true),
+        "precondition: the sibling evaluation-format capability is advertised, so the hover \
+         assertion below is discriminating"
     );
 
     assert_eq!(

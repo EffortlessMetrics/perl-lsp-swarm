@@ -898,10 +898,15 @@ fn test_session_lifecycle_inline_values_missing_source_path() {
 
     match response {
         DapMessage::Response { success, command, message, .. } => {
-            assert!(!success, "inlineValues should fail without source.path");
+            // #9089: the floor refuses after envelope validation only — the
+            // missing source.path never reaches path handling.
+            assert!(!success, "inlineValues must be refused while #9089 is unnegotiated");
             assert_eq!(command, "inlineValues");
-            assert!(message.is_some());
-            assert!(must_some(message).contains("source.path"));
+            assert_eq!(
+                must_some(message),
+                perl_dap::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE,
+                "expected the deterministic #9089 refusal"
+            );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
     }
@@ -922,10 +927,15 @@ fn test_session_lifecycle_inline_values_invalid_line_range() {
 
     match response {
         DapMessage::Response { success, command, message, .. } => {
-            assert!(!success, "inlineValues should reject non-positive line numbers");
+            // #9089: line-range validation sits behind the negotiation gate —
+            // the request is refused deterministically before any range check.
+            assert!(!success, "inlineValues must be refused while #9089 is unnegotiated");
             assert_eq!(command, "inlineValues");
-            assert!(message.is_some());
-            assert!(must_some(message).contains("startLine/endLine"));
+            assert_eq!(
+                must_some(message),
+                perl_dap::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE,
+                "expected the deterministic #9089 refusal"
+            );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
     }
@@ -946,10 +956,15 @@ fn test_session_lifecycle_inline_values_missing_file() {
 
     match response {
         DapMessage::Response { success, command, message, .. } => {
-            assert!(!success, "inlineValues should fail when file cannot be read");
+            // #9089: the gate fires before any filesystem read, so the
+            // missing file cannot change the refusal.
+            assert!(!success, "inlineValues must be refused while #9089 is unnegotiated");
             assert_eq!(command, "inlineValues");
-            assert!(message.is_some());
-            assert!(must_some(message).contains("Failed to read source file"));
+            assert_eq!(
+                must_some(message),
+                perl_dap::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE,
+                "expected the deterministic #9089 refusal"
+            );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
     }
@@ -973,12 +988,17 @@ fn test_session_lifecycle_inline_values_swapped_line_order() {
     let response = adapter.handle_request(1, "inlineValues", Some(args));
 
     match response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success, "inlineValues should normalize line ordering");
+        DapMessage::Response { success, command, body, message, .. } => {
+            // #9089: line normalization sits behind the negotiation gate — the
+            // request is refused deterministically and never served.
+            assert!(!success, "inlineValues must be refused while #9089 is unnegotiated");
             assert_eq!(command, "inlineValues");
-            let body = must_some(body);
-            let inline_values = must_some(body.get("inlineValues").and_then(|v| v.as_array()));
-            assert!(!inline_values.is_empty(), "Expected inline values in response");
+            assert!(body.is_none(), "a refused inlineValues response carries no body");
+            assert_eq!(
+                must_some(message),
+                perl_dap::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE,
+                "expected the deterministic #9089 refusal"
+            );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
     }
