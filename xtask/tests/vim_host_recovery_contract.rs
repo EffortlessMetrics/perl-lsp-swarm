@@ -24,9 +24,9 @@ use xtask::vim_host_recovery_run::recovery_journey;
 use xtask::vim_host_recovery_run::{
     CELL_CURRENT_RESULT, CELL_DOCUMENT_REPLAY, CELL_EXPLICIT_RESTART,
     CELL_INITIALIZED_NEW_GENERATION, CELL_OLD_GENERATION_REJECTED, CELL_RETRY_OR_MANUAL,
-    CELL_SHUTDOWN_CLEANUP, CELL_UNEXPECTED_EXIT, RecoveryFixtureVariant, StimulusRecord,
-    evaluate_recovery_observation, extract_recovery_wire, materialize_recovery_fixture,
-    stimulus_ledger_is_complete,
+    CELL_SHUTDOWN_CLEANUP, CELL_UNEXPECTED_EXIT, OPENED_FILE_REL, RecoveryFixtureVariant,
+    StimulusRecord, evaluate_recovery_observation, extract_recovery_wire,
+    materialize_recovery_fixture, stimulus_ledger_is_complete,
 };
 use xtask::vim_host_run::vim_host_runner::{
     self, DRIVER_SCHEMA_VERSION, DriverEvent, DriverEventKind, RUN_PLAN_SCHEMA_VERSION,
@@ -198,7 +198,7 @@ fn complete_recovery_events(digest: &str) -> Vec<DriverEvent> {
             &[
                 ("replay_index", "1"),
                 ("initialize_generation", "2"),
-                ("document", "workspace/project/main.pl"),
+                ("document", OPENED_FILE_REL),
                 ("root", "workspace/project"),
                 ("did_open_replayed", "1"),
                 ("client_init_events", "2"),
@@ -244,7 +244,7 @@ fn complete_recovery_events(digest: &str) -> Vec<DriverEvent> {
             &[
                 ("replay_index", "2"),
                 ("initialize_generation", "3"),
-                ("document", "workspace/project/main.pl"),
+                ("document", OPENED_FILE_REL),
                 ("root", "workspace/project"),
                 ("did_open_replayed", "1"),
                 ("client_init_events", "3"),
@@ -290,7 +290,7 @@ fn complete_recovery_events(digest: &str) -> Vec<DriverEvent> {
             &[
                 ("replay_index", "3"),
                 ("initialize_generation", "4"),
-                ("document", "workspace/project/main.pl"),
+                ("document", OPENED_FILE_REL),
                 ("root", "workspace/project"),
                 ("did_open_replayed", "1"),
                 ("client_init_events", "4"),
