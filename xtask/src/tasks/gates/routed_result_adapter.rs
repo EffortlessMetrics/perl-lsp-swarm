@@ -68,14 +68,30 @@ pub(super) fn load_compiled_plan(path: &Path) -> Result<CiRoutePlanV1> {
 /// Verify the supplied plan exactly covers the gates this invocation will
 /// run, in both directions, before any gate executes (review thread
 /// 3871822409): every applicable planned `run` row is among the executed
-/// selections, every selected gate has an applicable planned `run` row, and
-/// each matched row's execution identity (command, timeout policy) agrees
-/// with the actually loaded gate policy. An untampered but stale plan is
-/// refused here instead of publishing a result attributed to a different
-/// command or timeout (review thread 3871822396).
+/// selections, every gate the runner will actually execute has an applicable
+/// planned `run` row, and each matched row's execution identity (command,
+/// timeout policy) agrees with the actually loaded gate policy. An
+/// untampered but stale plan is refused here instead of publishing a result
+/// attributed to a different command or timeout (review thread 3871822396).
+///
+/// "Will actually execute" is narrower than "selected". The runner keeps
+/// quarantined gates in `GatePlan.selected` and skips them inside
+/// `run_single_gate`, so requiring a `run` row for every selected gate
+/// refused every real `merge_gate` plan: the checked policy quarantines
+/// `security_audit` on that profile, and a valid plan marks it
+/// `PlannedOutcome::Quarantined`, never `Run`. A selected gate whose plan
+/// row is a non-`run` disposition it agrees with is therefore accepted
+/// without executing.
+///
+/// The exception is `--verbose`, which makes `run_single_gate` execute
+/// quarantined gates after all. A quarantined row that would actually run
+/// contradicts the plan, so it stays a refusal in that mode: the invariant
+/// preserved here is that every execution has exactly one applicable `run`
+/// row, and quarantined rows never execute.
 pub(super) fn ensure_plan_covers_selection(
     plan: &CiRoutePlanV1,
     selected_gates: &[&GateDefinition],
+    verbose: bool,
 ) -> Result<()> {
     let planned_run_rows: Vec<&xtask::ci_route_plan::RoutePlanRow> = plan
         .rows
@@ -98,12 +114,32 @@ pub(super) fn ensure_plan_covers_selection(
     }
     for gate in selected_gates {
         let Some(row) = planned_run_rows.iter().find(|row| row.gate_id == gate.name) else {
-            bail!(
-                "runner selects gate {:?} but the plan has no applicable run row for it \
-                 (absent from the denominator, scoped-noop, quarantined, or error row); \
-                 plan mismatch is refused before any gate runs",
-                gate.name
-            );
+            // No applicable `run` row. That is legitimate exactly when the
+            // runner will not execute this gate either, and the plan says
+            // why. A quarantined gate is skipped by `run_single_gate`
+            // unless `--verbose` forces it to run.
+            let planned = plan.rows.iter().find(|row| row.gate_id == gate.name);
+            match planned.map(|row| &row.outcome) {
+                Some(PlannedOutcome::Quarantined { .. }) if gate.quarantine && !verbose => {
+                    continue;
+                }
+                Some(PlannedOutcome::Quarantined { .. }) if gate.quarantine && verbose => {
+                    bail!(
+                        "gate {:?} is quarantined in the plan but --verbose would execute \
+                         it; a quarantined row must never execute, so the routed \
+                         invocation is refused before any gate runs",
+                        gate.name
+                    );
+                }
+                _ => {
+                    bail!(
+                        "runner selects gate {:?} but the plan has no applicable run row for it \
+                         (absent from the denominator, scoped-noop, quarantined, or error row); \
+                         plan mismatch is refused before any gate runs",
+                        gate.name
+                    );
+                }
+            }
         };
         let PlannedOutcome::Run { command, timeout_seconds, .. } = &row.outcome else {
             continue;
@@ -462,8 +498,8 @@ mod fixtures {
     use xtask::ci_route_plan::{
         Applicability, CompileRoutePlanInput, ExpansionStatus, GateSelectorInput,
         LifecycleDisposition, LifecycleState, PolicyRole, Resolution, RouteDispositionInput,
-        RouteExecutionIdentity, RouteProfileExpansionInput, RouteSelectionEvidence,
-        RouteSubjectRef, SelectorPlacement, SelectorProof, SelectorRole,
+        RouteExecutionIdentity, RouteProfileExpansionInput, RouteQuarantineEvidence,
+        RouteSelectionEvidence, RouteSubjectRef, SelectorPlacement, SelectorProof, SelectorRole,
     };
     use xtask::routed_result::TerminalOutcome;
 
@@ -673,20 +709,87 @@ mod fixtures {
         // selected gate the plan does not cover with an applicable run row.
         let plan = compiled_fixture();
         let fmt_gate = fmt_gate_definition();
-        assert!(ensure_plan_covers_selection(&plan, &[&fmt_gate]).is_ok());
+        assert!(ensure_plan_covers_selection(&plan, &[&fmt_gate], false).is_ok());
 
         let other_gate = gate_definition_named("other_gate");
-        let refused_missing = ensure_plan_covers_selection(&plan, &[&other_gate]);
+        let refused_missing = ensure_plan_covers_selection(&plan, &[&other_gate], false);
         assert!(refused_missing.is_err());
         assert!(refused_missing.err().unwrap().to_string().contains("fmt_gate"));
 
-        let refused_extra = ensure_plan_covers_selection(&plan, &[&fmt_gate, &other_gate]);
+        let refused_extra = ensure_plan_covers_selection(&plan, &[&fmt_gate, &other_gate], false);
         assert!(
             refused_extra.is_err(),
             "a selected gate absent from the plan denominator must refuse before execution, got {:?}",
             refused_extra
         );
         assert!(refused_extra.err().unwrap().to_string().contains("other_gate"));
+    }
+
+    /// The checked `.ci/gate-policy.yaml` quarantines `security_audit` on the
+    /// `merge_gate` profile, and the runner keeps quarantined gates in
+    /// `GatePlan.selected`, skipping them inside `run_single_gate`. Requiring
+    /// an applicable `run` row for every selected gate therefore refused every
+    /// real merge-gate plan before a single gate could execute. A plan that
+    /// marks the gate `Quarantined` agrees with the runner and must be
+    /// accepted -- but only while the runner really will skip it.
+    #[test]
+    fn quarantined_selection_matches_a_quarantined_plan_row_but_never_executes() {
+        let mut input = fixture_input();
+        input.expansion.denominator.push("security_audit".to_string());
+        input.dispositions.push(RouteDispositionInput {
+            gate_id: "security_audit".to_string(),
+            policy_role: PolicyRole::Advisory,
+            lifecycle: LifecycleDisposition {
+                state: LifecycleState::Quarantined,
+                resolution: Resolution::Current,
+            },
+            native_tier: "merge_gate".to_string(),
+            quarantine: Some(RouteQuarantineEvidence {
+                owner: "platform".to_string(),
+                owner_issue: Some("#6261".to_string()),
+                reason_token: "cargo-audit-broken-install-2026-04-26".to_string(),
+                review_after: "2026-12-01".to_string(),
+            }),
+            detail: None,
+        });
+        input.selectors.push(GateSelectorInput {
+            gate_id: "security_audit".to_string(),
+            placement: SelectorPlacement::Selected,
+            role: Some(SelectorRole::AlwaysOn),
+            reason: "always on".to_string(),
+            proof: Some(SelectorProof::Applicable),
+        });
+        let plan = CiRoutePlanV1::compile(input).expect("quarantine fixture compiles");
+        plan.validate().expect("quarantine fixture validates");
+
+        let fmt_gate = fmt_gate_definition();
+        let mut quarantined = gate_definition_named("other_gate");
+        quarantined.name = "security_audit".to_string();
+        quarantined.quarantine = true;
+
+        // Non-verbose: the runner skips it, so the plan is honoured.
+        ensure_plan_covers_selection(&plan, &[&fmt_gate, &quarantined], false)
+            .expect("a quarantined selection matching a quarantined plan row must run the rest");
+
+        // Verbose makes `run_single_gate` execute quarantined gates, which
+        // would run a row the plan says never executes. That stays refused.
+        let refused = ensure_plan_covers_selection(&plan, &[&fmt_gate, &quarantined], true)
+            .expect_err("--verbose executing a quarantined row must refuse");
+        assert!(
+            refused.to_string().contains("security_audit"),
+            "the refusal must name the offending gate, got: {refused}"
+        );
+
+        // A gate the plan does not carry at all is still refused, quarantine
+        // bit or not: that is a genuine plan mismatch, not an agreed skip.
+        let mut unknown = gate_definition_named("other_gate");
+        unknown.quarantine = true;
+        let refused_unknown = ensure_plan_covers_selection(&plan, &[&fmt_gate, &unknown], false)
+            .expect_err("a quarantined gate absent from the plan must still refuse");
+        assert!(
+            refused_unknown.to_string().contains("other_gate"),
+            "the refusal must name the uncovered gate, got: {refused_unknown}"
+        );
     }
 
     #[test]
@@ -702,7 +805,7 @@ mod fixtures {
 
         let mut stale_gate = fmt_gate_definition();
         stale_gate.command = "cargo fmt --check --changed".to_string();
-        let stale_command = ensure_plan_covers_selection(&plan, &[&stale_gate]);
+        let stale_command = ensure_plan_covers_selection(&plan, &[&stale_gate], false);
         assert!(
             stale_command.is_err(),
             "a gate whose command disagrees with the plan row must refuse before execution"
@@ -711,7 +814,7 @@ mod fixtures {
 
         let mut stale_timeout = fmt_gate_definition();
         stale_timeout.timeout_seconds = 61;
-        let refused_timeout = ensure_plan_covers_selection(&plan, &[&stale_timeout]);
+        let refused_timeout = ensure_plan_covers_selection(&plan, &[&stale_timeout], false);
         assert!(refused_timeout.is_err(), "a timeout-policy disagreement must refuse");
     }
 
