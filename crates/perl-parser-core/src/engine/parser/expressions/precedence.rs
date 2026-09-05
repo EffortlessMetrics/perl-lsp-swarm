@@ -1061,9 +1061,13 @@ impl<'a> Parser<'a> {
                             | TokenKind::HashSigil
                             | TokenKind::LeftParen
                             | TokenKind::LeftBracket
+                            | TokenKind::LeftBrace
                             | TokenKind::String
                             | TokenKind::QuoteSingle
                             | TokenKind::QuoteDouble
+                            | TokenKind::Undef
+                            | TokenKind::Do
+                            | TokenKind::Sub
                             | TokenKind::Not
                             | TokenKind::Minus
                             | TokenKind::Plus

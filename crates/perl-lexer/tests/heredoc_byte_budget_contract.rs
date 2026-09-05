@@ -53,7 +53,9 @@ fn signatures(source: &str) -> Vec<TokenSignature> {
 fn accepted_body<'a>(source: &'a str, tokens: &'a [TokenSignature]) -> R<&'a TokenSignature> {
     let bodies = tokens
         .iter()
-        .filter(|token| matches!(&token.0, TokenType::HeredocBody(_)))
+        .filter(|token| {
+            matches!(&token.0, TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_))
+        })
         .collect::<Vec<_>>();
     if bodies.len() != 1 {
         return Err(missing(format!("expected one accepted heredoc body, got {}", bodies.len())));
@@ -74,7 +76,10 @@ fn byte_budget_accepts_max_minus_one_and_the_exact_boundary() -> R {
         let expected_start = HEADER.len();
         let expected_end = expected_start + body_bytes;
 
-        assert!(matches!(&body.0, TokenType::HeredocBody(payload) if payload.is_empty()));
+        assert!(
+            matches!(&body.0, TokenType::HeredocBody(payload) if payload.is_empty())
+                | matches!(&body.0, TokenType::InterpolatedHeredocBody(_) if body.1.is_empty())
+        );
         assert_eq!((body.2, body.3), (expected_start, expected_end));
         assert_eq!(source.get(body.2..body.3), source.get(expected_start..expected_end));
         assert_eq!(source.get(body.2..body.3).map(str::len), Some(body_bytes));
@@ -90,7 +95,10 @@ fn byte_budget_rejects_the_first_byte_above_the_boundary() -> R {
     let tokens = signatures(&source);
     let body_start = HEADER.len();
 
-    assert!(!tokens.iter().any(|token| matches!(&token.0, TokenType::HeredocBody(_))));
+    assert!(!tokens.iter().any(|token| matches!(
+        &token.0,
+        TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_)
+    )));
     let recovery_index = tokens
         .iter()
         .position(|token| matches!(&token.0, TokenType::UnknownRest))
@@ -118,7 +126,10 @@ fn multiline_scanning_uses_the_same_exact_byte_boundary() -> R {
             assert!(tokens.iter().all(|token| !token.0.is_recovery_token()));
         } else {
             assert!(tokens.iter().any(|token| matches!(&token.0, TokenType::UnknownRest)));
-            assert!(!tokens.iter().any(|token| matches!(&token.0, TokenType::HeredocBody(_))));
+            assert!(!tokens.iter().any(|token| matches!(
+                &token.0,
+                TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_)
+            )));
         }
     }
     Ok(())

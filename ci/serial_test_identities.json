@@ -157,17 +157,17 @@
       "path": "crates/perl-lsp-rs/src/execute_command/tests.rs",
       "test_function": "test_command_exists_ignores_planted_cwd_binary",
       "signals": "cwd",
-      "accepted_reason": "Serialized in-file by a static Mutex guard (CWD_LOCK/ENV_LOCK) held for the whole test body, equivalent to #[serial] within this binary.",
-      "state": "active",
-      "remediation": "pending"
+      "accepted_reason": "#1269 remediation: hostile CWD is supplied only to a selected child process; the parent test runner remains mutation-free.",
+      "state": "retired",
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs/src/execute_command/tests.rs",
       "test_function": "test_run_test_command_does_not_execute_planted_cwd_binary",
       "signals": "cwd",
-      "accepted_reason": "Serialized in-file by a static Mutex guard (CWD_LOCK/ENV_LOCK) held for the whole test body, equivalent to #[serial] within this binary.",
-      "state": "active",
-      "remediation": "pending"
+      "accepted_reason": "#1269 remediation: hostile CWD is supplied only to a selected child process; the parent test runner remains mutation-free.",
+      "state": "retired",
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs/tests/execute_command_security_tests.rs",
@@ -253,9 +253,9 @@
       "path": "crates/perl-subprocess-runtime/src/tests.rs",
       "test_function": "test_run_command_does_not_execute_planted_cwd_binary",
       "signals": "cwd",
-      "accepted_reason": "Serialized in-file by a static Mutex guard (CWD_LOCK/ENV_LOCK) held for the whole test body, equivalent to #[serial] within this binary.",
-      "state": "active",
-      "remediation": "pending"
+      "accepted_reason": "#1269 remediation: hostile CWD is supplied only to a selected child process; the parent test runner remains mutation-free.",
+      "state": "retired",
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-tdd-support/src/tdd/test_runner.rs",
@@ -277,9 +277,9 @@
       "path": "xtask/src/test_support.rs",
       "test_function": "tests::restore_env_removes_vars_that_were_absent",
       "signals": "env_set",
-      "accepted_reason": "Serialized in-file by a static Mutex guard (CWD_LOCK/ENV_LOCK) held for the whole test body, equivalent to #[serial] within this binary.",
-      "state": "active",
-      "remediation": "pending"
+      "accepted_reason": "#1269 remediation: the real adapter removal behavior is verified in a fresh child; the parent test runner remains mutation-free.",
+      "state": "retired",
+      "remediation": "eliminated"
     }
   ]
 }

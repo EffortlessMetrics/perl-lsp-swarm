@@ -530,10 +530,6 @@ fn tree_file(root: &Path, sha: &str, path: &str) -> Result<(String, Vec<u8>)> {
     Ok((object_sha.to_string(), bytes))
 }
 
-fn classify_tree(root: &Path, sha: &str) -> Result<(Vec<FileRecord>, String)> {
-    classify_tree_at(root, sha, Utc::now().date_naive())
-}
-
 fn classify_tree_at(
     root: &Path,
     sha: &str,
@@ -1250,7 +1246,11 @@ pub fn render_markdown(records: &[FileRecord]) -> String {
         );
         out.push_str("| Path | Extension |\n|---|---|\n");
         for r in non_rust.iter().filter(|r| !r.allowlisted) {
-            out.push_str(&format!("| `{}` | `{}` |\n", r.path, r.extension));
+            out.push_str(&format!(
+                "| `{}` | `{}` |\n",
+                escape_markdown_cell(&r.path),
+                escape_markdown_cell(&r.extension)
+            ));
         }
         out.push('\n');
     }
@@ -1260,7 +1260,13 @@ pub fn render_markdown(records: &[FileRecord]) -> String {
     for r in non_rust.iter().filter(|r| r.allowlisted) {
         let (id, owner) =
             r.entry.as_ref().map(|e| (e.id.as_str(), e.owner.as_str())).unwrap_or(("", ""));
-        out.push_str(&format!("| `{}` | {} | `{}` | {} |\n", r.path, r.category, id, owner));
+        out.push_str(&format!(
+            "| `{}` | {} | `{}` | {} |\n",
+            escape_markdown_cell(&r.path),
+            r.category,
+            escape_markdown_cell(id),
+            escape_markdown_cell(owner)
+        ));
     }
     out.push('\n');
 
@@ -1284,7 +1290,7 @@ pub fn render_markdown(records: &[FileRecord]) -> String {
 /// row counts, so stale summary totals cannot survive a regeneration.
 pub(crate) fn verify_inventory_projection(markdown: &str) -> Result<()> {
     let mut seen_paths = std::collections::BTreeSet::new();
-    let mut summary_counts: std::collections::BTreeMap<&str, usize> =
+    let mut summary_counts: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     let mut section_rows: std::collections::BTreeMap<&str, usize> =
         std::collections::BTreeMap::new();
@@ -1296,22 +1302,21 @@ pub(crate) fn verify_inventory_projection(markdown: &str) -> Result<()> {
             section = line.trim_start_matches('#').trim();
             continue;
         }
-        let Some(rest) = line.strip_prefix("| ") else { continue };
-        let cells: Vec<&str> =
-            rest.trim_end().trim_end_matches('|').split('|').map(str::trim).collect();
+        let Some(cells) = parse_markdown_cells(line) else { continue };
         if cells.len() == 2 && section == "Summary" {
             if let Ok(count) = cells[1].parse::<usize>() {
-                summary_counts.insert(cells[0], count);
+                summary_counts.insert(cells[0].clone(), count);
             }
             continue;
         }
         let Some(path) = cells
             .first()
             .and_then(|cell| cell.strip_prefix('`').and_then(|path| path.strip_suffix('`')))
+            .map(str::to_string)
         else {
             continue;
         };
-        if !seen_paths.insert(path) {
+        if !seen_paths.insert(path.clone()) {
             bail!(
                 "non-Rust inventory projection emits duplicate file rows for `{path}`; \
                  regenerate from a single pass with `cargo xtask non-rust inventory --write`"
@@ -1487,9 +1492,10 @@ fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -
         );
     }
     if normalize_line_endings(&actual) != normalize_line_endings(&expected) {
+        let path_delta = inventory_path_delta(&actual, &expected);
         bail!(
-            "non-Rust inventory documentation is stale at {}; run `cargo xtask non-rust inventory --write` to regenerate it",
-            docs_path.display()
+            "non-Rust inventory documentation is stale at {}; {path_delta}; run `cargo xtask non-rust inventory --write` to regenerate it",
+            docs_path.display(),
         );
     }
     println!("Non-Rust inventory scan completed: {}", docs_path.display());
@@ -1544,6 +1550,87 @@ fn added_paths_since(root: &Path, baseline: &str) -> Result<Vec<String>> {
 
 fn normalize_line_endings(value: &str) -> String {
     value.replace("\r\n", "\n")
+}
+
+/// Escape a literal value for embedding in one Markdown table cell so the
+/// rendered row keeps exactly one cell per column: a literal `|` inside a
+/// value would otherwise split the row. Backslashes are intentionally left
+/// unchanged because values may be rendered inside Markdown code spans. The
+/// pipe escape is reversed by [`parse_markdown_cells`].
+fn escape_markdown_cell(value: &str) -> String {
+    value.replace('|', "\\|")
+}
+
+/// Split one rendered table row into its raw cell values, honoring
+/// [`escape_markdown_cell`] pipe escapes and trimming the surrounding
+/// whitespace the renderer emits. Only the marker immediately before a pipe
+/// is consumed; all other backslashes are preserved verbatim. Returns `None`
+/// for lines outside table rows.
+fn parse_markdown_cells(line: &str) -> Option<Vec<String>> {
+    let rest = line.trim().strip_prefix("| ")?;
+    // Remove exactly the table delimiter. Using `trim_end_matches('|')` would
+    // also remove a literal pipe when a caller provides a row without the
+    // renderer's separating whitespace.
+    let trimmed = rest.trim_end().strip_suffix('|')?;
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    for ch in trimmed.chars() {
+        match ch {
+            '|' => {
+                if current.ends_with('\\') {
+                    current.pop();
+                    current.push('|');
+                } else {
+                    cells.push(current.trim().to_string());
+                    current = String::new();
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    cells.push(current.trim().to_string());
+    Some(cells)
+}
+
+/// Collect the backtick-wrapped first-column cells of a generated inventory
+/// table.
+///
+/// Header, separator, and summary rows have no backtick-wrapped first cell
+/// and are ignored, so the result is exactly the tracked-file rows.
+fn inventory_row_paths(markdown: &str) -> std::collections::BTreeSet<String> {
+    markdown
+        .lines()
+        .filter_map(|line| {
+            let cells = parse_markdown_cells(line)?;
+            let cell = cells.first()?;
+            Some(cell.strip_prefix('`')?.strip_suffix('`')?.to_string())
+        })
+        .collect()
+}
+
+/// Describe how a regenerated inventory (`expected`) differs from the
+/// committed one (`actual`).
+///
+/// Returns the exact missing and no-longer-generated rows when the row paths
+/// diverge, or a metadata-only note when both documents cover the same rows
+/// but summary counts or other non-row content changed.
+fn inventory_path_delta(actual: &str, expected: &str) -> String {
+    let actual = inventory_row_paths(actual);
+    let expected = inventory_row_paths(expected);
+    let missing = expected.difference(&actual).cloned().collect::<Vec<_>>();
+    let unexpected = actual.difference(&expected).cloned().collect::<Vec<_>>();
+    let mut details = Vec::new();
+    if !missing.is_empty() {
+        details.push(format!("missing generated paths: {}", missing.join(", ")));
+    }
+    if !unexpected.is_empty() {
+        details.push(format!("paths no longer generated: {}", unexpected.join(", ")));
+    }
+    if details.is_empty() {
+        "the row paths match but summary or metadata changed".to_string()
+    } else {
+        details.join("; ")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3931,6 +4018,10 @@ review_after = "2026-11-13"
             "component: Developer experience\n",
             "kind: Changed\n",
             "body: A sufficiently long changelog body line for the gate.\n",
+            // An RFC 3339 `time:` is part of well-formedness, not decoration:
+            // the renderer unmarshals it as a timestamp and crashes repo-wide
+            // without one (#13484).
+            "time: 2026-08-30T12:34:56Z\n",
             "custom:\n",
             "  PR: \"14588\"\n",
             "  Breaking: \"no\"\n",
@@ -4216,6 +4307,110 @@ review_after = "2026-11-13"
             "unexpected stale-inventory error: {error}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn inventory_path_delta_reports_exact_added_and_removed_rows() {
+        let actual = "| `docs/old.md` | documentation | `old` | owner |\n";
+        let expected = "| `docs/new.md` | documentation | `new` | owner |\n";
+        let delta = inventory_path_delta(actual, expected);
+        assert!(delta.contains("missing generated paths: docs/new.md"));
+        assert!(delta.contains("paths no longer generated: docs/old.md"));
+    }
+
+    #[test]
+    fn inventory_path_delta_reports_metadata_only_change_when_row_paths_match() {
+        // Same backtick-wrapped row paths in both documents; only the summary
+        // metadata line differs, so the delta must take the metadata-only
+        // branch instead of naming missing or removed rows.
+        let actual = "# Non-Rust File Inventory\n\n\
+            | Metric | Count |\n|---|---|\n\
+            | Total tracked files | 1 |\n\n\
+            | `docs/keep.md` | documentation | `keep` | owner |\n";
+        let expected = "# Non-Rust File Inventory\n\n\
+            | Metric | Count |\n|---|---|\n\
+            | Total tracked files | 2 |\n\n\
+            | `docs/keep.md` | documentation | `keep` | owner |\n";
+        let delta = inventory_path_delta(actual, expected);
+        assert_eq!(delta, "the row paths match but summary or metadata changed");
+    }
+
+    /// A tracked path containing `|` is rendered escaped in table cells; the
+    /// delta parser must reverse the escape and name the raw path, not hide
+    /// the stale row as metadata-only drift.
+    #[test]
+    fn inventory_path_delta_names_pipe_paths_through_markdown_escapes() {
+        let actual = "| `docs/old.md` | documentation | `old` | owner |\n\
+            | `docs/a|b.md` | documentation | `ab` | owner |\n";
+        let actual_rendered = actual.replace("docs/a|b.md", "docs/a\\|b.md");
+        let expected = "| `docs/new.md` | documentation | `new` | owner |\n\
+             | `docs/a\\|b.md` | documentation | `ab` | owner |\n";
+        let delta = inventory_path_delta(&actual_rendered, expected);
+        assert!(delta.contains("missing generated paths: docs/new.md"), "{delta}");
+        assert!(delta.contains("paths no longer generated: docs/old.md"), "{delta}");
+        assert!(
+            !delta.contains("docs/a"),
+            "the pipe path must be recovered on both sides, not reported stale: {delta}"
+        );
+
+        // Round trip: the escaped cell parses back to the raw path.
+        let escaped = escape_markdown_cell("docs/a|b.md");
+        let row = format!("| `{escaped}` | documentation | `ab` | owner |\n");
+        let parsed = inventory_row_paths(&row);
+        assert_eq!(
+            parsed.into_iter().collect::<Vec<_>>(),
+            vec!["docs/a|b.md"],
+            "escape and parse must be exact inverses"
+        );
+
+        // A backslash that is not part of a `\|` escape stays verbatim, and
+        // the pipe after it still decodes (#14330 review).
+        let raw = "docs\\a|b.md";
+        assert_eq!(escape_markdown_cell(raw), "docs\\a\\|b.md");
+        let row = format!("| `{}` | documentation | `ab` | owner |\n", escape_markdown_cell(raw));
+        let parsed = inventory_row_paths(&row);
+        assert_eq!(
+            parsed.into_iter().collect::<Vec<_>>(),
+            vec![raw],
+            "non-escape backslashes must round-trip verbatim"
+        );
+    }
+
+    #[test]
+    fn markdown_metadata_cells_round_trip_odd_backslashes_before_pipe() {
+        for count in 1..=3 {
+            let prefix = "\\".repeat(count);
+            let id = format!("id-{prefix}|suffix");
+            let owner = format!("owner-{prefix}|suffix");
+            let row = format!(
+                "| `path.md` | documentation | `{}` | {} |\n",
+                escape_markdown_cell(&id),
+                escape_markdown_cell(&owner)
+            );
+            let cells = parse_markdown_cells(&row).expect("rendered row must parse");
+            assert_eq!(cells.len(), 4, "metadata backslashes must not add cells");
+            assert_eq!(cells[2], format!("`{id}`"));
+            assert_eq!(cells[3], owner);
+        }
+    }
+
+    #[test]
+    fn markdown_metadata_cells_round_trip_trailing_literal_pipe() {
+        let id = "id|";
+        let owner = "owner|";
+        let row = format!(
+            "| `path.md` | documentation | `{}` | {} |\n",
+            escape_markdown_cell(id),
+            escape_markdown_cell(owner)
+        );
+        let cells = parse_markdown_cells(&row).expect("rendered row must parse");
+        assert_eq!(cells, vec!["`path.md`", "documentation", "`id|`", "owner|"]);
+
+        // The codec must also preserve a final literal pipe when there is no
+        // whitespace before the table delimiter.
+        let compact = "| `path.md`|documentation|`id\\|`|owner\\||";
+        let cells = parse_markdown_cells(compact).expect("compact row must parse");
+        assert_eq!(cells, vec!["`path.md`", "documentation", "`id|`", "owner|"]);
     }
 
     #[test]
