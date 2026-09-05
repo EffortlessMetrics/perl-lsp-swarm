@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12796 |
+| Total tracked files | 12803 |
 | Rust-family files | 3983 |
-| Non-Rust files | 8813 |
-| Allowlisted | 6574 |
+| Non-Rust files | 8820 |
+| Allowlisted | 6581 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 560 |
+| config | 567 |
 | documentation | 2858 |
 | generated | 2 |
 | production | 357 |
@@ -3779,12 +3779,16 @@
 | `contracts/dap/fixtures/negative-attach-process-id.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-baseline-perl-row.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-capability-catalog-claim.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-cleanup-owner-pod-only.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-cleanup-owner-unstructured.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-container-loader-mismatch.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-digest-mismatch-after-copy.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-digest-only-injection-source.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-downgraded-initial-dap-cell.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-editor-path-rewrite.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-empty-architecture-pair.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-empty-dap-claims.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-empty-include-root.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-empty-workspace-paths.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-fabricated-dap-evidence.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-init-image-perl.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
@@ -3793,6 +3797,8 @@
 | `contracts/dap/fixtures/negative-injection-source-empty-revision.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-injection-source-without-revision.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-kubernetes-api-rbac.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-loader-os-empty.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-loader-os-not-linux.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-lsp-profile-inheritance.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-missing-adapter-identity.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-missing-cleanup-owner.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
@@ -3804,6 +3810,7 @@
 | `contracts/dap/fixtures/negative-post-copy-unverified.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-project-image-with-artifact.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-project-perl-plan-differs.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-relative-interpreter-path.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-secrets-unredacted.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-security-context-root.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-service-account-token-used.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |

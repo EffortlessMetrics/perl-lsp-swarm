@@ -54,66 +54,119 @@ const REQUIRED_TOPOLOGY_CODES: &[RejectionReason] = &[
 /// cannot claim enforcement for a fact no admitted profile requires. Adding a fact
 /// to the contract without a check therefore fails the gate instead of silently
 /// inflating generated coverage.
-const ENFORCED_REQUIRED_FACTS: &[(&str, &str, RejectionReason)] = &[
-    ("project_image", "image_digest_and_build_identity", RejectionReason::ImageIdentityNotExact),
-    ("project_image", "image_libc_identity", RejectionReason::LoaderContractMismatch),
+const ENFORCED_REQUIRED_FACTS: &[(&str, &str, RejectionReason, &str)] = &[
+    (
+        "project_image",
+        "image_digest_and_build_identity",
+        RejectionReason::ImageIdentityNotExact,
+        "negative-tag-only-image",
+    ),
+    (
+        "project_image",
+        "image_libc_identity",
+        RejectionReason::LoaderContractMismatch,
+        "negative-musl-glibc-loader-mismatch",
+    ),
     (
         "project_image",
         "adapter_binary_path_version_hash_target",
         RejectionReason::AdapterIdentityNotExact,
+        "negative-missing-adapter-identity",
     ),
     (
         "project_image",
         "project_perl_path_version_environment",
         RejectionReason::ProjectPerlIdentityMismatch,
+        "negative-relative-interpreter-path",
     ),
     (
         "project_image",
         "exact_workspace_root_and_source_paths",
         RejectionReason::SourceNamespaceMismatch,
+        "negative-source-outside-workspace",
     ),
     (
         "project_image",
         "non_root_security_resource_cleanup",
         RejectionReason::SecurityContextMissing,
+        "negative-security-context-root",
     ),
-    ("project_image", "no_network_listener", RejectionReason::NetworkListenerForbidden),
+    (
+        "project_image",
+        "no_network_listener",
+        RejectionReason::NetworkListenerForbidden,
+        "negative-ambient-listener",
+    ),
     (
         "injected_tool",
         "injection_source_artifact_digest_and_build_revision",
         RejectionReason::InjectionSourceUnbound,
+        "negative-unbound-injection-source",
     ),
-    ("injected_tool", "injected_artifact_libc_identity", RejectionReason::LoaderContractMismatch),
+    (
+        "injected_tool",
+        "injected_artifact_libc_identity",
+        RejectionReason::LoaderContractMismatch,
+        "negative-injected-artifact-libc-mismatch",
+    ),
     (
         "injected_tool",
         "copy_and_post_copy_digest_verification",
         RejectionReason::ArtifactDigestUnverified,
+        "negative-post-copy-unverified",
     ),
-    ("injected_tool", "executable_mode", RejectionReason::ExecutableModeInvalid),
+    (
+        "injected_tool",
+        "executable_mode",
+        RejectionReason::ExecutableModeInvalid,
+        "negative-wrong-executable-mode",
+    ),
     (
         "injected_tool",
         "host_container_os_libc_architecture_loader_compatibility",
         RejectionReason::LoaderContractMismatch,
+        "negative-artifact-arch-loader-mismatch",
     ),
     (
         "injected_tool",
         "tool_volume_ownership_and_read_only_mount",
         RejectionReason::ToolMountNotReadOnly,
+        "negative-writable-tool-mount",
     ),
     (
         "injected_tool",
         "project_container_perl_authority_not_init_image_perl",
         RejectionReason::InitImagePerlSubstitutionForbidden,
+        "negative-init-image-perl",
     ),
 ];
 
-/// Minimum number of security requirements; #10112 lists eight ownership and
-/// disposition facts that must stay explicit.
-const MINIMUM_SECURITY_REQUIREMENTS: usize = 8;
+/// The exact security requirement identities #10112 mandates. A count-only
+/// ratchet would let one mandated fact be swapped for a different plausible
+/// row while the total stayed at eight, so the identities are pinned.
+const REQUIRED_SECURITY_REQUIREMENTS: &[&str] = &[
+    "parent_owned_stdio_no_shell_no_tty",
+    "no_kubernetes_credentials_to_adapter_or_debuggee",
+    "service_account_token_absent_or_unused",
+    "no_network_listener_created_for_dap",
+    "explicit_uid_gid_and_path_ownership",
+    "process_tree_and_pod_cleanup_owner",
+    "secrets_redacted_from_retained_receipts",
+    "workspace_data_cannot_select_adapter_or_cluster_target",
+];
 
-/// Number of DAP cells in the initial admitted family; #10112 enumerates this
-/// family explicitly and the projection may not shrink silently.
-const INITIAL_ADMITTED_FAMILY_SIZE: usize = 8;
+/// The exact initial-admitted DAP cell identities. Same reasoning as above:
+/// replacing one admitted cell with another evidence-backed row must not pass.
+const REQUIRED_INITIAL_ADMITTED_CELLS: &[&str] = &[
+    "initialize",
+    "launch",
+    "configurationDone",
+    "source_breakpoint_install_exact_stop",
+    "threads_stack_source",
+    "bounded_current_frame_scopes_variables",
+    "one_continue_step",
+    "termination_disconnect_cleanup",
+];
 
 #[derive(Debug, Parser)]
 #[command(name = "kubernetes-dap-profiles")]
@@ -566,7 +619,7 @@ impl ProfileContract {
                 }
                 if !ENFORCED_REQUIRED_FACTS
                     .iter()
-                    .any(|(owner, key, _)| *owner == row.profile_id && key == fact)
+                    .any(|(owner, key, _, _)| *owner == row.profile_id && key == fact)
                 {
                     bail!(
                         "admitted profile {profile_id} declares required fact {fact:?} with no \
@@ -576,7 +629,7 @@ impl ProfileContract {
             }
         }
 
-        for (owner, fact, _) in ENFORCED_REQUIRED_FACTS {
+        for (owner, fact, _, _) in ENFORCED_REQUIRED_FACTS {
             let declared = self.admitted_profiles.iter().any(|row| {
                 row.profile_id == *owner && row.required_facts.iter().any(|f| f == fact)
             });
@@ -616,7 +669,6 @@ impl ProfileContract {
         }
 
         let mut cell_ids = BTreeMap::new();
-        let mut initial_admitted = 0usize;
         for cell in &self.dap_cells {
             if !is_non_empty(&cell.cell_id) {
                 bail!("dap cell rows need non-empty cell ids");
@@ -626,7 +678,6 @@ impl ProfileContract {
             }
             match cell.family {
                 CellFamily::InitialAdmitted => {
-                    initial_admitted += 1;
                     if cell.state != CellState::EvidenceBacked {
                         bail!("initial admitted cell {:?} must be evidence backed", cell.cell_id);
                     }
@@ -653,10 +704,18 @@ impl ProfileContract {
                 }
             }
         }
-        if initial_admitted < INITIAL_ADMITTED_FAMILY_SIZE {
-            bail!(
-                "initial admitted family shrank to {initial_admitted} cells; the #10112 family has {INITIAL_ADMITTED_FAMILY_SIZE}"
-            );
+        // Identity, not arity: a swapped cell keeps the count at eight.
+        for required in REQUIRED_INITIAL_ADMITTED_CELLS {
+            if !self
+                .dap_cells
+                .iter()
+                .any(|cell| cell.cell_id == *required && cell.family == CellFamily::InitialAdmitted)
+            {
+                bail!(
+                    "initial admitted family is missing the #10112 cell {required:?}; the mandated \
+                     rows may not be replaced"
+                );
+            }
         }
         let has_optional_ceiling =
             self.dap_cells.iter().any(|cell| cell.family == CellFamily::Optional);
@@ -664,9 +723,17 @@ impl ProfileContract {
             bail!("projection must keep an explicit not_proven/unsupported optional ceiling");
         }
 
-        if self.security_requirements.len() < MINIMUM_SECURITY_REQUIREMENTS {
+        for required in REQUIRED_SECURITY_REQUIREMENTS {
+            if !self.security_requirements.iter().any(|row| row.requirement_id == *required) {
+                bail!(
+                    "security requirements are missing the #10112 fact {required:?}; the mandated \
+                     rows may not be replaced"
+                );
+            }
+        }
+        if self.security_requirements.len() < REQUIRED_SECURITY_REQUIREMENTS.len() {
             bail!(
-                "security requirements fell below the {MINIMUM_SECURITY_REQUIREMENTS} explicit ownership facts required by #10112"
+                "security requirements fell below the explicit ownership facts required by #10112"
             );
         }
         let mut requirement_ids = BTreeMap::new();
@@ -1728,24 +1795,50 @@ fn verify_required_fact_enforcement(
     contract: &ProfileContract,
     fixtures: &[FixtureDocument],
 ) -> Result<()> {
-    for (owner, fact, reason) in ENFORCED_REQUIRED_FACTS {
+    let mut discriminators = BTreeMap::new();
+    for (owner, fact, reason, fixture_id) in ENFORCED_REQUIRED_FACTS {
         let Some(profile) = contract.admitted_profiles.iter().find(|row| row.profile_id == *owner)
         else {
             bail!("ENFORCED_REQUIRED_FACTS names unknown profile {owner:?}");
         };
-        let exercised = fixtures.iter().any(|fixture| {
-            fixture.profile.install_mode == profile.install_mode
-                && matches!(
-                    fixture.profile.evaluate(contract),
-                    Err(rejection) if rejection.reason == *reason
-                )
-        });
-        if !exercised {
+        // Several facts legitimately share a rejection code — three share
+        // `loader_contract_mismatch` — so matching on the code alone would let one
+        // unrelated fixture stand in for all of them, and removing one fact's check
+        // would stay green while another check still returned that code. Each fact
+        // names the fixture that specifically exercises it instead.
+        if let Some(other) = discriminators.insert(*fixture_id, *fact) {
             bail!(
-                "required fact {fact:?} for profile {owner:?} claims enforcement through `{}`, \
-                 but no committed fixture is actually rejected with it",
-                reason.as_str()
+                "fixture {fixture_id:?} is claimed as the discriminator for both {other:?} and \
+                 {fact:?}; each required fact needs its own"
             );
+        }
+        let Some(fixture) = fixtures.iter().find(|fixture| fixture.fixture_id == *fixture_id)
+        else {
+            bail!(
+                "required fact {fact:?} names discriminating fixture {fixture_id:?}, which is not \
+                 committed"
+            );
+        };
+        if fixture.profile.install_mode != profile.install_mode {
+            bail!(
+                "fixture {fixture_id:?} for required fact {fact:?} uses install mode `{}` but the \
+                 fact belongs to `{}`",
+                fixture.profile.install_mode.as_str(),
+                profile.install_mode.as_str()
+            );
+        }
+        match fixture.profile.evaluate(contract) {
+            Err(rejection) if rejection.reason == *reason => {}
+            Err(rejection) => bail!(
+                "fixture {fixture_id:?} for required fact {fact:?} is rejected with `{}`, not the \
+                 claimed `{}`",
+                rejection.reason.as_str(),
+                reason.as_str()
+            ),
+            Ok(()) => bail!(
+                "fixture {fixture_id:?} for required fact {fact:?} is admitted; the fact's \
+                 enforcement is unproven"
+            ),
         }
     }
     Ok(())
@@ -2782,6 +2875,81 @@ mod tests {
             assert_rejected_with(&profile, RejectionReason::CleanupOwnershipMissing)?;
         }
         assert!(cleanup_owners("process-tree:adapter-parent/pod:kubelet").is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn a_shared_rejection_code_cannot_cover_another_fact() -> Result<()> {
+        let contract = committed_contract()?;
+        let fixtures = committed_fixtures()?;
+        assert!(verify_required_fact_enforcement(&contract, &fixtures).is_ok());
+
+        // Three facts share `loader_contract_mismatch`. Dropping only the fixture
+        // that discriminates the injected artifact's libc must fail even though
+        // other fixtures still produce that same reason code.
+        let others: Vec<&str> = ENFORCED_REQUIRED_FACTS
+            .iter()
+            .filter(|(_, _, reason, _)| *reason == RejectionReason::LoaderContractMismatch)
+            .map(|(_, _, _, fixture_id)| *fixture_id)
+            .collect();
+        assert!(others.len() >= 3, "expected several facts to share the loader reason");
+
+        let pruned: Vec<FixtureDocument> = fixtures
+            .iter()
+            .filter(|fixture| fixture.fixture_id != "negative-injected-artifact-libc-mismatch")
+            .cloned()
+            .collect();
+        // Another fixture still yields the shared code, so a reason-only check would pass.
+        assert!(pruned.iter().any(|fixture| matches!(
+            fixture.profile.evaluate(&contract),
+            Err(rejection) if rejection.reason == RejectionReason::LoaderContractMismatch
+        )));
+        let error = verify_required_fact_enforcement(&contract, &pruned)
+            .expect_err("a shared reason code must not cover a distinct fact");
+        assert!(
+            error.to_string().contains("injected_artifact_libc_identity"),
+            "unexpected error: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn every_required_fact_names_a_distinct_discriminating_fixture() {
+        let mut seen = std::collections::BTreeSet::new();
+        for (_, _, _, fixture_id) in ENFORCED_REQUIRED_FACTS {
+            assert!(seen.insert(*fixture_id), "fixture {fixture_id} claimed twice");
+        }
+    }
+
+    #[test]
+    fn a_mandated_dap_cell_cannot_be_swapped_for_another() -> Result<()> {
+        let mut contract = ProfileContract::from_str(COMMITTED_CONTRACT)?;
+        let cell = contract
+            .dap_cells
+            .iter_mut()
+            .find(|cell| cell.cell_id == "one_continue_step")
+            .ok_or_else(|| anyhow!("missing mandated cell"))?;
+        // A plausible replacement that keeps the family count at eight.
+        cell.cell_id = "one_continue_step_v2".into();
+        let error = contract.validate().expect_err("a swapped mandated cell must fail");
+        assert!(error.to_string().contains("one_continue_step"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_mandated_security_requirement_cannot_be_swapped_for_another() -> Result<()> {
+        let mut contract = ProfileContract::from_str(COMMITTED_CONTRACT)?;
+        let row = contract
+            .security_requirements
+            .iter_mut()
+            .find(|row| row.requirement_id == "process_tree_and_pod_cleanup_owner")
+            .ok_or_else(|| anyhow!("missing mandated security requirement"))?;
+        row.requirement_id = "cleanup_owner_documented".into();
+        let error = contract.validate().expect_err("a swapped mandated fact must fail");
+        assert!(
+            error.to_string().contains("process_tree_and_pod_cleanup_owner"),
+            "unexpected error: {error}"
+        );
         Ok(())
     }
 }
