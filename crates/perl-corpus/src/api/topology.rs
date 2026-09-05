@@ -399,6 +399,12 @@ fn asset_from_path(
     })
 }
 
+/// Fail-closed identity check for one deserialized asset.
+///
+/// A serialized record is trusted for nothing: its ID must equal its canonical
+/// relative path, that path must sit under its declared layer prefix, the path must
+/// be selectable by `classify_selected_asset`, and the declared kind must equal what
+/// that selector classifies. Anything discovery could not have produced is rejected.
 fn validate_asset_identity(asset: &CorpusAsset) -> Result<(), CorpusTopologyError> {
     if asset.id != asset.relative_path {
         return Err(CorpusTopologyError::AssetIdentityMismatch {
@@ -634,6 +640,12 @@ fn canonical_relative_path(path: &Path) -> Result<String, CorpusTopologyError> {
     Ok(parts.join("/"))
 }
 
+/// Discovers one layer's assets by walking it entry by entry.
+///
+/// The walk is where selection is enforced structurally: ignored names are skipped
+/// before descent, and a directory whose own name classifies as an asset is a hard
+/// refusal rather than a skip, because it can never be resolved to a file. Both
+/// constraints are what `classify_selected_asset` reproduces for validation.
 fn collect_layer_assets(
     paths: &CorpusPaths,
     root: &Path,
@@ -736,6 +748,10 @@ fn collect_layer_assets(
     Ok(assets)
 }
 
+/// Reports whether any component of a layer-relative path is an ignored name.
+///
+/// Discovery skips a `.`- or `_`-prefixed entry and never descends into it, so every
+/// component constrains selection, not just the leaf.
 fn is_ignored_path(path: &Path) -> bool {
     path.components().any(|component| {
         let Component::Normal(name) = component else {
@@ -783,10 +799,15 @@ fn classify_layer_asset(layer: CorpusAssetLayer, path: &Path) -> Option<CorpusAs
     }
 }
 
+/// Classifies a test-corpus path by extension: every Perl source extension in
+/// `TEST_EXTENSIONS` is `PerlSource`, and nothing else is selected.
 fn classify_test_asset(path: &Path) -> Option<CorpusAssetKind> {
     has_allowed_extension(path, TEST_EXTENSIONS).then_some(CorpusAssetKind::PerlSource)
 }
 
+/// Classifies a fuzz path: `.pl` is `PerlSource`, `.txt` is `TextFixture`, and an
+/// extensionless `crash-` name is `PerlSource` so libFuzzer crash artifacts, which
+/// carry no extension, are still selected.
 fn classify_fuzz_asset(path: &Path) -> Option<CorpusAssetKind> {
     match path.extension().and_then(|extension| extension.to_str()) {
         Some(extension) if extension.eq_ignore_ascii_case("pl") => {
