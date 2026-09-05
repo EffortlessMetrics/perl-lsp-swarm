@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import textwrap
@@ -256,6 +257,282 @@ class BinaryTargetRoutingTests(unittest.TestCase):
             ],
             binary_commands,
         )
+
+    def test_workspace_witnesses_match_cargo_target_identity(self) -> None:
+        """Real manifests where an explicit bin renames a `src/bin` source.
+
+        `perl-corpus` declares `perl-corpus` at `src/bin/main.rs` and
+        `tree-sitter-perl-c` declares `bench_parser_c` at
+        `src/bin/bench_parser.rs`.  Deriving names from the file layout alone
+        invents `--bin main` and `--bin bench_parser`, which Cargo rejects.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+
+        corpus = router.package_test_targets("perl-corpus", repo_root)
+        self.assertEqual(
+            ["perl-corpus"], [target.name for target in corpus.binaries]
+        )
+
+        tree_sitter = router.package_test_targets("tree-sitter-perl-c", repo_root)
+        self.assertEqual(
+            ["bench_parser_c", "parse_c"],
+            [target.name for target in tree_sitter.binaries],
+        )
+        self.assertEqual(
+            ("test-utils",), tree_sitter.binaries[0].required_features
+        )
+
+    def test_explicit_path_suppresses_the_implicit_target_for_the_same_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "renamed-directory",
+                """
+                [package]
+                name = "renamed-bin"
+                version = "0.0.0"
+                edition = "2024"
+
+                [[bin]]
+                name = "published"
+                path = "src/bin/internal.rs"
+                """,
+                ["src/lib.rs", "src/changed.rs", "src/bin/internal.rs"],
+            )
+
+            commands = self._commands_for(root, "renamed-directory")
+
+        binary_commands = [command for command in commands if " --bin " in command]
+        self.assertEqual(
+            [
+                "cargo llvm-cov test --no-report -p renamed-bin --bin published --profile agent --locked"
+            ],
+            binary_commands,
+        )
+
+    def test_untestable_explicit_target_still_reserves_its_source_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "reserved-directory",
+                """
+                [package]
+                name = "reserved-tool"
+                version = "0.0.0"
+                edition = "2024"
+
+                [[bin]]
+                name = "reserved"
+                path = "src/bin/helper.rs"
+                test = false
+                """,
+                ["src/lib.rs", "src/changed.rs", "src/bin/helper.rs"],
+            )
+
+            commands = self._commands_for(root, "reserved-directory")
+
+        self.assertFalse(any(" --bin " in command for command in commands))
+
+    def test_pathless_explicit_bin_reserves_its_inferred_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "pathless-directory",
+                """
+                [package]
+                name = "pathless-tool"
+                version = "0.0.0"
+                edition = "2024"
+
+                [[bin]]
+                name = "helper"
+                required-features = ["cli"]
+                """,
+                ["src/lib.rs", "src/changed.rs", "src/bin/helper.rs"],
+            )
+
+            commands = self._commands_for(root, "pathless-directory")
+
+        binary_commands = [command for command in commands if " --bin " in command]
+        self.assertEqual(
+            [
+                "cargo llvm-cov test --no-report -p pathless-tool --features cli --bin helper --profile agent --locked"
+            ],
+            binary_commands,
+        )
+
+    def test_edition_2015_manual_bin_disables_autobin_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "legacy-directory",
+                """
+                [package]
+                name = "legacy-tool"
+                version = "0.0.0"
+                edition = "2015"
+
+                [[bin]]
+                name = "declared"
+                path = "tools/declared.rs"
+                """,
+                [
+                    "src/lib.rs",
+                    "src/changed.rs",
+                    "src/bin/undeclared.rs",
+                    "tools/declared.rs",
+                ],
+            )
+
+            commands = self._commands_for(root, "legacy-directory")
+
+        binary_commands = [command for command in commands if " --bin " in command]
+        self.assertEqual(
+            [
+                "cargo llvm-cov test --no-report -p legacy-tool --bin declared --profile agent --locked"
+            ],
+            binary_commands,
+        )
+
+    def test_edition_2015_without_manual_bin_keeps_autobin_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "legacy-auto-directory",
+                """
+                [package]
+                name = "legacy-auto"
+                version = "0.0.0"
+                edition = "2015"
+                """,
+                ["src/lib.rs", "src/changed.rs", "src/bin/discovered.rs"],
+            )
+
+            commands = self._commands_for(root, "legacy-auto-directory")
+
+        binary_commands = [command for command in commands if " --bin " in command]
+        self.assertEqual(
+            [
+                "cargo llvm-cov test --no-report -p legacy-auto --bin discovered --profile agent --locked"
+            ],
+            binary_commands,
+        )
+
+    def test_missing_edition_defaults_to_2015_autobin_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "no-edition-directory",
+                """
+                [package]
+                name = "no-edition"
+                version = "0.0.0"
+
+                [[bin]]
+                name = "declared"
+                path = "tools/declared.rs"
+                """,
+                ["src/lib.rs", "src/changed.rs", "src/bin/undeclared.rs", "tools/declared.rs"],
+            )
+
+            commands = self._commands_for(root, "no-edition-directory")
+
+        binary_commands = [command for command in commands if " --bin " in command]
+        self.assertEqual(
+            [
+                "cargo llvm-cov test --no-report -p no-edition --bin declared --profile agent --locked"
+            ],
+            binary_commands,
+        )
+
+    def test_inherited_workspace_edition_is_resolved(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "Cargo.toml").write_text(
+                textwrap.dedent(
+                    """
+                    [workspace]
+                    members = ["crates/inherited-directory"]
+
+                    [workspace.package]
+                    edition = "2024"
+                    """
+                ).lstrip(),
+                encoding="utf-8",
+            )
+            self._write_package(
+                root,
+                "inherited-directory",
+                """
+                [package]
+                name = "inherited-tool"
+                version = "0.0.0"
+                edition.workspace = true
+
+                [[bin]]
+                name = "declared"
+                path = "tools/declared.rs"
+                """,
+                [
+                    "src/lib.rs",
+                    "src/changed.rs",
+                    "src/bin/discovered.rs",
+                    "tools/declared.rs",
+                ],
+            )
+
+            commands = self._commands_for(root, "inherited-directory")
+
+        binary_commands = [command for command in commands if " --bin " in command]
+        self.assertEqual(
+            [
+                "cargo llvm-cov test --no-report -p inherited-tool --bin declared --profile agent --locked",
+                "cargo llvm-cov test --no-report -p inherited-tool --bin discovered --profile agent --locked",
+            ],
+            binary_commands,
+        )
+
+    def test_inherited_edition_without_workspace_declaration_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "Cargo.toml").write_text(
+                "[workspace]\nmembers = []\n", encoding="utf-8"
+            )
+            self._write_package(
+                root,
+                "unresolvable-directory",
+                """
+                [package]
+                name = "unresolvable-tool"
+                version = "0.0.0"
+                edition.workspace = true
+                """,
+                ["src/lib.rs", "src/changed.rs"],
+            )
+
+            with self.assertRaises(ValueError):
+                router.package_test_targets("unresolvable-directory", root)
+
+    def test_derivation_is_independent_of_the_process_working_directory(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        expected = router.package_test_targets("perl-ci-hygiene", repo_root)
+
+        original_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.chdir(temp_dir)
+            try:
+                default_root = router.package_test_targets("perl-ci-hygiene")
+            finally:
+                os.chdir(original_cwd)
+
+        self.assertEqual(expected, default_root)
+
 
     def test_disabled_lib_target_is_not_registered(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
