@@ -178,6 +178,16 @@ struct WalkState<'a> {
     phase: MojoBaseExecutionPhase,
 }
 
+/// Whether this operator only evaluates its right operand conditionally.
+///
+/// A bare `do { ... }` block is deliberately not treated as control flow: on
+/// its own it runs exactly once, like any other statement. It becomes
+/// conditional only through the operator that encloses it, which is what these
+/// arms model.
+fn is_short_circuit_operator(op: &str) -> bool {
+    matches!(op, "&&" | "||" | "//" | "and" | "or")
+}
+
 /// Whether this node owns runtime control flow, so statements inside it do not
 /// run unconditionally at package load.
 ///
@@ -349,6 +359,28 @@ impl WalkState<'_> {
             // rather than invent. Keying on a name list of known callbacks
             // would invert that, over-reporting for every user-defined
             // `(&@)` function.
+            // A ternary's branches run only on their side of the condition;
+            // the condition itself runs unconditionally.
+            NodeKind::Ternary { condition, then_expr, else_expr } => {
+                self.walk(condition, current_package);
+                let enclosing = self.deferred;
+                self.deferred = true;
+                self.walk(then_expr, current_package);
+                self.walk(else_expr, current_package);
+                self.deferred = enclosing;
+                return;
+            }
+            // A short-circuit operator evaluates its left operand
+            // unconditionally and its right operand only if the left permits.
+            // `do { ... }` is how a `has` reaches either side as a statement.
+            NodeKind::Binary { op, left, right } if is_short_circuit_operator(op) => {
+                self.walk(left, current_package);
+                let enclosing = self.deferred;
+                self.deferred = true;
+                self.walk(right, current_package);
+                self.deferred = enclosing;
+                return;
+            }
             NodeKind::FunctionCall { .. } => {
                 for child in node.children() {
                     if matches!(child.kind, NodeKind::Block { .. }) {
@@ -695,6 +727,26 @@ fn interpolated_value_is_dynamic(value: &str) -> bool {
     crate::analysis::dancer2_routes::interpolated_value_is_dynamic(value)
 }
 
+/// Split a declared subroutine name into its owning package and bare slot.
+///
+/// `sub name` belongs to whatever package is current; `sub App::name` names
+/// `App` explicitly and ignores the current package; a leading `::` is `main`.
+/// Returns `None` when no package can be established.
+fn split_subroutine_name(name: &str, current_package: Option<&str>) -> Option<(String, String)> {
+    match name.rfind("::") {
+        Some(index) => {
+            let package = &name[..index];
+            let bare = &name[index + 2..];
+            if bare.is_empty() {
+                return None;
+            }
+            let package = if package.is_empty() { "main" } else { package };
+            Some((package.to_string(), bare.to_string()))
+        }
+        None => Some((current_package?.to_string(), name.to_string())),
+    }
+}
+
 /// Collect every named package subroutine, including those nested inside
 /// another subroutine's body.
 ///
@@ -727,8 +779,14 @@ fn collect_nested_package_subroutines(
         NodeKind::Subroutine { name: Some(name), declarator, .. } => {
             let package_scoped = matches!(declarator.as_deref(), None | Some("our"));
             if package_scoped {
-                if let Some(package) = current_package.as_deref() {
-                    found.insert((package.to_string(), name.clone()));
+                // `sub App::name` names its own package, whatever package is
+                // current. Recording the full spelling as the bare slot would
+                // make the collision lookup for `name` in `App` miss it, and a
+                // missed collision mints the member with no boundary at all.
+                if let Some((package, bare)) =
+                    split_subroutine_name(name, current_package.as_deref())
+                {
+                    found.insert((package, bare));
                 }
             }
         }

@@ -935,3 +935,61 @@ fn a_nested_method_in_an_unqualified_file_still_collides() {
     );
     assert!(facts.members[0].envelope.boundary.is_some());
 }
+
+#[test]
+fn a_conditional_expression_context_declares_no_accessor() {
+    // A `do { ... }` block runs once on its own, so it is not control flow —
+    // but under a ternary branch or the right side of a short-circuit operator
+    // it runs only conditionally. Extracting those would publish an accessor
+    // that may never exist, the over-reporting direction this producer treats
+    // as unsafe.
+    let code = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "$ENV{X} ? do { has 'ternary_then'; } : do { has 'ternary_else'; };\n",
+        "$ENV{X} && do { has 'right_of_and'; };\n",
+        "$ENV{X} || do { has 'right_of_or'; };\n",
+        "do { has 'plain_do'; };\n",
+        "has 'always';\n",
+    );
+    let facts = only_facts(code);
+    assert_eq!(
+        member_names(&facts),
+        ["plain_do", "always"],
+        "a bare `do` block still declares; a conditional one does not"
+    );
+}
+
+#[test]
+fn a_fully_qualified_subroutine_still_collides() {
+    // `sub App::name` names its own package regardless of what package is
+    // current, so it shadows `App`'s accessor. Recording the full spelling as
+    // the bare slot would make the lookup miss and mint the member with no
+    // boundary.
+    let qualified = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "has 'name';\n",
+        "package Other;\n",
+        "sub App::name { 'explicit' }\n",
+    );
+    let facts = only_facts(qualified);
+    assert_eq!(member_names(&facts), ["name"]);
+    assert_eq!(
+        facts.members[0].explicit_method,
+        MojoBaseExplicitMethodState::Collides,
+        "a qualified sub declared under another package still collides"
+    );
+
+    // Control: the same qualified sub naming a different package must not
+    // collide, so the lookup is not simply matching on the bare suffix.
+    let elsewhere = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "has 'name';\n",
+        "package Other;\n",
+        "sub Unrelated::name { 'explicit' }\n",
+    );
+    let clean = only_facts(elsewhere);
+    assert_eq!(clean.members[0].explicit_method, MojoBaseExplicitMethodState::None);
+}

@@ -496,6 +496,15 @@ pub fn mojo_base_object_facts(
     {
         return facts;
     }
+    // An unknown generation is missing evidence, not a generation that happens
+    // to match. `SourceGeneration::Unknown` compares equal to itself, so every
+    // generation gate here would pass on a pair of unknowns and the facts
+    // would still be stamped `SemanticFreshness::Fresh` — claiming a currency
+    // nothing established, and carrying invalidation dependencies that could
+    // never be invalidated because they name no snapshot.
+    if !activation.source_generation.is_known() {
+        return facts;
+    }
     // The activation already knows which package imported `Mojo::Base`. Asking
     // it for a different package's members must fail closed rather than trust
     // the caller: an activation `App` made establishes neither `Other`'s
@@ -1187,6 +1196,31 @@ mod tests {
             )
             .members
             .is_empty()
+        );
+
+        // An unknown generation is missing evidence: two unknowns compare
+        // equal, so every generation gate would pass and the facts would still
+        // be stamped `Fresh`.
+        // The declaration must carry the *same* unknown generation, or the
+        // per-declaration generation guard rejects it first and this control
+        // passes for the wrong reason.
+        let mut unknown_declaration = declaration(1, "kept", MojoBaseAttributeDefault::Absent);
+        unknown_declaration.source_generation = SourceGeneration::Unknown;
+        let mut unknown_activation = activation.clone();
+        unknown_activation.source_generation = SourceGeneration::Unknown;
+        let mut unknown_detection = detected_result("9.34", "gen-1");
+        unknown_detection.project_generation = SourceGeneration::Unknown;
+        assert!(
+            mojo_base_object_facts(
+                &unknown_detection,
+                &unknown_activation,
+                FileId(1),
+                Some("App"),
+                std::slice::from_ref(&unknown_declaration)
+            )
+            .members
+            .is_empty(),
+            "matching unknown generations are not a match"
         );
 
         // Control: a declaration matching on all counts still mints, so the
