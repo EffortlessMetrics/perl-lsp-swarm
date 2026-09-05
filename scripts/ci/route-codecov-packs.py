@@ -120,33 +120,30 @@ def manifest_test_targets(
         return {}
     try:
         manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        # Target derivation reports manifest problems with a precise error;
-        # feature discovery must not raise a second, noisier one.
-        return {}
-    declared: dict[str, tuple[str, tuple[str, ...]]] = {}
-    entries = manifest.get("test")
+    except OSError as error:
+        raise ValueError(f"cannot read Cargo manifest for changed crate {crate_name}: {error}") from error
+    except tomllib.TOMLDecodeError as error:
+        raise ValueError(f"invalid Cargo manifest for changed crate {crate_name}: {error}") from error
+
+    entries = manifest.get("test") or []
     if not isinstance(entries, list):
-        return declared
+        raise ValueError(f"Cargo manifest for changed crate {crate_name} has invalid [[test]] entries")
+    declared: dict[str, tuple[str, tuple[str, ...]]] = {}
     for entry in entries:
         if not isinstance(entry, dict):
-            continue
+            raise ValueError(f"Cargo manifest for changed crate {crate_name} has an invalid [[test]] row")
         name = entry.get("name")
         if not isinstance(name, str) or not name:
             continue
         raw_path = entry.get("path")
+        if raw_path is not None and not isinstance(raw_path, str):
+            raise ValueError(f"Cargo test path for changed crate {crate_name} must be a string")
         source = (
             str(PurePosixPath(raw_path.replace("\\", "/")))
             if isinstance(raw_path, str) and raw_path
             else f"tests/{name}.rs"
         )
-        raw_features = entry.get("required-features")
-        features = (
-            tuple(sorted({f for f in raw_features if isinstance(f, str) and f}))
-            if isinstance(raw_features, list)
-            else ()
-        )
-        declared[source] = (name, features)
+        declared[source] = (name, _target_features(entry))
     return declared
 
 

@@ -7,6 +7,7 @@ import importlib.util
 import os
 from pathlib import Path
 import tempfile
+import tomllib
 import textwrap
 import unittest
 
@@ -964,6 +965,93 @@ class BinaryTargetRoutingTests(unittest.TestCase):
         # The default root is the repository, not the process cwd, so the
         # temporary package is invisible even while it is the cwd.
         self.assertEqual({"gated-directory": [("gated", ())]}, from_cwd)
+
+
+    def test_manifest_required_features_are_merged_into_changed_test_targets(self) -> None:
+        """A test target's features can be declared in the manifest, not the source.
+
+        `perl-parser`'s `incremental_parse_snapshot` requires `incremental` with
+        no crate-level cfg at all. Emitting `--test incremental_parse_snapshot`
+        without `--features incremental` is a command Cargo rejects, so the
+        changed test contributes no coverage.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+
+        targets = router.changed_integration_test_targets(
+            ["crates/perl-parser/tests/incremental_parse_snapshot.rs"], repo_root
+        )
+
+        self.assertEqual(
+            {"perl-parser": [("incremental_parse_snapshot", ("incremental",))]}, targets
+        )
+
+    def test_manifest_and_source_feature_gates_are_unioned(self) -> None:
+        """Neither source cfg nor manifest alone is the whole feature set."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "gated-directory",
+                """
+                [package]
+                name = "gated-package"
+                version = "0.0.0"
+                edition = "2024"
+
+                [[test]]
+                name = "gated"
+                required-features = ["from-manifest"]
+                """,
+                [],
+            )
+            tests_root = root / "crates" / "gated-directory" / "tests"
+            tests_root.mkdir(parents=True)
+            (tests_root / "gated.rs").write_text(
+                '#![cfg(feature = "from-source")]\n', encoding="utf-8"
+            )
+
+            targets = router.changed_integration_test_targets(
+                ["crates/gated-directory/tests/gated.rs"], root
+            )
+
+        self.assertEqual(
+            {"gated-directory": [("gated", ("from-manifest", "from-source"))]}, targets
+        )
+
+    def test_manifest_features_tolerate_a_crate_without_a_manifest(self) -> None:
+        """A deleted or non-package directory must not abort sibling routing."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self.assertEqual({}, router.manifest_test_targets("absent", root))
+
+    def test_every_declared_test_target_feature_set_is_recovered(self) -> None:
+        """Parity oracle: the router must agree with every manifest in the tree.
+
+        Guards the whole class of defect rather than the three crates that
+        happen to exercise it today.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        mismatches = []
+        for manifest_path in sorted((repo_root / "crates").glob("*/Cargo.toml")):
+            crate_directory = manifest_path.parent.name
+            manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+            for declared in manifest.get("test", []):
+                required = declared.get("required-features") or []
+                name = declared.get("name")
+                if not required or not name:
+                    continue
+                source = declared.get("path") or f"tests/{name}.rs"
+                if not (manifest_path.parent / source).is_file():
+                    continue
+                derived = router.changed_integration_test_targets(
+                    [f"crates/{crate_directory}/{source}"], repo_root
+                )
+                emitted = dict(derived.get(crate_directory, []))
+                for feature in required:
+                    if feature not in emitted.get(name, ()):
+                        mismatches.append((crate_directory, name, feature))
+
+        self.assertEqual([], mismatches)
 
 
 class PackageTestTargetsUnitTests(unittest.TestCase):
