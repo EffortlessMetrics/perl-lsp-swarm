@@ -1651,9 +1651,9 @@ mod value_format_family_tests {
         // `mutation_and_evaluate_families_reject_unknown_format_options`),
         // which runs before this same gate.
         let mut adapter = DebugAdapter::new();
-        for (command, arguments) in [
-            ("evaluate", json!({ "expression": "$x", "format": { "hex": true } })),
-        ] {
+        for (command, arguments) in
+            [("evaluate", json!({ "expression": "$x", "format": { "hex": true } }))]
+        {
             let message = response_message(&mut adapter, command, arguments)?;
             assert_eq!(message, "No debugger session", "{command}: {message}");
         }
