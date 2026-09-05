@@ -205,12 +205,20 @@ local function eligible_for_config(filetype)
   return false
 end
 
+-- Returns the client only when it reached `initialized` inside the budget.
+--
+-- `vim.wait` leaves the discovered client in scope even when it times out, so
+-- returning it unconditionally would let a server that attached but never
+-- finished initializing be recorded as a successful activation.
 local function wait_for_client(bufnr, timeout_ms)
   local client
-  vim.wait(timeout_ms, function()
+  local initialized = vim.wait(timeout_ms, function()
     client = vim.lsp.get_clients({ bufnr = bufnr, name = 'perllsp' })[1]
     return client ~= nil and client.initialized
   end, 25)
+  if not initialized then
+    return nil
+  end
   return client
 end
 

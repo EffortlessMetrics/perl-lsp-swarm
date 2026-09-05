@@ -9,7 +9,9 @@
 //! be allowed to look green.
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::error::Error;
+use std::path::PathBuf;
 use xtask::neovim_activation_root_envelope::{
     EnvelopeValidationError, ISOLATION_ROOT_CELLS, REQUIRED_FILE_FAMILIES, REQUIRED_ROOT_CELLS,
     validate_envelope,
@@ -19,6 +21,53 @@ fn valid_envelope() -> Result<Value, serde_json::Error> {
     serde_json::from_str(include_str!(
         "fixtures/neovim_activation_root_envelopes/valid-linux-nvim-0-11-3.json"
     ))
+}
+
+fn failed_run_envelope() -> Result<Value, serde_json::Error> {
+    serde_json::from_str(include_str!(
+        "fixtures/neovim_activation_root_envelopes/invalid-server-never-attached.json"
+    ))
+}
+
+fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask always has a parent directory")
+        .to_path_buf()
+}
+
+fn sha256_of(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Freshness, not just well-formedness.
+///
+/// The envelope records the canonical config's digest but nothing inside the
+/// envelope can tell whether that digest still describes the file on disk. Both
+/// captured runs must therefore pin the *current* `perllsp.lua`, so editing the
+/// canonical filetypes or root markers turns this red and forces a fresh
+/// capture instead of leaving stale evidence green.
+#[test]
+fn both_captured_runs_pin_the_current_canonical_config() -> Result<(), Box<dyn Error>> {
+    let relative = "scripts/ux/neovim/perllsp.lua";
+    let config = std::fs::read(repository_root().join(relative))?;
+    let digest = sha256_of(&config);
+
+    for (label, envelope) in [("valid", valid_envelope()?), ("failed-run", failed_run_envelope()?)]
+    {
+        assert_eq!(
+            envelope["config"]["path"],
+            json!(relative),
+            "the {label} fixture should name the canonical config"
+        );
+        assert_eq!(
+            envelope["config"]["sha256"],
+            json!(digest),
+            "the {label} fixture was captured against a different {relative}; re-run \
+             scripts/ux/neovim_activation_root_smoke.sh and recapture it"
+        );
+    }
+    Ok(())
 }
 
 fn rejection(result: Result<(), EnvelopeValidationError>) -> Result<String, Box<dyn Error>> {
@@ -42,9 +91,7 @@ fn captured_actual_host_envelope_is_accepted() -> Result<(), Box<dyn Error>> {
 /// what it produced rather than accept a run in which nothing was established.
 #[test]
 fn a_real_failed_run_is_rejected_even_though_it_is_well_formed() -> Result<(), Box<dyn Error>> {
-    let envelope: Value = serde_json::from_str(include_str!(
-        "fixtures/neovim_activation_root_envelopes/invalid-server-never-attached.json"
-    ))?;
+    let envelope = failed_run_envelope()?;
 
     // It is a complete, structurally valid envelope: the denominator survived.
     for family in REQUIRED_FILE_FAMILIES {
