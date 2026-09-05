@@ -1,0 +1,97 @@
+name: Repair PR 14858 merge-reconcile thread precondition
+
+on:
+  push:
+    branches:
+      - 'docs/skills-thread-resolution-precondition'
+    paths:
+      - '.github/workflows/repair-14858-merge-reconcile.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repair-pr-14858-merge-reconcile
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: repair
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout exact repair subject
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: docs/skills-thread-resolution-precondition
+          fetch-depth: 2
+
+      - name: Verify bounded bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "f655e09875bc9de0f161e64d34fdc9ec3737194f"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/repair-14858-merge-reconcile.yml"
+
+      - name: Apply exact repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          skill_paths = (
+              Path('.agents/skills/merge-reconcile/SKILL.md'),
+              Path('.claude/skills/merge-reconcile/SKILL.md'),
+          )
+
+          integration_anchor = """Verify live GitHub facts:\n\n- PR is ready, not draft;\n- required checks are current for the candidate;\n- no unresolved substantive thread remains;\n"""
+
+          for path in skill_paths:
+              text = path.read_text(encoding='utf-8')
+              route = '$address-review-comments' if path.parts[0] == '.agents' else 'address-review-comments'
+              integration_replacement = f"""Before either `INTEGRATION_READY` or `PR_IN_FLIGHT` can be returned, enumerate\nthe complete live thread set with\n`scripts/reviews/threads <pr> --unresolved-only --json`. The reported\n`unresolved_count` must be `0`; bot-authored and outdated threads count. Any\nnon-zero result is `MERGE_BLOCKED`, routed to `{route}`, and is never\n`PR_IN_FLIGHT`.\n\nVerify live GitHub facts:\n\n- PR is ready, not draft;\n- required checks are current for the candidate;\n- the sanctioned thread enumerator reports `unresolved_count` of 0;\n"""
+              if text.count(integration_anchor) != 1:
+                  raise SystemExit(f'{path}: integration anchor count was {text.count(integration_anchor)}')
+              text = text.replace(integration_anchor, integration_replacement)
+
+              protected_anchor = """When the required union is still pending, arm auto-merge with the current head SHA:\n"""
+              protected_replacement = f"""zero unresolved review threads is a precondition of arming auto-merge. Re-run\n`scripts/reviews/threads <pr> --unresolved-only --json` immediately before the\ncommand. If `unresolved_count` is non-zero, return `MERGE_BLOCKED` and route to\n`{route}`.\n\nWhen the required union is still pending, arm auto-merge with the current head SHA:\n"""
+              if text.count(protected_anchor) != 1:
+                  raise SystemExit(f'{path}: protected-merge anchor count was {text.count(protected_anchor)}')
+              text = text.replace(protected_anchor, protected_replacement)
+              path.write_text(text, encoding='utf-8')
+
+          contract = Path('tests/test_active_authority_contract.py')
+          text = contract.read_text(encoding='utf-8')
+          old = """    \"merge-reconcile\": (\n        \"REVIEW_CURRENT\",\n        \"INTEGRATION_READY\",\n        \"PR_IN_FLIGHT\",\n        \"NOT_PROVEN\",\n        \"--match-head-commit\",\n"""
+          new = """    \"merge-reconcile\": (\n        \"REVIEW_CURRENT\",\n        \"INTEGRATION_READY\",\n        \"PR_IN_FLIGHT\",\n        \"NOT_PROVEN\",\n        THREAD_PRECONDITION,\n        \"--match-head-commit\",\n"""
+          if text.count(old) != 1:
+              raise SystemExit(f'{contract}: marker anchor count was {text.count(old)}')
+          contract.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+
+      - name: Verify and commit bounded repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=$(printf '%s\n' \
+            '.agents/skills/merge-reconcile/SKILL.md' \
+            '.claude/skills/merge-reconcile/SKILL.md' \
+            'tests/test_active_authority_contract.py')
+          actual=$(git diff --name-only | sort)
+          test "$actual" = "$expected"
+          git diff --check
+          grep -Fq 'zero unresolved review threads is a precondition of arming auto-merge' .agents/skills/merge-reconcile/SKILL.md
+          grep -Fq 'zero unresolved review threads is a precondition of arming auto-merge' .claude/skills/merge-reconcile/SKILL.md
+          grep -A8 -F '"merge-reconcile": (' tests/test_active_authority_contract.py | grep -Fq 'THREAD_PRECONDITION'
+
+          git config user.name 'EffortlessSteven'
+          git config user.email 'git@effortlesssteven.com'
+          git add .agents/skills/merge-reconcile/SKILL.md \
+                  .claude/skills/merge-reconcile/SKILL.md \
+                  tests/test_active_authority_contract.py
+          git commit --no-verify -m 'docs(skills): close merge-reconcile thread precondition'
+          git push origin HEAD:docs/skills-thread-resolution-precondition
