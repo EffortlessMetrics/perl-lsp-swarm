@@ -23,11 +23,11 @@ Preserve clarity, proof, rollback, and production behavior. A conclusion of
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains which complexity is necessary for the claim, whether a proposed
-simplification changes public behavior/authority/support/rollback, and whether the
-candidate remains inside the accepted design.
+The accountable root retains which complexity is necessary for the claim, whether a
+proposed simplification changes public behavior/authority/support/rollback, and whether
+the candidate remains inside the accepted design.
 
 ### Delegable read-only questions
 
@@ -45,9 +45,10 @@ the candidate or decide design changes independently.
 
 ### Mutation owner and join
 
-One candidate writer applies accepted simplifications. Join when the lane root can
-state which machinery was removed or retained, why the remaining structure is needed,
-which semantic owner is canonical, and what proof/review dimensions the change affects.
+One candidate writer applies accepted simplifications. Join when the accountable root
+can state which machinery was removed or retained, why the remaining structure is
+needed, which semantic owner is canonical, and what proof/review dimensions the change
+affects.
 
 Any simplification that changes production code, behavior, configuration, generated
 output, or proof artifacts creates a new candidate. Route it through
@@ -70,9 +71,10 @@ Publish when simplification changes semantic ownership, public/support/rollback 
 removes durable compatibility or migration machinery, or materially changes the
 candidate proof/limitation summary. Localized review findings may be inline.
 
-The integrating lane owner posts. A skill run that only answers a bounded
-simplification question returns file/line-anchored findings as evidence and does not
-write to GitHub.
+The accountable root posts the joined durable conclusion. A skill run that only answers
+a bounded simplification question returns file/line-anchored findings as evidence and
+does not write to GitHub unless its brief grants one specific bounded finding
+publication.
 
 Keep reviewer topology, candidate-shaping experiments, discarded alternatives, raw
 logs, retries, and clean `ALREADY_MINIMAL` analysis runtime-local unless the conclusion

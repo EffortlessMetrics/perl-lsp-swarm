@@ -32,10 +32,6 @@ pub struct OracleSubject {
 impl OracleSubject {
     /// Build a subject from redacted/content identities, rejecting private paths
     /// and missing identity components before they can reach a cache or receipt.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the constructor mirrors the ten-field OracleSubject identity; a struct-args refactor belongs to the #6984 claim"
-    )]
     pub fn new(
         identity: OracleSubjectIdentity,
         invocation: OracleInvocation,
