@@ -9,6 +9,20 @@
 //! and object keys round-trip exactly; scalars admit no fresh referent while
 //! arrays/objects map to fresh ARRAY/HASH referents; fingerprints derive from
 //! canonical value serialization and discriminate changed content.
+//!
+//! #11328 falsifier pins: complete consumption refuses trailing text and
+//! JSON-looking comments; strict JSON `\uXXXX` escapes (with exact surrogate
+//! pairing) decode to inert string data while raw controls stay illegal;
+//! Perl-looking text stays inert inside strings and bare at the prefix gate;
+//! an adversarial corpus is total, panic-free, and deterministic under
+//! repetition; every refusal path is pure (identical repeated results, no
+//! backend seam to observe).
+//!
+//! Scalar-authority receipt (#11328 required test 10): this module adds only
+//! the `json:`-prefixed structured branch beside the scalar
+//! `MutationValueText.v1` surface (#10745/#8364). It re-exports no scalar
+//! parsing symbol and touches no scalar path; the full perl-dap suite stays
+//! green as the standing scalar-behavior authority.
 
 use perl_dap::mutation::{
     FreshReferentKind, MUTATION_STRUCTURED_VALUE_SCHEMA_VERSION, StructuredMutationLimits,
@@ -398,5 +412,333 @@ fn exact_decimal_construction_is_checked() -> TestResult {
             "canonical {valid:?} must be admissible"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn complete_consumption_refuses_trailing_text_and_comments() -> TestResult {
+    // Any non-whitespace byte after one complete value must refuse as invalid
+    // syntax at the exact stopping offset; JSON has no comment grammar.
+    let trailing = parse_refusal("json:[1] trailing")?;
+    assert_eq!(trailing, StructuredRefusal::InvalidSyntax { offset: 4 });
+    let object_trailing = parse_refusal(r#"json:{"a":1} x"#)?;
+    assert_eq!(object_trailing, StructuredRefusal::InvalidSyntax { offset: 8 });
+    let line_comment = parse_refusal("json:[1] // comment")?;
+    assert_eq!(line_comment, StructuredRefusal::InvalidSyntax { offset: 4 });
+    let block_comment = parse_refusal("json:[/*c*/1]")?;
+    assert_eq!(block_comment, StructuredRefusal::InvalidSyntax { offset: 1 });
+
+    // Trailing whitespace is not trailing text: completion skips it.
+    let whitespace_only = parse("json:[1]   ").map_err(|error| error.to_string())?;
+    assert!(matches!(whitespace_only, StructuredValue::Array(_)));
+    Ok(())
+}
+
+#[test]
+fn escaped_control_and_unicode_escapes_decode_to_inert_data() -> TestResult {
+    // Strict JSON escapes decode to inert string DATA; they are never
+    // interpreted as Perl syntax or delimiters.
+    let cases = [
+        (r#"json:"\n""#, "\n"),
+        (r#"json:"\t""#, "\t"),
+        (r#"json:"\r""#, "\r"),
+        (r#"json:"\b\f""#, "\u{8}\u{c}"),
+        (r#"json:"\u0000""#, "\0"),
+        (r#"json:"\u0001""#, "\u{1}"),
+        (r#"json:"\u001f""#, "\u{1f}"),
+        (r#"json:"A\u00e9B""#, "A\u{e9}B"),
+        (r#"json:"\u00C9""#, "\u{c9}"),
+        (r#"json:"\ud83d\ude00""#, "\u{1f600}"),
+    ];
+    for (text, expected) in cases {
+        let value = parse(text).map_err(|error| format!("{text:?} refused: {error}"))?;
+        assert_eq!(
+            value,
+            StructuredValue::String(expected.to_string()),
+            "{text:?} must decode to inert data"
+        );
+    }
+
+    // An escape-produced delimiter stays data: it never terminates a string
+    // or opens structure, and an escaped backslash never starts an escape.
+    let quoted = parse(r#"json:"\u0022""#).map_err(|error| error.to_string())?;
+    assert_eq!(quoted, StructuredValue::String("\"".to_string()));
+    let two_quoted = parse(r#"json:["\u0022\u0022"]"#).map_err(|error| error.to_string())?;
+    assert_eq!(
+        two_quoted,
+        StructuredValue::Array(vec![StructuredValue::String("\"\"".to_string())])
+    );
+    let literal_backslash_n = parse(r#"json:"a\u005Cnb""#).map_err(|error| error.to_string())?;
+    assert_eq!(literal_backslash_n, StructuredValue::String("a\\nb".to_string()));
+
+    // The paired-escape spelling and the direct UTF-8 spelling are the same
+    // admitted value down to the fingerprint.
+    let escaped = parse_envelope(r#"json:"\ud83d\ude00""#)?;
+    let direct = parse_envelope("json:\"\u{1f600}\"")?;
+    assert_eq!(escaped, direct);
+    Ok(())
+}
+
+#[test]
+fn invalid_unicode_escapes_refuse_deterministically() -> TestResult {
+    // Offsets are payload-relative: the parser runs on the text after the
+    // `json:` prefix, so the opening quote sits at 0 and the first escape's
+    // backslash at 1. The leading `ab` cases below keep this pin honest by
+    // moving the offending escape off that fixed position.
+    //
+    // Class 1 - the refusal belongs to the leading escape, so it reports that
+    // escape's backslash: malformed or truncated first hex4, a lone low
+    // surrogate, and a high surrogate whose continuation is absent, not an
+    // escape at all, or a syntactically valid unit outside `DC00..=DFFF`.
+    for (malformed, expected_offset) in [
+        (r#"json:"\u12""#, 1),
+        (r#"json:"\uzzzz""#, 1),
+        (r#"json:"\ud800""#, 1),
+        (r#"json:"\udbff""#, 1),
+        (r#"json:"\udc00""#, 1),
+        (r#"json:"\udfff""#, 1),
+        (r#"json:"\ud800\ud800""#, 1),
+        (r#"json:"\udbff￿""#, 1),
+        (r#"json:"\ud800x""#, 1),
+        (r#"json:"\ud83d\n""#, 1),
+        (r#"json:"\ud83d""#, 1),
+        (r#"json:"ab\ud800""#, 3),
+        (r#"json:"ab\uzzzz""#, 3),
+    ] {
+        let error = parse_refusal(malformed)?;
+        assert_eq!(
+            error,
+            StructuredRefusal::InvalidSyntax { offset: expected_offset },
+            "{malformed:?} must report the leading escape's backslash"
+        );
+    }
+
+    // Class 2 - the continuation escape is itself malformed or truncated, so
+    // the refusal moves to the continuation backslash (leading backslash + 6)
+    // rather than pointing six bytes early at the high surrogate.
+    for (malformed, expected_offset) in [
+        (r#"json:"\ud800\uzzzz""#, 7),
+        (r#"json:"\ud800\u12""#, 7),
+        (r#"json:"\ud800\u""#, 7),
+        (r#"json:"ab\ud800\uzzzz""#, 9),
+    ] {
+        let error = parse_refusal(malformed)?;
+        assert_eq!(
+            error,
+            StructuredRefusal::InvalidSyntax { offset: expected_offset },
+            "{malformed:?} must report the continuation escape's backslash"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn perl_looking_text_stays_inert_in_strings_and_bare_at_prefix_gate() -> TestResult {
+    let inert_cases = [
+        (r#"json:["%{$x} = @INC"]"#, "%{$x} = @INC"),
+        (r#"json:["\\&undef"]"#, "\\&undef"),
+        (r#"json:["sub f { @@ }"]"#, "sub f { @@ }"),
+    ];
+    for (text, expected) in inert_cases {
+        let value = parse(text).map_err(|error| format!("{text:?} refused: {error}"))?;
+        let StructuredValue::Array(items) = &value else {
+            return Err(format!("{text:?} must parse to an array"));
+        };
+        let [StructuredValue::String(decoded)] = items.as_slice() else {
+            return Err(format!("{text:?} must hold exactly one string"));
+        };
+        assert_eq!(decoded, expected, "Perl-looking text must stay inert string data");
+    }
+    for bare in [
+        "%{$x} = @INC",
+        "\\&undef",
+        "sub f { @@ }",
+        "@INC",
+        "keys %hash",
+        "$x =~ y/a/b/",
+        "sort { $a <=> $b } @list",
+    ] {
+        let error = parse_refusal(bare)?;
+        assert_eq!(
+            error,
+            StructuredRefusal::MissingStructuredPrefix,
+            "bare Perl text {bare:?} must refuse at the prefix gate"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn adversarial_corpus_is_total_and_deterministic() -> TestResult {
+    let corpus: [(&str, bool); 15] = [
+        ("", false),
+        ("json:", false),
+        (r#"json:"\ud800""#, false),
+        (r#"json:"\udfff""#, false),
+        (r#"json:"\ud800\ud800""#, false),
+        (r#"json:"\udbff\uffff""#, false),
+        (r#"json:"\udc00\ud800""#, false),
+        (r#"json:"\u0000""#, true),
+        ("json:-", false),
+        ("json:01", false),
+        ("json:1e", false),
+        (r#"json:"unterminated"#, false),
+        (r#"{"a": [1, {"b": null}]}"#, false),
+        (r#"json:["🦀", "café"]"#, true),
+        ("json:null", true),
+    ];
+    for (text, admits) in corpus {
+        let limits = StructuredMutationLimits::default();
+        let first = parse_structured_mutation(text, &limits);
+        let second = parse_structured_mutation(text, &limits);
+        assert_eq!(first, second, "repeated parses of {text:?} must be identical");
+        assert_eq!(first.is_ok(), admits, "{text:?} must classify deterministically");
+    }
+
+    let built: [(String, bool); 5] = [
+        (format!("json:{}", "[".repeat(64)), false),
+        (format!("json:{}", "9".repeat(500)), false),
+        (format!("json:0.{}", "1".repeat(300)), false),
+        (format!("json:1e{}", "9".repeat(40)), false),
+        (format!("json:\"{}\"", "🦀".repeat(40)), true),
+    ];
+    for (text, admits) in built {
+        let limits = StructuredMutationLimits::default();
+        let first = parse_structured_mutation(&text, &limits);
+        let second = parse_structured_mutation(&text, &limits);
+        assert_eq!(first, second, "repeated parses of {text:?} must be identical");
+        assert_eq!(first.is_ok(), admits, "{text:?} must classify deterministically");
+    }
+
+    // Multi-byte scalars straddling a tightened byte budget refuse typed
+    // instead of splitting or panicking; the exact boundary still admits.
+    let scalar_two =
+        StructuredMutationLimits { max_scalar_bytes: 2, ..StructuredMutationLimits::default() };
+    let aggregate_one =
+        StructuredMutationLimits { max_aggregate_bytes: 1, ..StructuredMutationLimits::default() };
+    let aggregate_two =
+        StructuredMutationLimits { max_aggregate_bytes: 2, ..StructuredMutationLimits::default() };
+    let aggregate_three =
+        StructuredMutationLimits { max_aggregate_bytes: 3, ..StructuredMutationLimits::default() };
+    let budgeted: [(StructuredMutationLimits, &str, bool); 6] = [
+        (scalar_two, r#"json:"é""#, true),
+        (scalar_two, r#"json:"€""#, false),
+        (aggregate_one, r#"json:"a""#, true),
+        (aggregate_one, r#"json:"ab""#, false),
+        (aggregate_two, r#"json:"€""#, false),
+        (aggregate_three, r#"json:"€""#, true),
+    ];
+    for (limits, text, admits) in budgeted {
+        let first = parse_structured_mutation(text, &limits);
+        let second = parse_structured_mutation(text, &limits);
+        assert_eq!(first, second, "repeated parses of {text:?} must be identical");
+        assert_eq!(first.is_ok(), admits, "{text:?} must classify deterministically");
+    }
+    Ok(())
+}
+
+#[test]
+fn refusal_paths_are_pure_repeated_calls_are_identical() -> TestResult {
+    // Required-test 12 receipt (#11328): there is no backend seam by design.
+    // Every public entry point takes only shared references and returns owned
+    // data; the module holds no statics or interior mutability, so no state is
+    // observable between calls. The compile-time signature pin below fails to
+    // compile if any free function ever takes a `&mut` parameter, and the
+    // repeated-call identities prove each refusal is a pure function of its
+    // inputs (zero backend/state calls on every refusal path).
+    type ParseFn = fn(
+        &str,
+        &StructuredMutationLimits,
+    )
+        -> Result<perl_dap::mutation::MutationStructuredValueV1, StructuredRefusal>;
+    type PayloadFn = fn(&str) -> Result<&str, StructuredRefusal>;
+    type ReferentKindFn = fn(&StructuredValue) -> Option<FreshReferentKind>;
+    let shared_reference_signatures_only: (ParseFn, PayloadFn, ReferentKindFn) =
+        (parse_structured_mutation, structured_payload, fresh_referent_kind);
+    let _ = shared_reference_signatures_only;
+
+    let widened = StructuredMutationLimits {
+        max_input_bytes: usize::MAX,
+        ..StructuredMutationLimits::default()
+    };
+    let nodes_two =
+        StructuredMutationLimits { max_nodes: 2, ..StructuredMutationLimits::default() };
+    let zero_aggregate =
+        StructuredMutationLimits { max_aggregate_bytes: 0, ..StructuredMutationLimits::default() };
+    let scalar_one =
+        StructuredMutationLimits { max_scalar_bytes: 1, ..StructuredMutationLimits::default() };
+    let entries_one =
+        StructuredMutationLimits { max_entries: 1, ..StructuredMutationLimits::default() };
+    let digits_one = StructuredMutationLimits {
+        max_significant_digits: 1,
+        ..StructuredMutationLimits::default()
+    };
+    let exponent_one = StructuredMutationLimits {
+        max_absolute_exponent: 1,
+        ..StructuredMutationLimits::default()
+    };
+
+    let long_input = format!("json:{}", "1".repeat(70_000));
+    let deep_input = format!("json:{}", "[".repeat(18));
+    let beyond_integer = format!("json:-9{}", "9".repeat(25));
+
+    let cases: Vec<(StructuredMutationLimits, String, StructuredRefusal)> = vec![
+        (
+            StructuredMutationLimits::default(),
+            "bare Perl-looking text".to_string(),
+            StructuredRefusal::MissingStructuredPrefix,
+        ),
+        (
+            StructuredMutationLimits::default(),
+            long_input,
+            StructuredRefusal::InputTooLarge { limit: 65_536 },
+        ),
+        (widened, "json:1".to_string(), StructuredRefusal::LimitsExceedPinnedProfile),
+        (
+            StructuredMutationLimits::default(),
+            deep_input,
+            StructuredRefusal::DepthExceeded { limit: 16 },
+        ),
+        (nodes_two, "json:[1,2,3]".to_string(), StructuredRefusal::TooManyNodes { limit: 2 }),
+        (zero_aggregate, "json:[]".to_string(), StructuredRefusal::AggregateTooLarge { limit: 0 }),
+        (scalar_one, r#"json:"ab""#.to_string(), StructuredRefusal::ScalarTooLarge { limit: 1 }),
+        (entries_one, "json:[1,2]".to_string(), StructuredRefusal::TooManyEntries { limit: 1 }),
+        (
+            StructuredMutationLimits::default(),
+            r#"json:{"k":1,"k":2}"#.to_string(),
+            StructuredRefusal::DuplicateKey { key: "k".to_string() },
+        ),
+        (digits_one, "json:1.25".to_string(), StructuredRefusal::TooManyDigits { limit: 1 }),
+        (exponent_one, "json:1e2".to_string(), StructuredRefusal::ExponentTooLarge { limit: 1 }),
+        (StructuredMutationLimits::default(), beyond_integer, StructuredRefusal::IntegerOutOfRange),
+        (
+            StructuredMutationLimits::default(),
+            "json:[1] x".to_string(),
+            StructuredRefusal::InvalidSyntax { offset: 4 },
+        ),
+    ];
+    for (limits, text, expected) in cases {
+        let first = parse_structured_mutation(&text, &limits);
+        let second = parse_structured_mutation(&text, &limits);
+        let refusal = first.as_ref().err().ok_or_else(|| format!("{text:?} must be refused"))?;
+        assert_eq!(refusal, &expected, "{text:?} must refuse with the pinned variant");
+        assert_eq!(
+            first, second,
+            "{text:?} must produce identical refusals on repeated pure calls"
+        );
+    }
+
+    // The admitted path is equally repeatable: same input, same envelope.
+    let admitted_first = parse_structured_mutation(
+        r#"json:{"a":[true,null]}"#,
+        &StructuredMutationLimits::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    let admitted_second = parse_structured_mutation(
+        r#"json:{"a":[true,null]}"#,
+        &StructuredMutationLimits::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    assert_eq!(admitted_first, admitted_second);
     Ok(())
 }
