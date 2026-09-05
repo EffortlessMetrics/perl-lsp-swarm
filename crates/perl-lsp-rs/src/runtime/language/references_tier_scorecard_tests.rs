@@ -28,7 +28,8 @@
 //! empty answer over a complete index is a fresh, trustworthy negative rather
 //! than one indistinguishable from an absent index. A later open-document edit
 //! can still invalidate a captured full state at receipt time (#14163); H-B is
-//! skipped for `empty` rows because the tier is reached from several access modes.
+//! skipped for `empty` rows because the tier is reached from several access modes,
+//! including the qualified-name prefix guard (#1849).
 //!
 //! If the assertion fails the harness reports the discrepancy so the caller
 //! can fix `set_index_building` (or drop the "building" column and document why).
@@ -347,10 +348,11 @@ use warnings;
 
         // H-B: observed index_state matches the intended label — for non-empty tiers.
         //
-        // The `empty` tier can be reached from several access modes, and a
-        // request-local edit may also downgrade a captured full state at receipt
-        // time. We skip H-B for empty rows to avoid a false assertion; the
-        // `observed_state` column still records the state the receipt reported.
+        // The `empty` tier can be reached from several access modes (including
+        // the qualified-name prefix guard, #1849), and a request-local edit may
+        // also downgrade a captured full state at receipt time. We skip H-B for
+        // empty rows to avoid a false assertion; the `observed_state` column
+        // still records the state the receipt reported.
         let observed_state =
             receipt.get("index_state").and_then(Value::as_str).unwrap_or("").to_string();
         let answering_tier =
