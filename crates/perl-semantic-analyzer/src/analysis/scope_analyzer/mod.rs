@@ -997,16 +997,20 @@ impl ScopeAnalyzer {
             }
 
             NodeKind::StatementModifier { statement, condition, .. } => {
-                // Perl hoists a `my` declaration in the modifier condition to the
-                // enclosing block, so the condition must be analyzed BEFORE the
-                // statement.  The default children() order is statement-first,
-                // which causes a false-positive UndeclaredVariable for idioms like
-                //   `print $x if my $x = 1;`
-                // Analyze the condition first so any `my` it introduces is visible
-                // to the statement.
+                // Perl does NOT hoist a `my` in a modifier condition over the statement it
+                // modifies: the binding takes effect only after the whole statement, so the
+                // statement cannot see it.  Verified against perl 5.38.2 (#1772):
+                //
+                //   $ perl -c -e 'use strict; print $x if my $x = 1;'
+                //   Global symbol "$x" requires explicit package name ...
+                //
+                // Lexical visibility here is carried entirely by traversal order matching
+                // source order, so the statement must be analyzed before the condition.
+                // `fix_1772_declaration_order.rs` pins that, and reordering these two lines
+                // is what it fails on.
                 ancestors.push(node);
-                self.analyze_node(condition, scope, ancestors, issues, context);
                 self.analyze_node(statement, scope, ancestors, issues, context);
+                self.analyze_node(condition, scope, ancestors, issues, context);
                 ancestors.pop();
             }
 
