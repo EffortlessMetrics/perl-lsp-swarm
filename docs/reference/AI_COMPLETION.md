@@ -53,10 +53,20 @@ ignored key.
 | `timeoutMs` | integer | `1800` | yes | Per-request timeout in milliseconds. |
 | `maxOutputTokens` | integer | `64` | yes | Maximum tokens the model may generate per request. |
 | `rateLimitRps` | float | `1.0` | yes | Maximum requests per second (token-bucket rate). Controls how often a request may *start*, not how many may run at once. |
-| `maxInflight` | integer | `1` | yes | Maximum *simultaneously active* requests. A permit is held for the whole request and released on every outcome — success, error, timeout, or cancellation. Separate from `rateLimitRps`; raising one does not raise the other (#8300). |
+| `maxInflight` | integer | `1` | yes | Maximum *simultaneously active* requests, in the range `1..=64`; a value outside that range is ignored and the previous one kept. A permit is held for the whole request and released on every outcome — success, error, timeout, or cancellation. This answers a different question from `rateLimitRps`: how many may run at once, rather than how often one may start. It is not yet fully independent of it, though — see the note below. |
 | `fallback` | boolean | `true` | yes | Fall back to deterministic completions on AI failure. |
 | `streaming.enabled` | boolean | `true` | no — rejected (#4997) | Enable streaming mode (progressive ghost text). Streaming preferences never imply backend authorization. |
 | `streaming.updateDebounceMs` | integer | `60` | yes | Minimum milliseconds between streamed ghost text updates. The first and final cumulative updates are always emitted. |
+
+> **`maxInflight` currently also sets the rate limiter's burst capacity.**
+> The two settings answer different questions, but they are not yet wired
+> independently: the same value is passed to the token bucket as its burst
+> allowance, so raising `maxInflight` also raises how many requests may
+> start in a single burst, even though `rateLimitRps` is unchanged.
+> Lowering it likewise tightens the burst. Decoupling them would change
+> rate-limit behaviour for anyone already running `maxInflight >
+> rateLimitRps`, which is an observable change that belongs in its own
+> claim rather than in #8300's concurrency ceiling.
 
 Arming the remote backend additionally requires an accepted trusted
 activation; until the server-owned adapter lands, remote construction fails
