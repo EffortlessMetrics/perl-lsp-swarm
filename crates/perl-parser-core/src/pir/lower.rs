@@ -1001,13 +1001,21 @@ impl BodyLowerer {
                 // is a real modification of the slot on top of the localization,
                 // so lower the whole Assign: the RMW arm emits one Modify node for
                 // the place plus the RHS read, never a second plain Write.
+                // A simple initialiser whose target is not a plain variable
+                // (`local $ENV{PATH} = EXPR`) is not covered by the declaration
+                // write above, which only names the declared symbol; lower the
+                // whole Assign so the real target reaches PIR (today as the
+                // fail-closed `Subscript` marker) instead of vanishing.
                 if let Some(init_id) = init {
                     match body.expr(*init_id) {
-                        Some(HirExpr::Assign { rhs, mode: AssignMode::Simple, .. }) => {
+                        Some(HirExpr::Assign { lhs, rhs, mode: AssignMode::Simple })
+                            if matches!(body.expr(*lhs), Some(HirExpr::Variable(_))) =>
+                        {
                             self.lower_expr(body, *rhs, file);
                         }
-                        // ReadModifyWrite, or not an Assign node (shouldn't happen
-                        // in well-formed HIR): lower the init as-is.
+                        // ReadModifyWrite, a non-variable target, or not an Assign
+                        // node (shouldn't happen in well-formed HIR): lower the
+                        // init as-is.
                         _ => self.lower_expr(body, *init_id, file),
                     }
                 }
