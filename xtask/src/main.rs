@@ -2916,17 +2916,17 @@ enum NonRustCommand {
     /// and emit `target/policy/non-rust-inventory.{md,json}`.
     ///
     /// By default this is a read-only scan: no tracked file is modified.
-    /// Pass `--write` to also regenerate the committed snapshot at
-    /// `docs/policy/NON_RUST_INVENTORY.md`.
+    /// Pass `--write` only to publish the default-branch reader reference at
+    /// `docs/policy/NON_RUST_INVENTORY.md`; that publication is not gate input.
     Inventory {
-        /// Check classification and newly added files without rewriting outputs.
-        /// Require the generated Markdown snapshot to match the committed snapshot
-        /// after line-ending normalization.
+        /// Validate the current tracked tree against the allowlist, emit
+        /// Markdown/JSON evidence under `target/policy/`, and reject newly
+        /// added unclassified paths against merge-base.
         #[arg(long)]
         check: bool,
 
-        /// Also overwrite `docs/policy/NON_RUST_INVENTORY.md` with the
-        /// regenerated content.  Mutually exclusive with `--check`.
+        /// Publish the generated Markdown as the tracked default-branch reader
+        /// reference. Mutually exclusive with `--check`.
         #[arg(long, conflicts_with = "check")]
         write: bool,
     },
