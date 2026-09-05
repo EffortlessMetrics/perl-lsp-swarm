@@ -9,8 +9,10 @@
 //!   document with its own generation, so currentness is proven against an
 //!   admitted per-file generation snapshot, never against the moved file's
 //!   generation.
-//! * **Refusal and edit are mutually exclusive.**  An occurrence that raises a
-//!   blocker contributes no edit, so `edits` never contradicts `blockers`.
+//! * **A refused occurrence contributes no edit,** so `edits` never carries a
+//!   member the plan also refuses.  A plan blocked for a whole-plan reason may
+//!   still list the edits of its acceptable occurrences; those are diagnostic,
+//!   and [`ModuleMovePlan::is_complete`] is the only authorization.
 //! * **A complete plan is a checked property, not a tag.**  [`ModuleMovePlan`]
 //!   is publicly constructible and `Deserialize`, so
 //!   [`ModuleMovePlan::is_complete`] re-derives the invariants and the
@@ -250,6 +252,11 @@ pub enum ModuleMoveInvalidPlan {
     ResourceTransitionInconsistent,
     /// A complete plan does not rename the moved file's own package declaration.
     MissingPackageDeclaration,
+    /// The source identity would not have been eligible to authorize any edit.
+    SourceNotEligible,
+    /// An edit is not the boundary-clean substitution of the source identity by
+    /// the target module that it claims to be.
+    EditIsNotTheIdentitySubstitution,
     /// The fingerprint does not identify this payload.
     FingerprintMismatch,
 }
@@ -263,7 +270,11 @@ pub struct ModuleMovePlan {
     pub source: ModuleMoveSource,
     /// Derived resource transition.
     pub resource: ModuleMoveResourceTransition,
-    /// Complete ordered semantic edit set when accepted.
+    /// Ordered semantic edit set.
+    ///
+    /// A blocked plan may still carry the edits of its individually acceptable
+    /// occurrences; those are diagnostic, never authorization. Gate every read
+    /// on [`Self::is_complete`] — a non-empty `edits` is not a licence to apply.
     pub edits: Vec<ModuleMoveEdit>,
     /// Typed refusal reasons, empty for a complete plan.
     pub blockers: Vec<ModuleMoveBlocker>,
@@ -324,6 +335,8 @@ impl ModuleMovePlan {
             || source.restricted
             || source.primary_package_count != 1
         {
+            // Kept as the reported conjunction; `source_is_eligible` re-derives
+            // the same requirement at the acceptance boundary.
             blockers.push(if source.primary_package_count != 1 {
                 ModuleMoveBlocker::AmbiguousSourcePackage
             } else {
@@ -403,7 +416,7 @@ impl ModuleMovePlan {
             // identity — a dependent file's `package Old::Name` is a reference.
             if occurrence.kind == OccurrenceKind::Definition
                 && occurrence.file_id == source.file_id
-                && occurrence.old_text.trim_start().starts_with("package ")
+                && declares_package(&occurrence.old_text)
                 && sites.len() == 1
             {
                 primary_declarations += 1;
@@ -538,13 +551,36 @@ impl ModuleMovePlan {
         {
             return Err(ModuleMoveInvalidPlan::ResourceTransitionInconsistent);
         }
+        if !source_is_eligible(&self.source) {
+            return Err(ModuleMoveInvalidPlan::SourceNotEligible);
+        }
+        // The fingerprint proves the payload is self-consistent, not that it is
+        // legitimate: it is computed through a public API, so anyone who edits a
+        // field can recompute it. Each edit must therefore be re-derived as the
+        // substitution it claims to be.
+        for edit in &self.edits {
+            let sites = identity_sites(&edit.old_text, &self.source.package);
+            let [site] = sites.as_slice() else {
+                return Err(ModuleMoveInvalidPlan::EditIsNotTheIdentitySubstitution);
+            };
+            if edit.new_text
+                != substitute(
+                    &edit.old_text,
+                    *site,
+                    &self.source.package,
+                    &self.resource.target_module,
+                )
+            {
+                return Err(ModuleMoveInvalidPlan::EditIsNotTheIdentitySubstitution);
+            }
+        }
         let declarations = self
             .edits
             .iter()
             .filter(|edit| {
                 edit.file_id == self.source.file_id
                     && edit.kind == OccurrenceKind::Definition
-                    && edit.old_text.trim_start().starts_with("package ")
+                    && declares_package(&edit.old_text)
                     && identity_sites(&edit.old_text, &self.source.package).len() == 1
             })
             .count();
@@ -700,11 +736,48 @@ const fn occurrence_kind_tag(kind: OccurrenceKind) -> &'static str {
     }
 }
 
+/// A Perl package name this profile will write into source.
+///
+/// No segment may begin with a digit: `package 123` and `package Foo::1` are
+/// not valid Perl, so admitting them would plan an edit that breaks the module.
 fn valid_package(value: &str) -> bool {
     !value.is_empty()
         && value.split("::").all(|part| {
-            !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            part.bytes().next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+                && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
         })
+}
+
+/// Whether an anchor's text opens a `package` declaration.
+///
+/// Perl separates the keyword from the name with any whitespace, so a tab or
+/// newline declares a package exactly as a space does; `packageFoo` does not.
+fn declares_package(text: &str) -> bool {
+    text.trim_start()
+        .strip_prefix("package")
+        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_whitespace()))
+}
+
+/// The source-identity conjunction this profile requires.
+///
+/// Shared by `build` and `validate` so construction and acceptance cannot
+/// drift about which sources may authorize an edit.
+fn source_is_eligible(source: &ModuleMoveSource) -> bool {
+    let root = source.root.trim_end_matches('/');
+    let expected_path = module_path(&source.module).map(|path| format!("{root}/{path}"));
+    !source.workspace.trim().is_empty()
+        && !root.is_empty()
+        && !source.source_uri.trim().is_empty()
+        && !source.relative_path.trim().is_empty()
+        && valid_package(&source.package)
+        && valid_package(&source.module)
+        && source.package == source.module
+        && expected_path.as_deref() == Some(source.relative_path.as_str())
+        && source.editable
+        && !source.restricted
+        && source.primary_package_count == 1
+        && source.occurrences_complete
+        && source.generation.is_known()
 }
 
 fn module_path(package: &str) -> Option<String> {
@@ -1390,6 +1463,140 @@ mod tests {
             assert_eq!(
                 forged.validate(),
                 Err(ModuleMoveInvalidPlan::ResourceTransitionInconsistent)
+            );
+        }
+    }
+
+    // --- the fingerprint is not authorization (Devin review) ------------------
+
+    /// The attack the fingerprint cannot stop: change `new_text` to anything,
+    /// recompute the fingerprint through the public API, and ask for
+    /// materialization. `validate()` must re-derive the substitution.
+    #[test]
+    fn an_unrelated_replacement_with_a_recomputed_fingerprint_is_refused() {
+        for forged_text in ["package Malicious::Name", "system(\"rm -rf /\")", "package New::Nam"] {
+            let mut forged = plan(vec![declaration()], source_only_snapshot());
+            forged.edits[0].new_text = forged_text.into();
+            forged.fingerprint = rebuild_fingerprint(&forged);
+            assert_eq!(
+                forged.validate(),
+                Err(ModuleMoveInvalidPlan::EditIsNotTheIdentitySubstitution),
+                "{forged_text} was accepted"
+            );
+            assert!(!forged.is_complete());
+        }
+    }
+
+    /// An edit whose `old_text` no longer contains the source identity cannot
+    /// be the substitution it claims, however well-formed it looks.
+    #[test]
+    fn an_edit_whose_old_text_lost_the_identity_is_refused() {
+        let mut forged = plan(vec![declaration()], source_only_snapshot());
+        forged.edits[0].old_text = "package Unrelated".into();
+        forged.edits[0].new_text = "package Different".into();
+        forged.edits[0].end_byte = forged.edits[0].start_byte + "package Unrelated".len() as u32;
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::EditIsNotTheIdentitySubstitution));
+    }
+
+    /// Source eligibility is re-derived at acceptance, not inherited from the
+    /// build that produced the plan.
+    #[test]
+    fn an_ineligible_source_with_a_recomputed_fingerprint_is_refused() {
+        let mutations: Vec<(&str, fn(&mut ModuleMovePlan))> = vec![
+            ("editable", |plan| plan.source.editable = false),
+            ("restricted", |plan| plan.source.restricted = true),
+            ("primary package count", |plan| plan.source.primary_package_count = 2),
+            ("denominator completeness", |plan| plan.source.occurrences_complete = false),
+            ("generation", |plan| plan.source.generation = SourceGeneration::Unknown),
+            ("workspace", |plan| plan.source.workspace = "  ".into()),
+        ];
+        for (label, mutate) in mutations {
+            let mut forged = plan(vec![declaration()], source_only_snapshot());
+            mutate(&mut forged);
+            forged.fingerprint = rebuild_fingerprint(&forged);
+            assert_eq!(
+                forged.validate(),
+                Err(ModuleMoveInvalidPlan::SourceNotEligible),
+                "{label} survived acceptance"
+            );
+        }
+    }
+
+    /// A blocked plan may list the edits of its acceptable occurrences. That is
+    /// diagnostic; it must never read as authorization.
+    #[test]
+    fn a_blocked_plan_with_edits_is_still_not_authorization() {
+        let mut item = occurrence_at("use Old::Name", 40, 4);
+        item.unsupported = true;
+        let plan = plan(vec![declaration(), item], source_only_snapshot());
+        assert!(!plan.edits.is_empty(), "the acceptable occurrence is still listed");
+        assert!(!plan.is_complete(), "a non-empty edit set authorized a blocked plan");
+    }
+
+    // --- Perl identifier validity (Devin review) ------------------------------
+
+    #[test]
+    fn a_package_segment_may_not_begin_with_a_digit() {
+        for target in ["123", "New::123", "123::Name", "9Foo"] {
+            let plan = ModuleMovePlan::build(
+                source(),
+                ModuleMoveTarget::Package(target.into()),
+                vec![declaration()],
+                source_only_snapshot(),
+                false,
+            );
+            assert!(
+                plan.blockers.contains(&ModuleMoveBlocker::UnsafeTarget),
+                "{target} would have been written as a package declaration"
+            );
+            assert!(!plan.is_complete());
+        }
+    }
+
+    #[test]
+    fn an_underscore_or_letter_leading_segment_remains_valid() {
+        for target in ["_Private::Name", "New::N9"] {
+            let plan = ModuleMovePlan::build(
+                source(),
+                ModuleMoveTarget::Package(target.into()),
+                vec![declaration()],
+                source_only_snapshot(),
+                false,
+            );
+            assert!(plan.is_complete(), "{target} was rejected: {:?}", plan.blockers);
+        }
+    }
+
+    // --- declaration whitespace (Devin review) --------------------------------
+
+    #[test]
+    fn any_perl_whitespace_separates_the_package_keyword_from_its_name() {
+        for text in ["package\tOld::Name", "package\nOld::Name", "package  Old::Name"] {
+            let mut item = declaration();
+            item.old_text = text.into();
+            item.end_byte = text.len() as u32;
+            let plan = plan(vec![item], source_only_snapshot());
+            assert!(
+                plan.is_complete(),
+                "{text:?} was not recognized as a declaration: {:?}",
+                plan.blockers
+            );
+        }
+    }
+
+    #[test]
+    fn a_package_like_identifier_is_not_a_declaration() {
+        // `packageX Old::Name` is the discriminating case: the identity is
+        // boundary-clean, so only the keyword rule can reject it.
+        for text in ["packageOld::Name", "repackage Old::Name", "packageX Old::Name"] {
+            let mut item = declaration();
+            item.old_text = text.into();
+            item.end_byte = text.len() as u32;
+            let plan = plan(vec![item], source_only_snapshot());
+            assert!(
+                plan.blockers.contains(&ModuleMoveBlocker::MissingPackageDeclaration),
+                "{text:?} was accepted as a declaration"
             );
         }
     }
