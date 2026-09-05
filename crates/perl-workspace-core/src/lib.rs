@@ -52,6 +52,7 @@
 
 pub mod boundary;
 pub mod builder;
+pub mod carmel;
 pub mod dist;
 pub mod effects;
 pub mod environment;
@@ -81,6 +82,10 @@ pub const SCHEMA_VERSION: u32 = 2;
 // ── Curated public surface ──────────────────────────────────────────────────
 pub use boundary::{DynamicBoundary, DynamicBoundaryKind};
 pub use builder::{ProjectModelRequest, build_project_model};
+pub use carmel::{
+    CarmelArtifactRoot, CarmelDetection, CarmelLockAttribution, MySetupFacts, detect_carmel,
+    parse_mysetup_environment,
+};
 pub use dist::{DistMetadataFacts, DistMetadataSource, Prereq};
 pub use effects::CompileEffectFacts;
 pub use environment::{
