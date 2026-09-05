@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12727 |
-| Rust-family files | 3977 |
-| Non-Rust files | 8750 |
-| Allowlisted | 6511 |
+| Total tracked files | 12732 |
+| Rust-family files | 3981 |
+| Non-Rust files | 8751 |
+| Allowlisted | 6512 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -21,7 +21,7 @@
 | generated | 2 |
 | production | 357 |
 | test | 2111 |
-| tooling | 685 |
+| tooling | 686 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -3568,6 +3568,7 @@
 | `benchmarks/scripts/test_benchmark_targets.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_extract_criterion.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_regression.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/validate-native-pipeline-sidecar.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `book/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `book/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `book/src/SUMMARY.md` | documentation | `non-rust-root-governance-docs` | docs |
