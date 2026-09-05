@@ -42,6 +42,9 @@
 //! `Attribute "NAME" invalid` for anything outside `/^[a-zA-Z_]\w*$/`, so a
 //! rejected spelling (`'0'`, `'9lives'`, `'has-dash'`) becomes a typed
 //! malformed selection rather than an accessor that cannot exist at runtime.
+//! That pattern is asymmetric: the first character is the literal ASCII class
+//! `[a-zA-Z_]`, while later characters are `\w`, which Perl evaluates with
+//! Unicode semantics — so `'aé'` is a valid name and `'éleading'` is not.
 //!
 //! Package scoping mirrors the #9681 activation walk: an unqualified file
 //! defaults to `main`, bare `package X;` switches the current package for
@@ -153,6 +156,19 @@ fn owns_runtime_control_flow(node: &Node) -> bool {
 /// would be a member that cannot exist at runtime. This rejects a falsy `'0'`,
 /// a digit-leading `'9lives'`, and a hyphenated `'has-dash'` alike rather than
 /// special-casing any single spelling.
+///
+/// The two halves of that pattern are deliberately asymmetric. The first
+/// character is the literal class `[a-zA-Z_]`, so it stays ASCII — `'éleading'`
+/// is rejected. Every later character is `\w`, which Perl evaluates with
+/// Unicode semantics, so `'aé'`, `'naïve_name'` and `'café2'` are all names
+/// `Mojo::Base` accepts and this must not refuse.
+///
+/// Approximation boundary: `\w` additionally admits Unicode marks and
+/// connector punctuation, which [`char::is_alphanumeric`] does not report. A
+/// name whose continuation uses a combining mark is therefore still reported
+/// malformed. That errs toward omitting a real accessor rather than
+/// publishing one that cannot exist, which is the safe direction for a fact
+/// producer.
 fn is_valid_attribute_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
@@ -161,7 +177,7 @@ fn is_valid_attribute_name(name: &str) -> bool {
     if !(first.is_ascii_alphabetic() || first == '_') {
         return false;
     }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
 impl WalkState<'_> {
@@ -683,6 +699,27 @@ mod tests {
                 "{accepted} is a valid Mojo::Base attribute name"
             );
         }
+    }
+
+    #[test]
+    fn unicode_continuation_characters_are_valid_attribute_names() {
+        // Perl evaluates `\w` with Unicode semantics, so these are names
+        // `Mojo::Base` installs accessors for — refusing them would omit a real
+        // accessor.
+        for accepted in ["'aé'", "'naïve_name'", "'café2'"] {
+            let code = format!("package App;\nhas {accepted};\n");
+            assert!(
+                declarations(&code)[0].name.literal().is_some(),
+                "{accepted} is a runtime-valid Mojo::Base attribute name"
+            );
+        }
+        // The first character is the literal class `[a-zA-Z_]`, not `\w`, so a
+        // Unicode leading character stays malformed.
+        let leading = declarations("package App;\nhas 'éleading';\n");
+        assert!(
+            matches!(leading[0].name, MojoBaseAttributeName::Malformed { .. }),
+            "a non-ASCII first character is outside `[a-zA-Z_]`"
+        );
     }
 
     #[test]
