@@ -239,7 +239,10 @@ done
 mkdir -p "${fixture_root}/worktree-source"
 (
   cd "${fixture_root}/worktree-source"
-  git init --quiet --initial-branch=main .
+  # No --initial-branch: the default branch name is irrelevant here because
+  # the worktree branch is created explicitly below, and the flag would
+  # impose a needless Git 2.28+ requirement.
+  git init --quiet .
   git config user.email 'fixture@example.invalid'
   git config user.name 'Fixture'
   echo 'source root' >README.md

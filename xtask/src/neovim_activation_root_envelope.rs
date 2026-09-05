@@ -126,6 +126,14 @@ const SEMANTIC_OUTCOMES: &[&str] =
 /// Marker recorded by the boundary row that deliberately has no marker at all.
 const BOUNDARY_MARKER: &str = "none";
 
+/// The one required root cell that records an observation instead of asserting
+/// a root. Every other required cell must actually reach `proven`.
+const OBSERVATION_ONLY_ROOT_CELL: &str = "boundary.no_marker_single_file";
+
+/// Dispositions that mean the run failed to establish the row, as opposed to
+/// recording a deliberate policy about it.
+const FAILED_DISPOSITIONS: &[&str] = &["instrument_failed", "not_proven"];
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EnvelopeValidationError(String);
 
@@ -315,7 +323,18 @@ fn validate_file_families(root: &Map<String, Value>, config: &RecordedConfig) ->
             )));
         }
 
-        if ATTACHING_DISPOSITIONS.contains(&disposition) {
+        // Failure states are orthogonal to the native/attach policy branches
+        // below: they say the run did not establish the row, not what the
+        // project intends for that family.
+        if FAILED_DISPOSITIONS.contains(&disposition) {
+            if REQUIRED_FILE_FAMILIES.contains(&id.as_str()) {
+                return Err(EnvelopeValidationError::new(format!(
+                    "{path}.disposition: required family `{id}` is `{disposition}`; the run did \
+                     not establish it"
+                )));
+            }
+            require_nonempty_string(family, "reason", &format!("{path}.reason"))?;
+        } else if ATTACHING_DISPOSITIONS.contains(&disposition) {
             if !natively_activating {
                 return Err(EnvelopeValidationError::new(format!(
                     "{path}: disposition `{disposition}` requires a natively activating filetype, \
@@ -495,6 +514,15 @@ fn validate_roots(root: &Map<String, Value>, config: &RecordedConfig) -> Validat
             proven_markers.insert(marker.to_owned());
         } else {
             require_nonempty_string(semantic, "reason", &format!("{semantic_path}.reason"))?;
+            // Marker coverage alone cannot carry this: several cells share one
+            // marker, so a degraded conflict or isolation cell would otherwise
+            // hide behind a sibling cell that happens to name the same marker.
+            if REQUIRED_ROOT_CELLS.contains(&id.as_str()) && id != OBSERVATION_ONLY_ROOT_CELL {
+                return Err(EnvelopeValidationError::new(format!(
+                    "{semantic_path}.outcome: required root cell `{id}` is `{outcome}`; it must \
+                     reach `proven` on its own evidence"
+                )));
+            }
         }
 
         let observed_symbol = format!("probe_{observed_marker}");

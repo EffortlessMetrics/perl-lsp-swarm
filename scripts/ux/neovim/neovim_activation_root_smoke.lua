@@ -369,24 +369,48 @@ local function request(client, bufnr, method, params)
   return response.result, nil
 end
 
-for _, case in ipairs(ROOT_CASES) do
+-- Builds one root row. A row that cannot be established returns `not_proven`
+-- with its reason instead of aborting, so the envelope keeps the complete
+-- denominator even when a case fails.
+local function evaluate_root_case(case)
   local entry = fixture_root .. '/' .. case.root .. '/t/probe.pl'
   local expected_root = normalize(fixture_root .. '/' .. case.root)
+  local expected_module = expected_root .. '/lib/RootProbe.pm'
+
+  local function unestablished(reason)
+    return {
+      marker = case.marker,
+      expected_role = role_of(expected_root),
+      actual_role = 'none',
+      root_match = false,
+      semantic = {
+        definition_method = 'textDocument/definition',
+        content_method = 'workspace/symbol',
+        expected_target_role = role_of(expected_module),
+        observed_target_role = 'none',
+        expected_marker = case.marker_value,
+        observed_marker = '',
+        rejected_symbols = {},
+        outcome = 'not_proven',
+        reason = reason,
+      },
+    },
+      reason
+  end
 
   vim.cmd('edit ' .. vim.fn.fnameescape(entry))
   if vim.bo.filetype ~= 'perl' then
-    error(('root fixture %s did not detect as perl, got %q'):format(case.id, vim.bo.filetype))
+    return unestablished(('root fixture did not detect as perl, got %q'):format(vim.bo.filetype))
   end
 
   local client = wait_for_client(0, 15000)
   if not client then
-    error(('perllsp did not attach for root case %s'):format(case.id))
+    return unestablished('perllsp did not attach')
   end
 
   local actual_root = client.root_dir and normalize(client.root_dir) or ''
 
   -- Structural oracle: the module reference resolves inside the selected root.
-  local expected_module = expected_root .. '/lib/RootProbe.pm'
   local definition, definition_error = request(client, 0, 'textDocument/definition', {
     textDocument = { uri = vim.uri_from_fname(entry) },
     position = { line = 2, character = 6 },
@@ -460,10 +484,17 @@ for _, case in ipairs(ROOT_CASES) do
   }
   if reason then
     row.semantic.reason = reason
-    table.insert(failures, ('root case %s (%s): %s'):format(case.id, case.marker, reason))
   end
 
+  return row, reason
+end
+
+for _, case in ipairs(ROOT_CASES) do
+  local row, reason = evaluate_root_case(case)
   envelope.roots[case.id] = row
+  if reason then
+    table.insert(failures, ('root case %s (%s): %s'):format(case.id, case.marker, reason))
+  end
 end
 
 -- Single-file/no-marker behaviour stays an observed cell rather than an

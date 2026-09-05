@@ -34,6 +34,53 @@ fn captured_actual_host_envelope_is_accepted() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// The producer and the judge have to agree about failure, not just success.
+///
+/// This fixture is the verbatim envelope from a real run against a server that
+/// exits immediately: the harness still emitted the complete denominator (10
+/// root cells, 17 families) and exited non-zero, and the validator must reject
+/// what it produced rather than accept a run in which nothing was established.
+#[test]
+fn a_real_failed_run_is_rejected_even_though_it_is_well_formed() -> Result<(), Box<dyn Error>> {
+    let envelope: Value = serde_json::from_str(include_str!(
+        "fixtures/neovim_activation_root_envelopes/invalid-server-never-attached.json"
+    ))?;
+
+    // It is a complete, structurally valid envelope: the denominator survived.
+    for family in REQUIRED_FILE_FAMILIES {
+        assert!(
+            envelope["file_families"].get(*family).is_some(),
+            "the failed run should still carry family `{family}`"
+        );
+    }
+    for cell in REQUIRED_ROOT_CELLS {
+        assert!(
+            envelope["roots"].get(*cell).is_some(),
+            "the failed run should still carry root cell `{cell}`"
+        );
+    }
+
+    // ...and it is still rejected. The first required row that the run failed
+    // to establish is the one reported.
+    assert_eq!(
+        rejection(validate_envelope(&envelope))?,
+        "envelope.file_families.shebang.bin_tool.disposition: required family `shebang.bin_tool` \
+         is `not_proven`; the run did not establish it"
+    );
+
+    // Every root cell degraded too, so the root rule would reject it just as
+    // surely once the families are set aside.
+    let mut roots_only = envelope.clone();
+    roots_only["file_families"] = valid_envelope()?["file_families"].clone();
+    assert_eq!(
+        rejection(validate_envelope(&roots_only))?,
+        "envelope.roots.conflict.competing_markers_at_depth.semantic.outcome: required root cell \
+         `conflict.competing_markers_at_depth` is `not_proven`; it must reach `proven` on its own \
+         evidence"
+    );
+    Ok(())
+}
+
 #[test]
 fn every_required_file_family_is_present_in_the_captured_run() -> Result<(), Box<dyn Error>> {
     let envelope = valid_envelope()?;
@@ -185,17 +232,74 @@ fn a_non_proven_cell_must_say_why() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Adding a marker to the canonical config without giving it a winning
+/// actual-host case must fail: the envelope would otherwise claim a marker it
+/// never exercised.
 #[test]
 fn a_configured_marker_that_never_won_a_cell_is_rejected() -> Result<(), Box<dyn Error>> {
     let mut envelope = valid_envelope()?;
-    // dist.ini stays configured but its only winning cell degrades.
-    let cell = &mut envelope["roots"]["marker.dist_ini"]["semantic"];
-    cell["outcome"] = json!("not_proven");
-    cell["reason"] = json!("deliberately degraded by this test");
+    envelope["config"]["root_marker_groups"] = json!([
+        [".perl-lsp.toml", "Makefile.PL", "Build.PL", "cpanfile", "dist.ini", "META.json"],
+        ".git"
+    ]);
 
     assert_eq!(
         rejection(validate_envelope(&envelope))?,
-        "envelope.roots: configured root marker `dist.ini` never won a proven cell"
+        "envelope.roots: configured root marker `META.json` never won a proven cell"
+    );
+    Ok(())
+}
+
+/// Several cells legitimately share one marker (three cells use `cpanfile`,
+/// two use `.git`), so marker coverage alone would let a degraded conflict or
+/// isolation cell hide behind a sibling cell naming the same marker.
+#[test]
+fn a_shared_marker_cannot_cover_for_a_degraded_isolation_cell() -> Result<(), Box<dyn Error>> {
+    for cell in ["conflict.perl_marker_beats_git", "fallback.git_file_linked_worktree"] {
+        let mut envelope = valid_envelope()?;
+        let semantic = &mut envelope["roots"][cell]["semantic"];
+        semantic["outcome"] = json!("not_applicable");
+        semantic["reason"] = json!("degraded by this test");
+
+        // Marker coverage still holds: another cell names the same marker.
+        assert_eq!(
+            rejection(validate_envelope(&envelope))?,
+            format!(
+                "envelope.roots.{cell}.semantic.outcome: required root cell `{cell}` is \
+                 `not_applicable`; it must reach `proven` on its own evidence"
+            )
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn the_observation_only_boundary_cell_is_the_sole_exemption() -> Result<(), Box<dyn Error>> {
+    // It is already `not_applicable` in the captured run, and that must stay legal.
+    let envelope = valid_envelope()?;
+    assert_eq!(
+        envelope["roots"]["boundary.no_marker_single_file"]["semantic"]["outcome"],
+        json!("not_applicable")
+    );
+    validate_envelope(&envelope)?;
+    Ok(())
+}
+
+#[test]
+fn a_required_family_that_failed_to_establish_itself_is_rejected() -> Result<(), Box<dyn Error>> {
+    let mut envelope = valid_envelope()?;
+    let family = &mut envelope["file_families"]["source.psgi"];
+    family["disposition"] = json!("not_proven");
+    family["reason"] = json!("degraded by this test");
+    family["attached"] = json!(false);
+    family["language_id"] = json!("");
+    family["config_eligible"] = json!(false);
+    family["native_filetype"] = json!("");
+
+    assert_eq!(
+        rejection(validate_envelope(&envelope))?,
+        "envelope.file_families.source.psgi.disposition: required family `source.psgi` is \
+         `not_proven`; the run did not establish it"
     );
     Ok(())
 }
