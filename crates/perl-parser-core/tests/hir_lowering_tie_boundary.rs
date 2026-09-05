@@ -257,37 +257,57 @@ fn flat_pir_reaches_the_tie_boundary_after_its_arguments() -> TestResult {
     Ok(())
 }
 
-/// Known limitation, pinned deliberately: in a **nested expression** context the
-/// flat PIR graph reaches the consuming operation before the tie boundary.
-///
-/// `my $obj = tie %h, 'C';` is legal Perl and parses cleanly, but flat PIR
-/// yields `LexicalWrite($obj) -> Assign -> Literal('C') -> DynamicBoundary`, so
-/// the assignment that consumes the tie's result precedes the tie dispatch.
-///
-/// The cause is not this slice's emission order. `pir::lower` splices ordinary
-/// operand nodes back in beside their expression parent through
-/// `push_node_maybe_operand`, while `lower_dynamic_boundary` appends through
-/// `push_node` — so no dynamic boundary participates in operand splicing. Making
-/// them participate would change lowering for every existing boundary kind
-/// (`CoderefCall` and `EmbeddedRegexCode` in particular depend on staying
-/// adjacent to their owning item, guarded by `debug_assert!`), which is wider
-/// than this claim.
-///
-/// This test exists so the limitation is discoverable and cannot be relied upon
-/// by accident. It asserts the boundary is still *present* and records the
-/// current ordering; when the shared PIR seam is fixed, this test should fail
-/// and be replaced by the correct-order assertion.
+/// A tie used as an initializer is an operand of the assignment. Flat PIR
+/// must evaluate the tie operands, reach the hidden-dispatch boundary, and only
+/// then reach the consuming `Assign` node.
 #[test]
-fn nested_tie_boundary_currently_trails_its_consumer_in_flat_pir() -> TestResult {
-    let mut parser = Parser::new("package Main;\nmy $obj = tie %hash, 'Tie::StdHash';\n");
-    let output = parser.parse_with_recovery();
-    assert_eq!(
-        output.diagnostics.len(),
-        0,
-        "the nested form must parse cleanly, or this limitation is about something else"
+fn nested_tie_boundary_precedes_its_initializer_consumer_in_flat_pir() -> TestResult {
+    let mut parser = Parser::new(
+        "package Main;
+my $obj = tie %hash, 'Tie::StdHash', build_args();
+",
     );
-    let hir = lower_ast(&output.ast);
-    let graph = lower_hir(&hir);
+    let output = parser.parse_with_recovery();
+    assert_eq!(output.diagnostics.len(), 0, "the nested tie form must parse cleanly");
+    let graph = lower_hir(&lower_ast(&output.ast));
+
+    let call_id = must_some(graph.nodes.iter().find_map(|node| {
+        matches!(&node.operation, PirOperation::Call { callee: PirCallee::Named { name, .. }, .. } if name == "build_args")
+            .then_some(node.id)
+    }));
+    let boundary_id = must_some(graph.nodes.iter().find_map(|node| {
+        matches!(&node.operation, PirOperation::DynamicBoundary { .. }).then_some(node.id)
+    }));
+    let assign_id = must_some(
+        graph
+            .nodes
+            .iter()
+            .find_map(|node| matches!(&node.operation, PirOperation::Assign).then_some(node.id)),
+    );
+
+    let order = fallthrough_order(&graph);
+    let call_step = must_some(order.iter().position(|id| *id == call_id));
+    let boundary_step = must_some(order.iter().position(|id| *id == boundary_id));
+    let assign_step = must_some(order.iter().position(|id| *id == assign_id));
+    assert!(
+        call_step < boundary_step && boundary_step < assign_step,
+        "nested tie order must be operands -> boundary -> consumer; chain {order:?}"
+    );
+    Ok(())
+}
+
+/// `untie` has the same expression-position obligation: release happens before
+/// an enclosing assignment consumes its return value.
+#[test]
+fn nested_untie_boundary_precedes_its_initializer_consumer_in_flat_pir() -> TestResult {
+    let mut parser = Parser::new(
+        "package Main;
+my $released = untie %hash;
+",
+    );
+    let output = parser.parse_with_recovery();
+    assert_eq!(output.diagnostics.len(), 0, "the nested untie form must parse cleanly");
+    let graph = lower_hir(&lower_ast(&output.ast));
 
     let boundary_id = must_some(graph.nodes.iter().find_map(|node| {
         matches!(&node.operation, PirOperation::DynamicBoundary { .. }).then_some(node.id)
@@ -302,13 +322,9 @@ fn nested_tie_boundary_currently_trails_its_consumer_in_flat_pir() -> TestResult
     let order = fallthrough_order(&graph);
     let boundary_step = must_some(order.iter().position(|id| *id == boundary_id));
     let assign_step = must_some(order.iter().position(|id| *id == assign_id));
-
     assert!(
-        assign_step < boundary_step,
-        "pinning the known limitation: flat PIR currently reaches the consuming \
-         Assign before the tie boundary. If this now fails, the shared \
-         dynamic-boundary splicing seam was fixed — replace this test with the \
-         correct-order assertion rather than relaxing it. chain {order:?}"
+        boundary_step < assign_step,
+        "nested untie order must be boundary -> consumer; chain {order:?}"
     );
     Ok(())
 }

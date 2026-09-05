@@ -182,7 +182,7 @@ composition = "missing"
 provider_eligibility = "ineligible"
 ownership = "active"
 owner_issue = "#6683"
-claim_boundary = "Flat HIR marks the tie site itself with DynamicBoundary(TiedPlaceBinding), emitted after the operands. In a nested expression the flat PIR chain still reaches the consuming operation before the boundary, because dynamic boundaries skip operand splicing (#14803). Canonical PIR-A lowers from the body arenas, where the construct is still an opaque call, so PIR-A carries no tie boundary. Only the binding site is marked: subsequent reads and writes of the tied place remain indistinguishable from ordinary storage. Tie lifecycle, target place identity, hidden TIE* method effects, and capability boundaries are not represented."
+claim_boundary = "Flat HIR marks the tie site itself with DynamicBoundary(TiedPlaceBinding), emitted after the operands. When tie is nested in another flat-HIR expression, flat PIR splices that boundary before the consuming operation while preserving the conservative DynamicExit edge. Canonical PIR-A lowers from the body arenas, where the construct is still an opaque call, so PIR-A carries no tie boundary. Only the binding site is marked: subsequent reads and writes of the tied place remain indistinguishable from ordinary storage. Tie lifecycle, target place identity, hidden TIE* method effects, and capability boundaries are not represented."
 evidence = ["docs/project/status/hir_lowering.md", "#6683", "#14786"]
 
 [[concepts]]
@@ -202,7 +202,7 @@ composition = "missing"
 provider_eligibility = "ineligible"
 ownership = "active"
 owner_issue = "#6683"
-claim_boundary = "Flat HIR marks the untie site itself with DynamicBoundary(TiedPlaceRelease), emitted after the target expression. In a nested expression the flat PIR chain still reaches the consuming operation before the boundary (#14803). Canonical PIR-A lowers from the body arenas, where the construct is still an opaque call, so PIR-A carries no untie boundary. Only the release site is marked: the tied place's storage character before and after it is not tracked. Tied-place lifetime and hidden UNTIE/DESTROY consequences are not represented."
+claim_boundary = "Flat HIR marks the untie site itself with DynamicBoundary(TiedPlaceRelease), emitted after the target expression. When untie is nested in another flat-HIR expression, flat PIR splices that boundary before the consuming operation while preserving the conservative DynamicExit edge. Canonical PIR-A lowers from the body arenas, where the construct is still an opaque call, so PIR-A carries no untie boundary. Only the release site is marked: the tied place's storage character before and after it is not tracked. Tied-place lifetime and hidden UNTIE/DESTROY consequences are not represented."
 evidence = ["docs/project/status/hir_lowering.md", "#6683", "#14786"]
 
 [[concepts]]
