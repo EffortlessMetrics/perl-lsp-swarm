@@ -1,6 +1,8 @@
 //! Property/fuzz harness proof for formatter safety invariants (#10301).
 //!
-//! Rows FPH-001..FPH-010 from `.spec/10301-formatter-property-fuzz-harness/`.
+//! Rows FPH-001..FPH-010 from `.spec/10301-formatter-property-fuzz-harness/`,
+//! with FPH-008 covered only on its dormant-registry half (no profile lattice,
+//! receipt producer, or non-zero producer exit exists in this claim).
 //! The shared invariant core lives in
 //! `tests/support/formatter_property_harness/` and is consumed by the
 //! property-tier decoder/replay controls. The checker binds only canonical
@@ -33,7 +35,7 @@ use formatter_property_harness::{
     MAX_FUZZ_INPUT_BYTES, MAX_PLAN_EDITS, MAX_SUBJECT_BYTES, MAX_SUBJECT_LINES, apply_plan_strict,
     body_line_endings_preserved, case_from_fuzz_input, convention_present_in_bytes,
     dormant_registry, family_registry, generate_case, generate_case_neutral_control,
-    generate_invalidation_case, record_for, run_case, variants_for,
+    generate_invalidation_case, logical_line_count, record_for, run_case, variants_for,
 };
 use perl_lsp_perltidy::native::{FinalNewline, TextEdit, TextPosition, TextRange};
 
@@ -553,27 +555,70 @@ fn generator_and_mutator_dispositions_are_observable() -> TestResult {
 /// A valid-case property suite must contain independent positive controls.
 /// Without this executable assertion, a formatter that returns `NoChange` or
 /// `Refused` for every valid subject can satisfy all conditional plan checks.
+/// The control is per registry row: every admitted family must produce at
+/// least one `Applied` outcome from its own bounded seed run, so a family
+/// whose production path loses reachability turns this red on its own rather
+/// than hiding behind unrelated families.
 #[test]
 fn valid_generated_cases_have_independent_applied_controls() -> TestResult {
-    let mut applied_by_family = Vec::new();
-    for family_index in 0..Family::ALL.len() {
+    let mut missing = Vec::new();
+    for record in family_registry() {
+        let family_index = Family::ALL
+            .iter()
+            .position(|family| *family == record.family)
+            .ok_or("registry family must be an admitted family")?;
         let mut applied = 0;
         for seed in 0..64_u64 {
             let case = generate_case(seed, family_index);
+            assert_eq!(
+                case.family, record.family,
+                "generator index drifted from Family::ALL order"
+            );
             let receipt = run_case(&case)?;
             if receipt.outcome_disposition == "applied" {
                 applied += 1;
             }
         }
-        if applied > 0 {
-            applied_by_family.push(Family::ALL[family_index].name());
+        if applied == 0 {
+            missing.push(record.family.name());
         }
     }
 
     assert!(
-        applied_by_family.len() >= 2,
-        "valid generated controls must exercise Applied independently; applied families: {applied_by_family:?}"
+        missing.is_empty(),
+        "every admitted family must exercise Applied independently; families without an Applied control: {missing:?}"
     );
+    Ok(())
+}
+
+/// The composed line bound must count bare-CR separators: `str::lines` ignores
+/// `\r`, so a directly constructed `BareCr` subject of many CR-separated
+/// statements would otherwise pass the eight-line bound as one line.
+#[test]
+fn line_bound_counts_bare_cr_separators() -> TestResult {
+    assert_eq!(logical_line_count(""), 0);
+    assert_eq!(logical_line_count("a"), 1);
+    assert_eq!(logical_line_count("a\n"), 1);
+    assert_eq!(logical_line_count("a\r\nb"), 2);
+    assert_eq!(logical_line_count("a\rb\rc"), 3);
+    assert_eq!("a\rb\rc".lines().count(), 1, "control: str::lines does not split bare CR");
+
+    let mut bare_cr = None;
+    'search: for index in 0..FUZZ_INDEX_SPACE {
+        for seed in 0..64_u64 {
+            let case = generate_case(seed, index);
+            if case.profile.line_ending == LineEndingKind::BareCr {
+                bare_cr = Some(case);
+                break 'search;
+            }
+        }
+    }
+    let mut case = bare_cr.ok_or("bounded run must produce a BareCr case")?;
+    let statements = ["my $x = 1;"; MAX_SUBJECT_LINES + 1];
+    case.subject.text = statements.join("\r");
+    assert!(case.subject.text.len() <= MAX_SUBJECT_BYTES, "probe must stay under the byte cap");
+    let violation = run_case(&case).err().ok_or("over-bound BareCr subject must be refused")?;
+    assert_eq!(violation.rule, "generation.bounded_subject");
     Ok(())
 }
 
@@ -758,7 +803,7 @@ proptest! {
     fn generated_case_receipt_is_deterministic_and_bounded(seed in any::<u64>(), index in 0usize..FUZZ_INDEX_SPACE) {
         let case = generate_case(seed, index);
         prop_assert!(case.subject.text.len() <= MAX_SUBJECT_BYTES);
-        prop_assert!(case.subject.text.lines().count() <= MAX_SUBJECT_LINES);
+        prop_assert!(logical_line_count(&case.subject.text) <= MAX_SUBJECT_LINES);
         prop_assert_eq!(case.schema_version, HARNESS_SCHEMA_VERSION);
         let receipt = run_case(&case).map_err(|violation| TestCaseError::fail(violation.to_string()))?;
         prop_assert!(receipt.plan_edit_count <= MAX_PLAN_EDITS);
@@ -838,8 +883,14 @@ fn fuzz_decoder_consumes_bytes_past_the_selector() -> TestResult {
     Ok(())
 }
 
-/// FPH-008: dormant invariant slots exist as registered dispositions and fail
-/// closed as not-proven on today's tree; none claims proven coverage.
+/// FPH-008, registry half only: dormant invariant slots exist as registered
+/// dispositions and report not-proven on today's tree; none claims proven
+/// coverage. The other half of FPH-008 (the `pass | fail | not_proven`
+/// profile lattice, `mandatory_not_proven_prevents_profile_pass`,
+/// `profile_result_lattice_is_fail_closed`, and the non-zero producer exit)
+/// is not implemented in this claim: there is no profile producer here, so a
+/// green run of this test is not a `pass` verdict for the mandatory rows and
+/// #10301 stays open.
 #[test]
 fn dormant_invariants_report_not_proven_until_dependencies_land() -> TestResult {
     let dormant = dormant_registry();

@@ -11,7 +11,9 @@
 //!   domain-separated 32-byte `FPH_SEED` derivation; proptest's runner RNG is
 //!   unchanged.
 //! - No profile producer, receipt files, corpus digest contract, or validator
-//!   entry points exist here.
+//!   entry points exist here, so the FPH-008 `pass | fail | not_proven`
+//!   aggregation lattice and non-zero producer exit are not implemented; only
+//!   the dormant-slot registry half of FPH-008 is proven.
 //! - No runtime fuzzing campaign has been run; FPH-010 crash evidence is
 //!   decoder-replay only.
 //! - The FPH-009 index-safety clause is not mechanically scanned.
@@ -32,7 +34,8 @@
 //!    production APIs (`format_document_typed` / `format_range_typed`) plus
 //!    its own strict byte-edit applicator (FPH-002..FPH-006);
 //! 4. a fail-closed dormant-disposition registry for gated invariants whose
-//!    oracles do not exist on today's tree (FPH-008).
+//!    oracles do not exist on today's tree (the registry half of FPH-008; the
+//!    profile lattice and producer exit are not implemented here).
 //!
 //! Authority boundary: this module never references the subprocess-backed
 //! compatibility adapter, never spawns processes, never reads a clock, and
@@ -863,6 +866,17 @@ pub fn convention_present_in_bytes(kind: LineEndingKind, text: &str) -> bool {
     }
 }
 
+/// Count logical lines under every admitted convention. `str::lines` splits on
+/// `\n` only, so a `BareCr` subject would read as one line and slip past the
+/// composed line bound; this counts `\r\n`, bare `\r`, and `\n` separators.
+pub fn logical_line_count(text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+    let separators = separator_sequence(text).len();
+    if text.ends_with(['\r', '\n']) { separators } else { separators + 1 }
+}
+
 fn split_terminal_newline_run(text: &str) -> (&str, &str) {
     let body = text.trim_end_matches(['\r', '\n']);
     let terminal_run = &text[body.len()..];
@@ -1317,10 +1331,11 @@ fn check_bounds(case: &GeneratedCase) -> Result<(), Violation> {
             ),
         });
     }
-    if case.subject.text.lines().count() > MAX_SUBJECT_LINES {
+    let line_count = logical_line_count(&case.subject.text);
+    if line_count > MAX_SUBJECT_LINES {
         return Err(Violation {
             rule: "generation.bounded_subject",
-            detail: "subject exceeds the composed line bound".to_string(),
+            detail: format!("subject has {line_count} lines, bound is {MAX_SUBJECT_LINES}"),
         });
     }
     if !convention_present_in_bytes(case.profile.line_ending, &case.subject.text) {
