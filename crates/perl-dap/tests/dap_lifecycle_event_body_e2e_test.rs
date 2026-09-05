@@ -193,14 +193,14 @@ fn disconnect_without_session_emits_terminated_event_with_null_body() -> TestRes
 fn restart_request_without_session_fails_cleanly() -> TestResult {
     let (mut adapter, _rx) = create_test_adapter();
 
-    // The DAP `restart` request is not implemented for the native adapter.
-    // The dispatcher's fall-through path must return success=false with a
-    // descriptive message rather than panicking.
+    // #9581: `restart` is a floored secondary capability. The dispatch gate
+    // rejects it before any teardown/spawn/state work, with an explicit
+    // unsupported message, rather than panicking or masquerading.
     let response = adapter.handle_request(1, "restart", None);
     let DapMessage::Response { success, command, message, .. } = &response else {
         return Err(format!("expected Response for restart, got {response:?}").into());
     };
-    assert!(!*success, "restart should not silently succeed when unimplemented");
+    assert!(!*success, "floored restart must fail explicitly (#9581)");
     assert_eq!(command, "restart");
     assert!(message.is_some(), "restart failure must carry a message for the IDE");
 
