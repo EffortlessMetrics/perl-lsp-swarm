@@ -181,9 +181,67 @@ sent to the debugger:
    the shared DAP security logic.
 
 When `allowSideEffects` is `false` (the default), the handler rejects the
-request if **either** validator returns an error. When `allowSideEffects` is
-`true`, both validators are skipped and the expression is evaluated in the
-debugger context.
+request if **either** validator returns an error.
+
+In the **native adapter** (`DebugAdapter::handle_evaluate`, the default and
+first-mile debugger path), `allowSideEffects: true` is honored **only** for the
+explicit `repl` evaluation context. In every other context — `watch`, `hover`,
+`variables`, an unrecognized label, or an absent `context` field — the request
+is refused outright rather than silently downgraded to a screened evaluation,
+so a client cannot believe it received side-effect authority it never had.
+
+### Scope of this boundary
+
+This guarantee is specific to the native adapter's `evaluate` handler. It is
+**not** a system-wide statement that no side-effectful Perl can reach the
+debuggee outside a REPL. Two surfaces sit outside it:
+
+- **External-peer sessions.** `--external-peer` and `--external-peer-listen`
+  route DAP requests through `DapPeerBridge` / the mirror listen path rather
+  than through `DebugAdapter`. Those evaluate handlers have no
+  `allowSideEffects` field at all and perform no expression screening; the
+  expression is forwarded to the explicitly selected external debugger, which
+  owns the decision. An absent `context` on that path is currently defaulted to
+  `repl` when forwarding the label, which is the opposite of the native
+  adapter's fail-closed default.
+- **Breakpoint conditions.** A breakpoint `condition` runs when the line is hit,
+  outside any evaluation context, so the REPL boundary does not apply to it. It
+  is not unscreened: `AstBreakpointValidator::validate_condition` rejects empty
+  conditions, applies its own dangerous-construct screen
+  (`system(`/`exec(`/`qx`, backticks, `unlink`/`rename`/`rmdir`/`mkdir`, and
+  string `eval`), and then requires the condition to parse as a Perl
+  expression. That screen is narrower than the evaluate deny-list in
+  `eval/patterns.rs` and is maintained separately, so the two are not
+  interchangeable. A rejected condition leaves the breakpoint unverified, and
+  breakpoint synchronization writes `b {line} {condition}` only for verified
+  breakpoints, so a screened-out condition is never sent to the debugger at
+  all.
+
+Neither surface is changed by this boundary, and neither should be read as
+covered by it.
+
+That boundary exists because the read-oriented contexts are driven by the editor
+rather than by a deliberate user action: a hover fires on mouse movement and
+watch expressions re-evaluate on every stop. Only the `repl` context represents
+a user typing an expression they intend to run.
+
+The decision is taken before any debugger command is constructed, so a refusal
+is never preceded by a debugger write. It is owned by
+`crates/perl-dap/src/eval/trust.rs`, which keys off the typed
+`EvaluateContext` produced by the single label-mapping authority
+`EvaluateContext::from_dap_label` — the native adapter and the external-peer
+bridges cannot disagree about what `"repl"` means. Label matching is exact, so a
+near-miss such as `"REPL"` or `"repl-console"` carries no side-effect authority.
+
+Trusted REPL execution is additionally gated on a process-owned
+`ReplTrustPolicy`. It is deliberately not derived from project or workspace
+configuration, so a checked-in project file cannot grant broader execution
+authority to whoever opens the folder.
+
+Admitting an expression through the REPL boundary is **not** sandboxing. The
+expression runs with the debuggee's full authority. The guarantee is only that
+side-effectful evaluation is confined to the one context where the user
+explicitly asked for it.
 
 #### 2.2.1 What the validators block
 
@@ -243,8 +301,12 @@ it reaches `eval`. This is explicitly documented in
 ### 2.3 Test Coverage
 
 > Current behavior is policy validation plus timeout framing, **not** a
-> sandboxed interpreter boundary. `allowSideEffects: true` skips the safe-mode
-> validators and evaluates in the debugger context.
+> sandboxed interpreter boundary. In the native adapter, `allowSideEffects: true`
+> skips the safe-mode validators and evaluates in the debugger context — and is
+> honored only for the explicit `repl` context, having no effect on `watch`,
+> `hover`, `variables`, an unrecognized label, or an absent context, which are
+> refused instead. External-peer sessions and breakpoint conditions are outside
+> that boundary; see "Scope of this boundary" in §2.2.
 
 Relevant test files in `crates/perl-dap/tests/`:
 
