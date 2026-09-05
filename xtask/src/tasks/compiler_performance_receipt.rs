@@ -27,7 +27,7 @@ use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -592,21 +592,26 @@ pub fn validate_receipt(receipt: &CompilerPerformanceReceipt) -> Result<()> {
     // Stage identity: a name may appear once. `uniqueItems` cannot catch this,
     // because two rows sharing a name but differing in any counter are
     // distinct JSON objects.
-    let mut seen: HashSet<StageName> = HashSet::new();
+    let mut seen: HashMap<StageName, Applicability> = HashMap::new();
     for stage in &receipt.stages {
-        if !seen.insert(stage.name) {
+        if seen.insert(stage.name, stage.applicability).is_some() {
             errors.push(format!("stages: duplicate row for {:?}", stage.name));
         }
     }
 
     // The declared denominator is reconciled against the rows actually
     // present, so a producer cannot make a required stage vanish by simply
-    // omitting it.
+    // omitting it — nor by filing it as inapplicable, which would be the same
+    // disappearance wearing a legal row.
     for required in &receipt.workload.required_stages {
-        if !seen.contains(required) {
-            errors.push(format!(
+        match seen.get(required) {
+            None => errors.push(format!(
                 "workload.required_stages names {required:?}, but no stage row reports it — an absent required stage must be carried as a required_missing row"
-            ));
+            )),
+            Some(Applicability::NotApplicable) => errors.push(format!(
+                "workload.required_stages names {required:?}, but its row is not_applicable — a stage the workload declares required cannot also be inapplicable; carry it as required_missing if it was not observed"
+            )),
+            Some(_) => {}
         }
     }
 
@@ -889,7 +894,11 @@ fn validate_control_suite(root: &Path) -> Result<()> {
         )
     })?;
 
-    let controls = source.matches("#[test]").count();
+    // A line that *is* the attribute, not a substring. This module's own
+    // controls embed `#[test]` inside string literals as fixture data, and
+    // counting those would let the floor be satisfied by test data rather than
+    // by tests — a floor inflated by the very thing it is meant to detect.
+    let controls = source.lines().filter(|line| line.trim() == "#[test]").count();
     if controls < CONTROL_SUITE_FLOOR {
         bail!(
             "{}: {controls} controls found, expected at least {CONTROL_SUITE_FLOOR}. The gate's \
@@ -1333,6 +1342,65 @@ mod tests {
         validate_control_suite(root.path()).expect("a suite at the floor must pass");
     }
 
+    /// A required stage cannot be filed as inapplicable.
+    ///
+    /// Review found the denominator reconciled on row *presence* alone, so a
+    /// producer could name a stage in `required_stages` and then file it
+    /// `not_applicable` — a legal row that satisfies the denominator while
+    /// reporting nothing. That is the same disappearance the denominator
+    /// exists to prevent, just wearing a row. `required_missing` is the
+    /// sanctioned state for required-but-unobserved work, and it stays.
+    #[test]
+    fn rejects_a_required_stage_filed_as_not_applicable() {
+        let mut receipt = measured();
+        receipt["workload"]["required_stages"] = json!(["lex_parse", "upstream"]);
+
+        let rendered = decode_error(receipt.clone());
+        assert!(
+            rendered.contains("not_applicable") && rendered.contains("cannot also be inapplicable"),
+            "the error must name the contradiction, got {rendered}"
+        );
+
+        // The sanctioned spelling for the same situation still validates: the
+        // rule narrows one escape hatch, it does not forbid declaring a
+        // required stage that was never observed.
+        receipt["stages"][0]["applicability"] = json!("required_missing");
+        serde_json::from_value::<CompilerPerformanceReceipt>(receipt)
+            .expect("required_missing remains the way to report an unobserved required stage");
+    }
+
+    /// The control floor counts controls, not the word `#[test]`.
+    ///
+    /// Review found the floor inflated by this module's own fixture strings:
+    /// the controls above write `#[test]` inside string literals, and a
+    /// substring count scored those as controls. A floor that its own test
+    /// data can satisfy is not a floor.
+    #[test]
+    fn the_control_floor_ignores_test_markers_inside_source_text() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let module = root.path().join(CONTROL_SUITE_PATH);
+        fs::create_dir_all(module.parent().expect("module parent")).expect("create module dir");
+
+        // Far more `#[test]` occurrences than the floor, and not one of them a
+        // control: every occurrence is quoted text or a comment.
+        let mut decoys = String::from("// #[test] in a comment\n");
+        for _ in 0..CONTROL_SUITE_FLOOR * 2 {
+            decoys.push_str("    let marker = \"#[test]\";\n");
+        }
+        fs::write(&module, &decoys).expect("write a module full of decoys");
+
+        let rendered = format!(
+            "{:#}",
+            validate_control_suite(root.path())
+                .err()
+                .expect("quoted markers must not satisfy the floor")
+        );
+        assert!(
+            rendered.contains("0 controls found"),
+            "no decoy may be counted as a control, got {rendered}"
+        );
+    }
+
     /// The floor is reached through `validate`, not only by calling it directly.
     ///
     /// The first version of the control above called `validate_control_suite`
@@ -1390,7 +1458,7 @@ mod tests {
         validate_control_suite(&root).expect("the committed control suite must clear its floor");
         let source = fs::read_to_string(root.join(CONTROL_SUITE_PATH)).expect("read this module");
         assert!(
-            source.matches("#[test]").count() >= CONTROL_SUITE_FLOOR,
+            source.lines().filter(|line| line.trim() == "#[test]").count() >= CONTROL_SUITE_FLOOR,
             "the floor must stay at or below the real control count"
         );
     }
