@@ -31,6 +31,9 @@ pub mod reachability_operation;
 pub mod route;
 /// Transport-neutral stable semantic identity and ownership contract (#12121).
 pub mod semantic_identity;
+/// Transport-neutral semantic query outcomes and completeness requirements
+/// (#8911).
+pub mod semantic_query;
 /// Provider-neutral ordered structural access-hop contract (#13619).
 pub mod structural_access;
 
@@ -38,6 +41,7 @@ pub use envelope::*;
 pub use handler::*;
 pub use hook::*;
 pub use route::*;
+pub use semantic_query::*;
 
 macro_rules! id_newtype {
     ($name:ident) => {
