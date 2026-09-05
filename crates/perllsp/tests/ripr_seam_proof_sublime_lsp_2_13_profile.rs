@@ -239,10 +239,23 @@ fn sublime_lsp_2_13_receives_only_declared_file_operations() -> Result<()> {
         capabilities.pointer("/workspace/textDocumentContent/schemes/0") == Some(&json!("perldoc"))
     );
 
-    shutdown_and_exit(
-        &mut client,
-        &["workspace/configuration", "client/registerCapability", "window/workDoneProgress/create"],
-    )
+    // This profile initializes with `rootUri: null` and `workspaceFolders:
+    // null` — an explicit no-active-folder declaration (#8161). The server
+    // still asks for the unscoped `perl` configuration section and still
+    // registers the watched-file capability, so both stay listed. It does not
+    // create an indexing work-done progress token, because a session with no
+    // folders has nothing to index; announcing progress for zero work would be
+    // a false claim.
+    //
+    // Dropping it from this list does not stop proving anything: any request
+    // the profile does not answer here still fails `assert_transport_clean`, so
+    // if the server ever did issue `window/workDoneProgress/create` for a
+    // rootless session this test would fail on the unanswered request.
+    //
+    // Before #8161 this arrived because `workspaceFolders: null` fell through
+    // to the process-CWD fallback and manufactured a folder to index. What
+    // a rootless session should do instead is #8945's.
+    shutdown_and_exit(&mut client, &["workspace/configuration", "client/registerCapability"])
 }
 
 #[test]

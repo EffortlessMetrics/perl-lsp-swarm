@@ -447,10 +447,22 @@ impl LspServer {
 
         let folder_uris: Vec<String> =
             self.workspace_folders.lock().iter().map(|folder| folder.uri.clone()).collect();
-        if folder_uris.is_empty() {
-            return;
-        }
 
+        // A folder-less session still asks for the unscoped `perl` section.
+        //
+        // Returning early here would mean a rootless client never receives any
+        // `workspace/configuration` request, so the user's own settings would
+        // be silently ignored and the server would run on defaults alone. That
+        // was masked until #8161: a client sending `workspaceFolders: null`
+        // used to fall through to the process-CWD fallback, so there was always
+        // at least one folder to scope by. Now that an explicit no-active-folder
+        // declaration is honored, the global item is the only way those settings
+        // arrive — and it is the item that never needed a folder in the first
+        // place, since it carries no `scopeUri`.
+        //
+        // The response path already handles this shape: `includes_global_item`
+        // consumes `results[0]` for the global limits update and the per-folder
+        // loop iterates an empty `folder_uris`.
         let mut items: Vec<Value> = vec![json!({ "section": "perl" })];
         items.extend(folder_uris.iter().map(|uri| json!({ "scopeUri": uri, "section": "perl" })));
         let request_id =
@@ -4095,6 +4107,67 @@ mod tests {
     fn test_module_name_unicode_letter_after_rejected() {
         // Unicode letters still extend identifiers; do not match inside "BaseΔ".
         assert!(!module_name_appears_in_text("use BaseΔ;", "Base"));
+    }
+
+    /// A rootless session must still ask the client for the unscoped `perl`
+    /// section (#8161).
+    ///
+    /// Before #8161 a client declaring `workspaceFolders: null` fell through to
+    /// the process-CWD fallback, so there was always at least one folder and the
+    /// request always went out. Honoring the explicit no-active-folder
+    /// declaration removed that accident: without this, a single-file or
+    /// rootless session would never receive a `workspace/configuration` request
+    /// at all and would silently run on defaults, ignoring the user's settings.
+    ///
+    /// The global item carries no `scopeUri`, so it never needed a folder.
+    #[test]
+    fn rootless_session_still_requests_the_unscoped_configuration_section()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        server.client_capabilities.lock().workspace_configuration_support = true;
+        // Server-originated requests are refused until initialization completes
+        // (#7708); this call site runs after `initialized`.
+        server.initialized.store(true, std::sync::atomic::Ordering::Release);
+        assert!(
+            server.workspace_folders.lock().is_empty(),
+            "precondition: this server has no active workspace folders"
+        );
+
+        server.request_workspace_configuration_for_folders();
+
+        let pending = server.pending_workspace_configuration_requests.lock();
+        let (_, request) = pending.iter().next().ok_or(
+            "a rootless session must still send one workspace/configuration request for the \
+             unscoped section",
+        )?;
+        assert!(
+            request.folder_uris.is_empty(),
+            "no folder may be invented to carry the request: {:?}",
+            request.folder_uris
+        );
+        assert!(
+            request.includes_global_item,
+            "the recorded request must claim the global slot so the response path consumes \
+             results[0] as unscoped settings"
+        );
+        Ok(())
+    }
+
+    /// Opposite-direction control: the rootless request is still gated on the
+    /// client actually supporting `workspace/configuration`. Without this, the
+    /// test above could be satisfied by sending the request unconditionally.
+    #[test]
+    fn rootless_session_sends_no_configuration_request_without_client_support() {
+        let server = LspServer::new();
+        server.client_capabilities.lock().workspace_configuration_support = false;
+        server.initialized.store(true, std::sync::atomic::Ordering::Release);
+
+        server.request_workspace_configuration_for_folders();
+
+        assert!(
+            server.pending_workspace_configuration_requests.lock().is_empty(),
+            "a client that never declared workspace/configuration must not be sent one"
+        );
     }
 
     #[test]
