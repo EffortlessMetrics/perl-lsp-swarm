@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12737 |
-| Rust-family files | 3983 |
-| Non-Rust files | 8754 |
-| Allowlisted | 6515 |
+| Total tracked files | 12740 |
+| Rust-family files | 3984 |
+| Non-Rust files | 8756 |
+| Allowlisted | 6517 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 503 |
-| documentation | 2856 |
+| documentation | 2857 |
 | generated | 2 |
 | production | 357 |
-| test | 2111 |
+| test | 2112 |
 | tooling | 686 |
 | unclassified | 2239 |
 
@@ -2461,6 +2461,7 @@
 | `.changes/unreleased/product-7243-Added-090000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7275-Fixed-064500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7276-Changed-053500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-7291-Fixed-140000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7310-Changed-051500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7416-Fixed-075602.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7462-Added-085300.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -6283,6 +6284,7 @@
 | `fixtures/critic-rule-proof/string_eval/suppression.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `fixtures/debug-peer/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/debug-peer/perl/minimal_ptkdb_peer.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/emacs_train_packet/observed_no_candidate.v1.json` | test | `non-rust-emacs-train-packet-live-observation-fixture` | tooling/agent-packet |
 | `fixtures/experience/standalone_candidate_selection/01_complete_archive_pair.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/02_historical_server_only.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/03_exact_source_server_only.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
