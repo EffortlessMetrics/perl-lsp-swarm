@@ -55,14 +55,34 @@ fn truncate_inlay_hint_label(hint: &mut Value, max_chars: usize) {
     let Some(label) = hint.get_mut("label") else {
         return;
     };
-    let Some(text) = label.as_str() else {
-        return;
-    };
-    if text.chars().count() <= max_chars {
-        return;
+    match label {
+        Value::String(text) if text.chars().count() > max_chars => {
+            *text = text.chars().take(max_chars).collect();
+        }
+        Value::Array(parts) => {
+            // Spend the budget across the parts in order; parts past the budget
+            // are dropped rather than left empty.
+            let mut remaining = max_chars;
+            parts.retain_mut(|part| {
+                let Some(text) = part.get("value").and_then(Value::as_str).map(str::to_owned)
+                else {
+                    return true;
+                };
+                if remaining == 0 {
+                    return false;
+                }
+                let count = text.chars().count();
+                if count > remaining {
+                    part["value"] = Value::String(text.chars().take(remaining).collect());
+                    remaining = 0;
+                } else {
+                    remaining -= count;
+                }
+                true
+            });
+        }
+        _ => {}
     }
-
-    *label = Value::String(text.chars().take(max_chars).collect());
 }
 
 #[derive(Debug, Clone)]
@@ -615,7 +635,8 @@ impl LspServer {
     ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(mut hint) = params {
             // Extract hint properties for tooltip and label location generation
-            let label = hint.get("label").and_then(|l| l.as_str()).unwrap_or("").to_string();
+            let label =
+                crate::inlay_hints::inlay_hint_label_str(&hint).unwrap_or_default().to_string();
             let kind = hint.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
 
             // Add tooltip if not already present.
@@ -666,8 +687,11 @@ impl LspServer {
                 }
             }
 
-            // Add InlayHintLabelPart.location for parameter hints (kind=2), but only when
-            // the client declared "label.location" in resolveSupport.properties.
+            // Fill `InlayHintLabelPart.location` for parameter hints (kind=2), but only when
+            // the client declared "label.location" in resolveSupport.properties. The label's
+            // representation is preserved: the provider already emits parameter labels as
+            // parts, and resolve only populates the advertised nested property (#14679). A
+            // string label is left untouched rather than rewritten into parts.
             let client_supports_label_location = self
                 .client_capabilities
                 .lock()
@@ -680,25 +704,13 @@ impl LspServer {
                 && client_supports_label_location
                 && let Some(label_location) = self.resolve_hint_label_location(&hint)
                 && let Some(obj) = hint.as_object_mut()
+                && let Some(Value::Array(parts)) = obj.get_mut("label")
+                && let Some(part) = parts
+                    .iter_mut()
+                    .find(|part| part.get("value").is_some() && part.get("location").is_none())
+                && let Some(part) = part.as_object_mut()
             {
-                let label = obj.get("label").cloned().unwrap_or_else(|| json!(""));
-                let label = match label {
-                    Value::String(value) => json!([{
-                        "value": value,
-                        "location": label_location,
-                    }]),
-                    Value::Array(mut parts) => {
-                        if let Some(part) = parts.iter_mut().find(|part| {
-                            part.get("value").is_some() && part.get("location").is_none()
-                        }) && let Some(part) = part.as_object_mut()
-                        {
-                            part.insert("location".to_string(), label_location);
-                        }
-                        Value::Array(parts)
-                    }
-                    label => label,
-                };
-                obj.insert("label".to_string(), label);
+                part.insert("location".to_string(), label_location);
             }
 
             Ok(Some(hint))

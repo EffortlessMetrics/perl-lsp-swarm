@@ -221,7 +221,7 @@ fn lsp_inlay_hint_resolve_adds_label_location() -> Result<(), Box<dyn std::error
     // Resolve a parameter hint referencing that subroutine
     let hint = json!({
         "position": {"line": 0, "character": 15},
-        "label": "x:",
+        "label": [{ "value": "x:" }],
         "kind": 2,
         "paddingLeft": false,
         "paddingRight": true,
@@ -255,6 +255,11 @@ fn lsp_inlay_hint_resolve_adds_label_location() -> Result<(), Box<dyn std::error
         .ok_or("resolved label part location missing")?;
 
     // location must have uri and range
+    assert_eq!(
+        label_parts.iter().map(|part| part.value.as_str()).collect::<String>(),
+        "x:",
+        "resolve must preserve the displayed label text"
+    );
     assert_eq!(location.uri.as_str(), doc_uri);
     assert!(location.range.start.line <= location.range.end.line);
     assert!(result.get("labelDetails").is_none(), "legacy labelDetails must be absent");
