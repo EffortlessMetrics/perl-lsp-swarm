@@ -114,7 +114,9 @@ pub fn decode<S: AsRef<str>>(
             Some(operand) => {
                 let span = whole_argument_span(index, operand);
                 index += 1;
-                if operand == "-" {
+                // perl.c treats both `-` and an empty operand (`perl ""`) as
+                // "read the program from standard input".
+                if operand == "-" || operand.is_empty() {
                     ProgramSource::StandardInput { span }
                 } else {
                     ProgramSource::ScriptFile { path: operand.to_owned(), span }

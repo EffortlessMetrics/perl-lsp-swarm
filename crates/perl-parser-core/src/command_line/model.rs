@@ -473,9 +473,10 @@ pub enum ProgramSource {
         /// Where the operand came from.
         span: ArgvSpan,
     },
-    /// A bare `-` operand: Perl reads the program from standard input.
+    /// A bare `-` or empty (`""`) operand: Perl reads the program from
+    /// standard input.
     StandardInput {
-        /// Where the `-` operand came from.
+        /// Where the `-` or empty operand came from.
         span: ArgvSpan,
     },
     /// No fragment and no operand. Perl still reads standard input, but nothing

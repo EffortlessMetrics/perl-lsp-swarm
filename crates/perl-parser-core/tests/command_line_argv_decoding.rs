@@ -1153,6 +1153,19 @@ fn a_bare_dash_is_a_standard_input_program_not_a_switch() {
 }
 
 #[test]
+fn an_empty_operand_is_a_standard_input_program_not_an_empty_script_file() {
+    // `perl "" -e 1` reads the program from stdin and passes `-e 1` through,
+    // exactly like `perl - -e 1`; it never tries to open a file named "".
+    let invocation = perl(&["", "-e", "1"]);
+    assert!(!invocation.is_one_liner());
+    assert!(matches!(
+        &invocation.program,
+        ProgramSource::StandardInput { span } if span.argument_index == 1
+    ));
+    assert_eq!(program_arguments(&invocation), vec!["-e", "1"]);
+}
+
+#[test]
 fn switches_without_a_program_leave_the_program_unspecified() {
     let invocation = perl(&["-w"]);
     assert_eq!(invocation.program, ProgramSource::Unspecified);
