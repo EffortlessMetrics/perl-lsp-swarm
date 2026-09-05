@@ -565,6 +565,40 @@ fn strip_comments(source: &str) -> String {
             }
         }
 
+        // Char literal, e.g. `'"'` or `'\''`. This must be consumed before the
+        // string-literal branch below, because a `'"'` would otherwise be read as
+        // an *opening* double quote and neutralize everything up to the next `"`
+        // in the file — the same desync class as findings 6 and 10, one quote
+        // character over. A lifetime (`'a`, `'static`) is not a char literal and
+        // must fall through untouched, so the two are told apart by looking for
+        // the closing quote rather than by the opening one alone.
+        if ch == '\'' {
+            let is_escaped = next == Some('\\');
+            let is_single = chars.get(index + 2) == Some(&'\'');
+            if is_escaped || is_single {
+                out.push('\'');
+                index += 1;
+                while index < chars.len() {
+                    let inner = chars[index];
+                    index += 1;
+                    if inner == '\'' {
+                        out.push('\'');
+                        break;
+                    }
+                    // Neutralize, do not copy: a `}` or `"` inside the literal
+                    // must not reach the brace balance or the string scanner.
+                    out.push(' ');
+                    if inner == '\\'
+                        && let Some(&escaped) = chars.get(index)
+                    {
+                        out.push(if escaped == '\n' { '\n' } else { ' ' });
+                        index += 1;
+                    }
+                }
+                continue;
+            }
+        }
+
         if ch == '"' {
             out.push('"');
             index += 1;
@@ -889,6 +923,55 @@ fn a_brace_inside_a_string_literal_does_not_move_the_enum_boundary() {
         found, expected,
         "a brace inside an ordinary or raw string literal must not truncate the enum scan; \
          losing a field here silently shrinks the denominator the whole gate depends on"
+    );
+}
+
+/// A `char` literal holding a quote must not open a string literal.
+///
+/// Same desync class as the two string-literal findings, one quote character
+/// over: `'"'` read naively opens a double-quoted string, so everything up to
+/// the next `"` anywhere in the file is neutralized — and in `ast.rs` that is a
+/// long way, taking real fields with it. The sentinel on the total-loss case
+/// does catch it, so this was never a silent hole, but it failed with a
+/// scanner-is-broken message rather than simply working.
+///
+/// Lifetimes share the opening character and must survive untouched, so both
+/// are asserted here: `'"'` is consumed as a literal, `'a` is not.
+#[test]
+fn a_char_literal_holding_a_quote_does_not_open_a_string() {
+    let synthetic = r####"
+        pub const QUOTE_CHAR: char = '"';
+        pub const ESCAPED: char = '\'';
+        pub const BRACE: char = '}';
+
+        pub enum NodeKind<'a> {
+            Package {
+                name: String,
+                name_span: SourceLocation,
+            },
+            Class {
+                name: String,
+                name_span: SourceLocation,
+            },
+        }
+    "####;
+
+    let scan = scan_declared_fields(synthetic);
+    assert!(scan.unknown.is_empty(), "synthetic source must classify cleanly: {:?}", scan.unknown);
+
+    let found: BTreeSet<(String, String)> =
+        scan.geometry.iter().map(|(v, f, _)| (v.clone(), f.clone())).collect();
+    let expected: BTreeSet<(String, String)> = [
+        ("Package".to_string(), "name_span".to_string()),
+        ("Class".to_string(), "name_span".to_string()),
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(
+        found, expected,
+        "a char literal carrying a quote or a brace must not desync the scanner, and a \
+         lifetime must not be mistaken for one; either failure shrinks the denominator"
     );
 }
 
