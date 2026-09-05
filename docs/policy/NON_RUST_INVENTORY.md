@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12713 |
-| Rust-family files | 3965 |
-| Non-Rust files | 8748 |
-| Allowlisted | 6509 |
+| Total tracked files | 12718 |
+| Rust-family files | 3968 |
+| Non-Rust files | 8750 |
+| Allowlisted | 6511 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 502 |
-| documentation | 2852 |
+| documentation | 2853 |
 | generated | 2 |
 | production | 357 |
 | test | 2111 |
-| tooling | 685 |
+| tooling | 686 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -3425,6 +3425,8 @@
 | `.spec/8305-organize-imports-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8832-bounded-native-debug-render/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8832-bounded-native-debug-render/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/8843-ast-v2-lifecycle-audit/ast_v2_package_lifecycle.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/8843-ast-v2-lifecycle-audit/decision.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8867-iterative-ast-read-traversal/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/8867-iterative-ast-read-traversal/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/964-dap-stack-frame-lifecycle/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |

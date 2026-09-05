@@ -1,0 +1,1410 @@
+{
+  "schema": "ast_v2_package_lifecycle.v1",
+  "schema_version": 1,
+  "planning_basis": "I01 of the #9213 AST hardening programme, under package disposition #7403. Authored against main@a5a0f9630bdc0ad0e12d6a115eb0d6f3824c71c4 on 2026-09-05. Public-item rows and the production NodeKind parity denominator are derived from source by the loader and are not authored; dispositions, consumer classifications, external evidence and the ruling are authored and reviewed.",
+  "claim_ceiling": "inventory_and_ruling_only",
+  "programme": {
+    "audit_issue": 8843,
+    "package_disposition_issue": 7403,
+    "programme_issue": 9213,
+    "package_set_owner_issue": 7400,
+    "method_authority": "docs/agents/DEVELOPMENT_METHOD.md and the repository deliver-pr route"
+  },
+  "derivation": {
+    "v2_source": "crates/perl-ast-v2/src/lib.rs",
+    "v1_ast_source": "crates/perl-ast/src/ast.rs",
+    "public_item_instrument": "syn parse of the crate source, walking public type aliases, structs, enums, enum variants, inherent public associated functions and trait impls. Each row records a normalized shape covering derives, field names and types, and signatures, so a field or derive change cannot land under an unmoved row. Type rendering is total over the shapes these sources use and fails closed on anything else rather than approximating.",
+    "consumer_instrument": "Whole-word scan for perl_ast_v2, perl-ast-v2, ast_v2 and perl_ast::v2 across .rs and .toml files under the gating scan roots. Word boundaries are required on both sides, so ast_v2 does not match ast_v2_lifecycle_audit. The scan finds references; it does not classify them, and the role column is authored.",
+    "gating_scan_roots": [
+      "crates",
+      "xtask",
+      "policy",
+      "Cargo.toml"
+    ],
+    "gating_scan_excludes": [
+      "target",
+      ".git",
+      "archive",
+      "node_modules"
+    ],
+    "non_gating_note": "policy_inventory, docs_reference and release_metadata rows are recorded evidence and are deliberately not part of the gating denominator: a prose mention or a crate-name string is not production use. They are still checked \u2014 inside the scan roots a non-gating row must still be found by the scan, and outside them the file must exist \u2014 so a stale row cannot survive either way."
+  },
+  "public_items": [
+    {
+      "item_id": "item:node-id",
+      "path": "perl_ast_v2::NodeId",
+      "kind": "type_alias",
+      "derived_shape": "type NodeId = usize",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "experimental_only",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "The production AST carries no node identity at all, so this is a real v2-only proposition. It is weaker than its name suggests: NodeIdGenerator hands out a process-local usize starting at zero, carrying no document, parse-generation, schema or persistence binding. It is an arena-local handle, not an incremental cross-parse identity contract.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-parser-context",
+        "c:parser-core-tests-ast-node",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeId",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:diagnostic-id",
+      "path": "perl_ast_v2::DiagnosticId",
+      "kind": "type_alias",
+      "derived_shape": "type DiagnosticId = u32",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "not_applicable",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "No production counterpart. A u32 index into a diagnostics array the package neither owns nor versions: there is no ParseOutput type here binding node and table, so the index is meaningful only against a caller-supplied array. Also public API of perl-parser-core in its own right through c:parser-core-root-reexport.",
+      "consumer_ids": [
+        "c:ast-tests-comprehensive",
+        "c:parser-core-root-reexport",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::DiagnosticId",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:missing-kind",
+      "path": "perl_ast_v2::MissingKind",
+      "kind": "enum",
+      "derived_shape": "enum MissingKind derives[Clone, Copy, Debug, Eq, PartialEq] (9 variants)",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "not_applicable",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "No production counterpart enum. Nine granular missing-syntax categories that let a recovery node say what was expected without embedding a diagnostic. A genuine v2-only proposition. Public API of perl-parser-core in its own right through c:parser-core-root-reexport, and reached by no production code.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-root-reexport",
+        "c:parser-core-tests-missing-kind",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::MissingKind",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:missing-kind.expression",
+      "path": "perl_ast_v2::MissingKind::Expression",
+      "kind": "enum_variant",
+      "derived_shape": "variant Expression unit",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "not_applicable",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "No production counterpart; unit variant. Reached only by test consumers \u2014 no production site constructs or matches any MissingKind variant.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-tests-missing-kind",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::MissingKind::Expression",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:missing-kind.statement",
+      "path": "perl_ast_v2::MissingKind::Statement",
+      "kind": "enum_variant",
+      "derived_shape": "variant Statement unit",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "not_applicable",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "No production counterpart; unit variant. Reached only by test consumers \u2014 no production site constructs or matches any MissingKind variant.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-tests-missing-kind",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::MissingKind::Statement",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:missing-kind.identifier",
+      "path": "perl_ast_v2::MissingKind::Identifier",
+      "kind": "enum_variant",
+      "derived_shape": "variant Identifier unit",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "not_applicable",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "No production counterpart; unit variant. Reached only by test consumers \u2014 no production site constructs or matches any MissingKind variant.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-tests-missing-kind",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::MissingKind::Identifier",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:missing-kind.block",
+      "path": "perl_ast_v2::MissingKind::Block",
+      "kind": "enum_variant",
+      "derived_shape": "variant Block unit",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "not_applicable",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "No production counterpart; unit variant. Reached only by test consumers \u2014 no production site constructs or matches any MissingKind variant.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-tests-missing-kind",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::MissingKind::Block",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:missing-kind.closingdelimiter",
+      "path": "perl_ast_v2::MissingKind::ClosingDelimiter",
+      "kind": "enum_variant",
+      "derived_shape": "variant ClosingDelimiter (char)",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "not_applicable",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "No production counterpart; carries the unmatched delimiter char. Reached only by test consumers \u2014 no production site constructs or matches any MissingKind variant.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-tests-missing-kind",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::MissingKind::ClosingDelimiter",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:missing-kind.semicolon",
+      "path": "perl_ast_v2::MissingKind::Semicolon",
+      "kind": "enum_variant",
+      "derived_shape": "variant Semicolon unit",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "not_applicable",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "No production counterpart; unit variant. Reached only by test consumers \u2014 no production site constructs or matches any MissingKind variant.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-tests-missing-kind",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::MissingKind::Semicolon",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:missing-kind.condition",
+      "path": "perl_ast_v2::MissingKind::Condition",
+      "kind": "enum_variant",
+      "derived_shape": "variant Condition unit",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "not_applicable",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "No production counterpart; unit variant. Reached only by test consumers \u2014 no production site constructs or matches any MissingKind variant.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-tests-missing-kind",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::MissingKind::Condition",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:missing-kind.argument",
+      "path": "perl_ast_v2::MissingKind::Argument",
+      "kind": "enum_variant",
+      "derived_shape": "variant Argument unit",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "not_applicable",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "No production counterpart; unit variant. Reached only by test consumers \u2014 no production site constructs or matches any MissingKind variant.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-tests-missing-kind",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::MissingKind::Argument",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:missing-kind.operator",
+      "path": "perl_ast_v2::MissingKind::Operator",
+      "kind": "enum_variant",
+      "derived_shape": "variant Operator unit",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "not_applicable",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "No production counterpart; unit variant. Reached only by test consumers \u2014 no production site constructs or matches any MissingKind variant.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-tests-missing-kind",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::MissingKind::Operator",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node",
+      "path": "perl_ast_v2::Node",
+      "kind": "struct",
+      "derived_shape": "struct Node derives[Clone, Debug, PartialEq] { id: NodeId, kind: NodeKind, range: Range }",
+      "v1_relation": "divergent",
+      "v1_counterpart": null,
+      "range_disposition": "represented_unproven",
+      "recovery_disposition": "delegated",
+      "node_id_disposition": "represented",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "The production AST also has a Node struct, but the contracts differ: production is { kind, location: SourceLocation }, v2 is { id: NodeId, kind: NodeKind, range: Range }. The Range carries byte/line/column positions, which is a representation of position and not a proved incremental contract \u2014 nothing here binds a node to a source revision or maps it across an edit, so the incremental-parsing claim in the crate docs is unproven at this layer.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-context-impls",
+        "c:parser-core-recovery",
+        "c:parser-core-tests-ast-node",
+        "c:parser-core-trivia",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::Node",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node.new",
+      "path": "perl_ast_v2::Node::new",
+      "kind": "associated_fn",
+      "derived_shape": "fn new(id: NodeId, kind: NodeKind, range: Range) -> Self",
+      "v1_relation": "divergent",
+      "v1_counterpart": null,
+      "range_disposition": "delegated",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_applicable",
+      "currentness_disposition": "not_applicable",
+      "parity_note": "Infallible constructor taking a caller-supplied id and range. It validates neither, so node identity uniqueness and range ordering are caller obligations rather than type invariants.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-context-impls",
+        "c:parser-core-recovery",
+        "c:parser-core-tests-ast-node",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::Node::new",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node.to-sexp",
+      "path": "perl_ast_v2::Node::to_sexp",
+      "kind": "associated_fn",
+      "derived_shape": "fn to_sexp(&self) -> String",
+      "v1_relation": "divergent",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "not_applicable",
+      "serialization_disposition": "experimental_only",
+      "currentness_disposition": "not_applicable",
+      "parity_note": "An independent lossy debug projection over an abbreviated grammar, silently eliding children below depth 128 as `...`. It is neither the native machine output authority (#8044) nor Tree-sitter compatibility (#8047), and it must not be read as parity evidence for either.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::Node::to_sexp",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind",
+      "path": "perl_ast_v2::NodeKind",
+      "kind": "enum",
+      "derived_shape": "enum NodeKind derives[Clone, Debug, PartialEq] (18 variants)",
+      "v1_relation": "narrower",
+      "v1_counterpart": null,
+      "range_disposition": "delegated",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "18 variants against the production NodeKind's 76, and the crate source says so itself at lines 181-182 and 234 ('Abbreviated for example', 'Other essential variants...'). This is a deliberately partial recovery-oriented set, not an incomplete copy to be finished. Variant-level relations are recorded per row rather than inferred from this one.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-context-impls",
+        "c:parser-core-tests-ast-node",
+        "c:parser-core-tests-recovery-context",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.program",
+      "path": "perl_ast_v2::NodeKind::Program",
+      "kind": "enum_variant",
+      "derived_shape": "variant Program { statements: Vec<Node> }",
+      "v1_relation": "divergent",
+      "v1_counterpart": "Program",
+      "range_disposition": "delegated",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Same field name and arity as the production variant, but `statements` holds v2 Nodes, which carry a NodeId and a line/column Range instead of the production SourceLocation. The child contract differs even though the field list reads identical.",
+      "consumer_ids": [
+        "c:ast-tests-comprehensive",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::Program",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.block",
+      "path": "perl_ast_v2::NodeKind::Block",
+      "kind": "enum_variant",
+      "derived_shape": "variant Block { statements: Vec<Node> }",
+      "v1_relation": "divergent",
+      "v1_counterpart": "Block",
+      "range_disposition": "delegated",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Field-identical to the production variant; divergent through the v2 Node child contract (NodeId plus Range).",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:v2-tests-node-kinds"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::Block",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.variabledeclaration",
+      "path": "perl_ast_v2::NodeKind::VariableDeclaration",
+      "kind": "enum_variant",
+      "derived_shape": "variant VariableDeclaration { declarator: String, variable: Box<Node>, attributes: Vec<String>, initializer: Option<Box<Node>> }",
+      "v1_relation": "divergent",
+      "v1_counterpart": "VariableDeclaration",
+      "range_disposition": "delegated",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Field names and arity match the production variant exactly; the `variable` and `initializer` children are v2 Nodes, so identity and position contracts differ.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::VariableDeclaration",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.variablelistdeclaration",
+      "path": "perl_ast_v2::NodeKind::VariableListDeclaration",
+      "kind": "enum_variant",
+      "derived_shape": "variant VariableListDeclaration { declarator: String, variables: Vec<Node>, attributes: Vec<String>, initializer: Option<Box<Node>> }",
+      "v1_relation": "divergent",
+      "v1_counterpart": "VariableListDeclaration",
+      "range_disposition": "delegated",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Field names and arity match the production variant exactly; `variables` and `initializer` carry v2 Nodes.",
+      "consumer_ids": [
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::VariableListDeclaration",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.variable",
+      "path": "perl_ast_v2::NodeKind::Variable",
+      "kind": "enum_variant",
+      "derived_shape": "variant Variable { sigil: String, name: String }",
+      "v1_relation": "equivalent",
+      "v1_counterpart": "Variable",
+      "range_disposition": "delegated",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Field-level equivalence: both are { sigil: String, name: String } and neither carries a child Node, so no node-contract difference can leak in. Equivalence is asserted at field level only and does not claim the enclosing Node contracts are interchangeable.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::Variable",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.error",
+      "path": "perl_ast_v2::NodeKind::Error",
+      "kind": "enum_variant",
+      "derived_shape": "variant Error { message: String, expected: Vec<String>, partial: Option<Box<Node>> }",
+      "v1_relation": "divergent",
+      "v1_counterpart": "Error",
+      "range_disposition": "delegated",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Materially narrower and differently typed: v2 is { message, expected: Vec<String>, partial }, production is { message, expected: Vec<TokenKind>, found: Option<Token>, partial }. v2 loses the token-typed expectation set and the found token entirely.",
+      "consumer_ids": [
+        "c:ast-tests-comprehensive",
+        "c:parser-core-context-impls",
+        "c:parser-core-tests-ast-node",
+        "c:parser-core-tests-recovery-context",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::Error",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.errorref",
+      "path": "perl_ast_v2::NodeKind::ErrorRef",
+      "kind": "enum_variant",
+      "derived_shape": "variant ErrorRef { diag_id: DiagnosticId }",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "delegated",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "No production counterpart. A lightweight error node holding only a DiagnosticId index into a separately stored diagnostics array. The package's own docs call this the preferred error representation, yet the single production error site (c:parser-core-context-impls) constructs the legacy Error variant instead, so ErrorRef is currently a test-only proposition.",
+      "consumer_ids": [
+        "c:ast-tests-comprehensive",
+        "c:v2-tests-node-kinds"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::ErrorRef",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.missingexpression",
+      "path": "perl_ast_v2::NodeKind::MissingExpression",
+      "kind": "enum_variant",
+      "derived_shape": "variant MissingExpression unit",
+      "v1_relation": "equivalent",
+      "v1_counterpart": "MissingExpression",
+      "range_disposition": "delegated",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Unit variant in both; no fields and no child Node, so the shapes are genuinely equivalent.",
+      "consumer_ids": [
+        "c:ast-tests-comprehensive",
+        "c:v2-tests-node-kinds"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::MissingExpression",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.missingstatement",
+      "path": "perl_ast_v2::NodeKind::MissingStatement",
+      "kind": "enum_variant",
+      "derived_shape": "variant MissingStatement unit",
+      "v1_relation": "equivalent",
+      "v1_counterpart": "MissingStatement",
+      "range_disposition": "delegated",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Unit variant in both; no fields and no child Node.",
+      "consumer_ids": [
+        "c:ast-tests-comprehensive",
+        "c:v2-tests-node-kinds"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::MissingStatement",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.missingidentifier",
+      "path": "perl_ast_v2::NodeKind::MissingIdentifier",
+      "kind": "enum_variant",
+      "derived_shape": "variant MissingIdentifier unit",
+      "v1_relation": "equivalent",
+      "v1_counterpart": "MissingIdentifier",
+      "range_disposition": "delegated",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Unit variant in both; no fields and no child Node.",
+      "consumer_ids": [
+        "c:ast-tests-comprehensive",
+        "c:v2-tests-node-kinds"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::MissingIdentifier",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.missingblock",
+      "path": "perl_ast_v2::NodeKind::MissingBlock",
+      "kind": "enum_variant",
+      "derived_shape": "variant MissingBlock unit",
+      "v1_relation": "equivalent",
+      "v1_counterpart": "MissingBlock",
+      "range_disposition": "delegated",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Unit variant in both; no fields and no child Node.",
+      "consumer_ids": [
+        "c:ast-tests-comprehensive",
+        "c:v2-tests-node-kinds"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::MissingBlock",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.missing",
+      "path": "perl_ast_v2::NodeKind::Missing",
+      "kind": "enum_variant",
+      "derived_shape": "variant Missing (MissingKind)",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "delegated",
+      "recovery_disposition": "experimental_only",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "No production counterpart. Carries MissingKind, giving a granular missing-syntax category without embedding a diagnostic. This is a genuine v2-only recovery proposition and must survive absorption.",
+      "consumer_ids": [
+        "c:ast-tests-comprehensive",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::Missing",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.binary",
+      "path": "perl_ast_v2::NodeKind::Binary",
+      "kind": "enum_variant",
+      "derived_shape": "variant Binary { op: String, left: Box<Node>, right: Box<Node> }",
+      "v1_relation": "divergent",
+      "v1_counterpart": "Binary",
+      "range_disposition": "delegated",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Field names and types read identically to the production variant, but `left` and `right` are Box<v2 Node>. Same syntax label, different node contract.",
+      "consumer_ids": [
+        "c:ast-tests-comprehensive",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::Binary",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.unary",
+      "path": "perl_ast_v2::NodeKind::Unary",
+      "kind": "enum_variant",
+      "derived_shape": "variant Unary { op: String, operand: Box<Node> }",
+      "v1_relation": "divergent",
+      "v1_counterpart": "Unary",
+      "range_disposition": "delegated",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Field-identical to the production variant; `operand` is a Box<v2 Node>.",
+      "consumer_ids": [
+        "c:v2-tests-node-kinds"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::Unary",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.if",
+      "path": "perl_ast_v2::NodeKind::If",
+      "kind": "enum_variant",
+      "derived_shape": "variant If { condition: Box<Node>, then_branch: Box<Node>, elsif_branches: Vec<(Node, Node)>, else_branch: Option<Box<Node>> }",
+      "v1_relation": "divergent",
+      "v1_counterpart": "If",
+      "range_disposition": "delegated",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Narrower and structurally different: v2 elsif branches are Vec<(Node, Node)> by value where production uses Vec<(Box<Node>, Box<Node>)>, and v2 has no `keyword` field at all.",
+      "consumer_ids": [
+        "c:v2-tests-node-kinds"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::If",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.number",
+      "path": "perl_ast_v2::NodeKind::Number",
+      "kind": "enum_variant",
+      "derived_shape": "variant Number { value: String }",
+      "v1_relation": "equivalent",
+      "v1_counterpart": "Number",
+      "range_disposition": "delegated",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Field-level equivalence: both are { value: String } with no child Node.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-tests-ast-node",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::Number",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.string",
+      "path": "perl_ast_v2::NodeKind::String",
+      "kind": "enum_variant",
+      "derived_shape": "variant String { value: String, interpolated: bool }",
+      "v1_relation": "equivalent",
+      "v1_counterpart": "String",
+      "range_disposition": "delegated",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Field-level equivalence: both are { value: String, interpolated: bool } with no child Node.",
+      "consumer_ids": [
+        "c:ast-tests-comprehensive",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::String",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.identifier",
+      "path": "perl_ast_v2::NodeKind::Identifier",
+      "kind": "enum_variant",
+      "derived_shape": "variant Identifier { name: String }",
+      "v1_relation": "equivalent",
+      "v1_counterpart": "Identifier",
+      "range_disposition": "delegated",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "delegated",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "Field-level equivalence: both are { name: String } with no child Node.",
+      "consumer_ids": [
+        "c:ast-tests-comprehensive",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::Identifier",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-kind.to-sexp",
+      "path": "perl_ast_v2::NodeKind::to_sexp",
+      "kind": "associated_fn",
+      "derived_shape": "fn to_sexp(&self) -> String",
+      "v1_relation": "divergent",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "not_applicable",
+      "serialization_disposition": "experimental_only",
+      "currentness_disposition": "not_applicable",
+      "parity_note": "Public entry point to the same depth-limited debug projection as Node::to_sexp. Truncation is silent: a truncated rendering is indistinguishable from a tree that genuinely ends in `...`.",
+      "consumer_ids": [
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeKind::to_sexp",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-id-generator",
+      "path": "perl_ast_v2::NodeIdGenerator",
+      "kind": "struct",
+      "derived_shape": "struct NodeIdGenerator derives[] {  } +1 non-public",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "experimental_only",
+      "serialization_disposition": "not_represented",
+      "currentness_disposition": "not_represented",
+      "parity_note": "No production counterpart. One non-public counter field; the type is the only public way to obtain a NodeId. Its state is per-instance and process-local, so two generators hand out colliding ids and nothing detects it.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-parser-context",
+        "c:parser-core-tests-ast-node",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeIdGenerator",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-id-generator.new",
+      "path": "perl_ast_v2::NodeIdGenerator::new",
+      "kind": "associated_fn",
+      "derived_shape": "fn new() -> Self",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "experimental_only",
+      "serialization_disposition": "not_applicable",
+      "currentness_disposition": "not_applicable",
+      "parity_note": "Starts every generator at zero, which is what makes ids arena-local rather than globally meaningful.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-parser-context",
+        "c:parser-core-tests-ast-node",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeIdGenerator::new",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-id-generator.next-id",
+      "path": "perl_ast_v2::NodeIdGenerator::next_id",
+      "kind": "associated_fn",
+      "derived_shape": "fn next_id(&mut self) -> NodeId",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "experimental_only",
+      "serialization_disposition": "not_applicable",
+      "currentness_disposition": "not_applicable",
+      "parity_note": "Monotonic increment with no overflow handling stated; wraps or panics per profile at usize::MAX. Not reachable in practice, recorded because the audit must not present an unstated bound as a guarantee.",
+      "consumer_ids": [
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-parser-context",
+        "c:parser-core-tests-ast-node",
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeIdGenerator::next_id",
+      "earliest_removal_owner": "#8847"
+    },
+    {
+      "item_id": "item:node-id-generator.default",
+      "path": "perl_ast_v2::NodeIdGenerator as Default",
+      "kind": "trait_impl",
+      "derived_shape": "impl Default for NodeIdGenerator",
+      "v1_relation": "unique",
+      "v1_counterpart": null,
+      "range_disposition": "not_applicable",
+      "recovery_disposition": "not_applicable",
+      "node_id_disposition": "experimental_only",
+      "serialization_disposition": "not_applicable",
+      "currentness_disposition": "not_applicable",
+      "parity_note": "Trait impl delegating to new(). It is public API: removing it is a breaking change no field or signature row would record, which is why trait impls are inventoried separately.",
+      "consumer_ids": [
+        "c:v2-tests-node-kinds",
+        "c:v2-tests-sexp"
+      ],
+      "replacement_path": "perl_ast::v2::NodeIdGenerator as Default",
+      "earliest_removal_owner": "#8847"
+    }
+  ],
+  "reexport_paths": [
+    {
+      "reexport_id": "rx:perl-ast-v2",
+      "path": "perl_ast::v2",
+      "site": "crates/perl-ast/src/lib.rs:93",
+      "exposes": "whole package",
+      "consumer_id": "c:ast-reexport",
+      "compatibility_obligation": "The canonical documented compatibility path. Absorption must keep this path working unchanged; it is the path the replacement column of every public-item row names."
+    },
+    {
+      "reexport_id": "rx:parser-core-engine",
+      "path": "perl_parser_core::engine::ast_v2",
+      "site": "crates/perl-parser-core/src/engine/mod.rs:8",
+      "exposes": "whole package",
+      "consumer_id": "c:parser-core-engine-reexport",
+      "compatibility_obligation": "Public path of a separately published crate; removal is a breaking change to perl-parser-core, not to perl-ast-v2."
+    },
+    {
+      "reexport_id": "rx:parser-core-root",
+      "path": "perl_parser_core::ast_v2",
+      "site": "crates/perl-parser-core/src/lib.rs:101",
+      "exposes": "whole package",
+      "consumer_id": "c:parser-core-root-reexport",
+      "compatibility_obligation": "Root-level alias of the engine path; independently removable and independently breaking."
+    },
+    {
+      "reexport_id": "rx:parser-core-types",
+      "path": "perl_parser_core::{DiagnosticId, MissingKind}",
+      "site": "crates/perl-parser-core/src/lib.rs:97",
+      "exposes": "DiagnosticId, MissingKind",
+      "consumer_id": "c:parser-core-root-reexport",
+      "compatibility_obligation": "Two v2 types are public API of perl-parser-core under unqualified names. A consumer using perl_parser_core::MissingKind has no textual dependency on perl-ast-v2 at all, so a token scan of external code would not find it."
+    },
+    {
+      "reexport_id": "rx:parser",
+      "path": "perl_parser::ast_v2",
+      "site": "crates/perl-parser/src/lib.rs:122",
+      "exposes": "whole package",
+      "consumer_id": "c:parser-reexport",
+      "compatibility_obligation": "Third crate outward; breaking removal belongs to perl-parser."
+    },
+    {
+      "reexport_id": "rx:parser-compat",
+      "path": "perl_parser::compat::ast_v2",
+      "site": "crates/perl-parser/src/compat.rs:18",
+      "exposes": "whole package",
+      "consumer_id": "c:parser-compat-reexport",
+      "compatibility_obligation": "Fourth public path, on the explicitly compatibility-oriented module."
+    }
+  ],
+  "consumers": [
+    {
+      "consumer_id": "c:parser-core-parser-context",
+      "file": "crates/perl-parser-core/src/engine/parser_context.rs",
+      "role": "production_implementation",
+      "symbols": [
+        "NodeIdGenerator"
+      ],
+      "proposition": "ParserContext holds a NodeIdGenerator; this is the only production use of the v2 node-identity type."
+    },
+    {
+      "consumer_id": "c:parser-core-context-impls",
+      "file": "crates/perl-parser-core/src/engine/error/context_impls.rs",
+      "role": "production_implementation",
+      "symbols": [
+        "Node",
+        "NodeKind",
+        "NodeKind::Error"
+      ],
+      "proposition": "Builds v2 error nodes during recovery and matches NodeKind::Error. This is the only production site that constructs or matches any NodeKind variant."
+    },
+    {
+      "consumer_id": "c:parser-core-recovery",
+      "file": "crates/perl-parser-core/src/syntax/error/recovery.rs",
+      "role": "production_implementation",
+      "symbols": [
+        "Node"
+      ],
+      "proposition": "Recovery workflow constructs v2 Node values; it names no NodeKind variant directly."
+    },
+    {
+      "consumer_id": "c:parser-core-trivia",
+      "file": "crates/perl-parser-core/src/tokens/trivia.rs",
+      "role": "production_implementation",
+      "symbols": [
+        "Node"
+      ],
+      "proposition": "Trivia attachment uses the v2 Node as its container type; it names no NodeKind variant directly."
+    },
+    {
+      "consumer_id": "c:ast-reexport",
+      "file": "crates/perl-ast/src/lib.rs",
+      "role": "public_reexport",
+      "symbols": [
+        "perl_ast_v2 as v2"
+      ],
+      "proposition": "The canonical compatibility path perl_ast::v2. Documented in docs/reference/ast-contract.md as the experimental tier."
+    },
+    {
+      "consumer_id": "c:parser-core-engine-reexport",
+      "file": "crates/perl-parser-core/src/engine/mod.rs",
+      "role": "public_reexport",
+      "symbols": [
+        "perl_ast_v2 as ast_v2"
+      ],
+      "proposition": "Second public path to the whole package, as perl_parser_core::engine::ast_v2."
+    },
+    {
+      "consumer_id": "c:parser-core-root-reexport",
+      "file": "crates/perl-parser-core/src/lib.rs",
+      "role": "public_reexport",
+      "symbols": [
+        "engine::ast_v2",
+        "DiagnosticId",
+        "MissingKind"
+      ],
+      "proposition": "Root-level re-export of the module plus two named types, so DiagnosticId and MissingKind are public API of perl-parser-core in their own right."
+    },
+    {
+      "consumer_id": "c:parser-reexport",
+      "file": "crates/perl-parser/src/lib.rs",
+      "role": "public_reexport",
+      "symbols": [
+        "engine::ast_v2"
+      ],
+      "proposition": "perl_parser::ast_v2 forwards the package a third crate outward."
+    },
+    {
+      "consumer_id": "c:parser-compat-reexport",
+      "file": "crates/perl-parser/src/compat.rs",
+      "role": "public_reexport",
+      "symbols": [
+        "crate::engine::ast_v2"
+      ],
+      "proposition": "perl_parser::compat::ast_v2 is a fourth public path, retained for the compat surface."
+    },
+    {
+      "consumer_id": "c:workspace-manifest",
+      "file": "Cargo.toml",
+      "role": "package_dependency",
+      "symbols": [
+        "workspace.members",
+        "workspace.dependencies.perl-ast-v2",
+        "package.metadata publish allowlist"
+      ],
+      "proposition": "Declares the package as a workspace member, a workspace dependency pinned at 0.17.0, and a Tier 1b publish-allowlisted crate."
+    },
+    {
+      "consumer_id": "c:v2-own-manifest",
+      "file": "crates/perl-ast-v2/Cargo.toml",
+      "role": "package_dependency",
+      "symbols": [
+        "package.name",
+        "package.documentation",
+        "dependencies.perl-position-tracking"
+      ],
+      "proposition": "The audited package's own manifest: independent package identity, docs.rs metadata, and a single upstream dependency."
+    },
+    {
+      "consumer_id": "c:ast-manifest",
+      "file": "crates/perl-ast/Cargo.toml",
+      "role": "package_dependency",
+      "symbols": [
+        "dependencies.perl-ast-v2"
+      ],
+      "proposition": "Real dependency backing the perl_ast::v2 re-export."
+    },
+    {
+      "consumer_id": "c:parser-core-manifest",
+      "file": "crates/perl-parser-core/Cargo.toml",
+      "role": "package_dependency",
+      "symbols": [
+        "dependencies.perl-ast-v2"
+      ],
+      "proposition": "Real dependency backing the production implementation uses and the engine re-export."
+    },
+    {
+      "consumer_id": "c:lexer-manifest",
+      "file": "crates/perl-lexer/Cargo.toml",
+      "role": "package_dependency",
+      "symbols": [
+        "dev-dependencies.perl-ast-v2"
+      ],
+      "proposition": "Declared dev-dependency with no matching use: no perl_ast_v2 or perl_ast::v2 reference exists anywhere in crates/perl-lexer/src or crates/perl-lexer/tests. The tokenizer module doc at crates/perl-lexer/src/tokenizer/mod.rs:3-5 states the opposite of the manifest, describing this module as the slice with no perl-ast-v2 dependency. Recorded as an unused declared dependency; removing it is outside #8843's claim ceiling."
+    },
+    {
+      "consumer_id": "c:v2-tests-node-kinds",
+      "file": "crates/perl-ast-v2/tests/node_kinds.rs",
+      "role": "test_fixture",
+      "symbols": [
+        "Node",
+        "NodeKind",
+        "MissingKind",
+        "NodeIdGenerator"
+      ],
+      "proposition": "The package's own construction-coverage suite. It is the only consumer that names all 18 NodeKind variants and all 9 MissingKind variants."
+    },
+    {
+      "consumer_id": "c:v2-tests-sexp",
+      "file": "crates/perl-ast-v2/tests/sexp_branch_coverage.rs",
+      "role": "test_fixture",
+      "symbols": [
+        "Node",
+        "NodeKind",
+        "MissingKind",
+        "NodeIdGenerator"
+      ],
+      "proposition": "Covers to_sexp output across NodeKind variants and the whole MissingKind set."
+    },
+    {
+      "consumer_id": "c:ast-tests-additional",
+      "file": "crates/perl-ast/tests/additional_unit_tests.rs",
+      "role": "test_fixture",
+      "symbols": [
+        "v2::Node",
+        "v2::NodeKind",
+        "v2::MissingKind",
+        "v2::NodeIdGenerator"
+      ],
+      "proposition": "Exercises the package through the canonical perl_ast::v2 path rather than the direct package path."
+    },
+    {
+      "consumer_id": "c:ast-tests-comprehensive",
+      "file": "crates/perl-ast/tests/comprehensive_unit_tests.rs",
+      "role": "test_fixture",
+      "symbols": [
+        "v2::Node",
+        "v2::NodeKind",
+        "v2::MissingKind",
+        "v2::NodeIdGenerator"
+      ],
+      "proposition": "Second perl_ast::v2 suite; the only consumer besides the package's own tests that names ErrorRef."
+    },
+    {
+      "consumer_id": "c:parser-core-tests-ast-node",
+      "file": "crates/perl-parser-core/tests/ast_node_tests.rs",
+      "role": "test_fixture",
+      "symbols": [
+        "ast_v2::NodeKind",
+        "perl_ast_v2::Node",
+        "perl_ast_v2::NodeIdGenerator"
+      ],
+      "proposition": "Compares v1 and v2 node construction side by side through the parser-core re-export."
+    },
+    {
+      "consumer_id": "c:parser-core-tests-recovery-context",
+      "file": "crates/perl-parser-core/tests/error_recovery_context_tests.rs",
+      "role": "test_fixture",
+      "symbols": [
+        "ast_v2::NodeKind"
+      ],
+      "proposition": "Proof for the recovery path that builds v2 error nodes."
+    },
+    {
+      "consumer_id": "c:parser-core-tests-missing-kind",
+      "file": "crates/perl-parser-core/tests/missing_kind_tests.rs",
+      "role": "test_fixture",
+      "symbols": [
+        "ast_v2::MissingKind"
+      ],
+      "proposition": "Proves MissingKind is reachable through perl_parser_core::ast_v2 and names every variant."
+    },
+    {
+      "consumer_id": "c:policy-topology",
+      "file": "policy/repository-topology.toml",
+      "role": "policy_inventory",
+      "symbols": [
+        "packages.perl-ast-v2"
+      ],
+      "proposition": "Records the package as placement=accepted, publish_disposition=published, future_owner=perl-parser under migration owner #7398."
+    },
+    {
+      "consumer_id": "c:policy-risk-packs",
+      "file": "policy/ci-risk-packs.toml",
+      "role": "policy_inventory",
+      "symbols": [
+        "crates/perl-ast-v2/**"
+      ],
+      "proposition": "CI risk-pack glob membership; names the crate path, consumes no API."
+    },
+    {
+      "consumer_id": "c:policy-allow",
+      "file": "policy/allow.toml",
+      "role": "policy_inventory",
+      "symbols": [
+        "crates/perl-ast-v2/src/**/*.rs"
+      ],
+      "proposition": "Panic-macro baseline floor glob for the crate source; names the crate path, consumes no API."
+    },
+    {
+      "consumer_id": "c:xtask-agent-context",
+      "file": "xtask/src/tasks/check_agent_context.rs",
+      "role": "policy_inventory",
+      "symbols": [
+        "perl-ast-v2 crate-name entry"
+      ],
+      "proposition": "Workspace crate-name inventory inside an xtask check; a string, not an API use."
+    },
+    {
+      "consumer_id": "c:xtask-map-err-cohort",
+      "file": "xtask/tests/map_err_ignore_c0_coverage.rs",
+      "role": "policy_inventory",
+      "symbols": [
+        "perl-ast-v2 cohort entry"
+      ],
+      "proposition": "Asserts the crate's membership in the map_err_ignore C0 cohort; a string, not an API use."
+    },
+    {
+      "consumer_id": "c:xtask-coverage-fixture",
+      "file": "xtask/tests/quality_gate_patch_coverage_cli_policy.rs",
+      "role": "policy_inventory",
+      "symbols": [
+        "crates/perl-ast-v2/src/lib.rs sample path"
+      ],
+      "proposition": "Uses the crate's source path as sample data in coverage-report fixtures. Not an API consumer, but a real rename coupling."
+    },
+    {
+      "consumer_id": "c:lexer-tokenizer-doc",
+      "file": "crates/perl-lexer/src/tokenizer/mod.rs",
+      "role": "docs_reference",
+      "symbols": [],
+      "proposition": "Module doc naming perl-ast-v2 to explain what this module does NOT depend on. Consumes nothing, and contradicts crates/perl-lexer/Cargo.toml:35."
+    },
+    {
+      "consumer_id": "c:lexer-wave-c-comment",
+      "file": "crates/perl-lexer/tests/wave_c_collapse_hardening.rs",
+      "role": "docs_reference",
+      "symbols": [],
+      "proposition": "Comment naming perl-ast-v2 while describing crates the test does not reach. Consumes nothing."
+    },
+    {
+      "consumer_id": "c:v2-readme",
+      "file": "crates/perl-ast-v2/README.md",
+      "role": "docs_reference",
+      "symbols": [],
+      "proposition": "States the package is intentionally published for incremental-parsing integration work."
+    },
+    {
+      "consumer_id": "c:v2-claude-md",
+      "file": "crates/perl-ast-v2/CLAUDE.md",
+      "role": "docs_reference",
+      "symbols": [],
+      "proposition": "Package owner guidance; records that the two NodeKind enums are deliberately not kept in lockstep."
+    },
+    {
+      "consumer_id": "c:ast-readme",
+      "file": "crates/perl-ast/README.md",
+      "role": "docs_reference",
+      "symbols": [],
+      "proposition": "Describes v2 as experimental/pre-stability and enumerates NodeId, MissingKind, DiagnosticId and ErrorRef."
+    },
+    {
+      "consumer_id": "c:ast-contract-doc",
+      "file": "docs/reference/ast-contract.md",
+      "role": "docs_reference",
+      "symbols": [],
+      "proposition": "Names perl_ast::v2 an experimental compatibility tier and records that the package is published with an unstable API."
+    },
+    {
+      "consumer_id": "c:topology-doc",
+      "file": "docs/architecture/repository-topology.md",
+      "role": "docs_reference",
+      "symbols": [],
+      "proposition": "Human-readable projection of the topology policy row."
+    },
+    {
+      "consumer_id": "c:verify-docs-rs",
+      "file": "scripts/verify-docs-rs.sh",
+      "role": "release_metadata",
+      "symbols": [],
+      "proposition": "Includes perl-ast-v2 in the docs.rs verification set, so the published documentation surface is release-checked."
+    },
+    {
+      "consumer_id": "c:release-dry-run",
+      "file": "docs/release/0.14.0/dry-run-receipt.md",
+      "role": "release_metadata",
+      "symbols": [],
+      "proposition": "Historical publish dry-run treating perl-ast-v2 as one of the coordinated publishable crates."
+    }
+  ],
+  "package_surfaces": [
+    {
+      "surface_id": "ps:workspace-member",
+      "surface": "workspace_member",
+      "site": "Cargo.toml:5",
+      "current_status": "member of the root workspace",
+      "owner": "#7398 per policy/repository-topology.toml"
+    },
+    {
+      "surface_id": "ps:workspace-dependency",
+      "surface": "workspace_dependency",
+      "site": "Cargo.toml:235",
+      "current_status": "path + version 0.17.0, so workspace consumers resolve the local path while the published version stays declared",
+      "owner": "#7398"
+    },
+    {
+      "surface_id": "ps:publish-allowlist",
+      "surface": "publish_allowlist",
+      "site": "Cargo.toml:128",
+      "current_status": "Tier 1b publish-allowlisted crate",
+      "owner": "release tooling"
+    },
+    {
+      "surface_id": "ps:topology",
+      "surface": "repository_topology",
+      "site": "policy/repository-topology.toml:227",
+      "current_status": "placement=accepted, publish_disposition=published, current_integration_mode=workspace_path, future_owner=perl-parser",
+      "owner": "#7398"
+    },
+    {
+      "surface_id": "ps:risk-pack",
+      "surface": "policy_baseline",
+      "site": "policy/ci-risk-packs.toml:31",
+      "current_status": "crate glob is a member of a CI risk pack",
+      "owner": "CI policy"
+    },
+    {
+      "surface_id": "ps:panic-baseline",
+      "surface": "policy_baseline",
+      "site": "policy/allow.toml:1642",
+      "current_status": "per-crate panic-macro baseline floor over crates/perl-ast-v2/src/**/*.rs",
+      "owner": "repository panic policy"
+    },
+    {
+      "surface_id": "ps:docs-metadata",
+      "surface": "docs_metadata",
+      "site": "crates/perl-ast-v2/Cargo.toml:12",
+      "current_status": "documentation = https://docs.rs/perl-ast-v2 with docsrs rustdoc args",
+      "owner": "package manifest"
+    }
+  ],
+  "external_evidence": [
+    {
+      "evidence_id": "ev:registry-publication",
+      "class": "registry_publication",
+      "observed": "perl-ast-v2 is genuinely published on crates.io: 13 versions from 0.12.0 through 0.17.0, none yanked, created 2026-03-30, last updated 2026-06-28. The crate's registry repository field points at github.com/EffortlessMetrics/perl-lsp. Publication is real, so the package is a live semver surface and cannot be treated as deletable internal code.",
+      "observed_at": "2026-09-05",
+      "instrument": "GET https://crates.io/api/v1/crates/perl-ast-v2",
+      "lifecycle_weight": "Establishes a real compatibility obligation. Does not by itself establish an independent lifecycle: the repository publishes the whole crate set on one coordinated cadence."
+    },
+    {
+      "evidence_id": "ev:reverse-dependencies",
+      "class": "reverse_dependency",
+      "observed": "crates.io reports 4 reverse dependencies in total, and every one is this project's own published crate: perl-ast, perl-error, perl-parser-core, perl-tokenizer. perl-error and perl-tokenizer pin ^0.12.2 and are absorbed packages, so those are historical versions rather than current dependents. Zero third-party reverse dependents were observed.",
+      "observed_at": "2026-09-05",
+      "instrument": "GET https://crates.io/api/v1/crates/perl-ast-v2/reverse_dependencies?per_page=100",
+      "lifecycle_weight": "This is the decisive column. No external party depends on the package for a proposition that perl_ast::v2 does not already provide, so the independent-lifecycle threshold is not met."
+    },
+    {
+      "evidence_id": "ev:download-volume",
+      "class": "not_consumer_evidence",
+      "observed": "6412 total downloads, 5007 of them recent.",
+      "observed_at": "2026-09-05",
+      "instrument": "GET https://crates.io/api/v1/crates/perl-ast-v2",
+      "lifecycle_weight": "Deliberately classified as non-evidence. Download counts are consistent with CI, docs.rs builds and registry mirrors, and the loader structurally forbids a ruling from resting on this row."
+    },
+    {
+      "evidence_id": "ev:external-source-search",
+      "class": "unavailable",
+      "observed": "No instrument available in this environment enumerates non-registry external source use, such as a vendored copy or a private fork. Absence of third-party reverse dependencies is therefore evidence about the registry graph specifically, not a proof that no code anywhere imports the package.",
+      "observed_at": "2026-09-05",
+      "instrument": "none available",
+      "lifecycle_weight": "This unknown is exactly why the ruling is absorb-with-forwarding rather than delete. An unknown external consumer is preserved by the forwarding package and broken by deletion."
+    },
+    {
+      "evidence_id": "ev:coordinated-release",
+      "class": "registry_publication",
+      "observed": "The published version series tracks the workspace version rather than a package-specific cadence: the manifest inherits version.workspace, Cargo.toml:235 pins the workspace dependency at 0.17.0, and docs/release/0.14.0/dry-run-receipt.md treats perl-ast-v2 as one of the coordinated publishable crates. No release in the series is specific to this package.",
+      "observed_at": "2026-09-05",
+      "instrument": "crates.io version list joined with repository manifests and release receipts",
+      "lifecycle_weight": "Directly addresses the first clause of the retain threshold: there is no separate semver or release cadence to preserve."
+    }
+  ],
+  "ruling": {
+    "ruling": "absorb",
+    "rationale": "The package is a real published surface but does not earn an independent lifecycle. Against the five retain clauses: there is no separate semver or release cadence (ev:coordinated-release); there are no external consumers who should avoid the larger canonical package (ev:reverse-dependencies observes only first-party dependents); there is no public proposition owned only by perl-ast-v2, because every public item is already reachable through perl_ast::v2 and two of them are additionally public API of perl-parser-core; and the compatibility shell can satisfy the lifecycle precisely because the canonical path already exists and is the documented one. The unique experimental propositions the package does hold \u2014 NodeId identity, DiagnosticId/ErrorRef lightweight recovery, granular MissingKind, and the depth-limited debug projection \u2014 justify keeping a distinct v2 namespace with an explicit contract. They do not justify a second package identity, because a namespace under the canonical package preserves all of them. Absorb here means moving the implementation under perl_ast::v2 and leaving perl-ast-v2 as a forwarding package; it does not mean merging v1 and v2 semantics, and it does not authorize deleting the published package.",
+    "evidence_ids": [
+      "ev:registry-publication",
+      "ev:reverse-dependencies",
+      "ev:coordinated-release",
+      "ev:external-source-search"
+    ],
+    "compatibility_window": "The forwarding perl-ast-v2 package is retained until #8847 can show, on evidence current at that time, that no third-party reverse dependency exists on any published version and that at least one further coordinated release has shipped with the forwarding shell in place. Deletion before that window closes is not authorized by this ruling. The four downstream re-export paths (rx:parser-core-engine, rx:parser-core-root, rx:parser, rx:parser-compat) are owned by their own crates and are out of this window's scope.",
+    "reversal_condition": "Move the ruling to `retain` only on concrete evidence of an independent contract: a third-party reverse dependency on crates.io, a release cadence that diverges from the workspace version, or a public proposition that exists only under the perl_ast_v2 path and cannot be served by perl_ast::v2. Package existence, publish allowlisting, docs.rs metadata and experimental branding are explicitly below this threshold, and the loader enforces that a retain ruling must name independent-lifecycle evidence.",
+    "independent_lifecycle_evidence_ids": [],
+    "unknowns": [
+      "Non-registry external use (vendored copies, private forks) is not observable with any instrument available here; ev:external-source-search records this as unavailable rather than as zero.",
+      "A consumer reaching MissingKind or DiagnosticId through perl_parser_core's unqualified re-export (rx:parser-core-types) has no textual dependency on the perl-ast-v2 name, so no name-based search would find it.",
+      "The reverse-dependency figure is a point-in-time observation from 2026-09-05 and ages; #8847 must re-observe rather than inherit it."
+    ]
+  },
+  "successor_wake_conditions": [
+    {
+      "successor_issue": 8844,
+      "wake_event": "This ruling records `absorb`, which is #8844's start condition: move the implementation under perl_ast::v2 and reduce perl-ast-v2 to a forwarding shell. #8844 may start now.",
+      "blocked_until": "Nothing blocks it. The ruling is the gate and it is satisfied."
+    },
+    {
+      "successor_issue": 8845,
+      "wake_event": "Wake when #8844 has landed and perl-ast-v2 is a forwarding shell; then migrate in-repo implementation consumers to the canonical path. The migration set is the gating consumer rows of this manifest: four production_implementation rows, five public_reexport rows and seven test_fixture rows.",
+      "blocked_until": "#8844 landing on main."
+    },
+    {
+      "successor_issue": 8847,
+      "wake_event": "Wake only when #8845 has landed AND the compatibility window above has closed on re-observed registry evidence. #8847 must re-run the reverse-dependency observation rather than inherit ev:reverse-dependencies.",
+      "blocked_until": "#8845 landing, plus the stated compatibility window. This audit does not authorize package removal."
+    }
+  ],
+  "limitations": [
+    "The consumer scan is textual. A consumer that reaches the package only through perl_parser_core's unqualified DiagnosticId or MissingKind re-export, or through a grouped import such as use perl_ast::{v2, ast}, names none of the four tokens and would not be found. No such consumer exists on the authored basis, but the instrument cannot promise it.",
+    "syn sees declarations, not semantics. The public-item denominator is exact; whether a consumer depends on a variant's meaning rather than its name is an authored judgement.",
+    "Per-variant consumer attribution was resolved by alias-aware analysis of each consumer file, because v1 and v2 share 16 variant names. That analysis is authored input to this manifest, not a check the loader re-runs; the loader verifies that every consumer id resolves and that every named production counterpart still exists.",
+    "External evidence is a point-in-time registry observation from 2026-09-05. It ages, and the loader cannot refresh it.",
+    "This audit does not claim v2 is parity-complete, does not move source, does not change AST semantics, and does not authorize removing the published package.",
+    "The `equivalent` relation is asserted at field level only \u2014 same field names, same field types, and no child Node through which the differing node contract could leak. It never claims the two enclosing Node contracts are interchangeable."
+  ]
+}
