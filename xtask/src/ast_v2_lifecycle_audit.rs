@@ -16,6 +16,23 @@
 //! * reconciliation that fails closed in both directions, so a public item, enum
 //!   variant, re-export or direct consumer cannot land without moving a row, and
 //!   a row cannot outlive the thing it describes;
+//!
+//! What "both directions" covers, precisely, because the strength differs by
+//! row and an unqualified claim would read as stronger than the instrument is:
+//!
+//! | rows | forward | backward |
+//! |---|---|---|
+//! | public items | derived from source; an unmodelled declaration stops the audit | shape compared exactly |
+//! | re-exports | derived from every scanned file, module paths carried | each row's public path must still be bound |
+//! | consumers | derived from a reference scan of the gating roots | file presence, role, and — on Rust gating rows — each named identifier |
+//! | package surfaces | **not derived**; rows are checked, unrecorded surfaces are not found | the named line must still mention the package |
+//! | parity, dispositions, ruling | authored | vocabulary, referential integrity, and the ruling laws |
+//!
+//! The package-surface row is the honest weak one: a new `[workspace]` entry or
+//! a changed publish setting is not discovered, and the recorded settings are
+//! compared as a line mention rather than as values. Deriving them needs a
+//! manifest and policy model this issue's ceiling does not authorize; it is
+//! recorded as a limitation rather than implied away by the sentence above.
 //! * the ruling laws: a `retain` ruling must name independent-lifecycle evidence,
 //!   and download counts are structurally barred from being consumer evidence.
 //!
@@ -71,7 +88,7 @@ const V2_CRATE_PATH: &str = "perl_ast_v2";
 /// together with the manifest bytes; patching around it silently is exactly what
 /// the pin exists to prevent.
 pub const PINNED_CANONICAL_DIGEST: &str =
-    "BEB60C057125F5A2A4E2DAE40099240A59A6E32215E882DBCB0E4081AC330375";
+    "1156D372762E30C42D5902C6787885B8F95EDF47215C0228F4B25691C269C2D4";
 
 // ---------------------------------------------------------------------------
 // Code-owned v1 vocabularies. A cardinality check lets a repinned manifest
@@ -384,10 +401,11 @@ fn collect_public_items(
                     path: format!("{module_path}::{name}"),
                     kind: "struct".to_string(),
                     shape: format!(
-                        "struct {name}{} {}{} {}",
+                        "struct {name}{} {}{}{} {}",
                         render_generics(&item_struct.generics)?,
                         render_derives(&item_struct.attrs)?,
                         render_non_exhaustive(&item_struct.attrs),
+                        render_contract_attrs(&item_struct.attrs)?,
                         render_fields(&item_struct.fields, FieldContext::Struct)?
                     ),
                 });
@@ -398,10 +416,11 @@ fn collect_public_items(
                     path: format!("{module_path}::{name}"),
                     kind: "enum".to_string(),
                     shape: format!(
-                        "enum {name}{} {}{} ({} variants)",
+                        "enum {name}{} {}{}{} ({} variants)",
                         render_generics(&item_enum.generics)?,
                         render_derives(&item_enum.attrs)?,
                         render_non_exhaustive(&item_enum.attrs),
+                        render_contract_attrs(&item_enum.attrs)?,
                         item_enum.variants.len()
                     ),
                 });
@@ -411,8 +430,10 @@ fn collect_public_items(
                         path: format!("{module_path}::{name}::{variant_name}"),
                         kind: "enum_variant".to_string(),
                         shape: format!(
-                            "variant {variant_name}{} {}",
+                            "variant {variant_name}{}{}{} {}",
                             render_non_exhaustive(&variant.attrs),
+                            render_contract_attrs(&variant.attrs)?,
+                            render_discriminant(variant)?,
                             render_fields(&variant.fields, FieldContext::Variant)?
                         ),
                     });
@@ -662,7 +683,7 @@ fn render_generics(generics: &syn::Generics) -> Result<String> {
                 for bound in &ty.bounds {
                     match bound {
                         syn::TypeParamBound::Trait(trait_bound) => {
-                            bounds.push(render_path(&trait_bound.path)?);
+                            bounds.push(render_trait_bound(trait_bound)?);
                         }
                         syn::TypeParamBound::Lifetime(lifetime) => {
                             bounds.push(format!("'{}", lifetime.ident));
@@ -717,6 +738,50 @@ fn render_generics(generics: &syn::Generics) -> Result<String> {
     }
 }
 
+/// Render one trait bound, with the parts that change what the bound means.
+///
+/// The path alone is not the bound. `T: Sized` and `T: ?Sized` differ only in
+/// the `?`, and that difference decides whether a caller may pass an unsized
+/// type — a widening in one direction and a breaking narrowing in the other.
+/// Rendering only the path gave both the same shape. `for<'a>` is contract for
+/// the same reason: a higher-ranked bound accepts strictly more than a bound
+/// over one named lifetime.
+///
+/// `TraitBoundModifiers` is `#[non_exhaustive]` and currently has no fields, so
+/// there is nothing to render — but a future syn could add one, and dropping it
+/// would be the silent vanish this derivation refuses. The crate's own emptiness
+/// check is the hook that turns that into a stop.
+fn render_trait_bound(trait_bound: &syn::TraitBound) -> Result<String> {
+    if trait_bound.modifiers.require_empty().is_err() {
+        bail!(
+            "the audit derivation cannot render a trait bound carrying an unmodelled modifier; it \
+             must be handled explicitly rather than dropped from the recorded shape: {:?}",
+            trait_bound.path
+        );
+    }
+    let mut rendered = String::new();
+    if let Some(lifetimes) = &trait_bound.lifetimes {
+        let mut names: Vec<String> = Vec::new();
+        for param in &lifetimes.lifetimes {
+            match param {
+                syn::GenericParam::Lifetime(lifetime) => {
+                    names.push(format!("'{}", lifetime.lifetime.ident));
+                }
+                other => bail!(
+                    "the audit derivation cannot render this higher-ranked bound parameter: \
+                     {other:?}"
+                ),
+            }
+        }
+        rendered.push_str(&format!("for<{}> ", names.join(", ")));
+    }
+    if trait_bound.maybe.is_some() {
+        rendered.push('?');
+    }
+    rendered.push_str(&render_path(&trait_bound.path)?);
+    Ok(rendered)
+}
+
 /// Render one `where` predicate, so two different clauses cannot share a shape.
 fn render_where_predicate(predicate: &syn::WherePredicate) -> Result<String> {
     let render_bounds = |bounds: &syn::punctuated::Punctuated<
@@ -728,7 +793,7 @@ fn render_where_predicate(predicate: &syn::WherePredicate) -> Result<String> {
         for bound in bounds {
             match bound {
                 syn::TypeParamBound::Trait(trait_bound) => {
-                    rendered.push(render_path(&trait_bound.path)?);
+                    rendered.push(render_trait_bound(trait_bound)?);
                 }
                 syn::TypeParamBound::Lifetime(lifetime) => {
                     rendered.push(format!("'{}", lifetime.ident));
@@ -760,6 +825,57 @@ fn render_where_predicate(predicate: &syn::WherePredicate) -> Result<String> {
 /// Record `#[non_exhaustive]`, which is public contract: adding it stops
 /// downstream exhaustive matching and literal construction, and no field or
 /// derive would record the change.
+/// Attributes that change what a declaration means to a consumer.
+///
+/// `#[cfg]` decides whether the item exists at all on a given target, `#[repr]`
+/// fixes the memory layout an FFI or transmuting consumer depends on, and
+/// `#[deprecated]` is the documented removal signal. None of them touch the name,
+/// the fields or the types, so a shape built from those alone read identically
+/// before and after — a target-specific removal or a layout change landed under
+/// an unmoved row.
+const CONTRACT_ATTRIBUTES: [&str; 4] = ["cfg", "cfg_attr", "repr", "deprecated"];
+
+/// Render an explicit enum discriminant.
+///
+/// The discriminant is the value a `repr` enum crosses an FFI or serialization
+/// boundary as, so changing `Missing = 3` to `Missing = 4` is a wire-format
+/// change that touches no name, field or type. Nothing in the previous shape
+/// recorded it.
+fn render_discriminant(variant: &syn::Variant) -> Result<String> {
+    match &variant.discriminant {
+        Some((_, expr)) => Ok(format!(" = {}", render_const_expr(expr)?)),
+        None => Ok(String::new()),
+    }
+}
+
+/// Render the contract-bearing attributes of one declaration, normalized and
+/// ordered so the shape does not depend on source order.
+fn render_contract_attrs(attrs: &[syn::Attribute]) -> Result<String> {
+    let mut rendered: Vec<String> = Vec::new();
+    for attr in attrs {
+        let Some(name) = CONTRACT_ATTRIBUTES.iter().find(|name| attr.path().is_ident(name)) else {
+            continue;
+        };
+        match &attr.meta {
+            syn::Meta::Path(_) => rendered.push(format!("#[{name}]")),
+            syn::Meta::List(list) => {
+                // The token text is normalized by `proc_macro2`'s own
+                // formatting, so whitespace and line breaks in the source do
+                // not move the shape while a changed predicate does.
+                rendered.push(format!("#[{name}({})]", list.tokens));
+            }
+            syn::Meta::NameValue(value) => {
+                rendered.push(format!("#[{name} = {}]", render_const_expr(&value.value)?));
+            }
+        }
+    }
+    if rendered.is_empty() {
+        return Ok(String::new());
+    }
+    rendered.sort();
+    Ok(format!(" attrs[{}]", rendered.join(", ")))
+}
+
 fn render_non_exhaustive(attrs: &[syn::Attribute]) -> &'static str {
     if attrs.iter().any(|attr| attr.path().is_ident("non_exhaustive")) {
         " non_exhaustive"
@@ -2191,6 +2307,43 @@ fn reconcile_consumers(m: &Manifest, repo_root: &Path, scanned: &BTreeSet<String
             );
         }
 
+        // A row's symbols are the migration set #8845 inherits, and nothing
+        // checked them: the loader required only that the list be non-empty, so
+        // a stale name left behind by a refactor, or one that was never in the
+        // file, read exactly like a real one.
+        //
+        // Scoped to Rust gating rows on purpose. Those symbols are identifiers,
+        // so requiring each to appear as a whole word in the file is a real
+        // check the instrument can make. A `package_dependency` row names TOML
+        // table paths and a `policy_inventory` row names glob and cohort
+        // entries; those are descriptions of where the mention lives, not
+        // identifiers, and demanding them verbatim would reject honest rows.
+        // The boundary is stated rather than stretched: this proves the named
+        // identifier is present, not that the consumer depends on its meaning.
+        if gating
+            && row.file.ends_with(".rs")
+            && let Ok(text) = std::fs::read_to_string(repo_root.join(&row.file))
+        {
+            for symbol in &row.symbols {
+                for token in symbol.split("::").flat_map(str::split_whitespace) {
+                    // `as` is the `use ... as ...` keyword joining two real
+                    // names, not a name of its own.
+                    if token.is_empty() || token == "as" {
+                        continue;
+                    }
+                    if !contains_token(&text, token) {
+                        bail!(
+                            "consumer {} lists symbol `{symbol}` for `{}`, but `{token}` does not \
+                             appear there. A symbol list that outlives the code it names is the \
+                             migration set #8845 would inherit.",
+                            row.consumer_id,
+                            row.file
+                        );
+                    }
+                }
+            }
+        }
+
         // The inverse of falsifier 9, and the one the first version missed: a
         // real code consumer relabelled `docs_reference` or `policy_inventory`
         // escapes every gating check, because those roles are exactly the ones
@@ -2249,19 +2402,30 @@ pub fn derive_public_reexports(text: &str) -> Vec<(String, String)> {
         return Vec::new();
     };
     let mut found = Vec::new();
-    collect_public_reexports(&file.items, &mut found);
+    collect_public_reexports(&file.items, "", &mut found);
     found
 }
 
 /// Walk one item list for public re-exports of the audited package, descending
-/// into public inline modules.
+/// into public inline modules and carrying the module namespace.
 ///
 /// The descent matters because a public path is a public path: `pub mod compat {
 /// pub use perl_ast_v2 as ast_v2; }` publishes the package exactly as a
 /// top-level `pub use` does, and a top-level-only walk would have called that
 /// file re-export-free. A private inline module is skipped, because nothing
 /// outside the crate can name what it re-exports.
-fn collect_public_reexports(items: &[syn::Item], found: &mut Vec<(String, String)>) {
+///
+/// The namespace is carried rather than discarded because the alias alone is
+/// not the path. Two public modules in one file can both export `ast_v2`, and
+/// dropping their module names collapsed those into one indistinguishable
+/// binding, so a single row covered both — leaving a real compatibility path
+/// with no obligation recorded against it, exactly what these rows exist to
+/// hold.
+fn collect_public_reexports(
+    items: &[syn::Item],
+    namespace: &str,
+    found: &mut Vec<(String, String)>,
+) {
     for item in items {
         match item {
             syn::Item::Use(item_use) => {
@@ -2274,13 +2438,23 @@ fn collect_public_reexports(items: &[syn::Item], found: &mut Vec<(String, String
                 collect_use_aliases(&item_use.tree, "", &mut aliases);
                 for (alias, rendered) in aliases.into_iter().zip(paths) {
                     if API_USE_FORM.is_match(&format!("{rendered}::")) {
-                        found.push((alias, rendered));
+                        let qualified = if namespace.is_empty() {
+                            alias
+                        } else {
+                            format!("{namespace}::{alias}")
+                        };
+                        found.push((qualified, rendered));
                     }
                 }
             }
             syn::Item::Mod(item_mod) if is_public(&item_mod.vis) => {
                 if let Some((_, inner)) = &item_mod.content {
-                    collect_public_reexports(inner, found);
+                    let inner_namespace = if namespace.is_empty() {
+                        item_mod.ident.to_string()
+                    } else {
+                        format!("{namespace}::{}", item_mod.ident)
+                    };
+                    collect_public_reexports(inner, &inner_namespace, found);
                 }
             }
             _ => {}
@@ -2288,14 +2462,14 @@ fn collect_public_reexports(items: &[syn::Item], found: &mut Vec<(String, String
     }
 }
 
-/// The alias names one authored re-export row claims to publish.
+/// The full public paths one authored re-export row claims to publish.
 ///
-/// The row's `path` is the public path a consumer writes, so its leaf is the
-/// name the re-export binds: `perl_ast::v2` claims `v2`, and the grouped
-/// `perl_parser_core::{DiagnosticId, MissingKind}` claims both type names. This
-/// replaces an earlier substring test over the whole row path, which could call
-/// an alias covered because it happened to appear somewhere in the text.
-fn row_reexport_aliases(row: &ReexportRow) -> Result<BTreeSet<String>> {
+/// The row's `path` is the path a consumer writes, so a grouped
+/// `perl_parser_core::{DiagnosticId, MissingKind}` claims two of them. Returning
+/// whole paths rather than bare leaves is what keeps two same-named bindings in
+/// one file distinguishable: `a::ast_v2` and `b::ast_v2` are different
+/// compatibility obligations, and a leaf-only comparison collapsed them.
+fn row_reexport_paths(row: &ReexportRow) -> Result<BTreeSet<String>> {
     let path = row.path.trim();
     let aliases: BTreeSet<String> = if let Some(open) = path.find('{') {
         let Some(close) = path.rfind('}') else {
@@ -2312,20 +2486,19 @@ fn row_reexport_aliases(row: &ReexportRow) -> Result<BTreeSet<String>> {
                 row.path
             );
         }
+        let prefix = path[..open].trim().trim_end_matches("::");
         path[open + 1..close]
             .split(',')
             .map(str::trim)
             .filter(|name| !name.is_empty())
-            .map(str::to_string)
+            .map(
+                |name| {
+                    if prefix.is_empty() { name.to_string() } else { format!("{prefix}::{name}") }
+                },
+            )
             .collect()
     } else {
-        path.rsplit("::")
-            .next()
-            .map(str::trim)
-            .filter(|leaf| !leaf.is_empty())
-            .into_iter()
-            .map(str::to_string)
-            .collect()
+        std::iter::once(path).filter(|path| !path.is_empty()).map(str::to_string).collect()
     };
 
     if aliases.is_empty() {
@@ -2359,19 +2532,30 @@ fn reconcile_reexport_inventory(
     let mut claimed_by_file: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for row in rows {
         let (file, _) = split_site(&row.site, &row.reexport_id)?;
-        claimed_by_file.entry(file).or_default().extend(row_reexport_aliases(row)?);
+        claimed_by_file.entry(file).or_default().extend(row_reexport_paths(row)?);
     }
+
+    // A derived binding is what the row's public path ends in. The row records
+    // the path from the crate root (`perl_parser::compat::ast_v2`); the
+    // derivation sees only what is inside one file, so it renders `ast_v2` at
+    // file top level and `compat::ast_v2` inside `pub mod compat`. Matching on a
+    // `::`-segment suffix accepts both while keeping two same-named bindings in
+    // one file distinct: `a::ast_v2` does not satisfy a row for `b::ast_v2`.
+    let claims = |claimed: &BTreeSet<String>, binding: &str| -> bool {
+        claimed.iter().any(|path| path == binding || path.ends_with(&format!("::{binding}")))
+    };
 
     // Direction one: nothing may publish the package publicly without a row.
     // The earlier form only looked inside files a row already named, so a first
     // public re-export in any other file — a new crate forwarding the package,
     // or a compatibility shim added during absorption — moved no checked set.
     for (file, derived) in &derived_by_file {
-        for (alias, rendered) in derived {
-            let covered = claimed_by_file.get(*file).is_some_and(|set| set.contains(alias));
+        for (binding, rendered) in derived {
+            let covered =
+                claimed_by_file.get(*file).is_some_and(|claimed| claims(claimed, binding));
             if !covered {
                 bail!(
-                    "`{file}` publicly re-exports the audited package as `{alias}` (from \
+                    "`{file}` publicly re-exports the audited package as `{binding}` (from \
                      `{rendered}`) with no matching re-export row. A new public path to the \
                      package must move the compatibility inventory."
                 );
@@ -2394,12 +2578,14 @@ fn reconcile_reexport_inventory(
                 row.site
             );
         };
-        let live: BTreeSet<&str> = derived.iter().map(|(alias, _)| alias.as_str()).collect();
-        for alias in row_reexport_aliases(row)? {
-            if !live.contains(alias.as_str()) {
+        for path in row_reexport_paths(row)? {
+            let live = derived
+                .iter()
+                .any(|(binding, _)| path == *binding || path.ends_with(&format!("::{binding}")));
+            if !live {
                 bail!(
-                    "re-export {} claims `{file}` publishes the audited package as `{alias}`, but \
-                     no public re-export there binds that name any more. A path that became \
+                    "re-export {} claims `{file}` publishes the audited package at `{path}`, but \
+                     no public re-export there binds that path any more. A path that became \
                      private, was renamed, or was removed is a compatibility change and must move \
                      the inventory.",
                     row.reexport_id

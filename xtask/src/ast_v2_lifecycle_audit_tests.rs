@@ -91,10 +91,22 @@ fn violates_read_only(line: &str) -> bool {
     // The allowlist entries themselves appear in this file's prose, so only the
     // code part of the line is classified.
     let code = line.split("//").next().unwrap_or("");
-    MUTATION_MARKERS.iter().any(|marker| {
-        code.contains(marker)
-            && !(*marker == "fs::" && PERMITTED_FS_CALLS.iter().any(|ok| code.contains(ok)))
-    })
+    // The permitted reads are removed from the text rather than used to excuse
+    // the whole line. Excusing the line let one call vouch for another:
+    // `if let Ok(t) = fs::read_to_string(p) { fs::write(q, t)?; }` contains a
+    // permitted read, so the write beside it was waved through. The allowlist
+    // has to apply per call to mean anything.
+    //
+    // Known boundary, stated rather than papered over: splitting on `//` also
+    // truncates code that follows a `//` inside a string literal, so a mutation
+    // written after one on the same line is not seen. That is the same defect
+    // the role classifier was moved off text for, and it is why this guard is
+    // documented as a tripwire over the realistic case rather than a proof.
+    let mut residual = code.to_string();
+    for permitted in PERMITTED_FS_CALLS {
+        residual = residual.replace(permitted, "");
+    }
+    MUTATION_MARKERS.iter().any(|marker| residual.contains(marker))
 }
 
 // ---------------------------------------------------------------------------
@@ -899,13 +911,27 @@ fn the_prose_report_summary_cannot_drift_from_the_inventory() -> Result<()> {
         .as_array()
         .ok_or_else(|| color_eyre::eyre::eyre!("missing successor_wake_conditions"))?
     {
-        let text = wake["wake_event"].as_str().unwrap_or_default();
-        for spelled in ["four production", "five public_reexport", "seven test_fixture"] {
-            assert!(
-                !text.contains(spelled),
-                "wake text restates a row count (`{spelled}`); point at the rows instead, because \
-                 a duplicated count drifts the moment the inventory moves"
-            );
+        // Requiring the field rather than defaulting it: an absent or renamed
+        // `wake_event` made every `!contains` assertion below vacuously true,
+        // so the control reported success for a manifest missing the very field
+        // it names.
+        let text = wake["wake_event"].as_str().ok_or_else(|| {
+            color_eyre::eyre::eyre!("a successor wake row states no `wake_event`")
+        })?;
+        // Any spelled count, not the three that happen to be current. Pinning
+        // the list to today's inventory meant the moment a count moved, the
+        // newly-reintroduced hardcoded count was not in the denied set.
+        for number in
+            ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+        {
+            for role in ["production", "public_reexport", "package_dependency", "test_fixture"] {
+                let spelled = format!("{number} {role}");
+                assert!(
+                    !text.contains(&spelled),
+                    "wake text restates a row count (`{spelled}`); point at the rows instead, \
+                     because a duplicated count drifts the moment the inventory moves"
+                );
+            }
         }
     }
     Ok(())
@@ -1133,6 +1159,117 @@ fn trait_impl_contract_changes_that_keep_the_names_still_move_the_shape() -> Res
 }
 
 #[test]
+fn a_symbol_a_consumer_does_not_name_cannot_stay_in_the_migration_set() -> Result<()> {
+    // The loader required only that a gating row's `symbols` list be non-empty,
+    // so a name left behind by a refactor — or one that was never there — read
+    // exactly like a real one. These rows are the migration set #8845 inherits.
+    let mut value = real_value()?;
+    row_mut(&mut value, "consumers", "consumer_id", "c:parser-core-parser-context")?["symbols"] =
+        Value::Array(vec![Value::String("NodeIdGeneratorThatWasRemoved".to_string())]);
+    assert_rejected(&value, "does not appear there")?;
+
+    // A stale name inside an otherwise-live qualified path is caught too, since
+    // each identifier in the path is checked rather than the string as a whole.
+    let mut value = real_value()?;
+    row_mut(&mut value, "consumers", "consumer_id", "c:parser-core-context-impls")?["symbols"] =
+        Value::Array(vec![Value::String("NodeKind::RemovedVariant".to_string())]);
+    assert_rejected(&value, "does not appear there")
+}
+
+#[test]
+fn a_relaxed_or_higher_ranked_bound_is_not_the_same_bound() -> Result<()> {
+    // `render_generics` rendered only the bound's path, so `T: Sized` and
+    // `T: ?Sized` shared a shape. The `?` decides whether a caller may pass an
+    // unsized type — a widening one way and a breaking narrowing the other, and
+    // neither moved a row.
+    let shape_of = |src: &str| -> Result<String> {
+        derive_public_items(src)?
+            .iter()
+            .find(|item| item.kind == "struct")
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no struct derived from {src}"))
+    };
+    assert_ne!(
+        shape_of("pub struct S<T: Sized>(pub std::marker::PhantomData<T>);")?,
+        shape_of("pub struct S<T: ?Sized>(pub std::marker::PhantomData<T>);")?,
+        "`?Sized` is a different bound from `Sized`"
+    );
+    // The same rule has to hold in a `where` clause, which is a separate
+    // renderer and was equally path-only.
+    assert_ne!(
+        shape_of("pub struct S<T>(pub std::marker::PhantomData<T>) where T: Sized;")?,
+        shape_of("pub struct S<T>(pub std::marker::PhantomData<T>) where T: ?Sized;")?,
+        "`?Sized` is a different bound in a where clause too"
+    );
+    Ok(())
+}
+
+#[test]
+fn conditional_layout_and_discriminant_changes_move_the_shape() -> Result<()> {
+    // None of these touch a name, a field or a type, so a shape built from
+    // those alone read identically before and after. `#[cfg]` decides whether
+    // the item exists on a target at all, `#[repr]` fixes the layout an FFI
+    // consumer depends on, and a discriminant is the value a `repr` enum
+    // crosses a wire as.
+    let enum_shape = |src: &str| -> Result<String> {
+        derive_public_items(src)?
+            .iter()
+            .find(|item| item.kind == "enum")
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no enum derived from {src}"))
+    };
+    let variant_shape = |src: &str| -> Result<String> {
+        derive_public_items(src)?
+            .iter()
+            .find(|item| item.kind == "enum_variant")
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no variant derived from {src}"))
+    };
+
+    let plain = enum_shape("pub enum E { A }")?;
+    for (label, src) in [
+        ("repr", "#[repr(u8)]\npub enum E { A }"),
+        ("a different repr", "#[repr(u16)]\npub enum E { A }"),
+        ("cfg", "#[cfg(unix)]\npub enum E { A }"),
+        ("deprecated", "#[deprecated]\npub enum E { A }"),
+    ] {
+        assert_ne!(plain, enum_shape(src)?, "{label} collided with a plain enum");
+    }
+    assert_ne!(
+        enum_shape("#[repr(u8)]\npub enum E { A }")?,
+        enum_shape("#[repr(u16)]\npub enum E { A }")?,
+        "two different representations must not share a shape"
+    );
+
+    let bare_variant = variant_shape("pub enum E { A }")?;
+    assert_ne!(
+        bare_variant,
+        variant_shape("pub enum E { A = 3 }")?,
+        "an explicit discriminant is contract"
+    );
+    assert_ne!(
+        variant_shape("pub enum E { A = 3 }")?,
+        variant_shape("pub enum E { A = 4 }")?,
+        "changing a discriminant value is a wire-format change"
+    );
+    assert_ne!(
+        bare_variant,
+        variant_shape("pub enum E { #[cfg(unix)] A }")?,
+        "a target-conditional variant is not the unconditional one"
+    );
+
+    // Source formatting is not contract: the same attribute written with
+    // different spacing must not move the shape, or the check would fire on
+    // reformatting and be turned off.
+    assert_eq!(
+        enum_shape("#[repr(u8)]\npub enum E { A }")?,
+        enum_shape("#[repr( u8 )]\npub enum E { A }")?,
+        "whitespace inside an attribute is not a contract change"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_symlink_hiding_a_grouped_import_is_not_called_harmless() -> Result<()> {
     // The symlink guard checked the token scan alone while the file branch
     // beside it used the union, so a link whose target reached the package
@@ -1308,11 +1445,11 @@ fn a_reexport_that_stops_being_public_cannot_stay_inventoried() -> Result<()> {
     let rows = reexport_rows(&[("rx:known", "perl_ast::v2", "crates/perl-ast/src/lib.rs:93")])?;
 
     for (label, text, needle) in [
-        ("demoted to crate-private", "pub(crate) use perl_ast_v2 as v2;", "binds that name"),
+        ("demoted to crate-private", "pub(crate) use perl_ast_v2 as v2;", "binds that path"),
         // A rename fails on the forward direction first: the new name is a
         // public path with no row of its own.
         ("renamed", "pub use perl_ast_v2 as v_two;", "v_two"),
-        ("deleted", "// pub use perl_ast_v2 as v2;", "binds that name"),
+        ("deleted", "// pub use perl_ast_v2 as v2;", "binds that path"),
     ] {
         let drifted = sources(&[("crates/perl-ast/src/lib.rs", text)]);
         let Err(err) = reconcile_reexport_inventory(&rows, &drifted) else {
@@ -1333,14 +1470,54 @@ fn a_public_reexport_inside_a_public_module_is_a_public_path() -> Result<()> {
     // exactly as a top-level `pub use` does. A top-level-only walk called such a
     // file re-export-free, which is the same blind spot in a different shape.
     let derived = derive_public_reexports("pub mod compat { pub use perl_ast_v2 as ast_v2; }");
-    let aliases: BTreeSet<&str> = derived.iter().map(|(alias, _)| alias.as_str()).collect();
-    assert!(aliases.contains("ast_v2"), "a public module's re-export is public: {aliases:?}");
+    let bindings: BTreeSet<&str> = derived.iter().map(|(binding, _)| binding.as_str()).collect();
+    assert!(
+        bindings.contains("compat::ast_v2"),
+        "a public module's re-export is public, under its module path: {bindings:?}"
+    );
 
     // A private module publishes nothing outside the crate, so it is not one.
     assert!(
         derive_public_reexports("mod internal { pub use perl_ast_v2 as ast_v2; }").is_empty(),
         "a private module's re-export is not a public path"
     );
+    Ok(())
+}
+
+#[test]
+fn two_modules_exporting_one_alias_are_two_compatibility_paths() -> Result<()> {
+    // Carrying only the leaf alias collapsed `a::ast_v2` and `b::ast_v2` into
+    // one indistinguishable binding, so a single row covered both and a real
+    // public path carried no compatibility obligation — which is the entire
+    // purpose of these rows.
+    let source = "pub mod a { pub use perl_ast_v2 as ast_v2; }\n\
+                  pub mod b { pub use perl_ast_v2 as ast_v2; }";
+    let derived: BTreeSet<String> =
+        derive_public_reexports(source).into_iter().map(|(binding, _)| binding).collect();
+    assert_eq!(
+        derived,
+        BTreeSet::from(["a::ast_v2".to_string(), "b::ast_v2".to_string()]),
+        "each module's re-export is its own public path"
+    );
+
+    // One row cannot cover both, and the row that exists covers only its own.
+    let rows = reexport_rows(&[("rx:a", "the_crate::a::ast_v2", "crates/c/src/lib.rs:1")])?;
+    let both = sources(&[("crates/c/src/lib.rs", source)]);
+    let Err(err) = reconcile_reexport_inventory(&rows, &both) else {
+        bail!("the second module's public path must demand its own row");
+    };
+    let rendered = format!("{err:?}");
+    assert!(
+        rendered.contains("b::ast_v2"),
+        "the rejection must name the uncovered path, not the covered one: {rendered}"
+    );
+
+    // With only the first module present, the same row reconciles cleanly, so
+    // the rejection above is about the second path and not about the form of
+    // the row.
+    let only_a =
+        sources(&[("crates/c/src/lib.rs", "pub mod a { pub use perl_ast_v2 as ast_v2; }")]);
+    reconcile_reexport_inventory(&rows, &only_a)?;
     Ok(())
 }
 
@@ -1392,10 +1569,24 @@ fn an_unparseable_file_that_never_names_the_package_is_not_a_consumer() -> Resul
     // with zero mentions of the package, which would have forced a meaningless
     // inventory row on an unrelated file.
     assert_eq!(parsed_api_use("this is not valid rust {{{"), None);
-    let scanned = derive_reference_files(&repo_root_for_tests()?)?;
+    let root = repo_root_for_tests()?;
+    let scanned = derive_reference_files(&root)?;
+    // The negative assertion below is satisfied for free by a renamed or
+    // deleted file, and this is the only control for the open default discovery
+    // takes on a parse failure. Pin the fixture's existence so the control
+    // cannot pass while proving nothing.
+    let fixture = "crates/perl-lsp-rs/tests/fixtures/parser/comprehensive_syntax_fixtures.rs";
     assert!(
-        !scanned
-            .contains("crates/perl-lsp-rs/tests/fixtures/parser/comprehensive_syntax_fixtures.rs"),
+        root.join(fixture).exists(),
+        "the unparseable-fixture control names a file that no longer exists: {fixture}"
+    );
+    assert_eq!(
+        parsed_api_use(&std::fs::read_to_string(root.join(fixture))?),
+        None,
+        "the control is only meaningful while that fixture is still unparseable as Rust"
+    );
+    assert!(
+        !scanned.contains(fixture),
         "a fixture that never names the package must not be pulled into the denominator"
     );
     Ok(())

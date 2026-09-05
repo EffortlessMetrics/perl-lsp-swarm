@@ -162,4 +162,11 @@ that a `retain` ruling must name independent-lifecycle evidence.
   private fork. Recorded as an explicit `unavailable` evidence row rather than
   allowed to read as zero. This unknown is precisely why the ruling is
   absorb-with-forwarding rather than delete.
+- Package/release surface rows are checked, not derived. The loader confirms the
+  line each row names still mentions the package; it does not read the workspace
+  manifest or the publish policy as data. A new surface is therefore not
+  discovered, and a recorded setting is compared as a mention rather than as a
+  value. This is the weakest of the five row kinds, and it is named here rather
+  than left to be inferred from "reconciles in both directions": deriving it
+  needs a manifest and policy model beyond this issue's ceiling.
 - External evidence is a point-in-time observation from 2026-09-05 and ages.
