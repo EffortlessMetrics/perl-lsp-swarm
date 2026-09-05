@@ -109,6 +109,8 @@ fn test_update_status_is_split_into_subsystem_modules() -> Result<()> {
         "mod.rs",
         "parser.rs",
         "parser/accuracy.rs",
+        "parser/accuracy/tests.rs",
+        "parser/accuracy/trust_tests.rs",
         "parser/failure.rs",
         "parser/render.rs",
         "quality.rs",
