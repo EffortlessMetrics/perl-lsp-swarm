@@ -74,11 +74,11 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 - No cluster, pod, or debug session is executed by this contract; kind execution, live probes, and manifests that run the adapter remain future work.
 - Sidecar topologies are rejected here even when they share a pod; proving identical source and project-Perl parity is a separate claim.
 - DAP cell rows are evidence references into current perl-dap proof surfaces; this contract promotes no capability and creates no support row in #7122.
-- loader os is declared, not machine-compared against the subject identity
+- loader os is machine-compared against the single supported `linux` subject; no other operating system is admitted and no cross-OS compatibility is claimed
 
 ## Fixture matrix
 
-2 positive and 53 negative deterministic fixtures.
+2 positive and 60 negative deterministic fixtures.
 
 | Fixture | Expectation | Typed outcome |
 | --- | --- | --- |
@@ -93,12 +93,16 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 | `negative-attach-process-id` | `reject` | reject `attach_injection_unsupported` |
 | `negative-baseline-perl-row` | `reject` | reject `baseline_perl_substitution_forbidden` |
 | `negative-capability-catalog-claim` | `reject` | reject `capability_catalog_inheritance_forbidden` |
+| `negative-cleanup-owner-pod-only` | `reject` | reject `cleanup_ownership_missing` |
+| `negative-cleanup-owner-unstructured` | `reject` | reject `cleanup_ownership_missing` |
 | `negative-container-loader-mismatch` | `reject` | reject `loader_contract_mismatch` |
 | `negative-digest-mismatch-after-copy` | `reject` | reject `artifact_digest_unverified` |
 | `negative-digest-only-injection-source` | `reject` | reject `injection_source_unbound` |
 | `negative-downgraded-initial-dap-cell` | `reject` | reject `dap_cell_evidence_missing` |
 | `negative-editor-path-rewrite` | `reject` | reject `editor_path_translation_forbidden` |
+| `negative-empty-architecture-pair` | `reject` | reject `loader_contract_mismatch` |
 | `negative-empty-dap-claims` | `reject` | reject `dap_cell_evidence_missing` |
+| `negative-empty-include-root` | `reject` | reject `project_perl_identity_mismatch` |
 | `negative-empty-workspace-paths` | `reject` | reject `source_namespace_mismatch` |
 | `negative-fabricated-dap-evidence` | `reject` | reject `dap_cell_evidence_missing` |
 | `negative-init-image-perl` | `reject` | reject `init_image_perl_substitution_forbidden` |
@@ -107,6 +111,8 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 | `negative-injection-source-empty-revision` | `reject` | reject `injection_source_unbound` |
 | `negative-injection-source-without-revision` | `reject` | reject `injection_source_unbound` |
 | `negative-kubernetes-api-rbac` | `reject` | reject `kubernetes_api_dependency_forbidden` |
+| `negative-loader-os-empty` | `reject` | reject `loader_contract_mismatch` |
+| `negative-loader-os-not-linux` | `reject` | reject `loader_contract_mismatch` |
 | `negative-lsp-profile-inheritance` | `reject` | reject `lsp_profile_projection_forbidden` |
 | `negative-missing-adapter-identity` | `reject` | reject `adapter_identity_not_exact` |
 | `negative-missing-cleanup-owner` | `reject` | reject `cleanup_ownership_missing` |
@@ -118,6 +124,7 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 | `negative-post-copy-unverified` | `reject` | reject `artifact_digest_unverified` |
 | `negative-project-image-with-artifact` | `reject` | reject `install_mode_identity_conflict` |
 | `negative-project-perl-plan-differs` | `reject` | reject `project_perl_identity_mismatch` |
+| `negative-relative-interpreter-path` | `reject` | reject `project_perl_identity_mismatch` |
 | `negative-secrets-unredacted` | `reject` | reject `security_context_missing` |
 | `negative-security-context-root` | `reject` | reject `security_context_missing` |
 | `negative-service-account-token-used` | `reject` | reject `service_account_token_forbidden` |

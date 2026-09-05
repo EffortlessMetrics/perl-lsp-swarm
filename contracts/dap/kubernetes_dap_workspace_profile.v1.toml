@@ -255,4 +255,4 @@ statement = "Sidecar topologies are rejected here even when they share a pod; pr
 statement = "DAP cell rows are evidence references into current perl-dap proof surfaces; this contract promotes no capability and creates no support row in #7122."
 
 [[limitations]]
-statement = "loader os is declared, not machine-compared against the subject identity"
+statement = "loader os is machine-compared against the single supported `linux` subject; no other operating system is admitted and no cross-OS compatibility is claimed"

@@ -983,6 +983,23 @@ fn is_normalized_workspace_path(value: &str) -> bool {
         && value.split('/').skip(1).all(|component| component != "." && component != "..")
 }
 
+/// The only operating system this contract admits. The `project_image` and
+/// `injected_tool` subjects are both Linux container processes; a declared
+/// loader OS that is never compared is not a compatibility check.
+const SUPPORTED_LOADER_OS: &str = "linux";
+
+/// Cleanup ownership names two independent owners: the process tree that reaps
+/// the adapter, and the pod owner that reclaims the subject. Arbitrary non-empty
+/// text (`nobody`) satisfies neither, so both components are parsed and required.
+fn cleanup_owners(value: &str) -> Option<(&str, &str)> {
+    let (process_tree, pod) = value.split_once("/pod:")?;
+    let process_tree = process_tree.strip_prefix("process-tree:")?;
+    if process_tree.trim().is_empty() || pod.trim().is_empty() {
+        return None;
+    }
+    Some((process_tree, pod))
+}
+
 fn is_contained_path(root: &str, path: &str) -> bool {
     root == "/" || path == root || path.starts_with(&format!("{root}/"))
 }
@@ -1138,15 +1155,19 @@ impl ProfileDocument {
             }
             PerlAuthority::ProjectContainer => {}
         }
-        if self.perl.interpreter_path.trim().is_empty()
+        // An exact environment needs exact paths: a relative interpreter or an
+        // empty include root is not the declared identity, and non-empty text
+        // alone does not establish it.
+        if !is_normalized_workspace_path(&self.perl.interpreter_path)
             || self.perl.version.trim().is_empty()
             || self.perl.include_roots.is_empty()
+            || self.perl.include_roots.iter().any(|root| !is_normalized_workspace_path(root))
             || self.perl.dependency_authority.trim().is_empty()
             || self.launch_plan.authority.trim().is_empty()
         {
             return rejection(
                 RejectionReason::ProjectPerlIdentityMismatch,
-                why("project Perl/environment or launch-plan authority facts are incomplete".into()),
+                why("project Perl/environment or launch-plan authority facts are incomplete or not absolute normalized paths".into()),
             );
         }
         if self.launch_plan.perl_identity != self.derived_perl_identity() {
@@ -1312,6 +1333,22 @@ impl ProfileDocument {
                 (artifact.target_arch.as_str(), artifact.libc.as_str())
             }
         };
+        if self.loader.os != SUPPORTED_LOADER_OS {
+            return rejection(
+                RejectionReason::LoaderContractMismatch,
+                why(format!(
+                    "loader os {:?} is not the supported {SUPPORTED_LOADER_OS} subject",
+                    self.loader.os
+                )),
+            );
+        }
+        // Equality is not identity: two empty architectures compare equal.
+        if subject_architecture.trim().is_empty() || self.loader.architecture.trim().is_empty() {
+            return rejection(
+                RejectionReason::LoaderContractMismatch,
+                why("subject and loader architecture must both be named".into()),
+            );
+        }
         if subject_architecture != self.loader.architecture {
             return rejection(
                 RejectionReason::LoaderContractMismatch,
@@ -1360,10 +1397,12 @@ impl ProfileDocument {
                     why("no process-tree/pod cleanup owner is declared".into()),
                 );
             }
-            Some(owner) if owner.trim().is_empty() => {
+            Some(owner) if cleanup_owners(owner).is_none() => {
                 return rejection(
                     RejectionReason::CleanupOwnershipMissing,
-                    why("cleanup owner is empty".into()),
+                    why(format!(
+                        "cleanup owner {owner:?} does not name both a process-tree owner and a pod owner"
+                    )),
                 );
             }
             Some(_) => {}
@@ -1645,19 +1684,71 @@ fn line(output: &mut String, value: &str) -> Result<()> {
     writeln!(output, "{value}").map_err(|_| anyhow!("render kubernetes DAP profile status"))
 }
 
+/// Render one fixture's outcome from the evaluator, never from the fixture's own
+/// declaration. A declared `expected_rejection` that is never executed is not
+/// coverage: rendering it directly would report a rejection path the validator
+/// may no longer take.
 fn outcome_label(
     fixture: &FixtureDocument,
+    contract: &ProfileContract,
     exercised: &mut BTreeMap<&'static str, usize>,
 ) -> Result<String> {
     fixture.validate_shape()?;
-    Ok(match (fixture.expectation, fixture.expected_rejection) {
-        (Expectation::Admit, None) => "admit".to_string(),
-        (Expectation::Reject, Some(reason)) => {
-            *exercised.entry(reason.as_str()).or_default() += 1;
-            format!("reject `{}`", reason.as_str())
+    match fixture.profile.evaluate(contract) {
+        Ok(()) => {
+            if fixture.expectation != Expectation::Admit {
+                bail!(
+                    "fixture {:?} declares a rejection but the evaluator admits it",
+                    fixture.fixture_id
+                );
+            }
+            Ok("admit".to_string())
         }
-        _ => bail!("fixture {:?} has an invalid expectation shape", fixture.fixture_id),
-    })
+        Err(rejection) => {
+            if fixture.expected_rejection != Some(rejection.reason) {
+                bail!(
+                    "fixture {:?} declares {:?} but the evaluator returned `{}`",
+                    fixture.fixture_id,
+                    fixture.expected_rejection.map(|reason| reason.as_str()),
+                    rejection.reason.as_str()
+                );
+            }
+            *exercised.entry(rejection.reason.as_str()).or_default() += 1;
+            Ok(format!("reject `{}`", rejection.reason.as_str()))
+        }
+    }
+}
+
+/// Bind every declared required fact to a negative fixture that the evaluator
+/// actually rejects with that fact's typed reason, under that fact's install
+/// mode. `ENFORCED_REQUIRED_FACTS` alone only relates labels to reason codes;
+/// this executes the path, so deleting the check in `evaluate` — or the fixture
+/// that exercises it — fails the gate instead of leaving the mapping green.
+fn verify_required_fact_enforcement(
+    contract: &ProfileContract,
+    fixtures: &[FixtureDocument],
+) -> Result<()> {
+    for (owner, fact, reason) in ENFORCED_REQUIRED_FACTS {
+        let Some(profile) = contract.admitted_profiles.iter().find(|row| row.profile_id == *owner)
+        else {
+            bail!("ENFORCED_REQUIRED_FACTS names unknown profile {owner:?}");
+        };
+        let exercised = fixtures.iter().any(|fixture| {
+            fixture.profile.install_mode == profile.install_mode
+                && matches!(
+                    fixture.profile.evaluate(contract),
+                    Err(rejection) if rejection.reason == *reason
+                )
+        });
+        if !exercised {
+            bail!(
+                "required fact {fact:?} for profile {owner:?} claims enforcement through `{}`, \
+                 but no committed fixture is actually rejected with it",
+                reason.as_str()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Every admitted install mode must keep exactly one passing positive fixture.
@@ -1820,7 +1911,7 @@ fn render_status(contract: &ProfileContract, fixtures: &[FixtureDocument]) -> Re
     line(&mut output, "| --- | --- | --- |")?;
     let mut exercised = BTreeMap::<&'static str, usize>::new();
     for fixture in fixtures {
-        let outcome = outcome_label(fixture, &mut exercised)?;
+        let outcome = outcome_label(fixture, contract, &mut exercised)?;
         let expectation =
             if fixture.expectation == Expectation::Admit { "`admit`" } else { "`reject`" };
         line(&mut output, &format!("| `{}` | {expectation} | {outcome} |", fixture.fixture_id))?;
@@ -2041,6 +2132,7 @@ fn run(cli: &Cli) -> Result<()> {
         fixture.verify_against(&contract)?;
     }
     verify_admission_coverage(&contract, &fixtures)?;
+    verify_required_fact_enforcement(&contract, &fixtures)?;
 
     let rendered = render_status(&contract, &fixtures)?;
 
@@ -2600,5 +2692,96 @@ mod tests {
         evaluate(&profile)?;
         profile.adapter = None;
         assert_rejected_with(&profile, RejectionReason::AdapterIdentityNotExact)
+    }
+
+    #[test]
+    fn status_coverage_follows_the_evaluator_not_the_declaration() -> Result<()> {
+        // Relabel a fixture's declared rejection without changing the profile:
+        // rendering must follow what the evaluator actually returns and refuse
+        // the mismatch, rather than reporting the declared reason as coverage.
+        let contract = committed_contract()?;
+        let fixtures = committed_fixtures()?;
+        let mut fixture = find_fixture(&fixtures, "negative-node-port-service")?.clone();
+        fixture.expected_rejection = Some(RejectionReason::OperatorControllerForbidden);
+        let mut exercised = BTreeMap::new();
+        let error = outcome_label(&fixture, &contract, &mut exercised)
+            .expect_err("a relabeled fixture must not render as coverage");
+        assert!(error.to_string().contains("evaluator returned"), "unexpected error: {error}");
+        assert!(exercised.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn required_fact_enforcement_needs_an_actually_rejected_fixture() -> Result<()> {
+        let contract = committed_contract()?;
+        let fixtures = committed_fixtures()?;
+        assert!(verify_required_fact_enforcement(&contract, &fixtures).is_ok());
+        // Drop every fixture the evaluator rejects for adapter identity; the
+        // fact's claimed enforcement is then unproven even though the mapping
+        // entry still exists.
+        let pruned: Vec<FixtureDocument> = fixtures
+            .iter()
+            .filter(|fixture| {
+                !matches!(
+                    fixture.profile.evaluate(&contract),
+                    Err(rejection) if rejection.reason == RejectionReason::AdapterIdentityNotExact
+                )
+            })
+            .cloned()
+            .collect();
+        let error = verify_required_fact_enforcement(&contract, &pruned)
+            .expect_err("unexercised required fact must fail");
+        assert!(
+            error.to_string().contains("adapter_binary_path_version_hash_target"),
+            "unexpected error: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn loader_identity_requires_named_os_and_architecture() -> Result<()> {
+        let fixtures = committed_fixtures()?;
+        let mut profile = find_fixture(&fixtures, "positive-injected-tool")?.profile.clone();
+        evaluate(&profile)?;
+
+        let mut wrong_os = profile.clone();
+        wrong_os.loader.os = "windows".into();
+        assert_rejected_with(&wrong_os, RejectionReason::LoaderContractMismatch)?;
+
+        // Two empty architectures compare equal; equality is not identity.
+        profile.loader.architecture = String::new();
+        if let Some(artifact) = profile.artifact.as_mut() {
+            artifact.target_arch = String::new();
+        }
+        assert_rejected_with(&profile, RejectionReason::LoaderContractMismatch)
+    }
+
+    #[test]
+    fn perl_environment_requires_absolute_normalized_paths() -> Result<()> {
+        let fixtures = committed_fixtures()?;
+        let admitted = find_fixture(&fixtures, "positive-project-image")?.profile.clone();
+
+        let mut relative = admitted.clone();
+        relative.perl.interpreter_path = "usr/local/bin/perl".into();
+        relative.launch_plan.perl_identity = relative.derived_perl_identity();
+        assert_rejected_with(&relative, RejectionReason::ProjectPerlIdentityMismatch)?;
+
+        let mut empty_root = admitted;
+        empty_root.perl.include_roots.push(String::new());
+        assert_rejected_with(&empty_root, RejectionReason::ProjectPerlIdentityMismatch)
+    }
+
+    #[test]
+    fn cleanup_ownership_requires_both_owners() -> Result<()> {
+        let fixtures = committed_fixtures()?;
+        let admitted = find_fixture(&fixtures, "positive-project-image")?.profile.clone();
+        for owner in ["nobody", "process-tree:adapter-parent", "pod:kubelet", "process-tree:/pod:x"]
+        {
+            let mut profile = admitted.clone();
+            profile.cleanup_owner = Some(owner.to_string());
+            assert_rejected_with(&profile, RejectionReason::CleanupOwnershipMissing)?;
+        }
+        assert!(cleanup_owners("process-tree:adapter-parent/pod:kubelet").is_some());
+        Ok(())
     }
 }
