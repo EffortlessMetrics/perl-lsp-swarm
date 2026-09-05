@@ -1810,6 +1810,40 @@ fn a_forwarding_reexport_must_terminate_in_the_inventory() -> Result<()> {
 }
 
 #[test]
+fn a_forwarding_chain_that_never_reaches_the_package_is_rejected() -> Result<()> {
+    // Stepping once was not enough: a target that merely matches *some*
+    // inventoried path is satisfied by another forwarding row, so two rows
+    // pointing at each other passed with no direct export anywhere — the
+    // inventory vouching for itself.
+    let rows = reexport_rows(&[
+        ("rx:a", "the_crate::a::ast_v2", "crates/c/src/a.rs:1"),
+        ("rx:b", "the_crate::b::ast_v2", "crates/c/src/b.rs:1"),
+    ])?;
+
+    // The cycle: a forwards to b, b forwards to a, neither names the package.
+    let cyclic = sources(&[
+        ("crates/c/src/a.rs", "pub use crate::b::ast_v2;"),
+        ("crates/c/src/b.rs", "pub use crate::a::ast_v2;"),
+    ]);
+    let Err(err) = reconcile_reexport_inventory(&rows, &cyclic) else {
+        bail!("a forwarding cycle with no direct export must be rejected");
+    };
+    assert!(
+        format!("{err:?}").contains("cycles through"),
+        "the rejection must name the cycle rather than a missing path: {err:?}"
+    );
+
+    // The same two rows resolve once one end is a real export, so the rule is
+    // about reaching the package and not about chain length.
+    let grounded = sources(&[
+        ("crates/c/src/a.rs", "pub use crate::b::ast_v2;"),
+        ("crates/c/src/b.rs", "pub use perl_ast_v2 as ast_v2;"),
+    ]);
+    reconcile_reexport_inventory(&rows, &grounded)?;
+    Ok(())
+}
+
+#[test]
 fn a_nested_module_sharing_the_package_name_is_not_the_package() -> Result<()> {
     // `names_package_directly` used a substring test, so `other::perl_ast_v2` —
     // a nested module of some other package that happens to share the name —
@@ -2056,9 +2090,32 @@ fn a_doctest_counts_as_code_but_a_plain_comment_does_not() -> Result<()> {
     // ordinary `//` comment genuinely is prose. `////` is an ordinary comment,
     // not a doc comment, which is why the third slash is checked rather than
     // assumed.
+    // Revised deliberately: an earlier version expected an *unfenced* `//!`
+    // line naming an API path to count as code. It does not — `rustdoc`
+    // compiles fenced and indented blocks, not prose — and treating a sentence
+    // as compiled use forced a gating consumer role onto documentation-only
+    // files. The single loose case is replaced by the precise ones: what
+    // `rustdoc` compiles is code, in either doc spelling, and prose is not.
     for (label, source, expected) in [
-        ("doctest in ///", "/// ```\n/// use perl_ast_v2::Node;\n/// ```\npub fn f() {}", true),
-        ("module doc //!", "//! use perl_ast::v2::NodeKind;", true),
+        (
+            "fenced doctest in ///",
+            "/// ```\n/// use perl_ast_v2::Node;\n/// ```\npub fn f() {}",
+            true,
+        ),
+        ("fenced doctest in //!", "//! ```\n//! use perl_ast_v2::Node;\n//! ```", true),
+        ("indented doctest", "///     use perl_ast_v2::Node;\npub fn f() {}", true),
+        (
+            "hidden doctest line",
+            "/// ```\n/// # use perl_ast_v2::Node;\n/// ```\npub fn f() {}",
+            true,
+        ),
+        ("prose naming a path", "//! See perl_ast::v2::NodeKind for the variants.", false),
+        ("prose in ///", "/// Superseded by perl_ast_v2::Node.\npub fn f() {}", false),
+        (
+            "non-rust fence",
+            "/// ```text\n/// use perl_ast_v2::Node;\n/// ```\npub fn f() {}",
+            false,
+        ),
         ("plain // comment", "// use perl_ast_v2::Node;\npub fn f() {}", false),
         ("//// ordinary comment", "//// use perl_ast_v2::Node;\npub fn f() {}", false),
         ("block comment", "/* use perl_ast_v2::Node; */\npub fn f() {}", false),

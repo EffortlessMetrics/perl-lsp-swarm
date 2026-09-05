@@ -970,6 +970,84 @@ fn render_trait_impl_items(
     Ok(format!(" {{ {} }}", rendered.join("; ")))
 }
 
+/// Follow a forwarding re-export until it reaches a direct package export.
+///
+/// Stepping once was not enough. A target that merely matches *some* inventoried
+/// path is satisfied by another forwarding row, so two rows pointing at each
+/// other passed with no direct export anywhere in the chain — the inventory
+/// vouching for itself. Each step now moves to the path the target lands on and
+/// asks the same question again, with a visited set so a cycle is reported
+/// rather than walked forever.
+///
+/// This still proves reachability *within the inventory*, not that the far end
+/// resolves to the package: that needs the name resolution recorded as a
+/// limitation.
+fn resolve_forwarding(
+    rendered: &str,
+    file: &str,
+    binding: &str,
+    target_of: &BTreeMap<String, String>,
+) -> Result<()> {
+    let mut current = rendered.to_string();
+    let mut visited: BTreeSet<String> = BTreeSet::new();
+    loop {
+        if names_package_directly(&current) {
+            return Ok(());
+        }
+        let target = current
+            .trim_start_matches("crate::")
+            .trim_start_matches("self::")
+            .trim_start_matches("super::")
+            .to_string();
+        // The target may name an item *through* an inventoried path —
+        // `ast_v2::DiagnosticId` reaches the package through the inventoried
+        // `perl_parser_core::ast_v2` — so each module prefix is a candidate,
+        // longest first.
+        let mut segments: Vec<&str> = target.split("::").collect();
+        let mut landed: Option<String> = None;
+        while !segments.is_empty() {
+            let candidate = segments.join("::");
+            if let Some(path) = target_of
+                .keys()
+                .find(|path| **path == candidate || path.ends_with(&format!("::{candidate}")))
+            {
+                landed = Some(path.clone());
+                break;
+            }
+            segments.pop();
+        }
+        let Some(path) = landed else {
+            bail!(
+                "`{file}` re-exports `{binding}` from `{rendered}`, which names neither the \
+                 audited package directly nor any inventoried public path. A forwarding \
+                 re-export must terminate in the inventory, or the row describes a path to \
+                 something else."
+            );
+        };
+        if !visited.insert(path.clone()) {
+            bail!(
+                "`{file}` re-exports `{binding}` from `{rendered}`, whose forwarding chain \
+                 cycles through `{path}` without ever reaching a direct export of the audited \
+                 package. A compatibility path that only forwards to another inventoried path \
+                 documents nothing."
+            );
+        }
+        let Some(next) = target_of.get(&path) else {
+            bail!(
+                "`{file}` re-exports `{binding}` from `{rendered}`, whose chain reaches `{path}` \
+                 and stops: no public re-export there says what that path forwards to."
+            );
+        };
+        if *next == current {
+            bail!(
+                "`{file}` re-exports `{binding}` from `{rendered}`, whose forwarding chain does \
+                 not advance past `{path}`."
+            );
+        }
+        current = next.clone();
+    }
+}
+
 /// Render an explicit enum discriminant.
 ///
 /// The discriminant is the value a `repr` enum crosses an FFI or serialization
@@ -1497,6 +1575,80 @@ pub fn parsed_api_use(text: &str) -> Option<bool> {
     Some(visitor.found)
 }
 
+/// Extract the Rust `rustdoc` would compile from one doc comment.
+///
+/// Only fenced blocks count, and only fences `rustdoc` treats as Rust: a bare
+/// ``` ``` ``` opens one, as do the Rust attribute words, while `text`, `json`,
+/// `bash` and friends do not. Hidden lines (`# `) are part of the compiled
+/// doctest and are kept, with the marker removed.
+///
+/// Prose is deliberately excluded. An API path written in a sentence is a
+/// documentation reference, not compiled use, and classifying it as code forced
+/// a gating consumer role onto documentation-only files.
+fn rust_doctest_code(block: &str) -> String {
+    const RUST_FENCE_WORDS: [&str; 7] =
+        ["rust", "ignore", "should_panic", "no_run", "compile_fail", "edition2018", "edition2021"];
+    let mut code: Vec<String> = Vec::new();
+    let mut inside_rust = false;
+    let mut inside_other = false;
+    for line in block.lines() {
+        let trimmed = line.trim_start();
+        if let Some(info) = trimmed.strip_prefix("```") {
+            if inside_rust || inside_other {
+                inside_rust = false;
+                inside_other = false;
+                continue;
+            }
+            let info = info.trim();
+            // An empty info string is Rust; otherwise every comma-separated
+            // word must be one `rustdoc` recognises as Rust.
+            let rust = info.is_empty()
+                || info
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|word| !word.is_empty())
+                    .all(|word| RUST_FENCE_WORDS.contains(&word));
+            if rust {
+                inside_rust = true;
+            } else {
+                inside_other = true;
+            }
+            continue;
+        }
+        if inside_rust {
+            // `# ` hides a line from the rendered docs but not from the
+            // compiler, so it is code.
+            let line = trimmed
+                .strip_prefix("# ")
+                .unwrap_or_else(|| if trimmed == "#" { "" } else { line });
+            code.push(line.to_string());
+            continue;
+        }
+        // An indented block is a Markdown code block, and `rustdoc` compiles
+        // those as doctests too. Dropping them would be a false negative in the
+        // one direction classification may not take: a real compiled consumer
+        // downgraded to a prose mention.
+        if !inside_other && line.starts_with("    ") {
+            code.push(trimmed.strip_prefix("# ").unwrap_or(trimmed).to_string());
+        }
+    }
+    code.join("\n")
+}
+
+/// Whether one doctest body reaches the package's API.
+///
+/// A doctest is usually statements rather than items, and `syn::parse_file`
+/// wants items — so a bare `let n = perl_ast::v2::Node::new();` parses as a
+/// file only by accident. It is wrapped in a function before parsing, with the
+/// unwrapped parse kept for a doctest that really is items (`use` declarations,
+/// which is the grouped-import case this exists for).
+fn doctest_reaches_package(code: &str) -> bool {
+    if parsed_api_use(code).unwrap_or(false) {
+        return true;
+    }
+    parsed_api_use(&format!("fn __doctest() {{\n{code}\n}}")).unwrap_or(false)
+}
+
 /// Collects any path, `use` tree, or doc attribute that reaches the package.
 struct ApiUseVisitor {
     found: bool,
@@ -1523,17 +1675,21 @@ impl ApiUseVisitor {
         }
         let block = self.doc_block.join("\n");
         self.doc_block.clear();
-        if !self.found {
-            // Fence markers are prose to `syn`; stripping them is what lets the
-            // enclosed Rust parse.
-            let code: String = block
-                .lines()
-                .filter(|line| !line.trim_start().starts_with("```"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            if parsed_api_use(&code).unwrap_or(false) {
-                self.found = true;
-            }
+        if self.found {
+            return;
+        }
+        // Only what `rustdoc` compiles counts. Judging the whole doc comment
+        // classified an API path written in ordinary prose as executable use,
+        // which forced a gating consumer role onto a documentation-only
+        // reference — the same false-positive direction as an impl on a
+        // private type, and just as costly in a check that gates other
+        // people's PRs.
+        let code = rust_doctest_code(&block);
+        if code.trim().is_empty() {
+            return;
+        }
+        if API_USE_FORM.is_match(&code) || doctest_reaches_package(&code) {
+            self.found = true;
         }
     }
 
@@ -1583,17 +1739,10 @@ impl<'ast> syn::visit::Visit<'ast> for ApiUseVisitor {
             && let syn::Expr::Lit(lit) = &pair.value
             && let syn::Lit::Str(text) = &lit.lit
         {
-            let line = text.value();
-            // The text match alone repeats the very gap that moved ordinary
-            // code onto the parser: a grouped `use perl_ast::{v2, Node};` in a
-            // doctest names none of the forms `API_USE_FORM` recognises, so
-            // compiled API use could still be classified as prose.
-            if API_USE_FORM.is_match(&line) {
-                self.found = true;
-            }
-            // The parse is deferred to the block, not run per line: a construct
-            // split across doc lines parses as neither half on its own.
-            self.doc_block.push(line);
+            // Everything is deferred to the block: a construct split across
+            // doc lines is not judgeable one line at a time, and a line cannot
+            // be told from prose without knowing whether a fence is open.
+            self.doc_block.push(text.value());
         }
         syn::visit::visit_attribute(self, node);
     }
@@ -2815,7 +2964,22 @@ fn reconcile_reexport_inventory(
 
     // Every public path the inventory knows about, for chaining forwarding
     // re-exports back to a direct one.
-    let all_claimed: BTreeSet<String> = claimed_by_file.values().flatten().cloned().collect();
+    // What each inventoried public path forwards to, so a chain can be walked
+    // rather than merely stepped once. A row's target is the rendered `use`
+    // path of the derived binding at its own site.
+    let mut target_of: BTreeMap<String, String> = BTreeMap::new();
+    for (file, derived) in &derived_by_file {
+        let Some(claimed) = claimed_by_file.get(*file) else {
+            continue;
+        };
+        for (binding, rendered) in derived {
+            for path in claimed {
+                if path == binding || path.ends_with(&format!("::{binding}")) {
+                    target_of.insert(path.clone(), rendered.clone());
+                }
+            }
+        }
+    }
 
     // Direction one: nothing may publish the package publicly without a row.
     // The earlier form only looked inside files a row already named, so a first
@@ -2845,35 +3009,7 @@ fn reconcile_reexport_inventory(
             // residual is recorded rather than implied away — this chains rows
             // to rows, it does not prove the far end resolves to the package.
             if !names_package_directly(rendered) {
-                let target = rendered
-                    .trim_start_matches("crate::")
-                    .trim_start_matches("self::")
-                    .trim_start_matches("super::");
-                // The target may name an item *through* an inventoried path —
-                // `ast_v2::DiagnosticId` reaches the package through the
-                // inventoried `perl_parser_core::ast_v2` — so each module
-                // prefix of the target is a candidate, not only the whole.
-                let mut segments: Vec<&str> = target.split("::").collect();
-                let mut chained = false;
-                while !segments.is_empty() {
-                    let candidate = segments.join("::");
-                    if all_claimed
-                        .iter()
-                        .any(|path| *path == candidate || path.ends_with(&format!("::{candidate}")))
-                    {
-                        chained = true;
-                        break;
-                    }
-                    segments.pop();
-                }
-                if !chained {
-                    bail!(
-                        "`{file}` re-exports `{binding}` from `{rendered}`, which names neither \
-                         the audited package directly nor any inventoried public path. A \
-                         forwarding re-export must terminate in the inventory, or the row \
-                         describes a path to something else."
-                    );
-                }
+                resolve_forwarding(rendered, file, binding, &target_of)?;
             }
         }
     }
