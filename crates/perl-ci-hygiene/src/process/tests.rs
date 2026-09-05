@@ -1014,6 +1014,42 @@ mod child_cwd_launch_coherence {
         Ok(())
     }
 
+    // #14150 review (Devin, round 4): the policy governs only launches whose
+    // resolution depends on a search path. An explicit command path is resolved
+    // directly, so filtering its child's PATH stripped entries the command's own
+    // subprocesses were configured to use, without buying any coherence.
+
+    #[test]
+    fn an_explicit_command_keeps_a_caller_supplied_relative_path() -> TestResult {
+        let shell = Path::new("/bin/sh");
+        if !shell.is_file() {
+            return Err(io::Error::other("instrument unavailable: /bin/sh is not a file").into());
+        }
+
+        let workspace = TempDir::new("coherence-nested")?;
+        let tools = workspace.path().join("tools");
+        fs::create_dir_all(&tools)?;
+        let nested = tools.join("nested-probe");
+        fs::write(&nested, "#!/bin/sh\necho NESTED_RESOLVED\n")?;
+        fs::set_permissions(&nested, fs::Permissions::from_mode(0o755))?;
+
+        // The explicit command resolves without a search path; the *nested*
+        // bare tool is what needs the caller's relative PATH to survive.
+        let output = command_with_output(
+            workspace.path(),
+            &shell.to_string_lossy(),
+            &["-c", "nested-probe"],
+            &[("PATH", "tools")],
+        )?;
+
+        assert_eq!(
+            output.trim(),
+            "NESTED_RESOLVED",
+            "a caller-configured PATH must reach an explicit command's own subprocesses"
+        );
+        Ok(())
+    }
+
     // #14150 review (Devin, round 3): the admission policy has to read the
     // *effective* search path. Reading only the inherited one rejected a bare
     // name that the caller's own absolute PATH resolves; reading only the

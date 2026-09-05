@@ -75,9 +75,14 @@ fn is_search_path_key(key: &str) -> bool {
 
 /// Shared child construction for every wrapper in this module.
 ///
-/// The policy is applied to the *effective* search path — the value the child
-/// would actually use, which is a caller-supplied `PATH` when one is given and
-/// the inherited `PATH` otherwise. Evaluating only the inherited value would
+/// The search-path policy governs exactly the launches whose resolution depends
+/// on a search path, which is bare names only. An explicit command path is
+/// resolved directly by the launch APIs, so its child keeps whatever `PATH` the
+/// caller and environment gave it.
+///
+/// For a bare name the policy reads the *effective* search path — the value the
+/// child would actually use, which is a caller-supplied `PATH` when one is given
+/// and the inherited `PATH` otherwise. Evaluating only the inherited value would
 /// reject a bare name that the caller's own absolute `PATH` resolves perfectly
 /// well; evaluating only the caller's would let a relative component in an
 /// explicitly configured `PATH` reach `repo_root`. One rule over the effective
@@ -87,15 +92,28 @@ fn is_search_path_key(key: &str) -> bool {
 /// Removing PATH is not an empty search list — the platform substitutes its own
 /// default directories — so launching anyway would run a tool that
 /// [`command_exists`] reports absent, which is exactly the discovery/launch
-/// disagreement this module exists to prevent. An explicit *command* path is
-/// unaffected: the launch APIs resolve it directly and never consult a search
-/// path.
+/// disagreement this module exists to prevent.
 fn configure_child(
     command: &str,
     repo_root: &Path,
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<Command> {
+    let mut child = Command::new(command);
+    child.current_dir(repo_root).args(args);
+
+    if !is_bare_name(command) {
+        // An explicit path is resolved directly by the launch APIs, which never
+        // consult a search path. There is no resolution here for the policy to
+        // keep coherent, so the child's PATH is left exactly as the caller and
+        // the environment set it — rewriting it would only strip entries the
+        // command's own subprocesses were configured to use.
+        for (key, value) in env_vars {
+            child.env(key, value);
+        }
+        return Ok(child);
+    }
+
     let inherited = env::var_os("PATH");
     // Later entries win, matching `Command::env`.
     let configured = env_vars
@@ -105,7 +123,7 @@ fn configure_child(
         .map(|(_, value)| OsStr::new(*value));
     let effective = configured.or(inherited.as_deref());
 
-    if is_bare_name(command) && admissible_search_paths(effective).is_empty() {
+    if admissible_search_paths(effective).is_empty() {
         return Err(color_eyre::eyre::eyre!(
             "command '{command}' is not available: the search path has no absolute \
              component, and a relative or empty component cannot be resolved to the \
@@ -113,8 +131,6 @@ fn configure_child(
         ));
     }
 
-    let mut child = Command::new(command);
-    child.current_dir(repo_root).args(args);
     for (key, value) in env_vars {
         // PATH is set from the effective value below so that one policy governs
         // it, whichever source supplied it.
