@@ -696,3 +696,85 @@ fn an_overrun_that_refused_nothing_is_not_early_termination() {
         "a parse with a refused collection must present as terminated early"
     );
 }
+
+/// Source between heredocs is not charged to the collection budget.
+///
+/// The charge is `next_offset - scan_start`, one enclosing span per drain, and
+/// the collector restarts at `next_offset.max(hd.body_start)` — so a drain
+/// holding two declarations whose bodies were far apart would charge the
+/// unscanned gap between them. Review raised that as a false-resource-limit
+/// risk: large valid expressions between heredocs inflating the charge until an
+/// ordinary file trips the budget.
+///
+/// It does not occur, because a drain's `scan_start` is its own first queued
+/// declaration's `body_start` and statements attach their own heredocs as they
+/// complete, so far-apart declarations land in *different* drains. This pins
+/// that: the same two heredocs charge identically whether separated by ordinary
+/// code or adjacent, at both nesting shapes. Without it, a refactor that widened
+/// a drain's span — or retained a queue prefix across more source — would start
+/// charging unscanned bytes with nothing to catch it.
+#[test]
+fn ordinary_source_between_heredocs_is_not_charged() {
+    let gap: String = (0..200).map(|i| format!("my $x{i} = {i};\n")).collect();
+    assert!(gap.len() > 2000, "the gap must dwarf the bodies for this to discriminate");
+
+    // Sequential top-level statements, separated and adjacent.
+    let separated = format!("{FIRST_STATEMENT}{gap}{SECOND_STATEMENT}");
+    let adjacent = two_heredoc_statements();
+    let separated_out = parse_with_budget(&separated, unlimited_budget());
+    let adjacent_out = parse_with_budget(&adjacent, unlimited_budget());
+
+    assert_eq!(
+        heredoc_contents(&separated_out),
+        heredoc_contents(&adjacent_out),
+        "both shapes must collect the same two bodies, or the comparison is not like-for-like"
+    );
+    assert_eq!(
+        separated_out.budget_usage.heredoc_scan_bytes,
+        adjacent_out.budget_usage.heredoc_scan_bytes,
+        "{} bytes of ordinary code between two heredocs must not be charged",
+        gap.len()
+    );
+    // Absolute bound as well as the comparison: a defect that inflated *both*
+    // shapes equally would satisfy the equality above and still charge the gap.
+    assert!(
+        separated_out.budget_usage.heredoc_scan_bytes < gap.len(),
+        "the charge ({}) must stay far below the {} bytes of intervening code, or the \
+         budget is measuring the enclosing span rather than the bodies scanned",
+        separated_out.budget_usage.heredoc_scan_bytes,
+        gap.len()
+    );
+
+    // Nested shape: the outer declaration's queue entry is retained across the
+    // whole block, which is where a retained prefix could widen a drain's span.
+    let filler: String = (0..200).map(|i| format!("    my $y{i} = {i};\n")).collect();
+    let nested_wide = format!(
+        "if (<<COND) {{\ncond body\nCOND\n{filler}    my $inner = <<IN;\ninner body\nIN\n}}\n"
+    );
+    let nested_tight = "if (<<COND) {\ncond body\nCOND\n    my $inner = <<IN;\ninner body\nIN\n}\n";
+    let wide_out = parse_with_budget(&nested_wide, unlimited_budget());
+    let tight_out = parse_with_budget(nested_tight, unlimited_budget());
+
+    assert_eq!(
+        heredoc_contents(&wide_out),
+        heredoc_contents(&tight_out),
+        "both nested shapes must collect the same two bodies"
+    );
+    assert_eq!(
+        wide_out.budget_usage.heredoc_scan_bytes,
+        tight_out.budget_usage.heredoc_scan_bytes,
+        "a retained queue prefix must not charge the {} bytes of block source it spans",
+        filler.len()
+    );
+    assert!(
+        wide_out.budget_usage.heredoc_scan_bytes < filler.len(),
+        "the nested charge ({}) must stay far below the {} bytes of block source spanned",
+        wide_out.budget_usage.heredoc_scan_bytes,
+        filler.len()
+    );
+    assert_eq!(
+        wide_out.stop_cause(),
+        None,
+        "an ordinary file with widely separated heredocs must not trip the budget"
+    );
+}
