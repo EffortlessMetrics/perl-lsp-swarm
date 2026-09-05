@@ -120,12 +120,24 @@ pub(crate) enum SourceBackedReferenceDecline {
     DeclarationAnchorUnavailable,
     /// The declaration anchor had no wire location.
     DeclarationLocationUnavailable,
+    /// The declaration wire location carried a URI that is not a valid protocol URI.
+    ///
+    /// Distinct from [`Self::DeclarationLocationUnavailable`]: an anchor was found and
+    /// produced a location, but its URI could not be converted without naming a
+    /// different resource, so the attempt declines rather than emitting one.
+    DeclarationLocationUriInvalid,
     /// The declaration location could not be serialized for the wire response.
     DeclarationSerializationFailed,
     /// The initialized lexical declaration gate rejected the source shape.
     InitializedLexicalGateRejected,
     /// An occurrence had no wire location anchor.
     OccurrenceLocationUnavailable,
+    /// An occurrence wire location carried a URI that is not a valid protocol URI.
+    ///
+    /// Distinct from [`Self::OccurrenceLocationUnavailable`]: the anchor produced a
+    /// location, but its URI could not be converted without naming a different
+    /// resource, so the attempt declines rather than emitting one.
+    OccurrenceLocationUriInvalid,
     /// An occurrence location could not be serialized for the wire response.
     OccurrenceSerializationFailed,
     /// The exact path produced no locations after filtering.
@@ -171,6 +183,9 @@ impl SourceBackedReferenceAttempt {
                     SourceBackedReferenceDecline::DeclarationLocationUnavailable => {
                         ("declaration_location", false, 0, None)
                     }
+                    SourceBackedReferenceDecline::DeclarationLocationUriInvalid => {
+                        ("declaration_location_uri", false, 0, None)
+                    }
                     SourceBackedReferenceDecline::DeclarationSerializationFailed => {
                         ("declaration_serialization", false, 0, None)
                     }
@@ -179,6 +194,9 @@ impl SourceBackedReferenceAttempt {
                     }
                     SourceBackedReferenceDecline::OccurrenceLocationUnavailable => {
                         ("occurrence_location", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::OccurrenceLocationUriInvalid => {
+                        ("occurrence_location_uri", false, 0, None)
                     }
                     SourceBackedReferenceDecline::OccurrenceSerializationFailed => {
                         ("occurrence_serialization", false, 0, None)
@@ -1797,7 +1815,11 @@ impl LspServer {
                     SourceBackedReferenceDecline::OccurrenceLocationUnavailable,
                 );
             };
-            let location: lsp_types::Location = wire_location.into();
+            let Ok(location) = lsp_types::Location::try_from(wire_location) else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::OccurrenceLocationUriInvalid,
+                );
+            };
             let Ok(location) = serde_json::to_value(location) else {
                 return SourceBackedReferenceAttempt::Declined(
                     SourceBackedReferenceDecline::OccurrenceSerializationFailed,
@@ -1812,7 +1834,11 @@ impl LspServer {
             && let Some(anchor_id) = decl_anchor
             && let Some(wire_location) = workspace_index.semantic_anchor_wire_location(anchor_id)
         {
-            let decl_location: lsp_types::Location = wire_location.into();
+            let Ok(decl_location) = lsp_types::Location::try_from(wire_location) else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::DeclarationLocationUriInvalid,
+                );
+            };
             let Ok(decl_value) = serde_json::to_value(&decl_location) else {
                 return SourceBackedReferenceAttempt::Declined(
                     SourceBackedReferenceDecline::DeclarationSerializationFailed,
@@ -2220,6 +2246,13 @@ mod tests {
                 None,
             ),
             (
+                SourceBackedReferenceDecline::DeclarationLocationUriInvalid,
+                "declaration_location_uri",
+                false,
+                0,
+                None,
+            ),
+            (
                 SourceBackedReferenceDecline::DeclarationSerializationFailed,
                 "declaration_serialization",
                 false,
@@ -2236,6 +2269,13 @@ mod tests {
             (
                 SourceBackedReferenceDecline::OccurrenceLocationUnavailable,
                 "occurrence_location",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::OccurrenceLocationUriInvalid,
+                "occurrence_location_uri",
                 false,
                 0,
                 None,
