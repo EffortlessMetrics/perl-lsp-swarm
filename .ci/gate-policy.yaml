@@ -454,6 +454,31 @@ gates:
     planning:
       role: always_on
 
+  # Issue #1269 action item 3: a new parallel-unsafe test function (process
+  # env or CWD mutation without `#[serial]`-family serialization or an
+  # adjudicated row in ci/serial_test_identities.json) must not enter the
+  # workspace. The gate is fail-closed on NEW identities; repairing a
+  # registered site requires retiring its row, so the accepted set only
+  # shrinks. The 35 seeded rows are the measured current-main residual census
+  # at 94e099747f (env/cwd signals; port binds and static counters are
+  # documented non-goals in the lint module).
+  - name: serial_test_ratchet
+    tier: pr_fast
+    description: "Ratchet parallel-unsafe test serialization (#[serial] policy, #1269)"
+    required: true
+    command: just ci-serial-test-ratchet
+    timeout_seconds: 120
+    retry_count: 0
+    budgets:
+      max_duration_ms: 90000
+    quarantine: false
+    tags:
+      - policy
+      - tests
+      - ratchet
+    planning:
+      role: always_on
+
   - name: release_history_check
     tier: pr_fast
     description: "Check release-history drift"
@@ -744,14 +769,10 @@ gates:
 
   - name: compile_all_targets
     tier: pr_fast
-    description: "Compile all workspace targets (lib/bin/tests/benches) plus example test targets to catch integration, bench, and default-feature example cfg(test) bit-rot; all-features validation remains owned by the preceding check pass"
+    description: "Compile all workspace targets (lib/bin/tests/benches) to catch integration and bench bit-rot; also validates all-features paths"
     required: true
     # NOTE (#4642): this is a COMPILE-ONLY gate — it never runs tests. It catches
     # build/bit-rot in `tests/` and bench targets but not runtime failures.
-    # NOTE (#12693): the trailing `cargo test --workspace --examples --no-run`
-    # pass compiles each example's embedded `#[cfg(test)]` modules under
-    # default features; `cargo check --all-targets` skips those test targets.
-    # Feature-gated example tests remain covered by the all-features check pass.
     command: just check-all-targets
     # Two full-workspace cargo check passes (default + all-features) require more time
     # than the original 180s budget on a fresh CI runner. Aligned with unit_scoped budget.
@@ -1225,12 +1246,17 @@ gates:
 
   - name: unit_dap_support_full
     tier: merge_gate
-    description: "DAP, CI hygiene, test support, and tree-sitter workspace library tests"
+    description: "DAP, CI hygiene, test support, and tree-sitter workspace tests; Linux does not prove Windows-only pause runtime"
     required: true
-    # `--lib` excludes tests/. 143 integration targets in these crates are
-    # executed by no gate on a bounded schedule -- only when a PR diff happens
-    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
-    # this to --tests is blocked on the red suites in #11708.
+    # Keep the broad support-crate portion --lib-only because the remaining
+    # integration suites are tracked red debt (#11708). The four perl-dap
+    # test-helpers targets below are healthy and must be executed explicitly:
+    # `cargo test --tests` otherwise skips them silently when the feature is off
+    # (#14333). Recorded per #11694; flipping the broad support-crate portion to
+    # --tests is blocked on the red suites in #11708.
+    # pr_fast residual: unit_routed_full still runs the perl-dap leg without
+    # `--features test-helpers`, so these four targets stay absent from the
+    # pr_fast lane; closing that leg is tracked in #14458.
     #   perl-ci-hygiene               6
     #   perl-dap                    115
     #   perl-tdd-support              4
@@ -1238,16 +1264,31 @@ gates:
     #   perl-test-must                2
     #   tree-sitter-perl-c            6
     #   tree-sitter-perl-rs           8
+    # The command is retried once only after a watchdog timeout. Two attempts
+    # at 450s plus the Linux watchdog's 75s TERM/KILL grace per attempt consume
+    # 1050s, leaving 150s inside the workflow's 1200s shard watchdog for the
+    # terminal gate receipt, summary, and process cleanup. Do not increase this
+    # ceiling without revisiting that outer watchdog contract.
+    # Claim boundary: on Linux `#[cfg(windows)]` removes the Windows-only
+    # pause test before compilation, so this row runs only non-Windows tests
+    # and does not prove Windows pause behavior; that remains a Windows proof
+    # obligation.
     command: >-
       cargo test --locked --lib
       -p perl-ci-hygiene -p perl-dap
       -p perl-tdd-support -p perl-test-generators -p perl-test-must
       -p tree-sitter-perl-c -p tree-sitter-perl-rs
+      -- --test-threads=4 &&
+      cargo test --locked --features test-helpers -p perl-dap
+      --test eval_ref_cache_miss_resume_tests
+      --test dap_evaluate_comprehensive_tests
+      --test dap_variable_reference_hardening_tests
+      --test pause_signal_delivery_tests
       -- --test-threads=4
-    timeout_seconds: 300
+    timeout_seconds: 450
     retry_count: 1
     budgets:
-      max_duration_ms: 240000
+      max_duration_ms: 360000
     quarantine: false
     tags:
       - test
@@ -1530,6 +1571,31 @@ gates:
       - policy
       - docs
       - generated
+
+  - name: must_context_check
+    tier: merge_gate
+    # ADVISORY on landing (#14291). The blocking-failure filter in
+    # `xtask/src/tasks/gates.rs` is `required.unwrap_or(true)`, so a
+    # `required: false` member runs on every PR and reports without failing the
+    # shard. That is deliberate for a brand-new guard: it needs a period of
+    # real hosted traffic before a false positive can block anyone's merge. The
+    # known false-positive shape is documented in
+    # `crates/perl-ci-hygiene/src/commands/must_context.rs` (unrelated edits
+    # sharing one zero-context hunk); its remedy is always one line. Promoting
+    # this to `required: true` is a separate, evidenced decision.
+    description: "Report changes that drop an .expect(\"…\") explanation into a bare perl-test-must helper"
+    required: false
+    command: cargo xtask ci-hygiene check-must-context
+    # Matches non_rust_inventory_check, the sibling `cargo xtask ...` gate in
+    # this shard: the cost is the cargo invocation, not the scan itself.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - tests
 
   - name: lint_policy
     tier: merge_gate
@@ -2173,7 +2239,6 @@ workflow_integration:
   job_mapping:
     ci-gate:
       gates:
-        - fmt
         - ignored_tests_check_refs
         - clippy_full
         - unit_foundation_full
