@@ -704,7 +704,7 @@ jobs:
       needs.route-ripr.outputs.target == 'github' &&
       needs.route-ripr.outputs.fallback_allowed == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       RIPR_VERSION: "0.9.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
