@@ -451,16 +451,33 @@ fn pattern_is_compatible(kind: &NodeKind, geometry: &RegexFamilyGeometry) -> boo
 }
 
 fn apply_ast_compatibility_flags(node: &mut Node, table: &RegexAnalysisTable) {
-    let expected = ExpectedFamily::for_node(&node.kind);
-    let embedded = expected
+    // Only a record that actually analyzed the body is an authority on embedded code.
+    //
+    // A record whose geometry was unavailable, or a node with no record at all, has
+    // nothing to say about it — and writing that silence into the flag would clear
+    // evidence the parser had already found while publishing no canonical finding to
+    // replace it, since the projection emits nothing for such a record either. Leaving
+    // the parser's own flag intact keeps the compatibility lint as the floor. Dedup is
+    // unaffected: suppression is matched against canonical embedded-code spans, and an
+    // unanalyzed record contributes none, so the finding is still published exactly
+    // once.
+    //
+    // No input reached this branch in probing (varied delimiters, nesting, recovered
+    // forms, and multiple operators per document all produced one `Analyzed` record per
+    // regex-family node), so this guards a latent hazard rather than an observed
+    // failure. The previous unconditional write meant reachability was the only thing
+    // standing between the code and a lost security diagnostic.
+    let analyzed = ExpectedFamily::for_node(&node.kind)
         .and_then(|family| record_for_node(table, node.location, family))
-        .is_some_and(RegexAnalysisRecord::has_embedded_code);
+        .filter(|record| record.availability == RegexAnalysisAvailability::Analyzed);
 
     match &mut node.kind {
         NodeKind::Regex { has_embedded_code, .. }
         | NodeKind::Match { has_embedded_code, .. }
         | NodeKind::Substitution { has_embedded_code, .. } => {
-            *has_embedded_code = embedded;
+            if let Some(record) = analyzed {
+                *has_embedded_code = record.has_embedded_code();
+            }
         }
         _ => {}
     }

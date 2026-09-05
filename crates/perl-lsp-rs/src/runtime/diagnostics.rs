@@ -1214,7 +1214,7 @@ impl LspServer {
             };
             let msg_val =
                 Self::diagnostic_message_value(&d.message, None, markup_message_support);
-            diagnostic_json(
+            let mut diag = diagnostic_json(
                 start_line,
                 start_char,
                 end_line,
@@ -1223,7 +1223,22 @@ impl LspServer {
                 d.code.as_deref().unwrap_or_default(),
                 "perl-lsp",
                 msg_val,
-            )
+            );
+            // Enrichment parity (#1773). These are catalog-backed codes, so the
+            // catalog can answer both fields here exactly as it does on the full
+            // path; a `PL1000` should not lose its documentation link merely
+            // because the server is running in syntax-only mode.
+            if let Some(code_str) = d.code.as_deref() {
+                if let Some(url) =
+                    DiagnosticCode::parse_code(code_str).and_then(|dc| dc.documentation_url())
+                {
+                    diag["codeDescription"] = json!({ "href": url });
+                }
+                let category = DiagnosticCode::parse_code(code_str)
+                    .map_or_else(|| "Other".to_string(), |dc| format!("{:?}", dc.category()));
+                diag["data"] = diagnostic_data(code_str, &category, d.fixable, &[]);
+            }
+            diag
         })
         .collect()
     }
@@ -6436,13 +6451,24 @@ print \"unreachable\\n\";\n";
                 != Some(DiagnosticCode::ParseError.as_str())),
             "fixture must not rely on a parse error: {items:?}"
         );
+        let risk: Vec<_> = items
+            .iter()
+            .filter(|item| item.get("code").and_then(Value::as_str) == Some("PL1000"))
+            .collect();
+        assert_eq!(risk.len(), 1, "syntax-only must publish the backtracking risk: {items:?}");
+
+        // Enrichment parity (#1773): a catalog-backed code keeps its documentation
+        // link and structured metadata in this mode too, so a client does not see a
+        // different shape for the same code depending on how the server was started.
+        let item = risk[0];
+        assert!(
+            item.pointer("/codeDescription/href").and_then(Value::as_str).is_some(),
+            "PL1000 must carry its catalog documentation link: {item:?}"
+        );
         assert_eq!(
-            items
-                .iter()
-                .filter(|item| item.get("code").and_then(Value::as_str) == Some("PL1000"))
-                .count(),
-            1,
-            "syntax-only must publish the backtracking risk: {items:?}"
+            item.pointer("/data/code").and_then(Value::as_str),
+            Some("PL1000"),
+            "PL1000 must carry structured data: {item:?}"
         );
     }
 
