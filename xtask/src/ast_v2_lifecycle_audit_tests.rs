@@ -1810,6 +1810,53 @@ fn a_forwarding_reexport_must_terminate_in_the_inventory() -> Result<()> {
 }
 
 #[test]
+fn a_forwarding_target_does_not_resolve_through_another_crate() -> Result<()> {
+    // A bare `ast_v2` is a suffix of several inventoried paths across crates.
+    // Taking the first suffix match made the answer depend on map order and let
+    // a local module validate through another crate's genuine chain.
+    let rows = reexport_rows(&[
+        // A real chain in one crate.
+        (
+            "rx:core-engine",
+            "perl_parser_core::engine::ast_v2",
+            "crates/perl-parser-core/src/e.rs:1",
+        ),
+        // An unrelated local `ast_v2` in a different crate, forwarding to
+        // nothing of its own.
+        ("rx:other", "other_crate::ast_v2", "crates/other-crate/src/lib.rs:1"),
+    ])?;
+    let across = sources(&[
+        ("crates/perl-parser-core/src/e.rs", "pub use perl_ast_v2 as ast_v2;"),
+        ("crates/other-crate/src/lib.rs", "pub use local::ast_v2;"),
+    ]);
+    let Err(err) = reconcile_reexport_inventory(&rows, &across) else {
+        bail!("an unrelated local module must not resolve through another crate's chain");
+    };
+    let rendered = format!("{err:?}");
+    assert!(
+        rendered.contains("local::ast_v2") || rendered.contains("other-crate"),
+        "the rejection must be about the unrelated path: {rendered}"
+    );
+
+    // The crate root is read from the site path, so the same-crate case still
+    // resolves and this is not simply rejecting every forward.
+    let same_crate = reexport_rows(&[
+        (
+            "rx:core-engine",
+            "perl_parser_core::engine::ast_v2",
+            "crates/perl-parser-core/src/e.rs:1",
+        ),
+        ("rx:core-root", "perl_parser_core::ast_v2", "crates/perl-parser-core/src/lib.rs:1"),
+    ])?;
+    let within = sources(&[
+        ("crates/perl-parser-core/src/e.rs", "pub use perl_ast_v2 as ast_v2;"),
+        ("crates/perl-parser-core/src/lib.rs", "pub use engine::ast_v2;"),
+    ]);
+    reconcile_reexport_inventory(&same_crate, &within)?;
+    Ok(())
+}
+
+#[test]
 fn an_item_position_macro_invocation_stops_the_audit() -> Result<()> {
     // A macro invocation at item position can expand to public structs, enums,
     // functions, impls or re-exports, and `syn` does not expand macros. Skipping

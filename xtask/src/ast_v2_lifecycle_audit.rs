@@ -991,6 +991,75 @@ fn render_trait_impl_items(
     Ok(format!(" {{ {} }}", rendered.join("; ")))
 }
 
+/// The crate a repository-relative source path belongs to, as a Rust path
+/// segment (`crates/perl-parser-core/src/lib.rs` → `perl_parser_core`).
+fn crate_root_of(file: &str) -> Option<String> {
+    let mut parts = file.split('/');
+    if parts.next()? != "crates" {
+        return None;
+    }
+    Some(parts.next()?.replace('-', "_"))
+}
+
+/// Resolve one candidate module path to the inventoried path it lands on.
+///
+/// Fixed order, because a bare `ast_v2` is a suffix of several inventoried
+/// paths and picking the first made the answer depend on map iteration order:
+///
+/// 1. the site's own crate root joined to the candidate, exactly;
+/// 2. a unique match within the site's crate;
+/// 3. a unique match anywhere in the inventory.
+///
+/// More than one match at the last step is reported rather than guessed. Fully
+/// resolving a cross-crate forward needs the module graph, which is the name
+/// resolution this instrument records as a limitation — so where it cannot be
+/// certain it says so instead of choosing.
+fn resolve_candidate(
+    candidate: &str,
+    crate_root: Option<&str>,
+    target_of: &BTreeMap<String, String>,
+    file: &str,
+    binding: &str,
+) -> Result<Option<String>> {
+    let matches =
+        |path: &String| -> bool { path == candidate || path.ends_with(&format!("::{candidate}")) };
+
+    if let Some(root) = crate_root {
+        let exact = format!("{root}::{candidate}");
+        if target_of.contains_key(&exact) {
+            return Ok(Some(exact));
+        }
+        let prefix = format!("{root}::");
+        let own_crate: Vec<&String> =
+            target_of.keys().filter(|path| path.starts_with(&prefix) && matches(path)).collect();
+        if own_crate.len() == 1 {
+            return Ok(Some(own_crate[0].clone()));
+        }
+        if own_crate.len() > 1 {
+            bail!(
+                "`{file}` re-exports `{binding}`, whose forwarding target `{candidate}` matches \
+                 {} inventoried paths inside `{root}`: {:?}. Resolving that needs the module \
+                 graph, so the audit reports the ambiguity rather than choosing one.",
+                own_crate.len(),
+                own_crate
+            );
+        }
+    }
+
+    let anywhere: Vec<&String> = target_of.keys().filter(|path| matches(path)).collect();
+    match anywhere.len() {
+        0 => Ok(None),
+        1 => Ok(Some(anywhere[0].clone())),
+        _ => bail!(
+            "`{file}` re-exports `{binding}`, whose forwarding target `{candidate}` matches {} \
+             inventoried paths across crates: {:?}. Taking the first would let a local module \
+             validate through another crate's chain, so the audit reports the ambiguity instead.",
+            anywhere.len(),
+            anywhere
+        ),
+    }
+}
+
 /// Follow a forwarding re-export until it reaches a direct package export.
 ///
 /// Stepping once was not enough. A target that merely matches *some* inventoried
@@ -1024,15 +1093,20 @@ fn resolve_forwarding(
         // `ast_v2::DiagnosticId` reaches the package through the inventoried
         // `perl_parser_core::ast_v2` — so each module prefix is a candidate,
         // longest first.
+        //
+        // Which inventoried path a candidate lands on is resolved in a fixed
+        // order rather than by taking the first suffix match anywhere. A bare
+        // `ast_v2` is a suffix of four inventoried paths across three crates,
+        // so "first match wins" made resolution depend on map order and let a
+        // local module validate through another crate's genuine chain.
+        let crate_root = crate_root_of(file);
         let mut segments: Vec<&str> = target.split("::").collect();
         let mut landed: Option<String> = None;
         while !segments.is_empty() {
             let candidate = segments.join("::");
-            if let Some(path) = target_of
-                .keys()
-                .find(|path| **path == candidate || path.ends_with(&format!("::{candidate}")))
-            {
-                landed = Some(path.clone());
+            landed =
+                resolve_candidate(&candidate, crate_root.as_deref(), target_of, file, binding)?;
+            if landed.is_some() {
                 break;
             }
             segments.pop();
