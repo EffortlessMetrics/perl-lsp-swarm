@@ -808,7 +808,7 @@ fn admissible_search_paths_drops_empty_components_in_every_position() -> TestRes
         format!("{absolute_display}{separator}{separator}{absolute_display}"),
         format!("{absolute_display}{separator}"),
     ] {
-        let admitted = admissible_search_paths(Some(OsString::from(&raw).as_os_str()));
+        let admitted = admissible_search_paths(Some(OsStr::new(&raw)));
         assert!(
             admitted.iter().all(|dir| dir.is_absolute() && !dir.as_os_str().is_empty()),
             "empty component survived admission for PATH={raw:?}: {admitted:?}"
@@ -834,7 +834,7 @@ fn admissible_search_paths_drops_relative_components_and_keeps_absolute_order() 
     );
 
     assert_eq!(
-        admissible_search_paths(Some(OsString::from(raw).as_os_str())),
+        admissible_search_paths(Some(OsStr::new(&raw))),
         vec![first.path().to_path_buf(), second.path().to_path_buf()],
         "only absolute components are admissible, in PATH order"
     );
@@ -961,22 +961,22 @@ mod child_cwd_launch_coherence {
         plant(workspace.path(), "WORKSPACE")?;
 
         for raw in [".", "", ":", ".:"] {
-            let path = OsString::from(raw);
+            let path = OsStr::new(raw);
 
             assert!(
-                !command_exists_in_path(PROBE, Some(path.as_os_str())),
+                !command_exists_in_path(PROBE, Some(path)),
                 "PATH={raw:?} has no admissible component and must report the tool absent"
             );
             // PATH is removed rather than emptied, so the launch falls back to
             // the platform's absolute default search path — never the
             // workspace. An empty PATH *value* would have meant the workspace.
             assert_eq!(
-                launch_with_policy(workspace.path(), path.as_os_str())?,
+                launch_with_policy(workspace.path(), path)?,
                 "<entity not found>",
                 "an unadmitted PATH must not reach the workspace candidate (PATH={raw:?})"
             );
             assert_eq!(
-                launch_without_policy(workspace.path(), path.as_os_str())?,
+                launch_without_policy(workspace.path(), path)?,
                 "WORKSPACE",
                 "fixture no longer reproduces the defect for PATH={raw:?}"
             );
