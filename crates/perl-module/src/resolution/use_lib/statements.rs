@@ -172,6 +172,12 @@ fn is_data_section_marker(rest: &str) -> bool {
     })
 }
 
+/// Advance `index` through `chars` until it points at the first entry at or
+/// past `byte_end`.
+///
+/// The scanner walks a precomputed `char_indices` slice but jumps by byte
+/// offsets whenever it skips a region (POD, a heredoc body, a data section).
+/// This resynchronizes the character cursor after such a jump.
 fn advance_char_index(chars: &[(usize, char)], mut index: usize, byte_end: usize) -> usize {
     while index < chars.len() && chars[index].0 < byte_end {
         index += 1;
@@ -214,6 +220,12 @@ fn closes_heredoc(line: &str, tag: &str, strip_indent: bool) -> bool {
     if strip_indent { line.trim_start() == tag } else { line == tag }
 }
 
+/// Return the offset just past the POD section opening on the line at `start`.
+///
+/// A column-zero `=` directive puts Perl's lexer into POD until a `=cut` line,
+/// whichever directive opened it — a standalone `=cut` opens POD like any
+/// other. An unterminated section runs to end of file, which is also what
+/// Perl does, so the whole remainder stays out of the rail.
 fn skip_pod_section(source: &str, start: usize) -> usize {
     let Some(first_newline) = source[start..].find('\n') else {
         return source.len();
@@ -413,6 +425,11 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
     Some((tag_end, source[tag_start..tag_end].to_string(), strip_indent, true))
 }
 
+/// Whether a line terminating `tag` appears anywhere below the line at `start`.
+///
+/// Only bareword delimiters need this confirmation: they are the one form
+/// indistinguishable from incidental text such as a regex body. Quoted,
+/// escaped and empty delimiters are honored on sight.
 fn has_heredoc_terminator(source: &str, start: usize, tag: &str, strip_indent: bool) -> bool {
     let Some(first_newline) = source[start..].find('\n') else {
         return false;
@@ -422,6 +439,12 @@ fn has_heredoc_terminator(source: &str, start: usize, tag: &str, strip_indent: b
         .any(|(line, _)| closes_heredoc(line, tag, strip_indent))
 }
 
+/// Consume the bodies of the heredocs queued in `pending`, returning the offset
+/// of the first line that is code again.
+///
+/// Openers stack in source order on one line (`print <<'A', <<'B';`), so the
+/// bodies close in that same order and only the front of the queue can be
+/// closed by any given line.
 fn skip_heredoc_bodies(
     source: &str,
     mut line_start: usize,
@@ -447,6 +470,10 @@ fn skip_heredoc_bodies(
     line_start
 }
 
+/// Record one statement slice, normalized by `strip_statement_prefix`.
+///
+/// Every slice goes through the same normalization, so whether a `BEGIN` block
+/// was present never decides how the rest of the slice is treated.
 fn push_statement<'a>(statements: &mut Vec<&'a str>, statement: &'a str) {
     statements.push(strip_statement_prefix(statement));
 }
@@ -490,6 +517,10 @@ fn strip_leading_begin_block_prefix(trimmed: &str) -> Option<&str> {
     Some(skip_leading_whitespace_and_comments(rest))
 }
 
+/// Skip leading whitespace and whole-line `#` comments, returning the rest.
+///
+/// A comment with no trailing newline consumes the remainder, yielding an empty
+/// slice rather than treating the comment text as code.
 fn skip_leading_whitespace_and_comments(mut source: &str) -> &str {
     loop {
         source = source.trim_start();
