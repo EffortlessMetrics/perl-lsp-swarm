@@ -170,9 +170,12 @@ execute the new line.
 
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
 - never edit the coordination checkout directly;
-- never use `git stash` in worktrees;
+- do not use `git stash` for shared multi-worktree agent work; the stash ref is
+  repository-global;
 - stage intended paths explicitly;
-- use `--force-with-lease=<branch>:<expected-sha>` for an authorized rewrite;
+- rewrite published candidate history only with established sole mutation ownership and
+  an explicit expected remote SHA; if exclusivity is unknown, preserve the observed
+  remote head and use a non-rewriting integration or stop;
 - preserve dirty, unpushed, or salvageable work;
 - clean only lane-owned branches, worktrees, and scratch after reconciliation.
 
