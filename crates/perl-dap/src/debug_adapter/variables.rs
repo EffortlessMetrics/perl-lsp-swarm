@@ -539,6 +539,27 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
+        // #8354 fail-closed gate. The refusal is a function of the advertised
+        // capability alone, so advertisement and enforcement cannot disagree.
+        // It fires before `parse_dap_arguments`, name/value screening,
+        // reference lookup, and any broker/debugger traffic: while the
+        // capability is closed, no parser, resolver, coordinator, or transport
+        // call may run and no reference or retained state may change — valid
+        // and hostile input get the identical early unsupported response.
+        if crate::backend::capabilities::refuse_set_variable(
+            crate::backend::capabilities::advertises_set_variable(),
+        ) {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "setVariable".to_string(),
+                body: None,
+                message: Some(
+                    crate::backend::capabilities::SET_VARIABLE_UNSUPPORTED_MESSAGE.to_string(),
+                ),
+            };
+        }
         let args: SetVariableArguments = match parse_dap_arguments(arguments) {
             Ok(a) => a,
             Err(message) => {
@@ -988,9 +1009,10 @@ mod hazard_invariant_tests {
     }
 
     #[test]
-    fn package_globals_and_noncurrent_scope_refs_are_rejected_before_query() {
+    fn package_globals_and_noncurrent_scope_refs_are_rejected_before_query()
+    -> Result<(), Box<dyn std::error::Error>> {
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
         use crate::types::StackFrame;
@@ -1025,12 +1047,14 @@ mod hazard_invariant_tests {
             before_queries,
             "unadmitted scope references must perform zero framed debugger queries"
         );
+        Ok(())
     }
 
     #[test]
-    fn cleared_session_does_not_revive_stale_scope_from_recent_output() {
+    fn cleared_session_does_not_revive_stale_scope_from_recent_output()
+    -> Result<(), Box<dyn std::error::Error>> {
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         let mut a = adapter();
         a.seed_stopped_session_with_frames_for_test(vec![]);
@@ -1041,12 +1065,13 @@ mod hazard_invariant_tests {
             variables_body_is_empty(&mut a, 11),
             "a scope ref must stay empty after its session is cleared"
         );
+        Ok(())
     }
 
     #[test]
-    fn unknown_reference_does_not_parse_recent_output() {
+    fn unknown_reference_does_not_parse_recent_output() -> Result<(), Box<dyn std::error::Error>> {
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         let mut a = adapter();
         a.seed_stopped_session_with_frames_for_test(vec![]);
@@ -1058,6 +1083,7 @@ mod hazard_invariant_tests {
             variables_body_is_empty(&mut a, 999_999),
             "an unknown reference must not be correlated with recent output"
         );
+        Ok(())
     }
 
     // --- Fix #1338: stale EvalResult ref with Stopped session -> early short-circuit ---
@@ -1077,10 +1103,11 @@ mod hazard_invariant_tests {
     // Skip when perl is not on PATH (seed_stopped_session_with_frames_for_test
     // spawns perl -e 1 as a no-op child process).
     #[test]
-    fn fix_1338_stale_eval_ref_stopped_session_short_circuits_to_honest_empty() {
+    fn fix_1338_stale_eval_ref_stopped_session_short_circuits_to_honest_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
         // Skip if perl is not available on PATH.
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         let mut a = adapter();
         // Seed a Stopped session so the Running-state guard does not trigger.
@@ -1094,6 +1121,7 @@ mod hazard_invariant_tests {
                 "fix #1338: stopped session + stale eval_ref={eval_ref_wire} must return honest empty"
             );
         }
+        Ok(())
     }
 
     // --- Guard test: cached EvalResult is NOT short-circuited by the fix #1338 early return ---
@@ -1357,7 +1385,7 @@ mod value_format_family_tests {
 
     /// Frame 1 as the exact current stopped frame, so the Locals scope wire
     /// reference for frame 1 (11) passes current-frame admission.
-    fn seed_current_frame(adapter: &DebugAdapter) {
+    fn seed_current_frame(adapter: &DebugAdapter) -> TestResult {
         adapter.seed_stopped_session_with_frames_for_test(vec![StackFrame::new(
             1,
             "main::run",
@@ -1368,6 +1396,7 @@ mod value_format_family_tests {
             },
             3,
         )]);
+        Ok(())
     }
 
     fn seed_typed_roots(adapter: &DebugAdapter, wire: i32) {
@@ -1433,7 +1462,7 @@ mod value_format_family_tests {
             return Ok(());
         }
         let mut adapter = DebugAdapter::new();
-        seed_current_frame(&adapter);
+        seed_current_frame(&adapter)?;
         seed_typed_roots(&adapter, 11);
 
         // Rows are sorted by name: $f, $n, $neg, $s, $u, $zero.
@@ -1466,7 +1495,7 @@ mod value_format_family_tests {
             return Ok(());
         }
         let mut adapter = DebugAdapter::new();
-        seed_current_frame(&adapter);
+        seed_current_frame(&adapter)?;
         seed_typed_roots(&adapter, 11);
 
         // Hex first, then default on the same cached reference: the second
@@ -1490,7 +1519,7 @@ mod value_format_family_tests {
             return Ok(());
         }
         let mut adapter = DebugAdapter::new();
-        seed_current_frame(&adapter);
+        seed_current_frame(&adapter)?;
         seed_typed_roots(&adapter, 11);
 
         assert_eq!(
@@ -1507,7 +1536,7 @@ mod value_format_family_tests {
             return Ok(());
         }
         let mut adapter = DebugAdapter::new();
-        seed_current_frame(&adapter);
+        seed_current_frame(&adapter)?;
 
         let lines = vec!["@arr = [10, 20]".to_string()];
         let (roots, children) = DebugAdapter::parse_scope_variables_from_lines(
@@ -1569,11 +1598,12 @@ mod value_format_family_tests {
     fn mutation_and_evaluate_families_reject_unknown_format_options() -> TestResult {
         let mut adapter = DebugAdapter::new();
         // Argument deserialization fails before any session or mutation work.
+        // setVariable is deliberately absent from the family loop: since
+        // #8354 its capability gate refuses before argument parsing, so
+        // setExpression carries the mutation-family admission proof. The
+        // ordering claim itself (gate precedes screening) is asserted below
+        // and in dap_setvariable_capability_fail_closed_8354.
         for (command, arguments) in [
-            (
-                "setVariable",
-                json!({ "variablesReference": 11, "name": "$x", "value": "5", "format": { "radix": 16 } }),
-            ),
             ("evaluate", json!({ "expression": "$x", "format": { "radix": 16 } })),
             (
                 "setExpression",
@@ -1586,38 +1616,69 @@ mod value_format_family_tests {
                 "{command} must reject the unknown option by name: {message}"
             );
         }
+        // setVariable must refuse on the capability floor before it would ever
+        // reach this argument validation.
+        let message = response_message(
+            &mut adapter,
+            "setVariable",
+            json!({ "variablesReference": 11, "name": "$x", "value": "5", "format": { "radix": 16 } }),
+        )?;
+        assert!(
+            message.contains("supportsSetVariable"),
+            "setVariable must be refused by the #8354 capability gate, not by argument \
+             validation: {message}"
+        );
         Ok(())
     }
 
     #[test]
-    fn valid_hex_format_is_accepted_by_all_four_families() -> TestResult {
+    fn valid_hex_format_is_accepted_by_supported_families_and_floored_for_set_expression()
+    -> TestResult {
         // A well-formed format deserializes cleanly: without a session the
-        // handlers proceed to their normal "No debugger session" failure, NOT
-        // to a format error - proving the option is consumed, not rejected.
+        // setVariable/evaluate handlers proceed to their normal "No debugger
+        // session" failure, NOT to a format error - proving the option is
+        // consumed, not rejected.
+        //
+        // #8354: setVariable is absent from this family because its capability
+        // gate refuses before argument parsing, so evaluate carries the
+        // format-acceptance proof.
+        //
+        // #9568: setExpression refuses at the capability floor before any
+        // session work, so its well-formed-format leg expects the authority
+        // refusal instead of "No debugger session". Typed deserialization is
+        // still proven here: a *malformed* format on the same command fails
+        // with "Invalid arguments" (see
+        // `mutation_and_evaluate_families_reject_unknown_format_options`),
+        // which runs before this same gate.
         let mut adapter = DebugAdapter::new();
-        for (command, arguments) in [
-            (
-                "setVariable",
-                json!({ "variablesReference": 11, "name": "$x", "value": "5", "format": { "hex": true } }),
-            ),
-            ("evaluate", json!({ "expression": "$x", "format": { "hex": true } })),
-            (
-                "setExpression",
-                json!({ "expression": "$x", "value": "5", "format": { "hex": true } }),
-            ),
-        ] {
+        for (command, arguments) in
+            [("evaluate", json!({ "expression": "$x", "format": { "hex": true } }))]
+        {
             let message = response_message(&mut adapter, command, arguments)?;
             assert_eq!(message, "No debugger session", "{command}: {message}");
         }
+        let set_expression_message = response_message(
+            &mut adapter,
+            "setExpression",
+            json!({ "expression": "$x", "value": "5", "format": { "hex": true } }),
+        )?;
+        assert_eq!(
+            set_expression_message,
+            crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE,
+            "a well-formed format deserializes cleanly; the #9568 capability floor, \
+             not a format error, is what refuses setExpression"
+        );
         Ok(())
     }
 
     #[test]
     fn missing_arguments_message_is_preserved() -> TestResult {
         // Regression guard: `None` arguments still report "Missing arguments"
-        // (existing integration tests assert this exact message).
+        // (existing integration tests assert this exact message). setVariable
+        // is absent since #8354: its capability gate refuses before argument
+        // parsing, so it can no longer produce this message.
         let mut adapter = DebugAdapter::new();
-        for command in ["variables", "evaluate", "setVariable", "setExpression"] {
+        for command in ["variables", "evaluate", "setExpression"] {
             let outcome = adapter.handle_request(1, command, None);
             match outcome {
                 DapMessage::Response { success: false, message: Some(message), .. } => {

@@ -15,6 +15,7 @@ pub mod compiler_profile_contract;
 pub mod compiler_profile_initial_rows;
 pub mod compiler_profile_observation;
 pub mod contributor_topology;
+pub mod critic_rule_proof;
 pub mod durable_publish;
 pub mod editor_client_compat;
 pub mod editor_host;

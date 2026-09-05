@@ -19,12 +19,14 @@ export type ClientResourceId =
   | 'extension_owned_timers'
   | 'extension_owned_event_listeners'
   | 'extension_owned_disposables'
+  | 'extension_owned_activation_resources'
   | 'extension_host_rss_bytes';
 
 const CLIENT_RESOURCE_IDS: ReadonlySet<ClientResourceId> = new Set([
   'extension_owned_timers',
   'extension_owned_event_listeners',
   'extension_owned_disposables',
+  'extension_owned_activation_resources',
   'extension_host_rss_bytes',
 ]);
 
@@ -83,6 +85,48 @@ function assertClientResourceId(id: string): ClientResourceId {
   return id as ClientResourceId;
 }
 
+/**
+ * Builds one observed resource row.
+ *
+ * Producers that have no measurement subject of their own (a bare resource
+ * census, for example) use these builders instead of constructing a recorder
+ * with an invented subject: subject identity must be exact, never fabricated to
+ * borrow a serializer.
+ */
+export function observedResource(id: string, value: number): ClientResourceMeasurement {
+  const resourceId = assertClientResourceId(id);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`resource measurement must be a finite non-negative number: ${resourceId}`);
+  }
+  return { id: resourceId, availability: 'observed', value, reason: null };
+}
+
+/** Builds one unavailable resource row, which always carries a reason. */
+export function notProvenResource(id: string, reason: string): ClientResourceMeasurement {
+  const resourceId = assertClientResourceId(id);
+  const normalizedReason = reason.trim();
+  if (normalizedReason.length === 0) {
+    throw new Error(`not-proven resource measurement requires a reason: ${resourceId}`);
+  }
+  return { id: resourceId, availability: 'not_proven', value: null, reason: normalizedReason };
+}
+
+/**
+ * Deterministic row order for a set of resource measurements.
+ *
+ * Code-unit ordering, not `localeCompare`: a receipt must serialize identically
+ * on every host, and locale-sensitive collation can order the same ids
+ * differently across runners with different ICU/locale data — the same reason
+ * `scripts/check-vsix-inventory-transition.js` sorts its inventory this way.
+ */
+export function sortResourceMeasurements(
+  measurements: readonly ClientResourceMeasurement[],
+): ClientResourceMeasurement[] {
+  return [...measurements].sort((left, right) =>
+    left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+  );
+}
+
 export class VscodeClientMeasurementRecorder {
   private readonly originMs: number;
   private readonly phaseOffsets = new Map<ClientMeasurementPhase, number>();
@@ -111,30 +155,13 @@ export class VscodeClientMeasurementRecorder {
   }
 
   public observeResource(id: string, value: number): void {
-    const resourceId = assertClientResourceId(id);
-    if (!Number.isFinite(value) || value < 0) {
-      throw new Error(`resource measurement must be a finite non-negative number: ${resourceId}`);
-    }
-    this.resources.set(resourceId, {
-      id: resourceId,
-      availability: 'observed',
-      value,
-      reason: null,
-    });
+    const measurement = observedResource(id, value);
+    this.resources.set(measurement.id, measurement);
   }
 
   public markResourceNotProven(id: string, reason: string): void {
-    const resourceId = assertClientResourceId(id);
-    const normalizedReason = reason.trim();
-    if (normalizedReason.length === 0) {
-      throw new Error(`not-proven resource measurement requires a reason: ${resourceId}`);
-    }
-    this.resources.set(resourceId, {
-      id: resourceId,
-      availability: 'not_proven',
-      value: null,
-      reason: normalizedReason,
-    });
+    const measurement = notProvenResource(id, reason);
+    this.resources.set(measurement.id, measurement);
   }
 
   public snapshot(): VscodeClientMeasurementSnapshot {
@@ -146,9 +173,9 @@ export class VscodeClientMeasurementRecorder {
       return { phase, availability: 'not_proven', offset_ms: null };
     });
 
-    const resources = [...this.resources.values()]
-      .map((resource) => ({ ...resource }))
-      .sort((left, right) => left.id.localeCompare(right.id));
+    const resources = sortResourceMeasurements(
+      [...this.resources.values()].map((resource) => ({ ...resource })),
+    );
 
     return {
       schema_version: 'vscode_client_measurement.v1',
