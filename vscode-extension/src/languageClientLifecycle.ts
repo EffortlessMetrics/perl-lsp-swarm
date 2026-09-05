@@ -49,16 +49,29 @@ export interface LifecycleHooks<TClient extends LifecycleClient<TEvent>, TEvent 
   onFailed?(snapshot: LifecycleSnapshot): void | Promise<void>;
   onCallbackError?(error: unknown, phase: LifecycleCallbackPhase): void | Promise<void>;
   /**
-   * Report whether the client has already reached its own terminal state.
+   * Capture an observation of the client's external resources immediately
+   * before `stop()` is invoked. The value is handed back to
+   * `isClientTerminal` untouched. Needed because vscode-languageclient clears
+   * its own `serverProcess` reference during `stop()`, so anything consulted
+   * afterwards can no longer see the process that must be gone.
+   */
+  captureStopWitness?(client: TClient): unknown;
+  /**
+   * Report whether the client and everything it owned have reached a
+   * terminal state.
    *
    * Consulted only when `stop()` settles with a rejection. A language client
    * whose server hangs (the watchdog case) rejects `stop()` with a shutdown
-   * timeout after it has finished its own cleanup and terminated the server
-   * process; that rejection is a failed graceful handshake, not incomplete
-   * client cleanup, and must not block the replacement. A `stop()` that never
-   * settles is still incomplete regardless of what this reports.
+   * timeout after it has finished its own cleanup; that rejection is a failed
+   * graceful handshake, not incomplete client cleanup, and must not block the
+   * replacement once the server process has actually exited. The client's
+   * `State.Stopped` alone is not proof of that: the node client reaches it
+   * before it schedules process termination. Implementations may wait
+   * (bounded by `stopTimeoutMs`) for the process captured by
+   * `captureStopWitness` to exit. A `stop()` that never settles is still
+   * incomplete regardless of what this reports.
    */
-  isClientTerminal?(client: TClient): boolean;
+  isClientTerminal?(client: TClient, witness: unknown): boolean | Promise<boolean>;
 }
 
 export interface LanguageClientLifecycleOptions {
@@ -408,8 +421,12 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       active.listener = undefined;
     }
 
+    const witness = this.captureStopWitness(active.client);
     const stopResult = await this.runBounded('stop', () => active.client.stop());
-    if (!stopResult.completed && !this.stopSettledTerminal(active.client, stopResult)) {
+    if (
+      !stopResult.completed &&
+      !(await this.stopSettledTerminal(active.client, stopResult, witness))
+    ) {
       firstError ??= stopResult.error;
       clientCleanupComplete = false;
     }
@@ -423,22 +440,39 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     return { error: firstError, clientCleanupComplete };
   }
 
+  private captureStopWitness(client: TClient): unknown {
+    if (!this.hooks.captureStopWitness) {
+      return undefined;
+    }
+    try {
+      return this.hooks.captureStopWitness(client);
+    } catch {
+      return undefined;
+    }
+  }
+
   /**
    * A rejected (not hung) `stop()` from a client that reports itself terminal
    * has completed its cleanup: the graceful shutdown handshake failed, which
    * is exactly what a hung server produces, but nothing client-owned remains
    * live. Only a settled rejection qualifies; a stop that outlived the bound
-   * proves nothing about the client's state.
+   * proves nothing about the client's state. The terminal check is itself
+   * bounded by `stopTimeoutMs`: a check that hangs or throws is not proof.
    */
-  private stopSettledTerminal(client: TClient, stopResult: BoundedOperationResult): boolean {
+  private async stopSettledTerminal(
+    client: TClient,
+    stopResult: BoundedOperationResult,
+    witness: unknown,
+  ): Promise<boolean> {
     if (stopResult.timedOut || !this.hooks.isClientTerminal) {
       return false;
     }
-    try {
-      return this.hooks.isClientTerminal(client) === true;
-    } catch {
-      return false;
-    }
+    const isClientTerminal = this.hooks.isClientTerminal;
+    let terminal = false;
+    const result = await this.runBounded('terminal check', async () => {
+      terminal = (await isClientTerminal(client, witness)) === true;
+    });
+    return result.completed && terminal;
   }
 
   private recordCleanupResult(cleanup: CleanupResult): void {

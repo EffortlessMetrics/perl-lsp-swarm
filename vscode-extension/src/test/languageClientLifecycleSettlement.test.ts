@@ -26,9 +26,19 @@ class DeferredVoid {
   }
 }
 
+/** Stands in for the server child process the real node client owns. */
+class FakeServerProcess {
+  exited = false;
+}
+
 class FakeClient implements LifecycleClient {
   /** Stands in for the real client's own terminal state (State.Stopped). */
   terminal = false;
+  /**
+   * Mirrors `LanguageClient.serverProcess`: present while the client owns a
+   * child, cleared by the client itself inside `stop()`.
+   */
+  serverProcess: FakeServerProcess | undefined = new FakeServerProcess();
   start = jest.fn(async () => undefined);
   stop = jest.fn(async () => undefined);
   dispose = jest.fn(async () => undefined);
@@ -40,7 +50,8 @@ class FakeClient implements LifecycleClient {
 
 function makeController(
   stopTimeoutMs = 10,
-  isClientTerminal?: (client: FakeClient) => boolean,
+  isClientTerminal?: (client: FakeClient, witness: unknown) => boolean | Promise<boolean>,
+  captureStopWitness?: (client: FakeClient) => unknown,
 ): {
   controller: LanguageClientLifecycle<FakeClient>;
   clients: FakeClient[];
@@ -55,6 +66,7 @@ function makeController(
         return client;
       },
       ...(isClientTerminal ? { isClientTerminal } : {}),
+      ...(captureStopWitness ? { captureStopWitness } : {}),
     },
     { stopTimeoutMs },
   );
@@ -164,6 +176,111 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
     await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
     expect(clients).toHaveLength(1);
     expect(controller.snapshot.state).toBe('failed');
+  });
+
+  /**
+   * Production shape: vscode-languageclient moves to State.Stopped and clears
+   * `serverProcess` inside `stop()` before it schedules process termination,
+   * so the handle must be captured before `stop()` and the exit observed on
+   * that captured handle, not inferred from the client state.
+   */
+  function makeProcessBoundController(): ReturnType<typeof makeController> {
+    return makeController(
+      50,
+      async (client, witness) => {
+        if (!client.terminal) {
+          return false;
+        }
+        const child = witness as FakeServerProcess | undefined;
+        if (child === undefined) {
+          return true;
+        }
+        // Bounded wait for the exit, like awaitServerProcessExit.
+        for (let i = 0; i < 3 && !child.exited; i += 1) {
+          await Promise.resolve();
+        }
+        return child.exited;
+      },
+      (client) => client.serverProcess,
+    );
+  }
+
+  function rejectStopLikeLanguageClient(client: FakeClient): void {
+    client.stop.mockImplementation(async () => {
+      client.terminal = true;
+      client.serverProcess = undefined;
+      throw new Error('Stopping the server timed out');
+    });
+  }
+
+  test('a Stopped client whose server process is still alive blocks the replacement (#14155)', async () => {
+    const { controller, clients } = makeProcessBoundController();
+    const first = await controller.start();
+    const child = first!.serverProcess!;
+    rejectStopLikeLanguageClient(first!);
+
+    await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+
+    expect(child.exited).toBe(false);
+    expect(first!.terminal).toBe(true);
+    expect(first!.serverProcess).toBeUndefined();
+    expect(clients).toHaveLength(1);
+    expect(controller.snapshot.state).toBe('failed');
+  });
+
+  test('a Stopped client whose captured server process has exited admits the replacement (#14155)', async () => {
+    const { controller, clients } = makeProcessBoundController();
+    const first = await controller.start();
+    const child = first!.serverProcess!;
+    first!.stop.mockImplementation(async () => {
+      first!.terminal = true;
+      first!.serverProcess = undefined;
+      child.exited = true;
+      throw new Error('Stopping the server timed out');
+    });
+
+    const replacement = await controller.restart();
+
+    expect(replacement).toBe(clients[1]);
+    expect(clients).toHaveLength(2);
+    expect(controller.snapshot.state).toBe('running');
+  });
+
+  test('the stop witness is captured before stop() runs', async () => {
+    const seen: unknown[] = [];
+    const { controller } = makeController(
+      10,
+      (_client, witness) => {
+        seen.push(witness);
+        return true;
+      },
+      (client) => client.serverProcess,
+    );
+    const first = await controller.start();
+    const child = first!.serverProcess;
+    rejectStopLikeLanguageClient(first!);
+
+    await controller.restart();
+
+    expect(seen).toEqual([child]);
+  });
+
+  test('a terminal check that outlives the stop bound blocks the replacement', async () => {
+    jest.useFakeTimers();
+    try {
+      const { controller, clients } = makeController(10, () => new Promise<boolean>(() => undefined));
+      const first = await controller.start();
+      first!.stop.mockRejectedValue(new Error('Stopping the server timed out'));
+
+      const restart = controller.restart();
+      await jest.advanceTimersByTimeAsync(10);
+
+      await expect(restart).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+      expect(clients).toHaveLength(1);
+      expect(controller.snapshot.state).toBe('failed');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('a stop that outlives the bound blocks replacement even when the client reports terminal', async () => {
