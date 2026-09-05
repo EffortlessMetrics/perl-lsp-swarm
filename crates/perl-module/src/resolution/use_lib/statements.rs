@@ -400,12 +400,29 @@ fn read_quoted_delimiter(source: &str, start: usize, quote: char) -> Option<(Str
 fn bareword_delimiter_end(source: &str, from: usize) -> usize {
     let mut end = from;
     for ch in source[from..].chars() {
-        if !(ch.is_alphanumeric() || ch == '_') {
+        if !is_delimiter_char(ch) {
             break;
         }
         end += ch.len_utf8();
     }
     end
+}
+
+/// Whether `ch` may appear in a bareword heredoc delimiter.
+///
+/// `XID_Continue` rather than `is_alphanumeric`, because Perl's identifier
+/// characters under `use utf8` include combining marks and connector
+/// punctuation, and `is_alphanumeric` rejects both. Measured: a tag spelled
+/// `e` + U+0301, and tags containing U+203F or U+FE33, all run under `use
+/// utf8`. Truncating such a tag is not a harmless near-miss — the shortened
+/// tag never matches its terminator line, the bareword opener goes
+/// unconfirmed, and the body is then scanned as code, inventing an `@INC`
+/// root out of heredoc text.
+///
+/// `XID_Continue` already covers `_` and the digits, so a digit-initial tag
+/// such as `<<123` still opens a heredoc.
+fn is_delimiter_char(ch: char) -> bool {
+    unicode_ident::is_xid_continue(ch)
 }
 
 /// Recognize a heredoc opener at `start`, returning
@@ -482,7 +499,7 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
     // Position has already ruled out the shift readings — `$x<<2` and `1<<2`
     // end a term and never reach here.
     let first_char = source.get(spaced_tag_start..)?.chars().next()?;
-    if spaced_tag_start != tag_start || !(first_char.is_alphanumeric() || first_char == '_') {
+    if spaced_tag_start != tag_start || !is_delimiter_char(first_char) {
         return None;
     }
 

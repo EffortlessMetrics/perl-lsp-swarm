@@ -992,3 +992,36 @@ fn a_multibyte_character_beside_a_delimiter_never_slices_mid_codepoint() {
         let _ = extract_use_lib_operations(source);
     }
 }
+
+/// A delimiter may contain a combining mark or connector punctuation.
+///
+/// Perl's identifier characters under `use utf8` are `\w`, which includes
+/// marks and connector punctuation. Measured: a tag spelled `e` + U+0301, and
+/// tags containing U+203F and U+FE33, all run and print. `is_alphanumeric`
+/// rejects all three, so the tag was truncated at the first such character.
+///
+/// Truncation is not a harmless near-miss. The shortened tag never matches its
+/// terminator line, so the bareword opener goes unconfirmed and the body is
+/// scanned as code — the invention direction again, and the same failure the
+/// ASCII-only predicate produced.
+#[test]
+fn a_delimiter_may_contain_marks_and_connector_punctuation() {
+    let real =
+        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])];
+
+    for tag in [
+        "e\u{301}",      // combining acute, category Mn
+        "A\u{203f}B",    // undertie, category Pc
+        "A\u{fe33}B",    // presentation form connector, category Pc
+        "\u{c9}\u{301}", // precomposed letter plus a mark
+    ] {
+        let source =
+            format!("use utf8;\nmy $s = <<{tag};\nuse lib 'phantom';\n{tag}\nuse lib 'real';\n");
+
+        assert_eq!(
+            extract_use_lib_operations(&source),
+            real,
+            "the delimiter was truncated, so the body was scanned as code"
+        );
+    }
+}
