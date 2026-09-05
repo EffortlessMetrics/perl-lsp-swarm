@@ -560,13 +560,13 @@ fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
     matches!(
         last_char,
         '=' | ',' | ';' | '(' | '[' | '{' | '+' | '-' | '*' | '/' | '%' | '.' | '&' | '|' | '!' | '<' | '>' | '?' | ':' | '~' | '\\'
-    ) && !before.ends_with("=>") // fat comma is a key context, not expression
-    && !before.ends_with("==")
-    && !before.ends_with("!=")
-    && !before.ends_with("<=")
-    && !before.ends_with(">=")
-    && !before.ends_with("=~")
-    && !before.ends_with("//")
+    ) && !trimmed.ends_with("=>") // fat comma is a key context, not expression
+    && !trimmed.ends_with("==")
+    && !trimmed.ends_with("!=")
+    && !trimmed.ends_with("<=")
+    && !trimmed.ends_with(">=")
+    && !trimmed.ends_with("=~")
+    && !trimmed.ends_with("//")
 }
 
 #[cfg(test)]
@@ -733,5 +733,45 @@ mod indirect_helper_tests {
         assert!(is_in_expression_position("value = ", 8));
         assert!(!is_in_expression_position("value ", 6));
         assert!(!is_in_expression_position("   ", 3));
+    }
+
+    /// The exclusion list is what separates an expression position from a
+    /// comparison / match / defined-or / key context. It has to be applied to
+    /// the whitespace-trimmed prefix: the cursor in a completion request is
+    /// normally *after* a space, so testing the untrimmed prefix left every
+    /// exclusion dead in exactly the case it exists for.
+    #[test]
+    fn operator_exclusions_hold_across_trailing_whitespace() {
+        for (source, operator) in [
+            ("if ($a == ", "=="),
+            ("if ($a != ", "!="),
+            ("if ($a <= ", "<="),
+            ("if ($a >= ", ">="),
+            ("$x =~ ", "=~"),
+            ("$a // ", "//"),
+            ("key => ", "=>"),
+        ] {
+            assert!(
+                !is_in_expression_position(source, source.len()),
+                "{operator} is a comparison/match/key context, not an expression position: {source:?}"
+            );
+            let tight = source.trim_end();
+            assert!(
+                !is_in_expression_position(tight, tight.len()),
+                "{operator} must also be excluded without trailing whitespace: {tight:?}"
+            );
+        }
+    }
+
+    /// Negative control: the exclusions must not swallow a genuine single-character
+    /// expression position that merely ends in one of the same characters.
+    #[test]
+    fn single_character_operators_remain_expression_positions() {
+        for source in ["value = ", "f($a, ", "$h{ ", "$x + ", "cond ? "] {
+            assert!(
+                is_in_expression_position(source, source.len()),
+                "expected an expression position for {source:?}"
+            );
+        }
     }
 }
