@@ -471,15 +471,13 @@ fn complete_general_context(
     is_cancelled: &dyn Fn() -> bool,
 ) -> CompletionFlow {
     let (import_map, used_modules) = provider.import_state_at(context.position);
-    let keyword_set = keywords::keywords();
-    // Suppress statement keywords in expression positions to reduce noise.
-    // Statement keywords (package, sub, use, etc.) are only valid at the start
-    // of a statement. When the cursor follows =, [, (, {, comma, or an operator,
-    // we're in expression context and should not offer them. (UX_GAP_02)
-    let in_expression_position = is_in_expression_position(source, context.prefix_start);
-    if !in_expression_position
-        && (context.prefix.is_empty() || provider.could_be_keyword(&context.prefix, keyword_set))
-    {
+    // Value positions still admit expression-capable keywords (anonymous `sub`,
+    // `do`, `eval`) while suppressing statement-only ones (`package`, `use`,
+    // phasers, compound-statement openers). Statement positions get both sets.
+    // (#14844 — one boolean cannot express that split.)
+    let keyword_set =
+        keywords::keywords_for_position(is_in_expression_position(source, context.prefix_start));
+    if context.prefix.is_empty() || provider.could_be_keyword(&context.prefix, keyword_set) {
         keywords::add_keyword_completions(completions, context, keyword_set);
         if is_cancelled() {
             return CompletionFlow::Cancelled;
@@ -715,10 +713,11 @@ mod indirect_helper_tests {
     }
 }
 
-/// Heuristic: detect if the cursor is in an expression position where statement
-/// keywords (package, sub, use, etc.) would be invalid. Returns true if the
-/// text immediately before the prefix suggests an expression context.
-/// (UX_GAP_02)
+/// Heuristic: detect if the cursor is in a value/expression position.
+/// Statement-only keywords (`package`, `use`, compound openers) are invalid
+/// there; expression-capable keywords (anonymous `sub`, `do`, `eval`) remain
+/// admissible. Returns true if the text immediately before the prefix suggests
+/// an expression context. (UX_GAP_02 / #14844)
 fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
     if prefix_start == 0 {
         return false; // start of file — statement position

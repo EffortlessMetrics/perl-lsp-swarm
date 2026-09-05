@@ -17,6 +17,100 @@ pub fn keywords() -> &'static [&'static str] {
     LSP_COMPLETION_KEYWORDS
 }
 
+/// Keywords that cannot start a term in a value/expression position.
+///
+/// This includes statement declarations (`package`, `use`, phasers, `class`),
+/// compound-statement openers (`if`, `while`, `for`, …), and infix operators
+/// (`eq`, `and`, `cmp`, …) that need a left operand. Sorted for binary search
+/// and partition checks against [`keywords`].
+pub const STATEMENT_ONLY_KEYWORDS: &[&str] = &[
+    "ADJUST",
+    "AUTOLOAD",
+    "BEGIN",
+    "CHECK",
+    "DESTROY",
+    "END",
+    "INIT",
+    "UNITCHECK",
+    "and",
+    "catch",
+    "class",
+    "cmp",
+    "default",
+    "defer",
+    "else",
+    "elsif",
+    "eq",
+    "field",
+    "finally",
+    "for",
+    "foreach",
+    "ge",
+    "given",
+    "gt",
+    "if",
+    "isa",
+    "le",
+    "lt",
+    "method",
+    "ne",
+    "or",
+    "package",
+    "try",
+    "unless",
+    "until",
+    "use",
+    "when",
+    "while",
+    "xor",
+];
+
+/// Keywords that can start a term where a value is expected (anonymous `sub`,
+/// `do`/`eval` BLOCK, declarators, unary operators, special tokens).
+pub const EXPRESSION_OK_KEYWORDS: &[&str] = &[
+    "__CLASS__",
+    "__FILE__",
+    "__LINE__",
+    "__PACKAGE__",
+    "__SUB__",
+    "async",
+    "await",
+    "blessed",
+    "defined",
+    "die",
+    "do",
+    "eval",
+    "exit",
+    "goto",
+    "last",
+    "local",
+    "my",
+    "next",
+    "not",
+    "our",
+    "redo",
+    "ref",
+    "require",
+    "return",
+    "scalar",
+    "state",
+    "sub",
+    "undef",
+    "wantarray",
+    "warn",
+];
+
+const _: () = assert!(
+    STATEMENT_ONLY_KEYWORDS.len() + EXPRESSION_OK_KEYWORDS.len() == LSP_COMPLETION_KEYWORDS.len()
+);
+
+/// Keywords admitted at a statement position (the full inventory) or a value
+/// position (`expression_ok` only).
+#[must_use]
+pub fn keywords_for_position(in_expression_position: bool) -> &'static [&'static str] {
+    if in_expression_position { EXPRESSION_OK_KEYWORDS } else { keywords() }
+}
+
 /// Curated priority among keywords: the constructs a user is most likely to
 /// type next at an empty identifier position, in preference order. Keywords
 /// rank within tier 5 by this list first and label second; without it the
@@ -218,5 +312,49 @@ mod tests {
         let item = completion_for("return");
         assert_eq!(item.insert_text.as_deref(), Some("return"));
         assert_eq!(item.insert_text_format, InsertTextFormat::PlainText);
+    }
+
+    /// The two role lists must partition [`keywords`] so a newly added
+    /// `LSP_COMPLETION_KEYWORDS` entry cannot land in both sets or neither.
+    #[test]
+    fn syntactic_role_lists_partition_the_keyword_inventory() {
+        let all = keywords();
+        let statement_only = STATEMENT_ONLY_KEYWORDS;
+        let expression_ok = EXPRESSION_OK_KEYWORDS;
+        assert!(
+            is_strictly_sorted(statement_only),
+            "STATEMENT_ONLY_KEYWORDS must be strictly sorted"
+        );
+        assert!(
+            is_strictly_sorted(expression_ok),
+            "EXPRESSION_OK_KEYWORDS must be strictly sorted"
+        );
+        assert_eq!(
+            statement_only.len() + expression_ok.len(),
+            all.len(),
+            "role lists must cover the inventory without overlap: statement_only={} expression_ok={} all={}",
+            statement_only.len(),
+            expression_ok.len(),
+            all.len()
+        );
+        for &keyword in all {
+            let in_statement = statement_only.binary_search(&keyword).is_ok();
+            let in_expression = expression_ok.binary_search(&keyword).is_ok();
+            assert_ne!(
+                in_statement, in_expression,
+                "{keyword} must belong to exactly one syntactic role"
+            );
+        }
+        assert!(statement_only.binary_search(&"package").is_ok(), "`package` is statement_only");
+        for expression_ok_keyword in ["sub", "do", "eval", "my"] {
+            assert!(
+                expression_ok.binary_search(&expression_ok_keyword).is_ok(),
+                "`{expression_ok_keyword}` is expression_ok"
+            );
+        }
+    }
+
+    fn is_strictly_sorted(items: &[&str]) -> bool {
+        items.windows(2).all(|pair| pair[0] < pair[1])
     }
 }
