@@ -304,7 +304,9 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
         line must carry `historical`/`superseded`/`immutable` and must not carry
         executable current-work verbs.
 
-        This is a docs-phrasing lock, not a trigger-filter redesign (#14837).
+        This is a docs-phrasing lock. Aligning the workflow trigger with the
+        test file it already executes is in `test_agent_authority_status.py`;
+        it is not the #14837 scan-all/trigger-registry redesign.
         """
         original_main_line = (
             "[`docs/ci/perl-lsp-rust-1.95-rollout.md`]"

@@ -89,6 +89,7 @@ SELF_CLAIM_HEADER_LINES = 40
 # blind spot this coverage check exists to close.
 WORKFLOW_OWN_FILES = {
     "tests/test_agent_authority_status.py",
+    "tests/test_legacy_authority_banners.py",
     ".github/workflows/agent-authority-status.yml",
 }
 # A successor is either a repository path or a bounded issue/PR reference.
@@ -410,6 +411,7 @@ class AgentAuthorityStatusTests(unittest.TestCase):
             "docs/agents/DEVELOPMENT_METHOD.md",  # a registered current authority
             "CONTRIBUTING.md",  # reclassified current by #6868
             "scripts/ci/check-pr-review-convergence-core",  # still transitional
+            "tests/test_legacy_authority_banners.py",  # already executed; was not a trigger
         ):
             for event in ("pull_request", "push"):
                 with self.subTest(path=path, event=event):
