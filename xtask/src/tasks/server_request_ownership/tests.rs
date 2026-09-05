@@ -25,7 +25,7 @@ fn meta() -> Meta {
         owner_issue: 13223,
         direction_registry: "crates/perl-lsp-rs/src/protocol/method_direction.rs".to_string(),
         feature_catalog: "features.toml".to_string(),
-        emission_scan_root: "crates/perl-lsp-rs/src/runtime".to_string(),
+        emission_scan_root: "crates/perl-lsp-rs/src".to_string(),
         allowed_protocol_baselines: vec!["stable_3_17".to_string(), "selected_3_18".to_string()],
         allowed_emission_states: vec!["emitted".to_string(), "not_emitted".to_string()],
         allowed_response_decoders: vec!["generic_shape".to_string(), "per_method".to_string()],
@@ -111,6 +111,32 @@ fn synthetic_agreeing_row_has_no_findings() {
         rules(vec![passing_row()], &agreeing_discovery()).is_empty(),
         "the base row must pass so each mutation below isolates one rule"
     );
+}
+
+/// The committed scan root must cover the whole sender crate.
+///
+/// `an_emitter_outside_the_runtime_subtree_is_discovered` proves the *reader*
+/// sees more under a crate-wide root than under a runtime-only one, but it does
+/// so on a synthetic tree. Nothing asserted what the committed matrix actually
+/// selects, so narrowing `[meta] emission_scan_root` back to
+/// `crates/perl-lsp-rs/src/runtime` passed every test and left the live gate
+/// green — silently restoring the blindness the widening removed, because a
+/// file that is never read cannot produce a finding.
+///
+/// The boundary is derivable rather than chosen: `OutboundSink`, which declares
+/// `send_request`, is `pub(crate)` in `runtime/outbound.rs`, so every call site
+/// that can reach a sender lies inside this crate and none lies outside it.
+/// Widening past the crate would sweep in the unrelated `send_request` helpers
+/// in `perl-dap` and `perl-parser`.
+#[test]
+fn the_live_scan_root_covers_the_whole_sender_crate() -> Result<(), Box<dyn std::error::Error>> {
+    let matrix = load(&repo_root(), Path::new("policy/server-request-ownership.v1.toml"))?;
+    assert_eq!(
+        matrix.meta.emission_scan_root, "crates/perl-lsp-rs/src",
+        "the scan root must be the crate that declares the sender; a narrower root cannot \
+         report what it never reads"
+    );
+    Ok(())
 }
 
 /// The claim itself: the committed matrix agrees with current `main`.
