@@ -154,13 +154,42 @@ mod tests {
 
     #[test]
     fn present_malformed_shape_is_rootless_and_not_a_legacy_fallback() {
-        let params =
-            json!({ "workspaceFolders": "file:///not-an-array", "rootUri": "file:///legacy" });
+        // #8161 negative control 9: malformed folder input must not convert
+        // into a successful unrelated fallback. The JSON type space has five
+        // non-array, non-null shapes and a client bug can produce any of them
+        // — a string was the only one covered, so an implementation that
+        // matched on `Value::String` alone and let the rest fall through to
+        // `rootUri` would have passed.
+        for shape in [
+            json!("file:///not-an-array"),
+            json!(7),
+            json!(true),
+            json!({ "uri": "file:///a", "name": "a" }),
+        ] {
+            let classified = classify_initial_root_input(
+                &json!({ "workspaceFolders": shape, "rootUri": "file:///legacy" }),
+            );
 
-        let classified = classify_initial_root_input(&params);
+            assert_eq!(
+                classified,
+                InitialRootInput::MalformedWorkspaceFoldersShape,
+                "a declared-but-malformed folder field must not mine a legacy root: {shape}"
+            );
+            assert!(classified.is_explicit_rootless());
+        }
+    }
 
-        assert_eq!(classified, InitialRootInput::MalformedWorkspaceFoldersShape);
-        assert!(classified.is_explicit_rootless());
+    #[test]
+    fn a_legacy_root_is_refused_when_it_is_not_a_string() {
+        // The fallback reads `rootUri`/`rootPath` through `as_str`, so a
+        // non-string value is no root at all. Without this an implementation
+        // that tested only for key presence would report `LegacyRootUri` and
+        // then register nothing, leaving a receipt that names a root the
+        // session does not have.
+        let classified = classify_initial_root_input(&json!({ "rootUri": 42, "rootPath": [] }));
+
+        assert_eq!(classified, InitialRootInput::NoWorkspaceRoot);
+        assert!(!classified.is_explicit_rootless());
     }
 
     #[test]
