@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
+#[allow(dead_code)] // Bench-only helpers are compiled in via #[path] for path tests.
 #[path = "../benches/support/perf_scorecard.rs"]
 mod perf_scorecard;
 
