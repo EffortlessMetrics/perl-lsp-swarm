@@ -139,18 +139,19 @@ impl TryFrom<WireLocation> for lsp_types::Location {
     /// default, or substitute URI is ever produced: naming a resource the caller
     /// never requested is the failure this conversion exists to prevent.
     ///
-    /// Validity is exactly `lsp_types::Uri`'s parse result. Note that the empty
-    /// string parses successfully, as an empty relative reference; this conversion
-    /// therefore returns an empty `Uri` rather than an error for it. That is
-    /// unchanged from the previous behavior — the old code also parsed `""`
-    /// successfully and never reached its fallback — and whether an empty URI should
-    /// be refused belongs to the URI-validity owner, not to this structural
-    /// conversion.
+    /// An LSP `DocumentUri` is an *absolute* URI, but `lsp_types::Uri` parses the
+    /// wider URI-**reference** grammar, in which a scheme-less relative reference
+    /// (`""`, `"foo.pl"`, `"./rel.pl"`, `"/abs/path.pl"`, `"//host/x"`) parses
+    /// successfully while naming no resolvable document. Parse success alone is
+    /// therefore not validity here: the scheme is required, so an emitted
+    /// `Location` always identifies an absolute resource.
     fn try_from(location: WireLocation) -> Result<Self, Self::Error> {
         let WireLocation { uri, range } = location;
         match uri.parse::<lsp_types::Uri>() {
-            Ok(parsed) => Ok(Self { uri: parsed, range: range.into() }),
-            Err(_) => Err(WireLocationUriError { uri }),
+            Ok(parsed) if parsed.scheme().is_some() => {
+                Ok(Self { uri: parsed, range: range.into() })
+            }
+            _ => Err(WireLocationUriError { uri }),
         }
     }
 }
@@ -209,21 +210,65 @@ mod tests {
     fn wire_location_conversion_discriminates_valid_from_invalid() {
         let range = WireRange::new(WirePosition::new(0, 0), WirePosition::new(0, 1));
 
-        for valid in ["file:///a.pl", "untitled:Untitled-1", "file:///c%20d/e.pm"] {
+        for valid in
+            ["file:///a.pl", "untitled:Untitled-1", "file:///c%20d/e.pm", "http://h/p", "urn:x:y"]
+        {
             assert!(
                 lsp_types::Location::try_from(WireLocation::new(valid.to_string(), range)).is_ok(),
                 "{valid} must convert"
             );
         }
 
-        // Established empirically against `lsp_types::Uri`, not assumed. Note that
-        // `""` parses successfully as an empty relative reference, so it is not in
-        // this list; see the module note on the empty-URI limitation.
-        for invalid in ["not a uri", "  ", "://", "http://[", "%%"] {
+        // Established empirically against `lsp_types::Uri`, not assumed. The second
+        // group parses successfully as URI *references* and is rejected for having
+        // no scheme, not for failing to parse — that is the distinction the
+        // conversion has to make, so both groups belong in this control.
+        for invalid in [
+            // malformed: fails to parse at all
+            "not a uri",
+            "  ",
+            "://",
+            "http://[",
+            "%%",
+            // parses, but is a scheme-less relative reference naming no document
+            "",
+            "foo/bar.pl",
+            "./rel.pl",
+            "/abs/path.pl",
+            "//host/x",
+            "a",
+        ] {
             let result =
                 lsp_types::Location::try_from(WireLocation::new(invalid.to_string(), range));
             assert!(result.is_err(), "{invalid:?} must be rejected");
         }
+    }
+
+    /// A scheme-less reference parses but names no resolvable document, so it must
+    /// be rejected rather than emitted. Dropping the `scheme().is_some()` guard
+    /// makes every row here convert successfully.
+    #[test]
+    fn wire_location_rejects_scheme_less_relative_references() -> Result<(), String> {
+        let range = WireRange::new(WirePosition::new(0, 0), WirePosition::new(0, 1));
+
+        for reference in ["", "foo/bar.pl", "./rel.pl", "/abs/path.pl", "//host/x"] {
+            // Precondition: these really do parse; the guard, not the parser, rejects them.
+            assert!(
+                reference.parse::<lsp_types::Uri>().is_ok(),
+                "{reference:?} is expected to parse as a URI reference"
+            );
+
+            match lsp_types::Location::try_from(WireLocation::new(reference.to_string(), range)) {
+                Ok(location) => {
+                    return Err(format!(
+                        "scheme-less {reference:?} must not yield a Location, but it became {:?}",
+                        location.uri.as_str()
+                    ));
+                }
+                Err(error) => assert_eq!(error.uri, reference),
+            }
+        }
+        Ok(())
     }
 
     /// Pins the removal of the substitution helper itself, not just its call site.
