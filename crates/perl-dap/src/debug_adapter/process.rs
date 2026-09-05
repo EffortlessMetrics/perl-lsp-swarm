@@ -62,11 +62,7 @@ impl DebugAdapter {
         self.initialized.store(true, std::sync::atomic::Ordering::Release);
 
         let supports_core = catalog_has_feature("dap.core");
-        let supports_basic_breakpoints = catalog_has_feature("dap.breakpoints.basic");
         let supports_exceptions = catalog_has_feature("dap.exceptions.die");
-        let supports_inline_values = catalog_has_feature("dap.inline_values");
-        let supports_completions = catalog_has_feature("dap.completions");
-        let supports_modules = catalog_has_feature("dap.modules");
         let supports_watchpoints = catalog_has_feature("dap.watchpoints");
         let supports_warn = catalog_has_feature("dap.exceptions.warn");
         let supports_any_exception = supports_exceptions || supports_warn;
@@ -78,8 +74,6 @@ impl DebugAdapter {
         let supports_restart_frame = catalog_has_feature("dap.restart_frame");
         let supports_terminate_threads = catalog_has_feature("dap.terminate_threads");
         let supports_step_in_targets = catalog_has_feature("dap.step_in_targets");
-        let supports_restart = catalog_has_feature("dap.restart");
-        let supports_loaded_sources = catalog_has_feature("dap.loaded_sources");
         // `gotoTargets`/`goto` are fail-closed while the native backend only has
         // a run-to-line primitive (`f <source>` + `c <line>` resumes execution
         // instead of moving the next statement).  The catalog row is

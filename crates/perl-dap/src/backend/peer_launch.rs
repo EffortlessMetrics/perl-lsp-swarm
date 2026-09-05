@@ -619,16 +619,6 @@ impl MirrorPeerBridge {
         command: &str,
         arguments: Option<Value>,
     ) -> Vec<DapMessage> {
-        self.dispatch_with_capability_floor(request_seq, command, arguments)
-    }
-
-    /// Dispatch a request after the capability floor has been applied.
-    pub fn dispatch_with_capability_floor(
-        &mut self,
-        request_seq: i64,
-        command: &str,
-        arguments: Option<Value>,
-    ) -> Vec<DapMessage> {
         if let Some(response) =
             self.secondary_floor_response(request_seq, command, arguments.as_ref())
         {
@@ -677,7 +667,7 @@ impl MirrorPeerBridge {
                 // Answered locally from the AST oracle (the source is on the
                 // same host as perl-dap), independent of the peer. The #9581
                 // capability floor intercepts the request at
-                // [`Self::dispatch_with_capability_floor`] while
+                // [`Self::dispatch`] while
                 // `supportsBreakpointLocationsRequest` is false, so this arm is
                 // unreachable through the floored editor entry until that
                 // per-field re-enable gate passes.
@@ -1482,7 +1472,7 @@ fn dispatch_frame(bridge: &mut MirrorPeerBridge, body: &[u8]) -> (Vec<DapMessage
         v.get("seq").and_then(|s| s.as_i64().or_else(|| s.as_f64().map(|f| f as i64))).unwrap_or(0);
     // The editor-facing ingress applies the #9581 capability floor before the
     // canonical route match.
-    let out = bridge.dispatch_with_capability_floor(seq, command, v.get("arguments").cloned());
+    let out = bridge.dispatch(seq, command, v.get("arguments").cloned());
     let disconnect = command == "disconnect";
     (out, disconnect)
 }
@@ -1559,7 +1549,7 @@ fn dap_stop_reason(reason: &StopReason) -> String {
 ///
 /// Retained as the AST oracle behind the canonical `BreakpointLocations`
 /// route arm. The #9581 capability floor intercepts the request at
-/// `dispatch_with_capability_floor` while `supportsBreakpointLocationsRequest`
+/// `dispatch` while `supportsBreakpointLocationsRequest`
 /// is `false`, so production reaches this arm only after that per-field
 /// re-enable gate (#10524 + #2300 + #9021 + #7566) passes; the unit proofs
 /// keep proving its geometry/empty-set contract in the meantime.

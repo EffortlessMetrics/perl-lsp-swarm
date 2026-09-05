@@ -97,15 +97,13 @@ fn core_launch_breakpoint_and_control_cells_stay_advertised() -> TestResult {
     let mut adapter = DebugAdapter::new();
     let body = initialize_body(&mut adapter)?;
 
-    for capability in [
-        "supportsConfigurationDoneRequest",
-        "supportsFunctionBreakpoints",
-        "supportsConditionalBreakpoints",
-        "supportsSetVariable",
-        "supportsGotoTargetsRequest",
-        "supportTerminateDebuggee",
-        "supportsTerminateRequest",
-    ] {
+    // Positive controls: rows still bound to `dap.core` on current main.
+    // `supportsFunctionBreakpoints`/`supportsConditionalBreakpoints` (#9578),
+    // `supportsSetVariable` (#8354), and `supportsGotoTargetsRequest` (#9064)
+    // are fail-closed by their own authorities and are asserted there, not here.
+    for capability in
+        ["supportsConfigurationDoneRequest", "supportTerminateDebuggee", "supportsTerminateRequest"]
+    {
         let value = body
             .get(capability)
             .and_then(Value::as_bool)
@@ -144,16 +142,11 @@ fn core_state_queries_still_respond_alongside_the_floor() -> TestResult {
     let mut adapter = DebugAdapter::new();
     adapter.handle_request(1, "initialize", None);
 
-    // threads/stackTrace/gotoTargets succeed without a session on current
-    // main; they are outside the floor and must stay untouched.
-    for command in ["threads", "stackTrace", "gotoTargets"] {
-        let arguments = match command {
-            "gotoTargets" => {
-                Some(json!({ "source": { "path": "/tmp/floor_9581_core.pl" }, "line": 1 }))
-            }
-            _ => None,
-        };
-        let response = adapter.handle_request(2, command, arguments);
+    // threads/stackTrace succeed without a session on current main; they are
+    // outside the floor and must stay untouched. (`gotoTargets` is fail-closed
+    // by #9064 and is no longer a positive control.)
+    for command in ["threads", "stackTrace"] {
+        let response = adapter.handle_request(2, command, None);
         let (success, _, _) = response_parts(response, command)?;
         assert!(success, "`{command}` is outside the #9581 floor and must succeed");
     }
@@ -280,15 +273,8 @@ fn cancel_never_mutates_the_shared_cancellation_flag() -> TestResult {
         "the cancel disposition must be deterministic (no flag mutation)"
     );
 
-    let (goto_ok, _, _) = response_parts(
-        adapter.handle_request(
-            4,
-            "gotoTargets",
-            Some(json!({ "source": { "path": "/tmp/floor_9581_cancel.pl" }, "line": 1 })),
-        ),
-        "gotoTargets",
-    )?;
-    assert!(goto_ok, "gotoTargets (not floored) must keep working after floored cancels");
+    let (threads_ok, _, _) = response_parts(adapter.handle_request(4, "threads", None), "threads")?;
+    assert!(threads_ok, "threads (not floored) must keep working after floored cancels");
     Ok(())
 }
 
@@ -313,10 +299,19 @@ fn non_default_format_is_rejected_on_all_four_families() -> TestResult {
         let response = adapter.handle_request(2, command, Some(arguments));
         let (success, message, body) = response_parts(response, command)?;
         assert!(!success, "`{command}` with hex:true must be rejected (#9581)");
-        let message = message.ok_or("rejection must explain the format floor")?;
+        let message = message.ok_or("rejection must explain the refusing gate")?;
+        // `setVariable` (#8354) and `setExpression` (#9568) are refused by
+        // their own capability authorities before the ValueFormat floor is
+        // consulted; the query families reach the floor itself.
+        let expected_row = match command {
+            "setVariable" => "supportsSetVariable",
+            "setExpression" => "supportsSetExpression",
+            _ => "supportsValueFormattingOptions",
+        };
         assert!(
-            message.contains("unsupported") && message.contains("supportsValueFormattingOptions"),
-            "`{command}` must name the ValueFormat floor, got: {message}"
+            (message.contains("unsupported") || message.contains("not supported"))
+                && message.contains(expected_row),
+            "`{command}` must be refused naming `{expected_row}`, got: {message}"
         );
         assert!(body.is_none(), "a floored format request must not carry a result body");
     }
@@ -391,7 +386,7 @@ fn mirror_bridge_rejects_floored_requests_before_peer_or_oracle_work() -> TestRe
     );
     // The floored editor entry applies the floor before the canonical route
     // match, so a pending bridge (no peer) refuses without peer or oracle work.
-    bridge.dispatch_with_capability_floor(1, "initialize", Some(json!({ "adapterID": "perl" })));
+    bridge.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
 
     let floored: [(&str, Option<Value>); 6] = [
         ("completions", Some(json!({ "text": "pr", "column": 2 }))),
@@ -402,7 +397,7 @@ fn mirror_bridge_rejects_floored_requests_before_peer_or_oracle_work() -> TestRe
         ("cancel", None),
     ];
     for (command, arguments) in floored {
-        let out = bridge.dispatch_with_capability_floor(2, command, arguments);
+        let out = bridge.dispatch(2, command, arguments);
         assert_eq!(out.len(), 1, "mirror `{command}` floor must not poll peer events");
         let first = out.first().ok_or_else(|| format!("{command}: no response"))?;
         match first {
@@ -429,13 +424,13 @@ fn mirror_bridge_rejects_non_default_format_on_proxied_families() -> TestResult 
     let mut bridge = perl_dap::backend::MirrorPeerBridge::new_pending(
         perl_dap::backend::capabilities::ControlMode::Mirror,
     );
-    bridge.dispatch_with_capability_floor(1, "initialize", Some(json!({ "adapterID": "perl" })));
+    bridge.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
 
     for (command, arguments) in [
         ("variables", json!({ "variablesReference": 1, "format": { "hex": true } })),
         ("evaluate", json!({ "expression": "$x", "format": { "hex": true } })),
     ] {
-        let out = bridge.dispatch_with_capability_floor(2, command, Some(arguments));
+        let out = bridge.dispatch(2, command, Some(arguments));
         let first = out.first().ok_or_else(|| format!("{command}: no response"))?;
         match first {
             DapMessage::Response { success, message, .. } => {

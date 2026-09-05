@@ -15,9 +15,9 @@
 //! The bridge is a **parallel** path: it does not touch the native
 //! [`crate::debug_adapter::DebugAdapter`] dispatch funnel (decision DF1 remains
 //! deferred). [`run_external_peer_session_stdio`] drives it over editor stdio;
-//! [`DapPeerBridge::dispatch_with_capability_floor`] (the #9581 floored editor
-//! entry) / [`DapPeerBridge::dispatch`] / [`DapPeerBridge::poll_events`] are
-//! the deterministic, testable core.
+//! [`DapPeerBridge::dispatch`] (which applies the #9581 capability floor before
+//! routing) and [`DapPeerBridge::poll_events`] are the deterministic, testable
+//! core.
 
 #[cfg(test)]
 use perl_tdd_support::{must, must_some};
@@ -228,21 +228,6 @@ impl DapPeerBridge {
         self.dispatch_unchecked(request_seq, command, arguments)
     }
 
-    /// Dispatch a request after the capability floor has been applied.
-    pub fn dispatch_with_capability_floor(
-        &mut self,
-        request_seq: i64,
-        command: &str,
-        arguments: Option<Value>,
-    ) -> Vec<DapMessage> {
-        if let Some(response) =
-            self.secondary_floor_response(request_seq, command, arguments.as_ref())
-        {
-            return vec![response];
-        }
-        self.dispatch_unchecked(request_seq, command, arguments)
-    }
-
     /// Dispatch a single DAP request. Returns the response message followed by
     /// any backend events that arrived while servicing it (drained after the
     /// call), so a caller can write them in order.
@@ -369,7 +354,7 @@ impl DapPeerBridge {
                 // Answered locally from the AST oracle (the source file is on the
                 // same host as perl-dap), independent of the peer. The #9581
                 // capability floor intercepts the request at
-                // [`Self::dispatch_with_capability_floor`] while
+                // [`Self::dispatch`] while
                 // `supportsBreakpointLocationsRequest` is false, so this arm is
                 // unreachable through the floored editor entry until that
                 // per-field re-enable gate passes.
@@ -1012,7 +997,7 @@ fn dispatch_frame(bridge: &mut DapPeerBridge, body: &[u8]) -> (Vec<DapMessage>, 
         v.get("seq").and_then(|s| s.as_i64().or_else(|| s.as_f64().map(|f| f as i64))).unwrap_or(0);
     // The editor-facing ingress applies the #9581 capability floor before the
     // canonical route match.
-    let out = bridge.dispatch_with_capability_floor(seq, command, v.get("arguments").cloned());
+    let out = bridge.dispatch(seq, command, v.get("arguments").cloned());
     let disconnect = command == "disconnect";
     (out, disconnect)
 }
@@ -1100,7 +1085,7 @@ fn str_field(v: &Value, key: &str) -> Option<String> {
 ///
 /// Retained as the AST oracle behind the canonical `BreakpointLocations`
 /// route arm. The #9581 capability floor intercepts the request at
-/// `dispatch_with_capability_floor` while `supportsBreakpointLocationsRequest`
+/// `dispatch` while `supportsBreakpointLocationsRequest`
 /// is `false`, so production reaches this arm only after that per-field
 /// re-enable gate (#10524 + #2300 + #9021 + #7566) passes; the unit proofs
 /// keep proving its geometry/empty-set contract in the meantime.
@@ -1312,8 +1297,7 @@ mod tests {
         backend.events.push(DebugEvent::Terminated { exit_code: Some(7) });
         let mut bridge = DapPeerBridge::new(Box::new(backend));
 
-        let out =
-            bridge.dispatch_with_capability_floor(1, "completions", Some(json!({ "text": "pr" })));
+        let out = bridge.dispatch(1, "completions", Some(json!({ "text": "pr" })));
         assert_eq!(out.len(), 1, "a floored request must return only its response");
         assert!(matches!(out.first(), Some(DapMessage::Response { success: false, .. })));
 
@@ -1959,7 +1943,7 @@ mod tests {
         let path = f.path().to_string_lossy().to_string();
 
         let mut b = bridge();
-        let out = b.dispatch_with_capability_floor(
+        let out = b.dispatch(
             9,
             "breakpointLocations",
             Some(json!({ "source": { "path": path }, "line": 1, "endLine": 1 })),
