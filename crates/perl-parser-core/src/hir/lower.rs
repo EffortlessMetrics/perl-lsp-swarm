@@ -7,9 +7,9 @@ use std::collections::BTreeMap;
 
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
-    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirStmt,
-    HirStmtId, HirSubscript, HirVariable, Sigil, SubscriptKind, UnaryMode, VariableKind,
-    diamond_expr, glob_expr, heredoc_expr, readline_expr,
+    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirLoopLabel,
+    HirLoopRegionId, HirStmt, HirStmtId, HirSubscript, HirVariable, LoopControlResolution, Sigil,
+    SubscriptKind, UnaryMode, VariableKind, diamond_expr, glob_expr, heredoc_expr, readline_expr,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -3166,8 +3166,7 @@ fn lower_body_from_ast(
     let mut root_block = HirBlock::default();
 
     for stmt_node in stmts {
-        let stmt_id = builder.lower_statement(stmt_node);
-        root_block.stmts.push(stmt_id);
+        builder.append_statement_nodes(stmt_node, &mut root_block);
     }
 
     let root_id = builder.alloc_block(root_block, root_range);
@@ -3180,6 +3179,20 @@ fn lower_body_from_ast(
 //   - Scope-based variable-kind resolution (lexical vs. package)
 //   - Compound-assignment ReadModifyWrite distinction
 //   - Recovery-confidence propagation (no exact fact through contamination)
+
+/// One entry on the enclosing-loop stack used by [`BodyBuilder2`] to resolve
+/// `next`/`last`/`redo` statements to a specific loop region (#13249).
+///
+/// Each entry pairs a stable region ID with the label spelling written on the
+/// loop (if any). Labelled non-loop constructs — labelled bare blocks and the
+/// like — are recorded in a separate stack so a labelled transfer targeting a
+/// non-loop label returns a typed [`LoopControlResolution::NonLoopTarget`]
+/// disposition rather than silently falling back to the nearest loop.
+#[derive(Debug)]
+enum EnclosingLabel {
+    Loop { region: HirLoopRegionId, label: Option<String> },
+    NonLoop(String),
+}
 
 struct BodyBuilder2<'a> {
     exprs: Arena<HirExpr>,
@@ -3196,6 +3209,21 @@ struct BodyBuilder2<'a> {
     /// so every variable in a sub body incorrectly resolved to scope 0 (file root),
     /// making all bindings declared inside the sub invisible.
     start_scope: HirScopeId,
+    /// Next stable loop-region ID to hand out. Region IDs are allocated in
+    /// body source order as loops (or loop-form postfix modifiers) are
+    /// lowered (#13249).
+    next_loop_region_id: u32,
+    /// Enclosing structured-loop regions in source order (top of stack is
+    /// the innermost). Consumed by `HirStmt::LoopControl` resolution (#13249).
+    /// Enclosing labelled non-loop constructs (labelled bare blocks) that
+    /// consumed a pending label without allocating a loop region. Used to
+    /// tell a labelled `last LABEL` targeting a non-loop from a genuinely
+    /// unresolved label (#13249).
+    enclosing_label_stack: Vec<EnclosingLabel>,
+    /// Label inherited from an immediately-enclosing `LABEL:` statement,
+    /// consumed by the labelled construct as it is lowered. Distinct from
+    /// [`Lowerer::pending_label`] (which drives the flat-HIR first pass).
+    body_pending_label: Option<HirLoopLabel>,
 }
 
 impl<'a> BodyBuilder2<'a> {
@@ -3207,6 +3235,59 @@ impl<'a> BodyBuilder2<'a> {
             source_map: BodySourceMap::default(),
             scope_graph,
             start_scope,
+            next_loop_region_id: 0,
+            enclosing_label_stack: Vec::new(),
+            body_pending_label: None,
+        }
+    }
+
+    /// Allocate the next stable loop-region ID (#13249). Region IDs are
+    /// assigned in body source order as loops are lowered, so identical
+    /// inputs produce identical IDs.
+    fn alloc_loop_region(&mut self) -> HirLoopRegionId {
+        let id = HirLoopRegionId::from_index(self.next_loop_region_id);
+        self.next_loop_region_id += 1;
+        id
+    }
+
+    /// Resolve a `next`/`last`/`redo` transfer against the current
+    /// enclosing-loop and non-loop-label stacks (#13249).
+    fn resolve_loop_control(
+        &self,
+        written_label: Option<&str>,
+    ) -> (Option<HirLoopRegionId>, LoopControlResolution) {
+        match written_label {
+            None => self
+                .enclosing_label_stack
+                .iter()
+                .rev()
+                .find_map(|frame| match frame {
+                    EnclosingLabel::Loop { region, .. } => {
+                        Some((Some(*region), LoopControlResolution::Resolved))
+                    }
+                    EnclosingLabel::NonLoop(_) => None,
+                })
+                .unwrap_or((None, LoopControlResolution::NoEnclosingLoop)),
+            Some(label) => self
+                .enclosing_label_stack
+                .iter()
+                .rev()
+                .find_map(|frame| match frame {
+                    EnclosingLabel::Loop { region, label: Some(candidate) }
+                        if candidate == label =>
+                    {
+                        Some((Some(*region), LoopControlResolution::Resolved))
+                    }
+                    EnclosingLabel::NonLoop(candidate) if candidate == label => Some((
+                        None,
+                        LoopControlResolution::NonLoopTarget { label: label.to_string() },
+                    )),
+                    _ => None,
+                })
+                .unwrap_or((
+                    None,
+                    LoopControlResolution::UnresolvedLabel { label: label.to_string() },
+                )),
         }
     }
 
@@ -3288,13 +3369,69 @@ impl<'a> BodyBuilder2<'a> {
             // Peel through the expression-statement wrapper.
             NodeKind::ExpressionStatement { expression } => self.lower_statement(expression),
 
+            // `LABEL: <statement>` (#13249). The label attaches to the
+            // immediately-nested statement. Loop-shaped children consume it
+            // via `body_pending_label` (allocating a loop region); every
+            // other child is a non-loop labelled construct, tracked on the
+            // non-loop label stack so a labelled `last LABEL` targeting a
+            // non-loop returns a typed `NonLoopTarget` disposition rather
+            // than silently reaching for the nearest loop.
+            NodeKind::LabeledStatement { label, statement } => {
+                let label_meta = HirLoopLabel { name: label.clone(), range };
+                if is_loop_like_statement(statement) {
+                    let saved = self.body_pending_label.replace(label_meta);
+                    let stmt_id = self.lower_statement(statement);
+                    // The loop should have taken it. If somehow it did not
+                    // (e.g. the inner shape does not actually reach a loop
+                    // lowering site — a recovered/opaque node), drop it so a
+                    // later loop-form modifier does not inherit a stale
+                    // label. Restore the outer pending label either way.
+                    self.body_pending_label = saved;
+                    stmt_id
+                } else {
+                    self.enclosing_label_stack.push(EnclosingLabel::NonLoop(label.clone()));
+                    let stmt_id = self.lower_statement(statement);
+                    // Pop only the entry this LabeledStatement pushed. Any
+                    // nested LabeledStatement inside `statement` popped its
+                    // own entry before returning, so this pop always removes
+                    // our own frame.
+                    self.enclosing_label_stack.pop();
+                    stmt_id
+                }
+            }
+
+            // A bare block has no standalone HIR expression yet, but its
+            // statements must still be lowered so loop controls inside a
+            // labelled block remain visible to resolution.
+            NodeKind::Block { statements } => {
+                let first = statements.first().map(|statement| self.lower_statement(statement));
+                for statement in statements.iter().skip(1) {
+                    let _ = self.lower_statement(statement);
+                }
+                first.unwrap_or_else(|| {
+                    let expr =
+                        self.alloc_expr(HirExpr::Opaque { ast_kind: "Block".to_string() }, range);
+                    self.alloc_stmt(HirStmt::Expr(expr), range)
+                })
+            }
+
             NodeKind::LoopControl { op, label } => {
                 let verb = loop_control_kind(op);
-                self.alloc_stmt(HirStmt::LoopControl { verb, target_label: label.clone() }, range)
+                let (resolved_target, resolution) = self.resolve_loop_control(label.as_deref());
+                self.alloc_stmt(
+                    HirStmt::LoopControl {
+                        verb,
+                        written_label: label.clone(),
+                        resolved_target,
+                        resolution,
+                    },
+                    range,
+                )
             }
 
             NodeKind::StatementModifier { statement, modifier, condition } => {
                 let verb = statement_modifier_kind(modifier);
+                let (postfix_loop_region, postfix_label) = (None, None);
                 let statement_id = self.lower_statement(statement);
                 let condition_id = self.lower_expr(condition);
                 self.alloc_stmt(
@@ -3302,6 +3439,8 @@ impl<'a> BodyBuilder2<'a> {
                         statement: statement_id,
                         condition: condition_id,
                         verb,
+                        postfix_loop_region,
+                        postfix_label,
                     },
                     range,
                 )
@@ -3386,6 +3525,23 @@ impl<'a> BodyBuilder2<'a> {
                 let expr_id = self.lower_expr(node);
                 self.alloc_stmt(HirStmt::Expr(expr_id), range)
             }
+        }
+    }
+
+    /// Append every statement in a labelled bare block. Bare blocks are
+    /// transparent for body sequencing, but their label remains an enclosing
+    /// non-loop target while each child is lowered.
+    fn append_statement_nodes(&mut self, node: &Node, block: &mut HirBlock) {
+        if let NodeKind::LabeledStatement { label, statement } = &node.kind
+            && let NodeKind::Block { statements } = &statement.kind
+        {
+            self.enclosing_label_stack.push(EnclosingLabel::NonLoop(label.clone()));
+            for statement in statements {
+                block.stmts.push(self.lower_statement(statement));
+            }
+            self.enclosing_label_stack.pop();
+        } else {
+            block.stmts.push(self.lower_statement(node));
         }
     }
 
@@ -3509,13 +3665,26 @@ impl<'a> BodyBuilder2<'a> {
                     Some("until") => LoopKind::Until,
                     _ => LoopKind::While,
                 };
+                // Consume any pending `LABEL:` and allocate this loop's
+                // stable region BEFORE lowering the condition or body — so a
+                // `next`/`last`/`redo` inside resolves to this loop (#13249).
+                // Every loop kind allocates a region, labelled or not.
+                let label = self.body_pending_label.take();
+                let region_id = self.alloc_loop_region();
+                self.enclosing_label_stack.push(EnclosingLabel::Loop {
+                    region: region_id,
+                    label: label.as_ref().map(|l| l.name.clone()),
+                });
                 let condition_id = Some(self.lower_expr(condition));
                 let body_id = self.lower_nested_block(body);
                 let continue_id =
                     continue_block.as_deref().map(|block| self.lower_nested_block(block));
+                self.enclosing_label_stack.pop();
                 self.alloc_expr(
                     HirExpr::Loop {
                         kind,
+                        region_id,
+                        label,
                         init: None,
                         condition: condition_id,
                         update: None,
@@ -3528,16 +3697,27 @@ impl<'a> BodyBuilder2<'a> {
             }
 
             NodeKind::For { init, condition, update, body, continue_block } => {
+                let label = self.body_pending_label.take();
+                let region_id = self.alloc_loop_region();
+                // Initializer statements execute before entering the loop;
+                // controls there must not see this loop as an enclosing target.
                 let init_id =
                     init.as_deref().map(|initializer| self.lower_for_init_block(initializer));
+                self.enclosing_label_stack.push(EnclosingLabel::Loop {
+                    region: region_id,
+                    label: label.as_ref().map(|l| l.name.clone()),
+                });
                 let condition_id = condition.as_deref().map(|expr| self.lower_expr(expr));
                 let body_id = self.lower_nested_block(body);
                 let continue_id =
                     continue_block.as_deref().map(|block| self.lower_nested_block(block));
                 let update_id = update.as_deref().map(|expr| self.lower_expr(expr));
+                self.enclosing_label_stack.pop();
                 self.alloc_expr(
                     HirExpr::Loop {
                         kind: LoopKind::CStyleFor,
+                        region_id,
+                        label,
                         init: init_id,
                         condition: condition_id,
                         update: update_id,
@@ -3550,14 +3730,23 @@ impl<'a> BodyBuilder2<'a> {
             }
 
             NodeKind::Foreach { variable, list, body, continue_block } => {
+                let label = self.body_pending_label.take();
+                let region_id = self.alloc_loop_region();
+                self.enclosing_label_stack.push(EnclosingLabel::Loop {
+                    region: region_id,
+                    label: label.as_ref().map(|l| l.name.clone()),
+                });
                 let iterator_binding = Some(self.lower_iterator_binding(variable));
                 let condition_id = Some(self.lower_expr(list));
                 let body_id = self.lower_nested_block(body);
                 let continue_id =
                     continue_block.as_deref().map(|block| self.lower_nested_block(block));
+                self.enclosing_label_stack.pop();
                 self.alloc_expr(
                     HirExpr::Loop {
                         kind: LoopKind::Foreach,
+                        region_id,
+                        label,
                         init: None,
                         condition: condition_id,
                         update: None,
@@ -4086,7 +4275,7 @@ impl<'a> BodyBuilder2<'a> {
         };
         let mut block = HirBlock::default();
         for statement in statements {
-            block.stmts.push(self.lower_statement(statement));
+            self.append_statement_nodes(statement, &mut block);
         }
         self.start_scope = previous_scope;
         self.alloc_block(block, node.location)
@@ -4178,6 +4367,25 @@ fn loop_control_kind(op: &str) -> ControlTransferKind {
         "last" => ControlTransferKind::Last,
         "redo" => ControlTransferKind::Redo,
         _ => ControlTransferKind::Next,
+    }
+}
+
+/// True when `node` (or its `ExpressionStatement` payload) is a loop-shaped
+/// construct that will consume a pending `LABEL:` and allocate a loop
+/// region — i.e. a structured `while`/`until`/`for`/`foreach` loop, or a
+/// loop-form postfix statement modifier. Branch-form modifiers
+/// (`if`/`unless`) are deliberately excluded so `LABEL: STMT if COND;`
+/// classifies the label as a non-loop labelled region rather than silently
+/// tagging the `if` as a loop target (#13249).
+fn is_loop_like_statement(node: &Node) -> bool {
+    let inner = match &node.kind {
+        NodeKind::ExpressionStatement { expression } => &expression.kind,
+        other => other,
+    };
+    match inner {
+        NodeKind::While { .. } | NodeKind::For { .. } | NodeKind::Foreach { .. } => true,
+        NodeKind::StatementModifier { .. } => false,
+        _ => false,
     }
 }
 
