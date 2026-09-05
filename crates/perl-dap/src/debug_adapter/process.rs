@@ -2567,6 +2567,7 @@ mod tests {
         reserve_terminated_event, terminated_delivery_is_current,
     };
     use crate::tcp_attach::DapEvent;
+    use perl_test_must::must_some_with;
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
@@ -2632,35 +2633,40 @@ mod tests {
     /// thread-scoped requests, and events cannot disagree (#8294).
     #[test]
     fn tcp_events_normalize_foreign_thread_ids_to_the_advertised_context() {
-        let (stopped_name, stopped_body) = DebugAdapter::tcp_event_message(DapEvent::Stopped {
-            reason: "breakpoint".to_string(),
-            thread_id: 9,
-        })
-        .expect("stopped events translate");
+        let (stopped_name, stopped_body) = must_some_with(
+            DebugAdapter::tcp_event_message(DapEvent::Stopped {
+                reason: "breakpoint".to_string(),
+                thread_id: 9,
+            }),
+            "stopped events translate",
+        );
         assert_eq!(stopped_name, "stopped");
-        let stopped_body = stopped_body.expect("stopped events carry a body");
+        let stopped_body = must_some_with(stopped_body, "stopped events carry a body");
         assert_eq!(stopped_body["threadId"], DebugAdapter::TCP_ATTACH_SYNTHETIC_THREAD_ID);
         assert_eq!(stopped_body["threadId"], 1);
         assert_eq!(stopped_body["reason"], "breakpoint");
         assert_eq!(stopped_body["allThreadsStopped"], true);
 
-        let (continued_name, continued_body) =
-            DebugAdapter::tcp_event_message(DapEvent::Continued { thread_id: 9 })
-                .expect("continued events translate");
+        let (continued_name, continued_body) = must_some_with(
+            DebugAdapter::tcp_event_message(DapEvent::Continued { thread_id: 9 }),
+            "continued events translate",
+        );
         assert_eq!(continued_name, "continued");
-        let continued_body = continued_body.expect("continued events carry a body");
+        let continued_body = must_some_with(continued_body, "continued events carry a body");
         assert_eq!(continued_body["threadId"], DebugAdapter::TCP_ATTACH_SYNTHETIC_THREAD_ID);
         assert_eq!(continued_body["allThreadsContinued"], true);
 
         // Non-identity events keep their shape and stay decoupled from the
         // execution-context contract.
-        let (output_name, output_body) = DebugAdapter::tcp_event_message(DapEvent::Output {
-            category: "stdout".to_string(),
-            output: "hi".to_string(),
-        })
-        .expect("output events translate");
+        let (output_name, output_body) = must_some_with(
+            DebugAdapter::tcp_event_message(DapEvent::Output {
+                category: "stdout".to_string(),
+                output: "hi".to_string(),
+            }),
+            "output events translate",
+        );
         assert_eq!(output_name, "output");
-        assert!(output_body.expect("output events carry a body")["threadId"].is_null());
+        assert!(must_some_with(output_body, "output events carry a body")["threadId"].is_null());
         assert!(
             DebugAdapter::tcp_event_message(DapEvent::Terminated { reason: "exit".to_string() })
                 .is_none()
