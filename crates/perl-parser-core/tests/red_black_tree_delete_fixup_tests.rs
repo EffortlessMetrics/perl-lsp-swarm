@@ -273,15 +273,19 @@ fn mirrored_double_black_cases_keep_reads_and_writes_distinct() {
     let file = lower(FIXUP_SOURCE);
     let paths = subscript_paths(FIXUP_SOURCE, &file);
 
-    assert_path_present(&paths, "$node->{parent}->{left}", AccessMode::Read);
-    assert_path_present(&paths, "$node->{parent}->{right}", AccessMode::Read);
-    assert_path_present(&paths, "$sibling->{left}->{color}", AccessMode::Read);
-    assert_path_present(&paths, "$sibling->{left}->{color}", AccessMode::Write);
-    assert_path_present(&paths, "$sibling->{right}->{color}", AccessMode::Read);
-    assert_path_present(&paths, "$sibling->{right}->{color}", AccessMode::Write);
-    assert_path_present(&paths, "$node->{parent}->{color}", AccessMode::Read);
-    assert_path_present(&paths, "$node->{parent}->{color}", AccessMode::Write);
-    assert_path_present(&paths, "$node->{color}", AccessMode::Read);
+    // Exact counts pin both mirrored branches: dropping either side of the
+    // if/else halves the nephew write and parent-color counts below.
+    assert_path_count(&paths, "$node->{parent}->{left}", AccessMode::Read, 4);
+    assert_path_count(&paths, "$node->{parent}->{left}", AccessMode::Write, 0);
+    assert_path_count(&paths, "$node->{parent}->{right}", AccessMode::Read, 3);
+    assert_path_count(&paths, "$node->{parent}->{right}", AccessMode::Write, 0);
+    assert_path_count(&paths, "$sibling->{left}->{color}", AccessMode::Read, 3);
+    assert_path_count(&paths, "$sibling->{left}->{color}", AccessMode::Write, 2);
+    assert_path_count(&paths, "$sibling->{right}->{color}", AccessMode::Read, 3);
+    assert_path_count(&paths, "$sibling->{right}->{color}", AccessMode::Write, 2);
+    assert_path_count(&paths, "$node->{parent}->{color}", AccessMode::Read, 2);
+    assert_path_count(&paths, "$node->{parent}->{color}", AccessMode::Write, 4);
+    assert_path_count(&paths, "$node->{color}", AccessMode::Read, 1);
     assert_path_count(&paths, "$node->{color}", AccessMode::Write, 1);
 
     let left_nephew_write = matching_paths(&paths, "$sibling->{left}->{color}", AccessMode::Write);
