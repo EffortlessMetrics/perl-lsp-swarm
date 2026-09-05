@@ -10,15 +10,20 @@ on:
       - "scripts/test/vim-host-save-format-driver.vim"
       - "scripts/test/vim-clients/**"
       - ".ci/editor-clients/vim-vim-lsp-*.json"
-      - "crates/perl-lsp-rs-core/**"
-      - "crates/perl-lsp-perltidy/**"
-      - "crates/perl-lsp-rs/**"
-      - "crates/perl-diagnostics/**"
-      - "crates/perl-module/**"
-      - "crates/perllsp/**"
+      # Every workspace crate, not the six that were once named. `perllsp`'s
+      # transitive graph is 31 workspace crates; enumerating a subset let a
+      # change to `perl-parser-core`, `perl-lexer`, or `perl-workspace` reach
+      # main without ever re-running the promoted actual-client proof. An
+      # enumeration also goes stale silently the next time a crate is added,
+      # which is the same defect one list longer. This over-triggers on the
+      # crates outside the graph; that is the safe direction of error for a
+      # lane that guards a promoted support claim.
+      - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/vim-hermetic-host.yml"
+      - "policy/lsp-client-support.toml"
+      - "docs/receipts/lsp-clients/**"
   workflow_dispatch:
 
 permissions:
@@ -97,6 +102,86 @@ jobs:
           [ "${cleanup}" = "pass" ]
           [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/run/hermetic/raw/vim-lsp-client.log" ]
           [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/run/hermetic/raw/initialize.json" ]
+
+      - name: Bind the live run to the promoted committed evidence
+        run: |
+          set -euo pipefail
+          # Without this step the lane proves only that *a* Vim journey passes
+          # today, not that the committed receipt describes *this* journey.
+          # Triggering on docs/receipts/** would then be theatre: a
+          # self-consistent replacement of the receipt plus its snapshot
+          # satisfies the Rust registry validator (internal consistency) and
+          # this lane (an independent passing run) without the two ever being
+          # compared. That is the gap this step closes.
+          # The receipt path is DERIVED from the policy row, never hard-coded.
+          # `lsp_client_support_registry` validates whichever `actual_client`
+          # evidence entry the Vim row names, so a hard-coded path here would
+          # decouple the two gates again: repointing that entry at a new
+          # self-consistent receipt would have the registry validate the
+          # replacement while this lane kept reproducing the old file. Reading
+          # the same selector both gates read keeps them on one subject;
+          # missing or duplicate entries fail closed rather than picking one.
+          receipt="$(python3 - <<'SELECT'
+          import sys, tomllib
+
+          with open("policy/lsp-client-support.toml", "rb") as handle:
+              registry = tomllib.load(handle)
+
+          rows = [row for row in registry.get("client", []) if row.get("id") == "vim"]
+          if len(rows) != 1:
+              sys.exit(f"expected exactly one vim client row, found {len(rows)}")
+
+          paths = [
+              entry["path"]
+              for entry in rows[0].get("evidence", [])
+              if entry.get("kind") == "actual_client"
+          ]
+          if len(paths) != 1:
+              sys.exit(
+                  f"expected exactly one vim actual_client evidence entry, found {len(paths)}: {paths}"
+              )
+
+          print(paths[0])
+          SELECT
+          )"
+          echo "policy-selected receipt: ${receipt}"
+          [ -f "${receipt}" ] || {
+            echo "::error::policy names a vim actual_client receipt that does not exist: ${receipt}"
+            exit 1
+          }
+          generated="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/run/hermetic/raw/initialize.json"
+
+          # 1. The promoted artifact triad must describe the bytes this run produced.
+          want_path="$(jq -r '.artifact.path' "${receipt}")"
+          want_sha="$(jq -r '.artifact.sha256' "${receipt}")"
+          want_size="$(jq -r '.artifact.size_bytes' "${receipt}")"
+          got_sha="$(sha256sum "${generated}" | cut -d' ' -f1)"
+          got_size="$(wc -c < "${generated}" | tr -d ' ')"
+          echo "receipt artifact: ${want_path} sha256=${want_sha} size=${want_size}"
+          echo "this run:         sha256=${got_sha} size=${got_size}"
+          if [ "${got_sha}" != "${want_sha}" ] || [ "${got_size}" != "${want_size}" ]; then
+            echo "::error::The committed capability snapshot no longer matches what a live" \
+                 "Vim + vim-lsp host run produces. The promoted real_generic_client_proven" \
+                 "claim for Vim is stale. Refresh it by copying this run's" \
+                 "hermetic/raw/initialize.json over ${want_path} and updating" \
+                 "artifact.sha256/artifact.size_bytes in ${receipt} — do not relax this check."
+            diff <(jq -S . "${want_path}") <(jq -S . "${generated}") || true
+            exit 1
+          fi
+
+          # 2. The committed bytes must still hash to what the receipt asserts,
+          #    so a snapshot edited without its digest cannot ride along.
+          committed_sha="$(sha256sum "${want_path}" | cut -d' ' -f1)"
+          [ "${committed_sha}" = "${want_sha}" ]
+
+          # 3. The receipt's pinned vim-lsp identity must be the subject this
+          #    lane actually checked out, not a different upstream revision.
+          pinned="$(jq -r '.upstream.selected_commit' "${VIM_LSP_SUBJECT_MANIFEST}")"
+          checked_out="$(git -C "${GITHUB_WORKSPACE}/target/vim-lsp-subject" rev-parse HEAD)"
+          echo "pinned vim-lsp: ${pinned}; checked out: ${checked_out}"
+          [ "${checked_out}" = "${pinned}" ]
+          jq -e --arg pin "${pinned}" '.client_version | contains($pin)' "${receipt}" > /dev/null \
+            || { echo "::error::${receipt} client_version does not name the pinned vim-lsp commit ${pinned}"; exit 1; }
 
       - name: Run the #10946 bootstrap/diagnostics journey (canonical)
         run: >-
