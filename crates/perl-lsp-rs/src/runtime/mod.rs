@@ -200,6 +200,12 @@ pub struct LspServer {
     outbound_writer_handle: Option<std::thread::JoinHandle<outbound::WriterTerminalOutcome>>,
     /// Client capabilities (behind mutex for interior mutability — written once during initialize)
     client_capabilities: Mutex<ClientCapabilities>,
+    /// Root-input classification recorded by the most recent `initialize`
+    /// request (#8161). `None` before the first initialize. Kept as a separate
+    /// receipt from `client_capabilities.workspace_folders_support` so the
+    /// client's advertised bit and the declared root input never merge into
+    /// one derived boolean.
+    initial_root_input: Mutex<Option<lifecycle::root_input::InitialRootInput>>,
     /// Cancelled request IDs
     cancelled: Arc<Mutex<HashSet<JsonRpcId>>>,
     /// Request IDs that are queued or executing in the async scheduler.

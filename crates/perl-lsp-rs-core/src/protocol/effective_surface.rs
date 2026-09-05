@@ -39,6 +39,9 @@ use sha2::{Digest, Sha256};
 
 use crate::features::flags::BuildFlags;
 use crate::features::policy::FeatureProfile;
+use crate::protocol::capabilities::{
+    SERVER_WORKSPACE_FOLDER_SUPPORT, WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE,
+};
 
 /// Schema version of this model's inputs/output binding.
 pub const EFFECTIVE_SURFACE_SCHEMA_VERSION: u64 = 1;
@@ -1588,7 +1591,14 @@ fn project_server_capabilities(
     }
 
     // Workspace surface (folders, textDocumentContent, file operations).
-    let workspace_folders_supported = client.workspace_folders.is_supported();
+    //
+    // #8161: `workspaceFolders.supported` describes whether this server
+    // IMPLEMENTS workspace-folder semantics — a server-owned fact — not the
+    // client's advertised `workspace.workspaceFolders` bit and not the active
+    // folder count. The client's own `workspace_folders` fact remains a
+    // separate normalized observation for behavior that needs the client to
+    // participate; it must never feed this bit.
+    let workspace_folders_supported = SERVER_WORKSPACE_FOLDER_SUPPORT;
     // Mirrors `perl-lsp-rs` lifecycle/watchers.rs PERL_WATCH_PATTERNS: the
     // catch-all advertisement keeps extensionless shebang scripts observable;
     // handler-side classification stays the Perl-source authority (#13308).
@@ -1613,7 +1623,7 @@ fn project_server_capabilities(
         "workspaceFolders".into(),
         serde_json::json!({
             "supported": workspace_folders_supported,
-            "changeNotifications": true,
+            "changeNotifications": WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE,
         }),
     );
     workspace.insert("textDocumentContent".into(), serde_json::json!({ "schemes": ["perldoc"] }));

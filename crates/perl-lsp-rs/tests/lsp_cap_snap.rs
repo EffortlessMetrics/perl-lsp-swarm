@@ -20,6 +20,15 @@ use support::lsp_harness::LspHarness;
 // profile. This fixture declares no client capabilities at all, so per #7682 the
 // server advertises neither inline completion nor any workspace.fileOperations:
 // both are negotiated from the client's declaration.
+//
+// `workspace.workspaceFolders.supported` is deliberately NOT one of those. It
+// is `true` in this snapshot even though the fixture declares nothing, because
+// #8161 makes it a server implementation fact rather than a mirror of the
+// client's bit. Comparing this snapshot against its full-client sibling is the
+// golden-file form of that negative control: the two must agree on
+// `workspaceFolders`, and disagree only where a capability really is
+// negotiated. If a change makes this read `false` again, the mirror defect is
+// back — do not re-accept the snapshot.
 // ---------------------------------------------------------------------------
 
 #[test]

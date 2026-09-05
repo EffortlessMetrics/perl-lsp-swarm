@@ -239,10 +239,18 @@ fn sublime_lsp_2_13_receives_only_declared_file_operations() -> Result<()> {
         capabilities.pointer("/workspace/textDocumentContent/schemes/0") == Some(&json!("perldoc"))
     );
 
-    shutdown_and_exit(
-        &mut client,
-        &["workspace/configuration", "client/registerCapability", "window/workDoneProgress/create"],
-    )
+    // This profile initializes with `rootUri: null` and `workspaceFolders:
+    // null` — an explicit no-active-folder declaration (#8161). It still
+    // registers the watched-file capability the client negotiated, so that
+    // request remains required below. #8161 deliberately adds no rootless
+    // configuration path and no indexing work: #8945 owns what configuration
+    // and late project adoption mean without an active root.
+    //
+    // Any unexpected `workspace/configuration` or
+    // `window/workDoneProgress/create` request remains unanswered and causes
+    // `assert_transport_clean` to fail, so this does not weaken the profile
+    // receipt to obtain green status.
+    shutdown_and_exit(&mut client, &["client/registerCapability"])
 }
 
 #[test]
