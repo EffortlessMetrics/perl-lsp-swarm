@@ -817,7 +817,7 @@ impl LspServer {
                                 super::navigation::cursor_is_off_named_symbol(
                                     &doc.text,
                                     offset,
-                                    Some(&bare_sub_key.name),
+                                    Some(&*bare_sub_key.name),
                                 );
                             if cursor_is_off_the_named_sub {
                                 return Ok((
