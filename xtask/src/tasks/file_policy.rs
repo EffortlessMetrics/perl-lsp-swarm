@@ -1524,14 +1524,19 @@ fn resolve_inventory_baseline(root: &Path) -> Option<String> {
 
 fn added_paths_since(root: &Path, baseline: &str) -> Result<Vec<String>> {
     let range = format!("{baseline}..HEAD");
+    // `--no-renames` keeps a renamed or copied file visible as an addition at
+    // its destination path; with rename detection a classified file moved to
+    // an unclassified path would never reach the ratchet.
     let output = Command::new("git")
-        .args(["diff", "--name-only", "--diff-filter=A", "-z", baseline, "HEAD"])
+        .args(["diff", "--name-only", "--no-renames", "--diff-filter=A", "-z", baseline, "HEAD"])
         .current_dir(root)
         .output()
-        .with_context(|| format!("running `git diff --name-only --diff-filter=A -z {range}`"))?;
+        .with_context(|| {
+            format!("running `git diff --name-only --no-renames --diff-filter=A -z {range}`")
+        })?;
     if !output.status.success() {
         return Err(eyre!(
-            "`git diff --name-only --diff-filter=A -z {range}` failed: {}",
+            "`git diff --name-only --no-renames --diff-filter=A -z {range}` failed: {}",
             String::from_utf8_lossy(&output.stderr)
         ));
     }
@@ -4376,6 +4381,54 @@ review_after = "2026-11-13"
         let json = fs::read_to_string(temp.path().join("target/policy/non-rust-inventory.json"))?;
         assert!(markdown.contains("scripts/new.py"));
         assert!(json.contains("scripts/new.py"));
+        Ok(())
+    }
+
+    /// A classified file renamed to an unclassified path is a newly added
+    /// unclassified path: rename detection must not hide it from the ratchet.
+    #[test]
+    fn non_rust_inventory_check_rejects_rename_into_unclassified_path() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        init_tracked_fixture(
+            temp.path(),
+            &[("README.md", "# Fixture\n"), ("scripts/existing.py", "print('fixture')\n")],
+        )?;
+        write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
+        run_git(temp.path(), &["add", "."])?;
+        run_git(
+            temp.path(),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-qm",
+                "baseline",
+            ],
+        )?;
+
+        run_git(temp.path(), &["mv", "README.md", "scripts/README.md"])?;
+        run_git(
+            temp.path(),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-qm",
+                "rename",
+            ],
+        )?;
+
+        let error = non_rust_inventory_check_with_baseline(temp.path(), Some("HEAD^"))
+            .err()
+            .ok_or_else(|| eyre!("rename into an unclassified path must fail"))?;
+        ensure!(
+            error.to_string().contains("scripts/README.md"),
+            "failure must name the renamed destination path: {error}"
+        );
         Ok(())
     }
 
