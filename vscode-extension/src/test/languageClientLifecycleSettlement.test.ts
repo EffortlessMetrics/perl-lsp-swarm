@@ -27,6 +27,8 @@ class DeferredVoid {
 }
 
 class FakeClient implements LifecycleClient {
+  /** Stands in for the real client's own terminal state (State.Stopped). */
+  terminal = false;
   start = jest.fn(async () => undefined);
   stop = jest.fn(async () => undefined);
   dispose = jest.fn(async () => undefined);
@@ -36,7 +38,10 @@ class FakeClient implements LifecycleClient {
   }
 }
 
-function makeController(stopTimeoutMs = 10): {
+function makeController(
+  stopTimeoutMs = 10,
+  isClientTerminal?: (client: FakeClient) => boolean,
+): {
   controller: LanguageClientLifecycle<FakeClient>;
   clients: FakeClient[];
 } {
@@ -49,6 +54,7 @@ function makeController(stopTimeoutMs = 10): {
         clients.push(client);
         return client;
       },
+      ...(isClientTerminal ? { isClientTerminal } : {}),
     },
     { stopTimeoutMs },
   );
@@ -128,6 +134,55 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
     expect(clients[0]!.stop).toHaveBeenCalledTimes(1);
     expect(clients[0]!.dispose).toHaveBeenCalledTimes(1);
     expect(controller.snapshot.state).toBe('failed');
+  });
+
+  test('a settled stop rejection from a terminal client admits the replacement (hung server, #14155)', async () => {
+    // vscode-languageclient rejects stop() with a shutdown timeout after its
+    // own cleanup finished and it terminated the server process; a hung
+    // server (the watchdog case) always produces this shape.
+    const { controller, clients } = makeController(10, (client) => client.terminal);
+    const first = await controller.start();
+    first!.terminal = true;
+    first!.stop.mockRejectedValue(new Error('Stopping the server timed out'));
+
+    const replacement = await controller.restart();
+
+    expect(replacement).toBe(clients[1]);
+    expect(clients).toHaveLength(2);
+    expect(first!.stop).toHaveBeenCalledTimes(1);
+    expect(first!.dispose).toHaveBeenCalledTimes(1);
+    expect(controller.snapshot.state).toBe('running');
+    expect(controller.snapshot.error).toBeUndefined();
+  });
+
+  test('a settled stop rejection from a client that is not terminal still blocks replacement', async () => {
+    const { controller, clients } = makeController(10, (client) => client.terminal);
+    const first = await controller.start();
+    first!.terminal = false;
+    first!.stop.mockRejectedValue(new Error('Stopping the server timed out'));
+
+    await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    expect(clients).toHaveLength(1);
+    expect(controller.snapshot.state).toBe('failed');
+  });
+
+  test('a stop that outlives the bound blocks replacement even when the client reports terminal', async () => {
+    jest.useFakeTimers();
+    try {
+      const { controller, clients } = makeController(10, (client) => client.terminal);
+      const first = await controller.start();
+      first!.terminal = true;
+      first!.stop.mockReturnValue(new DeferredVoid().promise);
+
+      const restart = controller.restart();
+      await jest.advanceTimersByTimeAsync(10);
+
+      await expect(restart).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+      expect(clients).toHaveLength(1);
+      expect(controller.snapshot.state).toBe('failed');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test.each(['stop', 'dispose'] as const)(

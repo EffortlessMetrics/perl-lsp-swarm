@@ -1879,6 +1879,12 @@ function createLanguageClientLifecycle(
       const message = error instanceof Error ? error.message : String(error);
       outputChannel.error(`[lifecycle] ${phase} callback failed: ${message}`);
     },
+    // vscode-languageclient rejects `stop()` with "Stopping the server timed
+    // out" only after its own cleanup ran, its state reached Stopped, and the
+    // node transport terminated the server process. That is the shape a hung
+    // server (watchdog restart) always produces, so it must not be classified
+    // as incomplete cleanup that blocks the replacement (#14155).
+    isClientTerminal: (client) => client.state === LanguageClientState.Stopped,
   });
 }
 
