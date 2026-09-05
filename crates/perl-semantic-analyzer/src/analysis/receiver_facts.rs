@@ -894,10 +894,10 @@ mod tests {
     // object of the matching method call directly, so a found node is a
     // method-call receiver by construction.
     fn method_call_object<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
-        if let NodeKind::MethodCall { method, object, .. } = &node.kind {
-            if method == name {
-                return Some(object);
-            }
+        if let NodeKind::MethodCall { method, object, .. } = &node.kind
+            && method == name
+        {
+            return Some(object);
         }
 
         match &node.kind {
@@ -1761,16 +1761,16 @@ mod tests {
         let code = "$groups{staff}[0]->render(";
         let mut parser = Parser::new(code);
         let parsed = parser.parse();
-        if let Ok(ast) = parsed {
-            if let Some(call) = method_call_named(&ast, "render") {
-                let env = TypeEnvironment::new();
-                let fact = receiver_fact_for_method_call(
-                    call,
-                    ReceiverFactContext::new(Some(&env)).with_source(code),
-                );
-                if fact.package.is_some() || fact.fallback_state == ReceiverFallbackState::Exact {
-                    return Err(format!("malformed receiver fabricated exact fact: {fact:?}"));
-                }
+        if let Ok(ast) = parsed
+            && let Some(call) = method_call_named(&ast, "render")
+        {
+            let env = TypeEnvironment::new();
+            let fact = receiver_fact_for_method_call(
+                call,
+                ReceiverFactContext::new(Some(&env)).with_source(code),
+            );
+            if fact.package.is_some() || fact.fallback_state == ReceiverFallbackState::Exact {
+                return Err(format!("malformed receiver fabricated exact fact: {fact:?}"));
             }
         }
         Ok(())
