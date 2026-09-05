@@ -243,27 +243,17 @@ impl<'a> Parser<'a> {
                             if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // ->${ expr }: dynamic method call with a braced
                                 // method-name expression (`$obj->${method}()`),
-                                // valid Perl since 5.8. Not a truncated chain.
-                                let brace_start = self.previous_position();
-                                self.consume_token()?; // consume {
-                                self.parse_expression()?;
-                                self.expect_closing_delimiter(TokenKind::RightBrace)?;
-                                let method = String::from_utf8_lossy(
-                                    &self.src_bytes[brace_start - 1..self.previous_position()],
-                                )
-                                .into_owned();
-                                let args = if self.peek_kind() == Some(TokenKind::LeftParen) {
-                                    self.parse_args()?
-                                } else {
-                                    Vec::new()
-                                };
-                                let start = expr.location.start;
-                                let end = self.previous_position();
-                                record_postfix_layer()?;
-                                expr = Node::new(
-                                    NodeKind::MethodCall { object: Box::new(expr), method, args },
-                                    SourceLocation { start, end },
-                                );
+                                // valid Perl since 5.8. Not a truncated chain, so
+                                // do not recover. `NodeKind::MethodCall` stores the
+                                // method as text only, so building it here would
+                                // drop the parsed method expression from the tree
+                                // and hide `${ $undeclared }` from strict-vars.
+                                // Leave `{ expr }` and `(args)` to the subscript and
+                                // call layers below, which keep the expression as a
+                                // traversable child (the same shape `main` has
+                                // always produced; a first-class dynamic-method
+                                // operand is tracked separately).
+                                continue;
                             } else if self.peek_kind() == Some(TokenKind::Star) {
                                 let star = self.consume_token()?; // consume *
                                 let start = expr.location.start;

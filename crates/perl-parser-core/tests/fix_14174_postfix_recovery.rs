@@ -71,16 +71,41 @@ fn braced_dynamic_method_call_is_not_a_truncated_chain() -> Result<(), String> {
                 output.diagnostics
             ));
         }
-        let call = first_method_call(&output.ast)
-            .ok_or_else(|| format!("{source}: no method call in {}", output.ast.to_sexp()))?;
-        let NodeKind::MethodCall { method, .. } = &call.kind else {
-            return Err(format!("{source}: first_method_call returned a non-call node"));
-        };
-        if !(method.starts_with("${") && method.ends_with('}')) {
-            return Err(format!("{source}: unexpected method text {method:?}"));
+        if first_error(&output.ast).is_some() {
+            return Err(format!("{source}: unexpected Error node in {}", output.ast.to_sexp()));
         }
     }
     Ok(())
+}
+
+#[test]
+fn braced_dynamic_method_expression_stays_traversable() -> Result<(), String> {
+    // The method-name expression inside `->${ ... }` must remain a child node so
+    // strict-vars and usage analysis still see `$name`; reducing the call to
+    // `MethodCall { method: "${ $name }" }` text would drop it (review finding).
+    let source = "$obj->${ $name }(1, 2);";
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+    let name_node = find_variable(&output.ast, "name").ok_or_else(|| {
+        format!("{source}: method expression `$name` missing from {}", output.ast.to_sexp())
+    })?;
+    let expected_start = source.find("$name").ok_or("fixture must contain $name")?;
+    if name_node.location.start != expected_start {
+        return Err(format!(
+            "{source}: `$name` span starts at {} not {expected_start}",
+            name_node.location.start
+        ));
+    }
+    Ok(())
+}
+
+fn find_variable<'a>(node: &'a Node, wanted: &str) -> Option<&'a Node> {
+    if let NodeKind::Variable { name, .. } = &node.kind
+        && name == wanted
+    {
+        return Some(node);
+    }
+    node.children().into_iter().find_map(|child| find_variable(child, wanted))
 }
 
 fn first_error(node: &Node) -> Option<&Node> {
@@ -88,13 +113,6 @@ fn first_error(node: &Node) -> Option<&Node> {
         return Some(node);
     }
     node.children().into_iter().find_map(first_error)
-}
-
-fn first_method_call(node: &Node) -> Option<&Node> {
-    if matches!(node.kind, NodeKind::MethodCall { .. }) {
-        return Some(node);
-    }
-    node.children().into_iter().find_map(first_method_call)
 }
 
 #[test]
