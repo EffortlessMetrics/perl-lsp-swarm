@@ -21,7 +21,8 @@ and `docs/reference/NATIVE_STACK_POLICY.md`.
   asks for.
 - Modules: `boundary`, `builder`, `dist`, `effects`, `error`, `export`,
   `fact_classes`, `file`, `id`, `import` (+ `import_walk`), `model`,
-  `package`, `pod`, `provenance`, `range`, `relation`, `symbol`, `test`.
+  `package`, `pod`, `provenance`, `range`, `relation`, `symbol`, `test`,
+  `test_item`, `test_item_discovery`.
 - `SCHEMA_VERSION` -- the fact-schema version this crate emits; bump on any
   breaking model change.
 

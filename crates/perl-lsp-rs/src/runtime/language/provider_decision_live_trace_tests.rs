@@ -1354,6 +1354,7 @@ fn live_type_definition_request_blocks_ambiguous_package_identity()
     assert_eq!(receipt.get("blocker").and_then(Value::as_str), Some("ambiguous_identity"));
     assert_eq!(receipt.get("fact_source").and_then(Value::as_str), Some("parser_syntax"));
     assert_eq!(receipt.get("confidence").and_then(Value::as_str), Some("low"));
+    assert_eq!(receipt.get("freshness").and_then(Value::as_str), Some("fresh"));
     assert_eq!(receipt.get("source_backed").and_then(Value::as_bool), Some(false));
     assert_eq!(
         receipt.get("source_backed_state").and_then(Value::as_str),

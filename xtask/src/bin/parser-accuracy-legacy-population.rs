@@ -14,12 +14,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let population = load_legacy_whitespace_population(&root)?;
-    let output = match env::args().nth(1).as_deref() {
-        None | Some("--cases") => population.canonical_ndjson()?,
-        Some("--summary") => population.canonical_summary_json()?,
-        Some(argument) => {
+    // `env::args` panics on non-UTF-8 arguments; collect `OsString`s and fail
+    // closed instead, so a hostile argument is rejected, never a crash.
+    let arguments = env::args_os()
+        .skip(1)
+        .map(|argument| {
+            argument.into_string().map_err(|invalid| {
+                io::Error::other(format!(
+                    "non-UTF-8 argument {invalid:?}; expected --cases or --summary"
+                ))
+            })
+        })
+        .collect::<Result<Vec<String>, _>>()?;
+    let output = match arguments.as_slice() {
+        [] => population.canonical_ndjson()?,
+        [argument] if argument == "--cases" => population.canonical_ndjson()?,
+        [argument] if argument == "--summary" => population.canonical_summary_json()?,
+        _ => {
             return Err(io::Error::other(format!(
-                "unknown argument {argument:?}; expected --cases or --summary"
+                "unknown arguments {arguments:?}; expected --cases or --summary"
             ))
             .into());
         }
