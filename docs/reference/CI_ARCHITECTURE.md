@@ -55,7 +55,7 @@ CI hasn't broken since their last look).
 
 | Job | Timeout | Scope |
 |-----|---------|-------|
-| `pr-smoke` | 35 min | Format, scoped clippy, scoped test, integration-test compile |
+| `pr-smoke` | 75 min | Format, scoped clippy, scoped test, integration-test compile |
 | `merge-gate-shards` | 20 min | Bounded merge-gate shards via gate policy (see Section 2) |
 | `merge-gate` | 2 min | Aggregates shard results into the required merge-blocking status |
 | `ux-tests` | 15 min | UX regression suite against live binary |
