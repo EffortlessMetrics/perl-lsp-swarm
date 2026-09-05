@@ -288,16 +288,39 @@ fn is_crate_path_head(chars: &[char], index: usize) -> bool {
     if chars[index - 1].is_ascii_alphanumeric() || chars[index - 1] == '_' {
         return false;
     }
-    // Walk back over whitespace; a `::` immediately before makes this a
-    // segment of a longer path, not the head of one.
+    let before = skip_whitespace_back(chars, index);
+    // Only a full `::` separates path segments. A single `:` is a type
+    // annotation, struct-field, or label colon, and must not suppress the
+    // scan -- `fn f(x: perl_parser::semantic::Foo)` is a real reference.
+    if before < 2 || chars[before - 1] != ':' || chars[before - 2] != ':' {
+        return true;
+    }
+    // A `::` is reached. It is a continuation only when a real path segment
+    // precedes it. A leading absolute `::perl_parser` still names the crate.
+    let owner_end = skip_whitespace_back(chars, before - 2);
+    let owner_start = identifier_start(chars, owner_end);
+    let owner: String = chars[owner_start..owner_end].iter().collect();
+    owner.is_empty() || owner == "use" || owner == "as"
+}
+
+/// Walk back over whitespace from `index`, returning the first index whose
+/// preceding character is not whitespace.
+fn skip_whitespace_back(chars: &[char], index: usize) -> usize {
     let mut cursor = index;
     while cursor > 0 && chars[cursor - 1].is_whitespace() {
         cursor -= 1;
     }
-    if cursor >= 2 && chars[cursor - 1] == ':' {
-        return false;
+    cursor
+}
+
+/// Start index of the identifier ending at `end`, or `end` when the preceding
+/// character cannot be part of one.
+fn identifier_start(chars: &[char], end: usize) -> usize {
+    let mut cursor = end;
+    while cursor > 0 && (chars[cursor - 1].is_ascii_alphanumeric() || chars[cursor - 1] == '_') {
+        cursor -= 1;
     }
-    true
+    cursor
 }
 
 /// If a `::` separator starts at or after `cursor`, return the index just past
@@ -1081,4 +1104,41 @@ fn a_raw_identifier_alias_is_read_whole() {
         forbidden_facade_references(&code_without_comments(raw_string)),
         vec!["perl_parser::symbol".to_string()]
     );
+}
+
+/// Devin finding r3941691...: the first path-head guard tested for a single
+/// `:`, so a type annotation suppressed the scan entirely — the unsafe
+/// direction, and a defect introduced by the fix for the `other::perl_parser`
+/// false positive. Only a full `::` separates path segments.
+#[test]
+fn a_single_colon_does_not_suppress_the_scan() {
+    for (source, expected) in [
+        ("fn f(x: perl_parser::semantic::SemanticAnalyzer) {}\n", "perl_parser::semantic"),
+        ("let v: Vec<perl_parser::symbol::Symbol> = vec![];\n", "perl_parser::symbol"),
+        (
+            "struct S {\n    field: perl_parser::type_inference::TypeEnvironment,\n}\n",
+            "perl_parser::type_inference",
+        ),
+        // An absolute path still names the crate, not someone else's segment.
+        ("use ::perl_parser::semantic::SemanticAnalyzer;\n", "perl_parser::semantic"),
+    ] {
+        assert_eq!(
+            forbidden_facade_references(&code_without_comments(source)),
+            vec![expected.to_string()],
+            "a lone colon or leading `::` must not hide a facade reference: {source:?}"
+        );
+    }
+
+    // The continuation cases the guard exists to exclude must still be excluded,
+    // so this fix cannot undo the one before it.
+    for source in [
+        "use other::perl_parser::semantic::X;\n",
+        "use crate::perl_parser::semantic::X;\n",
+        "use other::perl_parser as pp;\nuse pp::semantic::X;\n",
+    ] {
+        assert!(
+            forbidden_facade_references(&code_without_comments(source)).is_empty(),
+            "a real path segment before `::` still means this is not the crate: {source:?}"
+        );
+    }
 }
