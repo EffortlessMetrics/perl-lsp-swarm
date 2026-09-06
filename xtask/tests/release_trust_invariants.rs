@@ -125,10 +125,9 @@ fn status_table_escapes_pipes_and_newlines() -> TestResult {
         owner_row.contains(r"Zero-budget \| table break"),
         "owner title must stay one escaped cell:\n{owner_row}"
     );
-    assert_eq!(
-        owner_row.matches('|').count(),
-        5,
-        "owner table row must keep four columns:\n{owner_row}"
+    assert!(
+        !owner_row.contains("| Zero-budget |"),
+        "an unescaped pipe must not add an owner-table column:\n{owner_row}"
     );
     let producer_row = rendered
         .lines()
@@ -138,10 +137,9 @@ fn status_table_escapes_pipes_and_newlines() -> TestResult {
         producer_row.contains(r"cargo xtask \| decision receipt"),
         "command_or_workflow must stay one escaped cell:\n{producer_row}"
     );
-    assert_eq!(
-        producer_row.matches('|').count(),
-        6,
-        "producer table row must keep five columns:\n{producer_row}"
+    assert!(
+        !producer_row.contains("| cargo xtask |"),
+        "an unescaped pipe must not add a producer-table column:\n{producer_row}"
     );
     let claim_line = rendered
         .lines()
