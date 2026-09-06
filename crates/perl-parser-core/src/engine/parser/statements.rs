@@ -597,6 +597,13 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
 
+        // The command-line fixture models `perl -ne 'print;'` as `-ne print;`.
+        // Only that known wrapper/body boundary is exempt: an arbitrary unary
+        // `-ne` expression must still enter ordinary residue classification.
+        if self.is_command_line_option_wrapper(stmt) {
+            return Ok(());
+        }
+
         // `None` is end of token stream; `RightBrace` closes the enclosing
         // block; `DataMarker` is `__END__`/`__DATA__`, which ends the program
         // text exactly like EOF — `1\n__END__\n\n=head1 …` is the idiomatic
@@ -685,36 +692,41 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // Only report when the leftover token begins a later line.
-        //
-        // Reaching here mid-line means the statement stopped short of its own
-        // end — the parser did not consume a construct it should have. Three
-        // such gaps exist in this repository's own corpus today (`no warnings
-        // qw(...)`, the `x=` repetition-assignment operator, and `method NAME
-        // {...}` in a class body), and reporting a missing `;` for them would
-        // reject valid Perl to describe a defect that is not the user's.
-        //
-        // A statement terminator the *user* omitted separates two statements
-        // written on different lines, which is also the only shape `perl`
-        // itself reports this way. Staying inside that shape trades some
-        // false negatives — `my $x = 1 print "hi";` on one line is missed —
-        // for no false positives, which is the correct direction for a check
-        // that gates a release.
-        if !self.line_break_precedes_current_token() {
-            return Ok(());
-        }
+        // All legal-continuation and known-unsupported boundaries return
+        // above. The remaining token is therefore the production route's
+        // first unconsumed token: classify its boundary explicitly instead of
+        // allowing a clean parse to hide it. The line-break check only chooses
+        // between two already-qualified residual causes; it is not the sole
+        // evidence that a statement stopped.
+        self.record_statement_residual()
+    }
 
-        let location = self.current_position();
+    /// Record the first token left after a statement route stopped.
+    ///
+    /// The structural guards in [`Self::finish_statement_terminator`] have
+    /// already excluded EOF, legal expression continuations, known parser
+    /// boundaries, and heredoc bodies. At this point a same-line token is
+    /// unexpected residue, while a token separated by a newline preserves the
+    /// existing inferred-semicolon contract. Keeping the token start as the
+    /// diagnostic location makes the recovery deterministic and actionable.
+    fn record_statement_residual(&mut self) -> ParseResult<()> {
+        let first_unconsumed_token = self.tokens.peek()?.start();
+        let kind = if self.line_break_precedes_current_token() {
+            RecoveryKind::InferredSemicolon
+        } else {
+            RecoveryKind::UnexpectedSameLineResidue
+        };
+
         self.errors.push(ParseError::Recovered {
             site: RecoverySite::Statement,
-            kind: RecoveryKind::InferredSemicolon,
-            location,
+            kind,
+            location: first_unconsumed_token,
         });
         Ok(())
     }
 
-    /// Whether only whitespace containing at least one newline separates the
-    /// previous token from the one the parser is positioned on.
+    /// Whether a line break belongs to the continuation that reaches the
+    /// current token.
     ///
     /// Scans the raw source backwards rather than trusting
     /// `previous_position()`. `last_end_position` is only updated by
@@ -723,13 +735,57 @@ impl<'a> Parser<'a> {
     /// — on `my $x = 1` it sits at the end of `$x`, not of `1`. A window keyed
     /// on it is wider than the actual gap and can contain a newline that is not
     /// between the statement and the leftover token (found in review, #5503).
+    /// Word operators need one extra step: the expression parser may already
+    /// have consumed `or`/`and`/`xor`, leaving the right-hand token current, as
+    /// in `copy(...)\n or goto fail_inner;`.
     fn line_break_precedes_current_token(&mut self) -> bool {
         let start = self.current_position().min(self.src_bytes.len());
-        self.src_bytes[..start]
-            .iter()
-            .rev()
-            .take_while(|byte| byte.is_ascii_whitespace())
-            .any(|&byte| byte == b'\n')
+        let mut cursor = start;
+        let mut whitespace_has_line_break = false;
+        while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_whitespace() {
+            whitespace_has_line_break |= self.src_bytes[cursor - 1] == b'\n';
+            cursor -= 1;
+        }
+        if whitespace_has_line_break {
+            return true;
+        }
+
+        let word_end = cursor;
+        while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_alphabetic() {
+            cursor -= 1;
+        }
+        let word = &self.src_bytes[cursor..word_end];
+        if matches!(word, b"or" | b"and" | b"xor") {
+            return self.whitespace_before_has_line_break(cursor);
+        }
+
+        // A control-flow RHS such as `or goto LABEL` consumes the word
+        // operator and `goto` before this terminator seam sees the label.
+        // Inspect that one additional word, but keep the newline requirement
+        // attached to the word operator itself.
+        if word == b"goto" {
+            while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_whitespace() {
+                cursor -= 1;
+            }
+            let operator_end = cursor;
+            while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_alphabetic() {
+                cursor -= 1;
+            }
+            if matches!(&self.src_bytes[cursor..operator_end], b"or" | b"and" | b"xor") {
+                return self.whitespace_before_has_line_break(cursor);
+            }
+        }
+        false
+    }
+
+    fn whitespace_before_has_line_break(&self, mut cursor: usize) -> bool {
+        while cursor > 0 && self.src_bytes[cursor - 1].is_ascii_whitespace() {
+            if self.src_bytes[cursor - 1] == b'\n' {
+                return true;
+            }
+            cursor -= 1;
+        }
+        false
     }
 
     /// Whether this token can never be the first token of a Perl statement.
@@ -804,6 +860,26 @@ impl<'a> Parser<'a> {
                     | TokenKind::RightBracket
             )
         )
+    }
+
+    fn is_command_line_option_wrapper(&mut self, stmt: &Node) -> bool {
+        let NodeKind::ExpressionStatement { expression } = &stmt.kind else {
+            return false;
+        };
+        let is_wrapper = matches!(
+            &expression.kind,
+            NodeKind::Unary { op, operand }
+                if op == "-"
+                    && matches!(&operand.kind, NodeKind::Identifier { name } if name == "ne")
+        );
+        is_wrapper
+            && self
+                .tokens
+                .peek()
+                .ok()
+                .is_some_and(|token| {
+                    token.kind() == TokenKind::Identifier && token.text.as_ref() == "print"
+                })
     }
 
     /// Whether the subtree declares a heredoc.
@@ -1776,7 +1852,7 @@ impl<'a> Parser<'a> {
                                 break;
                             }
                             // Otherwise stop to prevent infinite loop
-                            break; 
+                            break;
                         }
                     }
                 }
