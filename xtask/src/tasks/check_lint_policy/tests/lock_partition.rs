@@ -8,7 +8,15 @@
 //! isolate each lint in turn, so the recorded partition is measured rather than
 //! asserted.
 //!
-//! Both lints are deny-by-default upstream, so the fixture runs them under
+//! The same fixture carries the three discards both rows miss, and #14579's
+//! ruling on them is measured the same way: the owned and mapped guard forms
+//! are seen by `clippy::let_underscore_must_use`, and the explicit `drop`
+//! form is seen by no Clippy lint at any group level. Each boundary is asserted
+//! in the direction it was measured, so a toolchain that moves one fails the
+//! matching test and the ruling gets revisited rather than silently going
+//! stale.
+//!
+//! Both lock lints are deny-by-default upstream, so the fixture runs them under
 //! `--force-warn`: the compile completes, every site is reported in one pass,
 //! and a non-zero exit means the instrument failed rather than that the lint
 //! fired. Instrument failure is reported as failure, never as a pass.
@@ -23,22 +31,36 @@ use tempfile::tempdir;
 
 const RUST_LOCK_LINT: &str = "let_underscore_lock";
 const CLIPPY_LOCK_LINT: &str = "clippy::let_underscore_lock";
+/// The tracked row #14579 assigns the `let _ =` discards the lock rows miss:
+/// owned `*_arc` guards and mapped guards are `#[must_use]` types, so this lint
+/// sees them. It is a deny row in the ledger already and activates through
+/// #11240 once #11236 has defined deliberate-discard semantics.
+const CLIPPY_MUST_USE_LINT: &str = "clippy::let_underscore_must_use";
+/// Every Clippy group, for the sweep that establishes "no lint on this
+/// toolchain" rather than "not these rows".
+const CLIPPY_GROUPS: [&str; 4] =
+    ["clippy::all", "clippy::pedantic", "clippy::nursery", "clippy::restriction"];
 
 /// Discarded standard-library guards. Only the rustc row sees these.
 const STD_DISCARD_BINDINGS: [&str; 2] = ["dropped_std_mutex", "dropped_std_rwlock"];
 /// Discarded borrowed `parking_lot` guards. Only the Clippy row sees these.
 const PARKING_LOT_DISCARD_BINDINGS: [&str; 2] = ["dropped_pl_mutex", "dropped_pl_rwlock"];
-/// Discards that both rows are measured to miss (#14579): owned `parking_lot`
-/// guards from `lock_arc`/`write_arc`, an explicit `drop(m.lock())` of either
-/// family, and a mapped guard. Asserted by
-/// `discards_outside_the_governed_forms_are_covered_by_neither_row`.
-const UNCOVERED_DISCARD_BINDINGS: [&str; 5] = [
-    "dropped_arc_mutex",
-    "dropped_arc_rwlock",
-    "dropped_via_std_drop",
-    "dropped_via_pl_drop",
-    "dropped_mapped_pl",
-];
+/// Discards outside both lock rows that #14579 assigns to
+/// [`CLIPPY_MUST_USE_LINT`]: owned `parking_lot` guards from
+/// `lock_arc`/`write_arc`, and a mapped guard. Their guard types are
+/// `#[must_use]`, which is what that lint keys on; the lock rows never see them.
+const OWNED_AND_MAPPED_DISCARD_BINDINGS: [&str; 3] =
+    ["dropped_arc_mutex", "dropped_arc_rwlock", "dropped_mapped_pl"];
+/// The explicit `drop(m.lock())` discards of either family, by binding name.
+/// Used where the lint under measurement reports on the statement line, so a
+/// binding-name match cannot be confused with the signature that declares it.
+const EXPLICIT_DROP_DISCARD_BINDINGS: [&str; 2] = ["dropped_via_std_drop", "dropped_via_pl_drop"];
+/// The same two discards as exact statements. The every-group sweep sees
+/// whole-function findings whose primary span starts on the signature naming
+/// these parameters, so a finding *on the discard* has to be matched by the
+/// statement itself.
+const EXPLICIT_DROP_DISCARD_STATEMENTS: [&str; 2] =
+    ["drop(dropped_via_std_drop.lock());", "drop(dropped_via_pl_drop.lock());"];
 /// Compliant acquisitions of every flavor, held by named guards.
 const HELD_BINDING_MARKER: &str = "held_";
 
@@ -168,24 +190,50 @@ pub fn holds_parking_lot_guards(held_pl_mutex: &PlMutex<u32>, held_pl_rwlock: &P
 }
 "#;
 
-/// One reported `let_underscore_lock` finding: which lint fired, and on which
-/// source line it fired.
+/// One reported finding: which lint fired, and on which source line it fired.
 #[derive(Debug)]
-struct LockFinding {
+struct LintFinding {
     lint: String,
     source_line: String,
 }
+
+/// Which findings a measurement keeps from the diagnostic stream.
+#[derive(Clone, Copy)]
+enum Keep {
+    /// Only the named lints; a kept finding without a primary span is
+    /// instrument failure, because these lints always report on a statement.
+    Lints(&'static [&'static str]),
+    /// Every lint. Findings without a primary span (group-level advice such as
+    /// `blanket_clippy_restriction_lints`) are skipped: they cannot sit on a
+    /// fixture line and so cannot bear on any assertion below.
+    Every,
+}
+
+impl Keep {
+    fn admits(self, lint: &str) -> bool {
+        match self {
+            Keep::Lints(lints) => lints.contains(&lint),
+            Keep::Every => true,
+        }
+    }
+}
+
+const LOCK_LINTS: &[&str] = &[RUST_LOCK_LINT, CLIPPY_LOCK_LINT];
 
 #[test]
 fn rustc_row_covers_standard_library_guards_and_not_parking_lot() -> Result<()> {
     // Isolate the rustc row: the Clippy row is silenced, so anything reported
     // here is coverage the compiler lint supplies on its own.
-    let findings = measure_fixture(&["-A", CLIPPY_LOCK_LINT, "--force-warn", RUST_LOCK_LINT])?;
+    let findings = measure_fixture(
+        &["-A", CLIPPY_LOCK_LINT, "--force-warn", RUST_LOCK_LINT],
+        Keep::Lints(LOCK_LINTS),
+    )?;
 
     assert_every_finding_is(&findings, RUST_LOCK_LINT)?;
     assert_covers(&findings, &STD_DISCARD_BINDINGS)?;
-    assert_silent_on(&findings, &PARKING_LOT_DISCARD_BINDINGS)?;
-    assert_silent_on(&findings, &UNCOVERED_DISCARD_BINDINGS)?;
+    assert_silent_on(&findings, &PARKING_LOT_DISCARD_BINDINGS, PARTITION_WRONG)?;
+    assert_silent_on(&findings, &OWNED_AND_MAPPED_DISCARD_BINDINGS, LOCK_ROW_GREW)?;
+    assert_silent_on(&findings, &EXPLICIT_DROP_DISCARD_BINDINGS, LOCK_ROW_GREW)?;
     assert_silent_on_held_guards(&findings)?;
     Ok(())
 }
@@ -196,46 +244,109 @@ fn clippy_row_covers_parking_lot_guards_and_not_standard_library() -> Result<()>
     // standard-library guards it uplifted to rustc, the two rows would overlap
     // and the ledger's non-overlap note would be wrong; the silence assertion
     // below is what would fail.
-    let findings = measure_fixture(&["-A", RUST_LOCK_LINT, "--force-warn", CLIPPY_LOCK_LINT])?;
+    let findings = measure_fixture(
+        &["-A", RUST_LOCK_LINT, "--force-warn", CLIPPY_LOCK_LINT],
+        Keep::Lints(LOCK_LINTS),
+    )?;
 
     assert_every_finding_is(&findings, CLIPPY_LOCK_LINT)?;
     assert_covers(&findings, &PARKING_LOT_DISCARD_BINDINGS)?;
-    assert_silent_on(&findings, &STD_DISCARD_BINDINGS)?;
-    assert_silent_on(&findings, &UNCOVERED_DISCARD_BINDINGS)?;
+    assert_silent_on(&findings, &STD_DISCARD_BINDINGS, PARTITION_WRONG)?;
+    assert_silent_on(&findings, &OWNED_AND_MAPPED_DISCARD_BINDINGS, LOCK_ROW_GREW)?;
+    assert_silent_on(&findings, &EXPLICIT_DROP_DISCARD_BINDINGS, LOCK_ROW_GREW)?;
     assert_silent_on_held_guards(&findings)?;
     Ok(())
 }
 
 #[test]
 fn discards_outside_the_governed_forms_are_covered_by_neither_row() -> Result<()> {
-    // The measured edge of the union, recorded so the policy states a boundary
-    // rather than implying the two rows cover every discard. On the pinned
-    // toolchain both lints recognise exactly one shape: `let _ = <expr>` whose
-    // type is a known borrowed guard. Three discards with identical meaning
-    // fall outside it and are silently accepted:
+    // The measured edge of the two lock rows' union, recorded so the policy
+    // states a boundary rather than implying the rows cover every discard. On
+    // the pinned toolchain both lints recognise exactly one shape: `let _ =
+    // <expr>` whose type is a known borrowed guard. Three discards with
+    // identical meaning fall outside it:
     //
-    //   let _ = m.lock_arc();              owned guard, unknown type
+    //   let _ = m.lock_arc();              owned guard
+    //   let _ = MutexGuard::map(g, ...);   mapped guard
     //   drop(m.lock());                    same discard, different syntax
-    //   let _ = MutexGuard::map(g, ...);   mapped guard, unknown type
     //
-    // Two of those matter concretely. The owned-guard family is
-    // production-reachable — `perl-workspace`'s `workspace_index` holds an
-    // `ArcMutexGuard` from `lock_arc()`. And `drop(m.lock())` is the rewrite a
-    // contributor reaches for when the lint blocks them, which #14444 already
-    // names as a dishonest repair; the governed rows cannot currently stop it.
+    // #14579 ruled on each. The first two are `#[must_use]` types and belong to
+    // `clippy::let_underscore_must_use` — proved by
+    // `let_underscore_must_use_owns_owned_and_mapped_guard_discards`. The third
+    // is seen by no Clippy lint at all and stays with #11236's deliberate-
+    // discard contract — proved by
+    // `explicit_drop_discards_are_covered_by_no_clippy_lint_at_any_level`.
     //
-    // This is deliberately a change detector. If a future toolchain starts
-    // covering any of these, the test fails and the failure means the ledger
-    // reason, `docs/CLIPPY_POLICY.md`, and #14579 all need updating to claim
-    // the wider coverage — not that anything regressed.
-    let findings =
-        measure_fixture(&["--force-warn", RUST_LOCK_LINT, "--force-warn", CLIPPY_LOCK_LINT])?;
+    // This test keeps the lock rows honest about their own edge. If a future
+    // toolchain teaches either lock lint one of these forms, it fails, and the
+    // failure means the ledger reason, `docs/CLIPPY_POLICY.md`, and the ruling
+    // should say the lock row now owns that form — not that anything regressed.
+    let findings = measure_fixture(
+        &["--force-warn", RUST_LOCK_LINT, "--force-warn", CLIPPY_LOCK_LINT],
+        Keep::Lints(LOCK_LINTS),
+    )?;
 
-    for binding in UNCOVERED_DISCARD_BINDINGS {
-        if let Some(finding) = findings.iter().find(|finding| finding.source_line.contains(binding))
-        {
+    assert_silent_on(&findings, &OWNED_AND_MAPPED_DISCARD_BINDINGS, LOCK_ROW_GREW)?;
+    assert_silent_on(&findings, &EXPLICIT_DROP_DISCARD_BINDINGS, LOCK_ROW_GREW)?;
+    Ok(())
+}
+
+#[test]
+fn let_underscore_must_use_owns_owned_and_mapped_guard_discards() -> Result<()> {
+    // #14579's ruling for two of the three forms the lock rows miss. An owned
+    // `ArcMutexGuard`/`ArcRwLock*Guard` and a `MappedMutexGuard` are
+    // `#[must_use]` types, so `clippy::let_underscore_must_use` — already a
+    // tracked deny row in this ledger, activated by #11240 after #11236 — is
+    // the lint that sees `let _ = m.lock_arc()` and a discarded mapped guard.
+    // Nothing lock-specific is missing from that path. Both lock rows are
+    // silenced here so the coverage measured is this row's own.
+    //
+    // The row also reports the standard-library discards, which the rustc row
+    // owns; that overlap is harmless and not asserted. It does not report the
+    // borrowed `parking_lot` discards (Clippy routes those to the lock lint
+    // alone), and it cannot see `drop(m.lock())`, which has no `let _` to
+    // inspect. Held guards must stay silent, or the row would not discriminate.
+    let findings = measure_fixture(
+        &["-A", RUST_LOCK_LINT, "-A", CLIPPY_LOCK_LINT, "--force-warn", CLIPPY_MUST_USE_LINT],
+        Keep::Lints(&[CLIPPY_MUST_USE_LINT]),
+    )?;
+
+    assert_every_finding_is(&findings, CLIPPY_MUST_USE_LINT)?;
+    assert_covers(&findings, &OWNED_AND_MAPPED_DISCARD_BINDINGS)?;
+    assert_silent_on(&findings, &EXPLICIT_DROP_DISCARD_BINDINGS, MUST_USE_SEES_DROP)?;
+    assert_silent_on_held_guards(&findings)?;
+    Ok(())
+}
+
+#[test]
+fn explicit_drop_discards_are_covered_by_no_clippy_lint_at_any_level() -> Result<()> {
+    // #14579's ruling for the third form. `drop(m.lock())` acquires and
+    // releases in one expression and offers no `let _` for either lock row or
+    // the must-use row to inspect. This sweep enables every Clippy group, so
+    // the measurement says "no lint on this toolchain", not merely "not those
+    // rows". That is why the form stays with #11236's deliberate-discard
+    // contract, which already names `drop(lock())`-as-synchronization a
+    // rejected shape and will need a non-Clippy instrument for it: nothing
+    // here can be activated to close the gap.
+    //
+    // A change detector in the other direction: a future Clippy that gains
+    // such a lint fails this test, and the failure means the ruling can be
+    // revisited with a real lint to activate.
+    let mut flags = vec!["--force-warn", RUST_LOCK_LINT, "--force-warn", CLIPPY_LOCK_LINT];
+    for group in CLIPPY_GROUPS {
+        flags.extend(["-W", group]);
+    }
+    let findings = measure_fixture(&flags, Keep::Every)?;
+
+    // Instrument liveness: the sweep has to be seeing the discards on the
+    // neighbouring lines, or silence on the drop lines would prove nothing.
+    assert_covers(&findings, &PARKING_LOT_DISCARD_BINDINGS)?;
+    assert_covers(&findings, &OWNED_AND_MAPPED_DISCARD_BINDINGS)?;
+
+    for statement in EXPLICIT_DROP_DISCARD_STATEMENTS {
+        if let Some(finding) = findings.iter().find(|finding| finding.source_line == statement) {
             bail!(
-                "{} now covers `{binding}`; a recorded coverage gap has closed — widen the ledger reason, the Clippy policy doc, and #14579 to match",
+                "{} now reports `{statement}`; a Clippy lint covers the explicit-drop discard, so #14579's ruling that no lint can be activated for it should be revisited",
                 finding.lint
             );
         }
@@ -249,9 +360,12 @@ fn the_two_rows_jointly_cover_every_borrowed_guard_discard() -> Result<()> {
     // so only the union is the contract. Running them together must reach every
     // borrowed-guard discard in the fixture and still leave every held guard
     // alone. Owned (`*_arc`) guards are outside this union by measurement, not
-    // by omission — see `arc_guard_discards_are_covered_by_neither_row`.
-    let findings =
-        measure_fixture(&["--force-warn", RUST_LOCK_LINT, "--force-warn", CLIPPY_LOCK_LINT])?;
+    // by omission — see
+    // `discards_outside_the_governed_forms_are_covered_by_neither_row`.
+    let findings = measure_fixture(
+        &["--force-warn", RUST_LOCK_LINT, "--force-warn", CLIPPY_LOCK_LINT],
+        Keep::Lints(LOCK_LINTS),
+    )?;
 
     assert_covers(&findings, &STD_DISCARD_BINDINGS)?;
     assert_covers(&findings, &PARKING_LOT_DISCARD_BINDINGS)?;
@@ -270,9 +384,9 @@ fn the_two_rows_jointly_cover_every_borrowed_guard_discard() -> Result<()> {
     Ok(())
 }
 
-/// Compile the fixture with the given lint flags and return every
-/// `let_underscore_lock` finding it reported.
-fn measure_fixture(lint_flags: &[&str]) -> Result<Vec<LockFinding>> {
+/// Compile the fixture with the given lint flags and return the findings it
+/// reported, filtered by `keep`.
+fn measure_fixture(lint_flags: &[&str], keep: Keep) -> Result<Vec<LintFinding>> {
     let manifest = fixture_manifest(&workspace_parking_lot_version(super::test_root())?);
     let fixture = tempdir()?;
     write_fixture(fixture.path(), &manifest)?;
@@ -293,11 +407,11 @@ fn measure_fixture(lint_flags: &[&str]) -> Result<Vec<LockFinding>> {
         .env_remove("RUSTFLAGS")
         .output()?;
 
-    // Every lint here is force-warned, so a clean instrument exits zero. A
-    // non-zero exit means the fixture did not build — a missing registry entry,
-    // a toolchain mismatch — and that is instrument failure, not evidence about
-    // lint coverage. Reporting it as a pass would be the vacuous-oracle failure
-    // this proof exists to avoid.
+    // Every lint here is warned or force-warned, so a clean instrument exits
+    // zero. A non-zero exit means the fixture did not build — a missing
+    // registry entry, a toolchain mismatch — and that is instrument failure,
+    // not evidence about lint coverage. Reporting it as a pass would be the
+    // vacuous-oracle failure this proof exists to avoid.
     if !output.status.success() {
         let stdout = bounded_diagnostic(&output.stdout);
         let stderr = bounded_diagnostic(&output.stderr);
@@ -306,7 +420,7 @@ fn measure_fixture(lint_flags: &[&str]) -> Result<Vec<LockFinding>> {
         );
     }
 
-    collect_lock_findings(&output.stdout)
+    collect_findings(&output.stdout, keep)
 }
 
 fn write_fixture(root: &Path, manifest: &str) -> Result<()> {
@@ -317,11 +431,11 @@ fn write_fixture(root: &Path, manifest: &str) -> Result<()> {
     Ok(())
 }
 
-/// Parse the strict JSON diagnostic stream, keeping only the two lock lints.
+/// Parse the strict JSON diagnostic stream, keeping the findings `keep` admits.
 ///
 /// `--message-format=json` makes stdout a machine channel, so a non-JSON line
 /// is instrument failure and is not skipped as unrelated chatter.
-fn collect_lock_findings(stdout: &[u8]) -> Result<Vec<LockFinding>> {
+fn collect_findings(stdout: &[u8], keep: Keep) -> Result<Vec<LintFinding>> {
     let mut findings = Vec::new();
     let lines = stdout.split(|byte| *byte == b'\n').collect::<Vec<_>>();
 
@@ -337,7 +451,7 @@ fn collect_lock_findings(stdout: &[u8]) -> Result<Vec<LockFinding>> {
         let Some(lint) = event.pointer("/message/code/code").and_then(JsonValue::as_str) else {
             continue;
         };
-        if lint != RUST_LOCK_LINT && lint != CLIPPY_LOCK_LINT {
+        if !keep.admits(lint) {
             continue;
         }
 
@@ -347,9 +461,12 @@ fn collect_lock_findings(stdout: &[u8]) -> Result<Vec<LockFinding>> {
         let Some(source_line) =
             event.pointer("/message/spans/0/text/0/text").and_then(JsonValue::as_str)
         else {
+            if matches!(keep, Keep::Every) {
+                continue;
+            }
             bail!("{lint} finding carried no primary span text");
         };
-        findings.push(LockFinding {
+        findings.push(LintFinding {
             lint: lint.to_owned(),
             source_line: source_line.trim().to_owned(),
         });
@@ -358,14 +475,14 @@ fn collect_lock_findings(stdout: &[u8]) -> Result<Vec<LockFinding>> {
     Ok(findings)
 }
 
-fn assert_every_finding_is(findings: &[LockFinding], expected: &str) -> Result<()> {
+fn assert_every_finding_is(findings: &[LintFinding], expected: &str) -> Result<()> {
     if findings.is_empty() {
         bail!("{expected} reported nothing; an always-silent lint proves no coverage");
     }
     for finding in findings {
         if finding.lint != expected {
             bail!(
-                "expected only {expected} while the other row was silenced, got {} on `{}`",
+                "expected only {expected} while the other rows were silenced, got {} on `{}`",
                 finding.lint,
                 finding.source_line
             );
@@ -374,29 +491,32 @@ fn assert_every_finding_is(findings: &[LockFinding], expected: &str) -> Result<(
     Ok(())
 }
 
-fn assert_covers(findings: &[LockFinding], bindings: &[&str]) -> Result<()> {
+fn assert_covers(findings: &[LintFinding], bindings: &[&str]) -> Result<()> {
     for binding in bindings {
         if !findings.iter().any(|finding| finding.source_line.contains(binding)) {
-            bail!("no lock finding reported the discarded `{binding}` guard");
+            bail!("no finding reported the discarded `{binding}` guard");
         }
     }
     Ok(())
 }
 
-fn assert_silent_on(findings: &[LockFinding], bindings: &[&str]) -> Result<()> {
+/// Why an unexpected finding on one of `bindings` is a defect, named per
+/// boundary so the failure says which recorded fact moved.
+const PARTITION_WRONG: &str = "the recorded rustc/Clippy partition is wrong";
+const LOCK_ROW_GREW: &str = "a lock row has grown past its recorded boundary — widen the ledger reason, the Clippy policy doc, and the #14579 ruling to say it now owns this form";
+const MUST_USE_SEES_DROP: &str = "let_underscore_must_use now sees an explicit-drop discard, which has no let-underscore to inspect; the #14579 ruling that this form has no lint owner should be revisited";
+
+fn assert_silent_on(findings: &[LintFinding], bindings: &[&str], why: &str) -> Result<()> {
     for binding in bindings {
         if let Some(finding) = findings.iter().find(|finding| finding.source_line.contains(binding))
         {
-            bail!(
-                "{} unexpectedly covered `{binding}`; the recorded rustc/Clippy partition is wrong",
-                finding.lint
-            );
+            bail!("{} unexpectedly covered `{binding}`; {why}", finding.lint);
         }
     }
     Ok(())
 }
 
-fn assert_silent_on_held_guards(findings: &[LockFinding]) -> Result<()> {
+fn assert_silent_on_held_guards(findings: &[LintFinding]) -> Result<()> {
     if let Some(finding) =
         findings.iter().find(|finding| finding.source_line.contains(HELD_BINDING_MARKER))
     {
@@ -409,7 +529,7 @@ fn assert_silent_on_held_guards(findings: &[LockFinding]) -> Result<()> {
     Ok(())
 }
 
-fn lints_reported_for(findings: &[LockFinding], bindings: &[&str]) -> Vec<String> {
+fn lints_reported_for(findings: &[LintFinding], bindings: &[&str]) -> Vec<String> {
     let mut lints = findings
         .iter()
         .filter(|finding| bindings.iter().any(|binding| finding.source_line.contains(binding)))
