@@ -3546,6 +3546,7 @@ impl WorkspaceIndex {
         uri: &str,
         content_hash: u64,
         ast: &Node,
+        source: &str,
     ) -> FileFactShard {
         let file_id = Self::hash_uri_to_file_id(uri);
 
@@ -3586,8 +3587,8 @@ impl WorkspaceIndex {
         #[cfg(test)]
         let generated_member_start = Instant::now();
         let generated_member_facts =
-            crate::semantic::generated_member_extractor::extract_generated_member_facts(
-                ast, file_id,
+            crate::semantic::generated_member_extractor::extract_generated_member_facts_with_source(
+                ast, file_id, source,
             );
         #[cfg(test)]
         reindex_metrics::record_generated_member(generated_member_start.elapsed());
@@ -3653,6 +3654,7 @@ impl WorkspaceIndex {
         content_hash: u64,
         ast: &Node,
         refs: &[perl_symbol::surface::r#ref::SymbolRef],
+        source: &str,
     ) -> FileFactShard {
         let file_id = Self::hash_uri_to_file_id(uri);
 
@@ -3684,8 +3686,8 @@ impl WorkspaceIndex {
         #[cfg(test)]
         let generated_member_start = Instant::now();
         let generated_member_facts =
-            crate::semantic::generated_member_extractor::extract_generated_member_facts(
-                ast, file_id,
+            crate::semantic::generated_member_extractor::extract_generated_member_facts_with_source(
+                ast, file_id, source,
             );
         #[cfg(test)]
         reindex_metrics::record_generated_member(generated_member_start.elapsed());
@@ -5147,12 +5149,20 @@ impl FileExtractionBundle {
         let mut visitor = IndexVisitor::new(doc, uri_str.to_string(), folder_uri);
         visitor.visit(ast, &mut file_index);
 
-        let canonical_shard =
-            WorkspaceIndex::build_canonical_fact_shard_for_ast(uri_str, content_hash, ast);
+        let canonical_shard = WorkspaceIndex::build_canonical_fact_shard_for_ast(
+            uri_str,
+            content_hash,
+            ast,
+            doc.text(),
+        );
 
         let file_id = WorkspaceIndex::hash_uri_to_file_id(uri_str);
         let import_specs =
-            crate::semantic::workspace_import_extractor::extract_import_specs(ast, file_id);
+            crate::semantic::workspace_import_extractor::extract_import_specs_with_source(
+                ast,
+                file_id,
+                doc.text(),
+            );
         let use_lib_facts =
             crate::semantic::workspace_import_extractor::extract_use_lib_facts(ast, file_id);
 
@@ -5213,13 +5223,18 @@ impl FileExtractionBundle {
             content_hash,
             ast,
             &symbol_refs,
+            doc.text(),
         );
 
         let file_id = WorkspaceIndex::hash_uri_to_file_id(uri_str);
         #[cfg(test)]
         let import_start = Instant::now();
         let import_specs =
-            crate::semantic::workspace_import_extractor::extract_import_specs(ast, file_id);
+            crate::semantic::workspace_import_extractor::extract_import_specs_with_source(
+                ast,
+                file_id,
+                doc.text(),
+            );
         #[cfg(test)]
         reindex_metrics::record_import_extract(import_start.elapsed());
         #[cfg(test)]
@@ -13949,11 +13964,16 @@ mod extraction_bundle_shadow_compare {
         let mut visitor = IndexVisitor::new(&mut doc, uri.to_string(), None);
         visitor.visit(ast, &mut file_index);
 
-        let shard = WorkspaceIndex::build_canonical_fact_shard_for_ast(uri, content_hash, ast);
+        let shard =
+            WorkspaceIndex::build_canonical_fact_shard_for_ast(uri, content_hash, ast, doc.text());
 
         let file_id = WorkspaceIndex::hash_uri_to_file_id(uri);
         let import_specs =
-            crate::semantic::workspace_import_extractor::extract_import_specs(ast, file_id);
+            crate::semantic::workspace_import_extractor::extract_import_specs_with_source(
+                ast,
+                file_id,
+                doc.text(),
+            );
         let use_lib_facts =
             crate::semantic::workspace_import_extractor::extract_use_lib_facts(ast, file_id);
 

@@ -142,3 +142,11 @@ claim unless the live state and next-proof columns say so explicitly.
   proof.
 - Do not use real-workspace latency alone as provider correctness proof.
 - Keep generated status rows in their generators; this page links to them.
+
+- QuickORM exception, 2026-08-28: the completion surface may consume only the
+  narrow `DBIx::QuickORM` source-backed `qorm_table` generated-member pilot
+  admitted by the promotion ledger: explicit `[generated/framework]` labeling,
+  a source declaration anchor, and bounded `Medium` confidence are required.
+  Dynamic, stale, unanchored, ambiguous, and other generated candidates remain
+  shadowed or fallback-only; this does not promote generated members into the
+  generic package-member surface.

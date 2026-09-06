@@ -223,6 +223,49 @@ blocks = [
 claim_boundary = "DBIx::QuickORM has a parser-backed, non-published EntityKind::Field candidate extractor for identifier-shaped columns in explicit table classes using the default DSL names. Explicit table classes install qorm_table and row inheritance but do not synthesize one method per column: ordinary rows use field($name), while named field accessors belong to autorow. Each import replaces the caller's builder; plain or symbol-customized imports therefore close this candidate contract. Canonical shards, live providers, runtime schema fill, generated row classes, naming hooks, links, generated-member inference, and edit authorization remain blocked pending separate admission proof."
 
 [[adapter]]
+framework = "DBIx::QuickORM"
+fact_class = "generated_member"
+# Bounded pilot: this row stays `planned` while
+# `policy/provider-promotion-ledger.toml` promotes only the Completion
+# `Source-backed generated/framework member` class. That ledger row governs the
+# completion surface only; the `workspace_symbols` surface named below is
+# admitted by `policy/workspace-symbol-classes.toml` and is not promoted by it.
+state = "planned"
+fact_provenance = "SourceBackedGenerated"
+source_anchor_required = true
+generated_label_required = true
+rename_policy = "block_generated_member_by_default"
+safe_delete_policy = "block_generated_member_by_default"
+provider_surfaces = [
+  "completion",
+  "workspace_symbols",
+]
+supported_forms = [
+  "use DBIx::QuickORM type => 'table'",
+  "use DBIx::QuickORM type => 'orm'",
+  "direct package-level table/view builder -> qorm_table",
+  "canonical generated-member method completion",
+]
+blocked_forms = [
+  "filtered_import",
+  "renamed_import",
+  "skipped_import",
+  "dynamic_import_configuration",
+  "nested_or_runtime_controlled_builder",
+  "manual_column_or_columns_accessor_projection",
+  "quickorm_local_method_catalog",
+]
+blocks = [
+  "generated_no_source",
+  "stale_fact",
+  "dynamic_boundary",
+  "low_confidence",
+  "ambiguous_identity",
+  "unsupported_fact_class",
+]
+claim_boundary = "DBIx::QuickORM emits only the source-anchored, bounded Medium-confidence qorm_table generated member for exact unfiltered table-package builders; the generated-member package query, workspace-symbol, and method-completion consumers may present that fact, while generic source-only package-member queries, filtered configuration, runtime-controlled builders, local method catalogues, and manual column metadata remain blocked or unmodeled."
+
+[[adapter]]
 framework = "Catalyst"
 fact_class = "route_symbol"
 state = "deferred"
