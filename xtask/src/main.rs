@@ -57,15 +57,16 @@ use tasks::{
     provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
     publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
     queue_health, queue_snapshot, receipts, release, release_artifact_check,
-    release_candidate_artifacts, release_evidence, release_notes, release_turnkey, repo_hygiene,
-    repository_topology, ripr_evidence, rust_small_proof, seam_diff, semantic_inline_next_edit,
-    semantic_inline_receipts, semantic_scorecard, semantic_shadow_compare, semantic_token_classes,
-    session_receipt, shadow_parity, srp_microcrates, supported_editor_inline_smoke,
-    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
-    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
-    ux_scorecard, validate_workspace_exclusions, workflow_authority_inventory,
-    workflow_policy_lint, workflow_trigger_lint, workspace_symbol_classes, worktree_allocator,
-    worktrees, writer_admission,
+    release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
+    release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
+    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
+    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
+    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
+    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
+    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    validate_workspace_exclusions, workflow_authority_inventory, workflow_policy_lint,
+    workflow_trigger_lint, workspace_symbol_classes, worktree_allocator, worktrees,
+    writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
 use tasks::{bindings, compare_parsers, highlight};
@@ -157,6 +158,16 @@ enum Commands {
         /// Operation to run against the rule-proof manifest.
         #[command(subcommand)]
         command: tasks::critic_rule_proof::CriticRuleProofSubcommand,
+    },
+
+    /// Validate the versioned release trust-invariant registry and generated
+    /// Markdown projection (`release_trust_invariants.v1`, #9392). Does
+    /// not consume live candidate receipts.
+    #[command(name = "release-trust-invariants")]
+    ReleaseTrustInvariants {
+        /// Operation to run against the trust-invariant registry.
+        #[command(subcommand)]
+        command: tasks::release_trust_invariants::ReleaseTrustInvariantsSubcommand,
     },
 
     /// Validate differential real-Perl oracle receipt schema.
@@ -4962,6 +4973,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
+        Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CheckNativeNeovimTrain => native_neovim_train::run(),
