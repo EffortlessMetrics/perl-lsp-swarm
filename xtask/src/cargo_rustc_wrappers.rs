@@ -26,7 +26,11 @@
 //!   `$CARGO_HOME`), matching stable Cargo; environment values use the
 //!   workspace root as cwd; bare names stay PATH lookups;
 //! - empty string (`""`) clears a wrapper; whitespace-only values are present
-//!   programs, as Cargo does not trim.
+//!   programs, as Cargo does not trim;
+//! - empty `$CARGO_HOME` falls through to platform home; whitespace-only
+//!   `$CARGO_HOME` is a relative directory name; relative `$CARGO_HOME` is
+//!   resolved from the process current directory, matching Cargo;
+//! - non-UTF-8 wrapper/home variables are unresolvable, not silently unset.
 //!
 //! Absolute paths never enter the durable projection: in-workspace paths become
 //! workspace-relative, and external paths become `{basename}@{sha256:...}` of
@@ -70,6 +74,7 @@ const ENV_KEYS: &[&str] = &[
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EnvSnapshot {
     vars: BTreeMap<String, String>,
+    invalid_utf8: BTreeSet<String>,
 }
 
 impl EnvSnapshot {
@@ -77,22 +82,44 @@ impl EnvSnapshot {
     #[must_use]
     pub fn from_process() -> Self {
         let mut vars = BTreeMap::new();
+        let mut invalid_utf8 = BTreeSet::new();
         for key in ENV_KEYS {
-            if let Ok(value) = std::env::var(key) {
-                vars.insert((*key).to_string(), value);
+            match std::env::var_os(key) {
+                None => {}
+                Some(os) => match os.into_string() {
+                    Ok(value) => {
+                        vars.insert((*key).to_string(), value);
+                    }
+                    Err(_) => {
+                        invalid_utf8.insert((*key).to_string());
+                    }
+                },
             }
         }
-        Self { vars }
+        Self { vars, invalid_utf8 }
     }
 
     /// Insert or replace a captured variable. Used by tests and by callers that
     /// already isolated an environment.
     pub fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) {
-        self.vars.insert(key.into(), value.into());
+        let key = key.into();
+        self.invalid_utf8.remove(&key);
+        self.vars.insert(key, value.into());
+    }
+
+    #[cfg(test)]
+    fn mark_invalid_utf8(&mut self, key: impl Into<String>) {
+        let key = key.into();
+        self.vars.remove(&key);
+        self.invalid_utf8.insert(key);
     }
 
     fn get(&self, key: &str) -> Option<&str> {
         self.vars.get(key).map(String::as_str)
+    }
+
+    fn is_invalid_utf8(&self, key: &str) -> bool {
+        self.invalid_utf8.contains(key)
     }
 }
 
@@ -321,27 +348,35 @@ fn cargo_home_dir(env: &EnvSnapshot) -> CargoHome {
 }
 
 /// Cargo's default home is platform-specific: `HOME` on Unix, `USERPROFILE`
-/// then `HOME` on Windows. A cross-platform `HOME.or(USERPROFILE)` reads the
-/// wrong variable when both exist.
+/// then `HOME` on Windows. Empty `$CARGO_HOME` is treated as unset; any other
+/// value (including whitespace) is the home directory, resolved from cwd when
+/// relative.
 fn cargo_home_dir_on(env: &EnvSnapshot, windows: bool) -> CargoHome {
+    if env.is_invalid_utf8(CARGO_HOME_ENV) {
+        return CargoHome::Unknown;
+    }
     match env.get(CARGO_HOME_ENV) {
-        Some(value) if value.trim().is_empty() => return CargoHome::Unknown,
-        Some(value) => return CargoHome::Path(PathBuf::from(value)),
+        Some("") => {}
+        Some(value) => {
+            return CargoHome::Path(absolute_or_normalized(Path::new(value)));
+        }
         None => {}
     }
-    let home = if windows {
-        nonempty_env(env, USERPROFILE_ENV).or_else(|| nonempty_env(env, HOME_ENV))
-    } else {
-        nonempty_env(env, HOME_ENV)
-    };
-    match home {
-        Some(value) => CargoHome::Path(PathBuf::from(value).join(".cargo")),
-        None => CargoHome::Unknown,
+    let keys: &[&str] = if windows { &[USERPROFILE_ENV, HOME_ENV] } else { &[HOME_ENV] };
+    for key in keys {
+        if env.is_invalid_utf8(key) {
+            return CargoHome::Unknown;
+        }
+        match env.get(key) {
+            Some("") | None => {}
+            Some(value) => {
+                return CargoHome::Path(absolute_or_normalized(
+                    &PathBuf::from(value).join(".cargo"),
+                ));
+            }
+        }
     }
-}
-
-fn nonempty_env<'a>(env: &'a EnvSnapshot, key: &str) -> Option<&'a str> {
-    env.get(key).filter(|value| !value.trim().is_empty())
+    CargoHome::Unknown
 }
 
 fn search_dirs(workspace_root: &Path, ceiling: Option<&Path>) -> Vec<PathBuf> {
@@ -462,8 +497,14 @@ fn resolve_slot(
     config_complete: bool,
     workspace_root: &Path,
 ) -> WrapperSlot {
+    if env.is_invalid_utf8(dedicated) {
+        return WrapperSlot::Unresolved;
+    }
     if let Some(value) = env.get(dedicated) {
         return slot_from_env_value(value, workspace_root, workspace_root);
+    }
+    if env.is_invalid_utf8(cargo_mapped) {
+        return WrapperSlot::Unresolved;
     }
     if let Some(value) = env.get(cargo_mapped) {
         return slot_from_env_value(value, workspace_root, workspace_root);
@@ -490,12 +531,12 @@ fn slot_from_env_value(value: &str, origin_dir: &Path, workspace_root: &Path) ->
 fn present_from_configured(value: &str, origin_dir: &Path, workspace_root: &Path) -> WrapperSlot {
     let resolved = resolve_wrapper_path(value, origin_dir);
     let durable = durable_wrapper_identity(&resolved, workspace_root);
-    let local = resolved.to_string_lossy().replace('\\', "/");
+    let local = render_path_for_identity(&resolved);
     WrapperSlot::Present { durable, local }
 }
 
 fn wrapper_value_has_directory(value: &str) -> bool {
-    value.contains('/') || value.contains('\\')
+    value.contains('/') || (cfg!(windows) && value.contains('\\'))
 }
 
 fn resolve_wrapper_path(value: &str, origin_dir: &Path) -> PathBuf {
@@ -512,7 +553,7 @@ fn resolve_wrapper_path(value: &str, origin_dir: &Path) -> PathBuf {
 fn durable_wrapper_identity(resolved: &Path, workspace_root: &Path) -> String {
     let display = resolved.to_string_lossy();
     if !resolved.is_absolute() && !wrapper_value_has_directory(&display) {
-        return display.replace('\\', "/");
+        return render_path_for_identity(resolved);
     }
     let abs = lexically_normalize(&if resolved.is_absolute() {
         resolved.to_path_buf()
@@ -521,7 +562,7 @@ fn durable_wrapper_identity(resolved: &Path, workspace_root: &Path) -> String {
     });
     let workspace_root = lexically_normalize(workspace_root);
     if let Ok(relative) = abs.strip_prefix(&workspace_root) {
-        let rendered = relative.to_string_lossy().replace('\\', "/");
+        let rendered = render_path_for_identity(relative);
         if !rendered.is_empty() && !path_has_parent_dir(relative) {
             return rendered;
         }
@@ -531,12 +572,17 @@ fn durable_wrapper_identity(resolved: &Path, workspace_root: &Path) -> String {
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "wrapper".to_string());
-    let normalized = abs.to_string_lossy().replace('\\', "/");
+    let normalized = render_path_for_identity(&abs);
     format!("{basename}@{}", sha256_hex(normalized.as_bytes()))
 }
 
 fn path_has_parent_dir(path: &Path) -> bool {
     path.components().any(|component| matches!(component, Component::ParentDir))
+}
+
+fn render_path_for_identity(path: &Path) -> String {
+    let lossy = path.to_string_lossy();
+    if cfg!(windows) { lossy.replace('\\', "/") } else { lossy.into_owned() }
 }
 
 /// Collapse `.` and `..` without requiring the path to exist.
@@ -1253,5 +1299,86 @@ mod tests {
             CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/unix/home/.cargo")),
             CargoHome::Unknown => panic!("HOME is the Windows fallback"),
         }
+    }
+
+    #[test]
+    fn empty_cargo_home_falls_through_to_platform_home() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let user_home = root.path().join("user-home");
+        let ws = root.path().join("workspace");
+        fs::create_dir_all(ws.join(".cargo")).unwrap();
+        write_config(
+            &user_home.join(".cargo/config.toml"),
+            "[build]\nrustc-wrapper = \"from-home\"\n",
+        );
+        let mut env = EnvSnapshot::default();
+        env.insert(CARGO_HOME_ENV, "");
+        env.insert(HOME_ENV, user_home.to_string_lossy());
+        let resolved = resolve_compiler_wrappers_in(&ws, &env, Some(root.path()), &RealFs);
+        assert_eq!(resolved.rustc_wrapper(), Some("from-home"));
+        assert!(resolved.is_complete());
+    }
+
+    #[test]
+    fn whitespace_cargo_home_is_a_directory_not_a_fallback() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let user_home = root.path().join("user-home");
+        let ws = root.path().join("workspace");
+        fs::create_dir_all(ws.join(".cargo")).unwrap();
+        write_config(
+            &user_home.join(".cargo/config.toml"),
+            "[build]\nrustc-wrapper = \"from-home\"\n",
+        );
+        let mut env = EnvSnapshot::default();
+        env.insert(CARGO_HOME_ENV, "   ");
+        env.insert(HOME_ENV, user_home.to_string_lossy());
+        let resolved = resolve_compiler_wrappers_in(&ws, &env, Some(root.path()), &RealFs);
+        assert!(resolved.rustc_wrapper().is_none());
+        assert!(resolved.is_complete());
+    }
+
+    #[test]
+    fn relative_cargo_home_is_resolved_from_process_cwd() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let root = tempfile::tempdir_in(&cwd).expect("tempdir in cwd");
+        let rel_root = root.path().strip_prefix(&cwd).expect("under cwd");
+        let home = root.path().join("cargo-home");
+        let ws = root.path().join("workspace");
+        fs::create_dir_all(ws.join(".cargo")).unwrap();
+        write_config(&home.join("config.toml"), "[build]\nrustc-wrapper = \"from-rel-home\"\n");
+        let mut env = EnvSnapshot::default();
+        env.insert(CARGO_HOME_ENV, rel_root.join("cargo-home").to_string_lossy());
+        let resolved = resolve_compiler_wrappers_in(&ws, &env, Some(root.path()), &RealFs);
+        assert_eq!(resolved.rustc_wrapper(), Some("from-rel-home"));
+        assert!(resolved.is_complete());
+    }
+
+    #[test]
+    fn unix_backslash_in_a_wrapper_name_is_not_a_directory() {
+        if cfg!(windows) {
+            return;
+        }
+        let (root, home, ws, _) = fixture();
+        let mut env = isolated_env(&home);
+        env.insert(WRAPPER_ENV, "weird\\name");
+        env.insert(WORKSPACE_WRAPPER_ENV, "");
+        let resolved = resolve_compiler_wrappers_in(&ws, &env, Some(root.path()), &RealFs);
+        assert_eq!(resolved.rustc_wrapper(), Some("weird\\name"));
+        assert_eq!(resolved.rustc_wrapper_local(), Some("weird\\name"));
+        assert!(resolved.is_complete());
+    }
+
+    #[test]
+    fn non_utf8_wrapper_env_is_unresolvable_not_unset() {
+        let (root, home, ws, _) = fixture();
+        write_config(&ws.join(".cargo/config.toml"), "[build]\nrustc-wrapper = \"from-config\"\n");
+        let mut env = isolated_env(&home);
+        env.mark_invalid_utf8(WRAPPER_ENV);
+        let resolved = resolve_compiler_wrappers_in(&ws, &env, Some(root.path()), &RealFs);
+        assert!(resolved.rustc_wrapper().is_none());
+        assert!(!resolved.is_complete());
+        let utf8 = resolve_tree(&ws, root.path(), &home);
+        assert_eq!(utf8.rustc_wrapper(), Some("from-config"));
+        assert_ne!(resolved.subject_digest(), utf8.subject_digest());
     }
 }
