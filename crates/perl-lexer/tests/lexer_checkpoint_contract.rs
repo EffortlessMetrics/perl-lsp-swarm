@@ -88,6 +88,17 @@ fn caller_selected_position_is_not_a_restart_boundary() {
 }
 
 #[test]
+fn stamped_char_boundary_is_not_a_live_restart() {
+    let source = "my $value = 1;";
+    let mut checkpoint = PerlLexer::new(source).checkpoint();
+    checkpoint.__test_stamp_position(3);
+    assert_eq!(
+        PerlLexer::new(source).validate_restore(&checkpoint),
+        Err(CheckpointRestoreError::UnsupportedBoundary)
+    );
+}
+
+#[test]
 fn mid_codepoint_offset_fails_closed() {
     let source = "éx";
     let mut checkpoint = PerlLexer::new(source).checkpoint();

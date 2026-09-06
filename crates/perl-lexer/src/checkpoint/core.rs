@@ -1,6 +1,6 @@
 use crate::mode::LexerMode;
 use crate::{LexerConfig, Position};
-use perl_source_identity::{LogicalSourceId, SourceGeneration};
+use perl_source_identity::SourceGeneration;
 use std::fmt;
 
 use super::identity::{CheckpointRestoreError, LexerCheckpointIdentity};
@@ -417,7 +417,11 @@ impl LexerCheckpoint {
     /// Rebind this prefix checkpoint to a new source generation after a
     /// validated edit that did not invalidate its consumed prefix.
     ///
-    /// Offsets must already be valid for `source`. Policy identity is unchanged.
+    /// This retargets whole-source content identity. It does not prove that
+    /// prefix bytes are unchanged: [`Self::try_apply_edit`] is the offset
+    /// survival check, and callers must not rebind a checkpoint whose consumed
+    /// prefix was edited. Policy identity is unchanged. Offsets must already
+    /// be valid for `source`.
     pub fn rebind_to_source(
         &mut self,
         source: &str,
@@ -436,16 +440,6 @@ impl LexerCheckpoint {
         self.identity.retarget_content(source);
         self.identity.set_generation(generation);
         Ok(())
-    }
-
-    /// Replace only the logical-source component of identity.
-    pub fn set_logical_source(&mut self, logical_source: Option<LogicalSourceId>) {
-        self.identity.set_logical_source(logical_source);
-    }
-
-    /// Replace only the generation component of identity.
-    pub fn set_generation(&mut self, generation: SourceGeneration) {
-        self.identity.set_generation(generation);
     }
 
     /// Validate all source-relative checkpoint offsets for an input.
@@ -514,6 +508,9 @@ impl LexerCheckpoint {
     pub fn __test_stamp_position(&mut self, position: usize) {
         self.replay.position = position;
         self.replay.current_pos.byte = position;
+        // Stamping a byte is not a live capture. Restore must not treat the
+        // original live-boundary flag as restart authority for a forged offset.
+        self.live_boundary = false;
     }
 
     #[doc(hidden)]

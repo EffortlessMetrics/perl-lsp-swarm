@@ -102,6 +102,12 @@ impl Checkpointable for PerlLexer<'_> {
     }
 
     fn validate_restore(&self, checkpoint: &LexerCheckpoint) -> Result<(), CheckpointRestoreError> {
+        // UTF-8 is a property of the target buffer vs the claimed byte, and must
+        // remain distinguishable from "not a live boundary" even when a test
+        // hook has already revoked live-boundary authority.
+        if !self.input.is_char_boundary(checkpoint.position()) {
+            return Err(CheckpointRestoreError::InvalidUtf8Boundary);
+        }
         checkpoint.ensure_complete()?;
         checkpoint.identity().matches_target(
             self.input,
@@ -111,9 +117,6 @@ impl Checkpointable for PerlLexer<'_> {
             self.logical_source.as_ref(),
             &self.generation,
         )?;
-        if !self.input.is_char_boundary(checkpoint.position()) {
-            return Err(CheckpointRestoreError::InvalidUtf8Boundary);
-        }
         if !checkpoint.is_valid_for(self.input) {
             return Err(CheckpointRestoreError::UnsupportedBoundary);
         }

@@ -130,10 +130,6 @@ impl LexerCheckpointIdentity {
         self.generation = generation;
     }
 
-    pub(crate) fn set_logical_source(&mut self, logical_source: Option<LogicalSourceId>) {
-        self.logical_source = logical_source;
-    }
-
     pub(crate) fn set_schema_for_test(&mut self, schema: u32) {
         self.schema = schema;
     }
