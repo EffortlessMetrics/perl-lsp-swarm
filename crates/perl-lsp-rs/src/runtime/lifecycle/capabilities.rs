@@ -172,9 +172,9 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        // Duplicate initialize is always InvalidRequest, even when the payload
-        // would also fail encoding classification. First-attempt classification
-        // still runs before the one-shot CAS so a rejected offer can retry.
+        // Every later initialize is InvalidRequest before params. The first
+        // attempt consumes the one-shot CAS before classification: a rejected
+        // first payload is not retryable and must not open serving.
         if self.initialize_requested.load(Ordering::Acquire) {
             return Err(JsonRpcError {
                 code: -32600, // InvalidRequest per LSP spec 3.17
@@ -182,11 +182,7 @@ impl LspServer {
                 data: None,
             });
         }
-        if let Some(params) = &params {
-            super::super::v0_18_text_sync_envelope::classify_position_encoding_offer(params)?;
-        }
 
-        // Atomically check and set initialize_requested
         if self
             .initialize_requested
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -198,6 +194,17 @@ impl LspServer {
                 data: None,
             });
         }
+
+        let selection = match params.as_ref() {
+            Some(params) => {
+                super::super::v0_18_text_sync_envelope::classify_position_encoding_offer(params)?
+            }
+            None => super::super::v0_18_text_sync_envelope::Utf16SelectionReason::Omitted,
+        };
+        tracing::info!(
+            reason = selection.as_str(),
+            "v0.18 initialize selected UTF-16 position encoding"
+        );
 
         // Parse client capabilities
         if let Some(params) = &params {
@@ -517,10 +524,12 @@ impl LspServer {
                     }
                 }
 
-                // v0.18 envelope (#8129): UTF-16 is the only wire encoding. Offer
-                // classification above already refused lists that omit utf-16.
-                // Store the advertised encoding; do not keep a second preferred
-                // encoding that production never uses.
+                // v0.18 envelope (#8129): UTF-16 is the only wire encoding.
+                // Well-formed lists that omit utf-16 still accept via the
+                // explicit mandatory-fallback reason; malformed shapes already
+                // failed classification above. Store the advertised encoding;
+                // do not keep a second preferred encoding that production never
+                // uses.
                 caps.position_encoding = crate::textdoc::PosEnc::Utf16;
             } // caps lock released here
 
@@ -815,6 +824,8 @@ impl LspServer {
                 Value::Bool(true),
             );
         }
+
+        self.initialization_accepted.store(true, Ordering::Release);
 
         Ok(Some(json!({
             "capabilities": capabilities,
@@ -1605,7 +1616,7 @@ mod tests {
     }
 
     #[test]
-    fn initialize_rejects_position_encodings_with_no_utf16()
+    fn initialize_accepts_position_encodings_that_omit_utf16()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let params = json!({
@@ -1616,12 +1627,126 @@ mod tests {
             }
         });
 
-        let err = match server.handle_initialize(Some(params)) {
+        let result = server
+            .handle_initialize(Some(params))?
+            .ok_or("lists without utf-16 must accept via mandatory UTF-16 fallback")?;
+        assert_eq!(
+            result.pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+            Some("utf-16"),
+            "mandatory fallback must still advertise utf-16: {result}"
+        );
+        assert!(
+            server.initialization_accepted.load(std::sync::atomic::Ordering::Acquire),
+            "accepted omit-utf16 initialize must open the session"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_position_encodings_consume_initialize_and_do_not_open_serving()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let err = match server.handle_initialize(Some(json!({
+            "capabilities": {
+                "general": {
+                    "positionEncodings": [1]
+                }
+            }
+        }))) {
             Err(err) => err,
-            Ok(_) => return Err("lists without utf-16 must fail initialize".into()),
+            Ok(_) => return Err("malformed encodings must fail initialize".into()),
         };
         assert_eq!(err.code, -32602);
-        assert!(err.message.contains("UTF-16"), "{}", err.message);
+        assert!(
+            server.initialize_requested.load(std::sync::atomic::Ordering::Acquire),
+            "first attempt must consume the one-shot even when classification fails"
+        );
+        assert!(
+            !server.initialization_accepted.load(std::sync::atomic::Ordering::Acquire),
+            "rejected first attempt must not open an accepted session"
+        );
+
+        let duplicate = match server.handle_initialize(Some(json!({
+            "capabilities": {
+                "general": {
+                    "positionEncodings": ["utf-16"]
+                }
+            }
+        }))) {
+            Err(err) => err,
+            Ok(_) => {
+                return Err("retry after rejected first initialize must be InvalidRequest".into());
+            }
+        };
+        assert_eq!(duplicate.code, -32600);
+        assert_eq!(duplicate.message, "initialize may only be sent once");
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_first_initialize_attempts_have_exactly_one_owner()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let valid = json!({
+            "capabilities": {
+                "general": { "positionEncodings": ["utf-16"] }
+            }
+        });
+        let malformed = json!({
+            "capabilities": {
+                "general": { "positionEncodings": [1] }
+            }
+        });
+
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| server.handle_initialize(Some(valid.clone())));
+            let second = scope.spawn(|| server.handle_initialize(Some(malformed.clone())));
+            let first = first.join().expect("first initialize thread");
+            let second = second.join().expect("second initialize thread");
+
+            let outcomes = [first, second];
+            let owners = outcomes
+                .iter()
+                .filter(|outcome| {
+                    outcome.is_ok() || outcome.as_ref().err().is_some_and(|err| err.code == -32602)
+                })
+                .count();
+            let losers = outcomes
+                .iter()
+                .filter(|outcome| outcome.as_ref().err().is_some_and(|err| err.code == -32600))
+                .count();
+            assert_eq!(owners, 1, "exactly one first attempt owns the one-shot: {outcomes:?}");
+            assert_eq!(losers, 1, "the other attempt must be InvalidRequest: {outcomes:?}");
+        });
+
+        assert!(
+            server.initialize_requested.load(std::sync::atomic::Ordering::Acquire),
+            "exactly one owner must consume the one-shot"
+        );
+        let accepted = server.initialization_accepted.load(std::sync::atomic::Ordering::Acquire);
+        if accepted {
+            assert!(
+                server
+                    .handle_initialize(Some(json!({ "capabilities": {} })))
+                    .err()
+                    .is_some_and(|err| err.code == -32600),
+                "accepted session still rejects later initialize"
+            );
+        } else {
+            let unknown = server.handle_request(crate::protocol::JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(crate::protocol::JsonRpcId::Integer(99)),
+                method: "custom/unknown".to_string(),
+                params: None,
+            });
+            // If the concurrent owner was malformed, serving must stay closed.
+            let code = unknown.and_then(|response| response.error).map(|err| err.code);
+            assert_eq!(
+                code,
+                Some(-32002),
+                "attempted-but-unaccepted initialize must not open serving: {code:?}"
+            );
+        }
         Ok(())
     }
 

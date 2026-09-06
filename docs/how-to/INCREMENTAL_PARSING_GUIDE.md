@@ -14,8 +14,10 @@ atomically. Ranged incremental edits are protocol violations: they do not mutate
 last-good text, and current parse/provider facts become unavailable until an
 accepted full replacement, close/reopen, or restart.
 
-Wire positions are UTF-16 only. A nonempty `general.positionEncodings` list that
-omits `utf-16` fails initialize instead of silently advertising another encoding.
+Wire positions are UTF-16 only. A nonempty well-formed `general.positionEncodings`
+list that omits `utf-16` still accepts Full+UTF-16 via an explicit mandatory
+fallback reason rather than silently advertising another encoding. Malformed
+`positionEncodings` shapes fail initialize.
 
 ### What happens after each admitted edit
 

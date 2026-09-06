@@ -336,7 +336,7 @@ fn test_initialize_contract_3_17() -> TestResult {
 fn test_position_encoding_advertised_is_utf16_v0_18_envelope() -> TestResult {
     // v0.18 (#8129) advertises and uses UTF-16 only. A client list that
     // includes utf-16 still gets utf-16 even when utf-8 is preferred first.
-    // Lists that omit utf-16 fail initialize rather than silently diverging.
+    // Well-formed lists that omit utf-16 accept via explicit mandatory fallback.
 
     // Scenario 1: client prefers UTF-8 first, then UTF-16 -- must still get utf-16.
     let mut harness = LspHarness::new();
@@ -395,26 +395,23 @@ fn test_position_encoding_advertised_is_utf16_v0_18_envelope() -> TestResult {
 }
 
 #[test]
-fn utf8_only_position_encodings_fail_initialize_on_the_wire() -> TestResult {
+fn utf8_only_position_encodings_accept_initialize_via_utf16_fallback() -> TestResult {
     let mut harness = LspHarness::new();
-    let err = match harness.initialize(Some(json!({
+    let result = harness.initialize(Some(json!({
         "general": {
             "positionEncodings": ["utf-8"]
         }
-    }))) {
-        Err(err) => err,
-        Ok(result) => {
-            return Err(format!(
-                "utf-8-only initialize must fail on the wire, got capabilities: {result}"
-            )
-            .into());
-        }
-    };
-    assert!(
-        err.contains("-32602") || err.contains("32602"),
-        "utf-8-only initialize must be InvalidParams, got {err}"
+    })))?;
+
+    let encoding = result
+        .get("capabilities")
+        .and_then(|v| v.get("positionEncoding"))
+        .and_then(|v| v.as_str())
+        .ok_or("positionEncoding not found or not string")?;
+    assert_eq!(
+        encoding, "utf-16",
+        "utf-8-only initialize must still advertise utf-16 via mandatory fallback"
     );
-    assert!(err.contains("UTF-16") || err.contains("utf-16"), "error must name UTF-16, got {err}");
     Ok(())
 }
 

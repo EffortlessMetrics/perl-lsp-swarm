@@ -2241,7 +2241,7 @@
     {
       "surface_id": "compat.protocol.positionEncodingUtf16Pin",
       "kind": "compatibility",
-      "protocol_field": "positionEncoding always advertised utf-16; lists without utf-16 fail initialize",
+      "protocol_field": "positionEncoding always advertised utf-16; well-formed lists that omit utf-16 accept via mandatory UTF-16 fallback",
       "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "general.positionEncodings"

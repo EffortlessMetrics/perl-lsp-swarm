@@ -119,9 +119,9 @@ mod tests {
     }
 
     #[test]
-    fn rejected_encoding_initialize_does_not_consume_or_activate_lifecycle() {
+    fn utf8_only_initialize_accepts_via_utf16_mandatory_fallback() {
         let server = LspServer::new();
-        let rejected = server.handle_request(request(
+        let accepted = server.handle_request(request(
             1,
             "initialize",
             Some(json!({
@@ -132,15 +132,57 @@ mod tests {
                 }
             })),
         ));
+        assert!(
+            accepted.as_ref().is_some_and(|response| response.error.is_none()),
+            "utf-8-only initialize must accept via mandatory UTF-16 fallback: {accepted:?}"
+        );
+        let encoding = accepted
+            .as_ref()
+            .and_then(|response| response.result.as_ref())
+            .and_then(|result| result.pointer("/capabilities/positionEncoding"))
+            .and_then(Value::as_str);
+        assert_eq!(encoding, Some("utf-16"));
+        assert!(server.initialize_requested.load(std::sync::atomic::Ordering::Acquire));
+        assert!(server.initialization_accepted.load(std::sync::atomic::Ordering::Acquire));
+
+        let after_accepted = server
+            .handle_request(request(2, "custom/unknown", None))
+            .and_then(|response| response.error)
+            .map(|error| error.code);
+        assert_eq!(
+            after_accepted,
+            Some(-32601),
+            "accepted omit-utf16 initialize must open serving"
+        );
+    }
+
+    #[test]
+    fn malformed_encoding_initialize_consumes_one_shot_and_does_not_serve() {
+        let server = LspServer::new();
+        let rejected = server.handle_request(request(
+            1,
+            "initialize",
+            Some(json!({
+                "capabilities": {
+                    "general": {
+                        "positionEncodings": [1]
+                    }
+                }
+            })),
+        ));
         let error = rejected.and_then(|response| response.error);
         assert_eq!(
             error.as_ref().map(|e| e.code),
             Some(-32602),
-            "utf-8-only initialize must fail InvalidParams: {error:?}"
+            "malformed encodings must fail InvalidParams: {error:?}"
         );
         assert!(
-            !server.initialize_requested.load(std::sync::atomic::Ordering::Acquire),
-            "failed initialize must not consume the one-shot"
+            server.initialize_requested.load(std::sync::atomic::Ordering::Acquire),
+            "failed initialize must consume the one-shot"
+        );
+        assert!(
+            !server.initialization_accepted.load(std::sync::atomic::Ordering::Acquire),
+            "rejected initialize must not open an accepted session"
         );
         assert!(!server.is_initialized());
 
@@ -173,11 +215,13 @@ mod tests {
                 }
             })),
         ));
-        assert!(
-            retried.as_ref().is_some_and(|response| response.error.is_none()),
-            "corrected initialize must be accepted: {retried:?}"
+        let retry_error = retried.and_then(|response| response.error);
+        assert_eq!(
+            retry_error.as_ref().map(|e| e.code),
+            Some(-32600),
+            "corrected initialize must not retry after a consumed first attempt: {retry_error:?}"
         );
-        assert!(server.initialize_requested.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!server.initialization_accepted.load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]

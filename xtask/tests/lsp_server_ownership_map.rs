@@ -86,6 +86,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8386"
     ),
     row!(
+        "initialization_accepted",
+        ClientSession,
+        "AtomicBool",
+        "connection replacement",
+        "client session",
+        false,
+        "#8386"
+    ),
+    row!(
         "initialized",
         ClientSession,
         "AtomicBool",
@@ -199,6 +208,42 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "Arc<Mutex>",
         "workspace-set transition",
         "workspace-set generation",
+        false,
+        "#8385"
+    ),
+    row!(
+        "workspace_identity_generation",
+        WorkspaceServices,
+        "Arc<AtomicU64>",
+        "workspace identity invalidation",
+        "workspace-set generation",
+        false,
+        "#8385"
+    ),
+    row!(
+        "workspace_identity_lock",
+        WorkspaceServices,
+        "Arc<Mutex>",
+        "workspace identity invalidation",
+        "workspace-set generation",
+        false,
+        "#8385"
+    ),
+    row!(
+        "single_file_project_config",
+        WorkspaceServices,
+        "Arc<Mutex>",
+        "single-file project config replacement / server drop",
+        "single-file project generation",
+        false,
+        "#8385"
+    ),
+    row!(
+        "single_file_project_config_generation",
+        WorkspaceServices,
+        "Arc<AtomicU64>",
+        "single-file project config replacement / server drop",
+        "single-file project generation",
         false,
         "#8385"
     ),
@@ -552,6 +597,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "workspace generation",
         false,
         "#8388"
+    ),
+    row!(
+        "indexing_commit_gate",
+        RuntimeServices,
+        "Arc<std::sync::Mutex>",
+        "test hook release / server drop",
+        "test runtime",
+        true,
+        "#13308"
     ),
     row!(
         "permission_denied_shown",

@@ -9,6 +9,23 @@ use super::{
     extract_text_based_symbols, get_text_around_offset, get_text_window_around_offset,
     offset_to_position, position_to_offset,
 };
+use serde_json::Value;
+
+/// Current document text that may answer a user-facing provider request.
+pub(crate) struct UserAnswerTextSnapshot {
+    pub text: String,
+    pub generation: u32,
+}
+
+/// Result of looking up source text for a user-facing answer.
+pub(crate) enum UserAnswerTextLookup {
+    /// URI is not in the open-document map.
+    NotOpen,
+    /// Document is open but Full-sync-required: predecessor text is evidence only.
+    Unavailable,
+    /// Current source may answer the user.
+    Current(UserAnswerTextSnapshot),
+}
 
 #[allow(dead_code)]
 impl LspServer {
@@ -63,6 +80,56 @@ impl LspServer {
         } else {
             documents.get_mut(uri)
         }
+    }
+
+    /// Look up source text that may answer a user-facing provider request.
+    ///
+    /// Predecessor storage remains available through [`Self::get_document`] for
+    /// internal evidence. [`UserAnswerTextLookup::Unavailable`] means the current
+    /// generation is stable but explicitly unusable for user answers.
+    pub(crate) fn lookup_user_answer_text(&self, uri: &str) -> UserAnswerTextLookup {
+        let documents = self.documents_guard();
+        let Some(doc) = self.get_document(&documents, uri) else {
+            return UserAnswerTextLookup::NotOpen;
+        };
+        match doc.text_for_user_answers() {
+            Some(text) => UserAnswerTextLookup::Current(UserAnswerTextSnapshot {
+                text: text.to_string(),
+                generation: doc.current_generation(),
+            }),
+            None => UserAnswerTextLookup::Unavailable,
+        }
+    }
+
+    /// Copy source text that may answer a user-facing provider request.
+    pub(crate) fn snapshot_user_answer_text(&self, uri: &str) -> Option<UserAnswerTextSnapshot> {
+        match self.lookup_user_answer_text(uri) {
+            UserAnswerTextLookup::Current(snapshot) => Some(snapshot),
+            UserAnswerTextLookup::NotOpen | UserAnswerTextLookup::Unavailable => None,
+        }
+    }
+
+    /// True when `uri` still has a usable current snapshot at `generation`.
+    ///
+    /// Re-check after computing an answer so publication cannot cross a
+    /// Full-sync invalidation that landed while the provider was off-lock.
+    pub(crate) fn user_answer_text_is_current(&self, uri: &str, generation: u32) -> bool {
+        let documents = self.documents_guard();
+        self.get_document(&documents, uri)
+            .is_some_and(|doc| !doc.full_sync_required() && doc.current_generation() == generation)
+    }
+
+    /// Publish a computed user-facing JSON value only if the snapshot is still
+    /// the current usable document. `unavailable` is returned when predecessor
+    /// source must not be presented as current.
+    pub(crate) fn publish_user_answer_value(
+        &self,
+        uri: &str,
+        generation: u32,
+        value: Value,
+        unavailable: Value,
+    ) -> Value {
+        if self.user_answer_text_is_current(uri, generation) { value } else { unavailable }
     }
 
     /// Helper to create a ContentModified error response

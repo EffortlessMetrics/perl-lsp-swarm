@@ -28,6 +28,21 @@ pub(crate) enum Utf16SelectionReason {
     Empty,
     /// Client list contained `utf-16`.
     ClientOfferedUtf16,
+    /// Well-formed nonempty string list omitted `utf-16`. v0.18 still serves
+    /// Full+UTF-16; this is an explicit mandatory fallback, not a silent
+    /// encoding switch.
+    OmittedUtf16Fallback,
+}
+
+impl Utf16SelectionReason {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Omitted => "omitted",
+            Self::Empty => "empty",
+            Self::ClientOfferedUtf16 => "client_offered_utf16",
+            Self::OmittedUtf16Fallback => "omitted_utf16_mandatory_fallback",
+        }
+    }
 }
 
 /// Classify `capabilities.general.positionEncodings` for the v0.18 envelope.
@@ -52,10 +67,7 @@ pub(crate) fn classify_position_encoding_offer(
             if saw_utf16 {
                 Ok(Utf16SelectionReason::ClientOfferedUtf16)
             } else {
-                Err(invalid_params(
-                    "v0.18 supports only UTF-16 position encoding; \
-                     capabilities.general.positionEncodings listed no utf-16 value",
-                ))
+                Ok(Utf16SelectionReason::OmittedUtf16Fallback)
             }
         }
         Some(_) => Err(invalid_params(
@@ -149,19 +161,25 @@ mod tests {
     }
 
     #[test]
-    fn list_without_utf16_fails_initialize_instead_of_silent_fallback() {
-        let err = classify_position_encoding_offer(&json!({
+    fn well_formed_list_without_utf16_selects_mandatory_fallback() {
+        let reason = classify_position_encoding_offer(&json!({
             "capabilities": { "general": { "positionEncodings": ["utf-8"] } }
         }))
-        .expect_err("utf-8-only must fail");
-        assert_eq!(err.code, -32602);
-        assert!(err.message.contains("UTF-16"), "{}", err.message);
+        .expect("utf-8-only must accept via mandatory fallback");
+        assert_eq!(reason, Utf16SelectionReason::OmittedUtf16Fallback);
+        assert_eq!(reason.as_str(), "omitted_utf16_mandatory_fallback");
 
-        let err = classify_position_encoding_offer(&json!({
+        let reason = classify_position_encoding_offer(&json!({
             "capabilities": { "general": { "positionEncodings": ["utf-32"] } }
         }))
-        .expect_err("utf-32-only must fail");
-        assert_eq!(err.code, -32602);
+        .expect("utf-32-only must accept via mandatory fallback");
+        assert_eq!(reason, Utf16SelectionReason::OmittedUtf16Fallback);
+
+        let reason = classify_position_encoding_offer(&json!({
+            "capabilities": { "general": { "positionEncodings": ["utf-7"] } }
+        }))
+        .expect("unknown-string list must accept via mandatory fallback");
+        assert_eq!(reason, Utf16SelectionReason::OmittedUtf16Fallback);
     }
 
     #[test]

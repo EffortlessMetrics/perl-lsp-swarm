@@ -1200,7 +1200,7 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
         ),
         compat(
             "compat.protocol.positionEncodingUtf16Pin",
-            "positionEncoding always advertised utf-16; lists without utf-16 fail initialize",
+            "positionEncoding always advertised utf-16; well-formed lists that omit utf-16 accept via mandatory UTF-16 fallback",
             RT_INIT,
             &["general.positionEncodings"],
             "v0.18 full-document UTF-16 envelope (#8129); initialize offer classification",

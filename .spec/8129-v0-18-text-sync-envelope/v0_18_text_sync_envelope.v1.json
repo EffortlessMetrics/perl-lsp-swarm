@@ -31,7 +31,7 @@
   "limitations": [
     "subject_sha is origin/main at A-vs-B judgment (494faa8e9); it is not the candidate implementation commit.",
     "Long-term atomic incremental programme #1690/#7409/#7417 remains open and is not this envelope.",
-    "UTF-8 and UTF-32 wire encodings are unsupported; nonempty client lists that omit utf-16 fail initialize.",
+    "UTF-8 and UTF-32 wire encodings are unsupported; well-formed nonempty client lists that omit utf-16 accept Full+UTF-16 via an explicit mandatory-fallback reason.",
     "Internal full reparse is allowed and is not claimed as incremental parsing.",
     "Exact installed VSIX host-row proof and #4346 packaged journey remain separate receipts; this packet records the selected contract, not freeze SHA publication.",
     "Typed #7417 Desynchronized recovery beyond full-sync-required / full-replacement / close-reopen is not this claim."
