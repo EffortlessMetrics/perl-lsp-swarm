@@ -196,3 +196,59 @@ fn fat_comma_prefix_s_offers_sub_not_package() {
         "prefix `s` after fat comma must not offer `package`"
     );
 }
+
+fn keyword_item<'a>(completions: &'a [CompletionItem], label: &str) -> &'a CompletionItem {
+    must_some_with(
+        completions
+            .iter()
+            .find(|item| item.label == label && item.detail.as_deref() == Some("keyword")),
+        "keyword-detail item",
+    )
+}
+
+/// Selecting `sub` after `=>` must insert an anonymous subroutine, not `sub NAME`.
+#[test]
+fn fat_comma_sub_inserts_anonymous_snippet() {
+    let completions = completions_at("my %dispatch = (\n    on_start => ");
+    assert_eq!(keyword_item(&completions, "sub").insert_text.as_deref(), Some("sub {\n    $0\n}"));
+}
+
+#[test]
+fn statement_position_sub_inserts_named_snippet() {
+    let completions = completions_at("sub foo { 1 }\n\n");
+    assert_eq!(
+        keyword_item(&completions, "sub").insert_text.as_deref(),
+        Some("sub ${1:name} {\n    $0\n}")
+    );
+}
+
+/// Flush-against-operator value positions must use `expression_ok`, including
+/// a prefix that would match statement-only `package` if the full inventory leaked.
+#[test]
+fn flush_operators_offer_expression_ok_not_statement_only() {
+    let empty_positions = [
+        ("fat-comma", "my %d = (on_start =>"),
+        ("comparison", "my $ok = $x =="),
+        ("match", "my $ok = $x =~"),
+        ("defined-or", "my $val = $x //"),
+    ];
+    for (name, source) in empty_positions {
+        let completions = completions_at(source);
+        assert!(has_keyword(&completions, "sub"), "{name} flush value must offer `sub`");
+        assert!(!has_label(&completions, "package"), "{name} flush value must not offer `package`");
+    }
+
+    let package_prefix_positions = [
+        ("fat-comma", "my %d = (on_start =>p"),
+        ("comparison", "my $ok = $x ==p"),
+        ("match", "my $ok = $x =~p"),
+        ("defined-or", "my $val = $x //p"),
+    ];
+    for (name, source) in package_prefix_positions {
+        let completions = completions_at(source);
+        assert!(
+            !has_label(&completions, "package"),
+            "{name} flush prefix `p` must not offer `package`"
+        );
+    }
+}

@@ -190,15 +190,20 @@ fn keyword_doc(keyword: &str) -> Option<&'static str> {
     }
 }
 
-/// Add keyword completions
+/// Add keyword completions.
+///
+/// `in_expression_position` selects the anonymous `sub { }` snippet, because a
+/// named `sub NAME { }` is not a term after `=>` or another value operator.
 pub fn add_keyword_completions(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
     keywords: &[&'static str],
+    in_expression_position: bool,
 ) {
     for &keyword in keywords {
         if keyword.starts_with(&context.prefix) {
             let (insert_text, snippet) = match keyword {
+                "sub" if in_expression_position => ("sub {\n    $0\n}", true),
                 "sub" => ("sub ${1:name} {\n    $0\n}", true),
                 "if" => ("if ($1) {\n    $0\n}", true),
                 "elsif" => ("elsif ($1) {\n    $0\n}", true),
@@ -268,7 +273,7 @@ mod tests {
 
     fn completion_for(keyword: &str) -> CompletionItem {
         let mut items = Vec::new();
-        add_keyword_completions(&mut items, &context_for(keyword), keywords());
+        add_keyword_completions(&mut items, &context_for(keyword), keywords(), false);
         must_some(items.into_iter().find(|item| item.label == keyword))
     }
 
@@ -312,6 +317,22 @@ mod tests {
         let item = completion_for("return");
         assert_eq!(item.insert_text.as_deref(), Some("return"));
         assert_eq!(item.insert_text_format, InsertTextFormat::PlainText);
+    }
+
+    #[test]
+    fn expression_position_sub_snippet_is_anonymous_and_well_formed() {
+        let mut items = Vec::new();
+        add_keyword_completions(&mut items, &context_for("sub"), &["sub"], true);
+        let item = must_some(items.into_iter().find(|item| item.label == "sub"));
+        assert_eq!(item.insert_text.as_deref(), Some("sub {\n    $0\n}"));
+        let defects = snippet_body_defects(must_some(item.insert_text.as_deref()));
+        assert!(defects.is_empty(), "anonymous sub snippet: {defects:?}");
+    }
+
+    #[test]
+    fn statement_position_sub_snippet_stays_named() {
+        let item = completion_for("sub");
+        assert_eq!(item.insert_text.as_deref(), Some("sub ${1:name} {\n    $0\n}"));
     }
 
     /// The two role lists must partition [`keywords`] so a newly added

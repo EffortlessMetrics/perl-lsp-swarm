@@ -475,10 +475,15 @@ fn complete_general_context(
     // `do`, `eval`) while suppressing statement-only ones (`package`, `use`,
     // phasers, compound-statement openers). Statement positions get both sets.
     // (#14844 — one boolean cannot express that split.)
-    let keyword_set =
-        keywords::keywords_for_position(is_in_expression_position(source, context.prefix_start));
+    let in_expression_position = is_in_expression_position(source, context.prefix_start);
+    let keyword_set = keywords::keywords_for_position(in_expression_position);
     if context.prefix.is_empty() || provider.could_be_keyword(&context.prefix, keyword_set) {
-        keywords::add_keyword_completions(completions, context, keyword_set);
+        keywords::add_keyword_completions(
+            completions,
+            context,
+            keyword_set,
+            in_expression_position,
+        );
         if is_cancelled() {
             return CompletionFlow::Cancelled;
         }
@@ -711,6 +716,18 @@ mod indirect_helper_tests {
         assert!(!is_in_expression_position("value ", 6));
         assert!(!is_in_expression_position("   ", 3));
     }
+
+    #[test]
+    fn flush_value_operators_are_expression_positions() {
+        assert!(is_in_expression_position("k =>", 4));
+        assert!(is_in_expression_position("k => ", 5));
+        assert!(is_in_expression_position("x ==", 4));
+        assert!(is_in_expression_position("x !=", 4));
+        assert!(is_in_expression_position("x <=", 4));
+        assert!(is_in_expression_position("x >=", 4));
+        assert!(is_in_expression_position("x =~", 4));
+        assert!(is_in_expression_position("x //", 4));
+    }
 }
 
 /// Heuristic: detect if the cursor is in a value/expression position.
@@ -728,15 +745,31 @@ fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
     let Some(last_char) = trimmed.chars().next_back() else {
         return false; // blank line — statement position
     };
-    // Expression indicators: assignment, list, operator contexts
+    // Expression indicators: assignment, list, operator contexts.
+    // Multi-character value operators (`=>`, `==`, `=~`, `//`, …) already end
+    // in one of these characters; they must stay expression positions even
+    // when the prefix is flush against the operator (#14844).
     matches!(
         last_char,
-        '=' | ',' | ';' | '(' | '[' | '{' | '+' | '-' | '*' | '/' | '%' | '.' | '&' | '|' | '!' | '<' | '>' | '?' | ':' | '~' | '\\'
-    ) && !before.ends_with("=>") // fat comma is a key context, not expression
-    && !before.ends_with("==")
-    && !before.ends_with("!=")
-    && !before.ends_with("<=")
-    && !before.ends_with(">=")
-    && !before.ends_with("=~")
-    && !before.ends_with("//")
+        '=' | ','
+            | ';'
+            | '('
+            | '['
+            | '{'
+            | '+'
+            | '-'
+            | '*'
+            | '/'
+            | '%'
+            | '.'
+            | '&'
+            | '|'
+            | '!'
+            | '<'
+            | '>'
+            | '?'
+            | ':'
+            | '~'
+            | '\\'
+    )
 }
