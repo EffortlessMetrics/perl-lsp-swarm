@@ -19,8 +19,12 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
+mod format;
+
 use crate::lexer::helpers::is_builtin_function;
 use crate::unicode::{is_perl_identifier_continue, is_perl_identifier_start};
+
+use format::{is_format_terminator, opens_terminated_format_body};
 
 /// File-local subroutine symbol table built from a source pre-pass.
 ///
@@ -194,22 +198,10 @@ struct ScanState {
     awaiting_sub_name: bool,
     in_pod: bool,
     in_format: bool,
-    /// Cached result of [`last_format_terminator_line_start`]: `None` until a
-    /// `format` opener first needs it, so input without one pays nothing.
+    /// Cached result of [`format::last_format_terminator_line_start`]: `None`
+    /// until a `format` opener first needs it, so input without one pays nothing.
     format_terminator_scan: Option<Option<usize>>,
     pending_heredocs: VecDeque<PendingHeredoc>,
-}
-
-impl ScanState {
-    /// Return `true` if a `format` body opened on the line at `line_start`
-    /// terminates later in `input`, scanning for terminators at most once.
-    fn format_body_terminates(&mut self, input: &str, line_start: usize) -> bool {
-        let last = *self
-            .format_terminator_scan
-            .get_or_insert_with(|| last_format_terminator_line_start(input));
-
-        last.is_some_and(|terminator| terminator > line_start)
-    }
 }
 
 #[derive(Debug)]
@@ -271,130 +263,6 @@ fn is_pod_cut(line: &str) -> bool {
 
 fn is_data_marker(line: &str) -> bool {
     matches!(line.trim_end_matches([' ', '\t']), "__DATA__" | "__END__")
-}
-
-/// Return `true` if `line` terminates a `format` body.
-///
-/// Perl accepts trailing horizontal whitespace after the terminating `.` but
-/// rejects an indented one, so leading whitespace deliberately keeps the body
-/// open rather than releasing it back to code.
-fn is_format_terminator(line: &str) -> bool {
-    line.trim_end_matches([' ', '\t']) == "."
-}
-
-/// Return `true` if a `format` body opened on the line at `line_start` is
-/// terminated later in `input`.
-///
-/// An opener is only armed when its body closes. Otherwise a
-/// format-opener-shaped line that is really prose — inside a heredoc this
-/// prepass does not recognize, or in a partially typed buffer — would consume
-/// every remaining line and hide the real declarations after it. That failure
-/// is worse than the leak this region exists to close, and it contradicts the
-/// rule the prepass already applies to malformed quote-like constructs: keep the
-/// damage local rather than erasing the rest of the file.
-///
-/// A body terminates after `line_start` exactly when the *last* terminator in
-/// the file starts after it, so one cached scan answers every opener. Walking
-/// the remaining source per opener instead would be quadratic on input carrying
-/// many opener-shaped lines, which is the cost class #10210 already tracks for
-/// unclosed quote-like openers; this deliberately does not add another.
-fn last_format_terminator_line_start(input: &str) -> Option<usize> {
-    let bytes = input.as_bytes();
-    let mut cursor = 0usize;
-    let mut last = None;
-
-    while cursor < bytes.len() {
-        let (line_end, next_line_start) = line_bounds(bytes, cursor);
-        if is_format_terminator(&input[cursor..line_end]) {
-            last = Some(cursor);
-        }
-        cursor = next_line_start;
-    }
-
-    last
-}
-
-/// Return `true` if a statement can begin immediately after `prefix`.
-///
-/// A statement begins at the start of a line and after `;`, `{` or `}`. It also
-/// begins after Perl statement labels, which `format` accepts: `LABEL: format
-/// STDOUT =` is valid and does declare a format. Verified against perl 5.38.2,
-/// which also accepts a space before the colon (`L : format`) and more than one
-/// label (`A: B: format`), so labels are peeled in a loop rather than once.
-///
-/// The label case must not admit the `::` package separator: `$Report::format`
-/// also ends in a colon but is an ordinary name, not a labelled statement. Only
-/// one colon is stripped per turn, so a `::` prefix still ends in a colon, which
-/// is not an identifier character and therefore yields no label word. The
-/// package-scalar controls pin that.
-fn starts_a_statement(prefix: &str) -> bool {
-    let mut prefix = prefix.trim_end_matches([' ', '\t']);
-
-    loop {
-        if prefix.is_empty() || prefix.ends_with([';', '{', '}']) {
-            return true;
-        }
-
-        let Some(head) = prefix.strip_suffix(':') else {
-            return false;
-        };
-        let head = head.trim_end_matches([' ', '\t']);
-
-        let Some(label_start) = head
-            .char_indices()
-            .rev()
-            .take_while(|(_, ch)| is_perl_identifier_continue(*ch))
-            .last()
-            .map(|(index, _)| index)
-        else {
-            return false;
-        };
-
-        let (before_label, label) = head.split_at(label_start);
-        if !label.starts_with(is_perl_identifier_start) {
-            return false;
-        }
-
-        // Each turn removes at least the colon, so this terminates.
-        prefix = before_label.trim_end_matches([' ', '\t']);
-    }
-}
-
-/// Return `true` if the `format` keyword at `offset` sits where a statement can
-/// begin and is not part of a longer name, a method call, or a hash subscript.
-fn is_format_keyword_boundary(line: &str, offset: usize) -> bool {
-    if !starts_a_statement(line[..offset].trim_end_matches([' ', '\t'])) {
-        return false;
-    }
-
-    // `'` is already an identifier continuation here (legacy package
-    // separator), so only `:` needs naming alongside.
-    let after_offset = offset + "format".len();
-    let after = line[after_offset..].chars().next();
-    !after.is_some_and(|ch| is_perl_identifier_continue(ch) || ch == ':')
-}
-
-/// Return `true` if a `format` opener beginning at `after_keyword` completes on
-/// this line, i.e. an optional name followed by `=` as the last non-comment
-/// token.
-///
-/// The trailing check is what separates a real opener from an operator: `=>`,
-/// `==` and `=~` all leave their second character in `rest`, which is neither
-/// empty nor a comment, so no separate operator test is needed.
-fn format_opener_completes_line(line: &str, after_keyword: usize) -> bool {
-    let mut offset = skip_horizontal_whitespace(line, after_keyword);
-
-    if let Some((_, end)) = parse_qualified_name(line, offset) {
-        offset = skip_horizontal_whitespace(line, end);
-    }
-
-    if !line[offset..].starts_with('=') {
-        return false;
-    }
-    offset += '='.len_utf8();
-
-    let rest = line[offset..].trim_start_matches([' ', '\t']);
-    rest.is_empty() || rest.starts_with('#')
 }
 
 /// Run one full forward scan, treating `hints` as additional callable names.
@@ -546,11 +414,13 @@ fn scan_code_line(
             continue;
         }
 
-        if line[offset..].starts_with("format")
-            && is_format_keyword_boundary(line, offset)
-            && format_opener_completes_line(line, offset + "format".len())
-            && state.format_body_terminates(input, line_start)
-        {
+        if opens_terminated_format_body(
+            input,
+            line_start,
+            line,
+            offset,
+            &mut state.format_terminator_scan,
+        ) {
             // The picture body starts on the next line; nothing after the `=`
             // on this line is code.
             state.in_format = true;
@@ -980,6 +850,44 @@ mod tests {
         PerlLexer::with_config(source, config).collect_tokens()
     }
 
+    /// Pin table membership and the public slash-disambiguation consequence.
+    ///
+    /// `unknown` names must stay off the table and keep division at a later
+    /// `{name} /x/` site. `known` names must stay on the table and take the
+    /// regex path. Each name is appended as its own slash site so a fixture
+    /// cannot pass by mixing the two outcomes in one token stream.
+    fn assert_membership_and_slash(source: &str, known: &[&str], unknown: &[&str]) {
+        let table = LocalSymbolTable::scan_subs(source);
+        for name in known {
+            assert!(table.is_known_sub(name), "missing known sub {name:?} in {source:?}");
+        }
+        for name in unknown {
+            assert!(!table.is_known_sub(name), "leaked unknown sub {name:?} from {source:?}");
+        }
+
+        for name in unknown {
+            let with_slash = format!("{source}{name} /x/;\n");
+            let tokens = tokens_with_table(&with_slash, LocalSymbolTable::scan_subs(&with_slash));
+            assert!(
+                tokens.iter().any(|token| matches!(&token.token_type, TokenType::Division)),
+                "{name} leaked into the regex path for {source:?}"
+            );
+            assert!(
+                !tokens.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)),
+                "{name} unexpectedly took the regex path for {source:?}"
+            );
+        }
+
+        for name in known {
+            let with_slash = format!("{source}{name} /x/;\n");
+            let tokens = tokens_with_table(&with_slash, LocalSymbolTable::scan_subs(&with_slash));
+            assert!(
+                tokens.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)),
+                "{name} lost the known-sub regex path for {source:?}"
+            );
+        }
+    }
+
     #[test]
     fn empty_and_default_tables_are_empty() {
         assert!(LocalSymbolTable::scan_subs("").is_empty());
@@ -1379,11 +1287,7 @@ mod tests {
             ".\n",
             "sub after { }\n",
         );
-        let table = LocalSymbolTable::scan_subs(source);
-
-        assert!(table.is_known_sub("before"), "declaration before the format was lost");
-        assert!(table.is_known_sub("after"), "declaration after the format was lost");
-        assert!(!table.is_known_sub("fake_picture"), "format body leaked a declaration");
+        assert_membership_and_slash(source, &["before", "after"], &["fake_picture"]);
     }
 
     #[test]
@@ -1395,19 +1299,7 @@ mod tests {
             "sub real_fmt { }\n",
             "fake_fmt /x/;\n",
         );
-        let table = LocalSymbolTable::scan_subs(source);
-        assert!(!table.is_known_sub("fake_fmt"));
-        assert!(table.is_known_sub("real_fmt"));
-
-        let tokens = tokens_with_table(source, table);
-        assert!(
-            tokens.iter().any(|token| matches!(&token.token_type, TokenType::Division)),
-            "format-body name did not retain the division path"
-        );
-        assert!(
-            !tokens.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)),
-            "format-body name unexpectedly took the regex path"
-        );
+        assert_membership_and_slash(source, &["real_fmt"], &["fake_fmt"]);
     }
 
     #[test]
@@ -1431,10 +1323,8 @@ mod tests {
             ("chained spaced labels", "A : B : format STDOUT =\nsub fake { }\n.\nsub real { }\n"),
         ];
 
-        for (context, source) in cases {
-            let table = LocalSymbolTable::scan_subs(source);
-            assert!(!table.is_known_sub("fake"), "{context}: format body leaked a declaration");
-            assert!(table.is_known_sub("real"), "{context}: lost the declaration after the body");
+        for (_context, source) in cases {
+            assert_membership_and_slash(source, &["real"], &["fake"]);
         }
     }
 
@@ -1443,15 +1333,17 @@ mod tests {
         // `perl -c` accepts trailing horizontal whitespace after the terminating
         // `.` and rejects an indented one, so an indented `.` must keep the body
         // open rather than releasing it back to code.
-        let trailing_space = "format STDOUT =\nsub fake { }\n.  \nsub real { }\n";
-        let table = LocalSymbolTable::scan_subs(trailing_space);
-        assert!(!table.is_known_sub("fake"));
-        assert!(table.is_known_sub("real"), "a padded terminator failed to close the body");
+        assert_membership_and_slash(
+            "format STDOUT =\nsub fake { }\n.  \nsub real { }\n",
+            &["real"],
+            &["fake"],
+        );
 
-        let crlf = "format STDOUT =\r\nsub fake { }\r\n.\r\nsub real { }\r\n";
-        let table = LocalSymbolTable::scan_subs(crlf);
-        assert!(!table.is_known_sub("fake"));
-        assert!(table.is_known_sub("real"), "a CRLF terminator failed to close the body");
+        assert_membership_and_slash(
+            "format STDOUT =\r\nsub fake { }\r\n.\r\nsub real { }\r\n",
+            &["real"],
+            &["fake"],
+        );
 
         // A real terminator follows, so the region does arm; the indented `.`
         // in between must not release it early, because perl rejects an
@@ -1464,17 +1356,9 @@ mod tests {
             ".\n",
             "sub real { }\n",
         );
-        let table = LocalSymbolTable::scan_subs(indented_dot);
-        assert!(!table.is_known_sub("fake"));
-        assert!(
-            !table.is_known_sub("also_fake"),
-            "an indented `.` released the body, but perl does not accept it as a terminator"
-        );
-        assert!(table.is_known_sub("real"), "the real terminator failed to close the body");
+        assert_membership_and_slash(indented_dot, &["real"], &["fake", "also_fake"]);
 
-        let empty_body = "format STDOUT =\n.\nsub real { }\n";
-        let table = LocalSymbolTable::scan_subs(empty_body);
-        assert!(table.is_known_sub("real"), "an empty format body swallowed following code");
+        assert_membership_and_slash("format STDOUT =\n.\nsub real { }\n", &["real"], &[]);
 
         // A dot-leader picture line begins with `.` but is ordinary report
         // formatting, not a terminator. perl does not end the body there.
@@ -1486,12 +1370,7 @@ mod tests {
             ".\n",
             "sub real { }\n",
         );
-        let table = LocalSymbolTable::scan_subs(dot_leader);
-        assert!(table.is_known_sub("real"));
-        assert!(
-            !table.is_known_sub("hidden_in_picture"),
-            "a dot-leader picture line was treated as the terminator"
-        );
+        assert_membership_and_slash(dot_leader, &["real"], &["hidden_in_picture"]);
     }
 
     #[test]
@@ -1502,11 +1381,7 @@ mod tests {
         // region exists to close, and contradicts the rule the prepass already
         // applies to malformed quote-like constructs.
         let unterminated = "format STDOUT =\nsub fake { }\nsub real { }\n";
-        let table = LocalSymbolTable::scan_subs(unterminated);
-        assert!(
-            table.is_known_sub("real"),
-            "an unterminated opener swallowed a later real declaration"
-        );
+        assert_membership_and_slash(unterminated, &["fake", "real"], &[]);
 
         // The motivating case, and valid Perl: this prepass does not recognize
         // `print $fh <<'END';` as a heredoc, so the opener-shaped prose inside
@@ -1520,11 +1395,7 @@ mod tests {
             "END\n",
             "sub helper { return 2 }\n",
         );
-        let table = LocalSymbolTable::scan_subs(prose_in_unrecognized_heredoc);
-        assert!(
-            table.is_known_sub("helper"),
-            "opener-shaped prose erased the declarations after it"
-        );
+        assert_membership_and_slash(prose_in_unrecognized_heredoc, &["helper"], &[]);
     }
 
     #[test]
@@ -1555,16 +1426,7 @@ mod tests {
             "TWO\n",
             "sub after_all { 1 }\n",
         );
-        let table = LocalSymbolTable::scan_subs(src);
-
-        assert!(
-            !table.is_known_sub("real_between"),
-            "behavior improved — update this recorded boundary and the scan_subs docs"
-        );
-        assert!(
-            table.is_known_sub("after_all"),
-            "suppression must end at the bound terminator, not run to EOF"
-        );
+        assert_membership_and_slash(src, &["after_all"], &["real_between"]);
     }
 
     #[test]
@@ -1614,13 +1476,17 @@ mod tests {
                 table.is_known_sub("real"),
                 "{context}: opened a format region and swallowed real code"
             );
+            assert_membership_and_slash(source, &["real"], &[]);
         }
 
         // `sub format { }` declares a subroutine named `format`; the opener must
-        // not consume it as a region introducer.
-        let table = LocalSymbolTable::scan_subs("sub format { }\nsub real { }\n");
+        // not consume it as a region introducer. Slash is checked only for
+        // `real`: the lexer classifies the `format` keyword itself, so the
+        // known-sub/regex path does not apply to that name.
+        let source = "sub format { }\nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(source);
         assert!(table.is_known_sub("format"));
-        assert!(table.is_known_sub("real"));
+        assert_membership_and_slash(source, &["real"], &[]);
     }
 
     #[test]
@@ -1639,6 +1505,7 @@ mod tests {
                 table.is_known_sub("real"),
                 "{context}: opener text inside an excluded region opened a format body"
             );
+            assert_membership_and_slash(source, &["real"], &[]);
         }
     }
 
@@ -1652,12 +1519,22 @@ mod tests {
         // the standing behavior for imported subs; a false declaration would
         // instead actively mis-tokenize. See #14916.
         let source = "format STDOUT =\n@<<<\nsub argument_line { 1 }\n.\nsub real { }\n";
-        let table = LocalSymbolTable::scan_subs(source);
+        assert_membership_and_slash(source, &["real"], &["argument_line"]);
+    }
 
-        assert!(table.is_known_sub("real"));
-        assert!(
-            !table.is_known_sub("argument_line"),
-            "argument-line handling changed; revisit the limitation recorded on scan_subs"
-        );
+    #[test]
+    fn data_marker_inside_a_format_body_does_not_end_the_scan() {
+        // `in_format` is ordered before `__DATA__`/`__END__` so a picture line
+        // that happens to spell a data marker cannot abort the file. perl treats
+        // that text as report content; the terminator still returns to code.
+        //
+        // Slash is not appended here: the live lexer still treats a later
+        // `__DATA__` line as a data section, so a `{name} /x/` site after it
+        // would not reach `PerlLexer::with_config`'s bareword/slash seam.
+        let source =
+            concat!("format STDOUT =\n", "__DATA__\n", "sub fake { }\n", ".\n", "sub real { }\n",);
+        let table = LocalSymbolTable::scan_subs(source);
+        assert!(table.is_known_sub("real"), "__DATA__ inside a format body ended the scan");
+        assert!(!table.is_known_sub("fake"), "format body leaked a declaration");
     }
 }
