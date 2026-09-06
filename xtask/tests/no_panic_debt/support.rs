@@ -1,4 +1,5 @@
-#![allow(clippy::expect_used, dead_code)]
+#![expect(clippy::expect_used, reason = "test fixture setup for the panic-family denominator")]
+#![allow(dead_code)]
 
 use std::fs;
 use std::path::Path;

@@ -54,13 +54,11 @@ pub fn check_inventory(request: CheckRequest<'_>) -> Result<CheckResult> {
             );
         }
         for added in &delta.added {
-            let unowned = request.current.rows.iter().any(|row| {
-                format!(
-                    "{}|{}|{}|{}|{}",
-                    row.kind, row.path, row.entrypoint, row.site_family, row.selector_identity
-                ) == *added
-                    && row.status == DebtStatus::Unowned
-            });
+            let unowned = request
+                .current
+                .rows
+                .iter()
+                .any(|row| row.identity_key() == *added && row.status == DebtStatus::Unowned);
             if unowned {
                 findings.push(
                     "ordinary regeneration cannot absorb a new unowned site into an accepted baseline"
@@ -140,10 +138,7 @@ pub fn integrity_findings(root: &Path, inventory: &Inventory) -> Vec<String> {
 
     let mut identities = std::collections::BTreeSet::new();
     for row in &inventory.rows {
-        let id = format!(
-            "{}|{}|{}|{}",
-            row.path, row.entrypoint, row.site_family, row.selector_identity
-        );
+        let id = row.identity_key();
         if !identities.insert(id.clone()) {
             findings.push(format!("duplicate row identity {id}"));
         }

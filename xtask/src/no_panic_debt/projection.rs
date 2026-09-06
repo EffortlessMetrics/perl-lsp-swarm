@@ -82,14 +82,5 @@ pub struct Delta {
 }
 
 fn identities(inventory: &Inventory) -> BTreeSet<String> {
-    inventory
-        .rows
-        .iter()
-        .map(|row| {
-            format!(
-                "{}|{}|{}|{}|{}",
-                row.kind, row.path, row.entrypoint, row.site_family, row.selector_identity
-            )
-        })
-        .collect()
+    inventory.rows.iter().map(|row| row.identity_key()).collect()
 }

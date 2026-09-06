@@ -63,9 +63,10 @@ pub(crate) fn discover(root: &Path, vocabulary: &Vocabulary) -> Result<Topology>
     let mut files = Vec::new();
     for package_root in &package_roots {
         match load_package(root, package_root) {
-            Ok((package, package_files)) => {
+            Ok((package, package_files, walk_instruments)) => {
                 packages.push(package);
                 files.extend(package_files);
+                instruments.extend(walk_instruments);
             }
             Err(err) => instruments.push(Instrument {
                 kind: "test_topology".to_string(),
@@ -147,7 +148,10 @@ fn expand_member(root: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
     Ok(vec![path])
 }
 
-fn load_package(root: &Path, package_root: &Path) -> Result<(PackageRecord, Vec<FileRecord>)> {
+fn load_package(
+    root: &Path,
+    package_root: &Path,
+) -> Result<(PackageRecord, Vec<FileRecord>, Vec<Instrument>)> {
     let manifest_path = package_root.join("Cargo.toml");
     let raw = read_to_string(&manifest_path)?;
     let manifest: toml::Value =
@@ -168,18 +172,36 @@ fn load_package(root: &Path, package_root: &Path) -> Result<(PackageRecord, Vec<
         manifest: normalize_path(&manifest_path, root),
         features,
     };
-    let files = walk_package_files(root, package_root, &name);
-    Ok((package, files))
+    let (files, instruments) = walk_package_files(root, package_root, &name);
+    Ok((package, files, instruments))
 }
 
-fn walk_package_files(root: &Path, package_root: &Path, package: &str) -> Vec<FileRecord> {
+fn walk_package_files(
+    root: &Path,
+    package_root: &Path,
+    package: &str,
+) -> (Vec<FileRecord>, Vec<Instrument>) {
     let mut files = Vec::new();
+    let mut instruments = Vec::new();
     for entry in WalkDir::new(package_root).into_iter().filter_entry(|entry| {
         let name = entry.file_name();
         name != "target" && name != ".git" && name != "node_modules"
     }) {
-        let Ok(entry) = entry else {
-            continue;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                let subject = err
+                    .path()
+                    .map(|path| normalize_path(path, root))
+                    .unwrap_or_else(|| package.to_string());
+                instruments.push(Instrument {
+                    kind: "test_topology".to_string(),
+                    subject,
+                    status: InstrumentStatus::NotProven,
+                    detail: err.to_string(),
+                });
+                continue;
+            }
         };
         if !entry.file_type().is_file() {
             continue;
@@ -196,7 +218,7 @@ fn walk_package_files(root: &Path, package_root: &Path, package: &str) -> Vec<Fi
             platform: None,
         });
     }
-    files
+    (files, instruments)
 }
 
 fn classify_target(package_root: &Path, path: &Path) -> TargetKind {

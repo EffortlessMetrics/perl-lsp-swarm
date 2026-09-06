@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used)]
+#![expect(clippy::expect_used, reason = "test fixture setup for the panic-family denominator")]
 
 #[path = "no_panic_debt/support.rs"]
 mod support;
@@ -142,16 +142,46 @@ fn landed_conversion_does_not_keep_an_active_source_row() {
 #[test]
 fn registry_row_for_disappeared_or_changed_family_is_stale() {
     let temp = fixture_root();
+    let first = inventory_at(temp.path());
+    let site = first
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.site_family == "panic!")
+        .expect("panic site");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": site.path,
+                "enclosing_test_or_function": site.entrypoint,
+                "macro_family": site.site_family,
+                "normalized_snippet": site.source_identity,
+                "selector_identity": site.selector_identity,
+                "accepted_reason": "Intentional test failure diagnostic.",
+                "state": "active"
+            }]
+        })
+        .to_string(),
+    );
     fs::write(
         temp.path().join("crates/demo/tests/known.rs"),
         "#[test]\nfn known_panic() { let _ = Some(1).unwrap(); }\n",
     )
     .expect("family change");
-    write_registry(temp.path(), &active_panic_registry());
     let inventory = inventory_at(temp.path());
     assert!(
         inventory.rows.iter().any(|row| row.status == DebtStatus::StaleRegistry),
         "changed family did not stale the registry: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.kind == "site"
+                && row.site_family == "unwrap"
+                && row.status == DebtStatus::IntentionalExactException
+        }),
+        "unwrap inherited panic! registry identity: {:?}",
         inventory.rows
     );
 }
@@ -159,10 +189,36 @@ fn registry_row_for_disappeared_or_changed_family_is_stale() {
 #[test]
 fn source_disappearance_without_disposition_is_not_converted() {
     let temp = fixture_root();
+    let first = inventory_at(temp.path());
+    let site = first
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.site_family == "panic!")
+        .expect("panic site");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": site.path,
+                "enclosing_test_or_function": site.entrypoint,
+                "macro_family": site.site_family,
+                "normalized_snippet": site.source_identity,
+                "selector_identity": site.selector_identity,
+                "accepted_reason": "Intentional test failure diagnostic.",
+                "state": "active"
+            }]
+        })
+        .to_string(),
+    );
     fs::write(temp.path().join("crates/demo/tests/known.rs"), "#[test]\nfn known_panic() {}\n")
         .expect("gone");
-    write_registry(temp.path(), &active_panic_registry());
     let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.rows.iter().any(|row| row.status == DebtStatus::StaleRegistry),
+        "active disappearance was not stale: {:?}",
+        inventory.rows
+    );
     assert!(
         !inventory.rows.iter().any(|row| row.status == DebtStatus::ConvertedAbsent),
         "active disappearance was treated as converted: {:?}",
@@ -327,6 +383,30 @@ fn issue_closure_does_not_convert_current_source_to_converted_absent() {
         "#[expect(clippy::unwrap_used, reason = \"#14020 leftover\")]\n#[test]\nfn leftover() { let _ = Some(1).unwrap(); }\n",
     )
     .expect("owned");
+    let first = inventory_at(temp.path());
+    let site = first
+        .rows
+        .iter()
+        .find(|row| {
+            row.kind == "site" && row.path.ends_with("owned.rs") && row.site_family == "unwrap"
+        })
+        .expect("owned unwrap");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": site.path,
+                "enclosing_test_or_function": site.entrypoint,
+                "macro_family": "panic!",
+                "normalized_snippet": site.source_identity,
+                "selector_identity": site.selector_identity,
+                "accepted_reason": "retired conversion.",
+                "state": "retired"
+            }]
+        })
+        .to_string(),
+    );
     let mut owners = OwnerState::default();
     owners.closed_or_missing.insert("#14020".to_string());
     let inventory = build_inventory(InventoryRequest {
@@ -335,8 +415,19 @@ fn issue_closure_does_not_convert_current_source_to_converted_absent() {
         ..InventoryRequest::default()
     })
     .expect("inventory");
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("owned.rs")
+                && row.kind == "site"
+                && row.status == DebtStatus::StaleOwner
+        }),
+        "closed owner on live source was not stale_owner: {:?}",
+        inventory.rows
+    );
     assert!(!inventory.rows.iter().any(|row| {
-        row.path.ends_with("owned.rs") && row.status == DebtStatus::ConvertedAbsent
+        row.kind == "site"
+            && row.path.ends_with("owned.rs")
+            && row.status == DebtStatus::ConvertedAbsent
     }));
 }
 

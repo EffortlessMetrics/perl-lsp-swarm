@@ -101,30 +101,50 @@ pub(crate) fn load(
     Ok(vocabulary_from_lints(lints, instruments))
 }
 
-pub(crate) fn digest_paths(root: &Path) -> Vec<(String, String)> {
-    let mut files = vec![root.join("policy/clippy-lints.toml")];
-    let catalog = root.join("policy/clippy-lints.d");
-    if catalog.is_dir()
-        && let Ok(entries) = fs::read_dir(&catalog)
-    {
-        let mut paths: Vec<_> = entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("toml"))
-            .collect();
-        paths.sort();
-        files.extend(paths);
+pub(crate) fn digest_paths(
+    root: &Path,
+    ledger_path: Option<&Path>,
+    catalog_dir: Option<&Path>,
+) -> (Vec<super::model::SourceDigest>, Vec<Instrument>) {
+    let ledger_path =
+        ledger_path.map(Path::to_path_buf).unwrap_or_else(|| root.join("policy/clippy-lints.toml"));
+    let catalog_dir =
+        catalog_dir.map(Path::to_path_buf).unwrap_or_else(|| root.join("policy/clippy-lints.d"));
+    let mut files = vec![ledger_path];
+    let mut instruments = Vec::new();
+    if catalog_dir.is_dir() {
+        match fs::read_dir(&catalog_dir) {
+            Ok(entries) => {
+                let mut paths: Vec<_> = entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("toml"))
+                    .collect();
+                paths.sort();
+                files.extend(paths);
+            }
+            Err(err) => instruments.push(not_proven(
+                "lint_vocabulary",
+                &catalog_dir,
+                &format!("catalog directory unreadable: {err}"),
+            )),
+        }
     }
-    files
-        .into_iter()
-        .filter_map(|path| {
-            let raw = fs::read(&path).ok()?;
-            Some((
-                path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/"),
-                sha256_hex(&raw),
-            ))
-        })
-        .collect()
+    let mut digests = Vec::new();
+    for path in files {
+        match fs::read(&path) {
+            Ok(raw) => digests.push(super::model::SourceDigest {
+                path: path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/"),
+                sha256: sha256_hex(&raw),
+            }),
+            Err(err) => instruments.push(not_proven(
+                "lint_vocabulary",
+                &path,
+                &format!("digest input unreadable: {err}"),
+            )),
+        }
+    }
+    (digests, instruments)
 }
 
 fn collect_panic_lints(lints: &mut BTreeSet<String>, entries: &[LintEntry]) {

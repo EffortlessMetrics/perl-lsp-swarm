@@ -185,6 +185,15 @@ pub struct DebtRow {
     pub limitations: Vec<String>,
 }
 
+impl DebtRow {
+    pub(crate) fn identity_key(&self) -> String {
+        format!(
+            "{}|{}|{}|{}|{}",
+            self.kind, self.path, self.entrypoint, self.site_family, self.selector_identity
+        )
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DerivedCounts {

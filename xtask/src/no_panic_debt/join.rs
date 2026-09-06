@@ -79,7 +79,7 @@ pub(crate) fn join(
             .filter(|value| !value.is_empty())
             .or_else(|| registry_hit.map(|record| record.accepted_reason.clone()))
             .unwrap_or_default();
-        let status = classify_site(site, registry_hit, request.owner_state, &owner);
+        let status = classify_site(registry_hit, request.owner_state, &owner);
         rows.push(DebtRow {
             kind: "site".to_string(),
             package: site.package.clone(),
@@ -167,10 +167,9 @@ pub(crate) fn join(
     });
 
     let commit = request.repository_commit.clone().unwrap_or_else(|| git_head(request.root));
-    let mut digests = vocabulary::digest_paths(request.root)
-        .into_iter()
-        .map(|(path, sha256)| super::model::SourceDigest { path, sha256 })
-        .collect::<Vec<_>>();
+    let (mut digests, digest_instruments) =
+        vocabulary::digest_paths(request.root, request.lint_ledger_path, request.lint_catalog_dir);
+    instruments.extend(digest_instruments);
     if registry_path.is_file()
         && let Ok(bytes) = std::fs::read(&registry_path)
     {
@@ -218,7 +217,6 @@ pub(crate) fn join(
 }
 
 fn classify_site(
-    site: &super::model::RawSite,
     registry: Option<&RegistryRecord>,
     owner_state: Option<&super::model::OwnerState>,
     owner: &str,
@@ -231,9 +229,6 @@ fn classify_site(
     }
     if owner_is_stale(owner, owner_state) {
         return DebtStatus::StaleOwner;
-    }
-    if owner.is_empty() && site.covering_declaration.is_none() {
-        return DebtStatus::Unowned;
     }
     if owner.is_empty() {
         return DebtStatus::Unowned;

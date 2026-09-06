@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used)]
+#![expect(clippy::expect_used, reason = "test fixture setup for the panic-family denominator")]
 
 #[path = "no_panic_debt/support.rs"]
 mod support;
@@ -59,6 +59,46 @@ fn integrity_check_passes_on_a_complete_fixture() {
     })
     .expect("check");
     assert!(result.ok, "{:?}", result.findings);
+}
+
+#[test]
+fn stale_artifact_fails_canonical_source_drift() {
+    let temp = fixture_root();
+    let first = build_inventory(InventoryRequest {
+        root: temp.path(),
+        repository_commit: Some("fixture".to_string()),
+        ..InventoryRequest::default()
+    })
+    .expect("first");
+    let artifact = temp.path().join("artifact.json");
+    std::fs::write(&artifact, canonical_json(&first).expect("json")).expect("artifact");
+    std::fs::write(
+        temp.path().join("crates/demo/tests/drift.rs"),
+        "#[test]\nfn drifted() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("drift");
+    let current = build_inventory(InventoryRequest {
+        root: temp.path(),
+        repository_commit: Some("fixture".to_string()),
+        ..InventoryRequest::default()
+    })
+    .expect("current");
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &current,
+        artifact: Some(&artifact),
+        baseline: None,
+    })
+    .expect("check");
+    assert!(!result.ok, "stale artifact passed: {:?}", result.findings);
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|finding| finding.contains("does not match current source projection")),
+        "{:?}",
+        result.findings
+    );
 }
 
 #[test]
