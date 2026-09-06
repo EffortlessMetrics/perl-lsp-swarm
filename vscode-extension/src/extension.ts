@@ -52,6 +52,11 @@ import { registerGherkinProviders } from './gherkinProviders';
 import { registerGherkinStepDefinitionSupport } from './gherkinStepDefinitions';
 import { registerDocumentFeatureGroup } from './documentFeatureGroup';
 import { StreamingCompletionController } from './streamingCompletion';
+import {
+  awaitServerProcessExit,
+  serverProcessOf,
+  type ServerProcessLike,
+} from './serverProcessTermination';
 import { InlineCompletionOwner } from './inlineCompletionRouting';
 import {
   runAllTestsWithProve,
@@ -343,6 +348,11 @@ const MAX_AUTO_RESTART_ATTEMPTS = 3;
 const STABLE_RUN_GRACE_MS = 30_000;
 const WATCHDOG_INTERVAL_MS = 30_000;
 const WATCHDOG_TIMEOUT_MS = 10_000;
+// vscode-languageclient schedules `checkProcessDied()` two seconds after
+// `stop()` settles and only then terminates a still-running server. Wait a
+// little past that for the exit event; the lifecycle's own stop bound (5 s)
+// caps the whole terminal check.
+const SERVER_PROCESS_EXIT_GRACE_MS = 4_000;
 const crashRecoveryArbiter = new CrashRecoveryArbiter(
   MAX_AUTO_RESTART_ATTEMPTS,
   STABLE_RUN_GRACE_MS,
@@ -1945,6 +1955,20 @@ function createLanguageClientLifecycle(
       const message = error instanceof Error ? error.message : String(error);
       outputChannel.error(`[lifecycle] ${phase} callback failed: ${message}`);
     },
+    // vscode-languageclient rejects `stop()` with "Stopping the server timed
+    // out" only after its own cleanup ran and its state reached Stopped. That
+    // is the shape a hung server (watchdog restart) always produces, so it
+    // must not be classified as incomplete cleanup that blocks the
+    // replacement (#14155). Stopped is reached before the node transport
+    // terminates the server process, though, so the process captured before
+    // `stop()` must also be observed to exit before a replacement may start.
+    captureStopWitness: (client) => serverProcessOf(client),
+    isClientTerminal: async (client, witness) =>
+      client.state === LanguageClientState.Stopped &&
+      (await awaitServerProcessExit(
+        witness as ServerProcessLike | undefined,
+        SERVER_PROCESS_EXIT_GRACE_MS,
+      )),
   });
 }
 
