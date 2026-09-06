@@ -385,8 +385,8 @@ fn decode_git_nul_paths(bytes: &[u8]) -> Result<Vec<String>> {
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
         .map(|path| {
-            let path = String::from_utf8(path.to_vec())
-                .with_context(|| "git produced a non-UTF-8 path")?;
+            let path =
+                std::str::from_utf8(path).with_context(|| "git produced a non-UTF-8 path")?;
             Ok(path.replace('\\', "/"))
         })
         .collect()
@@ -1408,19 +1408,26 @@ fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -
     Ok(())
 }
 
+fn push_unique_candidate(candidates: &mut Vec<String>, value: String) {
+    if !candidates.iter().any(|existing| existing == &value) {
+        candidates.push(value);
+    }
+}
+
 fn inventory_baseline_candidates(
     ci_scope_base: Option<String>,
     github_base_ref: Option<String>,
 ) -> Vec<String> {
     let mut candidates = Vec::new();
     if let Some(scope_base) = ci_scope_base {
-        candidates.push(scope_base);
+        push_unique_candidate(&mut candidates, scope_base);
     }
     if let Some(base_ref) = github_base_ref {
-        candidates.push(format!("origin/{base_ref}"));
-        candidates.push(base_ref);
+        push_unique_candidate(&mut candidates, format!("origin/{base_ref}"));
+        push_unique_candidate(&mut candidates, base_ref);
     }
-    candidates.extend(["origin/main".to_string(), "HEAD^".to_string()]);
+    push_unique_candidate(&mut candidates, "origin/main".to_string());
+    push_unique_candidate(&mut candidates, "HEAD^".to_string());
     candidates
 }
 
@@ -4471,7 +4478,6 @@ review_after = "2026-11-13"
                 "scope-sha".to_string(),
                 "origin/main".to_string(),
                 "main".to_string(),
-                "origin/main".to_string(),
                 "HEAD^".to_string(),
             ]
         );
