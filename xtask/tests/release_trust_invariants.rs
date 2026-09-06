@@ -114,7 +114,8 @@ fn status_table_escapes_pipes_and_newlines() -> TestResult {
         json!("cargo xtask | decision\nreceipt");
     invariant_mut(&mut registry, "false_exact")?["claim_boundary"] =
         json!("Exact answers stay exact.\nPipes | stay inline.");
-    let typed = validate_registry_value(&repo_root(), &registry).map_err(|error| error.to_string())?;
+    let typed =
+        validate_registry_value(&repo_root(), &registry).map_err(|error| error.to_string())?;
     let rendered = render_status(&typed);
     let owner_row = rendered
         .lines()
