@@ -863,7 +863,10 @@ fn last_for_keyword_start(source: &str) -> Option<usize> {
         let mut end = source.len();
         while let Some(at) = source.get(..end).and_then(|prefix| prefix.rfind(keyword)) {
             if is_bare_keyword_at(source, at, keyword.len()) {
-                last = Some(last.map_or(at, |prev| prev.max(at)));
+                last = Some(match last {
+                    Some(prev) => prev.max(at),
+                    None => at,
+                });
                 break;
             }
             if at == 0 {
