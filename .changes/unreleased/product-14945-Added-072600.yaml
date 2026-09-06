@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: Add the checked perl-corpus stable authority train (perl_corpus_train.v1) with cargo xtask perl-corpus-train check, graph, and explain-static.
+time: 2026-09-06T07:26:00Z
+custom:
+  PR: "14945"
+  Slug: perl-corpus-stable-train
+  Breaking: "no"
