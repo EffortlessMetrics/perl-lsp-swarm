@@ -774,14 +774,19 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
                             AccessMode::Write,
                         ),
                         (Some(init_node), _) => match &init_node.kind {
-                            NodeKind::Assignment { lhs, rhs, op } => lower_assignment(
-                                builder,
-                                init_node,
-                                lhs,
-                                rhs,
-                                op,
-                                VariableKind::Package,
-                            ),
+                            NodeKind::Assignment { lhs, rhs, op }
+                                if lhs.location.start == binding_node.location.start
+                                    && lhs.location.end == binding_node.location.end =>
+                            {
+                                lower_assignment(
+                                    builder,
+                                    init_node,
+                                    lhs,
+                                    rhs,
+                                    op,
+                                    VariableKind::Package,
+                                )
+                            }
                             _ => {
                                 let place_id = lower_place(
                                     builder,

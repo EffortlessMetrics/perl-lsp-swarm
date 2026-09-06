@@ -2988,6 +2988,18 @@ fn declared_base_variable(node: &Node) -> Option<(&str, String, &Node)> {
     }
 }
 
+/// Whether `init` is the declaration's own compound assignment (`+=`, `.=`, …)
+/// whose LHS is the declared target, rather than an assignment used only as
+/// the initializer *value* (`local($ENV{PATH}) = ($x = 1)`).
+fn initializer_is_target_assignment(init: &Node, target: &Node) -> bool {
+    match &init.kind {
+        NodeKind::Assignment { lhs, .. } => {
+            lhs.location.start == target.location.start && lhs.location.end == target.location.end
+        }
+        _ => false,
+    }
+}
+
 struct NamedDeclTarget<'a> {
     sigil_str: &'a str,
     var_name: String,
@@ -3526,10 +3538,12 @@ impl<'a> BodyBuilder2<'a> {
         match (initializer, &variable.kind) {
             (None, NodeKind::Assignment { .. }) => self.lower_expr(variable),
             (None, _) => self.lower_expr_as_place(target, AccessMode::Write),
-            (Some(init_node), _) if matches!(&init_node.kind, NodeKind::Assignment { .. }) => {
+            (Some(init_node), _) if initializer_is_target_assignment(init_node, target) => {
                 // Compound `my $cache->{key} += 1` stores the RMW assignment in
-                // `initializer`. Lower that node once; wrapping it in another
-                // simple Assign would duplicate the place.
+                // `initializer` with the postfix as LHS. Lower that node once.
+                // An assignment-valued RHS (`foo(local($ENV{PATH}) = ($x = 1))`)
+                // must not take this arm: that Assignment is the value, not the
+                // localized write.
                 self.lower_expr(init_node)
             }
             (Some(init_node), _) => {

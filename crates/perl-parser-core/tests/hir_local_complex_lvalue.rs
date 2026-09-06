@@ -207,6 +207,35 @@ fn parenthesized_argument_local_lowers_the_real_place() -> Result<(), String> {
 }
 
 #[test]
+fn parenthesized_local_with_assignment_rhs_keeps_the_element_write() -> Result<(), String> {
+    // `parse_declaration_arg` stores the RHS assignment in `initializer`.
+    // That Assignment is the value, not the localized write of PATH.
+    let source = "foo(local($ENV{PATH}) = ($x = 1));";
+    let file = canonical_body(source)?;
+    let body = body_of(&file)?;
+    let graph = pir_of(&file);
+    require_no_placeholder(body, &graph, source)?;
+    element_assign(body, "ENV", SubscriptKind::Hash, AccessMode::Write, AssignMode::Simple)?;
+    let inner_x = body.exprs.iter().any(|expr| {
+        matches!(
+            expr,
+            HirExpr::Assign { lhs, mode: AssignMode::Simple, .. }
+                if matches!(
+                    body.expr(*lhs),
+                    Some(HirExpr::Variable(variable)) if variable.name == "x"
+                )
+        )
+    });
+    if !inner_x {
+        return Err("assignment-valued RHS must still lower the inner $x write".to_string());
+    }
+    if pir_unsupported(&graph, "Subscript") == 0 {
+        return Err(format!("assignment-valued RHS must not drop the PATH subscript: {graph:?}"));
+    }
+    Ok(())
+}
+
+#[test]
 fn hash_element_compound_local_keeps_rmw_place() -> Result<(), String> {
     let source = "local $h{k} .= 'x';";
     let file = canonical_body(source)?;
@@ -450,7 +479,7 @@ fn computed_typeglob_local_is_not_a_static_symbol() -> Result<(), String> {
 
 #[test]
 fn compound_postfix_my_keeps_one_rmw_assign() -> Result<(), String> {
-    let source = "my $cache->{key} += 1;";
+    let source = "my $cache->{$k} += 1;";
     let file = canonical_body(source)?;
     let body = body_of(&file)?;
     let graph = pir_of(&file);
