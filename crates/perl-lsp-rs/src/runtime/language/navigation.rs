@@ -3016,6 +3016,106 @@ mod tests {
         Ok((result, receipt))
     }
 
+    /// Cross-file definition must not consume predecessor workspace facts while
+    /// a Full-sync violation is outstanding, and must recover after an admitted
+    /// full replacement plus index catch-up (#8129).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn definition_skips_workspace_index_while_full_sync_required()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let caller_uri = "file:///workspace/desync-def-caller.pl";
+        let target_uri = "file:///workspace/desync-def-target.pl";
+        let caller_text = "DesyncDefTarget::shared_entry();\n";
+        let target_v1 = "package DesyncDefTarget;\nsub shared_entry { 1 }\n";
+        let target_v2 = "package DesyncDefTarget;\nsub shared_entry { 2 }\n";
+
+        server.test_apply_did_open(caller_uri, caller_text, 1)?;
+        server.test_apply_did_open(target_uri, target_v1, 1)?;
+        server
+            .test_index_file_in_building_state(caller_uri, caller_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(target_uri, target_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        assert!(
+            !server.workspace_index_stale_for_any_open_document(),
+            "the fixture starts with a current workspace index"
+        );
+
+        let (fresh, fresh_receipt) = goto_definition_request_receipt(&server, caller_uri, 0, 18)?;
+        assert!(
+            fresh.as_ref().and_then(Value::as_array).is_some_and(|locations| !locations.is_empty()),
+            "cross-file DesyncDefTarget::shared_entry should resolve while the index is current: {fresh:?}"
+        );
+        assert_eq!(
+            fresh_receipt.get("freshness").and_then(Value::as_str),
+            Some("fresh"),
+            "fresh definition over a current index: {fresh_receipt}"
+        );
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": target_uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 1, "character": 4 },
+                    "end": { "line": 1, "character": 16 }
+                },
+                "text": "renamed"
+            }]
+        })))?;
+        assert!(server.workspace_index_stale_for_any_open_document());
+
+        let (desync, desync_receipt) = goto_definition_request_receipt(&server, caller_uri, 0, 18)?;
+        assert!(
+            desync.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty)
+                || desync.is_none(),
+            "cross-file definition must not consume predecessor workspace facts: {desync:?}"
+        );
+        assert_eq!(
+            desync_receipt.get("freshness").and_then(Value::as_str),
+            Some("unknown"),
+            "empty definition over a Full-sync-stale index must not claim freshness: {desync_receipt}"
+        );
+
+        server.test_apply_did_change(target_uri, target_v2, 3)?;
+        let recovered_gen = {
+            let docs = server.documents.lock();
+            docs.get(target_uri).ok_or("recovered definition target")?.current_generation()
+        };
+        let coordinator = server
+            .index_coordinator
+            .as_ref()
+            .ok_or("test server must have an index coordinator")?;
+        coordinator
+            .index()
+            .index_file_with_generation(
+                url::Url::parse(target_uri)?,
+                target_v2.to_string(),
+                recovered_gen,
+            )
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        assert!(!server.workspace_index_stale_for_any_open_document());
+
+        let (recovered, recovered_receipt) =
+            goto_definition_request_receipt(&server, caller_uri, 0, 18)?;
+        assert!(
+            recovered
+                .as_ref()
+                .and_then(Value::as_array)
+                .is_some_and(|locations| !locations.is_empty()),
+            "full-document recovery must restore cross-file definition: {recovered:?}"
+        );
+        assert_eq!(
+            recovered_receipt.get("freshness").and_then(Value::as_str),
+            Some("fresh"),
+            "recovered definition over a current index: {recovered_receipt}"
+        );
+        Ok(())
+    }
+
     /// End-to-end counter-assertion that the goto-definition receipt's
     /// `freshness` is wired to the derivation rather than emitted as a literal
     /// (#14162).

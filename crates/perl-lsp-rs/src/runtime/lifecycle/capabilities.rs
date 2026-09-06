@@ -212,6 +212,14 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Classify encoding before consuming the initialize one-shot. A rejected
+        // offer must not make `initialized` or auto-initialize-for-compat treat
+        // the server as initialized, and a corrected initialize must still be
+        // able to run. Concurrent duplicates remain serialized by the CAS below.
+        if let Some(params) = &params {
+            super::super::v0_18_text_sync_envelope::classify_position_encoding_offer(params)?;
+        }
+
         // Atomically check and set initialize_requested
         if self
             .initialize_requested
@@ -223,10 +231,6 @@ impl LspServer {
                 message: "initialize may only be sent once".to_string(),
                 data: None,
             });
-        }
-
-        if let Some(params) = &params {
-            super::super::v0_18_text_sync_envelope::classify_position_encoding_offer(params)?;
         }
 
         // Parse client capabilities

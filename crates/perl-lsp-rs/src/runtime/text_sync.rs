@@ -711,9 +711,14 @@ impl LspServer {
                 // handling of non-conforming clients in tests/custom integrations.
                 let version =
                     incoming_version.unwrap_or_else(|| doc_state.version.saturating_add(1));
+                // Infer didOpen's template parse policy from the last publication,
+                // not from `current_parsed()`. A Full-sync violation fail-closes
+                // current facts (`None`) without meaning “this template was
+                // intentionally skipped,” which would strand a previously parsed
+                // Perl-mode `.ep`/`.tt` document after recovery.
                 let skip_template_parse = is_embedded_template_uri(uri)
                     && doc_state
-                        .current_parsed()
+                        .latest_parsed()
                         .map(|s| s.degradation_tier())
                         .unwrap_or(DegradationTier::Minimal)
                         == DegradationTier::Minimal;

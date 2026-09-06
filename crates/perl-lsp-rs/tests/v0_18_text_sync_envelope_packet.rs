@@ -71,6 +71,21 @@ fn v0_18_text_sync_envelope_packet_matches_schema_required_fields()
         assert!(!values.is_empty(), "{field} must be populated");
     }
 
+    let required = schema.get("required").and_then(Value::as_array).ok_or("schema required")?;
+    let properties =
+        schema.get("properties").and_then(Value::as_object).ok_or("schema properties")?;
+    let packet_obj = packet.as_object().ok_or("packet object")?;
+    for key in packet_obj.keys() {
+        assert!(
+            properties.contains_key(key),
+            "packet key {key:?} is not in schema properties (additionalProperties: false)"
+        );
+    }
+    for field in required {
+        let field = field.as_str().ok_or("required field name")?;
+        assert!(packet_obj.contains_key(field), "packet missing required {field}");
+    }
+
     let ceiling = packet.get("public_claim_ceiling").and_then(Value::as_str).ok_or("ceiling")?;
     assert!(ceiling.contains("full-document"), "{ceiling}");
     assert!(ceiling.contains("UTF-16"), "{ceiling}");

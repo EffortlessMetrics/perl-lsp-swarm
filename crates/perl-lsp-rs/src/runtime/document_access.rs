@@ -92,17 +92,21 @@ impl LspServer {
     }
 
     /// Whether the workspace index snapshot for `uri` is older than the open
-    /// document generation.
+    /// document generation, or the document is in Full-sync desynchronization.
     pub(crate) fn workspace_index_stale_for_document(&self, uri: &str) -> bool {
         #[cfg(feature = "workspace")]
         {
-            let document_generation = {
+            let sampled = {
                 let documents = self.documents.lock();
-                self.get_document(&documents, uri).map(DocumentState::current_generation)
+                self.get_document(&documents, uri)
+                    .map(|document| (document.current_generation(), document.full_sync_required()))
             };
-            let Some(document_generation) = document_generation else {
+            let Some((document_generation, desync)) = sampled else {
                 return false;
             };
+            if desync {
+                return true;
+            }
             if document_generation == 0 {
                 return false;
             }
@@ -157,7 +161,10 @@ impl LspServer {
         for _attempt in 0..=1 {
             let sampled = self.edited_open_document_snapshot();
 
-            let stale = sampled.iter().any(|(uri, (generation, expected_to_index))| {
+            let stale = sampled.iter().any(|(uri, (generation, expected_to_index, desync))| {
+                if *desync {
+                    return true;
+                }
                 match coordinator.index().indexed_generation(uri) {
                     Some(indexed_generation) => indexed_generation < *generation,
                     None => *expected_to_index,
@@ -187,7 +194,9 @@ impl LspServer {
     /// as by value: an opened, closed, or newly edited document changes the map
     /// even when every URI common to both passes is unchanged.
     #[cfg(feature = "workspace")]
-    fn edited_open_document_snapshot(&self) -> std::collections::BTreeMap<String, (u32, bool)> {
+    fn edited_open_document_snapshot(
+        &self,
+    ) -> std::collections::BTreeMap<String, (u32, bool, bool)> {
         let documents = self.documents.lock();
         documents
             .iter()
@@ -195,7 +204,9 @@ impl LspServer {
                 let generation = document.current_generation();
                 let expected_to_index =
                     document.latest_parsed().is_some_and(|snapshot| snapshot.ast().is_some());
-                (generation > 0).then(|| (uri.clone(), (generation, expected_to_index)))
+                let desync = document.full_sync_required();
+                (generation > 0 || desync)
+                    .then(|| (uri.clone(), (generation, expected_to_index, desync)))
             })
             .collect()
     }
@@ -428,6 +439,85 @@ mod tests {
             "an edited definition target must block cross-file index navigation"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn full_sync_violation_fail_closes_workspace_facts_until_full_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let caller_uri = "file:///workspace/desync-caller.pl";
+        let target_uri = "file:///workspace/desync-target.pl";
+        let caller_text = "DesyncTarget::shared_entry();\n";
+        let target_v1 = "package DesyncTarget;\nsub shared_entry { 1 }\n";
+        let target_v2 = "package DesyncTarget;\nsub shared_entry { 2 }\n";
+
+        server.test_apply_did_open(caller_uri, caller_text, 1)?;
+        server.test_apply_did_open(target_uri, target_v1, 1)?;
+
+        let coordinator = server
+            .index_coordinator
+            .as_ref()
+            .ok_or("test server must have an index coordinator")?;
+        coordinator
+            .index()
+            .index_file_with_generation(url::Url::parse(caller_uri)?, caller_text.to_string(), 1)
+            .map_err(std::io::Error::other)?;
+        coordinator
+            .index()
+            .index_file_with_generation(url::Url::parse(target_uri)?, target_v1.to_string(), 1)
+            .map_err(std::io::Error::other)?;
+        assert!(
+            !server.workspace_index_stale_for_any_open_document(),
+            "indexed didOpen documents start current"
+        );
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": target_uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 1, "character": 4 },
+                    "end": { "line": 1, "character": 16 }
+                },
+                "text": "renamed"
+            }]
+        })))?;
+
+        assert!(
+            server.workspace_index_stale_for_document(target_uri),
+            "Full-sync violation must stale the target's workspace facts"
+        );
+        assert!(
+            !server.workspace_index_stale_for_document(caller_uri),
+            "the unchanged caller must not be reported stale by the per-document helper"
+        );
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "Full-sync violation must fail-close cross-file index consumers"
+        );
+
+        server.test_apply_did_change(target_uri, target_v2, 3)?;
+        let recovered_gen = {
+            let docs = server.documents.lock();
+            docs.get(target_uri).ok_or("recovered target")?.current_generation()
+        };
+        coordinator
+            .index()
+            .index_file_with_generation(
+                url::Url::parse(target_uri)?,
+                target_v2.to_string(),
+                recovered_gen,
+            )
+            .map_err(std::io::Error::other)?;
+
+        assert!(
+            !server.workspace_index_stale_for_document(target_uri),
+            "full-document recovery plus index catch-up must clear per-document staleness"
+        );
+        assert!(
+            !server.workspace_index_stale_for_any_open_document(),
+            "full-document recovery plus index catch-up must restore a current workspace"
+        );
         Ok(())
     }
 

@@ -2077,6 +2077,93 @@ fn test_template_file_guard_parses_mojolicious_language_id()
     Ok(())
 }
 
+#[test]
+fn test_parsed_template_recovers_after_ranged_violation() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = LspServer::new();
+    let uri = "file:///app/templates/recover.html.ep";
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "embedded-perl",
+            "version": 1,
+            "text": "<%= my $name = 'world'; %>"
+        }
+    }))?;
+    {
+        let docs = server.documents.lock();
+        let doc = docs.get(uri).ok_or("parsed template must be stored after didOpen")?;
+        assert!(
+            doc.current_parsed().is_some_and(|p| p.ast().is_some()),
+            "embedded-perl template must start parsed"
+        );
+    }
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })))?;
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 3 },
+        "contentChanges": [{ "text": "<%= my $title = 'recovered'; %>" }]
+    })))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("recovered template must remain stored")?;
+    assert_eq!(doc.text, "<%= my $title = 'recovered'; %>");
+    assert!(!doc.full_sync_required());
+    assert!(
+        doc.current_parsed().is_some_and(|p| p.ast().is_some()),
+        "previously parsed Perl-mode template must reparse after full-document recovery"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_non_perl_template_stays_guarded_after_ranged_violation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///app/templates/html-mode.html.ep";
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "html",
+            "version": 1,
+            "text": "<div><%= $name %></div>"
+        }
+    }))?;
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })))?;
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 3 },
+        "contentChanges": [{ "text": "<div><%= $title %></div>" }]
+    })))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("html-mode template must remain stored")?;
+    assert_eq!(doc.text, "<div><%= $title %></div>");
+    assert!(!doc.full_sync_required());
+    assert!(
+        doc.current_parsed().is_none_or(|p| p.ast().is_none()),
+        "non-Perl languageId template must stay in the didOpen no-parse guard after recovery"
+    );
+    Ok(())
+}
+
 // =========================================================================
 // Error-path tests — closes #3039
 //
