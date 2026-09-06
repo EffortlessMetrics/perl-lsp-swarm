@@ -273,10 +273,10 @@ impl FakeSupervisor {
     /// refused here, so a malformed fixture fails at the point it was written
     /// rather than emitting a stream the elected result then denies.
     pub fn script(&self, outcome: ScriptedOutcome) -> Result<(), ScriptedRunContradiction> {
-        if let ScriptedOutcome::Run(run) = &outcome {
-            if let Some(contradiction) = run.control_contradiction() {
-                return Err(contradiction);
-            }
+        if let ScriptedOutcome::Run(run) = &outcome
+            && let Some(contradiction) = run.control_contradiction()
+        {
+            return Err(contradiction);
         }
         lock(&self.outcomes).push_back(outcome);
         Ok(())
