@@ -4,7 +4,7 @@ use crate::id::FileId;
 use crate::range::Utf8LineIndex;
 
 use super::scan::{
-    ScanPair, call_open_paren, contains_ident, find_ident, parse_paren_hash,
+    ScanPair, call_open_paren, contains_ident, find_ident, find_ident_with_sigil, parse_paren_hash,
     parse_paren_hash_recovering,
 };
 use super::{
@@ -58,11 +58,12 @@ fn makefile_pairs(content: &str, collector: &mut DistCollector<'_>) -> Option<Ve
         }
     }
     if let Some(pairs) = assigned_hash(content, "%WriteMakefileArgs") {
+        let ident = find_ident_with_sigil(content, "WriteMakefileArgs", b'%');
         collector.limitation(
             "helper_variable",
             "WriteMakefile arguments recovered from %WriteMakefileArgs without executing the helper",
-            find_ident(content, "WriteMakefileArgs", 0),
-            find_ident(content, "WriteMakefileArgs", 0).map(|idx| idx + "WriteMakefileArgs".len()),
+            ident,
+            ident.map(|idx| idx + "WriteMakefileArgs".len()),
         );
         return Some(pairs);
     }
@@ -71,7 +72,7 @@ fn makefile_pairs(content: &str, collector: &mut DistCollector<'_>) -> Option<Ve
 
 fn assigned_hash(content: &str, sigil_name: &str) -> Option<Vec<ScanPair>> {
     let name = sigil_name.trim_start_matches('%');
-    let ident = find_ident(content, name, 0)?;
+    let ident = find_ident_with_sigil(content, name, b'%')?;
     let mut idx = ident + name.len();
     super::scan::skip_ws_comments(content, &mut idx);
     let bytes = content.as_bytes();

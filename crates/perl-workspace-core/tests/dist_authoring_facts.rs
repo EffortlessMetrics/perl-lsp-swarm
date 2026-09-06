@@ -383,6 +383,24 @@ Test::More = 0.88
 }
 
 #[test]
+fn dist_ini_prereq_controls_apply_to_the_whole_section() {
+    let src = r#"
+[Prereqs]
+Early::Mod = 1
+-phase = test
+Mid::Mod = 1
+-relationship = recommends
+Late::Mod = 1
+"#;
+    let facts = parse_dist_ini(fid("dist.ini", src), src);
+    for module in ["Early::Mod", "Mid::Mod", "Late::Mod"] {
+        let prereq = facts.prereqs.iter().find(|p| p.module == module).unwrap();
+        assert_eq!(prereq.phase, "test", "{module}");
+        assert_eq!(prereq.relation, "recommends", "{module}");
+    }
+}
+
+#[test]
 fn build_pl_records_version_from_without_execution() {
     let src = r#"
 Module::Build->new(
@@ -915,4 +933,63 @@ fn single_quoted_special_escapes_collapse() {
     let src = "WriteMakefile(\n    NAME => 'Foo::Bar',\n    ABSTRACT => 'it\\'s \\\\ok',\n);\n";
     let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
     assert_eq!(facts.summary.as_deref(), Some(r"it's \ok"));
+}
+
+#[test]
+fn escaped_quotelike_closers_stay_inside_the_literal() {
+    let src = r#"
+my $example = q{ \} WriteMakefile(NAME => 'Wrong::Quote') };
+my @words = qw{ \} WriteMakefile(NAME => 'Wrong::Qw') };
+WriteMakefile(
+    NAME => q{Foo\}::Bar},
+    VERSION => qq{1.00\},0},
+    LICENSE => qw{ perl artistic_2 \}},
+);
+"#;
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    assert_eq!(facts.name.as_deref(), Some("Foo}-Bar"));
+    assert_eq!(facts.version.as_deref(), Some("1.00},0"));
+    assert!(facts.licenses.iter().any(|license| license == "perl_5"));
+    assert!(facts.licenses.iter().any(|license| license == "}"));
+    assert!(!facts.name.as_deref().unwrap().contains("Wrong"));
+}
+
+#[test]
+fn scalar_writemakefileargs_is_not_a_helper_hash() {
+    let src = r#"
+my $WriteMakefileArgs = (
+    NAME => 'Scalar::Trap',
+    VERSION => '9.99',
+);
+"#;
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    assert!(facts.name.is_none());
+    assert!(facts.limitations.iter().any(|l| l.kind == "missing_writemakefile"));
+}
+
+#[test]
+fn scalar_build_args_is_not_a_helper_hash() {
+    let src = r#"
+my $args = (
+    module_name => 'Scalar::Trap',
+    dist_version => '9.99',
+);
+"#;
+    let facts = parse_build_pl(fid("Build.PL", src), src);
+    assert!(facts.name.is_none());
+    assert!(facts.limitations.iter().any(|l| l.kind == "missing_module_build_new"));
+}
+
+#[test]
+fn hash_args_fallback_still_recovers_module_build_literals() {
+    let src = r#"
+my %args = (
+    module_name => 'Foo::Bar',
+    dist_version => '1.00',
+);
+Module::Build->new(%args)->create_build_script;
+"#;
+    let facts = parse_build_pl(fid("Build.PL", src), src);
+    assert_eq!(facts.name.as_deref(), Some("Foo-Bar"));
+    assert_eq!(facts.version.as_deref(), Some("1.00"));
 }

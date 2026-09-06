@@ -128,6 +128,21 @@ pub(crate) fn find_ident(source: &str, name: &str, mut from: usize) -> Option<us
     None
 }
 
+/// Find `name` only when it is preceded by `sigil` (`%WriteMakefileArgs`, `%args`).
+pub(crate) fn find_ident_with_sigil(source: &str, name: &str, sigil: u8) -> Option<usize> {
+    let mut from = 0;
+    while let Some(ident) = find_ident(source, name, from) {
+        if ident > 0 && source.as_bytes().get(ident - 1) == Some(&sigil) {
+            return Some(ident);
+        }
+        from = ident.saturating_add(name.len());
+        if from <= ident {
+            break;
+        }
+    }
+    None
+}
+
 pub(crate) fn call_open_paren(source: &str, ident_start: usize, ident_len: usize) -> Option<usize> {
     let mut idx = ident_start + ident_len;
     skip_ws_comments(source, &mut idx);
@@ -515,13 +530,26 @@ fn parse_quotelike(source: &str, idx: &mut usize) -> Option<Quoted> {
     let close = matching_quotelike_close(open);
     let mut value = String::new();
     let mut depth = 1usize;
+    let mut escaped = false;
     while *idx < source.len() {
         let ch = source[*idx..].chars().next()?;
         let byte = ch as u8;
+        *idx += ch.len_utf8();
+        if escaped {
+            if !is_quotelike_delimiter_byte(ch, open, close) && ch != '\\' {
+                value.push('\\');
+            }
+            value.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
         if ch.len_utf8() == 1 && byte == close {
             depth = depth.saturating_sub(1);
             if depth == 0 {
-                *idx += 1;
                 if kind == "qw" {
                     return Some(Quoted::Words(
                         value.split_whitespace().map(ToOwned::to_owned).collect(),
@@ -533,10 +561,16 @@ fn parse_quotelike(source: &str, idx: &mut usize) -> Option<Quoted> {
             depth += 1;
         }
         value.push(ch);
-        *idx += ch.len_utf8();
     }
     *idx = start;
     None
+}
+
+fn is_quotelike_delimiter_byte(ch: char, open: u8, close: u8) -> bool {
+    ch.len_utf8() == 1 && {
+        let byte = ch as u8;
+        byte == close || (byte == open && open != close)
+    }
 }
 
 fn finish_quotelike(kind: &str, value: String) -> Quoted {
@@ -600,19 +634,31 @@ fn skip_quotelike_at(source: &str, idx: usize) -> Option<usize> {
     let close = matching_quotelike_close(open);
     probe += 1;
     let mut depth = 1usize;
-    while probe < bytes.len() {
-        let byte = bytes[probe];
-        if byte == close {
+    let mut escaped = false;
+    while probe < source.len() {
+        let ch = source[probe..].chars().next()?;
+        if escaped {
+            escaped = false;
+            probe += ch.len_utf8();
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            probe += 1;
+            continue;
+        }
+        let byte = ch as u8;
+        if ch.len_utf8() == 1 && byte == close {
             depth = depth.saturating_sub(1);
             probe += 1;
             if depth == 0 {
                 return Some(probe);
             }
-        } else if byte == open && open != close {
+        } else if ch.len_utf8() == 1 && byte == open && open != close {
             depth += 1;
             probe += 1;
         } else {
-            probe += 1;
+            probe += ch.len_utf8();
         }
     }
     None

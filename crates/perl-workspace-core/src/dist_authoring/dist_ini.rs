@@ -212,26 +212,13 @@ fn apply_ini_entry(
             if key.starts_with('-') {
                 return;
             }
-            if *recognized {
-                add_prereq_ini_entry(
-                    collector,
-                    key,
-                    &value,
-                    phase,
-                    relation,
-                    key_start,
-                    value_start,
-                    value_end,
-                );
-            } else {
-                pending.push(PendingPrereq {
-                    key: key.to_string(),
-                    value,
-                    key_start,
-                    value_start,
-                    value_end,
-                });
-            }
+            pending.push(PendingPrereq {
+                key: key.to_string(),
+                value,
+                key_start,
+                value_start,
+                value_end,
+            });
         }
         Section::MetaResources => {
             collector.add_literal_resource(key, &value, key_start, value_end);

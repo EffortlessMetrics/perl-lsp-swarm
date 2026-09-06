@@ -3,7 +3,9 @@
 use crate::id::FileId;
 use crate::range::Utf8LineIndex;
 
-use super::scan::{ScanPair, call_open_paren, contains_ident, find_ident, parse_paren_hash};
+use super::scan::{
+    ScanPair, call_open_paren, contains_ident, find_ident, find_ident_with_sigil, parse_paren_hash,
+};
 use super::{DistAuthoringBuildTool, DistAuthoringFacts, DistAuthoringSource, DistCollector};
 
 /// Extract bounded static facts from `Build.PL` source.
@@ -96,7 +98,7 @@ fn is_module_build_constructor(ident: &str) -> bool {
 }
 
 fn assigned_hash(content: &str, name: &str) -> Option<Vec<ScanPair>> {
-    let ident = find_ident(content, name, 0)?;
+    let ident = find_ident_with_sigil(content, name, b'%')?;
     let mut idx = ident + name.len();
     super::scan::skip_ws_comments(content, &mut idx);
     let bytes = content.as_bytes();
