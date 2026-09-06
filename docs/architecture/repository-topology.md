@@ -50,7 +50,6 @@ The current monorepo and the product/integration repository after every split. R
 | `perl-dap` | swarm-product | published | `workspace_path` | #7369 |
 | `perl-diagnostics` | swarm-product | published | `workspace_path` | #7369 |
 | `perl-incremental-parsing` | _pending_ | private | `workspace_path` | #7400 |
-| `perl-kwalitee` | swarm-product | private | `workspace_path` | #7369 |
 | `perl-lexer` | perl-parser | published | `workspace_path` | #7398 |
 | `perl-line-index` | perl-parser | published | `workspace_path` | #7398 |
 | `perl-lsp-perltidy` | swarm-product | published | `workspace_path` | #7369 |
@@ -67,6 +66,7 @@ The current monorepo and the product/integration repository after every split. R
 | `perl-position-tracking` | perl-parser | published | `workspace_path` | #7398 |
 | `perl-pragma` | perl-parser | published | `workspace_path` | #7398 |
 | `perl-regex` | perl-parser | published | `workspace_path` | #7398 |
+| `perl-release-readiness` | swarm-product | private | `workspace_path` | #7369 |
 | `perl-ripr-facts` | swarm-product | published | `workspace_path` | #7369 |
 | `perl-semantic-analyzer` | _pending_ | published | `workspace_path` | #7400 |
 | `perl-semantic-facts` | _pending_ | published | `workspace_path` | #7400 |

@@ -1,7 +1,9 @@
-//! # perl-kwalitee
+//! # perl-release-readiness
 //!
 //! Historical compatibility crate for the repository's first
-//! `perl_kwalitee.v1` receipt.
+//! `perl_kwalitee.v1` receipt. This is the one code home of that frozen mixed
+//! evaluator; the `perl-kwalitee` / `perl_kwalitee` names stay vacant for the
+//! native Rust CPANTS-compatible distribution analyser.
 //!
 //! The existing implementation predates the separation between:
 //!
@@ -17,11 +19,6 @@
 //! of every historical row, and [`read_legacy_receipt`] is the fail-closed
 //! compatibility reader.
 //!
-//! The implementation remains available temporarily so existing automation can
-//! migrate without evidence loss. The canonical code home moves to
-//! `perl-release-readiness`; the reclaimed `perl-kwalitee` name is reserved for
-//! the native Rust CPANTS-compatible distribution analyser.
-//!
 //! Catalog v1 and the fixture-identity contract live beside the legacy
 //! evaluator. They freeze metric class, scoring, and fixture identities
 //! without implementing indicators, loading archives, or exposing a public
@@ -30,7 +27,7 @@
 //! ## Existing evaluation API
 //!
 //! ```no_run
-//! use perl_kwalitee::{evaluate, KwaliteeOptions, KwaliteeProfile};
+//! use perl_release_readiness::{evaluate, KwaliteeOptions, KwaliteeProfile};
 //!
 //! let options = KwaliteeOptions::new("/path/to/repo", KwaliteeProfile::Pr);
 //! let receipt = evaluate(&options);
@@ -47,6 +44,7 @@
 mod distribution_kwalitee;
 mod evaluator;
 mod evidence;
+mod historical_home;
 mod indicator;
 mod legacy;
 mod profile;
