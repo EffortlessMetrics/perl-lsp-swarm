@@ -315,22 +315,39 @@ mod tests {
             commands.iter().any(|command| command == "cargo xtask fmt --check"),
             "joined cargo xtask command must be extracted; got {commands:?}"
         );
+
+        let just_recipes = BTreeSet::from(["pr-fast".to_string()]);
+        let xtask_subcommands = BTreeSet::from(["fmt".to_string()]);
+        assert!(
+            command_exists("just pr-fast --locked", &just_recipes, &xtask_subcommands).is_ok(),
+            "joined just command must tokenize through the documented-command checker"
+        );
+        assert!(
+            command_exists("cargo xtask fmt --check", &just_recipes, &xtask_subcommands).is_ok(),
+            "joined cargo xtask command must tokenize through the documented-command checker"
+        );
     }
 
     #[test]
     fn naive_line_scan_misses_backslash_continuations() {
         let text = "just pr-fast \\\n    --locked\n";
         let naive = naive_line_devex_commands(text);
-        assert!(
-            !naive.iter().any(|command| command.contains("--locked")),
-            "a line-by-line scan without a joiner must not see continuation args; got {naive:?}"
-        );
-        assert_ne!(
+        assert_eq!(
             naive,
-            vec!["just pr-fast --locked".to_string()],
-            "the identity joiner is the wrong implementation this slice exists to reject"
+            vec!["just pr-fast \\"],
+            "without a joiner the first physical line stays a backslash-suffixed command and continuation args are absent"
         );
         assert_eq!(inline_devex_commands(text), vec!["just pr-fast --locked"]);
+    }
+
+    #[test]
+    fn dangling_trailing_backslash_still_extracts_the_command_stem() {
+        let commands = inline_devex_commands("just pr-fast \\\n");
+        assert_eq!(
+            commands,
+            vec!["just pr-fast"],
+            "a continuation with no following line still yields the governed stem"
+        );
     }
 
     #[test]
