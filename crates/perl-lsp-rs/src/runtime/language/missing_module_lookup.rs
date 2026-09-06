@@ -419,13 +419,21 @@ fn startup_inc_retry_state(snapshot: &SystemIncProbeSnapshot) -> &'static str {
 }
 
 /// Redacted remediation code; never a path, command line, or environment value.
+///
+/// Codes name only actions a user can actually perform. There is no
+/// user-facing channel that writes `WorkspaceConfig::perl_path` (see
+/// `perl_remediation::PERL_REMEDIATION`, #5376), so an unavailable
+/// interpreter routes to install/PATH/restart and a persistently slow one to
+/// PATH order, never to an interpreter-path setting.
 fn startup_inc_remediation(snapshot: &SystemIncProbeSnapshot) -> &'static str {
     match snapshot.outcome {
         SystemIncProbeOutcomeKind::Disabled => "enable_perl_workspace_use_system_inc",
         SystemIncProbeOutcomeKind::NotObserved => "await_first_live_lookup",
         SystemIncProbeOutcomeKind::TimedOut if snapshot.retry_eligible() => "retry_lookup",
-        SystemIncProbeOutcomeKind::TimedOut => "toggle_use_system_inc_or_pin_faster_perl",
-        SystemIncProbeOutcomeKind::Unavailable => "configure_perl_path",
+        SystemIncProbeOutcomeKind::TimedOut => {
+            "toggle_use_system_inc_or_put_faster_perl_first_on_path"
+        }
+        SystemIncProbeOutcomeKind::Unavailable => "install_perl_add_to_path_and_restart",
         SystemIncProbeOutcomeKind::IoFailed | SystemIncProbeOutcomeKind::NonZeroExit => {
             "check_perl_interpreter"
         }
@@ -784,7 +792,7 @@ mod tests {
                 "terminal_degraded",
                 "exhausted",
                 "omitted_terminal",
-                "toggle_use_system_inc_or_pin_faster_perl",
+                "toggle_use_system_inc_or_put_faster_perl_first_on_path",
                 false,
                 true,
             ),
@@ -794,7 +802,7 @@ mod tests {
                 "terminal_unavailable",
                 "settled",
                 "omitted_terminal",
-                "configure_perl_path",
+                "install_perl_add_to_path_and_restart",
                 false,
                 true,
             ),
@@ -901,6 +909,32 @@ mod tests {
             &ModuleUriResolution::TimedOut,
             SystemIncLookupImpact::Participated
         ));
+    }
+
+    /// Remediation codes must name only actions a user can perform; no
+    /// user-facing channel writes the interpreter path (#5376 rule).
+    #[test]
+    fn remediation_codes_never_name_an_unsettable_interpreter_setting() {
+        use SystemIncProbeOutcomeKind as K;
+        for (outcome, attempts) in [
+            (K::Disabled, 0),
+            (K::NotObserved, 0),
+            (K::TimedOut, 1),
+            (K::TimedOut, 2),
+            (K::Unavailable, 1),
+            (K::IoFailed, 1),
+            (K::NonZeroExit, 1),
+            (K::SuccessfulEmpty, 1),
+            (K::Paths, 1),
+        ] {
+            let code = startup_inc_remediation(&snapshot(outcome, attempts));
+            for forbidden in ["perl_path", "perlpath", "perl.path", "pin"] {
+                assert!(
+                    !code.to_ascii_lowercase().contains(forbidden),
+                    "{outcome:?}/{attempts}: remediation {code:?} names an unsettable route ({forbidden})"
+                );
+            }
+        }
     }
 
     /// The projection carries counts and codes only: no root path, home
