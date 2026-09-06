@@ -993,3 +993,17 @@ Module::Build->new(%args)->create_build_script;
     assert_eq!(facts.name.as_deref(), Some("Foo-Bar"));
     assert_eq!(facts.version.as_deref(), Some("1.00"));
 }
+
+#[test]
+fn unrelated_args_hash_is_not_stolen_from_empty_constructor() {
+    let src = r#"
+my %args = (
+    module_name => 'Wrong::Args',
+    dist_version => '9.99',
+);
+Module::Build->new(%custom)->create_build_script;
+"#;
+    let facts = parse_build_pl(fid("Build.PL", src), src);
+    assert!(facts.name.is_none());
+    assert!(facts.limitations.iter().any(|l| l.kind == "missing_module_build_new"));
+}

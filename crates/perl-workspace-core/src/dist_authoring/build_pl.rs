@@ -4,7 +4,8 @@ use crate::id::FileId;
 use crate::range::Utf8LineIndex;
 
 use super::scan::{
-    ScanPair, call_open_paren, contains_ident, find_ident, find_ident_with_sigil, parse_paren_hash,
+    ScanPair, call_open_paren, contains_ident, find_ident, find_ident_with_sigil, matching_pair,
+    parse_paren_hash,
 };
 use super::{DistAuthoringBuildTool, DistAuthoringFacts, DistAuthoringSource, DistCollector};
 
@@ -54,15 +55,22 @@ pub fn parse_build_pl(file_id: FileId, content: &str) -> DistAuthoringFacts {
 
 fn build_pairs(content: &str) -> Option<Vec<ScanPair>> {
     let mut from = 0;
+    let mut saw_constructor = false;
+    let mut saw_args_passthrough = false;
     while let Some(rel) = content.get(from..).and_then(|rest| rest.find("->new")) {
         let idx = from + rel;
         if ident_before_arrow(content, idx).is_some_and(is_module_build_constructor) {
+            saw_constructor = true;
             let method_start = idx + 2;
-            if let Some(open) = call_open_paren(content, method_start, "new".len())
-                && let Some((pairs, _)) = parse_paren_hash(content, open)
-                && !pairs.is_empty()
-            {
-                return Some(pairs);
+            if let Some(open) = call_open_paren(content, method_start, "new".len()) {
+                if let Some((pairs, _)) = parse_paren_hash(content, open)
+                    && !pairs.is_empty()
+                {
+                    return Some(pairs);
+                }
+                if paren_is_percent_var(content, open, "args") {
+                    saw_args_passthrough = true;
+                }
             }
         }
         from = idx.saturating_add("->new".len());
@@ -70,7 +78,32 @@ fn build_pairs(content: &str) -> Option<Vec<ScanPair>> {
             break;
         }
     }
-    assigned_hash(content, "args")
+    if saw_args_passthrough || !saw_constructor {
+        return assigned_hash(content, "args");
+    }
+    None
+}
+
+fn paren_is_percent_var(source: &str, open: usize, name: &str) -> bool {
+    let Some(close) = matching_pair(source, open) else {
+        return false;
+    };
+    let mut idx = open + 1;
+    super::scan::skip_ws_comments(source, &mut idx);
+    if source.as_bytes().get(idx) != Some(&b'%') {
+        return false;
+    }
+    idx += 1;
+    if !source.get(idx..).is_some_and(|rest| rest.starts_with(name)) {
+        return false;
+    }
+    idx += name.len();
+    super::scan::skip_ws_comments(source, &mut idx);
+    if source.as_bytes().get(idx) == Some(&b',') {
+        idx += 1;
+        super::scan::skip_ws_comments(source, &mut idx);
+    }
+    idx == close
 }
 
 fn ident_before_arrow(source: &str, arrow_idx: usize) -> Option<&str> {
