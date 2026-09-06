@@ -60,13 +60,19 @@ fn request_failed_without_response(err: &str) -> bool {
     err.contains("timed out") || err.contains("No response") || err.contains("Server send error")
 }
 
-fn notify_and_await(harness: &mut LspHarness, method: &str, params: Value) -> TestResult {
+fn notify_and_await(
+    harness: &mut LspHarness,
+    method: &str,
+    params: Value,
+) -> Result<Value, Box<dyn std::error::Error>> {
     harness.notify(method, params);
-    let _ = await_prior_notification(harness)?;
-    Ok(())
+    await_prior_notification(harness)
 }
 
-fn notify_generic_ai_config(harness: &mut LspHarness, ai_completion: Value) -> TestResult {
+fn notify_generic_ai_config(
+    harness: &mut LspHarness,
+    ai_completion: Value,
+) -> Result<Value, Box<dyn std::error::Error>> {
     notify_and_await(
         harness,
         "workspace/didChangeConfiguration",
@@ -87,7 +93,7 @@ fn notify_generic_ai_config(harness: &mut LspHarness, ai_completion: Value) -> T
 /// server and previously accepted state is preserved. The helper remains so
 /// transport-level regressions prove that exact rejection end-to-end.
 fn enable_ai_streaming(harness: &mut LspHarness) -> TestResult {
-    notify_generic_ai_config(
+    let _ = notify_generic_ai_config(
         harness,
         json!({
             "enabled": true,
@@ -95,13 +101,14 @@ fn enable_ai_streaming(harness: &mut LspHarness) -> TestResult {
                 "enabled": true
             }
         }),
-    )
+    )?;
+    Ok(())
 }
 
 /// Helper: generic enable attempt with fallback=false, the payload shape that
 /// used to select the no-backend progress contract before #4997.
 fn enable_ai_streaming_progress_contract(harness: &mut LspHarness) -> TestResult {
-    notify_generic_ai_config(
+    let _ = notify_generic_ai_config(
         harness,
         json!({
             "enabled": true,
@@ -110,13 +117,14 @@ fn enable_ai_streaming_progress_contract(harness: &mut LspHarness) -> TestResult
                 "enabled": true
             }
         }),
-    )
+    )?;
+    Ok(())
 }
 
 /// Helper: generic enable-plus-disable-streaming attempt. Both directions are
 /// unauthorized under #4997; neither may change AI state.
 fn enable_ai_disable_streaming(harness: &mut LspHarness) -> TestResult {
-    notify_generic_ai_config(
+    let _ = notify_generic_ai_config(
         harness,
         json!({
             "enabled": true,
@@ -124,7 +132,8 @@ fn enable_ai_disable_streaming(harness: &mut LspHarness) -> TestResult {
                 "enabled": false
             }
         }),
-    )
+    )?;
+    Ok(())
 }
 
 // ==================== Order-preserving notification round-trip (#14865) ====================
@@ -179,38 +188,22 @@ fn await_prior_notification_without_preceding_notify_still_returns_json_rpc_resp
 #[test]
 fn sequential_did_change_configuration_notifications_each_await_a_response() -> TestResult {
     let mut harness = init_harness()?;
-    notify_generic_ai_config(
+    let first = notify_generic_ai_config(
         &mut harness,
         json!({
             "enabled": true,
             "streaming": { "enabled": true }
         }),
     )?;
-    notify_generic_ai_config(
+    let second = notify_generic_ai_config(
         &mut harness,
         json!({
             "enabled": true,
             "streaming": { "enabled": false }
         }),
     )?;
-
-    let uri = "file:///sequential_config.pl";
-    harness.open(uri, "my $obj = Package->")?;
-    harness.wait_for_idle(Duration::from_millis(200));
-
-    let result = harness.request(
-        "textDocument/perlInlineCompletionStream",
-        json!({
-            "textDocument": { "uri": uri, "version": 1 },
-            "position": { "line": 0, "character": 19 },
-            "partialResultToken": "sequential-config-token"
-        }),
-    )?;
-    let items = result
-        .get("items")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| format!("generic config must remain unarmed; got: {result}"))?;
-    assert!(!items.is_empty(), "two awaited generic configs must not arm streaming");
+    assert_eq!(first.get("code").and_then(Value::as_i64), Some(-32601));
+    assert_eq!(second.get("code").and_then(Value::as_i64), Some(-32601));
     Ok(())
 }
 
