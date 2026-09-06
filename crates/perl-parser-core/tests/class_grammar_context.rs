@@ -47,6 +47,18 @@ fn adjust_blocks_in(source: &str) -> usize {
     admitted_adjust_blocks(&parse(source))
 }
 
+/// Count admitted ADJUST blocks in source that must also parse cleanly.
+///
+/// Used for every fixture that is valid Perl, so a regression that produced
+/// the right admission count while emitting `Error`/`Missing*` nodes still
+/// fails. Fixtures that deliberately contain a syntax error — the recovery
+/// and statement-form-rejection controls — use [`adjust_blocks_in`] instead,
+/// because diagnostics are the expected outcome there.
+fn adjust_blocks_in_valid(source: &str) -> usize {
+    assert_clean_parse(source);
+    admitted_adjust_blocks(&parse(source))
+}
+
 // ---------------------------------------------------------------------------
 // Positive control: the context does admit class members where it should.
 // ---------------------------------------------------------------------------
@@ -54,7 +66,7 @@ fn adjust_blocks_in(source: &str) -> usize {
 #[test]
 fn adjust_inside_a_block_class_body_is_admitted_as_a_class_member() {
     assert_eq!(
-        adjust_blocks_in("class Foo { ADJUST { my $x = 1; } }"),
+        adjust_blocks_in_valid("class Foo { ADJUST { my $x = 1; } }"),
         1,
         "ADJUST directly inside a class body must be admitted as a class member"
     );
@@ -63,7 +75,7 @@ fn adjust_inside_a_block_class_body_is_admitted_as_a_class_member() {
 #[test]
 fn each_of_two_sibling_classes_admits_its_own_members() {
     assert_eq!(
-        adjust_blocks_in("class A { ADJUST { } }\nclass B { ADJUST { } }"),
+        adjust_blocks_in_valid("class A { ADJUST { } }\nclass B { ADJUST { } }"),
         2,
         "leaving the first class body must not disable admission for the second"
     );
@@ -143,7 +155,7 @@ fn leaving_an_inner_class_body_restores_the_enclosing_class_context() {
     // class body. A context that clears on exit instead of restoring the
     // enclosing frame would drop this admission.
     assert_eq!(
-        adjust_blocks_in("class Foo { class Bar { } ADJUST { } }"),
+        adjust_blocks_in_valid("class Foo { class Bar { } ADJUST { } }"),
         1,
         "closing an inner class must restore the enclosing class frame, not clear it"
     );
@@ -157,12 +169,12 @@ fn a_nested_ordinary_block_does_not_clear_the_enclosing_class_context() {
     // semantic-scope decision owned downstream (#10346 / #6672), not a
     // parser-state change.
     assert_eq!(
-        adjust_blocks_in("class Foo { if (1) { ADJUST { } } }"),
+        adjust_blocks_in_valid("class Foo { if (1) { ADJUST { } } }"),
         1,
         "a nested ordinary block must not erase the enclosing class context"
     );
     assert_eq!(
-        adjust_blocks_in("class Foo { method m { ADJUST { } } }"),
+        adjust_blocks_in_valid("class Foo { method m { ADJUST { } } }"),
         1,
         "a nested method body must not erase the enclosing class context"
     );
@@ -217,12 +229,12 @@ fn an_ordinary_method_named_adjust_is_not_an_admitted_block() {
     // would count this, and every negative control in this file would be
     // satisfiable by a construct that has nothing to do with class grammar.
     assert_eq!(
-        adjust_blocks_in("method ADJUST { 1; }"),
+        adjust_blocks_in_valid("method ADJUST { 1; }"),
         0,
         "an ordinary method named ADJUST is a method, not an admitted ADJUST block"
     );
     assert_eq!(
-        adjust_blocks_in("class Foo { method ADJUST { 1; } }"),
+        adjust_blocks_in_valid("class Foo { method ADJUST { 1; } }"),
         0,
         "even inside class grammar, `method ADJUST` is parsed as a method declaration"
     );
@@ -230,7 +242,7 @@ fn an_ordinary_method_named_adjust_is_not_an_admitted_block() {
     // And the real thing is still counted, so the discrimination is not
     // achieved by simply never counting anything.
     assert_eq!(
-        adjust_blocks_in("class Foo { ADJUST { 1; } }"),
+        adjust_blocks_in_valid("class Foo { ADJUST { 1; } }"),
         1,
         "a genuine ADJUST block must still be counted"
     );
@@ -254,7 +266,9 @@ fn field_and_method_keep_their_identity_outside_class_grammar() {
             || node.children().into_iter().any(|child| has_named_method(child, wanted))
     }
 
+    assert_clean_parse("field $x;");
     assert!(has_field(&parse("field $x;")), "`field` must parse outside a class as it does today");
+    assert_clean_parse("method m { 1 }");
     assert!(
         has_named_method(&parse("method m { 1 }"), "m"),
         "`method` must parse outside a class as it does today"

@@ -70,10 +70,10 @@ requires be explicit so #10864 does not redesign parser state.
 
 ### Step 6 — Prove the tests discriminate
 
-- [x] Mutant A (`restore` no-op): 6 of 14 fail
-- [x] Mutant B (always admit): 7 of 14 fail
-- [x] Mutant C (`restore` clears all frames): 1 of 14 fails, and it is the
-      test written for exactly that property
+- [x] Mutant A (`restore` no-op): 6 of 14 fail (pre-repair suite size)
+- [x] Mutant B (always admit): 7 of 14 fail (pre-repair suite size)
+- [x] Mutant C (`restore` clears all frames): 1 of 14 fails (pre-repair suite
+      size), and it is the test written for exactly that property
 - [x] Source restored after each mutant
 
 ### Step 7 — Repair the oracle after independent review
@@ -92,8 +92,10 @@ apart, and its doc comment claimed it could.
 - [x] `an_ordinary_method_named_adjust_is_not_an_admitted_block` added, holding
       the distinction in both directions (ordinary method not counted inside or
       outside a class; a genuine block still counted)
-- [x] Mutants A/B/C re-run against the stricter oracle: 6 / 7 / 1 failures,
-      unchanged discrimination
+- [x] Mutants A/B/C re-run against the stricter oracle, now out of 15 tests:
+      6 / 7 / 1 failures — unchanged discrimination. Step 6 counts are out of
+      14 because they predate the oracle control added here; both runs cover
+      the same three mutants
 
 ### Step 8 — Verify
 

@@ -12,7 +12,7 @@ with statement-form representation available to #10864 but not admitted.
 | # | Criterion | Evidence |
 |---|---|---|
 | A1 | One parser-owned scope-aware grammar context replaces the scalar convention | `class_grammar.rs`; `in_class_body` has zero remaining occurrences |
-| A2 | Block-form AST / token / diagnostic / recovery behavior is source-equivalent | 368 green `perl-parser-core` test targets, including the pre-existing class, field, method, ADJUST, and incremental suites |
+| A2 | Block-form AST, diagnostic, and recovery behavior is source-equivalent | 368 green `perl-parser-core` test targets, including the pre-existing class, field, method, ADJUST, and incremental suites. Token equivalence is structural rather than asserted — see the scope note below |
 | A3 | Restoration is structured across normal, nested, recovery, early-return, and EOF paths | `within_class_grammar` guard; leak falsifiers below |
 | A4 | Near-neighbour syntax outside class grammar stays ordinary | `adjust_outside_any_class_stays_ordinary_syntax` and four sibling negative controls |
 | A5 | Statement-mode seam is explicit and unit-tested without production admission | `ClassGrammarForm::Statement`; `nested_frames_restore_the_exact_enclosing_form`; `statement_form_classes_are_still_not_admitted` |
@@ -51,6 +51,16 @@ grammar.
 Equivalence control: an edit inside a class body reparses to exactly the fresh
 parse — same s-expression and same diagnostics.
 
+Scope of the equivalence claim: these tests assert the emitted **AST** and
+**parser diagnostics**, plus recovery behavior at the boundaries. They do not
+diff token streams, and no in-tree test can compare output against a different
+build of the parser. Token equivalence is structural rather than asserted:
+this diff changes parser state only and touches no lexer, tokenizer, or
+`TokenStream` code, so the token stream reaching the parser is the same one
+`origin/main` produces. The evidence that AST output is unchanged is the 368
+green pre-existing test targets, which include the class, field, method,
+ADJUST, corpus, and incremental suites written against the previous behavior.
+
 Oracle control: `an_ordinary_method_named_adjust_is_not_an_admitted_block`.
 `ADJUST` is an ordinary identifier to the lexer, so `method ADJUST { }` is a
 legal method declaration that reaches `parse_method` without consulting the
@@ -71,6 +81,7 @@ implementations to confirm they discriminate rather than merely pass:
 | A | `restore()` is a no-op — frames leak | 6 of 15 fail |
 | B | `admits_class_members()` always true | 7 of 15 fail |
 | C | `restore()` clears all frames instead of restoring the observed depth | 1 of 15 fails — `leaving_an_inner_class_body_restores_the_enclosing_class_context` |
+| D | `current_form()` is form-blind (always answers `Block`) | 1 of 7 mechanism tests fails — `nested_frames_restore_the_exact_enclosing_form`; all 15 behavioral tests still pass |
 
 Mutant C is the reason that test exists: it is the only case that separates
 "clear the context on exit" from "restore the exact enclosing frame", and it
@@ -93,20 +104,26 @@ papered over.
 
 `within_class_grammar` has exactly one production call site, and it always
 passes `ClassGrammarForm::Block`. `ClassGrammarForm::Statement` is therefore
-constructed only by this module's own unit tests. A consequence: an
-implementation that discarded the `form` argument entirely and kept a plain
-depth counter — `current_form()` always answering `Block` — would pass all 22
-tests in this candidate, because nothing reachable through `Parser` exercises
-form discrimination yet.
+constructed only by this module's own unit tests.
+
+The gap is **parser reachability, not test coverage**. The mechanism tests do
+discriminate on form: `nested_frames_restore_the_exact_enclosing_form` enters
+`Statement`, nests a `Block` inside it, and asserts the enclosing `Statement`
+is restored, so an implementation that discarded the `form` argument and kept
+a plain depth counter — `current_form()` always answering `Block` — fails that
+unit test. Mutant D in the table above is exactly that implementation: it fails
+one mechanism test and passes all 15 behavioral tests, which locates the gap
+precisely. What no test can currently reach is form discrimination *through
+`Parser`*, because production never enters `Statement`.
 
 That does not affect any correctness claim here; every behavioral claim in
-this PR is about admission and restoration, which the suite does discriminate
-(see the mutation table above). It does bound A6: "successors can consume the
-state without redesign" rests on the unit tests of `ClassGrammarContext` in
-isolation, not on anything the parser reaches. The first parser-reachable
-proof of form discrimination arrives with #10864, which is the issue that
-activates statement form; whoever takes it should expect to add that coverage
-rather than assume this suite already carries it.
+this PR is about admission and restoration, which the suite discriminates (see
+the mutation table above). It bounds A6: "successors can consume the state
+without redesign" rests on `ClassGrammarContext`'s unit tests in isolation,
+not on anything the parser reaches. The first parser-reachable proof of form
+discrimination arrives with #10864, which activates statement form; whoever
+takes it should expect to add that coverage rather than assume this suite
+already carries it.
 
 Manufacturing a production path for `Statement` here to close the gap would
 mean admitting `class Foo;`, which is exactly this issue's stated non-goal.

@@ -70,7 +70,7 @@ stays an ordinary identifier expression.
 | `class Foo { class Bar { } ADJUST { } }` | yes |
 | `class Foo { if (1) { ADJUST { } } }` | yes |
 | `class Foo { method m { ADJUST { } } }` | yes |
-| `class Foo;` | parse error; no class node; no frame opened |
+| `class Foo;` | parse error; no class node; no frame left active |
 
 **No context leak is observable on current main.** This change is therefore an
 architectural replacement that preserves behavior exactly, not a bug fix, and
@@ -141,4 +141,5 @@ of redesigning parser state.
 ## Non-authorities
 
 Nothing here is a support claim, a release action, a compatibility retirement,
-a NodeKind change, or a semantic promotion. Parser output is byte-identical.
+a NodeKind change, or a semantic promotion. Emitted AST and parser diagnostics
+are unchanged; the lexer and token stream are not touched by this diff at all.
