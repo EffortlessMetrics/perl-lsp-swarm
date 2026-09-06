@@ -288,7 +288,7 @@ tests = [
 ]
 evidence = []
 limitations = [
-  "Response-shape field only; no client capability gate. Coverage is CodeLens plus reachable code-action Command producers; completion, inline-completion, and document-link surfaces do not produce Command objects (#13633).",
+  "Response-shape field only; no client capability gate. Coverage is CodeLens, reachable code-action Command producers, and CodeAction.documentation Command objects; completion, inline-completion, and document-link surfaces do not produce Command objects (#13633).",
 ]
 description = "Plain-text Command.tooltip on every reachable LSP Command object"
 

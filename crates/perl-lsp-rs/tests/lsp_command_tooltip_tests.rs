@@ -143,6 +143,59 @@ fn explain_diagnostic_command_includes_lsp_318_tooltip() -> TestResult {
 }
 
 #[test]
+fn code_action_documentation_commands_include_lsp_318_tooltip() -> TestResult {
+    let mut harness = LspHarness::new();
+    let init = harness.initialize(Some(json!({
+        "textDocument": {
+            "codeAction": {
+                "documentationSupport": true
+            }
+        }
+    })))?;
+    let docs = init
+        .pointer("/capabilities/codeActionProvider/documentation")
+        .cloned()
+        .ok_or_else(|| format!("expected CodeActionOptions.documentation: {init}"))?;
+    let entries = docs.as_array().ok_or("documentation must be an array")?;
+    assert_eq!(entries.len(), 3);
+
+    let expected = [
+        (
+            "quickfix",
+            "Explain Perl quick fixes",
+            "Show why Perl quick-fix code actions are offered",
+        ),
+        ("refactor", "Explain Perl refactors", "Show why Perl refactor code actions are offered"),
+        (
+            "source.fixAll",
+            "Explain Perl fix-all actions",
+            "Show why Perl source.fixAll actions are offered",
+        ),
+    ];
+    for (kind, title, tooltip) in expected {
+        let command = entries
+            .iter()
+            .find(|entry| entry.get("kind").and_then(Value::as_str) == Some(kind))
+            .and_then(|entry| entry.get("command"))
+            .ok_or_else(|| format!("missing documentation command for {kind}: {entries:?}"))?;
+        assert_eq!(command.get("title").and_then(Value::as_str), Some(title));
+        assert_eq!(
+            command.get("command").and_then(Value::as_str),
+            Some("perl.explainProviderDecision")
+        );
+        assert_eq!(command.get("tooltip").and_then(Value::as_str), Some(tooltip));
+        assert_eq!(
+            command.pointer("/arguments/0/receipt_id").and_then(Value::as_str),
+            Some(
+                "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation"
+            )
+        );
+    }
+    assert_command_objects_carry_tooltip(&docs)?;
+    Ok(())
+}
+
+#[test]
 fn completion_and_document_link_do_not_produce_lsp_commands() -> TestResult {
     let mut harness = LspHarness::new();
     harness.initialize(None)?;

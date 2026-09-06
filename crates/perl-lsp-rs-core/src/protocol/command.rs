@@ -11,7 +11,7 @@
 //! its existing receipts stay byte-identical.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 /// LSP Command as serialized on the wire (LSP 3.18, including `tooltip`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +46,55 @@ impl Command {
             arguments,
         }
     }
+}
+
+/// `CodeActionOptions.documentation` entries advertised when the client
+/// supports `textDocument.codeAction.documentationSupport`.
+///
+/// Runtime initialize and the effective-surface projection share this
+/// producer so tooltip policy cannot drift between the two writers.
+pub fn code_action_documentation_entries() -> Value {
+    json!([
+        {
+            "kind": "quickfix",
+            "command": Command::presented(
+                "Explain Perl quick fixes",
+                "perl.explainProviderDecision",
+                "Show why Perl quick-fix code actions are offered",
+                Some(vec![json!({
+                    "provider": "diagnostics",
+                    "receipt_id": "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
+                    "scenario": "lsp_318_code_action_documentation_quickfix"
+                })]),
+            )
+        },
+        {
+            "kind": "refactor",
+            "command": Command::presented(
+                "Explain Perl refactors",
+                "perl.explainProviderDecision",
+                "Show why Perl refactor code actions are offered",
+                Some(vec![json!({
+                    "provider": "rename",
+                    "receipt_id": "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
+                    "scenario": "lsp_318_code_action_documentation_refactor"
+                })]),
+            )
+        },
+        {
+            "kind": "source.fixAll",
+            "command": Command::presented(
+                "Explain Perl fix-all actions",
+                "perl.explainProviderDecision",
+                "Show why Perl source.fixAll actions are offered",
+                Some(vec![json!({
+                    "provider": "diagnostics",
+                    "receipt_id": "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
+                    "scenario": "lsp_318_code_action_documentation_fix_all"
+                })]),
+            )
+        }
+    ])
 }
 
 #[cfg(test)]
@@ -104,5 +153,66 @@ mod tests {
             Some(vec![json!(1), json!("keep"), json!({"k": true})]),
         );
         assert_eq!(serialized(&command)["arguments"], json!([1, "keep", {"k": true}]));
+    }
+
+    #[test]
+    fn code_action_documentation_commands_carry_tooltip_without_replacing_identity() {
+        let docs = super::code_action_documentation_entries();
+        let Some(entries) = docs.as_array() else {
+            panic!("documentation entries must serialize as an array");
+        };
+        assert_eq!(entries.len(), 3);
+        for (kind, title, tooltip, provider, scenario) in [
+            (
+                "quickfix",
+                "Explain Perl quick fixes",
+                "Show why Perl quick-fix code actions are offered",
+                "diagnostics",
+                "lsp_318_code_action_documentation_quickfix",
+            ),
+            (
+                "refactor",
+                "Explain Perl refactors",
+                "Show why Perl refactor code actions are offered",
+                "rename",
+                "lsp_318_code_action_documentation_refactor",
+            ),
+            (
+                "source.fixAll",
+                "Explain Perl fix-all actions",
+                "Show why Perl source.fixAll actions are offered",
+                "diagnostics",
+                "lsp_318_code_action_documentation_fix_all",
+            ),
+        ] {
+            let Some(entry) = entries
+                .iter()
+                .find(|entry| entry.get("kind").and_then(Value::as_str) == Some(kind))
+            else {
+                panic!("missing documentation kind {kind}");
+            };
+            let command = entry.get("command").unwrap_or(&Value::Null);
+            assert_eq!(command.get("title").and_then(Value::as_str), Some(title));
+            assert_eq!(
+                command.get("command").and_then(Value::as_str),
+                Some("perl.explainProviderDecision")
+            );
+            assert_eq!(command.get("tooltip").and_then(Value::as_str), Some(tooltip));
+            assert_ne!(title, tooltip);
+            assert_eq!(
+                command.pointer("/arguments/0/provider").and_then(Value::as_str),
+                Some(provider)
+            );
+            assert_eq!(
+                command.pointer("/arguments/0/scenario").and_then(Value::as_str),
+                Some(scenario)
+            );
+            assert_eq!(
+                command.pointer("/arguments/0/receipt_id").and_then(Value::as_str),
+                Some(
+                    "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation"
+                )
+            );
+        }
     }
 }

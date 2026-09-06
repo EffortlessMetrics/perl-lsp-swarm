@@ -1486,7 +1486,10 @@ fn project_server_capabilities(
         );
         code_action.insert("resolveProvider".into(), serde_json::Value::Bool(true));
         if projects_static(families, CapabilityFamily::CodeActionDocumentation) {
-            code_action.insert("documentation".into(), code_action_documentation_entries());
+            code_action.insert(
+                "documentation".into(),
+                crate::protocol::command::code_action_documentation_entries(),
+            );
         }
         caps.insert("codeActionProvider".into(), serde_json::Value::Object(code_action));
     }
@@ -1644,52 +1647,6 @@ fn insert_experimental(
     if let Some(map) = experimental.as_object_mut() {
         map.insert(key.to_string(), value);
     }
-}
-
-/// Exact `codeActionProvider.documentation` entries (parity-pinned against
-/// the runtime producer until S03 removes the second writer).
-fn code_action_documentation_entries() -> serde_json::Value {
-    serde_json::json!([
-        {
-            "kind": "quickfix",
-            "command": {
-                "title": "Explain Perl quick fixes",
-                "command": "perl.explainProviderDecision",
-                "arguments": [{
-                    "provider": "diagnostics",
-                    "receipt_id":
-                        "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
-                    "scenario": "lsp_318_code_action_documentation_quickfix"
-                }]
-            }
-        },
-        {
-            "kind": "refactor",
-            "command": {
-                "title": "Explain Perl refactors",
-                "command": "perl.explainProviderDecision",
-                "arguments": [{
-                    "provider": "rename",
-                    "receipt_id":
-                        "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
-                    "scenario": "lsp_318_code_action_documentation_refactor"
-                }]
-            }
-        },
-        {
-            "kind": "source.fixAll",
-            "command": {
-                "title": "Explain Perl fix-all actions",
-                "command": "perl.explainProviderDecision",
-                "arguments": [{
-                    "provider": "diagnostics",
-                    "receipt_id":
-                        "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
-                    "scenario": "lsp_318_code_action_documentation_fix_all"
-                }]
-            }
-        }
-    ])
 }
 
 /// Semantic token legend types; index position is the wire format.

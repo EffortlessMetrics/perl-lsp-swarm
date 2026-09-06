@@ -124,6 +124,16 @@ fn code_action_documentation_advertised_when_supported() -> TestResult {
             argument.get("provider").and_then(Value::as_str).is_some(),
             "provider-decision documentation command must include provider context: {doc}"
         );
+        let title = command.get("title").and_then(Value::as_str);
+        let tooltip = command.get("tooltip").and_then(Value::as_str);
+        let tooltip = tooltip
+            .ok_or_else(|| format!("documentation Command must carry LSP 3.18 tooltip: {doc}"))?;
+        assert!(!tooltip.is_empty(), "documentation Command.tooltip must be non-empty: {doc}");
+        assert_ne!(
+            Some(tooltip),
+            title,
+            "documentation Command.tooltip must not replace title: {doc}"
+        );
     }
     Ok(())
 }

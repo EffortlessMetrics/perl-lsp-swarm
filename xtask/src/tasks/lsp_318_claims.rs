@@ -312,6 +312,10 @@ const COMMAND_TOOLTIP_TEST_MARKERS: &[RequiredMarker] = &[
         marker: "explain_diagnostic_command_includes_lsp_318_tooltip",
     },
     RequiredMarker {
+        label: "CodeAction.documentation Command.tooltip positive receipt",
+        marker: "code_action_documentation_commands_include_lsp_318_tooltip",
+    },
+    RequiredMarker {
         label: "completion and document-link Command absence receipt",
         marker: "completion_and_document_link_do_not_produce_lsp_commands",
     },
