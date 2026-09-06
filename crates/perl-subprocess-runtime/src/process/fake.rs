@@ -95,7 +95,10 @@ pub struct ScriptedRun {
     /// A `DeadlineReached`, `CancellationRequested`, or `LimitReached` event
     /// that disagrees with `control` is refused by [`FakeSupervisor::script`],
     /// not replayed. A control flag without a matching event is legal: a
-    /// backend need not emit a phase for every control fact.
+    /// backend need not emit a phase for every control fact. Live
+    /// [`ProcessHandle::cancel`] after an already-admitted
+    /// `CancellationRequested` of a different reason is refused the same way:
+    /// it does not rewrite the emitted phase.
     pub events: Vec<ProcessEventKind>,
     /// What the child is observed to do.
     pub settlement: ObservedSettlement,
@@ -430,6 +433,7 @@ struct FakeHandle {
     cancellable: bool,
     script_rejected: bool,
     child_started: bool,
+    announced_cancellation: Option<CancellationReason>,
     streamed_stdin: bool,
     stdin_closed: bool,
     stdin_written: Arc<Mutex<Vec<(RunId, Vec<u8>)>>>,
@@ -459,6 +463,7 @@ impl FakeHandle {
             cancellable,
             script_rejected: false,
             child_started: false,
+            announced_cancellation: None,
             streamed_stdin,
             stdin_closed: false,
             stdin_written,
@@ -548,6 +553,60 @@ impl FakeHandle {
             None => self.failure_result(),
         }
     }
+
+    /// Record facts the live `cancel` path must not contradict later.
+    ///
+    /// `child_started` is whether a `Started` event was admitted, not how
+    /// many polls happened. `announced_cancellation` is the reason already
+    /// shown to the consumer: replacing it with a different reason would
+    /// make `wait` elect a cause the stream has already denied.
+    fn note_admitted_kind(&mut self, kind: &ProcessEventKind) {
+        if matches!(kind, ProcessEventKind::Started) {
+            self.child_started = true;
+        }
+        if let ProcessEventKind::TerminationPhase(TerminationPhase::CancellationRequested(reason)) =
+            kind
+        {
+            self.announced_cancellation = Some(*reason);
+        }
+    }
+
+    /// Whether `reason` would replace an already-admitted cancellation phase.
+    fn contradicts_emitted_cancellation(&self, reason: CancellationReason) -> bool {
+        self.announced_cancellation.is_some_and(|emitted| emitted != reason)
+    }
+
+    /// Apply a cancellation the consumer has not been shown a conflicting
+    /// reason for.
+    ///
+    /// Same-reason `cancel` after a matching admitted event still runs this
+    /// path: pre-start tests rely on it to clear a scripted `Started` that
+    /// has not been admitted yet and to reconcile settlement.
+    fn apply_accepted_cancel(&mut self, reason: CancellationReason) {
+        self.run.control.cancellation_requested = Some(reason);
+        // Whether a `Started` event was actually admitted, not how many polls
+        // happened. A poll count is not proof that the child started: a script
+        // whose first event is not `Started` would claim one, and cancelling
+        // before the first poll would deny one the script does describe.
+        self.run.control.started_before_cancellation = self.child_started;
+        if !self.child_started {
+            // A run cancelled before it started did not go on to exit, and
+            // nothing exists to clean up or terminate. Every piece of the
+            // scripted child evidence has to be reconciled together: leaving
+            // the settlement alone elects `NotProven`, and leaving the cleanup
+            // alone leaves a completed cleanup beside a child that never ran,
+            // which result assembly refuses.
+            self.run.settlement = ObservedSettlement::NotStarted;
+            self.run.cleanup = CleanupDisposition::NotRequired;
+            self.run.tree = TreeDisposition::NotRequired;
+            self.run.stdout = StreamEvidence::empty(StreamChannel::Stdout);
+            self.run.stderr = StreamEvidence::empty(StreamChannel::Stderr);
+        }
+        self.pending.clear();
+        self.pending.push_back(ProcessEventKind::TerminationPhase(
+            TerminationPhase::CancellationRequested(reason),
+        ));
+    }
 }
 
 impl ProcessHandle for FakeHandle {
@@ -603,9 +662,7 @@ impl ProcessHandle for FakeHandle {
         // prevent, reached one call later.
         match self.ledger.admit(kind) {
             Ok(event) => {
-                if matches!(event.kind(), ProcessEventKind::Started) {
-                    self.child_started = true;
-                }
+                self.note_admitted_kind(event.kind());
                 Some(event)
             }
             Err(_) => {
@@ -653,29 +710,10 @@ impl ProcessHandle for FakeHandle {
         if !self.cancellable {
             return CancellationAcknowledgement::NotCancellable;
         }
-        self.run.control.cancellation_requested = Some(reason);
-        // Whether a `Started` event was actually admitted, not how many polls
-        // happened. A poll count is not proof that the child started: a script
-        // whose first event is not `Started` would claim one, and cancelling
-        // before the first poll would deny one the script does describe.
-        self.run.control.started_before_cancellation = self.child_started;
-        if !self.child_started {
-            // A run cancelled before it started did not go on to exit, and
-            // nothing exists to clean up or terminate. Every piece of the
-            // scripted child evidence has to be reconciled together: leaving
-            // the settlement alone elects `NotProven`, and leaving the cleanup
-            // alone leaves a completed cleanup beside a child that never ran,
-            // which result assembly refuses.
-            self.run.settlement = ObservedSettlement::NotStarted;
-            self.run.cleanup = CleanupDisposition::NotRequired;
-            self.run.tree = TreeDisposition::NotRequired;
-            self.run.stdout = StreamEvidence::empty(StreamChannel::Stdout);
-            self.run.stderr = StreamEvidence::empty(StreamChannel::Stderr);
+        if self.contradicts_emitted_cancellation(reason) {
+            return CancellationAcknowledgement::ContradictsEmittedReason;
         }
-        self.pending.clear();
-        self.pending.push_back(ProcessEventKind::TerminationPhase(
-            TerminationPhase::CancellationRequested(reason),
-        ));
+        self.apply_accepted_cancel(reason);
         CancellationAcknowledgement::Accepted
     }
 
@@ -1045,5 +1083,360 @@ mod script_control_coherence {
                 control: Some(CancellationReason::Shutdown),
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod cancel_after_emitted_reason {
+    use super::*;
+    use crate::process::encoding::Fingerprint;
+
+    type TestResult = Result<(), &'static str>;
+
+    fn dummy_fingerprint() -> PlanFingerprint {
+        PlanFingerprint::new(Fingerprint::of(b"fake-handle-cancel-test"))
+    }
+
+    fn cancellable_handle(run: ScriptedRun) -> FakeHandle {
+        FakeHandle::new(
+            PlanId::new("plan"),
+            dummy_fingerprint(),
+            RunId::new("run"),
+            run,
+            true,
+            false,
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+        )
+    }
+
+    fn started_then_cancelled(reason: CancellationReason) -> ScriptedRun {
+        let mut run = ScriptedRun::exiting(0).with_control(ControlState {
+            cancellation_requested: Some(reason),
+            started_before_cancellation: true,
+            ..ControlState::default()
+        });
+        run.events = vec![
+            ProcessEventKind::Started,
+            ProcessEventKind::TerminationPhase(TerminationPhase::CancellationRequested(reason)),
+        ];
+        run
+    }
+
+    fn drain(handle: &mut FakeHandle) -> Vec<ProcessEventKind> {
+        let mut kinds = Vec::new();
+        while let Some(event) = handle.next_event() {
+            kinds.push(event.kind().clone());
+        }
+        kinds
+    }
+
+    fn take_event(handle: &mut FakeHandle) -> Result<ProcessEvent, &'static str> {
+        handle.next_event().ok_or("the fake emitted no further event")
+    }
+
+    fn poll_started_and_cancellation(
+        handle: &mut FakeHandle,
+        reason: CancellationReason,
+    ) -> TestResult {
+        let started = take_event(handle)?;
+        if !matches!(started.kind(), ProcessEventKind::Started) {
+            return Err("first event was not Started");
+        }
+        let phase = take_event(handle)?;
+        if !is_cancellation(phase.kind(), reason) {
+            return Err("second event was not the expected CancellationRequested");
+        }
+        Ok(())
+    }
+
+    fn is_cancellation(kind: &ProcessEventKind, reason: CancellationReason) -> bool {
+        matches!(
+            kind,
+            ProcessEventKind::TerminationPhase(TerminationPhase::CancellationRequested(emitted))
+                if *emitted == reason
+        )
+    }
+
+    #[test]
+    fn different_reason_after_scripted_phase_is_refused() -> TestResult {
+        // The wrong implementation this kills: accepting UserRequested after
+        // Shutdown was already admitted, so wait elects UserRequested while
+        // the consumer already holds Shutdown.
+        let mut handle = cancellable_handle(started_then_cancelled(CancellationReason::Shutdown));
+        poll_started_and_cancellation(&mut handle, CancellationReason::Shutdown)?;
+
+        assert_eq!(
+            handle.cancel(CancellationReason::UserRequested),
+            CancellationAcknowledgement::ContradictsEmittedReason
+        );
+
+        let kinds = drain(&mut handle);
+        assert!(
+            kinds.iter().all(|kind| !is_cancellation(kind, CancellationReason::UserRequested)),
+            "refused cancel still emitted UserRequested: {kinds:?}"
+        );
+        assert!(
+            matches!(
+                kinds.last(),
+                Some(ProcessEventKind::Terminal(TerminalDisposition::CancelledRunning(
+                    CancellationReason::Shutdown
+                )))
+            ),
+            "wait-equivalent terminal was {:?}",
+            kinds.last()
+        );
+
+        let result = Box::new(handle).wait();
+        assert_eq!(
+            result.disposition(),
+            &TerminalDisposition::CancelledRunning(CancellationReason::Shutdown)
+        );
+        assert_ne!(
+            result.disposition(),
+            &TerminalDisposition::SupervisorFailed,
+            "a coherent run was supervisor-failed instead of keeping the emitted reason"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn same_reason_after_scripted_phase_stays_accepted() -> TestResult {
+        let mut handle = cancellable_handle(started_then_cancelled(CancellationReason::Shutdown));
+        poll_started_and_cancellation(&mut handle, CancellationReason::Shutdown)?;
+
+        assert_eq!(
+            handle.cancel(CancellationReason::Shutdown),
+            CancellationAcknowledgement::Accepted
+        );
+
+        let result = Box::new(handle).wait();
+        assert_eq!(
+            result.disposition(),
+            &TerminalDisposition::CancelledRunning(CancellationReason::Shutdown)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pending_not_yet_admitted_phase_may_be_replaced() -> TestResult {
+        // The wrong implementation this kills: treating a scripted pending
+        // CancellationRequested as already emitted, so a live cancel with
+        // a different reason is refused before the consumer has seen one.
+        let mut handle = cancellable_handle(started_then_cancelled(CancellationReason::Shutdown));
+        let started = take_event(&mut handle)?;
+        if !matches!(started.kind(), ProcessEventKind::Started) {
+            return Err("first event was not Started");
+        }
+
+        assert_eq!(
+            handle.cancel(CancellationReason::UserRequested),
+            CancellationAcknowledgement::Accepted
+        );
+
+        let kinds = drain(&mut handle);
+        assert!(
+            kinds.iter().all(|kind| !is_cancellation(kind, CancellationReason::Shutdown)),
+            "unannounced Shutdown survived a legal live cancel: {kinds:?}"
+        );
+        assert!(
+            kinds.iter().any(|kind| is_cancellation(kind, CancellationReason::UserRequested)),
+            "legal live cancel did not emit UserRequested: {kinds:?}"
+        );
+
+        let result = Box::new(handle).wait();
+        assert_eq!(
+            result.disposition(),
+            &TerminalDisposition::CancelledRunning(CancellationReason::UserRequested)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn live_cancel_then_different_reason_after_the_phase_is_admitted_is_refused() -> TestResult {
+        let mut handle = cancellable_handle(ScriptedRun::exiting(0));
+        let started = take_event(&mut handle)?;
+        if !matches!(started.kind(), ProcessEventKind::Started) {
+            return Err("first event was not Started");
+        }
+        assert_eq!(
+            handle.cancel(CancellationReason::UserRequested),
+            CancellationAcknowledgement::Accepted
+        );
+        let phase = take_event(&mut handle)?;
+        if !is_cancellation(phase.kind(), CancellationReason::UserRequested) {
+            return Err("live cancel did not emit UserRequested");
+        }
+
+        assert_eq!(
+            handle.cancel(CancellationReason::Shutdown),
+            CancellationAcknowledgement::ContradictsEmittedReason
+        );
+
+        let result = Box::new(handle).wait();
+        assert_eq!(
+            result.disposition(),
+            &TerminalDisposition::CancelledRunning(CancellationReason::UserRequested)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scripted_control_without_event_may_be_replaced_by_live_cancel() -> TestResult {
+        // The #14556 converse: a control flag with no phase is scriptable.
+        // Nothing has been announced, so live cancel may name a different
+        // reason.
+        let run = ScriptedRun::exiting(0).with_control(ControlState {
+            cancellation_requested: Some(CancellationReason::Shutdown),
+            ..ControlState::default()
+        });
+        let mut handle = cancellable_handle(run);
+        let started = take_event(&mut handle)?;
+        if !matches!(started.kind(), ProcessEventKind::Started) {
+            return Err("first event was not Started");
+        }
+
+        assert_eq!(
+            handle.cancel(CancellationReason::UserRequested),
+            CancellationAcknowledgement::Accepted
+        );
+
+        let result = Box::new(handle).wait();
+        assert_eq!(
+            result.disposition(),
+            &TerminalDisposition::CancelledRunning(CancellationReason::UserRequested)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn refused_second_reason_does_not_drop_unpolled_scripted_events() -> TestResult {
+        // The wrong implementation this kills: refusing by clearing pending,
+        // so a later Started the consumer had not yet seen disappears.
+        let mut run = ScriptedRun::exiting(0).with_control(ControlState {
+            cancellation_requested: Some(CancellationReason::Shutdown),
+            started_before_cancellation: false,
+            ..ControlState::default()
+        });
+        run.events = vec![
+            ProcessEventKind::TerminationPhase(TerminationPhase::CancellationRequested(
+                CancellationReason::Shutdown,
+            )),
+            ProcessEventKind::Started,
+        ];
+        let mut handle = cancellable_handle(run);
+        let phase = take_event(&mut handle)?;
+        if !is_cancellation(phase.kind(), CancellationReason::Shutdown) {
+            return Err("first event was not CancellationRequested(Shutdown)");
+        }
+
+        assert_eq!(
+            handle.cancel(CancellationReason::OperationSuperseded),
+            CancellationAcknowledgement::ContradictsEmittedReason
+        );
+
+        let kinds = drain(&mut handle);
+        assert!(
+            kinds.iter().any(|kind| matches!(kind, ProcessEventKind::Started)),
+            "refused cancel dropped the unpolled Started: {kinds:?}"
+        );
+        assert!(
+            kinds
+                .iter()
+                .all(|kind| !is_cancellation(kind, CancellationReason::OperationSuperseded)),
+            "refused cancel still emitted OperationSuperseded: {kinds:?}"
+        );
+
+        let result = Box::new(handle).wait();
+        assert_eq!(
+            result.disposition(),
+            &TerminalDisposition::CancelledBeforeStart(CancellationReason::Shutdown)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn same_reason_after_a_pre_start_scripted_phase_still_reconciles() -> TestResult {
+        // Existing contract: cancelling before Started is admitted must
+        // still rewrite settlement even when the matching phase was already
+        // emitted.
+        let mut run = ScriptedRun::exiting(0).with_control(ControlState {
+            cancellation_requested: Some(CancellationReason::Shutdown),
+            ..ControlState::default()
+        });
+        run.events = vec![
+            ProcessEventKind::TerminationPhase(TerminationPhase::CancellationRequested(
+                CancellationReason::Shutdown,
+            )),
+            ProcessEventKind::Started,
+        ];
+        let mut handle = cancellable_handle(run);
+        let phase = take_event(&mut handle)?;
+        if !is_cancellation(phase.kind(), CancellationReason::Shutdown) {
+            return Err("first event was not CancellationRequested(Shutdown)");
+        }
+
+        assert_eq!(
+            handle.cancel(CancellationReason::Shutdown),
+            CancellationAcknowledgement::Accepted
+        );
+
+        let kinds = drain(&mut handle);
+        assert!(
+            kinds.iter().all(|kind| !matches!(kind, ProcessEventKind::Started)),
+            "same-reason pre-start cancel left Started in the stream: {kinds:?}"
+        );
+
+        let result = Box::new(handle).wait();
+        assert_eq!(
+            result.disposition(),
+            &TerminalDisposition::CancelledBeforeStart(CancellationReason::Shutdown)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_later_same_reason_cancel_is_still_legal_after_a_refused_one() -> TestResult {
+        let mut handle = cancellable_handle(started_then_cancelled(CancellationReason::Shutdown));
+        poll_started_and_cancellation(&mut handle, CancellationReason::Shutdown)?;
+        assert_eq!(
+            handle.cancel(CancellationReason::UserRequested),
+            CancellationAcknowledgement::ContradictsEmittedReason
+        );
+        assert_eq!(
+            handle.cancel(CancellationReason::Shutdown),
+            CancellationAcknowledgement::Accepted
+        );
+        let result = Box::new(handle).wait();
+        assert_eq!(
+            result.disposition(),
+            &TerminalDisposition::CancelledRunning(CancellationReason::Shutdown)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn not_cancellable_still_wins_before_reason_comparison() -> TestResult {
+        let mut handle = FakeHandle::new(
+            PlanId::new("plan"),
+            dummy_fingerprint(),
+            RunId::new("run"),
+            started_then_cancelled(CancellationReason::Shutdown),
+            false,
+            false,
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        poll_started_and_cancellation(&mut handle, CancellationReason::Shutdown)?;
+        assert_eq!(
+            handle.cancel(CancellationReason::UserRequested),
+            CancellationAcknowledgement::NotCancellable
+        );
+        let result = Box::new(handle).wait();
+        assert_eq!(
+            result.disposition(),
+            &TerminalDisposition::CancelledRunning(CancellationReason::Shutdown)
+        );
+        Ok(())
     }
 }
