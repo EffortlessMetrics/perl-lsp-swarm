@@ -60,7 +60,7 @@
 //! let _ = lexer.next_token();
 //!
 //! // Restore to checkpoint
-//! lexer.restore(&checkpoint);
+//! lexer.restore(&checkpoint).expect("live checkpoint restores");
 //! ```
 //!
 //! ## Configuration Options
@@ -199,7 +199,10 @@ pub mod tokenizer;
 mod unicode;
 
 pub use api::*;
-pub use checkpoint::{CheckpointCache, Checkpointable, LexerCheckpoint};
+pub use checkpoint::{
+    CHECKPOINT_SCHEMA_VERSION, CheckpointCache, CheckpointNewlinePolicy, CheckpointRestoreError,
+    Checkpointable, LexerCheckpoint, LexerCheckpointIdentity, LexerPolicyIdentity,
+};
 pub use config::LexerConfig;
 pub use error::{LexerError, Result};
 pub use lexer::PerlLexer;

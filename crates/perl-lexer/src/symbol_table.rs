@@ -91,6 +91,11 @@ impl LocalSymbolTable {
     pub fn is_empty(&self) -> bool {
         self.known_subs.is_empty()
     }
+
+    /// Ordered name set used as checkpoint policy identity until #8812.
+    pub(crate) fn identity_names(&self) -> std::collections::BTreeSet<Box<str>> {
+        self.known_subs.iter().cloned().collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

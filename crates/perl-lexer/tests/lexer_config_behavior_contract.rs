@@ -285,7 +285,7 @@ fn configured_lookahead_survives_checkpoint_replay() -> R {
         let checkpoint = lexer.checkpoint();
         assert!(lexer.can_restore(&checkpoint));
         let uninterrupted = collect_remaining(&mut lexer);
-        lexer.restore(&checkpoint);
+        assert!(lexer.restore(&checkpoint).is_ok());
         let replayed = collect_remaining(&mut lexer);
         assert_eq!(uninterrupted, replayed, "lookahead limit {max_lookahead}");
     }
@@ -376,7 +376,7 @@ fn checkpoint_identity_ignores_noop_configuration_variation() -> R {
         );
 
         let from_tracked = collect_remaining(&mut tracked);
-        untracked.restore(&checkpoint);
+        assert!(untracked.restore(&checkpoint).is_ok());
         let replayed = collect_remaining(&mut untracked);
         assert_eq!(
             from_tracked, replayed,
@@ -401,7 +401,7 @@ fn checkpoint_identity_ignores_noop_configuration_variation() -> R {
             back_on_default.can_restore(&flipped_checkpoint),
             "default configuration must accept checkpoints captured under the no-op value"
         );
-        back_on_default.restore(&flipped_checkpoint);
+        assert!(back_on_default.restore(&flipped_checkpoint).is_ok());
         let reverse_replayed = collect_remaining(&mut back_on_default);
         assert_eq!(
             expected_reverse, reverse_replayed,

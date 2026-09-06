@@ -4,6 +4,7 @@ use crate::config::LexerConfig;
 use crate::heredoc::HeredocSpec;
 use crate::mode::LexerMode;
 use crate::quote_handler;
+use perl_source_identity::{LogicalSourceId, SourceGeneration};
 
 /// Context-aware lexer for the Perl language.
 ///
@@ -35,4 +36,8 @@ pub struct PerlLexer<'a> {
     pub(crate) eof_emitted: bool,
     /// Temporary upper bound used while segmenting a heredoc body.
     pub(crate) scan_limit: Option<usize>,
+    /// Optional logical source bound by a producer (#4851 / #7747).
+    pub(crate) logical_source: Option<LogicalSourceId>,
+    /// Optional source generation bound by a producer (#7747).
+    pub(crate) generation: SourceGeneration,
 }

@@ -31,6 +31,8 @@ impl<'a> PerlLexer<'a> {
             qw_recovery_enabled: true,
             eof_emitted: false,
             scan_limit: None,
+            logical_source: None,
+            generation: perl_source_identity::SourceGeneration::Unknown,
         }
     }
 

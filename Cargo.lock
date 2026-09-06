@@ -1852,6 +1852,7 @@ dependencies = [
  "perl-ast-v2",
  "perl-parser-core",
  "perl-position-tracking",
+ "perl-source-identity",
  "perl-tdd-support",
  "perl-token",
  "phf",

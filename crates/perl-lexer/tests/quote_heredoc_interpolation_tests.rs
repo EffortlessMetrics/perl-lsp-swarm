@@ -554,7 +554,7 @@ fn heredoc_identity_and_geometry_are_stable_across_settings() -> R {
 fn checkpoint_rejects_a_different_interpolation_policy_for_pending_heredocs() {
     let source = heredoc_source("value $name");
     let mut enabled = PerlLexer::with_config_and_body_tokens(&source, config(true));
-    while enabled.checkpoint().pending_heredocs.is_empty() {
+    while enabled.checkpoint().pending_heredocs().is_empty() {
         assert!(enabled.next_token().is_some(), "heredoc opener should be reached");
     }
     let checkpoint = enabled.checkpoint();
@@ -577,12 +577,12 @@ fn checkpoint_policy_identity_is_independent_of_the_pending_heredoc_form() -> R 
     for opener in ["<<'END'", "<<\\END", "<<`END`"] {
         let source = format!("my $text = {opener};\nbody\nEND\nprint $text;\n");
         let mut enabled = PerlLexer::with_config_and_body_tokens(&source, config(true));
-        while enabled.checkpoint().pending_heredocs.is_empty() {
+        while enabled.checkpoint().pending_heredocs().is_empty() {
             assert!(enabled.next_token().is_some(), "heredoc opener {opener} should be reached");
         }
         let checkpoint = enabled.checkpoint();
         assert!(
-            checkpoint.pending_heredocs.iter().all(|heredoc| !heredoc.interpolates),
+            checkpoint.pending_heredocs().iter().all(|heredoc| !heredoc.interpolates),
             "{opener} must queue a non-interpolating heredoc"
         );
 
@@ -606,7 +606,7 @@ fn checkpoint_policy_identity_is_independent_of_the_pending_heredoc_form() -> R 
     let plain_source = "my $x = 1;\n";
     let fresh_enabled = PerlLexer::with_config_and_body_tokens(plain_source, config(true));
     let fresh_checkpoint = fresh_enabled.checkpoint();
-    assert!(fresh_checkpoint.pending_heredocs.is_empty());
+    assert!(fresh_checkpoint.pending_heredocs().is_empty());
     let fresh_disabled = PerlLexer::with_config_and_body_tokens(plain_source, config(false));
     assert!(
         !fresh_disabled.can_restore(&fresh_checkpoint),
