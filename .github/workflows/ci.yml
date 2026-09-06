@@ -1668,6 +1668,18 @@ jobs:
       - name: Changelog fragment gate contract (required merge surface)
         run: cargo test -p xtask --bin xtask --locked -- --nocapture changelog changie
 
+      # #14180: same required-surface reasoning as the Cargo dependency-name
+      # contract above. This suite asserts that the GitHub Actions `/` and npm
+      # `/vscode-extension` rows keep `prefix: "chore"` plus `include: "scope"`
+      # and reject `prefix: "chore(deps)"` plus that include. Cargo is out of
+      # this claim (#13482 / #14898). `.github/dependabot.yml` is not in
+      # ci-scope's CI_CONFIG_PATHS, so a config-only revert would never reach
+      # the advisory routed lane. Inserted after the changelog fragment gate
+      # so it does not occupy the insertion site #14898 uses after the Cargo
+      # name contract.
+      - name: Dependabot GitHub Actions and npm commit-message contract (required merge surface)
+        run: cargo test -p xtask --test dependabot_gha_npm_commit_message --locked -- --nocapture
+
   lsp-memory-smoke:
     name: LSP Memory Smoke
     runs-on: ubuntu-24.04
