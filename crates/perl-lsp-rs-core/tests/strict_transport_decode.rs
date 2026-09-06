@@ -383,6 +383,59 @@ fn read_message_rejects_invalid_utf8_header_without_losing_next_frame() -> io::R
 }
 
 #[test]
+fn read_message_discards_known_body_after_invalid_utf8_secondary_header() -> io::Result<()> {
+    // Content-Length is trustworthy before a later header line fails UTF-8.
+    // Leaving that body unread makes the next call swallow the following frame.
+    let body = br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let mut payload = format!("Content-Length: {}\r\n", body.len()).into_bytes();
+    payload.push(0xFF);
+    payload.extend_from_slice(b"\r\n\r\n");
+    payload.extend_from_slice(body);
+    payload.extend(framed_request(7, "after-known-length"));
+
+    let mut reader = BufReader::with_capacity(4096, Cursor::new(payload.clone()));
+    match read_message_outcome(&mut reader)? {
+        Some(Err(IncomingMessageError::Framing(FramingError::InvalidHeaderUtf8))) => {}
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected InvalidHeaderUtf8, got {other:?}"),
+            ));
+        }
+    }
+    let recovered = read_message(&mut reader)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "expected recovered request after known-length body discard",
+        )
+    })?;
+    assert_eq!(recovered.method, "after-known-length");
+
+    // The stateful production reader recovers the same bytes via sentinel resync.
+    let mut cursor = Cursor::new(payload);
+    let mut stateful = ContentLengthMessageReader::new();
+    match stateful.read_next_outcome(&mut cursor)? {
+        Some(Err(IncomingMessageError::Framing(FramingError::InvalidHeaderUtf8))) => {}
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected stateful InvalidHeaderUtf8, got {other:?}"),
+            ));
+        }
+    }
+    match stateful.read_next_outcome(&mut cursor)? {
+        Some(Ok(request)) => assert_eq!(request.method, "after-known-length"),
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected recovered stateful request, got {other:?}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn read_message_rejects_invalid_utf8_without_losing_next_frame() -> io::Result<()> {
     let mut payload = framed(&invalid_utf8_json_body());
     payload.extend(framed_request(9, "second"));

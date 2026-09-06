@@ -412,6 +412,17 @@ fn drain_to_header_end(reader: &mut dyn BufRead) -> io::Result<()> {
     }
 }
 
+/// Discard a body whose `Content-Length` was already parsed before a later
+/// header-block failure. The one-shot helper has no sentinel resync, so
+/// leaving those bytes would make the next call treat the body as headers.
+fn discard_known_body(reader: &mut dyn BufRead, length: usize) -> io::Result<()> {
+    if length == 0 || length > MAX_FRAME_SIZE {
+        return Ok(());
+    }
+    let mut limited = reader.take(length as u64);
+    io::copy(&mut limited, &mut io::sink()).map(|_| ())
+}
+
 /// Read one LSP message from a buffered reader as a typed one-frame outcome.
 ///
 /// This helper consumes at most one frame from `reader` so a following frame
@@ -437,6 +448,9 @@ pub fn read_message_outcome(
             Ok(header) => header,
             Err(_) => {
                 drain_to_header_end(reader)?;
+                if let Some(length) = content_length {
+                    discard_known_body(reader, length)?;
+                }
                 return Ok(Some(Err(IncomingMessageError::Framing(
                     FramingError::InvalidHeaderUtf8,
                 ))));
