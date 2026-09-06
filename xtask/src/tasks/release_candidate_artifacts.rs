@@ -319,6 +319,27 @@ pub fn check() -> Result<()> {
     );
     push_failure(
         &mut failures,
+        "incomplete_checksums",
+        incomplete_packet_omits_support_role_check(&topology, ArtifactRole::Checksums),
+    );
+    push_failure(
+        &mut failures,
+        "incomplete_sbom",
+        incomplete_packet_omits_support_role_check(&topology, ArtifactRole::Sbom),
+    );
+    push_failure(
+        &mut failures,
+        "attestation_subjects",
+        attestation_subjects_mismatch_check(&topology),
+    );
+    push_failure(
+        &mut failures,
+        "non_archive_target",
+        non_archive_target_fails_verify_check(&topology),
+    );
+    push_failure(&mut failures, "role_target_schema", role_target_presence_schema_check(&topology));
+    push_failure(
+        &mut failures,
         "invalid_freeze_expiry",
         freeze_invalid_available_until_check(&topology),
     );
@@ -753,8 +774,8 @@ fn bind_artifacts(
     Ok(artifacts)
 }
 
-/// Packet membership must cover topology archives/VSIX, not merely hash the
-/// declared packet list. Digest agreement on a subset is not verification.
+/// Packet membership must cover topology archives/VSIX plus exactly one
+/// SHA256SUMS and one SBOM. Digest agreement on a subset is not verification.
 fn assert_packet_matches_topology(
     topology: &TopologyMembership,
     packet: &CandidateArtifactPacket,
@@ -813,6 +834,8 @@ fn assert_packet_matches_topology(
         .into());
     }
 
+    let mut checksums = 0usize;
+    let mut sbom = 0usize;
     for artifact in &packet.artifacts {
         match artifact.role {
             ArtifactRole::ReleaseArchive => {
@@ -838,9 +861,78 @@ fn assert_packet_matches_topology(
                     )
                     .into());
                 }
+                if artifact.target.is_some() {
+                    return Err(HandoffError::new(
+                        ReasonCode::VersionMetadataMismatch,
+                        format!("{} vsix must omit target", artifact.name),
+                    )
+                    .into());
+                }
             }
-            ArtifactRole::Checksums | ArtifactRole::Sbom => {}
+            ArtifactRole::Checksums => {
+                checksums += 1;
+                if artifact.name != CHECKSUMS_NAME {
+                    return Err(HandoffError::new(
+                        ReasonCode::VersionMetadataMismatch,
+                        format!("checksums member must be named {CHECKSUMS_NAME}"),
+                    )
+                    .into());
+                }
+                if artifact.target.is_some() {
+                    return Err(HandoffError::new(
+                        ReasonCode::VersionMetadataMismatch,
+                        format!("{CHECKSUMS_NAME} must omit target"),
+                    )
+                    .into());
+                }
+            }
+            ArtifactRole::Sbom => {
+                sbom += 1;
+                if artifact.target.is_some() {
+                    return Err(HandoffError::new(
+                        ReasonCode::VersionMetadataMismatch,
+                        format!("{} sbom must omit target", artifact.name),
+                    )
+                    .into());
+                }
+            }
         }
+    }
+    if checksums == 0 {
+        return Err(HandoffError::new(
+            ReasonCode::TransportIncomplete,
+            format!("frozen packet omits {CHECKSUMS_NAME}"),
+        )
+        .into());
+    }
+    if checksums > 1 {
+        return Err(HandoffError::new(
+            ReasonCode::ExtraPublishableArtifact,
+            "frozen packet declares more than one checksums member",
+        )
+        .into());
+    }
+    if sbom == 0 {
+        return Err(
+            HandoffError::new(ReasonCode::TransportIncomplete, "frozen packet omits SBOM").into()
+        );
+    }
+    if sbom > 1 {
+        return Err(HandoffError::new(
+            ReasonCode::ExtraPublishableArtifact,
+            "frozen packet declares more than one SBOM",
+        )
+        .into());
+    }
+
+    let expected_subjects: Vec<String> =
+        packet.artifacts.iter().map(|artifact| artifact.name.clone()).collect();
+    if packet.attestation_subjects != expected_subjects {
+        return Err(HandoffError::new(
+            ReasonCode::MalformedDocument,
+            "attestation_subjects must equal frozen artifact names in packet order",
+        )
+        .into());
     }
     Ok(())
 }
@@ -1296,6 +1388,114 @@ fn incomplete_packet_omits_archive_check(topology: &Path) -> Result<()> {
     expect_verify_reason(verify_packet(&verify_cfg(&dirs)), ReasonCode::MissingTopologyArchive)
 }
 
+fn incomplete_packet_omits_support_role_check(topology: &Path, role: ArtifactRole) -> Result<()> {
+    let dirs = scenario_dirs(topology)?;
+    let mut packet = freeze_packet(&freeze_cfg(&dirs, "run-1", "set-rc1"))?;
+    let omitted: Vec<String> = packet
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.role == role)
+        .map(|artifact| artifact.name.clone())
+        .collect();
+    if omitted.is_empty() {
+        bail!("freeze did not produce a {} member", role.as_str());
+    }
+    packet.artifacts.retain(|artifact| artifact.role != role);
+    packet
+        .attestation_subjects
+        .retain(|name| !omitted.iter().any(|omitted_name| omitted_name == name));
+    packet.packet_digest = compute_packet_digest(&packet)?;
+    serde_json::to_writer_pretty(File::create(&dirs.packet)?, &packet)?;
+    for name in &omitted {
+        fs::remove_file(dirs.staging.join(name))?;
+    }
+    expect_verify_reason(verify_packet(&verify_cfg(&dirs)), ReasonCode::TransportIncomplete)
+}
+
+fn attestation_subjects_mismatch_check(topology: &Path) -> Result<()> {
+    let dirs = scenario_dirs(topology)?;
+    let mut packet = freeze_packet(&freeze_cfg(&dirs, "run-1", "set-rc1"))?;
+    packet.attestation_subjects.reverse();
+    if packet.attestation_subjects
+        == packet.artifacts.iter().map(|artifact| artifact.name.clone()).collect::<Vec<_>>()
+    {
+        packet.attestation_subjects.clear();
+        packet.attestation_subjects.push("not-a-frozen-member.tar.gz".to_string());
+    }
+    packet.packet_digest = compute_packet_digest(&packet)?;
+    serde_json::to_writer_pretty(File::create(&dirs.packet)?, &packet)?;
+    expect_verify_reason(verify_packet(&verify_cfg(&dirs)), ReasonCode::MalformedDocument)
+}
+
+fn non_archive_target_fails_verify_check(topology: &Path) -> Result<()> {
+    for role in [ArtifactRole::Vsix, ArtifactRole::Checksums, ArtifactRole::Sbom] {
+        let dirs = scenario_dirs(topology)?;
+        let mut packet = freeze_packet(&freeze_cfg(&dirs, "run-1", "set-rc1"))?;
+        let mut found = false;
+        for artifact in &mut packet.artifacts {
+            if artifact.role == role {
+                artifact.target = Some("x86_64-unknown-linux-gnu".to_string());
+                found = true;
+            }
+        }
+        if !found {
+            bail!("freeze did not produce a {} member", role.as_str());
+        }
+        packet.packet_digest = compute_packet_digest(&packet)?;
+        serde_json::to_writer_pretty(File::create(&dirs.packet)?, &packet)?;
+        expect_verify_reason(verify_packet(&verify_cfg(&dirs)), ReasonCode::SchemaViolation)?;
+    }
+    Ok(())
+}
+
+fn role_target_presence_schema_check(topology: &Path) -> Result<()> {
+    let dirs = scenario_dirs(topology)?;
+    let packet = freeze_packet(&freeze_cfg(&dirs, "run-1", "set-rc1"))?;
+    let schema = load_schema(&project_root()?)?;
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| eyre!("schema compile failed: {error}"))?;
+    let mut missing_archive_target = serde_json::to_value(&packet)?;
+    let Some(artifacts) = missing_archive_target.get_mut("artifacts").and_then(Value::as_array_mut)
+    else {
+        bail!("packet artifacts missing");
+    };
+    let mut saw_archive = false;
+    for artifact in artifacts.iter_mut() {
+        if artifact.get("role").and_then(Value::as_str) == Some("release_archive") {
+            if let Some(object) = artifact.as_object_mut() {
+                object.remove("target");
+            }
+            saw_archive = true;
+        }
+    }
+    if !saw_archive {
+        bail!("freeze did not produce a release_archive member");
+    }
+    if validator.iter_errors(&missing_archive_target).next().is_none() {
+        bail!("schema accepted release_archive without target");
+    }
+    for role in ["vsix", "checksums", "sbom"] {
+        let mut with_target = serde_json::to_value(&packet)?;
+        let Some(artifacts) = with_target.get_mut("artifacts").and_then(Value::as_array_mut) else {
+            bail!("packet artifacts missing");
+        };
+        let mut found = false;
+        for artifact in artifacts.iter_mut() {
+            if artifact.get("role").and_then(Value::as_str) == Some(role) {
+                artifact["target"] = Value::String("x86_64-unknown-linux-gnu".to_string());
+                found = true;
+            }
+        }
+        if !found {
+            bail!("freeze did not produce a {role} member");
+        }
+        if validator.iter_errors(&with_target).next().is_none() {
+            bail!("schema accepted {role} with target");
+        }
+    }
+    Ok(())
+}
+
 fn freeze_invalid_available_until_check(topology: &Path) -> Result<()> {
     let dirs = scenario_dirs(topology)?;
     let mut cfg = freeze_cfg(&dirs, "run-1", "set-rc1");
@@ -1440,6 +1640,31 @@ mod tests {
     #[test]
     fn incomplete_packet_omitting_topology_archive_fails_after_digest_recompute() -> Result<()> {
         incomplete_packet_omits_archive_check(&topology()?)
+    }
+
+    #[test]
+    fn incomplete_packet_omitting_checksums_fails_after_digest_recompute() -> Result<()> {
+        incomplete_packet_omits_support_role_check(&topology()?, ArtifactRole::Checksums)
+    }
+
+    #[test]
+    fn incomplete_packet_omitting_sbom_fails_after_digest_recompute() -> Result<()> {
+        incomplete_packet_omits_support_role_check(&topology()?, ArtifactRole::Sbom)
+    }
+
+    #[test]
+    fn attestation_subjects_must_match_frozen_artifact_names() -> Result<()> {
+        attestation_subjects_mismatch_check(&topology()?)
+    }
+
+    #[test]
+    fn non_archive_roles_with_target_fail_verify() -> Result<()> {
+        non_archive_target_fails_verify_check(&topology()?)
+    }
+
+    #[test]
+    fn role_target_presence_is_encoded_in_schema() -> Result<()> {
+        role_target_presence_schema_check(&topology()?)
     }
 
     #[test]

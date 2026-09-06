@@ -168,7 +168,25 @@
         },
         "sha256": { "$ref": "#/$defs/sha256" },
         "size": { "type": "integer", "minimum": 0 }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "role": { "const": "release_archive" } },
+            "required": ["role"]
+          },
+          "then": { "required": ["target"] }
+        },
+        {
+          "if": {
+            "properties": { "role": { "enum": ["vsix", "checksums", "sbom"] } },
+            "required": ["role"]
+          },
+          "then": {
+            "not": { "required": ["target"] }
+          }
+        }
+      ]
     }
   }
 }
