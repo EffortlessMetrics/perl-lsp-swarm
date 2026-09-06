@@ -17,6 +17,8 @@
 //! the value the client requested. Echoing the request would let a backend
 //! that silently ignored the write report success.
 
+use std::fmt;
+
 use serde::Serialize;
 
 use super::scalar_value::{MutationValue, MutationValueProfile};
@@ -46,7 +48,7 @@ pub struct PossibleApplication(());
 ///
 /// Constructed from what the engine reported on re-inspection, never from the
 /// operation's requested value.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ObservedReadBack {
     /// The value observed in the target after the write.
     pub observed_value: MutationValue,
@@ -54,6 +56,19 @@ pub struct ObservedReadBack {
     pub observed_binding_identity: String,
     /// Value-authority generation the read-back was observed under.
     pub observed_value_authority_generation: u64,
+}
+
+impl fmt::Debug for ObservedReadBack {
+    /// Redacted: the observed value is debuggee data, and the binding identity
+    /// is a storage spelling. Reports only that a read-back exists and the
+    /// authority it was observed under.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ObservedReadBack")
+            .field("observed_value", &self.observed_value)
+            .field("observed_binding_identity", &"<redacted>")
+            .field("observed_value_authority_generation", &self.observed_value_authority_generation)
+            .finish()
+    }
 }
 
 /// Terminal outcome of one scalar mutation operation.

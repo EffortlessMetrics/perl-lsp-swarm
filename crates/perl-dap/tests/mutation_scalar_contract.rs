@@ -874,3 +874,117 @@ fn unsupported_receipts_keep_the_exact_refusing_cell() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn an_empty_backend_mode_cannot_bind() -> TestResult {
+    // The target and its operation name the capability cell an edit runs
+    // against, and an unsupported refusal reports that cell. An empty mode
+    // would produce evidence that cannot say which backend was involved.
+    let mut candidate = lexical_candidate("frame#1", "pad:$x@0");
+    candidate.backend_mode = String::new();
+
+    let error = binding_error(&candidate)?;
+    if error != MutationTargetBindingError::MissingBackendMode {
+        return Err(format!("expected a missing-backend-mode refusal, got {error:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn receipts_distinguish_different_storage_cells() -> TestResult {
+    // Targets the contract treats as distinct must not collapse to one
+    // receipt, or durable evidence cannot say which cell an edit addressed.
+    let count = bind(&lexical_candidate("frame#1", "pad:$count@0"))?.receipt_projection();
+    let total = bind(&lexical_candidate("frame#1", "pad:$total@1"))?.receipt_projection();
+    let other_frame = bind(&lexical_candidate("frame#2", "pad:$count@0"))?.receipt_projection();
+
+    if count.location_fingerprint == total.location_fingerprint {
+        return Err("two different bindings shared a receipt fingerprint".to_string());
+    }
+    if count.location_fingerprint == other_frame.location_fingerprint {
+        return Err("the same binding in two frames shared a fingerprint".to_string());
+    }
+    // Same cell, same fingerprint: it identifies the location, not the call.
+    let count_again = bind(&lexical_candidate("frame#1", "pad:$count@0"))?.receipt_projection();
+    if count.location_fingerprint != count_again.location_fingerprint {
+        return Err("one cell produced two fingerprints".to_string());
+    }
+
+    // Two hash keys differing only in content must still separate.
+    let key_receipt = |key: &str| -> TestResult<perl_dap::mutation::MutationTargetReceipt> {
+        let mut candidate = lexical_candidate("frame#1", "pad:%opts@2");
+        candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
+        candidate.member = Some(MutationMember::HashKey(key.to_string()));
+        candidate.inspected_value = Some(InspectedValueIdentity {
+            value_node: "node".to_string(),
+            referent: Some("HASH(0x1)".to_string()),
+            value_authority_generation: 11,
+        });
+        Ok(bind(&candidate)?.receipt_projection())
+    };
+    if key_receipt("alpha")?.location_fingerprint == key_receipt("beta")?.location_fingerprint {
+        return Err("two hash keys shared a fingerprint".to_string());
+    }
+    // Field-split ambiguity: "ab"+"c" must not collide with "a"+"bc".
+    let ab_c = bind(&lexical_candidate("ab", "c"))?.receipt_projection();
+    let a_bc = bind(&lexical_candidate("a", "bc"))?.receipt_projection();
+    if ab_c.location_fingerprint == a_bc.location_fingerprint {
+        return Err("length prefixing failed to separate field splits".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn debug_formatting_does_not_leak_payload() -> TestResult {
+    // Withholding Serialize closes the durable path; Debug is the diagnostic
+    // one, and a `tracing` span or a failed assertion would print it.
+    let secret_value = "hunter2";
+    let secret_key = "api-token";
+
+    let value = MutationValue::UnicodeString(secret_value.to_string());
+    let rendered = format!("{value:?}");
+    if rendered.contains(secret_value) {
+        return Err(format!("Debug leaked the assigned value: {rendered}"));
+    }
+    if !rendered.contains("redacted") {
+        return Err(format!("Debug did not mark the value redacted: {rendered}"));
+    }
+
+    let member = MutationMember::HashKey(secret_key.to_string());
+    let rendered_member = format!("{member:?}");
+    if rendered_member.contains(secret_key) {
+        return Err(format!("Debug leaked the hash key: {rendered_member}"));
+    }
+
+    // Exact numbers are assigned values too.
+    let integer = integer("9007199254740993")?;
+    if format!("{integer:?}").contains("9007199254740993") {
+        return Err("Debug leaked an exact integer".to_string());
+    }
+
+    // Composition: a containing type's derived Debug must inherit redaction.
+    let mut candidate = lexical_candidate("frame#1", "pad:%creds@4");
+    candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
+    candidate.member = Some(MutationMember::HashKey(secret_key.to_string()));
+    candidate.inspected_value = Some(InspectedValueIdentity {
+        value_node: "node".to_string(),
+        referent: Some("HASH(0x1)".to_string()),
+        value_authority_generation: 11,
+    });
+    let op = operation(
+        MutationOrigin::SetVariable,
+        bind(&candidate)?,
+        MutationValue::UnicodeString(secret_value.to_string()),
+    );
+    let rendered_op = format!("{op:?}");
+    if rendered_op.contains(secret_value) || rendered_op.contains(secret_key) {
+        return Err(format!("Debug leaked through the operation: {rendered_op}"));
+    }
+
+    // And through an outcome carrying an observed read-back.
+    let outcome = success_outcome();
+    if format!("{outcome:?}").contains("observed") && format!("{outcome:?}").contains("pad:$x@0") {
+        return Err("Debug leaked the observed binding identity".to_string());
+    }
+    Ok(())
+}

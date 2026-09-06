@@ -1307,6 +1307,7 @@ pub fn perl_dap::mutation::MutationOutcome::eq(&self, other: &perl_dap::mutation
 pub fn perl_dap::mutation::MutationOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::mutation::MutationTargetBindingError
 pub perl_dap::mutation::MutationTargetBindingError::MemberKindMismatch
+pub perl_dap::mutation::MutationTargetBindingError::MissingBackendMode
 pub perl_dap::mutation::MutationTargetBindingError::MissingBindingIdentity
 pub perl_dap::mutation::MutationTargetBindingError::MissingFrameIdentity
 pub perl_dap::mutation::MutationTargetBindingError::MissingLocationKind
@@ -1534,8 +1535,10 @@ pub fn perl_dap::mutation::MutationTargetCandidate::default() -> perl_dap::mutat
 pub fn perl_dap::mutation::MutationTargetCandidate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::mutation::MutationTargetReceipt
 pub perl_dap::mutation::MutationTargetReceipt::array_index: core::option::Option<i64>
+pub perl_dap::mutation::MutationTargetReceipt::backend_mode: alloc::string::String
 pub perl_dap::mutation::MutationTargetReceipt::cohort: perl_dap::mutation::MutationTargetCohort
 pub perl_dap::mutation::MutationTargetReceipt::key_bytes: core::option::Option<usize>
+pub perl_dap::mutation::MutationTargetReceipt::location_fingerprint: perl_source_identity::digest::ContentDigest
 pub perl_dap::mutation::MutationTargetReceipt::member_kind: &'static str
 pub perl_dap::mutation::MutationTargetReceipt::profile_version: u32
 pub perl_dap::mutation::MutationTargetReceipt::session_generation: u64

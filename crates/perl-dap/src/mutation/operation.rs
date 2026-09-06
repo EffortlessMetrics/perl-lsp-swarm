@@ -164,7 +164,7 @@ impl MutationOperation {
 }
 
 /// Redacted projection of an operation for receipts and diagnostics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MutationOperationReceipt {
     /// Correlation identity.
     pub operation_id: u64,

@@ -40,6 +40,9 @@
 //! tightening is to make them newtypes only acquisition can mint; until it
 //! exists, there is nothing to constrain them against.
 
+use std::fmt;
+
+use perl_source_identity::ContentDigest;
 use serde::Serialize;
 
 /// Version of the supported mutation-target profile.
@@ -82,7 +85,7 @@ impl MutationLocationKind {
 /// concern and never reaches this type, so an empty key, a key containing a
 /// quote, a backslash, a control character, or a digit-looking key stays
 /// exactly the bytes the runtime observed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum MutationMember {
     /// The whole scalar binding.
     WholeScalar,
@@ -90,6 +93,18 @@ pub enum MutationMember {
     ArrayIndex(i64),
     /// Exact hash key data.
     HashKey(String),
+}
+
+impl fmt::Debug for MutationMember {
+    /// Redacted: hash key data is debuggee data. The array index is
+    /// structural and is retained, matching what the receipt keeps.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WholeScalar => f.write_str("WholeScalar"),
+            Self::ArrayIndex(index) => write!(f, "ArrayIndex({index})"),
+            Self::HashKey(key) => write!(f, "HashKey(<{} bytes redacted>)", key.len()),
+        }
+    }
 }
 
 impl MutationMember {
@@ -304,6 +319,13 @@ pub enum MutationTargetBindingError {
     /// No location kind was claimed.
     #[error("mutation target candidate has no location kind")]
     MissingLocationKind,
+    /// No backend/mode cell was named.
+    ///
+    /// The target and its operation identify the capability cell an edit runs
+    /// against, and an unsupported refusal names that cell, so an empty mode
+    /// would produce evidence that cannot say which backend refused.
+    #[error("mutation target candidate has no backend mode")]
+    MissingBackendMode,
     /// No member selector was claimed.
     #[error("mutation target candidate has no member selector")]
     MissingMember,
@@ -375,6 +397,9 @@ impl MutationTargetCandidate {
         }
         if self.binding_identity.is_empty() {
             return Err(MutationTargetBindingError::MissingBindingIdentity);
+        }
+        if self.backend_mode.is_empty() {
+            return Err(MutationTargetBindingError::MissingBackendMode);
         }
         let kind = self.kind.ok_or(MutationTargetBindingError::MissingLocationKind)?;
         let member = self.member.clone().ok_or(MutationTargetBindingError::MissingMember)?;
@@ -449,10 +474,43 @@ impl MutationTarget {
         self.profile_version
     }
 
+    /// Domain-separated digest of the exact storage cell this target names.
+    ///
+    /// Two targets the contract treats as distinct — different bindings, or
+    /// the same binding in different frames — must not produce equal receipts,
+    /// or durable evidence could not say which cell an edit addressed. The
+    /// digest gives that discrimination without putting the frame or binding
+    /// spelling, or hash key data, into the receipt.
+    ///
+    /// Every field is length-prefixed before hashing, so no two different
+    /// field splits can produce the same input.
+    fn location_fingerprint(&self) -> ContentDigest {
+        fn push(bytes: &mut Vec<u8>, field: &[u8]) {
+            bytes.extend_from_slice(&(field.len() as u64).to_be_bytes());
+            bytes.extend_from_slice(field);
+        }
+        let mut bytes = Vec::new();
+        push(&mut bytes, self.location.frame_identity().as_bytes());
+        push(&mut bytes, self.location.binding_identity().as_bytes());
+        match self.location.member() {
+            MutationMember::WholeScalar => push(&mut bytes, b"scalar"),
+            MutationMember::ArrayIndex(index) => {
+                push(&mut bytes, b"index");
+                push(&mut bytes, index.to_string().as_bytes());
+            }
+            MutationMember::HashKey(key) => {
+                push(&mut bytes, b"key");
+                push(&mut bytes, key.as_bytes());
+            }
+        }
+        ContentDigest::of_bytes(&bytes)
+    }
+
     /// Receipt-safe projection: identity and cohort, never key or value data.
     ///
     /// A hash key is debuggee data, so it is reduced to its byte length; the
-    /// array index is structural and is retained.
+    /// array index is structural and is retained. The exact cell is carried as
+    /// [`Self::location_fingerprint`], so distinct targets stay distinguishable.
     pub fn receipt_projection(&self) -> MutationTargetReceipt {
         let (member_kind, array_index, key_bytes) = match self.location.member() {
             MutationMember::WholeScalar => ("whole_scalar", None, None),
@@ -460,6 +518,8 @@ impl MutationTarget {
             MutationMember::HashKey(key) => ("hash_key", None, Some(key.len())),
         };
         MutationTargetReceipt {
+            location_fingerprint: self.location_fingerprint(),
+            backend_mode: self.backend_mode.clone(),
             cohort: self.cohort,
             member_kind,
             array_index,
@@ -473,8 +533,12 @@ impl MutationTarget {
 }
 
 /// Redacted projection of a mutation target for receipts and diagnostics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MutationTargetReceipt {
+    /// Digest of the exact storage cell, so distinct targets stay distinct.
+    pub location_fingerprint: ContentDigest,
+    /// Backend/mode cell the target is operated under.
+    pub backend_mode: String,
     /// Admitted cohort.
     pub cohort: MutationTargetCohort,
     /// Structural member discriminant.

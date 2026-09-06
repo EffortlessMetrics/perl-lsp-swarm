@@ -22,6 +22,8 @@
 //! number authority — which is what #11327's own start conditions asked for.
 //! See [`crate::mutation`] for the shared-ownership note.
 
+use std::fmt;
+
 use serde::Serialize;
 
 use super::structured_value::ExactDecimal;
@@ -55,7 +57,7 @@ pub const MUTATION_SCALAR_VALUE_SCHEMA_VERSION: u32 = 1;
 /// domain keeps exactly one representation of that value. Signed zero survives
 /// only in the decimal cohort, where `-0.0` is a distinct spelling Perl can
 /// observe.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ExactInteger {
     /// Canonical form: `0`, or `-?[1-9][0-9]*`.
     canonical: String,
@@ -91,6 +93,15 @@ impl ExactInteger {
     /// Whether this integer is strictly negative.
     pub fn is_negative(&self) -> bool {
         self.canonical.starts_with('-')
+    }
+}
+
+impl fmt::Debug for ExactInteger {
+    /// Redacted: the digits are an assigned debuggee value, so `{:?}` reports
+    /// the shape and not the number. Deriving `Debug` here would have reopened
+    /// through diagnostics exactly what withholding `Serialize` closed.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ExactInteger(<{} digits redacted>)", self.significant_digits())
     }
 }
 
@@ -159,7 +170,25 @@ impl MutationValueProfile {
 /// This is typed data below the parser boundary. It retains no raw client
 /// text, no spelling, and no Perl source; string content is inert regardless
 /// of what it resembles.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// # Which numeric cohort a value takes
+///
+/// The two exact cohorts overlap by construction: `ExactDecimal::admitted("5")`
+/// succeeds, because canonical JSON-number text includes bare integers. That
+/// overlap lives in the shared carrier and is not resolved here — it is
+/// resolved by the value parser (#10745), whose grammar makes the choice
+/// deterministic:
+///
+/// ```text
+/// at least one `.` or exponent  -> ExactDecimal
+/// otherwise                     -> ExactInteger
+/// ```
+///
+/// So `5` is always [`MutationValue::ExactInteger`] and never
+/// [`MutationValue::ExactDecimal`], and one client spelling never has two
+/// representations. A producer ignoring this rule would create exactly the
+/// ambiguity an exact model exists to avoid.
+#[derive(Clone, PartialEq)]
 pub enum MutationValue {
     /// Perl `undef`.
     Undef,
@@ -169,6 +198,25 @@ pub enum MutationValue {
     ExactDecimal(ExactDecimal),
     /// Unicode string data.
     UnicodeString(String),
+}
+
+impl fmt::Debug for MutationValue {
+    /// Redacted: the payload is debuggee data. Reports cohort and size only,
+    /// so a `tracing` span or a test assertion cannot print an assigned value.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Undef => f.write_str("Undef"),
+            Self::ExactInteger(integer) => {
+                write!(f, "ExactInteger(<{} digits redacted>)", integer.significant_digits())
+            }
+            Self::ExactDecimal(decimal) => {
+                write!(f, "ExactDecimal(<{} bytes redacted>)", decimal.canonical().len())
+            }
+            Self::UnicodeString(text) => {
+                write!(f, "UnicodeString(<{} bytes redacted>)", text.len())
+            }
+        }
+    }
 }
 
 impl MutationValue {
