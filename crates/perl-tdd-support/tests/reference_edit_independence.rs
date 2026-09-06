@@ -20,6 +20,12 @@ const MANIFEST: &str = include_str!("../Cargo.toml");
 
 /// Type and function names that would indicate delegation to a production
 /// applicator rather than an independent derivation.
+///
+/// `PositionMapper` and `apply_edit_utf8` are exports of `perl-position-tracking`,
+/// which the model is otherwise allowed to use. They are listed anyway: that
+/// crate is admitted for line geometry, not for edit application, and those two
+/// names are its edit-applying surface. Being deliberately stricter than the
+/// crate boundary is the point.
 const FORBIDDEN_SYMBOLS: &[&str] = &[
     "IncrementalEdit",
     "IncrementalEditSet",

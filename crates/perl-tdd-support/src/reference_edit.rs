@@ -22,7 +22,8 @@
 //! - both endpoints must lie on UTF-8 scalar boundaries;
 //! - an accepted transaction is already in ascending predecessor order;
 //! - overlapping ranges are rejected;
-//! - two edits sharing a start byte are rejected as ambiguous;
+//! - two edits sharing a start byte are rejected, because old-generation
+//!   coordinates alone do not order them;
 //! - a malformed transaction is **never** silently sorted into a valid one.
 //!
 //! Rejection is atomic. [`ReferenceSourceState::apply`] borrows the predecessor
@@ -317,7 +318,14 @@ pub enum ReferenceEditError {
         /// Start byte of the later-supplied edit.
         later_start: usize,
     },
-    /// Two edits share a start byte, so their relative effect is ambiguous.
+    /// Two edits share a start byte, so nothing in the coordinates orders them.
+    ///
+    /// Their relative order is not undefined in principle — the supplied
+    /// sequence would settle it — but old-generation coordinates alone do not,
+    /// and this slice declines to let incidental list order carry meaning the
+    /// coordinate model cannot express or validate. Rejecting is the
+    /// conservative choice #7344 asks the first slice to make, not a claim that
+    /// no sensible result exists.
     #[error("edits {earlier_index} and {later_index} share start byte {start_byte}")]
     DuplicateStart {
         /// Index of the earlier-supplied edit.
@@ -347,11 +355,12 @@ pub enum ReferenceEditError {
     },
     /// Source line geometry could not be derived.
     ///
-    /// Reachable only through [`ReferenceSourceState::new`], whose input is
-    /// arbitrary caller-supplied text. Successor bytes are assembled from
-    /// boundary-checked `&str` slices and replacement `&str`s, so they are
-    /// valid UTF-8 by construction; this variant keeps that step fail-closed
-    /// instead of asserting the invariant with a panic.
+    /// Raised wherever a [`LineRecordTable`] is derived: when a caller builds a
+    /// state from arbitrary text, and again when `apply` builds the successor
+    /// state. Both inputs are `&str`, and successor bytes are assembled from
+    /// boundary-checked slices, so the only residual failure mode is byte-offset
+    /// overflow on a source near `usize::MAX`. The variant keeps that step
+    /// fail-closed instead of asserting the invariant with a panic.
     #[error("source line geometry is invalid: {0}")]
     InvalidSourceGeometry(#[from] SourceLineError),
     /// A generation counter exceeded its representable range.
@@ -688,14 +697,23 @@ impl ReferenceEditResult {
     /// end-of-source position therefore maps to the successor's, which is what
     /// lets a half-open range ending at EOF be translated whole.
     ///
-    /// Returns `None` for an offset strictly inside a replaced span, where no
-    /// offset-preserving image exists, and for an offset beyond the predecessor.
+    /// A replaced span's *start* is such a position: it is the boundary before
+    /// the replaced bytes, and it maps to the boundary before the replacement.
+    /// Only positions strictly inside a replaced span have no image, because no
+    /// boundary there survives the edit. Without the start boundary a
+    /// half-open range that begins at an edit could not be translated at all.
     ///
-    /// One convention is worth naming: when the transaction ends by inserting
-    /// at EOF, the predecessor's end position is ambiguous — it could map
-    /// before or after the inserted text. This returns the successor's end,
-    /// placing it after, which is what an editor caret at end-of-document does
-    /// when text is appended.
+    /// Returns `None` strictly inside a replaced span and beyond the
+    /// predecessor.
+    ///
+    /// Two conventions are worth naming, both placing a position *after*
+    /// inserted text, as an editor caret does:
+    ///
+    /// - a pure insertion has an empty predecessor span, so its position
+    ///   resolves through the following segment rather than to the start of the
+    ///   inserted text;
+    /// - when the transaction ends by inserting at EOF, the predecessor's end
+    ///   position maps to the successor's end.
     #[must_use]
     pub fn map_old_to_new(&self, old_byte: usize) -> Option<usize> {
         if old_byte == self.predecessor_len() {
@@ -704,6 +722,14 @@ impl ReferenceEditResult {
         self.mapping.iter().find_map(|segment| match *segment {
             ReferenceByteMapSegment::Unchanged { old, new } if old.contains(old_byte) => {
                 Some(new.start + (old_byte - old.start))
+            }
+            // An empty predecessor span is a pure insertion; its position is
+            // resolved by the following segment so that it lands after the
+            // inserted text rather than before it.
+            ReferenceByteMapSegment::Replaced { old, new }
+                if !old.is_empty() && old_byte == old.start =>
+            {
+                Some(new.start)
             }
             _ => None,
         })

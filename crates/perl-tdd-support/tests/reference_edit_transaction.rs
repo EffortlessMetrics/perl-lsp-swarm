@@ -13,13 +13,16 @@
 //!
 //! | Deliberate mutation | Killed by |
 //! |---|---|
-//! | applies edits against already-mutated coordinates | `disjoint_edits_address_only_predecessor_coordinates` |
+//! | applies edits against already-mutated coordinates | `disjoint_edits_address_only_predecessor_coordinates`, `recorded_new_end_accounts_for_earlier_edits` |
 //! | accepts an overlap | `overlapping_edits_are_rejected` |
-//! | accepts a same-start ambiguity | `duplicate_start_is_rejected`, `duplicate_pure_insertions_are_rejected` |
+//! | accepts a same-start edit pair | `duplicate_start_is_rejected`, `duplicate_pure_insertions_are_rejected` |
 //! | splits a UTF-8 scalar | `edit_endpoint_inside_a_scalar_is_rejected`, `bom_interior_endpoint_is_rejected` |
 //! | silently sorts an invalid transaction | `noncanonical_order_is_rejected_not_sorted` |
 //! | computes final line starts from the predecessor | `inserted_newline_moves_row_count`, `deletion_moves_row_geometry` |
-//! | partially applies before finding a later invalid edit | `rejection_leaves_predecessor_untouched` |
+//! | partially applies before finding a later invalid edit | `rejection_leaves_predecessor_untouched`, `out_of_bounds_is_rejected` |
+//! | drops the predecessor EOF position from the mapping | `predecessor_eof_maps_to_successor_eof`, `mapping_tiles_both_subjects_completely` |
+//! | leaves a gap or overlap in the mapping | `mapping_tiles_both_subjects_completely` |
+//! | panics while inspecting a malformed edit | `a_reversed_edit_can_be_inspected_without_panicking` |
 //! | calls the production applicator as its oracle | `reference_edit_independence.rs` |
 //!
 //! [#7344]: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7344
@@ -29,7 +32,7 @@ use perl_tdd_support::reference_edit::{
     REFERENCE_EDIT_COORDINATE_MODEL_ID, ReferenceByteMapSegment, ReferenceEdit, ReferenceEditError,
     ReferenceEditResult, ReferenceEditTransaction, ReferenceSourceState,
 };
-use perl_tdd_support::{must, must_err};
+use perl_tdd_support::{must, must_err, must_some};
 
 /// One row as `(start, content_end, separator_end, kind)`.
 type Row = (usize, usize, usize, SeparatorKind);
@@ -285,24 +288,74 @@ fn result_records_the_predecessor_it_was_addressed_against() {
 
 #[test]
 fn mapping_tiles_both_subjects_completely() {
-    let result = apply(
-        "aaa bbb ccc",
-        vec![ReferenceEdit::replace(0, 3, "AAAA"), ReferenceEdit::replace(8, 11, "C")],
-    );
+    // Totality is the property an oracle leans on hardest, so it is checked
+    // across the boundary fixtures rather than on one comfortable mid-string
+    // case: empty subjects, edits at byte 0 and at EOF, whole-source
+    // replacement, adjacent edits with nothing between them, and multibyte and
+    // CRLF sources.
+    let cases: Vec<(&str, Vec<ReferenceEdit>)> = vec![
+        (
+            "aaa bbb ccc",
+            vec![ReferenceEdit::replace(0, 3, "AAAA"), ReferenceEdit::replace(8, 11, "C")],
+        ),
+        ("", Vec::new()),
+        ("", vec![ReferenceEdit::insert(0, "abc")]),
+        ("abc", Vec::new()),
+        ("ab", vec![ReferenceEdit::insert(0, "X")]),
+        ("ab", vec![ReferenceEdit::insert(2, "X")]),
+        ("abc", vec![ReferenceEdit::delete(0, 3)]),
+        ("abc", vec![ReferenceEdit::replace(0, 3, "")]),
+        ("abc\ndef\n", vec![ReferenceEdit::delete(4, 7)]),
+        // Adjacent edits that touch but do not overlap: no unchanged segment
+        // exists between them, which is where an off-by-one would surface.
+        ("abcdef", vec![ReferenceEdit::replace(0, 2, "Z"), ReferenceEdit::replace(2, 4, "YY")]),
+        ("héllo", vec![ReferenceEdit::replace(3, 4, "L")]),
+        ("a\r\nb", vec![ReferenceEdit::insert(4, "X")]),
+        ("x x x", vec![ReferenceEdit::replace(2, 3, "y")]),
+    ];
 
-    let mut old_cursor = 0;
-    let mut new_cursor = 0;
-    for segment in result.mapping() {
-        assert_eq!(segment.old().start, old_cursor);
-        assert_eq!(segment.new_span().start, new_cursor);
-        old_cursor = segment.old().end;
-        new_cursor = segment.new_span().end;
-        if let ReferenceByteMapSegment::Unchanged { old, new } = *segment {
-            assert_eq!(old.len(), new.len());
+    for (predecessor, edits) in cases {
+        let result = apply(predecessor, edits);
+
+        let mut old_cursor = 0;
+        let mut new_cursor = 0;
+        for segment in result.mapping() {
+            assert_eq!(
+                segment.old().start,
+                old_cursor,
+                "gap or overlap in the predecessor tiling of {predecessor:?}",
+            );
+            assert_eq!(
+                segment.new_span().start,
+                new_cursor,
+                "gap or overlap in the successor tiling of {predecessor:?}",
+            );
+            old_cursor = segment.old().end;
+            new_cursor = segment.new_span().end;
+            if let ReferenceByteMapSegment::Unchanged { old, new } = *segment {
+                assert_eq!(
+                    old.len(),
+                    new.len(),
+                    "an unchanged segment changed length for {predecessor:?}",
+                );
+            }
         }
+
+        assert_eq!(
+            old_cursor,
+            predecessor.len(),
+            "the mapping does not reach the end of the predecessor {predecessor:?}",
+        );
+        assert_eq!(
+            new_cursor,
+            result.source().len(),
+            "the mapping does not reach the end of the successor for {predecessor:?}",
+        );
+
+        // Totality implies every predecessor position, EOF included, resolves.
+        assert!(result.map_old_to_new(predecessor.len()).is_some());
+        assert_eq!(result.map_old_to_new(predecessor.len() + 1), None);
     }
-    assert_eq!(old_cursor, "aaa bbb ccc".len());
-    assert_eq!(new_cursor, result.source().len());
 }
 
 #[test]
@@ -315,12 +368,54 @@ fn unchanged_offsets_translate_and_replaced_offsets_do_not() {
     // " bbb " shifts by one byte.
     assert_eq!(result.map_old_to_new(3), Some(4));
     assert_eq!(result.map_old_to_new(7), Some(8));
-    // Offsets inside a replaced range have no offset-preserving image.
+    // Offsets *strictly inside* a replaced range have no image.
     assert_eq!(result.map_old_to_new(1), None);
     assert_eq!(result.map_old_to_new(9), None);
+    // But a replaced range's start is a boundary, not an interior byte: it is
+    // the position before the replaced text, so it maps to the position before
+    // the replacement.
+    assert_eq!(result.map_old_to_new(0), Some(0));
+    assert_eq!(result.map_old_to_new(8), Some(9));
     // Predecessor EOF maps to successor EOF even though the last segment is
     // Replaced and ends exactly at EOF.
     assert_eq!(result.map_old_to_new(11), Some(10));
+}
+
+#[test]
+fn a_range_beginning_at_an_edit_translates_whole() {
+    // The reason replaced starts must map: a half-open predecessor range whose
+    // start coincides with an edit is otherwise untranslatable, which is the
+    // common case for a differential harness comparing edited regions.
+    let result = apply(
+        "aaa bbb ccc",
+        vec![ReferenceEdit::replace(0, 3, "AAAA"), ReferenceEdit::replace(8, 11, "C")],
+    );
+
+    // The whole predecessor [0, 11) maps onto the whole successor [0, 10).
+    let start = must_some(result.map_old_to_new(0));
+    let end = must_some(result.map_old_to_new(11));
+    assert_eq!((start, end), (0, 10));
+    assert_eq!(&result.source()[start..end], "AAAA bbb C");
+
+    // And the second edited region [8, 11) maps onto [9, 10) == "C".
+    let edited_start = must_some(result.map_old_to_new(8));
+    assert_eq!((edited_start, end), (9, 10));
+    assert_eq!(&result.source()[edited_start..end], "C");
+}
+
+#[test]
+fn a_pure_insertion_position_resolves_after_the_inserted_text() {
+    // A pure insertion has an empty predecessor span, so the replaced-start
+    // rule deliberately does not fire: the position resolves through the
+    // following segment and lands after the inserted text, matching the EOF
+    // convention rather than contradicting it.
+    let result = apply("abc", vec![ReferenceEdit::insert(1, "XY")]);
+
+    assert_eq!(result.source(), "aXYbc");
+    assert_eq!(result.map_old_to_new(1), Some(3));
+    assert_ne!(result.map_old_to_new(1), Some(1));
+    assert_eq!(result.map_old_to_new(0), Some(0));
+    assert_eq!(result.map_old_to_new(2), Some(4));
 }
 
 #[test]
