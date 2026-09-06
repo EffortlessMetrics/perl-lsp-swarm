@@ -1212,6 +1212,7 @@ mod tests {
                 let mentions_parsed = line.contains(".parsed") && !line.contains(".parsed_range");
                 let via_accessor = line.contains("current_parsed")
                     || line.contains("latest_parsed")
+                    || line.contains("parsed_for_user_answers")
                     || line.contains("publish_parsed_if_current");
                 if mentions_parsed && !via_accessor {
                     offenders.push(format!("{}:{}: {}", path.display(), idx + 1, line.trim()));

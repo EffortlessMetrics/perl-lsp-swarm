@@ -1984,8 +1984,9 @@ fn test_did_change_malformed_outer_content_changes_ignored_for_unopened_document
     Ok(())
 }
 
-/// didSave text reconciliation must enforce the same per-line bound before
-/// replacing the already-open document.
+/// didSave text reconciliation uses the same full-replacement path as didChange.
+/// `didSave` is a notification, so an unstorable line is not InvalidParams: the
+/// text is not committed and current answers fail closed.
 #[test]
 fn test_did_save_rejects_overlong_text_before_commit() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
@@ -2000,16 +2001,47 @@ fn test_did_save_rejects_overlong_text_before_commit() -> Result<(), Box<dyn std
             "text": "saved\n"
         }
     }))?;
+    let opened_generation = {
+        let documents = server.documents.lock();
+        documents.get(uri).ok_or("didOpen must retain the document")?.current_generation()
+    };
 
     let result = server.handle_did_save(Some(json!({
         "textDocument": {"uri": uri, "version": 1},
         "text": overlong
     })));
-    assert!(result.is_err(), "didSave must reject an overlong saved line");
+    assert!(
+        result.is_ok(),
+        "overlong didSave is a notification sync loss, not InvalidParams: {result:?}"
+    );
 
-    let documents = server.documents.lock();
-    let document = documents.get(uri).ok_or("rejected didSave must retain the document")?;
+    let document = server
+        .documents
+        .lock()
+        .get(uri)
+        .ok_or("rejected didSave must retain the document")?
+        .clone();
     assert_eq!(document.text, "saved\n", "rejected didSave must not commit the text");
+    assert_eq!(document.version, 1, "didSave must preserve the already-observed client version");
+    assert!(
+        document.current_generation() > opened_generation,
+        "overlong didSave must advance generation so predecessor facts are not current"
+    );
+    assert!(
+        document.full_sync_required(),
+        "unstorable didSave replacement must fail-close current answers"
+    );
+    assert!(
+        document.current_parsed().is_none(),
+        "overlong didSave must not keep the predecessor parse current"
+    );
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Unavailable
+        ),
+        "predecessor text must not remain a current user answer after overlong didSave"
+    );
     Ok(())
 }
 
