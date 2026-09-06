@@ -183,9 +183,15 @@ impl ReceiverFact {
 }
 
 /// Heuristic reason recorded for `$array[i]->method` receivers.
+///
+/// Tests should compare evidence with [`TypeEvidence::is_heuristic_reason`]
+/// and this constant rather than duplicating the literal string.
 pub const ARRAY_INDEX_RECEIVER_REASON: &str = "array index receiver";
 
 /// Heuristic reason recorded when a hash-slot key cannot be classified statically.
+///
+/// Tests should compare evidence with [`TypeEvidence::is_heuristic_reason`]
+/// and this constant rather than duplicating the literal string.
 pub const DYNAMIC_HASH_KEY_RECEIVER_REASON: &str = "hash receiver key is dynamic";
 
 fn array_index_receiver_evidence() -> TypeEvidence {
