@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12767 |
-| Rust-family files | 4003 |
-| Non-Rust files | 8764 |
-| Allowlisted | 6527 |
+| Total tracked files | 12815 |
+| Rust-family files | 4031 |
+| Non-Rust files | 8784 |
+| Allowlisted | 6547 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 509 |
-| documentation | 2860 |
+| config | 517 |
+| documentation | 2867 |
 | generated | 2 |
 | production | 357 |
-| test | 2112 |
-| tooling | 687 |
+| test | 2115 |
+| tooling | 689 |
 | unclassified | 2237 |
 
 ## Unclassified files
@@ -2327,6 +2327,7 @@
 | `.changes/unreleased/product-12180-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12185-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12213-Added-053344.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-12277-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12425-Changed-064000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12428-Changed-071500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12470-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2363,6 +2364,7 @@
 | `.changes/unreleased/product-14162-Fixed-062000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14213-Added-carmel-root-state-r1.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14281-Fixed-014013.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14303-Fixed-033000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14362-Added-000001.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14376-Fixed-060000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14384-Added-063000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2371,6 +2373,7 @@
 | `.changes/unreleased/product-14588-Changed-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14883-Fixed-235000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14890-Fixed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14909-Fixed-022000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2822,6 +2825,7 @@
 | `.ci/semantic-close-containment/fixtures/invalid-phase-terminal-5023-5001.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/invalid-predecessor-successor-5968-5231.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/invalid-proof-level-6282-5901.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/invalid-proof-level-required-release.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/invalid-remaining-same-issue.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/multiple-relations-one-invalid.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/no-terminal-relation.json` | config | `non-rust-ci-config` | release/ci |
@@ -2830,6 +2834,7 @@
 | `.ci/semantic-close-containment/fixtures/valid-neighbor-disclaimer-inline-code.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/valid-neighbor-disclaimer-unproven.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/valid-phase-leaf-2624.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/valid-proof-level-unchanged-release.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/valid-representation-scope-substring.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/ux-flakes.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/workflow-security-baseline.json` | config | `non-rust-ci-config` | release/ci |
@@ -2956,12 +2961,14 @@
 | `.github/workflows/droid.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/em-ci-routed-rust.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/emacs-train-context-contract.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/emacs-train-packet-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/flake-detection.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/gate-enforcement-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/generated-status-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/installer-bootstrap-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/installer-checksum-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/installer-powershell-checksum-contract.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/installer-termux-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/legacy-authority-banners.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/lsp-318-claim-guard.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/merge-gate-target.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3160,6 +3167,9 @@
 | `.spec/10690-missing-import-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10690-missing-import-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10690-missing-import-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10740-class-grammar-context/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10740-class-grammar-context/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10740-class-grammar-context/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10794-workspace-symbol-query-profile-substrate/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10794-workspace-symbol-query-profile-substrate/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10794-workspace-symbol-query-profile-substrate/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -5312,6 +5322,7 @@
 | `docs/project/status/receiver_facts.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/release-ux-backlog.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/release.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/project/status/release_trust_invariants.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/semantic_capability_dashboard.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/semantic_scorecard.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/semantic_scorecard.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6292,6 +6303,7 @@
 | `fixtures/critic-rule-proof/string_eval/suppression.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `fixtures/debug-peer/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `fixtures/debug-peer/perl/minimal_ptkdb_peer.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `fixtures/emacs_train_packet/observed_no_candidate.v1.json` | test | `non-rust-emacs-train-packet-live-observation-fixture` | tooling/agent-packet |
 | `fixtures/experience/standalone_candidate_selection/01_complete_archive_pair.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/02_historical_server_only.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
 | `fixtures/experience/standalone_candidate_selection/03_exact_source_server_only.json` | test | `non-rust-standalone-candidate-selection-fixtures` | release/ci |
@@ -6334,6 +6346,7 @@
 | `fixtures/product_health_status/sources/sec-b.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
 | `fixtures/product_health_status/sources/sec-ind.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
 | `fixtures/product_health_status/sources/unproven.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/release_candidate_artifacts/topology.json` | test | `non-rust-release-candidate-artifacts-fixtures` | release/ci |
 | `fixtures/train_edge_contract/external_stages.v1.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/expected_errors.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/external_stage_satisfied_internally.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
@@ -6458,6 +6471,7 @@
 | `policy/clippy-lints.d/60-reviewability.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/clippy-lints.d/70-iteration-suppression.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/clippy-lints.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/docs-agents-contract-workflows.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/framework-adapters.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/generated-allowlist.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/generated-status-contract.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -6475,6 +6489,7 @@
 | `policy/release-channel-actuals.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/release-container-actuals.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/release-tag-provenance.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/release-trust-invariants.v1.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/repository-topology.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/review-surfaces.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ripr-suppressions.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -6516,7 +6531,9 @@
 | `schemas/perl_core_harness_upstream_effective_invocation_trace.v1.schema.json` | config | `non-rust-core-harness-upstream-effective-invocation-trace-schema` | compiler |
 | `schemas/perl_core_harness_upstream_runner_discovery.v1.schema.json` | config | `non-rust-core-harness-upstream-runner-discovery-schema` | compiler |
 | `schemas/publication_runtime_identity.v1.schema.json` | config | `non-rust-publication-runtime-identity-schema` | release/ci |
+| `schemas/release_candidate_artifacts.v1.schema.json` | config | `non-rust-release-candidate-artifacts-schema` | release/ci |
 | `schemas/release_topology.v1.schema.json` | config | `non-rust-release-topology-schema` | release/ci |
+| `schemas/release_trust_invariants.v1.schema.json` | config | `non-rust-release-trust-invariants-schema` | release/ci |
 | `schemas/stage_closure_projection.v1.schema.json` | config | `non-rust-stage-closure-projection-schema` | tooling/agent-review |
 | `schemas/standalone_candidate.v1.schema.json` | config | `non-rust-standalone-candidate-schema` | release/ci |
 | `schemas/standalone_current_selection.v1.schema.json` | config | `non-rust-standalone-current-selection-schema` | release/ci |
@@ -6744,6 +6761,7 @@
 | `scripts/ci/test_rustfmt_required_workflow.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_scope_cache_key.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_cargo_lock_conflict_policy.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_validate_dependabot_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_gate_enforcement_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_helix_fixture_drift.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6756,6 +6774,7 @@
 | `scripts/ci/test_verify_rustfmt_receipt.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_workflow_security_ratchet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_cargo_lock_conflict_policy.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/validate_dependabot_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_gate_enforcement_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_helix_fixture_drift.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8396,6 +8415,7 @@
 | `tests/perl-corpus/spans/utf16_crlf_positions.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `tests/test_active_authority_contract.py` | test | `non-rust-active-authority-contract-test` | release/ci |
 | `tests/test_agent_authority_status.py` | test | `non-rust-agent-authority-status-test` | release/ci |
+| `tests/test_docs_agents_contract_workflows.py` | test | `non-rust-docs-agents-contract-workflows-test` | release/ci |
 | `tests/test_legacy_authority_banners.py` | test | `non-rust-legacy-authority-banners-test` | release/ci |
 | `tests/test_writer_authority_transfer_contract.py` | test | `non-rust-writer-authority-transfer-contract-test` | release/ci |
 | `tree-sitter-perl/.gitignore` | config | `non-rust-gitignore-family` | release/ci |

@@ -3515,6 +3515,22 @@ created = "2026-08-24"
 review_after = "2026-11-24"
 
 [[allow]]
+id = "non-rust-emacs-train-packet-live-observation-fixture"
+path = "fixtures/emacs_train_packet/observed_no_candidate.v1.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/agent-packet"
+reason = "The caller-supplied live candidate observation the E06 packet CI lane passes to the denominator, determinism and render steps (#11719). A coding packet admits a repository writer, so it refuses without an observation; this fixture states an explicit observed no-candidate sweep rather than letting CI assume vacancy."
+covered_by = [
+  "cargo xtask integration emacs train packets --check --live-observation fixtures/emacs_train_packet/observed_no_candidate.v1.json",
+  "cargo test -p xtask --bin xtask emacs_train_packet --locked",
+]
+created = "2026-09-05"
+review_after = "2026-12-05"
+
+[[allow]]
 id = "non-rust-agent-implementation-packet-golden-markdown"
 glob = "fixtures/agent_implementation_packet/golden/*.md"
 kind = "test_fixture"
