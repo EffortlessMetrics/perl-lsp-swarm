@@ -130,12 +130,6 @@ struct TemporaryException {
 
 const TEMPORARY_EXCEPTIONS: &[TemporaryException] = &[
     TemporaryException {
-        path: "crates/perl-lsp-rs-core/src/protocol/jsonrpc.rs",
-        token: "perl_parser_core",
-        owner_issue: "#7599",
-        removal_condition: "neutral JsonRpcError no longer implements parser ErrorClass",
-    },
-    TemporaryException {
         path: "crates/perl-lsp-rs-core/src/transport/framing.rs",
         token: "perl_parser_core",
         owner_issue: "#7599",
@@ -278,6 +272,34 @@ fn generic_candidate_imports_are_clean_or_consumptively_excepted() {
             candidate.path
         );
     }
+}
+
+#[test]
+fn jsonrpc_model_has_no_perl_taxonomy_escape_hatch() {
+    assert!(
+        !TEMPORARY_EXCEPTIONS.iter().any(|exception| {
+            exception.path == "crates/perl-lsp-rs-core/src/protocol/jsonrpc.rs"
+                && exception.token == "perl_parser_core"
+        }),
+        "generic JsonRpcError must not regain a temporary Perl taxonomy exception"
+    );
+}
+
+#[test]
+fn jsonrpc_taxonomy_guard_rejects_synthetic_restoration() {
+    let restored_taxonomy = r#"
+use perl_parser_core::ErrorClass;
+
+impl ErrorClass for JsonRpcError {}
+"#;
+
+    assert_eq!(
+        unregistered_forbidden_tokens(
+            "crates/perl-lsp-rs-core/src/protocol/jsonrpc.rs",
+            restored_taxonomy
+        ),
+        BTreeSet::from(["perl_parser_core".to_string()])
+    );
 }
 
 #[test]

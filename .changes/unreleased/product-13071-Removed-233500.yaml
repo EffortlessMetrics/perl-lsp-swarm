@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Removed
+body: "`perl-lsp-rs-core::protocol::JsonRpcError` no longer implements `perl_parser_core::ErrorClass`; downstream source consumers must classify originating failures in an application adapter. JSON-RPC fields and wire serialization are unchanged."
+time: 2026-08-29T23:35:00Z
+custom:
+  PR: "13071"
+  Slug: jsonrpc-error-taxonomy-boundary
+  Breaking: "yes"
