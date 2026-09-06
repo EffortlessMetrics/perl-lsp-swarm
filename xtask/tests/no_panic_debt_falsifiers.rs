@@ -654,6 +654,7 @@ fn production_unwrap_is_not_test_debt() {
 fn non_member_nested_workspace_is_not_proven_not_a_population_hole() {
     let temp = tempfile::tempdir().expect("temp");
     write_policy(temp.path());
+    write_empty_registry(temp.path());
     write_package(
         temp.path(),
         "demo",
