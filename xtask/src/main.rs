@@ -2274,9 +2274,22 @@ enum Commands {
     /// job in `.github/workflows/em-ci-routed-rust.yml` invokes this single
     /// definition, so the aggregate required check means one proof on all
     /// routes; the yml keeps only runner instrumentation and the #12320
-    /// pinned `cargo fmt` literal. Typed step receipts remain issue #8408.
+    /// pinned `cargo fmt` literal. Emits one versioned receipt binding the
+    /// candidate SHA, toolchain, and scorecard profile/features to every
+    /// selected step's typed outcome (#8407); route adoption of that receipt
+    /// as status evidence is issue #8408.
     #[command(name = "rust-small-proof")]
-    RustSmallProof,
+    RustSmallProof {
+        /// Receipt destination (default: `target/receipts/rust-small-proof.json`).
+        #[arg(long, conflicts_with = "verify_receipt")]
+        receipt: Option<PathBuf>,
+
+        /// Validate an existing receipt against this checkout and exit without
+        /// running the proof. Fails closed on a malformed, stale, or
+        /// wrong-subject receipt, or one missing any canonical step.
+        #[arg(long)]
+        verify_receipt: Option<PathBuf>,
+    },
 
     /// Publish/check 0.13.2 semantic scorecard artifacts from deterministic fixtures.
     SemanticScorecard {
@@ -6521,7 +6534,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::SemanticScorecard { manifest, output, status_md, check } => {
             semantic_scorecard::run(manifest, output, status_md, check)
         }
-        Commands::RustSmallProof => rust_small_proof::run(),
+        Commands::RustSmallProof { receipt, verify_receipt } => {
+            rust_small_proof::run(receipt, verify_receipt)
+        }
         Commands::SemanticShadowCompare { output, status_md, check } => {
             semantic_shadow_compare::run(output, status_md, check)
         }
