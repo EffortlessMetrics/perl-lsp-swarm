@@ -1273,6 +1273,12 @@ mod cancel_after_emitted_reason {
             CancellationAcknowledgement::ContradictsEmittedReason
         );
 
+        let kinds = drain(&mut handle);
+        assert!(
+            kinds.iter().all(|kind| !is_cancellation(kind, CancellationReason::Shutdown)),
+            "refused live cancel still emitted Shutdown: {kinds:?}"
+        );
+
         let result = Box::new(handle).wait();
         assert_eq!(
             result.disposition(),
