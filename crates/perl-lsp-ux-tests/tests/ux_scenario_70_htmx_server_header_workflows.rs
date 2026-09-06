@@ -34,7 +34,7 @@
 //! claimed; hover, diagnostics, and header-value completion are later #14102
 //! children.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use perl_lsp_ux_tests::ProjectFixtureFile;
 use perl_lsp_ux_tests::binary_available;
 use perl_lsp_ux_tests::missing_binary_skip;
@@ -156,16 +156,19 @@ const STACKS: &[Stack] = &[
 
 /// Zero-based (line, character) of the position immediately after the first
 /// occurrence of `needle`; every fixture is ASCII, so byte and UTF-16 columns
-/// coincide.
-fn cursor_after(source: &str, needle: &str) -> (u32, u32) {
-    let line = source.lines().position(|l| l.contains(needle)).unwrap_or(0);
-    let column = source
+/// coincide. A missing needle is a fixture/needle drift and fails loudly
+/// rather than degrading a check to line 0, column 0.
+fn cursor_after(source: &str, needle: &str) -> Result<(u32, u32)> {
+    let (line, text) = source
         .lines()
-        .nth(line)
-        .and_then(|l| l.find(needle))
+        .enumerate()
+        .find(|(_, l)| l.contains(needle))
+        .with_context(|| format!("needle {needle:?} is absent from the fixture source"))?;
+    let column = text
+        .find(needle)
         .map(|idx| idx + needle.len())
-        .unwrap_or(0);
-    (line as u32, column as u32)
+        .with_context(|| format!("needle {needle:?} vanished from its own line"))?;
+    Ok((u32::try_from(line)?, u32::try_from(column)?))
 }
 
 fn labels(items: &[Value]) -> Vec<&str> {
@@ -231,7 +234,14 @@ fn check_stack(recorder: &mut UxRunRecorder, harness: &UxHarness, stack: &Stack)
     let Stack { name, path, source } = stack;
 
     // --- Parser acceptance: the fixture is admitted Perl. ---
+    // `wait_for_latest_diagnostics` returns an empty set both for a clean file
+    // and for a deadline with no publication at all; require the notification
+    // so the two "no bad code" checks below cannot pass vacuously.
     let diagnostics = harness.wait_for_latest_diagnostics(path, Duration::from_secs(10));
+    recorder.check(
+        &format!("{name}: a diagnostics notification arrived for the fixture"),
+        harness.diagnostics_event_count(path) > 0,
+    )?;
     let codes = diagnostic_codes(&diagnostics);
     recorder.check(
         &format!("{name}: fixture opens without parse-error diagnostics"),
@@ -243,16 +253,17 @@ fn check_stack(recorder: &mut UxRunRecorder, harness: &UxHarness, stack: &Stack)
     )?;
 
     // --- Request-header detection site completes the canonical request name. ---
-    let (line, cursor) = cursor_after(source, REQUEST_SITE);
+    let (line, cursor) = cursor_after(source, REQUEST_SITE)?;
     let prefix_start = cursor - (REQUEST_SITE.len() as u32 - 1);
-    recorder.mark_request_start("completion");
+    let timing_key = format!("completion_{name}");
+    recorder.mark_request_start(&timing_key);
     let request_items = harness.completion(path, line, cursor)?;
     let request_labels = htmx_labels(&request_items);
     recorder.check(
         &format!("{name}: request-header site completes exactly HX-Request"),
         request_labels == ["HX-Request"],
     )?;
-    recorder.mark_first_useful_result("completion");
+    recorder.mark_first_useful_result(&timing_key);
     recorder.check(
         &format!("{name}: HX-Request carries the request-direction detail"),
         item_detail(&request_items, "HX-Request") == Some("htmx request header"),
@@ -276,7 +287,7 @@ fn check_stack(recorder: &mut UxRunRecorder, harness: &UxHarness, stack: &Stack)
     )?;
 
     // --- Response-header emission site completes the HX-Trigger family. ---
-    let (line, cursor) = cursor_after(source, RESPONSE_SITE);
+    let (line, cursor) = cursor_after(source, RESPONSE_SITE)?;
     let prefix_start = cursor - (RESPONSE_SITE.len() as u32 - 1);
     let response_items = harness.completion(path, line, cursor)?;
     recorder.check(
@@ -308,7 +319,7 @@ fn check_stack(recorder: &mut UxRunRecorder, harness: &UxHarness, stack: &Stack)
     )?;
 
     // --- Case-insensitive typing inserts the canonical spelling. ---
-    let (line, cursor) = cursor_after(source, CASE_INSENSITIVE_SITE);
+    let (line, cursor) = cursor_after(source, CASE_INSENSITIVE_SITE)?;
     let prefix_start = cursor - (CASE_INSENSITIVE_SITE.len() as u32 - 1);
     let redirect_items = harness.completion(path, line, cursor)?;
     recorder.check(
@@ -325,7 +336,7 @@ fn check_stack(recorder: &mut UxRunRecorder, harness: &UxHarness, stack: &Stack)
     )?;
 
     // --- Dynamic value stays unrestricted: no htmx item at the value. ---
-    let (line, cursor) = cursor_after(source, DYNAMIC_VALUE_SITE);
+    let (line, cursor) = cursor_after(source, DYNAMIC_VALUE_SITE)?;
     let dynamic_items = harness.completion(path, line, cursor)?;
     recorder.check(
         &format!("{name}: a dynamic header value receives no htmx completion item"),
@@ -333,7 +344,7 @@ fn check_stack(recorder: &mut UxRunRecorder, harness: &UxHarness, stack: &Stack)
     )?;
 
     // --- Ordinary string stays owned by ordinary string completion. ---
-    let (line, cursor) = cursor_after(source, ORDINARY_STRING_SITE);
+    let (line, cursor) = cursor_after(source, ORDINARY_STRING_SITE)?;
     let ordinary_items = harness.completion(path, line, cursor)?;
     recorder.check(
         &format!("{name}: an ordinary path string receives no htmx completion item"),
