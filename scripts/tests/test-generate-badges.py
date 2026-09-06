@@ -533,8 +533,16 @@ class DirectRiprContainmentProof(unittest.TestCase):
             ):
                 stdout = generator.run_ripr(REPO_ROOT, timeout_seconds=timeout_seconds)
         except BaseException as error:
+            self.release_hung_streams(process)
             return error, time.monotonic() - started, terminate
+        self.release_hung_streams(process)
         return stdout, time.monotonic() - started, terminate
+
+    def release_hung_streams(self, process) -> None:
+        for stream in (getattr(process, "stdout", None), getattr(process, "stderr", None)):
+            block = getattr(stream, "block", None)
+            if block is not None:
+                block.set()
 
     def test_prompt_exit_oversized_stdout_is_rejected_at_the_cap(self):
         process = TerminalProcess(
@@ -619,7 +627,7 @@ class DirectRiprContainmentProof(unittest.TestCase):
         error, elapsed, terminate = self.capture_run_ripr(
             process, generator.RIPR_TIMEOUT_SECONDS
         )
-        self.assertIsInstance(error, RuntimeError)
+        self.assertIsInstance(error, generator.RiprStreamHungAfterExit)
         message = str(error)
         self.assertIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, message)
         self.assertIn("ripr-stdout-reader", message)
@@ -634,7 +642,7 @@ class DirectRiprContainmentProof(unittest.TestCase):
         error, elapsed, terminate = self.capture_run_ripr(
             process, generator.RIPR_TIMEOUT_SECONDS
         )
-        self.assertIsInstance(error, RuntimeError)
+        self.assertIsInstance(error, generator.RiprStreamHungAfterExit)
         message = str(error)
         self.assertIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, message)
         self.assertIn("ripr-stderr-reader", message)
@@ -648,7 +656,7 @@ class DirectRiprContainmentProof(unittest.TestCase):
         error, elapsed, terminate = self.capture_run_ripr(
             process, generator.RIPR_TIMEOUT_SECONDS
         )
-        self.assertIsInstance(error, RuntimeError)
+        self.assertIsInstance(error, generator.RiprStreamHungAfterExit)
         self.assertIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, str(error))
         self.assertNotIn("timed out after", str(error))
         self.assertLess(elapsed, 15)
@@ -659,7 +667,7 @@ class DirectRiprContainmentProof(unittest.TestCase):
         error, elapsed, terminate = self.capture_run_ripr(
             process, generator.RIPR_TIMEOUT_SECONDS
         )
-        self.assertIsInstance(error, RuntimeError)
+        self.assertIsInstance(error, generator.RiprStreamHungAfterExit)
         message = str(error)
         self.assertIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, message)
         self.assertIn("ripr-stdout-reader", message)
@@ -692,7 +700,7 @@ class DirectRiprContainmentProof(unittest.TestCase):
         error, elapsed, terminate = self.capture_run_ripr(
             process, generator.RIPR_TIMEOUT_SECONDS
         )
-        self.assertIsInstance(error, RuntimeError)
+        self.assertIsInstance(error, generator.RiprStreamHungAfterExit)
         self.assertIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, str(error))
         self.assertNotIn("timed out after", str(error))
         self.assertLess(elapsed, 15)
@@ -702,6 +710,7 @@ class DirectRiprContainmentProof(unittest.TestCase):
         process = StillRunningProcess(HungReadStream(), io.BytesIO())
         error, elapsed, terminate = self.capture_run_ripr(process, timeout_seconds=0.4)
         self.assertIsInstance(error, RuntimeError)
+        self.assertNotIsInstance(error, generator.RiprStreamHungAfterExit)
         message = str(error)
         self.assertIn("timed out after 0.4s", message)
         self.assertNotIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, message)
@@ -760,7 +769,7 @@ class DirectRiprContainmentProof(unittest.TestCase):
         )
         self.assertTrue(done)
         self.assertEqual(exited_at, 0.0)
-        self.assertIsInstance(failure, RuntimeError)
+        self.assertIsInstance(failure, generator.RiprStreamHungAfterExit)
         self.assertIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, str(failure))
         self.assertIn("ripr-stdout-reader", str(failure))
         self.assertNotIn("timed out after", str(failure))
@@ -796,6 +805,7 @@ class DirectRiprContainmentProof(unittest.TestCase):
             post_exit_reader_seconds=10.0,
         )
         self.assertTrue(done)
+        self.assertIsInstance(failure, generator.RiprStreamHungAfterExit)
         self.assertIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, str(failure))
         self.assertNotIn("timed out after", str(failure))
 
@@ -814,6 +824,7 @@ class DirectRiprContainmentProof(unittest.TestCase):
         )
         self.assertTrue(done)
         self.assertIsNone(exited_at)
+        self.assertNotIsInstance(failure, generator.RiprStreamHungAfterExit)
         self.assertIn("timed out after 900s", str(failure))
         self.assertNotIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, str(failure))
 

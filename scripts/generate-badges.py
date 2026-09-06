@@ -52,6 +52,18 @@ class RiprOutputLimitExceeded(RuntimeError):
         self.args = (f"{self.args[0]}; cleanup incomplete: {detail}",)
 
 
+class RiprStreamHungAfterExit(RuntimeError):
+    """A producer stream stayed blocked after the direct RIPR process exited."""
+
+    def __init__(self, reader_names: list[str]) -> None:
+        names = ", ".join(reader_names) if reader_names else "unknown"
+        super().__init__(
+            f"{HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC} ({names}); "
+            "its process tree was terminated"
+        )
+        self.reader_names = tuple(reader_names)
+
+
 class WindowsJob:
     """Own a Windows process tree independently of its direct leader."""
 
@@ -314,16 +326,12 @@ def read_bounded_stream(
             return
 
 
-def hung_stream_after_process_exit(reader_names: list[str]) -> RuntimeError:
-    names = ", ".join(reader_names) if reader_names else "unknown"
-    return RuntimeError(
-        f"{HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC} ({names}); "
-        "its process tree was terminated"
-    )
+def hung_stream_after_process_exit(reader_names: list[str]) -> RiprStreamHungAfterExit:
+    return RiprStreamHungAfterExit(reader_names)
 
 
 def is_hung_stream_after_exit(failure: RuntimeError | None) -> bool:
-    return failure is not None and HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC in str(failure)
+    return isinstance(failure, RiprStreamHungAfterExit)
 
 
 def decide_direct_ripr_wait(
@@ -574,7 +582,11 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
                 if cleanup_failures
                 else ""
             )
-            raise RuntimeError(f"{failure}{suffix}{cleanup_suffix}")
+            message = f"{failure}{suffix}{cleanup_suffix}"
+            if isinstance(failure, RiprStreamHungAfterExit):
+                failure.args = (message,)
+                raise failure
+            raise RuntimeError(message)
         if process.returncode:
             diagnostic = bounded_stderr(stderr)
             suffix = f": {diagnostic}" if diagnostic else ""
