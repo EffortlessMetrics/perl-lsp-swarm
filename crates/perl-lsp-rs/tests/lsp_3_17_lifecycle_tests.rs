@@ -341,13 +341,8 @@ fn test_position_encoding_advertised_is_utf16_v0_18_envelope() -> TestResult {
     // Scenario 1: client prefers UTF-8 first, then UTF-16 -- must still get utf-16.
     let mut harness = LspHarness::new();
     let result = harness.initialize(Some(json!({
-        "processId": 1234,
-        "clientInfo": { "name": "test-client" },
-        "rootUri": "file:///workspace",
-        "capabilities": {
-            "general": {
-                "positionEncodings": ["utf-8", "utf-16"]
-            }
+        "general": {
+            "positionEncodings": ["utf-8", "utf-16"]
         }
     })))?;
 
@@ -366,13 +361,8 @@ fn test_position_encoding_advertised_is_utf16_v0_18_envelope() -> TestResult {
     // Scenario 2: client prefers UTF-16 first, then UTF-8 -- utf-16 either way.
     let mut harness = LspHarness::new();
     let result = harness.initialize(Some(json!({
-        "processId": 1234,
-        "clientInfo": { "name": "test-client" },
-        "rootUri": "file:///workspace",
-        "capabilities": {
-            "general": {
-                "positionEncodings": ["utf-16", "utf-8"]
-            }
+        "general": {
+            "positionEncodings": ["utf-16", "utf-8"]
         }
     })))?;
 
@@ -387,10 +377,7 @@ fn test_position_encoding_advertised_is_utf16_v0_18_envelope() -> TestResult {
     // Scenario 3: client doesn't specify positionEncodings - default to utf-16.
     let mut harness = LspHarness::new();
     let result = harness.initialize(Some(json!({
-        "processId": 1234,
-        "clientInfo": { "name": "test-client" },
-        "rootUri": "file:///workspace",
-        "capabilities": {}
+        "textDocument": {}
     })))?;
 
     let capabilities = &result["capabilities"];
@@ -404,6 +391,30 @@ fn test_position_encoding_advertised_is_utf16_v0_18_envelope() -> TestResult {
         "server should default to utf-16 when client doesn't specify positionEncodings"
     );
 
+    Ok(())
+}
+
+#[test]
+fn utf8_only_position_encodings_fail_initialize_on_the_wire() -> TestResult {
+    let mut harness = LspHarness::new();
+    let err = match harness.initialize(Some(json!({
+        "general": {
+            "positionEncodings": ["utf-8"]
+        }
+    }))) {
+        Err(err) => err,
+        Ok(result) => {
+            return Err(format!(
+                "utf-8-only initialize must fail on the wire, got capabilities: {result}"
+            )
+            .into());
+        }
+    };
+    assert!(
+        err.contains("-32602") || err.contains("32602"),
+        "utf-8-only initialize must be InvalidParams, got {err}"
+    );
+    assert!(err.contains("UTF-16") || err.contains("utf-16"), "error must name UTF-16, got {err}");
     Ok(())
 }
 

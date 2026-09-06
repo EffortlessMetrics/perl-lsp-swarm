@@ -36,8 +36,23 @@ fn v0_18_text_sync_envelope_packet_matches_schema_required_fields()
     assert_eq!(encodings, &vec![Value::String("utf-16".into())]);
 
     let sha = packet.get("subject_sha").and_then(Value::as_str).ok_or("subject_sha")?;
-    assert_eq!(sha.len(), 40);
-    assert!(sha.chars().all(|ch| ch.is_ascii_hexdigit()));
+    assert_eq!(
+        sha, "494faa8e9ab47e8b7b97035488fb5e4bd0aa5a6d",
+        "subject_sha must stay the origin/main SHA against which A vs B was judged"
+    );
+
+    let limitations = packet
+        .get("limitations")
+        .and_then(Value::as_array)
+        .ok_or("limitations")?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        limitations.contains("subject_sha is origin/main"),
+        "packet must state that subject_sha is the judged main, not the candidate: {limitations}"
+    );
 
     let owners = packet
         .get("required_owner_issues")

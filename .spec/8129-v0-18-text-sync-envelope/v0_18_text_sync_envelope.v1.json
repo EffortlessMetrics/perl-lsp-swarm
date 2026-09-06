@@ -29,6 +29,7 @@
     "open-document replay after restart sends full text (languageClientDocumentSync)"
   ],
   "limitations": [
+    "subject_sha is origin/main at A-vs-B judgment (494faa8e9); it is not the candidate implementation commit.",
     "Long-term atomic incremental programme #1690/#7409/#7417 remains open and is not this envelope.",
     "UTF-8 and UTF-32 wire encodings are unsupported; nonempty client lists that omit utf-16 fail initialize.",
     "Internal full reparse is allowed and is not claimed as incremental parsing.",
