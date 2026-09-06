@@ -726,6 +726,7 @@ pub fn perl_dap::backend::DebugBackend::evaluate(&mut self, params: perl_dap::ba
 pub fn perl_dap::backend::DebugBackend::initialize(&mut self, params: perl_dap::backend::InitializeBackendParams) -> perl_dap::backend::BackendResult<()>
 pub fn perl_dap::backend::DebugBackend::is_closed(&self) -> bool
 pub fn perl_dap::backend::DebugBackend::launch(&mut self, params: perl_dap::backend::LaunchBackendParams) -> perl_dap::backend::BackendResult<perl_dap::backend::LaunchResult>
+pub fn perl_dap::backend::DebugBackend::mutate_scalar(&mut self, operation: &perl_dap::mutation::MutationOperation) -> perl_dap::mutation::MutationOutcome
 pub fn perl_dap::backend::DebugBackend::name(&self) -> &str
 pub fn perl_dap::backend::DebugBackend::next(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
 pub fn perl_dap::backend::DebugBackend::pause(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
@@ -735,6 +736,7 @@ pub fn perl_dap::backend::DebugBackend::set_function_breakpoints(&mut self, para
 pub fn perl_dap::backend::DebugBackend::stack_trace(&mut self, params: perl_dap::backend::StackTraceParams) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugStackFrame>>
 pub fn perl_dap::backend::DebugBackend::step_in(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
 pub fn perl_dap::backend::DebugBackend::step_out(&mut self, thread_id: perl_dap::model::ThreadId) -> perl_dap::backend::BackendResult<()>
+pub fn perl_dap::backend::DebugBackend::supports_scalar_mutation(&self, _cohort: perl_dap::mutation::MutationTargetCohort) -> bool
 pub fn perl_dap::backend::DebugBackend::variables(&mut self, variables_ref: perl_dap::model::VariablesRef) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugVariable>>
 pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::attach(&mut self, _params: perl_dap::backend::AttachBackendParams) -> perl_dap::backend::BackendResult<perl_dap::backend::AttachResult>
 pub fn perl_dap::backend::external_peer::ExternalDebuggerPeerBackend::capabilities(&self) -> perl_dap::backend::capabilities::DebugBackendCapabilities
@@ -1241,6 +1243,122 @@ pub fn perl_dap::mutation::FreshReferentKind::clone(&self) -> perl_dap::mutation
 pub fn perl_dap::mutation::FreshReferentKind::eq(&self, other: &perl_dap::mutation::FreshReferentKind) -> bool
 pub fn perl_dap::mutation::FreshReferentKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::mutation::FreshReferentKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub enum perl_dap::mutation::MutationLocationKind
+pub perl_dap::mutation::MutationLocationKind::CurrentFrameArrayElement
+pub perl_dap::mutation::MutationLocationKind::CurrentFrameHashEntry
+pub perl_dap::mutation::MutationLocationKind::CurrentFrameLexicalScalar
+pub perl_dap::mutation::MutationLocationKind::NonCurrentFrameScalar
+pub perl_dap::mutation::MutationLocationKind::PackageScalar
+pub fn perl_dap::mutation::MutationLocationKind::is_supported_in_v1(self) -> bool
+pub fn perl_dap::mutation::MutationLocationKind::clone(&self) -> perl_dap::mutation::MutationLocationKind
+pub fn perl_dap::mutation::MutationLocationKind::eq(&self, other: &perl_dap::mutation::MutationLocationKind) -> bool
+pub fn perl_dap::mutation::MutationLocationKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::MutationLocationKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub enum perl_dap::mutation::MutationMember
+pub perl_dap::mutation::MutationMember::ArrayIndex(i64)
+pub perl_dap::mutation::MutationMember::HashKey(alloc::string::String)
+pub perl_dap::mutation::MutationMember::WholeScalar
+pub fn perl_dap::mutation::MutationMember::clone(&self) -> perl_dap::mutation::MutationMember
+pub fn perl_dap::mutation::MutationMember::eq(&self, other: &perl_dap::mutation::MutationMember) -> bool
+pub fn perl_dap::mutation::MutationMember::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::mutation::MutationOrigin
+pub perl_dap::mutation::MutationOrigin::SetExpression
+pub perl_dap::mutation::MutationOrigin::SetVariable
+pub fn perl_dap::mutation::MutationOrigin::clone(&self) -> perl_dap::mutation::MutationOrigin
+pub fn perl_dap::mutation::MutationOrigin::eq(&self, other: &perl_dap::mutation::MutationOrigin) -> bool
+pub fn perl_dap::mutation::MutationOrigin::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::MutationOrigin::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub enum perl_dap::mutation::MutationOutcome
+pub perl_dap::mutation::MutationOutcome::CancelledBeforeDispatch
+pub perl_dap::mutation::MutationOutcome::EngineRejectedWithoutMutation
+pub perl_dap::mutation::MutationOutcome::IndeterminateAfterDispatch
+pub perl_dap::mutation::MutationOutcome::IndeterminateAfterDispatch::possible_application: perl_dap::mutation::PossibleApplication
+pub perl_dap::mutation::MutationOutcome::NotInitialized
+pub perl_dap::mutation::MutationOutcome::NotStopped
+pub perl_dap::mutation::MutationOutcome::PolicyRefused
+pub perl_dap::mutation::MutationOutcome::ReadBackMalformedAfterPossibleMutation
+pub perl_dap::mutation::MutationOutcome::ReadBackMissingAfterPossibleMutation
+pub perl_dap::mutation::MutationOutcome::ReadBackOpaqueOrResourceLimited
+pub perl_dap::mutation::MutationOutcome::ReadBackTargetMismatch
+pub perl_dap::mutation::MutationOutcome::ReadOnlyOrUnaddressable(perl_dap::mutation::WritabilityDisposition)
+pub perl_dap::mutation::MutationOutcome::StaleSession
+pub perl_dap::mutation::MutationOutcome::StaleSuspension
+pub perl_dap::mutation::MutationOutcome::StaleValueAuthority
+pub perl_dap::mutation::MutationOutcome::SuccessWithObservedReadBack(perl_dap::mutation::ObservedReadBack)
+pub perl_dap::mutation::MutationOutcome::TimeoutBeforeDispatch
+pub perl_dap::mutation::MutationOutcome::TransportFailureBeforeDispatch
+pub perl_dap::mutation::MutationOutcome::UnknownOrWrongContainerMember
+pub perl_dap::mutation::MutationOutcome::Unsupported
+pub perl_dap::mutation::MutationOutcome::Unsupported::backend: alloc::string::String
+pub perl_dap::mutation::MutationOutcome::Unsupported::mode: alloc::string::String
+pub perl_dap::mutation::MutationOutcome::Unsupported::profile: perl_dap::mutation::MutationValueProfile
+pub perl_dap::mutation::MutationOutcome::UnsupportedFrameOrTargetCohort
+pub perl_dap::mutation::MutationOutcome::ValueParseRefused
+pub fn perl_dap::mutation::MutationOutcome::indeterminate_after_dispatch() -> Self
+pub fn perl_dap::mutation::MutationOutcome::invalidates_value_authority(&self) -> bool
+pub fn perl_dap::mutation::MutationOutcome::is_before_dispatch(&self) -> bool
+pub fn perl_dap::mutation::MutationOutcome::is_success(&self) -> bool
+pub fn perl_dap::mutation::MutationOutcome::observed_read_back(&self) -> core::option::Option<&perl_dap::mutation::ObservedReadBack>
+pub fn perl_dap::mutation::MutationOutcome::possible_application(&self) -> bool
+pub fn perl_dap::mutation::MutationOutcome::receipt_class(&self) -> &'static str
+pub fn perl_dap::mutation::MutationOutcome::receipt_projection(&self) -> perl_dap::mutation::MutationOutcomeReceipt
+pub fn perl_dap::mutation::MutationOutcome::clone(&self) -> perl_dap::mutation::MutationOutcome
+pub fn perl_dap::mutation::MutationOutcome::eq(&self, other: &perl_dap::mutation::MutationOutcome) -> bool
+pub fn perl_dap::mutation::MutationOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::mutation::MutationTargetBindingError
+pub perl_dap::mutation::MutationTargetBindingError::MemberKindMismatch
+pub perl_dap::mutation::MutationTargetBindingError::MissingBindingIdentity
+pub perl_dap::mutation::MutationTargetBindingError::MissingFrameIdentity
+pub perl_dap::mutation::MutationTargetBindingError::MissingLocationKind
+pub perl_dap::mutation::MutationTargetBindingError::MissingMember
+pub perl_dap::mutation::MutationTargetBindingError::MissingReferentForContainerMember
+pub perl_dap::mutation::MutationTargetBindingError::MissingSessionGeneration
+pub perl_dap::mutation::MutationTargetBindingError::MissingSuspensionGeneration
+pub perl_dap::mutation::MutationTargetBindingError::MissingValueAuthorityGeneration
+pub perl_dap::mutation::MutationTargetBindingError::NotWritable(perl_dap::mutation::WritabilityDisposition)
+pub perl_dap::mutation::MutationTargetBindingError::StaleValueObservation
+pub perl_dap::mutation::MutationTargetBindingError::UnsupportedLocationKind(perl_dap::mutation::MutationLocationKind)
+pub fn perl_dap::mutation::MutationTargetBindingError::clone(&self) -> perl_dap::mutation::MutationTargetBindingError
+pub fn perl_dap::mutation::MutationTargetBindingError::eq(&self, other: &perl_dap::mutation::MutationTargetBindingError) -> bool
+pub fn perl_dap::mutation::MutationTargetBindingError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::MutationTargetBindingError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::MutationTargetBindingError::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub enum perl_dap::mutation::MutationTargetCohort
+pub perl_dap::mutation::MutationTargetCohort::CurrentFrameArrayElement
+pub perl_dap::mutation::MutationTargetCohort::CurrentFrameHashEntry
+pub perl_dap::mutation::MutationTargetCohort::CurrentFrameLexicalScalar
+pub fn perl_dap::mutation::MutationTargetCohort::clone(&self) -> perl_dap::mutation::MutationTargetCohort
+pub fn perl_dap::mutation::MutationTargetCohort::eq(&self, other: &perl_dap::mutation::MutationTargetCohort) -> bool
+pub fn perl_dap::mutation::MutationTargetCohort::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::MutationTargetCohort::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub enum perl_dap::mutation::MutationValue
+pub perl_dap::mutation::MutationValue::ExactDecimal(perl_dap::mutation::ExactDecimal)
+pub perl_dap::mutation::MutationValue::ExactInteger(perl_dap::mutation::ExactInteger)
+pub perl_dap::mutation::MutationValue::Undef
+pub perl_dap::mutation::MutationValue::UnicodeString(alloc::string::String)
+pub fn perl_dap::mutation::MutationValue::kind(&self) -> perl_dap::mutation::MutationValueKind
+pub fn perl_dap::mutation::MutationValue::profile(&self) -> perl_dap::mutation::MutationValueProfile
+pub fn perl_dap::mutation::MutationValue::receipt_projection(&self) -> perl_dap::mutation::MutationValueReceipt
+pub fn perl_dap::mutation::MutationValue::clone(&self) -> perl_dap::mutation::MutationValue
+pub fn perl_dap::mutation::MutationValue::eq(&self, other: &perl_dap::mutation::MutationValue) -> bool
+pub fn perl_dap::mutation::MutationValue::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::mutation::MutationValueKind
+pub perl_dap::mutation::MutationValueKind::ExactDecimal
+pub perl_dap::mutation::MutationValueKind::ExactInteger
+pub perl_dap::mutation::MutationValueKind::Undef
+pub perl_dap::mutation::MutationValueKind::UnicodeString
+pub fn perl_dap::mutation::MutationValueKind::clone(&self) -> perl_dap::mutation::MutationValueKind
+pub fn perl_dap::mutation::MutationValueKind::eq(&self, other: &perl_dap::mutation::MutationValueKind) -> bool
+pub fn perl_dap::mutation::MutationValueKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::MutationValueKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub enum perl_dap::mutation::MutationValueProfile
+pub perl_dap::mutation::MutationValueProfile::ScalarV1
+pub perl_dap::mutation::MutationValueProfile::StructuredV1
+pub fn perl_dap::mutation::MutationValueProfile::schema_version(self) -> u32
+pub fn perl_dap::mutation::MutationValueProfile::clone(&self) -> perl_dap::mutation::MutationValueProfile
+pub fn perl_dap::mutation::MutationValueProfile::eq(&self, other: &perl_dap::mutation::MutationValueProfile) -> bool
+pub fn perl_dap::mutation::MutationValueProfile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::MutationValueProfile::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub perl_dap::mutation::StructuredRefusal::AggregateTooLarge
 pub perl_dap::mutation::StructuredRefusal::AggregateTooLarge::limit: usize
 pub perl_dap::mutation::StructuredRefusal::DepthExceeded
@@ -1280,6 +1398,16 @@ pub fn perl_dap::mutation::StructuredValue::clone(&self) -> perl_dap::mutation::
 pub fn perl_dap::mutation::StructuredValue::eq(&self, other: &perl_dap::mutation::StructuredValue) -> bool
 pub fn perl_dap::mutation::StructuredValue::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::mutation::StructuredValue::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub enum perl_dap::mutation::WritabilityDisposition
+pub perl_dap::mutation::WritabilityDisposition::NotProven
+pub perl_dap::mutation::WritabilityDisposition::ReadOnly
+pub perl_dap::mutation::WritabilityDisposition::Unaddressable
+pub perl_dap::mutation::WritabilityDisposition::Writable
+pub fn perl_dap::mutation::WritabilityDisposition::clone(&self) -> perl_dap::mutation::WritabilityDisposition
+pub fn perl_dap::mutation::WritabilityDisposition::eq(&self, other: &perl_dap::mutation::WritabilityDisposition) -> bool
+pub fn perl_dap::mutation::WritabilityDisposition::default() -> perl_dap::mutation::WritabilityDisposition
+pub fn perl_dap::mutation::WritabilityDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::WritabilityDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub struct perl_dap::mutation::ExactDecimal
 pub fn perl_dap::mutation::ExactDecimal::admitted(canonical: &str) -> core::option::Option<Self>
 pub fn perl_dap::mutation::ExactDecimal::canonical(&self) -> &str
@@ -1287,6 +1415,80 @@ pub fn perl_dap::mutation::ExactDecimal::clone(&self) -> perl_dap::mutation::Exa
 pub fn perl_dap::mutation::ExactDecimal::eq(&self, other: &perl_dap::mutation::ExactDecimal) -> bool
 pub fn perl_dap::mutation::ExactDecimal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::mutation::ExactDecimal::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_dap::mutation::ExactInteger
+pub fn perl_dap::mutation::ExactInteger::admitted(canonical: &str) -> core::option::Option<Self>
+pub fn perl_dap::mutation::ExactInteger::canonical(&self) -> &str
+pub fn perl_dap::mutation::ExactInteger::is_negative(&self) -> bool
+pub fn perl_dap::mutation::ExactInteger::significant_digits(&self) -> usize
+pub fn perl_dap::mutation::ExactInteger::clone(&self) -> perl_dap::mutation::ExactInteger
+pub fn perl_dap::mutation::ExactInteger::eq(&self, other: &perl_dap::mutation::ExactInteger) -> bool
+pub fn perl_dap::mutation::ExactInteger::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::mutation::InspectedValueIdentity
+pub perl_dap::mutation::InspectedValueIdentity::referent: core::option::Option<alloc::string::String>
+pub perl_dap::mutation::InspectedValueIdentity::value_authority_generation: u64
+pub perl_dap::mutation::InspectedValueIdentity::value_node: alloc::string::String
+pub fn perl_dap::mutation::InspectedValueIdentity::clone(&self) -> perl_dap::mutation::InspectedValueIdentity
+pub fn perl_dap::mutation::InspectedValueIdentity::eq(&self, other: &perl_dap::mutation::InspectedValueIdentity) -> bool
+pub fn perl_dap::mutation::InspectedValueIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::mutation::MutationDeadline
+pub perl_dap::mutation::MutationDeadline::cancellation_id: core::option::Option<u64>
+pub perl_dap::mutation::MutationDeadline::deadline_millis: core::option::Option<u64>
+pub perl_dap::mutation::MutationDeadline::request_id: u64
+pub fn perl_dap::mutation::MutationDeadline::clone(&self) -> perl_dap::mutation::MutationDeadline
+pub fn perl_dap::mutation::MutationDeadline::eq(&self, other: &perl_dap::mutation::MutationDeadline) -> bool
+pub fn perl_dap::mutation::MutationDeadline::default() -> perl_dap::mutation::MutationDeadline
+pub fn perl_dap::mutation::MutationDeadline::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::MutationDeadline::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_dap::mutation::MutationLocationProvenance
+pub fn perl_dap::mutation::MutationLocationProvenance::binding_identity(&self) -> &str
+pub fn perl_dap::mutation::MutationLocationProvenance::frame_identity(&self) -> &str
+pub fn perl_dap::mutation::MutationLocationProvenance::kind(&self) -> perl_dap::mutation::MutationLocationKind
+pub fn perl_dap::mutation::MutationLocationProvenance::member(&self) -> &perl_dap::mutation::MutationMember
+pub fn perl_dap::mutation::MutationLocationProvenance::profile_version(&self) -> u32
+pub fn perl_dap::mutation::MutationLocationProvenance::referent_identity(&self) -> core::option::Option<&str>
+pub fn perl_dap::mutation::MutationLocationProvenance::session_generation(&self) -> u64
+pub fn perl_dap::mutation::MutationLocationProvenance::suspension_generation(&self) -> u64
+pub fn perl_dap::mutation::MutationLocationProvenance::value_authority_generation(&self) -> u64
+pub fn perl_dap::mutation::MutationLocationProvenance::clone(&self) -> perl_dap::mutation::MutationLocationProvenance
+pub fn perl_dap::mutation::MutationLocationProvenance::eq(&self, other: &perl_dap::mutation::MutationLocationProvenance) -> bool
+pub fn perl_dap::mutation::MutationLocationProvenance::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::mutation::MutationOperation
+pub fn perl_dap::mutation::MutationOperation::backend_mode(&self) -> &str
+pub fn perl_dap::mutation::MutationOperation::deadline(&self) -> perl_dap::mutation::MutationDeadline
+pub fn perl_dap::mutation::MutationOperation::expected_session_generation(&self) -> u64
+pub fn perl_dap::mutation::MutationOperation::expected_suspension_generation(&self) -> u64
+pub fn perl_dap::mutation::MutationOperation::expected_value_authority_generation(&self) -> u64
+pub fn perl_dap::mutation::MutationOperation::new(operation_id: u64, origin: perl_dap::mutation::MutationOrigin, target: perl_dap::mutation::MutationTarget, value: perl_dap::mutation::MutationValue, deadline: perl_dap::mutation::MutationDeadline, response_format: perl_dap::mutation::ResponseValueFormat) -> Self
+pub fn perl_dap::mutation::MutationOperation::operation_id(&self) -> u64
+pub fn perl_dap::mutation::MutationOperation::origin(&self) -> perl_dap::mutation::MutationOrigin
+pub fn perl_dap::mutation::MutationOperation::receipt_projection(&self) -> perl_dap::mutation::MutationOperationReceipt
+pub fn perl_dap::mutation::MutationOperation::response_format(&self) -> perl_dap::mutation::ResponseValueFormat
+pub fn perl_dap::mutation::MutationOperation::target(&self) -> &perl_dap::mutation::MutationTarget
+pub fn perl_dap::mutation::MutationOperation::value(&self) -> &perl_dap::mutation::MutationValue
+pub fn perl_dap::mutation::MutationOperation::value_profile(&self) -> perl_dap::mutation::MutationValueProfile
+pub fn perl_dap::mutation::MutationOperation::clone(&self) -> perl_dap::mutation::MutationOperation
+pub fn perl_dap::mutation::MutationOperation::eq(&self, other: &perl_dap::mutation::MutationOperation) -> bool
+pub fn perl_dap::mutation::MutationOperation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::mutation::MutationOperationReceipt
+pub perl_dap::mutation::MutationOperationReceipt::operation_id: u64
+pub perl_dap::mutation::MutationOperationReceipt::origin: perl_dap::mutation::MutationOrigin
+pub perl_dap::mutation::MutationOperationReceipt::target: perl_dap::mutation::MutationTargetReceipt
+pub perl_dap::mutation::MutationOperationReceipt::value: perl_dap::mutation::MutationValueReceipt
+pub perl_dap::mutation::MutationOperationReceipt::value_profile: perl_dap::mutation::MutationValueProfile
+pub fn perl_dap::mutation::MutationOperationReceipt::clone(&self) -> perl_dap::mutation::MutationOperationReceipt
+pub fn perl_dap::mutation::MutationOperationReceipt::eq(&self, other: &perl_dap::mutation::MutationOperationReceipt) -> bool
+pub fn perl_dap::mutation::MutationOperationReceipt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::MutationOperationReceipt::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_dap::mutation::MutationOutcomeReceipt
+pub perl_dap::mutation::MutationOutcomeReceipt::before_dispatch: bool
+pub perl_dap::mutation::MutationOutcomeReceipt::class: &'static str
+pub perl_dap::mutation::MutationOutcomeReceipt::invalidates_value_authority: bool
+pub perl_dap::mutation::MutationOutcomeReceipt::possible_application: bool
+pub perl_dap::mutation::MutationOutcomeReceipt::read_back_value: core::option::Option<perl_dap::mutation::MutationValueReceipt>
+pub fn perl_dap::mutation::MutationOutcomeReceipt::clone(&self) -> perl_dap::mutation::MutationOutcomeReceipt
+pub fn perl_dap::mutation::MutationOutcomeReceipt::eq(&self, other: &perl_dap::mutation::MutationOutcomeReceipt) -> bool
+pub fn perl_dap::mutation::MutationOutcomeReceipt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::MutationOutcomeReceipt::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub struct perl_dap::mutation::MutationStructuredValueV1
 pub const fn perl_dap::mutation::MutationStructuredValueV1::fingerprint(&self) -> &perl_source_identity::digest::ContentDigest
 pub const fn perl_dap::mutation::MutationStructuredValueV1::schema_version(&self) -> u32
@@ -1295,6 +1497,70 @@ pub fn perl_dap::mutation::MutationStructuredValueV1::clone(&self) -> perl_dap::
 pub fn perl_dap::mutation::MutationStructuredValueV1::eq(&self, other: &perl_dap::mutation::MutationStructuredValueV1) -> bool
 pub fn perl_dap::mutation::MutationStructuredValueV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::mutation::MutationStructuredValueV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_dap::mutation::MutationTarget
+pub fn perl_dap::mutation::MutationTarget::backend_mode(&self) -> &str
+pub fn perl_dap::mutation::MutationTarget::cohort(&self) -> perl_dap::mutation::MutationTargetCohort
+pub fn perl_dap::mutation::MutationTarget::location(&self) -> &perl_dap::mutation::MutationLocationProvenance
+pub fn perl_dap::mutation::MutationTarget::profile_version(&self) -> u32
+pub fn perl_dap::mutation::MutationTarget::receipt_projection(&self) -> perl_dap::mutation::MutationTargetReceipt
+pub fn perl_dap::mutation::MutationTarget::clone(&self) -> perl_dap::mutation::MutationTarget
+pub fn perl_dap::mutation::MutationTarget::eq(&self, other: &perl_dap::mutation::MutationTarget) -> bool
+pub fn perl_dap::mutation::MutationTarget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::mutation::MutationTargetCandidate
+pub perl_dap::mutation::MutationTargetCandidate::backend_mode: alloc::string::String
+pub perl_dap::mutation::MutationTargetCandidate::binding_identity: alloc::string::String
+pub perl_dap::mutation::MutationTargetCandidate::frame_identity: alloc::string::String
+pub perl_dap::mutation::MutationTargetCandidate::inspected_value: core::option::Option<perl_dap::mutation::InspectedValueIdentity>
+pub perl_dap::mutation::MutationTargetCandidate::kind: core::option::Option<perl_dap::mutation::MutationLocationKind>
+pub perl_dap::mutation::MutationTargetCandidate::member: core::option::Option<perl_dap::mutation::MutationMember>
+pub perl_dap::mutation::MutationTargetCandidate::session_generation: core::option::Option<u64>
+pub perl_dap::mutation::MutationTargetCandidate::suspension_generation: core::option::Option<u64>
+pub perl_dap::mutation::MutationTargetCandidate::value_authority_generation: core::option::Option<u64>
+pub perl_dap::mutation::MutationTargetCandidate::writability: perl_dap::mutation::WritabilityDisposition
+pub fn perl_dap::mutation::MutationTargetCandidate::bind(&self) -> core::result::Result<perl_dap::mutation::MutationTarget, perl_dap::mutation::MutationTargetBindingError>
+pub fn perl_dap::mutation::MutationTargetCandidate::clone(&self) -> perl_dap::mutation::MutationTargetCandidate
+pub fn perl_dap::mutation::MutationTargetCandidate::eq(&self, other: &perl_dap::mutation::MutationTargetCandidate) -> bool
+pub fn perl_dap::mutation::MutationTargetCandidate::default() -> perl_dap::mutation::MutationTargetCandidate
+pub fn perl_dap::mutation::MutationTargetCandidate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::mutation::MutationTargetReceipt
+pub perl_dap::mutation::MutationTargetReceipt::array_index: core::option::Option<i64>
+pub perl_dap::mutation::MutationTargetReceipt::cohort: perl_dap::mutation::MutationTargetCohort
+pub perl_dap::mutation::MutationTargetReceipt::key_bytes: core::option::Option<usize>
+pub perl_dap::mutation::MutationTargetReceipt::member_kind: &'static str
+pub perl_dap::mutation::MutationTargetReceipt::profile_version: u32
+pub perl_dap::mutation::MutationTargetReceipt::session_generation: u64
+pub perl_dap::mutation::MutationTargetReceipt::suspension_generation: u64
+pub fn perl_dap::mutation::MutationTargetReceipt::clone(&self) -> perl_dap::mutation::MutationTargetReceipt
+pub fn perl_dap::mutation::MutationTargetReceipt::eq(&self, other: &perl_dap::mutation::MutationTargetReceipt) -> bool
+pub fn perl_dap::mutation::MutationTargetReceipt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::MutationTargetReceipt::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_dap::mutation::MutationValueReceipt
+pub perl_dap::mutation::MutationValueReceipt::kind: perl_dap::mutation::MutationValueKind
+pub perl_dap::mutation::MutationValueReceipt::payload_bytes: usize
+pub perl_dap::mutation::MutationValueReceipt::profile: perl_dap::mutation::MutationValueProfile
+pub perl_dap::mutation::MutationValueReceipt::schema_version: u32
+pub fn perl_dap::mutation::MutationValueReceipt::clone(&self) -> perl_dap::mutation::MutationValueReceipt
+pub fn perl_dap::mutation::MutationValueReceipt::eq(&self, other: &perl_dap::mutation::MutationValueReceipt) -> bool
+pub fn perl_dap::mutation::MutationValueReceipt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::MutationValueReceipt::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_dap::mutation::ObservedReadBack
+pub perl_dap::mutation::ObservedReadBack::observed_binding_identity: alloc::string::String
+pub perl_dap::mutation::ObservedReadBack::observed_value: perl_dap::mutation::MutationValue
+pub perl_dap::mutation::ObservedReadBack::observed_value_authority_generation: u64
+pub fn perl_dap::mutation::ObservedReadBack::clone(&self) -> perl_dap::mutation::ObservedReadBack
+pub fn perl_dap::mutation::ObservedReadBack::eq(&self, other: &perl_dap::mutation::ObservedReadBack) -> bool
+pub fn perl_dap::mutation::ObservedReadBack::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::mutation::PossibleApplication(_)
+pub fn perl_dap::mutation::PossibleApplication::clone(&self) -> perl_dap::mutation::PossibleApplication
+pub fn perl_dap::mutation::PossibleApplication::eq(&self, other: &perl_dap::mutation::PossibleApplication) -> bool
+pub fn perl_dap::mutation::PossibleApplication::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::mutation::ResponseValueFormat
+pub perl_dap::mutation::ResponseValueFormat::hex: bool
+pub fn perl_dap::mutation::ResponseValueFormat::clone(&self) -> perl_dap::mutation::ResponseValueFormat
+pub fn perl_dap::mutation::ResponseValueFormat::eq(&self, other: &perl_dap::mutation::ResponseValueFormat) -> bool
+pub fn perl_dap::mutation::ResponseValueFormat::default() -> perl_dap::mutation::ResponseValueFormat
+pub fn perl_dap::mutation::ResponseValueFormat::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::ResponseValueFormat::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub struct perl_dap::mutation::StructuredMutationLimits
 pub perl_dap::mutation::StructuredMutationLimits::max_absolute_exponent: u32
 pub perl_dap::mutation::StructuredMutationLimits::max_aggregate_bytes: usize
@@ -1309,7 +1575,9 @@ pub fn perl_dap::mutation::StructuredMutationLimits::clone(&self) -> perl_dap::m
 pub fn perl_dap::mutation::StructuredMutationLimits::eq(&self, other: &perl_dap::mutation::StructuredMutationLimits) -> bool
 pub fn perl_dap::mutation::StructuredMutationLimits::default() -> Self
 pub fn perl_dap::mutation::StructuredMutationLimits::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_dap::mutation::MUTATION_SCALAR_VALUE_SCHEMA_VERSION: u32
 pub const perl_dap::mutation::MUTATION_STRUCTURED_VALUE_SCHEMA_VERSION: u32
+pub const perl_dap::mutation::MUTATION_TARGET_PROFILE_VERSION: u32
 pub const perl_dap::mutation::STRUCTURED_PREFIX: &str
 pub fn perl_dap::mutation::fresh_referent_kind(value: &perl_dap::mutation::StructuredValue) -> core::option::Option<perl_dap::mutation::FreshReferentKind>
 pub fn perl_dap::mutation::parse_structured_mutation(raw: &str, limits: &perl_dap::mutation::StructuredMutationLimits) -> core::result::Result<perl_dap::mutation::MutationStructuredValueV1, perl_dap::mutation::StructuredRefusal>
