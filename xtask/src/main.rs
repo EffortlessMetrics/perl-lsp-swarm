@@ -34,17 +34,18 @@ use tasks::ux_scorecard::UxScorecardFormat;
 use tasks::workflow_trigger_lint::WorkflowTriggerLintFormat;
 use tasks::worktree_allocator::AgentWorktreeCommand;
 use tasks::{
-    active_goal_manifest, agent_capability_policy, agent_flow, agent_implementation_packet,
-    agent_lease, agent_receipt, agent_review_packet, aggregate_receipts, badges, bench, benchmarks,
-    build, build_timing, bump_version, change_set, check, check_agent_context, check_lint_policy,
-    check_tautology, check_test_wiring, check_toolchain, check_version_sync, ci,
-    ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
-    ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure, command_evidence,
-    compare, compat_inventory, compiler_lexical_cutline, corpus_audit, count_ratchet, cpan_corpus,
-    critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
-    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs,
-    features, finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts,
-    gates, generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
+    activation, active_goal_manifest, agent_capability_policy, agent_flow,
+    agent_implementation_packet, agent_lease, agent_receipt, agent_review_packet,
+    aggregate_receipts, badges, bench, benchmarks, build, build_timing, bump_version, change_set,
+    check, check_agent_context, check_lint_policy, check_tautology, check_test_wiring,
+    check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract, ci_doctor,
+    ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route, ci_scope,
+    clean, clippy_cost_measure, command_evidence, compare, compat_inventory,
+    compiler_lexical_cutline, corpus_audit, count_ratchet, cpan_corpus, critic_rule_proof,
+    dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc,
+    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
+    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
+    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
     ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
     inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
     issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
@@ -143,6 +144,18 @@ enum Commands {
 
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
+
+    /// Generate, validate, and list the versioned activation inventory
+    /// (`activation_inventory.v1`, #9204): a deterministic classified catalog
+    /// of product, preview, compatibility-shim, test-api, lab, oracle,
+    /// benchmark, and gate surfaces derived from existing authorities plus a
+    /// narrow, typed, owner/expiry-bound override ledger. Does not implement
+    /// activation checking (#9205).
+    Activation {
+        /// Operation to run against the activation inventory.
+        #[command(subcommand)]
+        command: tasks::activation::ActivationSubcommand,
+    },
 
     /// List, validate, and explain the compiler lexical cut-line cases
     /// manifest (`compiler_lexical_cutline_cases.v1`, #12156).
@@ -4971,6 +4984,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckActiveGoalManifest => active_goal_manifest::run(),
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
+        Commands::Activation { command } => activation::run(command),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
         Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),

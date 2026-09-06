@@ -1,0 +1,4848 @@
+{
+  "schema": "schemas/activation_inventory.v1.schema.json",
+  "schema_version": "activation_inventory.v1",
+  "policy": "activation-inventory",
+  "owner": "architecture/activation",
+  "controlling_issue": "#9204",
+  "derivation": [
+    {
+      "rule": "cargo-bench-targets",
+      "authority": "crates/*/Cargo.toml",
+      "emits": "benchmark",
+      "considered": 15,
+      "emitted": 15,
+      "not_seeded_reason": "every [[bench]] target is emitted; nothing is filtered"
+    },
+    {
+      "rule": "cargo-test-features",
+      "authority": "crates/*/Cargo.toml",
+      "emits": "test_api",
+      "considered": 78,
+      "emitted": 26,
+      "not_seeded_reason": "a feature is seeded when its NAME declares test-only intent (test-*, expose_*, experimental-*, stress-tests, slow_tests, integration-test) or its USAGE proves it (at least one cfg(feature = \"...\") site, all under tests/ or benches/). Each row records which signal settled it. A feature with no cfg sites at all is not seeded by usage: an unused feature is neither shown to gate tests nor shown not to. A feature gating both production and test code is seeded only if its name declares the intent, since gating production code is what an exposed test API does"
+    },
+    {
+      "rule": "features-preview",
+      "authority": "features.toml",
+      "emits": "preview",
+      "considered": 128,
+      "emitted": 2,
+      "not_seeded_reason": "rows with maturity != \"preview\" are not preview surfaces"
+    },
+    {
+      "rule": "features-product",
+      "authority": "features.toml",
+      "emits": "product",
+      "considered": 128,
+      "emitted": 16,
+      "not_seeded_reason": "rows with maturity != \"proven\" or advertised != true are not product surfaces; earned-claim maturity stays owned by features.toml"
+    },
+    {
+      "rule": "fuzz-targets",
+      "authority": "fuzz/fuzz_targets/*.rs",
+      "emits": "lab",
+      "considered": 21,
+      "emitted": 21,
+      "not_seeded_reason": "every fuzz target source file is emitted; nothing is filtered"
+    },
+    {
+      "rule": "gate-policy-gates",
+      "authority": ".ci/gate-policy.yaml",
+      "emits": "gate",
+      "considered": 80,
+      "emitted": 80,
+      "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
+    },
+    {
+      "rule": "override",
+      "authority": "policy/activation-overrides.toml",
+      "emits": "any",
+      "considered": 2,
+      "emitted": 2,
+      "not_seeded_reason": "hand-maintained; every row is a narrow, owner- and expiry-bound exception for a class no derivation rule settles today"
+    }
+  ],
+  "rows": [
+    {
+      "surface_id": "bench:perl-dap/dap_benchmarks",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-dap/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-dap/Cargo.toml#bench.dap_benchmarks",
+      "consumers": [
+        "crates/perl-dap"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-dap/Cargo.toml",
+        "detail": "[[bench]] name = \"dap_benchmarks\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-dap/Cargo.toml"
+      },
+      "owner": "perl-dap",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-incremental-parsing/incremental_parsing_benchmarks",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-incremental-parsing/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-incremental-parsing/Cargo.toml#bench.incremental_parsing_benchmarks",
+      "consumers": [
+        "crates/perl-incremental-parsing"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-incremental-parsing/Cargo.toml",
+        "detail": "[[bench]] name = \"incremental_parsing_benchmarks\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-incremental-parsing/Cargo.toml"
+      },
+      "owner": "perl-incremental-parsing",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-lexer/lexer_benchmarks",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lexer/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-lexer/Cargo.toml#bench.lexer_benchmarks",
+      "consumers": [
+        "crates/perl-lexer"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lexer/Cargo.toml",
+        "detail": "[[bench]] name = \"lexer_benchmarks\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lexer/Cargo.toml"
+      },
+      "owner": "perl-lexer",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-lsp-perltidy/native_pipeline_benchmark",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-perltidy/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-lsp-perltidy/Cargo.toml#bench.native_pipeline_benchmark",
+      "consumers": [
+        "crates/perl-lsp-perltidy"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-perltidy/Cargo.toml",
+        "detail": "[[bench]] name = \"native_pipeline_benchmark\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-perltidy/Cargo.toml"
+      },
+      "owner": "perl-lsp-perltidy",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-lsp-rs/rope_performance_benchmark",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-lsp-rs/Cargo.toml#bench.rope_performance_benchmark",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "detail": "[[bench]] name = \"rope_performance_benchmark\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-rs/Cargo.toml"
+      },
+      "owner": "perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-parser/cpan_patterns_benchmark",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#bench.cpan_patterns_benchmark",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[[bench]] name = \"cpan_patterns_benchmark\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-parser/incremental_benchmark",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#bench.incremental_benchmark",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[[bench]] name = \"incremental_benchmark\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-parser/parser_benchmark",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#bench.parser_benchmark",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[[bench]] name = \"parser_benchmark\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-parser/positions_bench",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#bench.positions_bench",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[[bench]] name = \"positions_bench\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-parser/scope_benchmark",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#bench.scope_benchmark",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[[bench]] name = \"scope_benchmark\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-parser/substitution_performance",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#bench.substitution_performance",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[[bench]] name = \"substitution_performance\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-pragma/pragma_benchmarks",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-pragma/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-pragma/Cargo.toml#bench.pragma_benchmarks",
+      "consumers": [
+        "crates/perl-pragma"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-pragma/Cargo.toml",
+        "detail": "[[bench]] name = \"pragma_benchmarks\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-pragma/Cargo.toml"
+      },
+      "owner": "perl-pragma",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-symbol/symbol_benchmarks",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-symbol/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-symbol/Cargo.toml#bench.symbol_benchmarks",
+      "consumers": [
+        "crates/perl-symbol"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-symbol/Cargo.toml",
+        "detail": "[[bench]] name = \"symbol_benchmarks\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-symbol/Cargo.toml"
+      },
+      "owner": "perl-symbol",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-token/token_scorecard",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-token/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-token/Cargo.toml#bench.token_scorecard",
+      "consumers": [
+        "crates/perl-token"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-token/Cargo.toml",
+        "detail": "[[bench]] name = \"token_scorecard\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-token/Cargo.toml"
+      },
+      "owner": "perl-token",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-workspace/workspace_index_benchmark",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-workspace/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-workspace/Cargo.toml#bench.workspace_index_benchmark",
+      "consumers": [
+        "crates/perl-workspace"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-workspace/Cargo.toml",
+        "detail": "[[bench]] name = \"workspace_index_benchmark\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-workspace/Cargo.toml"
+      },
+      "owner": "perl-workspace",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "cargo-feature:perl-dap/dap-phase2",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-dap/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-dap/Cargo.toml#features.dap-phase2",
+      "consumers": [
+        "crates/perl-dap"
+      ],
+      "compile_profiles": [
+        "dap-phase2"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-dap/Cargo.toml",
+        "detail": "[features] dap-phase2 = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-dap/Cargo.toml"
+      },
+      "owner": "perl-dap",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-dap/dap-phase3",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-dap/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-dap/Cargo.toml#features.dap-phase3",
+      "consumers": [
+        "crates/perl-dap"
+      ],
+      "compile_profiles": [
+        "dap-phase3"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-dap/Cargo.toml",
+        "detail": "[features] dap-phase3 = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-dap/Cargo.toml"
+      },
+      "owner": "perl-dap",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-dap/test-helpers",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-dap/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-dap/Cargo.toml#features.test-helpers",
+      "consumers": [
+        "crates/perl-dap"
+      ],
+      "compile_profiles": [
+        "test-helpers"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-dap/Cargo.toml",
+        "detail": "[features] test-helpers = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-dap/Cargo.toml"
+      },
+      "owner": "perl-dap",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lexer/slow_tests",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lexer/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lexer/Cargo.toml#features.slow_tests",
+      "consumers": [
+        "crates/perl-lexer"
+      ],
+      "compile_profiles": [
+        "slow_tests"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lexer/Cargo.toml",
+        "detail": "[features] slow_tests = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lexer/Cargo.toml"
+      },
+      "owner": "perl-lexer",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lsp-rs/experimental-features",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lsp-rs/Cargo.toml#features.experimental-features",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [
+        "experimental-features"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "detail": "[features] experimental-features = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-rs/Cargo.toml"
+      },
+      "owner": "perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lsp-rs/expose_lsp_test_api",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lsp-rs/Cargo.toml#features.expose_lsp_test_api",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [
+        "expose_lsp_test_api"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "detail": "[features] expose_lsp_test_api = [perl-parser/expose_lsp_test_api]"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-rs/Cargo.toml"
+      },
+      "owner": "perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lsp-rs/lsp-extras",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lsp-rs/Cargo.toml#features.lsp-extras",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [
+        "lsp-extras"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "detail": "[features] lsp-extras = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-rs/Cargo.toml"
+      },
+      "owner": "perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lsp-rs/stress-tests",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lsp-rs/Cargo.toml#features.stress-tests",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [
+        "stress-tests"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "detail": "[features] stress-tests = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-rs/Cargo.toml"
+      },
+      "owner": "perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lsp-rs/strict-jsonrpc",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lsp-rs/Cargo.toml#features.strict-jsonrpc",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [
+        "strict-jsonrpc"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "detail": "[features] strict-jsonrpc = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-rs/Cargo.toml"
+      },
+      "owner": "perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lsp-rs/test-fallbacks",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lsp-rs/Cargo.toml#features.test-fallbacks",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [
+        "test-fallbacks"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "detail": "[features] test-fallbacks = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-rs/Cargo.toml"
+      },
+      "owner": "perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lsp-rs/test-performance",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lsp-rs/Cargo.toml#features.test-performance",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [
+        "test-performance"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "detail": "[features] test-performance = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-rs/Cargo.toml"
+      },
+      "owner": "perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lsp-rs/utf16-complete",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lsp-rs/Cargo.toml#features.utf16-complete",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [
+        "utf16-complete"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "detail": "[features] utf16-complete = [perl-parser/utf16-complete]"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-rs/Cargo.toml"
+      },
+      "owner": "perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lsp-ux-tests/integration-test",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-ux-tests/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lsp-ux-tests/Cargo.toml#features.integration-test",
+      "consumers": [
+        "crates/perl-lsp-ux-tests"
+      ],
+      "compile_profiles": [
+        "integration-test"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-ux-tests/Cargo.toml",
+        "detail": "[features] integration-test = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-ux-tests/Cargo.toml"
+      },
+      "owner": "perl-lsp-ux-tests",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/constant-advanced",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.constant-advanced",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "constant-advanced"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] constant-advanced = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/crash-repros",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.crash-repros",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "crash-repros"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] crash-repros = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/doc-coverage",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.doc-coverage",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "doc-coverage"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] doc-coverage = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/error-classifier-v2",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.error-classifier-v2",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "error-classifier-v2"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] error-classifier-v2 = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/experimental-features",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.experimental-features",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "experimental-features"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] experimental-features = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/expose_lsp_test_api",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.expose_lsp_test_api",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "expose_lsp_test_api"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] expose_lsp_test_api = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/package-qualified",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.package-qualified",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "package-qualified"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] package-qualified = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/parser-extras",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.parser-extras",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "parser-extras"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] parser-extras = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/qw-variants",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.qw-variants",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "qw-variants"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] qw-variants = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/semantic-phase2",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.semantic-phase2",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "semantic-phase2"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] semantic-phase2 = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/slow_tests",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.slow_tests",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "slow_tests"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] slow_tests = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/test-performance",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.test-performance",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "test-performance"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] test-performance = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:tree-sitter-perl-c/test-utils",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/tree-sitter-perl-c/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/tree-sitter-perl-c/Cargo.toml#features.test-utils",
+      "consumers": [
+        "crates/tree-sitter-perl-c"
+      ],
+      "compile_profiles": [
+        "test-utils"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/tree-sitter-perl-c/Cargo.toml",
+        "detail": "[features] test-utils = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/tree-sitter-perl-c/Cargo.toml"
+      },
+      "owner": "tree-sitter-perl-c",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "crate:perl-tree-sitter-compat",
+      "class": "compatibility_shim",
+      "class_authority": {
+        "kind": "override",
+        "authority": "policy/activation-overrides.toml",
+        "rule": "override"
+      },
+      "semantic_authority": "policy/tree-sitter-compat-inventory.toml",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "not_established",
+        "detail": "narrow override row; no runtime registration mechanism established"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "private_workspace_member",
+        "authority": "crates/perl-tree-sitter-compat/Cargo.toml#package.publish"
+      },
+      "owner": "parser/tree-sitter",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "retirement": {
+        "owner": "#8890",
+        "boundary": "Removal tracked by controlling issue #8880 (train #8877 row PR-09); migration #8889 must land before removal #8890 executes, per policy/tree-sitter-compat-inventory.toml (migration_owner = \"#8889\", removal_owner = \"#8890\")."
+      },
+      "notes": "No #9204 derivation rule classifies a private, currently-unconsumed compatibility-adapter crate. policy/tree-sitter-compat-inventory.toml (controlling issue #8880) establishes perl-tree-sitter-compat as the Tier-A tree-sitter compatibility surface (parse_to_tree, to_ts_node, highlights, to_sexp, per docs/explanation/TREE_SITTER_COMPATIBILITY.md), records zero current Cargo dependents, and crates/perl-tree-sitter-compat/Cargo.toml sets publish = false. Scheduled for removal (#8890) once migration #8889 completes."
+    },
+    {
+      "surface_id": "crate:tree-sitter-perl-c",
+      "class": "oracle",
+      "class_authority": {
+        "kind": "override",
+        "authority": "policy/activation-overrides.toml",
+        "rule": "override"
+      },
+      "semantic_authority": "crates/tree-sitter-perl-c/Cargo.toml#package.description",
+      "consumers": [
+        "crates/perl-parser-comparison",
+        "xtask"
+      ],
+      "compile_profiles": [
+        "historical",
+        "parser-tasks"
+      ],
+      "registration": {
+        "state": "not_established",
+        "detail": "narrow override row; no runtime registration mechanism established"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "publish_allowed",
+        "authority": "Cargo.toml#workspace.metadata.publish.allow"
+      },
+      "owner": "parser/tree-sitter",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "No #9204 derivation rule classifies a differential test-oracle crate. crates/tree-sitter-perl-c/Cargo.toml describes the crate as a \"Tree-sitter Perl C FFI snapshot for testing, experimentation, accuracy comparison, and baseline benchmarking\". It has two in-tree Cargo dependents, both optional and both oracle uses: crates/perl-parser-comparison gates it behind `historical = [\"dep:tree-sitter-perl-c\"]` to compare native-parser output against the legacy C grammar, and xtask gates it behind `parser-tasks = [\"legacy\", \"tree-sitter-perl-c\"]`, calling `tree_sitter_perl_c::language()` in xtask/src/tasks/compare_parsers.rs. The root Cargo.toml `[workspace.metadata.publish] allow` list names this crate, which establishes that publication is permitted, not that any version was actually published — only a registry lookup could show that, and this ledger stays checkable from the repository alone. The row therefore claims `publish_allowed` rather than `published`."
+    },
+    {
+      "surface_id": "feature:lsp.code_action",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.code_action",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"codeActionProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_code_actions_tests.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.code_action",
+      "owner": "crates/perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.completion",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.completion",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"completionProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_completion_tests.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-ux-tests/tests/ux_scenario_19_completion_core.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.completion",
+      "owner": "crates/perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.declaration",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.declaration",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"declarationProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_definition_tests.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_bdd_workflows.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-ux-tests/tests/ux_scenario_10_goto_definition.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.declaration",
+      "owner": "crates/perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.definition",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.definition",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"definitionProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_definition_tests.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_bdd_workflows.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-ux-tests/tests/ux_scenario_10_goto_definition.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.definition",
+      "owner": "crates/perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.document_highlight",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.document_highlight",
+      "consumers": [
+        "crates/perl-lsp-rs-core"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"documentHighlightProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_document_highlight_tests.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.document_highlight",
+      "owner": "crates/perl-lsp-rs-core",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.document_symbol",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.document_symbol",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"documentSymbolProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_symbols_tests.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_bdd_workflows.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.document_symbol",
+      "owner": "crates/perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.folding_range",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.folding_range",
+      "consumers": [
+        "crates/perl-lsp-rs-core"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"foldingRangeProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_folding_ranges_test.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_bdd_workflows.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.folding_range",
+      "owner": "crates/perl-lsp-rs-core",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.formatting",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.formatting",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"documentFormattingProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_formatting_tests.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_bdd_workflows.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.formatting",
+      "owner": "crates/perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.hover",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.hover",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"hoverProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_hover_tests.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_bdd_workflows.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-ux-tests/tests/ux_scenario_11_hover.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.hover",
+      "owner": "crates/perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.notebook_cell_execution",
+      "class": "preview",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-preview"
+      },
+      "semantic_authority": "features.toml#lsp.notebook_cell_execution",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"notebookDocumentSync\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.notebook_cell_execution",
+      "owner": "unowned",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "no implementation crate recorded: features.toml sets implementation_owner = \"missing\""
+    },
+    {
+      "surface_id": "feature:lsp.notebook_document_sync",
+      "class": "preview",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-preview"
+      },
+      "semantic_authority": "features.toml#lsp.notebook_document_sync",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"notebookDocumentSync\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/ripr_seam_proof_notebook_preview_boundary.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.notebook_document_sync",
+      "owner": "unowned",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "no implementation crate recorded: features.toml sets implementation_owner = \"missing\""
+    },
+    {
+      "surface_id": "feature:lsp.prepare_rename",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.prepare_rename",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"renameProvider.prepareProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_rename_tests.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_bdd_workflows.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.prepare_rename",
+      "owner": "crates/perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.pull_diagnostics",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.pull_diagnostics",
+      "consumers": [
+        "crates/perl-lsp-rs-core"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"diagnosticProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/pull_diagnostics_tests.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.pull_diagnostics",
+      "owner": "crates/perl-lsp-rs-core",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.references",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.references",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"referencesProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_references_tests.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_bdd_workflows.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.references",
+      "owner": "crates/perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.rename",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.rename",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"renameProvider.prepareProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_rename_tests.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_bdd_workflows.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.rename",
+      "owner": "crates/perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.selection_range",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.selection_range",
+      "consumers": [
+        "crates/perl-lsp-rs-core"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"selectionRangeProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_selection_range_tests.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_bdd_workflows.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.selection_range",
+      "owner": "crates/perl-lsp-rs-core",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.semantic_tokens",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.semantic_tokens",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"semanticTokensProvider.full\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_semantic_tokens.rs"
+        },
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_3_17_semantic_tokens_tests.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.semantic_tokens",
+      "owner": "crates/perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "feature:lsp.workspace_symbol",
+      "class": "product",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "features.toml",
+        "rule": "features-product"
+      },
+      "semantic_authority": "features.toml#lsp.workspace_symbol",
+      "consumers": [
+        "crates/perl-lsp-rs-core"
+      ],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": "features.toml",
+        "detail": "capability_gate = \"workspaceSymbolProvider\"; registration = \"static_capabilities\""
+      },
+      "proof_references": [
+        {
+          "class": "integration_test",
+          "id": "crates/perl-lsp-rs/tests/lsp_workspace_symbol_tests.rs"
+        }
+      ],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "features.toml"
+      },
+      "maturity_authority": "features.toml#lsp.workspace_symbol",
+      "owner": "crates/perl-lsp-rs-core",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:builtin_functions",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/builtin_functions.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/builtin_functions.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"builtin_functions\", path = \"fuzz_targets/builtin_functions.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:config_surfaces",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/config_surfaces.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/config_surfaces.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"config_surfaces\", path = \"fuzz_targets/config_surfaces.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:dap_eval_validator",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/dap_eval_validator.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/dap_eval_validator.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"dap_eval_validator\", path = \"fuzz_targets/dap_eval_validator.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:dap_stack_parser",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/dap_stack_parser.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/dap_stack_parser.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"dap_stack_parser\", path = \"fuzz_targets/dap_stack_parser.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:declaration_parsing",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/declaration_parsing.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/declaration_parsing.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"declaration_parsing\", path = \"fuzz_targets/declaration_parsing.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:heredoc_parsing",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/heredoc_parsing.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/heredoc_parsing.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"heredoc_parsing\", path = \"fuzz_targets/heredoc_parsing.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:incremental_edit_sequences",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/incremental_edit_sequences.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/incremental_edit_sequences.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"incremental_edit_sequences\", path = \"fuzz_targets/incremental_edit_sequences.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:lexer_tokenization",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/lexer_tokenization.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/lexer_tokenization.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"lexer_tokenization\", path = \"fuzz_targets/lexer_tokenization.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:lsp_cancellation_registry",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/lsp_cancellation_registry.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/lsp_cancellation_registry.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"lsp_cancellation_registry\", path = \"fuzz_targets/lsp_cancellation_registry.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:lsp_navigation",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/lsp_navigation.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/lsp_navigation.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"lsp_navigation\", path = \"fuzz_targets/lsp_navigation.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:module_surface",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/module_surface.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/module_surface.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"module_surface\", path = \"fuzz_targets/module_surface.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:parser_integration",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/fuzz_target_1.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/fuzz_target_1.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"parser_integration\", path = \"fuzz_targets/fuzz_target_1.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:pod_extraction",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/pod_extraction.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/pod_extraction.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"pod_extraction\", path = \"fuzz_targets/pod_extraction.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:quote_operators",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/quote_operators.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/quote_operators.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"quote_operators\", path = \"fuzz_targets/quote_operators.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:regex_validation",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/regex_validation.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/regex_validation.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"regex_validation\", path = \"fuzz_targets/regex_validation.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:semantic_model",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/semantic_model.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/semantic_model.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"semantic_model\", path = \"fuzz_targets/semantic_model.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:structured_perl_programs",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/structured_perl_programs.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/structured_perl_programs.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"structured_perl_programs\", path = \"fuzz_targets/structured_perl_programs.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:substitution_parsing",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/substitution_parsing.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/substitution_parsing.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"substitution_parsing\", path = \"fuzz_targets/substitution_parsing.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:symbol_query_ranking",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/symbol_query_ranking.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/symbol_query_ranking.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"symbol_query_ranking\", path = \"fuzz_targets/symbol_query_ranking.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:unicode_positions",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/unicode_positions.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/unicode_positions.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"unicode_positions\", path = \"fuzz_targets/unicode_positions.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "fuzz:utf16_roundtrip",
+      "class": "lab",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "fuzz/fuzz_targets/utf16_roundtrip.rs",
+        "rule": "fuzz-targets"
+      },
+      "semantic_authority": "fuzz/fuzz_targets/utf16_roundtrip.rs",
+      "consumers": [
+        "perl-parser-fuzz"
+      ],
+      "compile_profiles": [
+        "fuzz"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "fuzz/Cargo.toml",
+        "detail": "[[bin]] name = \"utf16_roundtrip\", path = \"fuzz_targets/utf16_roundtrip.rs\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "fuzz/Cargo.toml"
+      },
+      "owner": "perl-parser-fuzz",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "gate:adr_link_check",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#adr_link_check",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Inline relative Markdown links under docs/adr resolve to files inside the repository"
+    },
+    {
+      "surface_id": "gate:agent_context_coverage",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#agent_context_coverage",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Every workspace member has package-local context, an exemption, or tracked context debt (advisory; needs_context non-empty)"
+    },
+    {
+      "surface_id": "gate:benchmarks",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#benchmarks",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"nightly\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Performance benchmarks for tracking regressions"
+    },
+    {
+      "surface_id": "gate:changie_fragment_staged",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#changie_fragment_staged",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"commit\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Changie fragment schema validity for staged .changes/unreleased/*.yaml (dry-render deferred to pre-push, #3985)"
+    },
+    {
+      "surface_id": "gate:check_conflict_markers",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#check_conflict_markers",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Prevent committed merge conflict markers"
+    },
+    {
+      "surface_id": "gate:check_tests_scoped",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#check_tests_scoped",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Compile integration tests for ci-scope selected crates"
+    },
+    {
+      "surface_id": "gate:clippy_core",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#clippy_core",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Clippy lints on core library crates (not full workspace)"
+    },
+    {
+      "surface_id": "gate:clippy_full",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#clippy_full",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Clippy lints on full workspace with strict settings"
+    },
+    {
+      "surface_id": "gate:clippy_scoped",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#clippy_scoped",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Scope-aware library clippy for ci-scope selected crates"
+    },
+    {
+      "surface_id": "gate:clippy_tests_kernel",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#clippy_tests_kernel",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Clippy --all-targets on the known-clean staged cohort (36/46 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    },
+    {
+      "surface_id": "gate:common_corpus_clean",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#common_corpus_clean",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Pinned common Perl modules must parse with zero errors"
+    },
+    {
+      "surface_id": "gate:compile_all_targets",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#compile_all_targets",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Compile all workspace targets (lib/bin/tests/benches) to catch integration and bench bit-rot; also validates all-features paths"
+    },
+    {
+      "surface_id": "gate:compiler_concept_ledger",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#compiler_concept_ledger",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Validate contracts/compiler/perl_compiler_concepts.v1.toml and its generated status doc"
+    },
+    {
+      "surface_id": "gate:compiler_concept_proof",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#compiler_concept_proof",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Validate the one-to-one concept proof-obligation matrix against the ledger and proof policy, and its generated status doc"
+    },
+    {
+      "surface_id": "gate:compiler_proof_policy",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#compiler_proof_policy",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Validate contracts/compiler/perl_compiler_proof_policy.v1.toml against the concept ledger and its generated status doc"
+    },
+    {
+      "surface_id": "gate:conflict_markers_staged",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#conflict_markers_staged",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"commit\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Full-content scan of staged files for leftover merge-conflict markers"
+    },
+    {
+      "surface_id": "gate:corpus_sweep",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#corpus_sweep",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"nightly\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Parser corpus sweep ratchet check against baseline"
+    },
+    {
+      "surface_id": "gate:corpus_validation",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#corpus_validation",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"nightly\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Full corpus validation and coverage reporting"
+    },
+    {
+      "surface_id": "gate:coverage",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#coverage",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"nightly\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Code coverage collection and reporting"
+    },
+    {
+      "surface_id": "gate:cpan_corpus_ratchet",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#cpan_corpus_ratchet",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "CPAN corpus baseline + known-clean manifest must remain green (advisory; CPAN corpus not installed on PR runners)"
+    },
+    {
+      "surface_id": "gate:determinism_check",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#determinism_check",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"nightly\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Verify test output is deterministic across runs"
+    },
+    {
+      "surface_id": "gate:docs_build",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#docs_build",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Verify documentation builds without errors"
+    },
+    {
+      "surface_id": "gate:fmt",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#fmt",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Check code formatting with rustfmt"
+    },
+    {
+      "surface_id": "gate:forbidden_machine_paths",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#forbidden_machine_paths",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"commit\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Machine-specific absolute paths (Windows user profile, POSIX home dir) in staged non-doc files"
+    },
+    {
+      "surface_id": "gate:from_raw_staged",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#from_raw_staged",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"commit\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "ExitStatus::from_raw() policy over staged Rust content (folds in .ci/hooks/pre-commit)"
+    },
+    {
+      "surface_id": "gate:full_matrix",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#full_matrix",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"nightly\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "All OS/toolchain combinations for compatibility"
+    },
+    {
+      "surface_id": "gate:fuzz",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#fuzz",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"nightly\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Bounded fuzzing runs for parser robustness"
+    },
+    {
+      "surface_id": "gate:ignored_tests_check_refs",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#ignored_tests_check_refs",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Require every ignored test to cite a numeric tracking issue"
+    },
+    {
+      "surface_id": "gate:inline_completion_binary_smoke",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#inline_completion_binary_smoke",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"release\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Release-built perl-lsp stdio smoke for LSP 3.18 inline completion (advisory; no workflow route)"
+    },
+    {
+      "surface_id": "gate:inline_completion_core",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#inline_completion_core",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Core inline-completion provider lib tests (perl-lsp-rs-core::inline_completion)"
+    },
+    {
+      "surface_id": "gate:inline_completion_quality_receipt",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#inline_completion_quality_receipt",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Deterministic inline-completion fixture quality receipt"
+    },
+    {
+      "surface_id": "gate:inline_completion_registration",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#inline_completion_registration",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Inline-completion provider registration tests (lsp_inline_completion_registration_tests)"
+    },
+    {
+      "surface_id": "gate:layer_check",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#layer_check",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Enforce crate dependency layering"
+    },
+    {
+      "surface_id": "gate:lint_policy",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#lint_policy",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Validate the workspace Clippy lint policy against its catalog and ledgers"
+    },
+    {
+      "surface_id": "gate:lsp_capability_snapshots",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#lsp_capability_snapshots",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "LSP capability snapshot contract — detects capability-negotiation drift (lsp_cap_snap)"
+    },
+    {
+      "surface_id": "gate:lsp_registration_contract",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#lsp_registration_contract",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "LSP capability registration contract (lsp_registration_tests)"
+    },
+    {
+      "surface_id": "gate:lsp_smoke",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#lsp_smoke",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Deterministic LSP semantic-definition and initialize-contract tests (atomic children, #8063)"
+    },
+    {
+      "surface_id": "gate:lsp_tier_a",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#lsp_tier_a",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "LSP smoke tests: capabilities, protocol basics (<30s) (advisory; no workflow route)"
+    },
+    {
+      "surface_id": "gate:lsp_tier_b",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#lsp_tier_b",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "LSP core behavior: definitions, completion, color handling, code lens, inline completion, security (2-5 min) (advisory; no workflow route)"
+    },
+    {
+      "surface_id": "gate:msrv_authority_sync",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#msrv_authority_sync",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Run the gate-policy validator: every MSRV authority (Cargo.toml, rust-toolchain.toml, gate-policy global + matrix legs) agrees, plus PR-profile and registry invariants"
+    },
+    {
+      "surface_id": "gate:must_context_check",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#must_context_check",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Report changes that drop an .expect(\"…\") explanation into a bare perl-test-must helper"
+    },
+    {
+      "surface_id": "gate:mutation",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#mutation",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"nightly\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Mutation testing subset to verify test quality"
+    },
+    {
+      "surface_id": "gate:nested_lock_check",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#nested_lock_check",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Ensure no nested Cargo.lock files exist (footgun prevention)"
+    },
+    {
+      "surface_id": "gate:non_rust_inventory_check",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#non_rust_inventory_check",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Scan and classify tracked non-Rust files and require the normalized committed snapshot to match"
+    },
+    {
+      "surface_id": "gate:parser_audit_closeout",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#parser_audit_closeout",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Project corpus parser closeout metrics (repo-scoped, deterministic run) must not regress (advisory; no workflow route)"
+    },
+    {
+      "surface_id": "gate:parser_behavior_proof",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#parser_behavior_proof",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Parser behavior-proof admission: registry validity and validator falsifiers (#6908)"
+    },
+    {
+      "surface_id": "gate:parser_corpus_ratchet",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#parser_corpus_ratchet",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "System Perl corpus must not regress against parser baseline (advisory; baseline drifts with runner Perl)"
+    },
+    {
+      "surface_id": "gate:parser_integration",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#parser_integration",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Bounded parser integration proof with a non-shrinking target manifest (#6107)"
+    },
+    {
+      "surface_id": "gate:perl_token_leaf_contract",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#perl_token_leaf_contract",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Ratchet perl-token leaf-crate dependency and API/metadata stability"
+    },
+    {
+      "surface_id": "gate:policy_checks",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#policy_checks",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Enforce project policies (docs baseline, version sync, ExitStatus helper, features invariants) (advisory; no workflow route)"
+    },
+    {
+      "surface_id": "gate:publish_closure",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#publish_closure",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Check publish-closure transitive dependencies"
+    },
+    {
+      "surface_id": "gate:publish_manifest_check",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#publish_manifest_check",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Check publish manifest allowlist drift and license metadata"
+    },
+    {
+      "surface_id": "gate:published_crate_count_pr_fast",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#published_crate_count_pr_fast",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Ratchet published crate count"
+    },
+    {
+      "surface_id": "gate:readme_heading_check",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#readme_heading_check",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Prevent duplicate README level-2 headings"
+    },
+    {
+      "surface_id": "gate:release_build",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#release_build",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"release\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Release build with locked dependencies (advisory; no workflow route)"
+    },
+    {
+      "surface_id": "gate:release_history",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#release_history",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Validate release-history surfaces"
+    },
+    {
+      "surface_id": "gate:release_history_check",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#release_history_check",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Check release-history drift"
+    },
+    {
+      "surface_id": "gate:rustfmt_staged",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#rustfmt_staged",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"commit\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "rustfmt --check against staged Rust blob content (not the working-tree file)"
+    },
+    {
+      "surface_id": "gate:sbom_verify",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#sbom_verify",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"release\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "SBOM generation and verification for supply chain security (advisory; no workflow route)"
+    },
+    {
+      "surface_id": "gate:security_audit",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#security_audit",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Check dependencies for known security vulnerabilities (advisory; quarantined + no workflow route)"
+    },
+    {
+      "surface_id": "gate:serial_test_ratchet",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#serial_test_ratchet",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Ratchet parallel-unsafe test serialization (#[serial] policy, #1269)"
+    },
+    {
+      "surface_id": "gate:source_commit_api_check",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#source_commit_api_check",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Validate source-commit API callers against the owner ledger"
+    },
+    {
+      "surface_id": "gate:staged_config_syntax",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#staged_config_syntax",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"commit\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Malformed staged JSON/TOML/YAML"
+    },
+    {
+      "surface_id": "gate:staged_exec_mode_policy",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#staged_exec_mode_policy",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"commit\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Staged executable-bit policy via git ls-tree (core.fileMode=false safe; the R1 chmod defect class)"
+    },
+    {
+      "surface_id": "gate:staged_oversized_or_binary",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#staged_oversized_or_binary",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"commit\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Oversized staged files and disallowed native-binary extensions"
+    },
+    {
+      "surface_id": "gate:staged_tree_identity",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#staged_tree_identity",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"commit\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Wiring proof: resolves git write-tree and reports staged-file count (not a hygiene check)"
+    },
+    {
+      "surface_id": "gate:unit_analysis_full",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#unit_analysis_full",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Semantic analysis, workspace, diagnostics, and refactoring library tests"
+    },
+    {
+      "surface_id": "gate:unit_core",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#unit_core",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Fast unit test subset for quick feedback"
+    },
+    {
+      "surface_id": "gate:unit_dap_support_full",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#unit_dap_support_full",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "DAP, CI hygiene, test support, and tree-sitter workspace tests; Linux does not prove Windows-only pause runtime"
+    },
+    {
+      "surface_id": "gate:unit_foundation_full",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#unit_foundation_full",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Foundation token/AST workspace library tests"
+    },
+    {
+      "surface_id": "gate:unit_lsp_core_full",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#unit_lsp_core_full",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "LSP core library tests (heaviest single crate in the LSP surface)"
+    },
+    {
+      "surface_id": "gate:unit_lsp_full",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#unit_lsp_full",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "LSP server, editor UX, perltidy, and subprocess library tests"
+    },
+    {
+      "surface_id": "gate:unit_parser_stack_full",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#unit_parser_stack_full",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Parser, lexer, and parser-core library tests, deterministic AST/error-recovery snapshot proof, plus deterministic incremental integration targets"
+    },
+    {
+      "surface_id": "gate:unit_routed_full",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#unit_routed_full",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Scoped routed integration tests for ci-scope selected crates (required test gate for #1470 coupling; --tests runs tests/ directories, catching runtime assertion failures not reachable by --lib)"
+    },
+    {
+      "surface_id": "gate:unit_scoped",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#unit_scoped",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"pr_fast\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Scope-aware library tests for ci-scope selected crates"
+    },
+    {
+      "surface_id": "gate:v2_bundle_sync",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#v2_bundle_sync",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Verify v2 bundle files stay synchronized while bridge fallback exists"
+    },
+    {
+      "surface_id": "gate:v2_parity",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#v2_parity",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Verify in-crate v2 and perl-parser-pest v2 produce identical corpus output (advisory; no workflow route)"
+    },
+    {
+      "surface_id": "gate:version_sync",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#version_sync",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"release\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "All version strings agree across features.toml, Cargo.toml, package.json, build.rs"
+    },
+    {
+      "surface_id": "gate:whitespace_check",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#whitespace_check",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"commit\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "git diff --cached --check: trailing whitespace + conflict markers in the staged diff"
+    },
+    {
+      "surface_id": "gate:workflow_audit",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#workflow_audit",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = false"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Audit CI workflows for ungated expensive jobs (advisory; no workflow route)"
+    }
+  ]
+}

@@ -3708,6 +3708,22 @@ created = "2026-08-26"
 review_after = "2026-11-26"
 
 [[allow]]
+id = "non-rust-activation-inventory-schema"
+path = "schemas/activation_inventory.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "activation"
+classification = "config"
+owner = "architecture/activation"
+reason = "JSON Schema for the activation_inventory.v1 classified surface inventory (#9204); policy/** already covers the generated artifact and the hand-maintained override ledger via non-rust-policy-ledgers, so only the schema file (outside policy/) needs its own row."
+covered_by = [
+  "cargo xtask activation validate",
+  "cargo test -p xtask --locked --test activation",
+]
+created = "2026-09-02"
+review_after = "2026-12-01"
+
+[[allow]]
 id = "non-rust-critic-rule-proof-manifest"
 path = "fixtures/critic-rule-proof/manifest.json"
 kind = "test_fixture"
