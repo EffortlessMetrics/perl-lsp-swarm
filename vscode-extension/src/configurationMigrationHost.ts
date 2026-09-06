@@ -44,6 +44,16 @@ function folderIdentity(index: number): string {
   return `folder:${index}`;
 }
 
+/**
+ * The three ordinary configuration targets, and deliberately not the language-override
+ * variants (`globalLanguageValue` and friends).
+ *
+ * VS Code only honours a language override for a setting whose declared scope is
+ * language-overridable, and no registry row is: the one current row is `machine`, which
+ * cannot be overridden per language at all. Reading those fields would therefore report
+ * a value the host itself ignores, and the registry's scope vocabulary has no per-language
+ * target to judge it under. A future language-overridable row needs that vocabulary first.
+ */
 function inspectLegacyKey(key: string): LegacyConfigurationSites {
   const rootInspection = vscode.workspace.getConfiguration().inspect(key);
   const workspaceFolders: LegacyFolderValue[] = [];

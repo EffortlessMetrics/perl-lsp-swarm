@@ -169,6 +169,9 @@ function scopeForOccurrence(
       authorizedScopes.add(row.old_scope);
     }
   }
+  // `noUncheckedIndexedAccess` widens the destructured element to
+  // `MigrationScope | undefined` no matter what `size` says, so the second guard is
+  // load-bearing for the compiler rather than redundant with the first.
   const [onlyScope] = [...authorizedScopes];
   if (authorizedScopes.size === 1 && onlyScope !== undefined) {
     return onlyScope;
