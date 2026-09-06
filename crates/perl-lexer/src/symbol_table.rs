@@ -184,7 +184,22 @@ struct ScanState {
     awaiting_sub_name: bool,
     in_pod: bool,
     in_format: bool,
+    /// Cached result of [`last_format_terminator_line_start`]: `None` until a
+    /// `format` opener first needs it, so input without one pays nothing.
+    format_terminator_scan: Option<Option<usize>>,
     pending_heredocs: VecDeque<PendingHeredoc>,
+}
+
+impl ScanState {
+    /// Return `true` if a `format` body opened on the line at `line_start`
+    /// terminates later in `input`, scanning for terminators at most once.
+    fn format_body_terminates(&mut self, input: &str, line_start: usize) -> bool {
+        let last = *self
+            .format_terminator_scan
+            .get_or_insert_with(|| last_format_terminator_line_start(input));
+
+        last.is_some_and(|terminator| terminator > line_start)
+    }
 }
 
 #[derive(Debug)]
@@ -268,22 +283,25 @@ fn is_format_terminator(line: &str) -> bool {
 /// rule the prepass already applies to malformed quote-like constructs: keep the
 /// damage local rather than erasing the rest of the file.
 ///
-/// Cost is one extra line walk per opener that reaches this check. Openers are
-/// rare and the walk stops at the first terminator, so this does not change the
-/// prepass's behavior on input without `format`.
-fn format_body_terminates(input: &str, line_start: usize) -> bool {
+/// A body terminates after `line_start` exactly when the *last* terminator in
+/// the file starts after it, so one cached scan answers every opener. Walking
+/// the remaining source per opener instead would be quadratic on input carrying
+/// many opener-shaped lines, which is the cost class #10210 already tracks for
+/// unclosed quote-like openers; this deliberately does not add another.
+fn last_format_terminator_line_start(input: &str) -> Option<usize> {
     let bytes = input.as_bytes();
-    let (_, mut cursor) = line_bounds(bytes, line_start);
+    let mut cursor = 0usize;
+    let mut last = None;
 
     while cursor < bytes.len() {
         let (line_end, next_line_start) = line_bounds(bytes, cursor);
         if is_format_terminator(&input[cursor..line_end]) {
-            return true;
+            last = Some(cursor);
         }
         cursor = next_line_start;
     }
 
-    false
+    last
 }
 
 /// Return `true` if a statement can begin immediately after `prefix`.
@@ -521,7 +539,7 @@ fn scan_code_line(
         if line[offset..].starts_with("format")
             && is_format_keyword_boundary(line, offset)
             && format_opener_completes_line(line, offset + "format".len())
-            && format_body_terminates(input, line_start)
+            && state.format_body_terminates(input, line_start)
         {
             // The picture body starts on the next line; nothing after the `=`
             // on this line is code.
