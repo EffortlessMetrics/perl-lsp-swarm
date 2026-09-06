@@ -1307,6 +1307,39 @@ created = "2026-08-08"
 review_after = "2026-11-08"
 
 [[allow]]
+id = "non-rust-release-candidate-artifacts-schema"
+path = "schemas/release_candidate_artifacts.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Closed Draft 2020-12 schema for the no-publish release_candidate_artifacts.v1 freeze/handoff packet (#9092); exact bytes are bound to topology digest and verified without rebuild or public-channel mutation."
+covered_by = [
+  "cargo xtask release check-candidate-artifacts",
+  "cargo test -p xtask --locked --bin xtask release_candidate_artifacts",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
+
+[[allow]]
+id = "non-rust-release-candidate-artifacts-fixtures"
+glob = "fixtures/release_candidate_artifacts/**/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "release/ci"
+reason = "Topology membership fixture for the #9092 freeze/verify handoff: a projection over canonical archive/VSIX subjects used by the closed negative-control suite."
+covered_by = [
+  "cargo xtask release check-candidate-artifacts",
+  "cargo test -p xtask --locked --bin xtask release_candidate_artifacts",
+]
+broad_glob_reason = "The `**` spans the owned fixture directory for the handoff contract (topology plus any later invalid packet vectors). Breadth is bounded by that directory."
+created = "2026-09-06"
+review_after = "2026-12-06"
+
+[[allow]]
 id = "non-rust-blocker-closeout-schema"
 path = "schemas/blocker_closeout.v1.schema.json"
 kind = "release_contract"

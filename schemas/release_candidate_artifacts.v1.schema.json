@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/release_candidate_artifacts.v1.schema.json",
+  "title": "release_candidate_artifacts.v1",
+  "description": "Content-addressed no-publish freeze of one reviewed candidate artifact set (#9092). This is a freeze/handoff packet over canonical topology and channel-specific produced files, not a second subject taxonomy. Publisher jobs retrieve and verify these exact bytes; they must not rebuild. Transport identity is distinct from semantic identity. Public channels are never mutated here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "release",
+    "candidate_id",
+    "release_repo_sha",
+    "release_topology_digest",
+    "producer_run",
+    "inputs",
+    "artifacts",
+    "crate_subjects",
+    "attestation_subjects",
+    "transport",
+    "published_channels",
+    "publish_authorized",
+    "packet_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "release_candidate_artifacts.v1"
+    },
+    "release": {
+      "$ref": "#/$defs/release_version"
+    },
+    "candidate_id": {
+      "$ref": "#/$defs/bounded_id"
+    },
+    "release_repo_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "release_topology_digest": {
+      "$ref": "#/$defs/sha256",
+      "description": "SHA-256 of the exact topology document bytes that declared membership. A same-version topology edit is a different packet."
+    },
+    "producer_run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflow", "run_id", "attempt"],
+      "properties": {
+        "workflow": { "$ref": "#/$defs/bounded_id" },
+        "run_id": { "$ref": "#/$defs/bounded_id" },
+        "attempt": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cargo_lock", "npm_lock", "toolchains"],
+      "properties": {
+        "cargo_lock": { "$ref": "#/$defs/sha256" },
+        "npm_lock": { "$ref": "#/$defs/sha256" },
+        "toolchains": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/artifact" }
+    },
+    "crate_subjects": {
+      "type": "array",
+      "description": "Package/release identity evidence for later crates.io work (#9099). Not a frozen-byte publication claim.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "version", "package_path"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "version": { "$ref": "#/$defs/release_version" },
+          "package_path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[A-Za-z0-9._/-]+$"
+          }
+        }
+      }
+    },
+    "attestation_subjects": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    },
+    "transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "artifact_set_id"],
+      "properties": {
+        "kind": {
+          "enum": ["staging_directory", "github_actions_artifact"]
+        },
+        "artifact_set_id": { "$ref": "#/$defs/bounded_id" },
+        "available_until": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "RFC3339 expiry of the transport object. Expiry forces candidate regeneration; it is not rebuild authority."
+        }
+      }
+    },
+    "published_channels": {
+      "type": "array",
+      "maxItems": 0,
+      "items": false,
+      "description": "Must remain empty. This packet never authorizes a public channel."
+    },
+    "publish_authorized": {
+      "const": false
+    },
+    "packet_digest": {
+      "$ref": "#/$defs/sha256",
+      "description": "Domain-separated SHA-256 over canonical JSON excluding this field. Editing any other field without regenerating this digest fails closed."
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "release_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+      "maxLength": 64
+    },
+    "bounded_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@+-]*$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "name", "sha256", "size"],
+      "properties": {
+        "role": {
+          "enum": ["release_archive", "vsix", "checksums", "sbom"]
+        },
+        "target": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[A-Za-z0-9._+-]+$"
+        },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "size": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}
