@@ -327,22 +327,26 @@ impl LspServer {
     }
 
     /// Startup-`@INC` roots plus the typed probe state, both read from the
-    /// SAME stored folder/global config under one lock so the snapshot cannot
-    /// describe a different subject than the roots (#13589).
+    /// SAME stored folder/global config so the snapshot cannot describe a
+    /// different subject than the roots (#13589).
     ///
-    /// `get_system_inc` and `peek_system_inc_probe` each early-return for a
-    /// disabled config, so the disabled case needs no separate branch.
+    /// The pair comes from one `peek_system_inc` call, i.e. one epoch lock
+    /// acquisition, so a clone advancing the shared epoch on another thread
+    /// cannot leave the paths and the snapshot describing different states.
+    /// In `Acquire` mode the probe (or bounded retry) runs first through
+    /// `get_system_inc`; the peek then reads the settled epoch it produced.
+    /// `get_system_inc` and `peek_system_inc` each early-return for a disabled
+    /// config, so the disabled case needs no separate branch.
     fn system_inc_for_context(
         &self,
         folder_uri: Option<&str>,
         access: SystemIncAccess,
     ) -> (Vec<PathBuf>, SystemIncProbeSnapshot) {
         let read = |config: &mut perl_lsp_rs_core::config::WorkspaceConfig| {
-            let paths = match access {
-                SystemIncAccess::Acquire => config.get_system_inc().to_vec(),
-                SystemIncAccess::PeekOnly => config.peek_system_inc_paths(),
-            };
-            (paths, config.peek_system_inc_probe())
+            if access == SystemIncAccess::Acquire {
+                let _ = config.get_system_inc();
+            }
+            config.peek_system_inc()
         };
 
         if let Some(folder_uri) = folder_uri {

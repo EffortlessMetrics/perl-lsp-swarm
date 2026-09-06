@@ -1889,66 +1889,65 @@ impl WorkspaceConfig {
     /// used (#13589). Because the epoch is shared across clones, the snapshot
     /// describes the same stored subject that [`Self::get_system_inc`]
     /// advanced. `Disabled` is reported directly from `use_system_inc`.
+    ///
+    /// Use [`Self::peek_system_inc`] when the cached paths are needed too;
+    /// it reads both under one lock acquisition.
     #[must_use]
     pub fn peek_system_inc_probe(&self) -> SystemIncProbeSnapshot {
-        let (outcome, attempts_consumed, system_root_count) = if !self.use_system_inc {
-            (SystemIncProbeOutcomeKind::Disabled, 0, None)
+        self.peek_system_inc().1
+    }
+
+    /// The startup-`@INC` paths already held by the shared epoch together
+    /// with the typed acquisition state, read under a single epoch lock so
+    /// the pair is mutually consistent (#13589).
+    ///
+    /// The paths are the cached `Paths` outcome when one exists and empty for
+    /// every other state, including the not-yet-observed one. Unlike
+    /// [`Self::get_system_inc`], this never launches or retries Perl, so a
+    /// caller that only needs to *describe* the last live lookup cannot
+    /// spend the retry budget on the user's behalf.
+    #[must_use]
+    pub fn peek_system_inc(&self) -> (Vec<PathBuf>, SystemIncProbeSnapshot) {
+        let (paths, outcome, attempts_consumed, system_root_count) = if !self.use_system_inc {
+            (Vec::new(), SystemIncProbeOutcomeKind::Disabled, 0, None)
         } else {
             let epoch = self.lock_system_inc_epoch();
-            let (outcome, count) = match epoch.outcome.as_ref() {
-                None => (SystemIncProbeOutcomeKind::NotObserved, None),
+            let (paths, outcome, count) = match epoch.outcome.as_ref() {
+                None => (Vec::new(), SystemIncProbeOutcomeKind::NotObserved, None),
                 Some(SystemIncProbeOutcome::Disabled) => {
-                    (SystemIncProbeOutcomeKind::Disabled, None)
+                    (Vec::new(), SystemIncProbeOutcomeKind::Disabled, None)
                 }
                 Some(SystemIncProbeOutcome::Unavailable) => {
-                    (SystemIncProbeOutcomeKind::Unavailable, None)
+                    (Vec::new(), SystemIncProbeOutcomeKind::Unavailable, None)
                 }
                 Some(SystemIncProbeOutcome::TimedOut) => {
-                    (SystemIncProbeOutcomeKind::TimedOut, None)
+                    (Vec::new(), SystemIncProbeOutcomeKind::TimedOut, None)
                 }
                 Some(SystemIncProbeOutcome::IoFailed) => {
-                    (SystemIncProbeOutcomeKind::IoFailed, None)
+                    (Vec::new(), SystemIncProbeOutcomeKind::IoFailed, None)
                 }
                 Some(SystemIncProbeOutcome::NonZeroExit) => {
-                    (SystemIncProbeOutcomeKind::NonZeroExit, None)
+                    (Vec::new(), SystemIncProbeOutcomeKind::NonZeroExit, None)
                 }
                 Some(SystemIncProbeOutcome::SuccessfulEmpty) => {
-                    (SystemIncProbeOutcomeKind::SuccessfulEmpty, Some(0))
+                    (Vec::new(), SystemIncProbeOutcomeKind::SuccessfulEmpty, Some(0))
                 }
                 Some(SystemIncProbeOutcome::Paths(paths)) => {
-                    (SystemIncProbeOutcomeKind::Paths, Some(paths.len()))
+                    (paths.clone(), SystemIncProbeOutcomeKind::Paths, Some(paths.len()))
                 }
             };
-            (outcome, epoch.attempts, count)
+            (paths, outcome, epoch.attempts, count)
         };
 
-        SystemIncProbeSnapshot {
+        let snapshot = SystemIncProbeSnapshot {
             use_system_inc: self.use_system_inc,
             use_perl5lib: self.use_perl5lib,
             outcome,
             attempts_consumed,
             max_attempts: SYSTEM_INC_PROBE_MAX_ATTEMPTS,
             system_root_count,
-        }
-    }
-
-    /// The startup-`@INC` paths already held by the shared epoch, without
-    /// probing (#13589).
-    ///
-    /// Returns the cached `Paths` outcome when one exists and an empty vector
-    /// for every other state, including the not-yet-observed one. Unlike
-    /// [`Self::get_system_inc`], this never launches or retries Perl, so a
-    /// caller that only needs to *describe* the last live lookup cannot
-    /// spend the retry budget on the user's behalf.
-    #[must_use]
-    pub fn peek_system_inc_paths(&self) -> Vec<PathBuf> {
-        if !self.use_system_inc {
-            return Vec::new();
-        }
-        match self.lock_system_inc_epoch().outcome.as_ref() {
-            Some(SystemIncProbeOutcome::Paths(paths)) => paths.clone(),
-            _ => Vec::new(),
-        }
+        };
+        (paths, snapshot)
     }
 
     /// Get system @INC paths (lazily populated).
@@ -5749,7 +5748,7 @@ profile = "recommended"
         assert_eq!(before.max_attempts, SYSTEM_INC_PROBE_MAX_ATTEMPTS);
         assert!(before.retry_eligible() && !before.terminal());
         assert_eq!(before.lookup_impact(), SystemIncLookupImpact::NotObserved);
-        assert!(config.peek_system_inc_paths().is_empty());
+        assert!(config.peek_system_inc().0.is_empty());
         assert_eq!(calls.get(), 0, "peeking must not launch Perl");
 
         // One live timeout: transient, one retry remains.
@@ -5762,7 +5761,7 @@ profile = "recommended"
         assert_eq!(transient.lookup_impact(), SystemIncLookupImpact::OmittedTransient);
         for _ in 0..3 {
             let _ = config.peek_system_inc_probe();
-            let _ = config.peek_system_inc_paths();
+            let _ = config.peek_system_inc();
         }
         assert_eq!(calls.get(), 1, "peeking must not consume the remaining retry");
 
@@ -5834,7 +5833,7 @@ profile = "recommended"
             assert_eq!(snapshot.lookup_impact(), impact, "{outcome:?}");
             assert_eq!(snapshot.system_root_count, root_count, "{outcome:?}");
             assert_eq!(
-                config.peek_system_inc_paths(),
+                config.peek_system_inc().0,
                 live,
                 "peeked paths must equal what the live lookup used for {outcome:?}"
             );
