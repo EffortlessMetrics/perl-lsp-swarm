@@ -95,7 +95,7 @@ fn full_sync_violation_fails_closed_before_edit_projection()
     let error = server
         .handle_formatting_policy(
             Some(json!({
-                "textDocument": { "uri": uri, "version": 1 },
+                "textDocument": { "uri": uri, "version": 2 },
                 "options": { "tabSize": 4, "insertSpaces": true },
             })),
             None,

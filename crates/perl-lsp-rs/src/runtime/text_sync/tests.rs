@@ -371,7 +371,10 @@ fn test_did_change_ranged_edit_does_not_mutate_open_document()
     let docs = server.documents.lock();
     let doc = docs.get(uri).ok_or("open document must remain stored")?;
     assert_eq!(doc.text, "sub old_symbol { 1 }\n");
-    assert_eq!(doc.version, 1);
+    assert_eq!(
+        doc.version, 2,
+        "violation must record the observed client version without accepting rejected text"
+    );
     assert!(doc.full_sync_required());
     assert!(doc.current_parsed().is_none());
     Ok(())
@@ -459,6 +462,82 @@ fn test_full_document_did_change_recovers_after_ranged_violation()
     let doc = docs.get(uri).ok_or("recovered document must remain stored")?;
     assert_eq!(doc.text, "sub new_symbol { 1 }\n");
     assert_eq!(doc.version, 3);
+    assert!(!doc.full_sync_required());
+    assert!(doc.current_parsed().is_some_and(|p| p.ast().is_some()));
+    Ok(())
+}
+
+#[test]
+fn test_delayed_older_full_replacement_does_not_recover_after_newer_violation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///delayed-stale-recovery.pl";
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "sub last_good { 1 }\n"
+        }
+    }))?;
+    let opened_gen = {
+        let docs = server.documents.lock();
+        docs.get(uri).ok_or("opened document")?.current_generation()
+    };
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 3 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })))?;
+
+    let desync_gen = {
+        let docs = server.documents.lock();
+        let doc = docs.get(uri).ok_or("desync document")?;
+        assert_eq!(doc.text, "sub last_good { 1 }\n");
+        assert_eq!(doc.version, 3);
+        assert!(doc.full_sync_required());
+        let desync_generation = doc.current_generation();
+        assert!(desync_generation > opened_gen, "violation must advance generation");
+        desync_generation
+    };
+    let (state, ready_gen, _) = server
+        .test_active_document_readiness(&server.normalize_uri_key(uri))
+        .ok_or("desync must keep a readiness entry")?;
+    assert_eq!(
+        state, "unavailable_terminal",
+        "predecessor parser-core readiness cannot remain current after a Full-sync violation"
+    );
+    assert_eq!(ready_gen, desync_gen);
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{ "text": "sub stale { 0 }\n" }]
+    })))?;
+
+    {
+        let docs = server.documents.lock();
+        let doc = docs.get(uri).ok_or("document after delayed v2")?;
+        assert_eq!(doc.text, "sub last_good { 1 }\n");
+        assert_eq!(doc.version, 3);
+        assert!(doc.full_sync_required());
+        assert!(doc.current_parsed().is_none());
+    }
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 4 },
+        "contentChanges": [{ "text": "sub recovered { 1 }\n" }]
+    })))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("recovered document")?;
+    assert_eq!(doc.text, "sub recovered { 1 }\n");
+    assert_eq!(doc.version, 4);
     assert!(!doc.full_sync_required());
     assert!(doc.current_parsed().is_some_and(|p| p.ast().is_some()));
     Ok(())

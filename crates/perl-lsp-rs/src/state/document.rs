@@ -491,7 +491,12 @@ pub struct DocumentState {
     /// (#5053).
     pub text_arc: std::sync::Arc<str>,
 
-    /// LSP document version number for synchronization
+    /// Newest observed client document version.
+    ///
+    /// After an accepted full replacement this matches the committed buffer.
+    /// After a Full-sync violation it is raised to the rejected notification's
+    /// version without mutating last-good text, so a delayed older replacement
+    /// cannot recover.
     pub version: i32,
 
     /// Latest published parse result, if any.
@@ -645,6 +650,17 @@ impl DocumentState {
         }
         self.full_sync_required = true;
         self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Raise the client-version watermark without accepting the notification text.
+    ///
+    /// The existing out-of-order `didChange` gate compares against [`Self::version`].
+    /// Recording the rejected notification here keeps last-good text untouched while
+    /// still refusing delayed older full replacements.
+    pub(crate) fn observe_change_version(&mut self, incoming: i32) {
+        if incoming > self.version {
+            self.version = incoming;
+        }
     }
 
     /// Whether later ranged changes and current-answer facts are unavailable.
@@ -956,6 +972,14 @@ mod tests {
             "predecessor text must not answer user-facing edit providers while desynchronized"
         );
         assert!(doc.full_sync_required());
+        doc.observe_change_version(3);
+        assert_eq!(
+            doc.version, 3,
+            "observed client version must rise without treating rejected text as accepted"
+        );
+        assert_eq!(doc.text_str(), "my $x = 1;");
+        doc.observe_change_version(2);
+        assert_eq!(doc.version, 3, "older observed versions must not lower the watermark");
         assert!(
             !doc.publish_parsed_if_current(doc_gen, Arc::new(snapshot_for("my $x = 1;", doc_gen))),
             "a parse of the pre-desync generation must not republish"

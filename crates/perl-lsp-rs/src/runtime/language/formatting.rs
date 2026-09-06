@@ -422,7 +422,10 @@ mod tests {
         })))?;
 
         let error = server
-            .handle_formatting(Some(params.clone()))
+            .handle_formatting(Some(json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })))
             .err()
             .ok_or("desynchronized formatting must fail closed")?;
         assert_eq!(error.code, CONTENT_MODIFIED);

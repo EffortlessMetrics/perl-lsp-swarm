@@ -746,16 +746,36 @@ impl LspServer {
                         tracing::warn!(
                             "Full-sync violation for {uri}: {reason}; last-good text was not mutated"
                         );
+                        if let Some(observed) = incoming_version {
+                            doc_state.observe_change_version(observed);
+                        }
                         doc_state.mark_full_sync_required();
+                        let desync_gen = doc_state.current_generation();
+                        // Supersede predecessor parser-core readiness: generation
+                        // advanced, but no replacement parse will run for this
+                        // ticket. UnavailableTerminal is the honest current fact.
+                        self.install_active_document_pending(
+                            &normalized_uri,
+                            uri,
+                            &doc_state.generation,
+                            desync_gen,
+                        );
+                        self.mark_active_document_parser_accepted(
+                            &normalized_uri,
+                            &doc_state.generation,
+                            desync_gen,
+                            crate::runtime::readiness::ParserAcceptanceClass::Failed,
+                            Some("full_sync_required".to_string()),
+                        );
                         let symbols_identity = SymbolsIdentity::for_document(
                             &normalized_uri,
                             &doc_state.generation,
-                            doc_state.current_generation(),
+                            desync_gen,
                         );
                         let identity = PushDiagnosticIdentity::for_document(
                             &normalized_uri,
                             &doc_state.generation,
-                            doc_state.current_generation(),
+                            desync_gen,
                             self.workspace_identity_generation.load(Ordering::SeqCst),
                         )
                         .with_folder_config_generation(
