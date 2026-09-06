@@ -1646,7 +1646,8 @@ fn validate_policy_table(
         return 0;
     };
 
-    validate_policy_entries(entries, table_name, strict_allow_schema, errors);
+    let source_label = path.display().to_string();
+    validate_policy_entries(entries, table_name, strict_allow_schema, Some(&source_label), errors);
     entries.len()
 }
 
@@ -1655,13 +1656,21 @@ fn validate_policy_table(
 /// Exact-tree receipts and ordinary `validate-policy` both walk this path so a
 /// schema-field change cannot be applied to only one surface.
 fn validate_allow_document_entries(entries: &[toml::Value], errors: &mut Vec<String>) {
-    validate_policy_entries(entries, "allow", true, errors);
+    validate_policy_entries(entries, "allow", true, None, errors);
+}
+
+fn policy_entry_error(source_label: Option<&str>, message: String) -> String {
+    match source_label {
+        Some(label) => format!("{label}: {message}"),
+        None => message,
+    }
 }
 
 fn validate_policy_entries(
     entries: &[toml::Value],
     table_name: &str,
     strict_allow_schema: bool,
+    source_label: Option<&str>,
     errors: &mut Vec<String>,
 ) {
     let mut seen_ids: BTreeMap<String, usize> = BTreeMap::new();
@@ -1669,7 +1678,10 @@ fn validate_policy_entries(
     let mut coherence_tables: Vec<&toml::map::Map<String, toml::Value>> = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         let Some(table) = entry.as_table() else {
-            errors.push(format!("`{table_name}` entry #{index} must be a table"));
+            errors.push(policy_entry_error(
+                source_label,
+                format!("`{table_name}` entry #{index} must be a table"),
+            ));
             continue;
         };
         coherence_tables.push(table);
@@ -1701,7 +1713,10 @@ fn validate_policy_entries(
 
     if table_name == "allow" {
         for conflict in mispaired_provenance_conflicts(&coherence_tables) {
-            errors.push(format!("mispaired provenance: {conflict}"));
+            errors.push(policy_entry_error(
+                source_label,
+                format!("mispaired provenance: {conflict}"),
+            ));
         }
     }
 }
@@ -3195,7 +3210,7 @@ fn render_migration_candidates_markdown(candidates: &[MigrationCandidate]) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use color_eyre::eyre::ensure;
+    use color_eyre::eyre::{ensure, eyre};
 
     fn make_entry(
         id: &str,
@@ -3339,7 +3354,11 @@ review_after = "2026-06-01"
         std::fs::write(&allowlist_path, mispaired_allowlist_fixture())?;
         let mut errors = Vec::new();
         validate_policy_table(&allowlist_path, "allow", true, &mut errors);
-        assert!(errors.iter().any(|error| error.contains("provenance is mispaired")), "{errors:?}");
+        assert!(
+            errors.iter().any(|error| error
+                .contains(&format!("{}: mispaired provenance", allowlist_path.display()))),
+            "{errors:?}"
+        );
 
         let marker_path = temp.path().join("markers.toml");
         std::fs::write(
@@ -4836,6 +4855,24 @@ review_after = "2026-06-01"
             valid_allow_entry("same-id", "docs/b.md", "Second id.")
         ));
         assert_shared_allow_schema_rejects(&duplicate_id, &["duplicate id"])?;
+        assert_shared_allow_schema_rejects(
+            &mispaired_allowlist_fixture(),
+            &["provenance is mispaired"],
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn committed_allowlist_passes_exact_tree_and_ordinary_schema_surfaces() -> Result<()> {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest_dir.parent().ok_or_else(|| eyre!("xtask must be in a subdirectory"))?;
+        let allowlist = root.join("policy/non-rust-allowlist.toml");
+        let document = fs::read_to_string(&allowlist)?;
+        validate_exact_policy_bytes(document.as_bytes())?;
+        let mut errors = Vec::new();
+        let count = validate_policy_table(&allowlist, "allow", true, &mut errors);
+        ensure!(count > 0, "committed allowlist must contain allow entries");
+        ensure!(errors.is_empty(), "committed allowlist failed ordinary schema: {errors:?}");
         Ok(())
     }
 
