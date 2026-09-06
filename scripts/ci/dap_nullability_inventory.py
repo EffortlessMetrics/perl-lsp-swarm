@@ -50,6 +50,7 @@ RUST_OWNER_ALIASES = {
     "Variable": "ProtocolVariable",
     "StackFrame": "ProtocolStackFrame",
     "ExceptionBreakpointsFilter": "ExceptionBreakpointFilter",
+    "ExceptionFilterOptions": "ExceptionFilterOption",
 }
 
 # Contradictions verified on main and accepted until their serde migration
@@ -200,37 +201,6 @@ def build_rows(schema: dict, rust: dict) -> tuple[list[dict], list[str]]:
     claimed: dict[tuple[str, str], str] = {}
     for def_name in sorted(definitions):
         definition = definitions[def_name]
-        composed_properties = None
-        for branch in definition.get("allOf", []):
-            if isinstance(branch, dict) and branch.get("properties"):
-                composed_properties = branch["properties"]
-                break
-        if composed_properties is not None:
-            # Non-response composed definitions (requests, events): their
-            # envelope fields belong to the inventory too.
-            required = set(definition.get("allOf", [])[0].get("required", []))
-            for branch in definition.get("allOf", []):
-                if isinstance(branch, dict):
-                    required.update(branch.get("required", []))
-            for wire_name in sorted(composed_properties):
-                property_schema = composed_properties[wire_name]
-                schema_nullable = is_nullable_schema(property_schema)
-                schema_required = wire_name in required
-                row_class = classify(schema_required, schema_nullable)
-                mapped = rust_field_for(wire_name, rust.get(def_name, {"fields": {}})) or (
-                    rust_field_for(wire_name, rust.get(f"{def_name}Body", {"fields": {}}))
-                )
-                rows.append(
-                    {
-                        "definition": def_name,
-                        "field": wire_name,
-                        "class": row_class,
-                        "rust_owner": f"{def_name}::{mapped[0]}" if mapped else None,
-                        "rust_type": mapped[1]["rust_type"] if mapped else None,
-                        "reason": None if mapped else "not modeled in protocol.rs",
-                    }
-                )
-            continue
         body_properties = response_body_properties(definition, definitions)
         if body_properties is not None:
             # Response definitions: rows are the body payload's fields. The
@@ -265,6 +235,37 @@ def build_rows(schema: dict, rust: dict) -> tuple[list[dict], list[str]]:
                 if mapped is None:
                     row["reason"] = "not modeled in protocol.rs (Rust owner mapping pending)"
                 rows.append(row)
+            continue
+        composed_properties = None
+        for branch in definition.get("allOf", []):
+            if isinstance(branch, dict) and branch.get("properties"):
+                composed_properties = branch["properties"]
+                break
+        if composed_properties is not None:
+            # Composed envelope definitions (requests, events) without a
+            # response body: their envelope fields belong to the inventory.
+            required = set(definition.get("allOf", [])[0].get("required", []))
+            for branch in definition.get("allOf", []):
+                if isinstance(branch, dict):
+                    required.update(branch.get("required", []))
+            for wire_name in sorted(composed_properties):
+                property_schema = composed_properties[wire_name]
+                schema_nullable = is_nullable_schema(property_schema)
+                schema_required = wire_name in required
+                row_class = classify(schema_required, schema_nullable)
+                mapped = rust_field_for(wire_name, rust.get(def_name, {"fields": {}})) or (
+                    rust_field_for(wire_name, rust.get(f"{def_name}Body", {"fields": {}}))
+                )
+                rows.append(
+                    {
+                        "definition": def_name,
+                        "field": wire_name,
+                        "class": row_class,
+                        "rust_owner": f"{def_name}::{mapped[0]}" if mapped else None,
+                        "rust_type": mapped[1]["rust_type"] if mapped else None,
+                        "reason": None if mapped else "not modeled in protocol.rs",
+                    }
+                )
             continue
         properties = definition.get("properties")
         if not properties:

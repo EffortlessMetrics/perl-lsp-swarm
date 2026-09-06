@@ -1,9 +1,10 @@
 {
   "class_counts": {
-    "optional-non-null-when-present": 220,
-    "optional-nullable": 6,
-    "required-non-null": 204,
-    "unsupported": 74
+    "optional-non-null-when-present": 282,
+    "optional-nullable": 8,
+    "required-non-null": 198,
+    "required-nullable": 1,
+    "unsupported": 71
   },
   "rows": [
     {
@@ -113,19 +114,21 @@
     },
     {
       "class": "required-non-null",
-      "definition": "BreakpointEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "definition": "BreakpointEventBody",
+      "field": "breakpoint",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
-      "definition": "BreakpointEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
+      "definition": "BreakpointEventBody",
+      "field": "reason",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -215,11 +218,11 @@
     },
     {
       "class": "required-non-null",
-      "definition": "BreakpointLocationsResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "definition": "BreakpointLocationsResponseBody",
+      "field": "breakpoints",
+      "rust_owner": "BreakpointLocationsResponseBody::breakpoints",
+      "rust_type": "Vec<BreakpointLocation>",
+      "seeded": false
     },
     {
       "class": "unsupported",
@@ -592,19 +595,12 @@
     },
     {
       "class": "required-non-null",
-      "definition": "CapabilitiesEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "definition": "CapabilitiesEventBody",
+      "field": "capabilities",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
-    },
-    {
-      "class": "required-non-null",
-      "definition": "CapabilitiesEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "unsupported",
@@ -775,11 +771,11 @@
     },
     {
       "class": "required-non-null",
-      "definition": "CompletionsResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "definition": "CompletionsResponseBody",
+      "field": "targets",
+      "rust_owner": "CompletionsResponseBody::targets",
+      "rust_type": "Vec<CompletionItem>",
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -829,28 +825,30 @@
       "rust_type": null
     },
     {
-      "class": "required-non-null",
-      "definition": "ContinueResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "class": "optional-non-null-when-present",
+      "definition": "ContinueResponseBody",
+      "field": "allThreadsContinued",
+      "rust_owner": "ContinueResponseBody::all_threads_continued",
+      "rust_type": "bool",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ContinuedEventBody",
+      "field": "allThreadsContinued",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
-      "definition": "ContinuedEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "definition": "ContinuedEventBody",
+      "field": "threadId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
-    },
-    {
-      "class": "required-non-null",
-      "definition": "ContinuedEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -946,12 +944,37 @@
       "rust_type": null
     },
     {
-      "class": "required-non-null",
-      "definition": "DataBreakpointInfoResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "class": "optional-non-null-when-present",
+      "definition": "DataBreakpointInfoResponseBody",
+      "field": "accessTypes",
+      "rust_owner": "DataBreakpointInfoResponseBody::access_types",
+      "rust_type": "Option<Vec<String>>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "DataBreakpointInfoResponseBody",
+      "field": "canPersist",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-nullable",
+      "definition": "DataBreakpointInfoResponseBody",
+      "field": "dataId",
+      "rust_owner": "DataBreakpointInfoResponseBody::data_id",
+      "rust_type": "Option<String>",
+      "seeded": true
+    },
+    {
+      "class": "required-non-null",
+      "definition": "DataBreakpointInfoResponseBody",
+      "field": "description",
+      "rust_owner": "DataBreakpointInfoResponseBody::description",
+      "rust_type": "String",
+      "seeded": false
     },
     {
       "class": "unsupported",
@@ -1005,12 +1028,13 @@
       "rust_type": null
     },
     {
-      "class": "optional-non-null-when-present",
-      "definition": "DisassembleResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "class": "required-non-null",
+      "definition": "DisassembleResponseBody",
+      "field": "instructions",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "unsupported",
@@ -1122,12 +1146,13 @@
       "rust_type": null
     },
     {
-      "class": "required-non-null",
-      "definition": "ErrorResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "class": "optional-non-null-when-present",
+      "definition": "ErrorResponseBody",
+      "field": "error",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -1199,12 +1224,73 @@
       "rust_type": null
     },
     {
-      "class": "required-non-null",
-      "definition": "EvaluateResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateResponseBody",
+      "field": "indexedVariables",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateResponseBody",
+      "field": "memoryReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateResponseBody",
+      "field": "namedVariables",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateResponseBody",
+      "field": "presentationHint",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "EvaluateResponseBody",
+      "field": "result",
+      "rust_owner": "EvaluateResponseBody::result",
+      "rust_type": "String",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateResponseBody",
+      "field": "type",
+      "rust_owner": "EvaluateResponseBody::type_",
+      "rust_type": "Option<String>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "EvaluateResponseBody",
+      "field": "valueLocationReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "EvaluateResponseBody",
+      "field": "variablesReference",
+      "rust_owner": "EvaluateResponseBody::variables_reference",
+      "rust_type": "i64",
+      "seeded": false
     },
     {
       "class": "optional-nullable",
@@ -1321,24 +1407,26 @@
       "serde_skips_when_none": true
     },
     {
-      "class": "unsupported",
+      "class": "optional-non-null-when-present",
       "definition": "ExceptionFilterOptions",
       "field": "condition",
-      "reason": "no matching Rust struct in protocol.rs",
-      "rust_owner": null
+      "rust_owner": "ExceptionFilterOptions::condition",
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
     },
     {
-      "class": "unsupported",
+      "class": "required-non-null",
       "definition": "ExceptionFilterOptions",
       "field": "filterId",
-      "reason": "no matching Rust struct in protocol.rs",
-      "rust_owner": null
+      "rust_owner": "ExceptionFilterOptions::filter_id",
+      "rust_type": "String",
+      "serde_skips_when_none": false
     },
     {
-      "class": "unsupported",
+      "class": "optional-non-null-when-present",
       "definition": "ExceptionFilterOptions",
       "field": "mode",
-      "reason": "no matching Rust struct in protocol.rs",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null
     },
     {
@@ -1367,11 +1455,35 @@
     },
     {
       "class": "required-non-null",
-      "definition": "ExceptionInfoResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "definition": "ExceptionInfoResponseBody",
+      "field": "breakMode",
+      "rust_owner": "ExceptionInfoResponseBody::break_mode",
+      "rust_type": "String",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionInfoResponseBody",
+      "field": "description",
+      "rust_owner": "ExceptionInfoResponseBody::description",
+      "rust_type": "Option<String>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ExceptionInfoResponseBody",
+      "field": "details",
+      "rust_owner": "ExceptionInfoResponseBody::details",
+      "rust_type": "Option<ExceptionDetails>",
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "ExceptionInfoResponseBody",
+      "field": "exceptionId",
+      "rust_owner": "ExceptionInfoResponseBody::exception_id",
+      "rust_type": "String",
+      "seeded": false
     },
     {
       "class": "unsupported",
@@ -1403,19 +1515,12 @@
     },
     {
       "class": "required-non-null",
-      "definition": "ExitedEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "definition": "ExitedEventBody",
+      "field": "exitCode",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
-    },
-    {
-      "class": "required-non-null",
-      "definition": "ExitedEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -1570,11 +1675,11 @@
     },
     {
       "class": "required-non-null",
-      "definition": "GotoTargetsResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "definition": "GotoTargetsResponseBody",
+      "field": "targets",
+      "rust_owner": "GotoTargetsResponseBody::targets",
+      "rust_type": "Vec<GotoTarget>",
+      "seeded": false
     },
     {
       "class": "required-non-null",
@@ -1769,20 +1874,31 @@
       "rust_owner": null
     },
     {
-      "class": "required-non-null",
-      "definition": "InvalidatedEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "class": "optional-non-null-when-present",
+      "definition": "InvalidatedEventBody",
+      "field": "areas",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
-      "class": "required-non-null",
-      "definition": "InvalidatedEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
+      "class": "optional-non-null-when-present",
+      "definition": "InvalidatedEventBody",
+      "field": "stackFrameId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "InvalidatedEventBody",
+      "field": "threadId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
@@ -1816,19 +1932,21 @@
     },
     {
       "class": "required-non-null",
-      "definition": "LoadedSourceEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "definition": "LoadedSourceEventBody",
+      "field": "reason",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
-      "definition": "LoadedSourceEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
+      "definition": "LoadedSourceEventBody",
+      "field": "source",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -1848,11 +1966,11 @@
     },
     {
       "class": "required-non-null",
-      "definition": "LoadedSourcesResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "definition": "LoadedSourcesResponseBody",
+      "field": "sources",
+      "rust_owner": "LoadedSourcesResponseBody::sources",
+      "rust_type": "Vec<Source>",
+      "seeded": false
     },
     {
       "class": "unsupported",
@@ -1879,27 +1997,75 @@
     },
     {
       "class": "optional-non-null-when-present",
-      "definition": "LocationsResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "definition": "LocationsResponseBody",
+      "field": "column",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "LocationsResponseBody",
+      "field": "endColumn",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "LocationsResponseBody",
+      "field": "endLine",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
-      "definition": "MemoryEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "definition": "LocationsResponseBody",
+      "field": "line",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
-      "definition": "MemoryEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
+      "definition": "LocationsResponseBody",
+      "field": "source",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "MemoryEventBody",
+      "field": "count",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "MemoryEventBody",
+      "field": "memoryReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "MemoryEventBody",
+      "field": "offset",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "unsupported",
@@ -2025,19 +2191,21 @@
     },
     {
       "class": "required-non-null",
-      "definition": "ModuleEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "definition": "ModuleEventBody",
+      "field": "module",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
-      "definition": "ModuleEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
+      "definition": "ModuleEventBody",
+      "field": "reason",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -2073,11 +2241,19 @@
     },
     {
       "class": "required-non-null",
-      "definition": "ModulesResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "definition": "ModulesResponseBody",
+      "field": "modules",
+      "rust_owner": "ModulesResponseBody::modules",
+      "rust_type": "Vec<Module>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ModulesResponseBody",
+      "field": "totalModules",
+      "rust_owner": "ModulesResponseBody::total_modules",
+      "rust_type": "Option<i64>",
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -2118,20 +2294,85 @@
       "rust_type": null
     },
     {
-      "class": "required-non-null",
-      "definition": "OutputEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "class": "optional-non-null-when-present",
+      "definition": "OutputEventBody",
+      "field": "category",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "OutputEventBody",
+      "field": "column",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-nullable",
+      "definition": "OutputEventBody",
+      "field": "data",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "OutputEventBody",
+      "field": "group",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "OutputEventBody",
+      "field": "line",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "OutputEventBody",
+      "field": "locationReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
-      "definition": "OutputEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
+      "definition": "OutputEventBody",
+      "field": "output",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "OutputEventBody",
+      "field": "source",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "OutputEventBody",
+      "field": "variablesReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
@@ -2158,68 +2399,148 @@
       "rust_type": null
     },
     {
-      "class": "required-non-null",
-      "definition": "ProcessEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "class": "optional-non-null-when-present",
+      "definition": "ProcessEventBody",
+      "field": "isLocalProcess",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
-      "definition": "ProcessEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
+      "definition": "ProcessEventBody",
+      "field": "name",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProcessEventBody",
+      "field": "pointerSize",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProcessEventBody",
+      "field": "startMethod",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProcessEventBody",
+      "field": "systemProcessId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProgressEndEventBody",
+      "field": "message",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
-      "definition": "ProgressEndEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "definition": "ProgressEndEventBody",
+      "field": "progressId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProgressStartEventBody",
+      "field": "cancellable",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProgressStartEventBody",
+      "field": "message",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProgressStartEventBody",
+      "field": "percentage",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
-      "definition": "ProgressEndEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
+      "definition": "ProgressStartEventBody",
+      "field": "progressId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProgressStartEventBody",
+      "field": "requestId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
-      "definition": "ProgressStartEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "definition": "ProgressStartEventBody",
+      "field": "title",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProgressUpdateEventBody",
+      "field": "message",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ProgressUpdateEventBody",
+      "field": "percentage",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
-      "definition": "ProgressStartEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
+      "definition": "ProgressUpdateEventBody",
+      "field": "progressId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
-    },
-    {
-      "class": "required-non-null",
-      "definition": "ProgressUpdateEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
-    },
-    {
-      "class": "required-non-null",
-      "definition": "ProgressUpdateEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "unsupported",
@@ -2273,12 +2594,31 @@
       "rust_type": null
     },
     {
-      "class": "optional-non-null-when-present",
-      "definition": "ReadMemoryResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "class": "required-non-null",
+      "definition": "ReadMemoryResponseBody",
+      "field": "address",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ReadMemoryResponseBody",
+      "field": "data",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "ReadMemoryResponseBody",
+      "field": "unreadableBytes",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "optional-nullable",
@@ -2489,12 +2829,22 @@
       "rust_owner": null
     },
     {
-      "class": "required-non-null",
-      "definition": "RunInTerminalResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "class": "optional-non-null-when-present",
+      "definition": "RunInTerminalResponseBody",
+      "field": "processId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "RunInTerminalResponseBody",
+      "field": "shellProcessId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -2605,11 +2955,11 @@
     },
     {
       "class": "required-non-null",
-      "definition": "ScopesResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "definition": "ScopesResponseBody",
+      "field": "scopes",
+      "rust_owner": "ScopesResponseBody::scopes",
+      "rust_type": "Vec<Scope>",
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -2660,11 +3010,11 @@
     },
     {
       "class": "required-non-null",
-      "definition": "SetBreakpointsResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "definition": "SetBreakpointsResponseBody",
+      "field": "breakpoints",
+      "rust_owner": "SetBreakpointsResponseBody::breakpoints",
+      "rust_type": "Vec<Breakpoint>",
+      "seeded": false
     },
     {
       "class": "required-non-null",
@@ -2692,11 +3042,11 @@
     },
     {
       "class": "required-non-null",
-      "definition": "SetDataBreakpointsResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "definition": "SetDataBreakpointsResponseBody",
+      "field": "breakpoints",
+      "rust_owner": "SetDataBreakpointsResponseBody::breakpoints",
+      "rust_type": "Vec<Breakpoint>",
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -2739,11 +3089,12 @@
     },
     {
       "class": "optional-non-null-when-present",
-      "definition": "SetExceptionBreakpointsResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "definition": "SetExceptionBreakpointsResponseBody",
+      "field": "breakpoints",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
@@ -2794,12 +3145,73 @@
       "rust_type": null
     },
     {
-      "class": "required-non-null",
-      "definition": "SetExpressionResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionResponseBody",
+      "field": "indexedVariables",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionResponseBody",
+      "field": "memoryReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionResponseBody",
+      "field": "namedVariables",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionResponseBody",
+      "field": "presentationHint",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionResponseBody",
+      "field": "type",
+      "rust_owner": "SetExpressionResponseBody::type_",
+      "rust_type": "Option<String>",
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetExpressionResponseBody",
+      "field": "value",
+      "rust_owner": "SetExpressionResponseBody::value",
+      "rust_type": "String",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionResponseBody",
+      "field": "valueLocationReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetExpressionResponseBody",
+      "field": "variablesReference",
+      "rust_owner": "SetExpressionResponseBody::variables_reference",
+      "rust_type": "i64",
+      "seeded": false
     },
     {
       "class": "required-non-null",
@@ -2827,11 +3239,12 @@
     },
     {
       "class": "required-non-null",
-      "definition": "SetFunctionBreakpointsResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "definition": "SetFunctionBreakpointsResponseBody",
+      "field": "breakpoints",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "unsupported",
@@ -2858,11 +3271,12 @@
     },
     {
       "class": "required-non-null",
-      "definition": "SetInstructionBreakpointsResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "definition": "SetInstructionBreakpointsResponseBody",
+      "field": "breakpoints",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -2913,12 +3327,64 @@
       "rust_type": null
     },
     {
-      "class": "required-non-null",
-      "definition": "SetVariableResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "class": "optional-non-null-when-present",
+      "definition": "SetVariableResponseBody",
+      "field": "indexedVariables",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetVariableResponseBody",
+      "field": "memoryReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetVariableResponseBody",
+      "field": "namedVariables",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetVariableResponseBody",
+      "field": "type",
+      "rust_owner": "SetVariableResponseBody::type_",
+      "rust_type": "Option<String>",
+      "seeded": false
+    },
+    {
+      "class": "required-non-null",
+      "definition": "SetVariableResponseBody",
+      "field": "value",
+      "rust_owner": "SetVariableResponseBody::value",
+      "rust_type": "String",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetVariableResponseBody",
+      "field": "valueLocationReference",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SetVariableResponseBody",
+      "field": "variablesReference",
+      "rust_owner": "SetVariableResponseBody::variables_reference",
+      "rust_type": "i64",
+      "seeded": false
     },
     {
       "class": "optional-nullable",
@@ -3060,11 +3526,19 @@
     },
     {
       "class": "required-non-null",
-      "definition": "SourceResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "definition": "SourceResponseBody",
+      "field": "content",
+      "rust_owner": "SourceResponseBody::content",
+      "rust_type": "String",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "SourceResponseBody",
+      "field": "mimeType",
+      "rust_owner": "SourceResponseBody::mime_type",
+      "rust_type": "Option<String>",
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -3255,11 +3729,19 @@
     },
     {
       "class": "required-non-null",
-      "definition": "StackTraceResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "definition": "StackTraceResponseBody",
+      "field": "stackFrames",
+      "rust_owner": "StackTraceResponseBody::stack_frames",
+      "rust_type": "Vec<ProtocolStackFrame>",
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StackTraceResponseBody",
+      "field": "totalFrames",
+      "rust_owner": "StackTraceResponseBody::total_frames",
+      "rust_type": "Option<i64>",
+      "seeded": false
     },
     {
       "class": "required-non-null",
@@ -3450,11 +3932,11 @@
     },
     {
       "class": "required-non-null",
-      "definition": "StepInTargetsResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "definition": "StepInTargetsResponseBody",
+      "field": "targets",
+      "rust_owner": "StepInTargetsResponseBody::targets",
+      "rust_type": "Vec<StepInTarget>",
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -3495,20 +3977,67 @@
       "rust_type": null
     },
     {
-      "class": "required-non-null",
-      "definition": "StoppedEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "class": "optional-non-null-when-present",
+      "definition": "StoppedEventBody",
+      "field": "allThreadsStopped",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StoppedEventBody",
+      "field": "description",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StoppedEventBody",
+      "field": "hitBreakpointIds",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StoppedEventBody",
+      "field": "preserveFocusHint",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
-      "definition": "StoppedEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
+      "definition": "StoppedEventBody",
+      "field": "reason",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StoppedEventBody",
+      "field": "text",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "StoppedEventBody",
+      "field": "threadId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -3559,20 +4088,13 @@
       "rust_type": null
     },
     {
-      "class": "optional-non-null-when-present",
-      "definition": "TerminatedEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "class": "optional-nullable",
+      "definition": "TerminatedEventBody",
+      "field": "restart",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
-    },
-    {
-      "class": "required-non-null",
-      "definition": "TerminatedEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
@@ -3592,19 +4114,21 @@
     },
     {
       "class": "required-non-null",
-      "definition": "ThreadEvent",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "definition": "ThreadEventBody",
+      "field": "reason",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
-      "definition": "ThreadEvent",
-      "field": "event",
-      "reason": "not modeled in protocol.rs",
+      "definition": "ThreadEventBody",
+      "field": "threadId",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
     },
     {
       "class": "required-non-null",
@@ -3616,11 +4140,11 @@
     },
     {
       "class": "required-non-null",
-      "definition": "ThreadsResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "definition": "ThreadsResponseBody",
+      "field": "threads",
+      "rust_owner": "ThreadsResponseBody::threads",
+      "rust_type": "Vec<Thread>",
+      "seeded": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -3800,11 +4324,11 @@
     },
     {
       "class": "required-non-null",
-      "definition": "VariablesResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
-      "rust_owner": null,
-      "rust_type": null
+      "definition": "VariablesResponseBody",
+      "field": "variables",
+      "rust_owner": "VariablesResponseBody::variables",
+      "rust_type": "Vec<ProtocolVariable>",
+      "seeded": false
     },
     {
       "class": "unsupported",
@@ -3852,14 +4376,24 @@
     },
     {
       "class": "optional-non-null-when-present",
-      "definition": "WriteMemoryResponse",
-      "field": "body",
-      "reason": "not modeled in protocol.rs",
+      "definition": "WriteMemoryResponseBody",
+      "field": "bytesWritten",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "seeded": false
+    },
+    {
+      "class": "optional-non-null-when-present",
+      "definition": "WriteMemoryResponseBody",
+      "field": "offset",
+      "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+      "rust_owner": null,
+      "rust_type": null,
+      "seeded": false
     }
   ],
-  "schema_field_rows": 504,
+  "schema_field_rows": 560,
   "schema_version": "dap_nullability_inventory.v1",
   "upstream_sha256": "ff8ae4c6cfd588a050e9346c35fd104748a27ef4518d1c3268529ca6f8ff5818"
 }
