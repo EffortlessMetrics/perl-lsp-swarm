@@ -1256,7 +1256,7 @@ pub fn perl_dap::mutation::MutationLocationKind::fmt(&self, f: &mut core::fmt::F
 pub fn perl_dap::mutation::MutationLocationKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub enum perl_dap::mutation::MutationMember
 pub perl_dap::mutation::MutationMember::ArrayIndex(i64)
-pub perl_dap::mutation::MutationMember::HashKey(alloc::vec::Vec<u8>)
+pub perl_dap::mutation::MutationMember::HashKey(perl_dap::mutation::PerlHashKey)
 pub perl_dap::mutation::MutationMember::WholeScalar
 pub fn perl_dap::mutation::MutationMember::clone(&self) -> perl_dap::mutation::MutationMember
 pub fn perl_dap::mutation::MutationMember::eq(&self, other: &perl_dap::mutation::MutationMember) -> bool
@@ -1564,6 +1564,14 @@ pub perl_dap::mutation::ObservedReadBack::observed_value_authority_generation: u
 pub fn perl_dap::mutation::ObservedReadBack::clone(&self) -> perl_dap::mutation::ObservedReadBack
 pub fn perl_dap::mutation::ObservedReadBack::eq(&self, other: &perl_dap::mutation::ObservedReadBack) -> bool
 pub fn perl_dap::mutation::ObservedReadBack::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::mutation::PerlHashKey
+pub fn perl_dap::mutation::PerlHashKey::byte_string(bytes: alloc::vec::Vec<u8>) -> Self
+pub fn perl_dap::mutation::PerlHashKey::bytes(&self) -> &[u8]
+pub fn perl_dap::mutation::PerlHashKey::character_string(utf8_bytes: alloc::vec::Vec<u8>) -> Self
+pub fn perl_dap::mutation::PerlHashKey::is_character_string(&self) -> bool
+pub fn perl_dap::mutation::PerlHashKey::clone(&self) -> perl_dap::mutation::PerlHashKey
+pub fn perl_dap::mutation::PerlHashKey::eq(&self, other: &perl_dap::mutation::PerlHashKey) -> bool
+pub fn perl_dap::mutation::PerlHashKey::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::mutation::PossibleApplication(_)
 pub fn perl_dap::mutation::PossibleApplication::clone(&self) -> perl_dap::mutation::PossibleApplication
 pub fn perl_dap::mutation::PossibleApplication::eq(&self, other: &perl_dap::mutation::PossibleApplication) -> bool

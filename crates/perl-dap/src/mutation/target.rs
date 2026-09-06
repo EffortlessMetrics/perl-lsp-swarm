@@ -88,33 +88,90 @@ impl MutationLocationKind {
     }
 }
 
+/// Exact Perl hash-key identity: the observed bytes plus the UTF8 flag.
+///
+/// Equality distinguishes a character-string key from a byte-string key even
+/// when their bytes coincide, because Perl does.
+///
+/// # Why a key is bytes plus a flag, not a `String`
+///
+/// Perl hash-key identity is the byte buffer **and** the string's UTF8 flag,
+/// and the two are independently addressable. Verified against a real
+/// interpreter (perl 5.38.2):
+///
+/// ```text
+/// $h{chr(0x100)} = "char_key";
+/// $h{"\xc4\x80"}  = "byte_key";
+///
+/// distinct keys: 2
+///   utf8_flag=0 len=2 bytes=c480  value=byte_key
+///   utf8_flag=1 len=1             value=char_key
+/// ```
+///
+/// Both entries exist at once, and `chr(0x100)` encodes to exactly the bytes
+/// `c4 80`. So neither a `String` nor a bare `Vec<u8>` is sufficient: a
+/// `String` cannot hold a non-UTF-8 byte key such as `"\xff\xfe"` at all, and
+/// bytes alone would give those two distinct cells one identity — the precise
+/// collapse this contract exists to prevent.
+///
+/// Carrying an exact key does not make every key *editable*: DAP is JSON, so a
+/// client cannot name a non-UTF-8 key in a request. It means #11310 can record
+/// such a row and refuse it explicitly as
+/// [`WritabilityDisposition::Unaddressable`], instead of mangling it into a
+/// key that addresses a different cell.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PerlHashKey {
+    bytes: Vec<u8>,
+    is_character_string: bool,
+}
+
+impl PerlHashKey {
+    /// A byte-string key: exactly these bytes, UTF8 flag clear.
+    pub fn byte_string(bytes: Vec<u8>) -> Self {
+        Self { bytes, is_character_string: false }
+    }
+
+    /// A character-string key (UTF8 flag set), carried as its UTF-8 encoding.
+    ///
+    /// Takes bytes rather than `&str` because a Perl character string may hold
+    /// code points that are not Unicode scalar values.
+    pub fn character_string(utf8_bytes: Vec<u8>) -> Self {
+        Self { bytes: utf8_bytes, is_character_string: true }
+    }
+
+    /// The exact observed key bytes.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Whether Perl's UTF8 flag was set on this key.
+    pub fn is_character_string(&self) -> bool {
+        self.is_character_string
+    }
+}
+
+impl fmt::Debug for PerlHashKey {
+    /// Redacted: key data is debuggee data. Reports the flag and size only.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = if self.is_character_string { "char" } else { "bytes" };
+        write!(f, "PerlHashKey({kind}, <{} bytes redacted>)", self.bytes.len())
+    }
+}
+
 /// Which cell inside the binding a location denotes.
 ///
 /// Hash keys carry exact key *data*. Client display escaping is a rendering
 /// concern and never reaches this type, so an empty key, a key containing a
 /// quote, a backslash, a control character, or a digit-looking key stays
-/// exactly the bytes the runtime observed.
-///
-/// # Why the key is bytes and not a `String`
-///
-/// A Perl hash key is a byte string. `$h{"\xff\xfe"}` is an ordinary entry
-/// and is not valid UTF-8, so a `String` cannot hold it — acquisition would
-/// have to lossily convert the key or drop the row, and the contract would
-/// silently lose entries it claims to address exactly.
-///
-/// Representing the key exactly does not make every key *editable*: DAP is
-/// JSON, so a client cannot name a non-UTF-8 key in a request. The point is
-/// that #11310 can record such a row and refuse it explicitly — as
-/// [`WritabilityDisposition::Unaddressable`] — instead of mangling it into a
-/// key that addresses a different cell.
+/// exactly what the runtime observed — see [`PerlHashKey`].
 #[derive(Clone, PartialEq, Eq)]
 pub enum MutationMember {
     /// The whole scalar binding.
     WholeScalar,
     /// An exact bounded array index.
     ArrayIndex(i64),
-    /// Exact hash key data, as the bytes the runtime observed.
-    HashKey(Vec<u8>),
+    /// Exact hash key identity: observed bytes plus Perl's UTF8 flag.
+    HashKey(PerlHashKey),
 }
 
 impl fmt::Debug for MutationMember {
@@ -124,7 +181,7 @@ impl fmt::Debug for MutationMember {
         match self {
             Self::WholeScalar => f.write_str("WholeScalar"),
             Self::ArrayIndex(index) => write!(f, "ArrayIndex({index})"),
-            Self::HashKey(key) => write!(f, "HashKey(<{} bytes redacted>)", key.len()),
+            Self::HashKey(key) => write!(f, "HashKey({key:?})"),
         }
     }
 }
@@ -524,8 +581,14 @@ impl MutationTarget {
                 push(&mut bytes, index.to_string().as_bytes());
             }
             MutationMember::HashKey(key) => {
-                push(&mut bytes, b"key");
-                push(&mut bytes, key);
+                // The flag is part of Perl's key identity, so it is part of
+                // the fingerprint: two cells whose bytes coincide but whose
+                // flags differ must not share one identity.
+                push(
+                    &mut bytes,
+                    if key.is_character_string() { b"key:char" } else { b"key:bytes" },
+                );
+                push(&mut bytes, key.bytes());
             }
         }
         ContentDigest::of_bytes(&bytes)
@@ -540,7 +603,7 @@ impl MutationTarget {
         let (member_kind, array_index, key_bytes) = match self.location.member() {
             MutationMember::WholeScalar => ("whole_scalar", None, None),
             MutationMember::ArrayIndex(index) => ("array_index", Some(*index), None),
-            MutationMember::HashKey(key) => ("hash_key", None, Some(key.len())),
+            MutationMember::HashKey(key) => ("hash_key", None, Some(key.bytes().len())),
         };
         MutationTargetReceipt {
             location_fingerprint: self.location_fingerprint(),

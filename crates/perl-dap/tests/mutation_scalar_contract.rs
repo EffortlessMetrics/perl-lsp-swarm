@@ -20,7 +20,7 @@ use perl_dap::mutation::{
     MUTATION_STRUCTURED_VALUE_SCHEMA_VERSION, MutationDeadline, MutationLocationKind,
     MutationMember, MutationOperation, MutationOrigin, MutationOutcome, MutationTarget,
     MutationTargetBindingError, MutationTargetCandidate, MutationTargetCohort, MutationValue,
-    MutationValueKind, MutationValueProfile, ObservedReadBack, RefusedWritability,
+    MutationValueKind, MutationValueProfile, ObservedReadBack, PerlHashKey, RefusedWritability,
     ResponseValueFormat, StructuredMutationLimits, WritabilityDisposition,
     parse_structured_mutation,
 };
@@ -161,7 +161,8 @@ fn hash_key_data_round_trips_exactly() -> TestResult {
     for key in keys {
         let mut candidate = lexical_candidate("frame#1", "pad:%opts@2");
         candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
-        candidate.member = Some(MutationMember::HashKey(key.as_bytes().to_vec()));
+        candidate.member =
+            Some(MutationMember::HashKey(PerlHashKey::byte_string(key.as_bytes().to_vec())));
         candidate.inspected_value = Some(InspectedValueIdentity {
             value_node: "node-2".to_string(),
             referent: Some("HASH(0xbeef)".to_string()),
@@ -170,7 +171,7 @@ fn hash_key_data_round_trips_exactly() -> TestResult {
 
         let target = bind(&candidate)?;
         match target.location().member() {
-            MutationMember::HashKey(observed) if observed.as_slice() == key.as_bytes() => {}
+            MutationMember::HashKey(observed) if observed.bytes() == key.as_bytes() => {}
             other => return Err(format!("key {key:?} did not round-trip, got {other:?}")),
         }
     }
@@ -697,7 +698,8 @@ fn receipts_redact_private_key_and_value_payload() -> TestResult {
 
     let mut candidate = lexical_candidate("frame#1", "pad:%creds@4");
     candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
-    candidate.member = Some(MutationMember::HashKey(secret_key.as_bytes().to_vec()));
+    candidate.member =
+        Some(MutationMember::HashKey(PerlHashKey::byte_string(secret_key.as_bytes().to_vec())));
     candidate.inspected_value = Some(InspectedValueIdentity {
         value_node: "node-4".to_string(),
         referent: Some("HASH(0xfeed)".to_string()),
@@ -914,7 +916,8 @@ fn receipts_distinguish_different_storage_cells() -> TestResult {
     let key_receipt = |key: &str| -> TestResult<perl_dap::mutation::MutationTargetReceipt> {
         let mut candidate = lexical_candidate("frame#1", "pad:%opts@2");
         candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
-        candidate.member = Some(MutationMember::HashKey(key.as_bytes().to_vec()));
+        candidate.member =
+            Some(MutationMember::HashKey(PerlHashKey::byte_string(key.as_bytes().to_vec())));
         candidate.inspected_value = Some(InspectedValueIdentity {
             value_node: "node".to_string(),
             referent: Some("HASH(0x1)".to_string()),
@@ -950,7 +953,7 @@ fn debug_formatting_does_not_leak_payload() -> TestResult {
         return Err(format!("Debug did not mark the value redacted: {rendered}"));
     }
 
-    let member = MutationMember::HashKey(secret_key.as_bytes().to_vec());
+    let member = MutationMember::HashKey(PerlHashKey::byte_string(secret_key.as_bytes().to_vec()));
     let rendered_member = format!("{member:?}");
     if rendered_member.contains(secret_key) {
         return Err(format!("Debug leaked the hash key: {rendered_member}"));
@@ -965,7 +968,8 @@ fn debug_formatting_does_not_leak_payload() -> TestResult {
     // Composition: a containing type's derived Debug must inherit redaction.
     let mut candidate = lexical_candidate("frame#1", "pad:%creds@4");
     candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
-    candidate.member = Some(MutationMember::HashKey(secret_key.as_bytes().to_vec()));
+    candidate.member =
+        Some(MutationMember::HashKey(PerlHashKey::byte_string(secret_key.as_bytes().to_vec())));
     candidate.inspected_value = Some(InspectedValueIdentity {
         value_node: "node".to_string(),
         referent: Some("HASH(0x1)".to_string()),
@@ -1009,7 +1013,7 @@ fn a_non_utf8_hash_key_round_trips_exactly() -> TestResult {
 
         let mut candidate = lexical_candidate("frame#1", "pad:%bytes@3");
         candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
-        candidate.member = Some(MutationMember::HashKey(raw.to_vec()));
+        candidate.member = Some(MutationMember::HashKey(PerlHashKey::byte_string(raw.to_vec())));
         candidate.inspected_value = Some(InspectedValueIdentity {
             value_node: "node".to_string(),
             referent: Some("HASH(0x1)".to_string()),
@@ -1018,7 +1022,7 @@ fn a_non_utf8_hash_key_round_trips_exactly() -> TestResult {
 
         let target = bind(&candidate)?;
         match target.location().member() {
-            MutationMember::HashKey(observed) if observed.as_slice() == raw => {}
+            MutationMember::HashKey(observed) if observed.bytes() == raw => {}
             other => return Err(format!("{raw:?} did not round-trip, got {other:?}")),
         }
 
@@ -1033,7 +1037,7 @@ fn a_non_utf8_hash_key_round_trips_exactly() -> TestResult {
     let fingerprint = |raw: &[u8]| -> TestResult<perl_dap::mutation::MutationTargetReceipt> {
         let mut candidate = lexical_candidate("frame#1", "pad:%bytes@3");
         candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
-        candidate.member = Some(MutationMember::HashKey(raw.to_vec()));
+        candidate.member = Some(MutationMember::HashKey(PerlHashKey::byte_string(raw.to_vec())));
         candidate.inspected_value = Some(InspectedValueIdentity {
             value_node: "node".to_string(),
             referent: Some("HASH(0x1)".to_string()),
@@ -1045,6 +1049,68 @@ fn a_non_utf8_hash_key_round_trips_exactly() -> TestResult {
     let second = fingerprint(&[0xfe, 0xff])?;
     if first.location_fingerprint == second.location_fingerprint {
         return Err("two byte keys shared a location fingerprint".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_character_key_and_a_byte_key_with_equal_bytes_stay_distinct() -> TestResult {
+    // Perl hash-key identity is the byte buffer AND the UTF8 flag, and both
+    // entries can exist at once. Established against perl 5.38.2:
+    //
+    //   $h{chr(0x100)} = "char_key";
+    //   $h{"\xc4\x80"}  = "byte_key";
+    //
+    //   distinct keys: 2
+    //     utf8_flag=0 len=2 bytes=c480  value=byte_key
+    //     utf8_flag=1 len=1             value=char_key
+    //
+    // chr(0x100) encodes to exactly `c4 80`, so a bytes-only key would give
+    // these two independently addressable cells one identity.
+    let utf8_bytes = "\u{100}".as_bytes().to_vec();
+    if utf8_bytes != vec![0xc4, 0x80] {
+        return Err(format!("fixture premise wrong: chr(0x100) encoded as {utf8_bytes:?}"));
+    }
+
+    let character = PerlHashKey::character_string(utf8_bytes.clone());
+    let bytes = PerlHashKey::byte_string(utf8_bytes);
+
+    if character.bytes() != bytes.bytes() {
+        return Err("the fixture must hold the bytes equal".to_string());
+    }
+    if character == bytes {
+        return Err("a character key and a byte key with equal bytes collapsed".to_string());
+    }
+    if !character.is_character_string() || bytes.is_character_string() {
+        return Err("the UTF8 flag was not preserved".to_string());
+    }
+
+    let target_for = |key: PerlHashKey| -> TestResult<MutationTarget> {
+        let mut candidate = lexical_candidate("frame#1", "pad:%h@5");
+        candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
+        candidate.member = Some(MutationMember::HashKey(key));
+        candidate.inspected_value = Some(InspectedValueIdentity {
+            value_node: "node".to_string(),
+            referent: Some("HASH(0x1)".to_string()),
+            value_authority_generation: 11,
+        });
+        bind(&candidate)
+    };
+
+    let char_target = target_for(character)?;
+    let byte_target = target_for(bytes)?;
+
+    if char_target == byte_target {
+        return Err("two distinct Perl entries produced one target".to_string());
+    }
+    let char_receipt = char_target.receipt_projection();
+    let byte_receipt = byte_target.receipt_projection();
+    if char_receipt.location_fingerprint == byte_receipt.location_fingerprint {
+        return Err("two distinct Perl entries shared a location fingerprint".to_string());
+    }
+    // Both still redact the key content to a length.
+    if char_receipt.key_bytes != Some(2) || byte_receipt.key_bytes != Some(2) {
+        return Err("receipts lost the redacted key length".to_string());
     }
     Ok(())
 }

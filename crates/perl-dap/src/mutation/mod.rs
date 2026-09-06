@@ -69,6 +69,6 @@ pub use structured_value::{
 pub use target::{
     InspectedValueIdentity, MUTATION_TARGET_PROFILE_VERSION, MutationLocationKind,
     MutationLocationProvenance, MutationMember, MutationTarget, MutationTargetBindingError,
-    MutationTargetCandidate, MutationTargetCohort, MutationTargetReceipt, RefusedWritability,
-    WritabilityDisposition,
+    MutationTargetCandidate, MutationTargetCohort, MutationTargetReceipt, PerlHashKey,
+    RefusedWritability, WritabilityDisposition,
 };
