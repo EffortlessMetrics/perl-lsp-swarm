@@ -22,9 +22,15 @@ fn framed(body: &[u8]) -> Vec<u8> {
     frame
 }
 
-fn framed_request(id: u64, method: &str) -> Vec<u8> {
+fn framed_request_content_type_first(id: u64, method: &str) -> Vec<u8> {
     let body = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{{}}}}"#);
-    framed(body.as_bytes())
+    let mut frame = format!(
+        "Content-Type: application/vscode-jsonrpc; charset=utf-8\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    frame.extend_from_slice(body.as_bytes());
+    frame
 }
 
 fn invalid_utf8_secondary_header_frame(content_length: usize, body: &[u8]) -> Vec<u8> {
@@ -540,6 +546,16 @@ fn read_message_does_not_consume_next_frame_across_small_bufreader_capacities() 
     // length must still treat a following header prefix as the next frame.
     for capacity in [1, 8, 14, 15, 16] {
         expect_invalid_header_utf8_then_method(payload.clone(), capacity, "after-small-buffer")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn read_message_does_not_consume_content_type_first_frame_after_omitted_body() -> io::Result<()> {
+    let mut payload = invalid_utf8_secondary_header_frame(64, &[]);
+    payload.extend(framed_request_content_type_first(12, "after-content-type"));
+    for capacity in [1, 8, 14, 15, 16, 4096] {
+        expect_invalid_header_utf8_then_method(payload.clone(), capacity, "after-content-type")?;
     }
     Ok(())
 }

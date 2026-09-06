@@ -412,25 +412,29 @@ fn drain_to_header_end(reader: &mut dyn BufRead) -> io::Result<()> {
     }
 }
 
-fn looks_like_content_length_header(bytes: &[u8]) -> bool {
-    const SENTINEL: &[u8] = b"content-length:";
+fn starts_with_ascii_prefix(bytes: &[u8], sentinel: &[u8]) -> bool {
     if bytes.is_empty() {
         return false;
     }
-    let prefix_len = bytes.len().min(SENTINEL.len());
-    match (bytes.get(..prefix_len), SENTINEL.get(..prefix_len)) {
+    let prefix_len = bytes.len().min(sentinel.len());
+    match (bytes.get(..prefix_len), sentinel.get(..prefix_len)) {
         (Some(prefix), Some(expected)) => prefix.eq_ignore_ascii_case(expected),
         _ => false,
     }
 }
 
-/// Recover a following frame after an invalid header without scanning payload
-/// bytes for a `Content-Length` sentinel.
+fn looks_like_lsp_header_prefix(bytes: &[u8]) -> bool {
+    starts_with_ascii_prefix(bytes, b"content-length:")
+        || starts_with_ascii_prefix(bytes, b"content-type:")
+}
+
+/// Recover a following frame after an invalid header.
 ///
-/// If the next buffered bytes already look like a header (including a prefix
-/// split across a small `BufRead` buffer), the claimed body was omitted and
-/// must not be consumed. Otherwise consume an in-limit claimed body so a
-/// leftover payload cannot be reread as headers.
+/// LSP JSON-RPC bodies start with `{` or `[`. A following frame's header block
+/// starts with `Content-Length` or optional `Content-Type`, including a prefix
+/// split across a small `BufRead`. Those two starts are the protocol
+/// discriminator. A claimed payload that itself begins with those header names
+/// is not distinguishable from a following frame on a stateless `BufRead`.
 fn recover_after_malformed_header(
     reader: &mut dyn BufRead,
     claimed_length: Option<usize>,
@@ -439,7 +443,7 @@ fn recover_after_malformed_header(
         return Ok(());
     };
     let available = reader.fill_buf()?;
-    if available.is_empty() || looks_like_content_length_header(available) {
+    if available.is_empty() || looks_like_lsp_header_prefix(available) {
         return Ok(());
     }
     let mut limited = reader.take(length as u64);
