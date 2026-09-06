@@ -266,14 +266,78 @@ def run_commands(workflow_text: str) -> tuple[str, ...]:
 _FLOW_PATHS_KEY = re.compile(r"(?<![\w-])paths:\s*(\[[^\]]*\])")
 _FLOW_IGNORE_KEY = re.compile(r"paths-ignore:\s*(\[[^\]]*\])")
 _PYTHON_VALUE_FLAGS = frozenset({"-W", "-X", "--check-hash-based-pycs"})
-_SHELL_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\|)\s*")
+
+
+def _split_unquoted_operators(line: str) -> list[str]:
+    """Split on `&&`, `||`, `;`, and `|` that are not inside quotes.
+
+    This is quote-aware word-boundary splitting, not a shell parser: no
+    expansions, escapes, or heredocs.
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if quote is not None:
+            buf.append(char)
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            buf.append(char)
+            index += 1
+            continue
+        if line.startswith("&&", index) or line.startswith("||", index):
+            parts.append("".join(buf))
+            buf = []
+            index += 2
+            continue
+        if char in {";", "|"}:
+            parts.append("".join(buf))
+            buf = []
+            index += 1
+            continue
+        buf.append(char)
+        index += 1
+    parts.append("".join(buf))
+    return parts
+
+
+def _shell_words(text: str) -> list[str]:
+    """Split on unquoted whitespace and drop matching quotes from words."""
+    words: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    for char in text:
+        if quote is not None:
+            if char == quote:
+                quote = None
+            else:
+                buf.append(char)
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            continue
+        if char.isspace():
+            if buf:
+                words.append("".join(buf))
+                buf = []
+            continue
+        buf.append(char)
+    if buf:
+        words.append("".join(buf))
+    return words
 
 
 def _command_segments(command: str) -> tuple[str, ...]:
     parts: list[str] = []
     for line in command.splitlines():
-        parts.extend(_SHELL_SPLIT.split(line))
-    return tuple(part for part in parts if part.strip())
+        parts.extend(_split_unquoted_operators(line))
+    return tuple(part.strip() for part in parts if part.strip())
 
 
 def _python_script_operand(tokens: list[str]) -> str | None:
@@ -323,11 +387,12 @@ def _unittest_module_targets(segment: str) -> set[str]:
 
 
 def _segment_test_paths(segment: str) -> set[str]:
-    tokens = segment.split()
+    tokens = _shell_words(segment)
     if not tokens or tokens[0] not in {"python3", "python"}:
         return set()
-    if "-m unittest" in " ".join(tokens):
-        return _unittest_module_targets(segment)
+    joined = " ".join(tokens)
+    if "-m unittest" in joined:
+        return _unittest_module_targets(joined)
     operand = _python_script_operand(tokens)
     return {operand} if operand else set()
 
@@ -338,9 +403,9 @@ def unittest_targets(commands: Iterable[str]) -> set[str]:
     The hosted shard runner rejects `python3 -m unittest` (`-m` is an unsupported
     nested interpreter command), so this gate's own production command is
     `python3 tests/test_docs_agents_contract_workflows.py`. A fifth that copies
-    that form, including interpreter flags such as `-u`, must still be
-    discovered. Test paths that appear only in a later non-python command
-    (`echo tests/foo.py`) are not operands.
+    that form, including interpreter flags such as `-u` and quoted script or
+    unittest operands, must still be discovered. Test paths that appear only
+    in a later non-python command (`echo tests/foo.py`) are not operands.
     """
     targets: set[str] = set()
     for command in commands:
@@ -1037,6 +1102,80 @@ jobs:
             {"tests/test_script_docs_contract.py"},
         )
 
+    def test_quoted_script_operand_is_discovered(self) -> None:
+        workflow = """\
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/quoted-docs-contract.yml'
+jobs:
+  check:
+    steps:
+      - run: python3 "tests/test_script_docs_contract.py"
+"""
+        allowlist = {
+            "allow": [
+                {
+                    "kind": CONTROL_PLANE_KIND,
+                    "path": "tests/test_script_docs_contract.py",
+                }
+            ]
+        }
+        discovered = discover_contract_workflows(
+            {".github/workflows/quoted-docs-contract.yml": workflow}, allowlist
+        )
+        self.assertEqual(discovered, {".github/workflows/quoted-docs-contract.yml"})
+        self.assertEqual(
+            unittest_targets(['python3 "tests/test_script_docs_contract.py"']),
+            {"tests/test_script_docs_contract.py"},
+        )
+        self.assertEqual(
+            unittest_targets(["python3 'tests/test_script_docs_contract.py'"]),
+            {"tests/test_script_docs_contract.py"},
+        )
+
+    def test_quoted_unittest_target_is_discovered(self) -> None:
+        workflow = """\
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/quoted-unittest-docs-contract.yml'
+jobs:
+  check:
+    steps:
+      - run: python3 -m unittest "tests/test_quoted_docs_contract.py"
+"""
+        allowlist = {
+            "allow": [
+                {
+                    "kind": CONTROL_PLANE_KIND,
+                    "path": "tests/test_quoted_docs_contract.py",
+                }
+            ]
+        }
+        discovered = discover_contract_workflows(
+            {
+                ".github/workflows/quoted-unittest-docs-contract.yml": workflow
+            },
+            allowlist,
+        )
+        self.assertEqual(
+            discovered,
+            {".github/workflows/quoted-unittest-docs-contract.yml"},
+        )
+        self.assertEqual(
+            unittest_targets(
+                ['python3 -m unittest "tests/test_quoted_docs_contract.py"']
+            ),
+            {"tests/test_quoted_docs_contract.py"},
+        )
+        self.assertEqual(
+            unittest_targets(
+                ["python3 -m unittest 'tests.test_quoted_docs_contract'"]
+            ),
+            {"tests/test_quoted_docs_contract.py"},
+        )
+
     def test_echo_after_unrelated_python_is_not_a_unittest_target(self) -> None:
         self.assertEqual(
             unittest_targets(
@@ -1050,6 +1189,16 @@ jobs:
     def test_non_python_mention_of_tests_is_not_a_unittest_target(self) -> None:
         self.assertEqual(
             unittest_targets(["echo tests/test_script_docs_contract.py"]),
+            set(),
+        )
+        self.assertEqual(
+            unittest_targets(['echo "tests/test_script_docs_contract.py"']),
+            set(),
+        )
+        self.assertEqual(
+            unittest_targets(
+                ['echo "python3 tests/test_script_docs_contract.py && true"']
+            ),
             set(),
         )
 
