@@ -182,7 +182,7 @@ impl ArtifactRole {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CrateSubject {
     name: String,
@@ -312,6 +312,16 @@ pub fn check() -> Result<()> {
     push_failure(&mut failures, "transport_expired", transport_expired_check(&topology));
     push_failure(&mut failures, "rebuild_forbidden", rebuild_forbidden_check(&topology));
     push_failure(&mut failures, "packet_field_edit", packet_field_edit_check(&topology));
+    push_failure(
+        &mut failures,
+        "incomplete_packet",
+        incomplete_packet_omits_archive_check(&topology),
+    );
+    push_failure(
+        &mut failures,
+        "invalid_freeze_expiry",
+        freeze_invalid_available_until_check(&topology),
+    );
     push_failure(&mut failures, "determinism", determinism_check(&topology));
 
     if failures.is_empty() {
@@ -338,6 +348,9 @@ fn freeze_packet(config: &FreezeConfig) -> Result<CandidateArtifactPacket> {
             "inputs.toolchains must name at least one toolchain",
         )
         .into());
+    }
+    if let Some(until) = &config.available_until {
+        parse_rfc3339_expiry(until)?;
     }
     let topology = load_topology(&config.topology)?;
     let staging_files = scan_staging(&config.staging)?;
@@ -422,6 +435,7 @@ fn verify_packet(config: &VerifyConfig) -> Result<VerificationReceipt> {
         )
         .into());
     }
+    assert_packet_matches_topology(&topology, &packet)?;
     if packet.publish_authorized {
         return Err(HandoffError::new(
             ReasonCode::PublishAuthorized,
@@ -456,14 +470,7 @@ fn verify_packet(config: &VerifyConfig) -> Result<VerificationReceipt> {
         .into());
     }
     if let Some(until) = &packet.transport.available_until {
-        let expiry = DateTime::parse_from_rfc3339(until)
-            .map_err(|error| {
-                HandoffError::new(
-                    ReasonCode::MalformedDocument,
-                    format!("transport.available_until is not RFC3339: {error}"),
-                )
-            })?
-            .with_timezone(&Utc);
+        let expiry = parse_rfc3339_expiry(until)?;
         let now = config.now.unwrap_or_else(Utc::now);
         if now >= expiry {
             return Err(HandoffError::new(
@@ -733,6 +740,98 @@ fn bind_artifacts(
     Ok(artifacts)
 }
 
+/// Packet membership must cover topology archives/VSIX, not merely hash the
+/// declared packet list. Digest agreement on a subset is not verification.
+fn assert_packet_matches_topology(
+    topology: &TopologyMembership,
+    packet: &CandidateArtifactPacket,
+) -> Result<()> {
+    if packet.release != topology.release {
+        return Err(HandoffError::new(
+            ReasonCode::VersionMetadataMismatch,
+            format!(
+                "packet release {} does not match topology release {}",
+                packet.release, topology.release
+            ),
+        )
+        .into());
+    }
+    if packet.crate_subjects != topology.crate_subjects {
+        return Err(HandoffError::new(
+            ReasonCode::MalformedDocument,
+            "crate_subjects do not match topology published_crates",
+        )
+        .into());
+    }
+
+    for (name, target) in &topology.archives {
+        let Some(artifact) = packet.artifacts.iter().find(|artifact| artifact.name == *name) else {
+            return Err(HandoffError::new(
+                ReasonCode::MissingTopologyArchive,
+                format!("frozen packet omits topology archive {name}"),
+            )
+            .into());
+        };
+        if artifact.role != ArtifactRole::ReleaseArchive
+            || artifact.target.as_deref() != Some(target.as_str())
+        {
+            return Err(HandoffError::new(
+                ReasonCode::VersionMetadataMismatch,
+                format!("{name} is not frozen as release_archive for target {target}"),
+            )
+            .into());
+        }
+    }
+
+    let Some(vsix) =
+        packet.artifacts.iter().find(|artifact| artifact.name == topology.vsix_asset_name)
+    else {
+        return Err(HandoffError::new(
+            ReasonCode::MissingTopologyArchive,
+            format!("frozen packet omits topology VSIX {}", topology.vsix_asset_name),
+        )
+        .into());
+    };
+    if vsix.role != ArtifactRole::Vsix {
+        return Err(HandoffError::new(
+            ReasonCode::VersionMetadataMismatch,
+            format!("{} is not frozen as vsix", topology.vsix_asset_name),
+        )
+        .into());
+    }
+
+    for artifact in &packet.artifacts {
+        match artifact.role {
+            ArtifactRole::ReleaseArchive => {
+                let declared = topology.archives.iter().any(|(name, target)| {
+                    name == &artifact.name && artifact.target.as_deref() == Some(target.as_str())
+                });
+                if !declared {
+                    return Err(HandoffError::new(
+                        ReasonCode::ExtraPublishableArtifact,
+                        format!(
+                            "{} is frozen as an archive but is not a topology member",
+                            artifact.name
+                        ),
+                    )
+                    .into());
+                }
+            }
+            ArtifactRole::Vsix => {
+                if artifact.name != topology.vsix_asset_name {
+                    return Err(HandoffError::new(
+                        ReasonCode::ExtraPublishableArtifact,
+                        format!("{} is frozen as VSIX but is not the topology VSIX", artifact.name),
+                    )
+                    .into());
+                }
+            }
+            ArtifactRole::Checksums | ArtifactRole::Sbom => {}
+        }
+    }
+    Ok(())
+}
+
 fn require_file<'a>(
     staging: &'a BTreeMap<String, PathBuf>,
     name: &str,
@@ -779,6 +878,16 @@ fn reject_version_mismatch(name: &str, release: &str, target: Option<&str>) -> R
         .into());
     }
     Ok(())
+}
+
+fn parse_rfc3339_expiry(value: &str) -> Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value).map(|parsed| parsed.with_timezone(&Utc)).map_err(|error| {
+        HandoffError::new(
+            ReasonCode::MalformedDocument,
+            format!("transport.available_until is not RFC3339: {error}"),
+        )
+        .into()
+    })
 }
 
 fn compute_packet_digest(packet: &CandidateArtifactPacket) -> Result<String> {
@@ -1162,6 +1271,25 @@ fn packet_field_edit_check(topology: &Path) -> Result<()> {
     expect_verify_reason(verify_packet(&verify_cfg(&dirs)), ReasonCode::PacketDigestMismatch)
 }
 
+fn incomplete_packet_omits_archive_check(topology: &Path) -> Result<()> {
+    let dirs = scenario_dirs(topology)?;
+    let mut packet = freeze_packet(&freeze_cfg(&dirs, "run-1", "set-rc1"))?;
+    let omitted = "perllsp-0.18.0-x86_64-unknown-linux-gnu.tar.gz";
+    packet.artifacts.retain(|artifact| artifact.name != omitted);
+    packet.attestation_subjects.retain(|name| name != omitted);
+    packet.packet_digest = compute_packet_digest(&packet)?;
+    serde_json::to_writer_pretty(File::create(&dirs.packet)?, &packet)?;
+    fs::remove_file(dirs.staging.join(omitted))?;
+    expect_verify_reason(verify_packet(&verify_cfg(&dirs)), ReasonCode::MissingTopologyArchive)
+}
+
+fn freeze_invalid_available_until_check(topology: &Path) -> Result<()> {
+    let dirs = scenario_dirs(topology)?;
+    let mut cfg = freeze_cfg(&dirs, "run-1", "set-rc1");
+    cfg.available_until = Some("not-an-rfc3339-timestamp".to_string());
+    expect_reason(freeze_packet(&cfg), ReasonCode::MalformedDocument)
+}
+
 fn determinism_check(topology: &Path) -> Result<()> {
     let dirs = scenario_dirs(topology)?;
     let first = freeze_packet(&freeze_cfg(&dirs, "run-1", "set-rc1"))?;
@@ -1249,6 +1377,16 @@ mod tests {
     #[test]
     fn edited_packet_without_new_digest_fails() -> Result<()> {
         packet_field_edit_check(&topology()?)
+    }
+
+    #[test]
+    fn incomplete_packet_omitting_topology_archive_fails_after_digest_recompute() -> Result<()> {
+        incomplete_packet_omits_archive_check(&topology()?)
+    }
+
+    #[test]
+    fn freeze_rejects_non_rfc3339_available_until() -> Result<()> {
+        freeze_invalid_available_until_check(&topology()?)
     }
 
     #[test]
