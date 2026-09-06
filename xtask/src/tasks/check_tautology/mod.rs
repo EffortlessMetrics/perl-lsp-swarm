@@ -1,11 +1,14 @@
-//! Conservative checker for provably tautological Rust assertions (#14061).
+//! Conservative checker for provably tautological Rust assertions (#14061 / #14058).
 //!
 //! Inventory is the existing `crates`/`xtask`/`examples`/`tests` source tree.
 //! Detection is a syn AST walk of `assert!`/`assert_eq!` (and debug variants).
-//! False negatives are accepted; false positives are not.
+//! False negatives are accepted; false positives are not. Function-call
+//! receivers and type-unknown `assert_eq!` identities are skipped because
+//! they are not proven tautologies.
 
 mod detect;
 mod disposition;
+mod expr;
 mod inventory;
 mod scan;
 
@@ -168,7 +171,7 @@ mod tests {
     use std::path::Path;
     use tempfile::TempDir;
 
-    const PATH_SECURITY_HIT: &str = r#"
+    const PATH_SECURITY_TWO_CALL_HIT: &str = r#"
         fn sanitize_completion_path_input(_path: &str) -> Option<String> { None }
         #[test]
         fn test_traversal_encoded_dot_segments_completion() {
@@ -176,6 +179,16 @@ mod tests {
                 sanitize_completion_path_input("..%2f..%2fetc%2fpasswd").is_some()
                     || sanitize_completion_path_input("..%2f..%2fetc%2fpasswd").is_none()
             );
+            assert!(sanitize_completion_path_input("../foo").is_none());
+        }
+    "#;
+
+    const PATH_SECURITY_BOUND_TAUTOLOGY: &str = r#"
+        fn sanitize_completion_path_input(_path: &str) -> Option<String> { None }
+        #[test]
+        fn test_traversal_encoded_dot_segments_completion() {
+            let value = sanitize_completion_path_input("..%2f..%2fetc%2fpasswd");
+            assert!(value.is_some() || value.is_none());
             assert!(sanitize_completion_path_input("../foo").is_none());
         }
     "#;
@@ -193,17 +206,29 @@ mod tests {
     }
 
     #[test]
-    fn path_security_hit_is_red_before_repair() {
-        let findings =
-            scan_file("crates/perl-parser-core/src/syntax/path_security.rs", PATH_SECURITY_HIT)
-                .expect("parse");
+    fn path_security_bound_option_tautology_is_red() {
+        let findings = scan_file(
+            "crates/perl-parser-core/src/syntax/path_security.rs",
+            PATH_SECURITY_BOUND_TAUTOLOGY,
+        )
+        .expect("parse");
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule, RuleId::OptionSomeOrNone);
         assert!(findings[0].line >= 1);
     }
 
     #[test]
-    fn repaired_path_security_boundary_stays_green_and_reinsertion_is_red() {
+    fn original_two_call_path_security_shape_is_conservatively_skipped() {
+        let findings = scan_file(
+            "crates/perl-parser-core/src/syntax/path_security.rs",
+            PATH_SECURITY_TWO_CALL_HIT,
+        )
+        .expect("parse");
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn repaired_path_security_boundary_stays_green_and_bound_reinsertion_is_red() {
         let repaired = r#"
             fn sanitize_completion_path_input(path: &str) -> Option<String> {
                 Some(path.to_string())
@@ -225,10 +250,8 @@ mod tests {
                     sanitize_completion_path_input("..%2f..%2fetc%2fpasswd"),
                     Some("..%2f..%2fetc%2fpasswd".to_string())
                 );"#,
-            r#"assert!(
-                    sanitize_completion_path_input("..%2f..%2fetc%2fpasswd").is_some()
-                        || sanitize_completion_path_input("..%2f..%2fetc%2fpasswd").is_none()
-                );"#,
+            r#"let value = sanitize_completion_path_input("..%2f..%2fetc%2fpasswd");
+                assert!(value.is_some() || value.is_none());"#,
         );
         let findings = scan_file("path_security.rs", &reinserted).expect("parse reinsertion");
         assert_eq!(findings.len(), 1);
@@ -244,10 +267,14 @@ mod tests {
                 let _ = ready || !ready;
                 tick();
                 assert!(tick() || !tick());
+                assert!(counter().is_some() || counter().is_none());
+                assert_eq!(f32::NAN, f32::NAN);
+                assert_eq!(f64::NAN, f64::NAN);
             }
             enum Expected { Deferred }
             struct Item { code: Option<u8>, data: Option<u8> }
             fn tick() -> bool { true }
+            fn counter() -> Option<u8> { None }
             // Historical example: assert!(value.is_some() || value.is_none());
         "#;
         let findings = scan_file("controls.rs", source).expect("parse");

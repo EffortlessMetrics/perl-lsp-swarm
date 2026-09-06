@@ -136,7 +136,7 @@ mod tests {
                 assert!(value.is_some() || value.is_none());
                 debug_assert!(result.is_ok() || result.is_err());
                 assert!(ready || !ready, "still a tautology");
-                assert_eq!(ready, ready);
+                assert_eq!(1, 1);
                 let _ = value.is_some() || value.is_none();
                 if result.is_ok() || result.is_err() {
                     let _ = ready;
@@ -190,5 +190,19 @@ mod tests {
     fn unparsable_source_is_an_instrument_error() {
         let error = scan_file("broken.rs", "fn oops( {").expect_err("must fail");
         assert!(!error.is_empty());
+    }
+
+    #[test]
+    fn scan_skips_stateful_receivers_and_non_reflexive_eq_but_keeps_path_tautologies() {
+        let source = r#"
+            fn probe(value: Option<u8>) {
+                assert!(value.is_some() || value.is_none());
+                assert!(counter().is_some() || counter().is_none());
+                assert_eq!(f32::NAN, f32::NAN);
+                assert_eq!(1, 1);
+            }
+            fn counter() -> Option<u8> { None }
+        "#;
+        assert_eq!(rules(source), vec![RuleId::OptionSomeOrNone, RuleId::AssertEqIdentical]);
     }
 }
