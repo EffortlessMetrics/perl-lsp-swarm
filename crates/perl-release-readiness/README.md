@@ -1,15 +1,16 @@
-# perl-kwalitee — legacy compatibility
+# perl-release-readiness — legacy mixed readiness
 
-> **Frozen historical meaning.** This crate currently contains the repository's
-> original `perl_kwalitee.v1` evaluator. Despite the name, that evaluator is a
+> **Frozen historical meaning.** This crate is the canonical code home of the
+> repository's original `perl_kwalitee.v1` evaluator. That evaluator is a
 > weighted mixture of native-product posture, engineering evidence, release
 > integrity, release governance, and documentation checks. It is **not** the
 > native Rust CPANTS-compatible Perl distribution analyser being built under
 > #4745.
 
-The historical evaluator remains temporarily available so existing automation
-can migrate without losing receipt compatibility. Its indicator catalog and
-wire contract are closed to new work.
+The historical evaluator remains available so existing automation can migrate
+without losing receipt compatibility. Its indicator catalog and wire contract
+are closed to new work. The `perl-kwalitee` / `perl_kwalitee` names stay vacant
+for that native analyser.
 
 ## Frozen contract
 
@@ -27,7 +28,7 @@ generated human view is
 ## Existing compatibility API
 
 ```rust
-use perl_kwalitee::{evaluate, KwaliteeOptions, KwaliteeProfile};
+use perl_release_readiness::{evaluate, KwaliteeOptions, KwaliteeProfile};
 
 let options = KwaliteeOptions::new("/path/to/repo", KwaliteeProfile::Pr);
 let receipt = evaluate(&options);
@@ -43,11 +44,14 @@ The explicit compatibility surfaces are:
   `1`;
 - `render_legacy_migration_markdown()` — deterministic generated reference.
 
+The xtask command remains `cargo xtask perl-kwalitee`. Receipt paths stay under
+`target/receipts/kwalitee/`.
+
 ## Migration sequence
 
 1. Freeze this contract and migration ledger (#7164).
-2. Move the mixed implementation to `perl-release-readiness` without changing
-   its observed results (#7166).
+2. Move the mixed implementation here without changing its observed results
+   (#7166 / #8421).
 3. Replace the weighted readiness decision with independent, candidate-bound
    evidence rails (#7168, #7169, #7191).
 4. Reclaim `perl-kwalitee` for the native Rust distribution analyser and remove

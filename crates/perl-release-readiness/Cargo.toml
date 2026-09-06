@@ -1,5 +1,5 @@
 [package]
-name = "perl-kwalitee"
+name = "perl-release-readiness"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,9 +11,9 @@ repository.workspace = true
 homepage.workspace = true
 keywords = ["perl", "release", "readiness", "evidence", "compatibility"]
 categories = ["development-tools"]
-# Historical compatibility crate. The canonical implementation moves to
-# `perl-release-readiness`; the `perl-kwalitee` package name is reclaimed by
-# the native distribution analyser only after the migration train completes.
+# Historical compatibility crate. The `perl-kwalitee` package/library names
+# stay vacant for the native distribution analyser; this crate is the one
+# code home of the frozen mixed evaluator.
 publish = false
 include = [
     "src/**",
@@ -27,7 +27,7 @@ include = [
 ]
 
 [lib]
-name = "perl_kwalitee"
+name = "perl_release_readiness"
 path = "src/lib.rs"
 
 [dependencies]

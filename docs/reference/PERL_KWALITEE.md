@@ -1,9 +1,9 @@
 # Historical Perl Kwalitee Compatibility Surface
 
-`perl-kwalitee` and `cargo xtask perl-kwalitee` preserve the historical
-`perl_kwalitee.v1` repository/product/release-readiness contract. They are not
-the authority for CPANTS-compatible Perl distribution Kwalitee and must not
-gain new indicators.
+`perl-release-readiness` owns the historical `perl_kwalitee.v1`
+repository/product/release-readiness evaluator. `cargo xtask perl-kwalitee`
+is the compatibility command wrapper. They are not the authority for
+CPANTS-compatible Perl distribution Kwalitee and must not gain new indicators.
 
 The frozen 17-row catalog, the pinned v1 receipt reader, and the disposition of
 every historical proposition are documented in
