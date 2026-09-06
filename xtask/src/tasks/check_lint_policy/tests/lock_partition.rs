@@ -340,8 +340,23 @@ fn explicit_drop_discards_are_covered_by_no_clippy_lint_at_any_level() -> Result
 
     // Instrument liveness: the sweep has to be seeing the discards on the
     // neighbouring lines, or silence on the drop lines would prove nothing.
-    assert_covers(&findings, &PARKING_LOT_DISCARD_BINDINGS)?;
-    assert_covers(&findings, &OWNED_AND_MAPPED_DISCARD_BINDINGS)?;
+    // Bound to the lint that owns each form, because the sweep also carries
+    // whole-function findings (`missing_inline_in_public_items`) whose primary
+    // span is the signature naming these parameters; an unbound substring
+    // match would be satisfied by those and prove nothing about the lint.
+    assert_lint_covers(&findings, CLIPPY_LOCK_LINT, &PARKING_LOT_DISCARD_BINDINGS)?;
+    assert_lint_covers(&findings, CLIPPY_MUST_USE_LINT, &OWNED_AND_MAPPED_DISCARD_BINDINGS)?;
+
+    // The oracle below is exact-statement equality, so a fixture edit that
+    // reworded either statement without updating the constant would make it
+    // permanently silent. Refuse that state rather than pass through it.
+    for statement in EXPLICIT_DROP_DISCARD_STATEMENTS {
+        if !FIXTURE_SOURCE.contains(statement) {
+            bail!(
+                "fixture no longer contains `{statement}`; update EXPLICIT_DROP_DISCARD_STATEMENTS in lockstep or the drop-line oracle cannot fire"
+            );
+        }
+    }
 
     for statement in EXPLICIT_DROP_DISCARD_STATEMENTS {
         if let Some(finding) = findings.iter().find(|finding| finding.source_line == statement) {
@@ -495,6 +510,23 @@ fn assert_covers(findings: &[LintFinding], bindings: &[&str]) -> Result<()> {
     for binding in bindings {
         if !findings.iter().any(|finding| finding.source_line.contains(binding)) {
             bail!("no finding reported the discarded `{binding}` guard");
+        }
+    }
+    Ok(())
+}
+
+/// Like [`assert_covers`], but only a finding from `lint` counts. Use this
+/// wherever the stream carries other lints, so a whole-function finding on a
+/// signature that names the binding cannot stand in for the lint under test.
+fn assert_lint_covers(findings: &[LintFinding], lint: &str, bindings: &[&str]) -> Result<()> {
+    for binding in bindings {
+        if !findings
+            .iter()
+            .any(|finding| finding.lint == lint && finding.source_line.contains(binding))
+        {
+            bail!(
+                "{lint} did not report the discarded `{binding}` guard; the sweep instrument is not live for it"
+            );
         }
     }
     Ok(())
