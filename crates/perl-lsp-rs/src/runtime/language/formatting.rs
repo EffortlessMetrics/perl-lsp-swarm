@@ -11,7 +11,7 @@ use crate::cancellation::RequestCleanupGuard;
 use crate::features::formatting::{
     CodeFormatter, FormattingError, FormattingOptions, PerlTidyConfig,
 };
-use crate::protocol::{REQUEST_CANCELLED, req_uri};
+use crate::protocol::{CONTENT_MODIFIED, REQUEST_CANCELLED, req_uri};
 use perl_lsp_rs_core::config::FormatterMode;
 
 /// Build a `JsonRpcError` from a `FormattingError`, populating the `data` field
@@ -132,7 +132,17 @@ impl LspServer {
                 let doc = self
                     .get_document(&documents, uri)
                     .ok_or_else(|| document_not_open_error(uri))?;
-                doc.text_arc.to_string()
+                match doc.text_for_user_answers() {
+                    Some(text) => text.to_string(),
+                    None => {
+                        return Err(JsonRpcError {
+                            code: CONTENT_MODIFIED,
+                            message: "Document requires a full-document resync before formatting"
+                                .to_string(),
+                            data: None,
+                        });
+                    }
+                }
             };
             let config = self.build_perltidy_config();
             let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
@@ -207,6 +217,7 @@ impl LspServer {
 mod tests {
     use super::*;
     use crate::features::formatting::FormattingError;
+    use crate::protocol::CONTENT_MODIFIED;
     use perl_tdd_support::must_some;
 
     #[test]
@@ -379,6 +390,60 @@ mod tests {
             server.documents.try_lock().is_some(),
             "documents lock must be released after handle_formatting returns"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn handle_formatting_fails_closed_while_full_sync_required()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///desync_formatting.pl";
+        server.test_apply_did_open(uri, "sub hello{my $x=1;return $x;}\n", 1)?;
+
+        let params = json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        });
+        let fresh = server.handle_formatting(Some(params.clone()))?;
+        let fresh_edits = fresh
+            .and_then(|value| value.as_array().map(ToOwned::to_owned))
+            .ok_or("expected formatting edits before desync")?;
+        assert!(!fresh_edits.is_empty(), "native formatter should edit unformatted Perl");
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 3 }
+                },
+                "text": "foo"
+            }]
+        })))?;
+
+        let error = server
+            .handle_formatting(Some(params.clone()))
+            .err()
+            .ok_or("desynchronized formatting must fail closed")?;
+        assert_eq!(error.code, CONTENT_MODIFIED);
+        assert!(
+            error.message.contains("full-document resync"),
+            "desync formatting error should name resync: {}",
+            error.message
+        );
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 3 },
+            "contentChanges": [{ "text": "sub recovered{my $y=2;return $y;}\n" }]
+        })))?;
+        let recovered = server.handle_formatting(Some(json!({
+            "textDocument": { "uri": uri, "version": 3 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })))?;
+        let recovered_edits = recovered
+            .and_then(|value| value.as_array().map(ToOwned::to_owned))
+            .ok_or("expected formatting edits after full replacement")?;
+        assert!(!recovered_edits.is_empty(), "accepted full replacement must restore formatting");
         Ok(())
     }
 

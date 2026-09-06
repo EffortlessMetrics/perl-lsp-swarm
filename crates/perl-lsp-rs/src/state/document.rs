@@ -592,6 +592,16 @@ impl DocumentState {
         &self.text_arc
     }
 
+    /// Source text usable for user-facing answers.
+    ///
+    /// Predecessor text remains in [`Self::text_str`] as last-good evidence.
+    /// Edit-producing providers must not format or rewrite from that buffer
+    /// while a Full-sync violation is outstanding.
+    #[must_use]
+    pub fn text_for_user_answers(&self) -> Option<&str> {
+        if self.full_sync_required { None } else { Some(self.text_str()) }
+    }
+
     /// Construct a document state from raw rope/text/version parts while
     /// preserving an existing generation counter.
     ///
@@ -941,6 +951,10 @@ mod tests {
             "predecessor snapshot stays retained as last-good evidence"
         );
         assert_eq!(doc.text_str(), "my $x = 1;");
+        assert!(
+            doc.text_for_user_answers().is_none(),
+            "predecessor text must not answer user-facing edit providers while desynchronized"
+        );
         assert!(doc.full_sync_required());
         assert!(
             !doc.publish_parsed_if_current(doc_gen, Arc::new(snapshot_for("my $x = 1;", doc_gen))),
