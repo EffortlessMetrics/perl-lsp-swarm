@@ -38,6 +38,7 @@ use crate::tasks::emacs_train_context::resolve::{
     EngineInputs, load_inputs_with_git, resolve_spec,
 };
 use crate::tasks::emacs_train_specs::{DEFAULT_LEDGER_PATH as SPECS_LEDGER_PATH, SpecsLedger};
+use crate::tasks::module_train_live;
 use crate::utils::project_root;
 
 /// Shared builder-packet contract this adapter projects into (#10872).
@@ -750,7 +751,10 @@ fn hard_dependency_blockers(
         let Some(target_node) = target_node else {
             blockers.push((
                 dependency.target.clone(),
-                "external hard dependency: landing currency is not observable offline                  (#10923/#10930 unlanded); supply a live observation"
+                "external hard dependency: landing currency is not observable offline \
+                 (#10923/#10930 unlanded). No input to this adapter can establish it -- \
+                 `--live-observation` attests the *candidate*, not a dependency's landing -- \
+                 so this blocks until #10923/#10930 provide the instrument"
                     .to_string(),
             ));
             continue;
@@ -779,17 +783,30 @@ fn hard_dependency_blockers(
             // Declared landed contract consumed unchanged: landing evidence.
             continue;
         }
+        // A resolvable E04 context proves the dependency's declared surfaces
+        // exist on the observed tree. It does NOT prove the prerequisite work
+        // finished -- surfaces can exist while the behavior behind them is
+        // still being built. Reading a non-gap context as landing evidence is
+        // the same error as reading `SPEC_COMPILED`/`ISSUE_PLAN_SUFFICIENT` as
+        // currentness, which was already corrected at the disposition layer
+        // above; `EXISTING_CONTRACT_SUFFICIENT` remains the only offline
+        // disposition that declares landing.
         match resolve_spec(root, &inputs.engine, &target_node.node_id) {
-            Ok(resolution) if !resolution.is_gap() => {
-                // Full exact-tree context: the dependency's declared surfaces
-                // exist on the observed tree.
+            Ok(resolution) => {
+                let detail = if resolution.is_gap() {
+                    "and the E04 exact-tree context carries a typed blocker for it"
+                } else {
+                    "and a resolvable E04 context proves only that its declared surfaces exist \
+                     on the observed tree, not that the work landed"
+                };
+                blockers.push((
+                    dependency.target.clone(),
+                    format!(
+                        "checked spec disposition {disposition} establishes specability, not \
+                         landing, {detail}; offline landing currency needs #10923/#10930"
+                    ),
+                ));
             }
-            Ok(_) => blockers.push((
-                dependency.target.clone(),
-                format!(
-                    "checked spec disposition {disposition} establishes specability, not landing; the E04 exact-tree context carries a typed blocker for the dependency; offline landing currency needs #10923/#10930"
-                ),
-            )),
             Err(error) => blockers.push((
                 dependency.target.clone(),
                 format!("resolving the dependency's exact-tree context failed: {error:#}"),
@@ -1655,8 +1672,42 @@ pub fn compose_reconcile_packet(
                 ),
             ));
         }
-        let state = entry.get("state").and_then(Value::as_str).unwrap_or_default().trim();
-        if state.is_empty() {
+        // `state` is adjudicated against the repository's existing closed
+        // candidate-state law rather than a second vocabulary defined here:
+        // restating it would be exactly the duplicate authority this adapter's
+        // "adapter, not an ontology" boundary rules out.
+        //
+        // That law records `candidate_flags: Vec<String>` -- independent flags,
+        // not one collapsed signal -- so a candidate may carry several (a
+        // branch can be both `stale_base` and `dirty_or_unpushed_unique_work`,
+        // which is exactly when keep/rewrite/drop/transfer stops being
+        // obvious). Both a single flag and an array of flags are accepted;
+        // every flag must appear in the law, and the set is normalized so the
+        // packet identity does not depend on the order they were supplied in.
+        let raw_states: Vec<&str> = match entry.get("state") {
+            Some(Value::String(single)) => vec![single.as_str()],
+            Some(Value::Array(many)) => {
+                let mut collected = Vec::new();
+                for flag in many {
+                    let Some(flag) = flag.as_str() else {
+                        return Err(Refusal::new(
+                            &node.node_id,
+                            PROFILE,
+                            "MALFORMED_CANDIDATE_FACTS",
+                            format!("candidate {identity} supplies a non-string state flag"),
+                        ));
+                    };
+                    collected.push(flag);
+                }
+                collected
+            }
+            _ => Vec::new(),
+        };
+        let mut flags: Vec<&str> =
+            raw_states.into_iter().map(str::trim).filter(|flag| !flag.is_empty()).collect();
+        flags.sort_unstable();
+        flags.dedup();
+        if flags.is_empty() {
             return Err(Refusal::new(
                 &node.node_id,
                 PROFILE,
@@ -1667,6 +1718,21 @@ pub fn compose_reconcile_packet(
                 ),
             ));
         }
+        for flag in &flags {
+            if !module_train_live::CANDIDATE_STATES.contains(flag) {
+                return Err(Refusal::new(
+                    &node.node_id,
+                    PROFILE,
+                    "MALFORMED_CANDIDATE_FACTS",
+                    format!(
+                        "candidate {identity} supplies state flag {flag}, which is not in the \
+                         closed candidate-state vocabulary (module_train_live::CANDIDATE_STATES); \
+                         the frontier digest must not content-address an uninterpretable token"
+                    ),
+                ));
+            }
+        }
+        let state = flags.join(",");
         let facts = entry.get("facts").and_then(Value::as_str).unwrap_or_default().trim();
         if facts.is_empty() {
             return Err(Refusal::new(
@@ -1681,7 +1747,7 @@ pub fn compose_reconcile_packet(
         }
         candidate_binding.push_str(identity);
         candidate_binding.push('\u{1f}');
-        candidate_binding.push_str(state);
+        candidate_binding.push_str(&state);
         candidate_binding.push('\u{1f}');
         candidate_binding.push_str(facts);
         candidate_binding.push('\u{1e}');

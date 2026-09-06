@@ -445,7 +445,7 @@ fn review_and_reconcile_routes_are_not_blocked_by_the_live_gate() -> Result<()> 
     let root = fixture_tree("anchored")?;
     let inputs = default_fixture(&root)?;
     let candidates = json!([
-        {"identity": "PR #8800", "state": "open_stale_base", "facts": "dirty unique work"}
+        {"identity": "PR #8800", "state": ["stale_base", "dirty_or_unpushed_unique_work"], "facts": "dirty unique work"}
     ]);
     let doc = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
         .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
@@ -466,7 +466,7 @@ fn reconcile_binds_the_supplied_candidate_facts_into_the_packet_and_digest() -> 
 
     let render = |facts: &str| -> Result<(String, String, String)> {
         let candidates = json!([
-            {"identity": "PR #8800 (tooling/sub-claim)", "state": "open_stale_base", "facts": facts}
+            {"identity": "PR #8800 (tooling/sub-claim)", "state": ["stale_base", "dirty_or_unpushed_unique_work"], "facts": facts}
         ]);
         let doc = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
             .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
@@ -492,10 +492,10 @@ fn reconcile_refuses_incomplete_or_duplicate_candidate_facts() -> Result<()> {
     let inputs = default_fixture(&root)?;
     let cases = [
         json!([]),
-        json!([{"identity": "PR #8800", "state": "open"}]),
+        json!([{"identity": "PR #8800", "state": "stale_base"}]),
         json!([
-            {"identity": "PR #8800", "state": "open", "facts": "a"},
-            {"identity": "PR #8800", "state": "open", "facts": "b"}
+            {"identity": "PR #8800", "state": "stale_base", "facts": "a"},
+            {"identity": "PR #8800", "state": "stale_base", "facts": "b"}
         ]),
     ];
     for candidates in cases {
@@ -787,7 +787,7 @@ fn reconcile_refuses_without_supplied_candidates_and_blocks_with_them() -> Resul
     assert_eq!(refusal.code, "NO_LIVE_OBSERVATION");
 
     let candidates = json!([
-        {"identity": "PR #8800 (tooling/sub-claim)", "state": "open_stale_base", "facts": "dirty unique work"}
+        {"identity": "PR #8800 (tooling/sub-claim)", "state": ["stale_base", "dirty_or_unpushed_unique_work"], "facts": "dirty unique work"}
     ]);
     let doc = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
         .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
@@ -809,8 +809,9 @@ fn reconcile_refuses_without_supplied_candidates_and_blocks_with_them() -> Resul
 #[test]
 fn spec_only_hard_dependency_does_not_count_as_landed() -> Result<()> {
     let root = fixture_tree("spec-dep")?;
-    // DEP holds only ISSUE_PLAN_SUFFICIENT (specability, not landing) and
-    // has a full exact-tree context; SUB hard-depends on it.
+    // DEP holds only ISSUE_PLAN_SUFFICIENT (specability, not landing) and is
+    // unmapped, so its E04 context is a gap; SUB hard-depends on it. The
+    // mapped/non-gap case is the sibling test below.
     let mut dep = make_node("DEP", 9101, "implementation", "ISSUE_PLAN_SUFFICIENT");
     dep["train_role"] = json!("stable_contract");
     dep["successors"] = json!(["SUB"]);
@@ -971,5 +972,140 @@ fn review_packet_without_a_test_obligation_refuses() -> Result<()> {
     let refusal = compose_review_packet(&root, &inputs, "SUB", &facts)
         .expect_err("a node with no test obligation must refuse a review packet");
     assert_eq!(refusal.code, "MISSING_TEST_OBLIGATION");
+    Ok(())
+}
+
+#[test]
+fn candidate_state_must_come_from_the_closed_vocabulary() -> Result<()> {
+    // Without the vocabulary check there is nothing for this to assert: any
+    // token was accepted, and the frontier digest then content-addressed the
+    // packet to a state no instrument in this repository can produce or read
+    // back. `open_stale_base` is the value this PR's own fixtures used before
+    // the check landed, and it is not in the law.
+    let root = fixture_tree("candidate-vocabulary")?;
+    let inputs = default_fixture(&root)?;
+    for unknown in ["open_stale_base", "open", "stale-base", "plausible_nonsense"] {
+        let candidates = json!([
+            {"identity": "PR #8800", "state": unknown, "facts": "dirty unique work"}
+        ]);
+        let refusal = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+            .expect_err("an unknown candidate state must refuse");
+        assert_eq!(refusal.code, "MALFORMED_CANDIDATE_FACTS");
+        assert!(
+            refusal.detail.contains(unknown),
+            "the refusal must name the rejected flag, got: {}",
+            refusal.detail
+        );
+    }
+
+    // A flag the law does define is accepted, so the guard cannot pass by
+    // refusing everything.
+    let accepted = json!([
+        {"identity": "PR #8800", "state": "stale_base", "facts": "dirty unique work"}
+    ]);
+    compose_reconcile_packet(&root, &inputs, "SUB", Some(&accepted))
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    Ok(())
+}
+
+#[test]
+fn candidate_state_flags_are_independent_and_order_insensitive() -> Result<()> {
+    // The law records `candidate_flags: Vec<String>` -- independent flags, not
+    // one collapsed signal -- so a candidate may carry several, and the packet
+    // identity must not depend on the order they arrive in.
+    let root = fixture_tree("candidate-flag-set")?;
+    let inputs = default_fixture(&root)?;
+    let render = |flags: Value| -> Result<String> {
+        let candidates = json!([
+            {"identity": "PR #8800", "state": flags, "facts": "dirty unique work"}
+        ]);
+        let doc = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+            .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+        Ok(doc["frontier"]["digest"].as_str().unwrap_or_default().to_string())
+    };
+
+    let forward = render(json!(["stale_base", "dirty_or_unpushed_unique_work"]))?;
+    let reversed = render(json!(["dirty_or_unpushed_unique_work", "stale_base"]))?;
+    assert_eq!(forward, reversed, "flag order must not change the packet identity");
+
+    // A different flag set is a different candidate, so it must not collide.
+    let single = render(json!(["stale_base"]))?;
+    assert_ne!(forward, single, "dropping a flag must change the frontier digest");
+
+    // One unknown flag in an otherwise valid set still refuses.
+    let mixed = json!([
+        {"identity": "PR #8800", "state": ["stale_base", "open"], "facts": "x"}
+    ]);
+    let refusal = compose_reconcile_packet(&root, &inputs, "SUB", Some(&mixed))
+        .expect_err("one unknown flag must refuse the whole set");
+    assert_eq!(refusal.code, "MALFORMED_CANDIDATE_FACTS");
+    Ok(())
+}
+
+#[test]
+fn a_resolvable_dependency_context_is_not_landing_evidence() -> Result<()> {
+    // The sibling test above covers a dependency whose E04 context is a gap.
+    // This is the case that used to be admitted: DEP is fully mapped, so its
+    // context resolves, and that was read as landing evidence. A resolvable
+    // context proves only that the dependency's declared surfaces exist on the
+    // observed tree -- surfaces can exist while the behavior behind them is
+    // still being built -- so it must not establish currentness on its own.
+    let root = fixture_tree("mapped-dep")?;
+    let mut dep = make_node("DEP", 9101, "implementation", "ISSUE_PLAN_SUFFICIENT");
+    dep["train_role"] = json!("stable_contract");
+    dep["successors"] = json!(["SUB"]);
+    let mut sub = make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT");
+    sub["dependencies"] = json!([{"target": "DEP", "class": "hard", "provenance": "fixture"}]);
+    let inputs = load_fixture_inputs(
+        &root,
+        &[sub, dep],
+        &[mapped_node_entry("SUB", true), mapped_node_entry("DEP", true)],
+        &[
+            disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT"),
+            disposition_record("DEP", 9101, "ISSUE_PLAN_SUFFICIENT"),
+        ],
+    )?;
+    let refusal = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
+        .expect_err("a resolvable dependency context must not count as landing evidence");
+    assert_eq!(refusal.code, "HARD_DEPENDENCY_NOT_CURRENT");
+    assert!(
+        refusal.detail.contains("not that the work landed"),
+        "the refusal must distinguish existing surfaces from landed work, got: {}",
+        refusal.detail
+    );
+
+    // Negative control: a declared-landed contract still admits, so the guard
+    // cannot pass by blocking every hard dependency.
+    let inputs_landed = load_fixture_inputs(
+        &root,
+        &[
+            {
+                let mut sub = make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT");
+                sub["dependencies"] =
+                    json!([{"target": "DEP", "class": "hard", "provenance": "fixture"}]);
+                sub
+            },
+            {
+                let mut dep =
+                    make_node("DEP", 9101, "implementation", "EXISTING_CONTRACT_SUFFICIENT");
+                dep["train_role"] = json!("stable_contract");
+                dep["successors"] = json!(["SUB"]);
+                dep
+            },
+        ],
+        &[mapped_node_entry("SUB", true), mapped_node_entry("DEP", true)],
+        &[
+            disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT"),
+            disposition_record("DEP", 9101, "EXISTING_CONTRACT_SUFFICIENT"),
+        ],
+    )?;
+    compose_builder_packet(
+        &root,
+        &inputs_landed,
+        "SUB",
+        "coding_agent_bounded",
+        Some(&observed_vacant()),
+    )
+    .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
     Ok(())
 }
