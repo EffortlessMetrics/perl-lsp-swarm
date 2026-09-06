@@ -294,6 +294,54 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
                     [f"docs/current.md:1: {line}"],
                 )
 
+    def test_no_panic_policy_line11_retired_path_follows_registry_status(self) -> None:
+        """The exact main finding named by #14870.
+
+        `docs/NO_PANIC_POLICY.md:11` failed because the retired rollout path sat
+        on a line ending `, but`, with any historical qualifier on a later line.
+        The registry classifies that path as superseded with successor
+        `docs/CLIPPY_POLICY.md`. The checker is line-local, so the path's own
+        line must carry `historical`/`superseded`/`immutable` and must not carry
+        executable current-work verbs.
+
+        This is a docs-phrasing lock. Aligning the workflow trigger with the
+        test file it already executes is in `test_agent_authority_status.py`;
+        it is not the #14837 scan-all/trigger-registry redesign.
+        """
+        original_main_line = (
+            "[`docs/ci/perl-lsp-rust-1.95-rollout.md`]"
+            "(ci/perl-lsp-rust-1.95-rollout.md), but"
+        )
+        self.assertEqual(
+            unqualified_retired_references(
+                "docs/NO_PANIC_POLICY.md",
+                original_main_line
+                + "\ncurrent source and policy files are authoritative "
+                "for current-state claims.",
+            ),
+            [f"docs/NO_PANIC_POLICY.md:1: {original_main_line}"],
+        )
+
+        qualified_line = (
+            "[`docs/ci/perl-lsp-rust-1.95-rollout.md`]"
+            "(ci/perl-lsp-rust-1.95-rollout.md) is superseded"
+        )
+        self.assertEqual(
+            unqualified_retired_references("docs/NO_PANIC_POLICY.md", qualified_line),
+            [],
+        )
+
+        body = (ROOT / "docs" / "NO_PANIC_POLICY.md").read_text(encoding="utf-8")
+        self.assertEqual(
+            unqualified_retired_references("docs/NO_PANIC_POLICY.md", body),
+            [],
+        )
+        self.assertIn(qualified_line, body)
+        self.assertIn(
+            "by [`docs/CLIPPY_POLICY.md`](CLIPPY_POLICY.md) and retained only as a record.",
+            body,
+        )
+
     def test_local_banners_match_registry(self) -> None:
         by_path = registry_rows()
 
