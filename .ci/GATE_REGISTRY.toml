@@ -329,7 +329,7 @@ name = "Pending Parse Provider Freshness"
 type = "correctness"
 blocking = true
 timeout_seconds = 300
-command = "cargo test -p perl-lsp-rs --locked --features workspace,expose_lsp_test_api --test pending_parse_provider_freshness_tests --test post_edit_index_staleness_tests --test navigation_same_document_toctou_regression_tests -- --test-threads=2"
+command = "env RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs --locked --features workspace,expose_lsp_test_api --test pending_parse_provider_freshness_tests --test post_edit_index_staleness_tests --test navigation_same_document_toctou_regression_tests -- --test-threads=2"
 evidence_pattern = "test result: ok"
 threshold = { type = "exit_code", pass = 0 }
 
@@ -345,7 +345,7 @@ name = "Pull Diagnostics Compile/Panic Coverage"
 type = "correctness"
 blocking = true
 timeout_seconds = 240
-command = "cargo test -p perl-lsp-rs --locked --features expose_lsp_test_api --test pull_diagnostics_freshness_tests -- --test-threads=2"
+command = "env RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs --locked --features expose_lsp_test_api --test pull_diagnostics_freshness_tests -- --test-threads=2"
 evidence_pattern = "test result: ok"
 threshold = { type = "exit_code", pass = 0 }
 
