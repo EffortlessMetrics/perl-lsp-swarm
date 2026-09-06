@@ -491,14 +491,17 @@ greet("Alice", "Hello");
         let selected =
             effective_subroutine_declaration(&ast, "greet", call_offset(source, "greet()")?)
                 .ok_or("expected the forward declaration")?;
-        let text = selected_text(source, selected);
-        assert!(
-            text.contains("sub greet;"),
-            "a forward-only snapshot must still be navigable: {text}"
-        );
-        assert!(
-            !text.contains('{'),
-            "sole forward must not be confused with an empty-brace body: {text}"
+        let NodeKind::Subroutine { name: Some(name), body, .. } = &selected.kind else {
+            return Err("expected a Subroutine node".into());
+        };
+        assert_eq!(name.as_str(), "greet");
+        let NodeKind::Block { statements } = &body.kind else {
+            return Err("forward body must be a Block".into());
+        };
+        assert!(statements.is_empty(), "forward body has no statements");
+        assert_eq!(
+            body.location.start, body.location.end,
+            "parser encodes a forward as a zero-width empty Block"
         );
         Ok(())
     }
