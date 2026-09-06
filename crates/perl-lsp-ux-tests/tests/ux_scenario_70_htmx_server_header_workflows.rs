@@ -171,14 +171,23 @@ fn cursor_after(source: &str, needle: &str) -> Result<(u32, u32)> {
     Ok((u32::try_from(line)?, u32::try_from(column)?))
 }
 
-fn labels(items: &[Value]) -> Vec<&str> {
-    items.iter().filter_map(|item| item.get("label").and_then(Value::as_str)).collect()
+/// Items whose label is htmx-shaped; other completion items (should the
+/// string router ever union them in) are outside this scenario's claim.
+fn htmx_items(items: &[Value]) -> Vec<&Value> {
+    items
+        .iter()
+        .filter(|item| {
+            item.get("label")
+                .and_then(Value::as_str)
+                .is_some_and(|label| label.to_ascii_lowercase().starts_with("hx-"))
+        })
+        .collect()
 }
 
 fn htmx_labels(items: &[Value]) -> Vec<&str> {
-    labels(items)
+    htmx_items(items)
         .into_iter()
-        .filter(|label| label.to_ascii_lowercase().starts_with("hx-"))
+        .filter_map(|item| item.get("label").and_then(Value::as_str))
         .collect()
 }
 
@@ -311,7 +320,7 @@ fn check_stack(recorder: &mut UxRunRecorder, harness: &UxHarness, stack: &Stack)
     )?;
     recorder.check(
         &format!("{name}: every HX-Trigger item textEdit replaces exactly the typed prefix"),
-        response_items.iter().all(|item| {
+        htmx_items(&response_items).into_iter().all(|item| {
             item.get("label").and_then(Value::as_str).is_some_and(|label| {
                 text_edit_replaces_prefix(item, line, prefix_start, cursor, label)
             })
