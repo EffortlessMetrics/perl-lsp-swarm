@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Changed
+body: LexerCheckpoint is now an opaque, versioned live-boundary snapshot. Production capture comes only from a live lexer; restore is typed and atomic and fails closed on source, content, generation, configuration, schema, UTF-8, unsupported-boundary, incomplete, or invalidated identity. Caller-selected at_position labels are no longer restart authority. This is an intentional pre-1.0 public API break.
+time: 2026-09-06T00:24:00Z
+custom:
+  PR: "14896"
+  Slug: lexer-checkpoint-opaque-complete-fail-closed
+  Breaking: "yes"

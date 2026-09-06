@@ -107,24 +107,24 @@ fn assert_terminal_state(row: &MatrixRow) -> Result<(), String> {
     let mut lexer = PerlLexer::new(row.source);
     let _ = lexer.collect_tokens();
     let checkpoint = lexer.checkpoint();
-    if !row.terminal.matches(checkpoint.mode) {
+    if !row.terminal.matches(checkpoint.mode()) {
         return Err(prefix(
             row,
-            format!("terminal mode {:?} != {:?}", checkpoint.mode, row.terminal),
+            format!("terminal mode {:?} != {:?}", checkpoint.mode(), row.terminal),
         ));
     }
-    if checkpoint.current_quote_op.is_some() {
+    if checkpoint.current_quote_op().is_some() {
         return Err(prefix(row, "stale current_quote_op after observation"));
     }
-    if !checkpoint.delimiter_stack.is_empty() {
+    if !checkpoint.delimiter_stack().is_empty() {
         return Err(prefix(row, "stale delimiter_stack after observation"));
     }
-    if !checkpoint.eof_emitted {
+    if !checkpoint.eof_emitted() {
         return Err(prefix(row, "EOF was not emitted"));
     }
     match row.terminal {
         TerminalStateClass::ExpectOperator | TerminalStateClass::ExpectTerm => {
-            if matches!(checkpoint.mode, LexerMode::ExpectDelimiter | LexerMode::InFormatBody) {
+            if matches!(checkpoint.mode(), LexerMode::ExpectDelimiter | LexerMode::InFormatBody) {
                 return Err(prefix(row, "terminal mode remained inside a quote-like class"));
             }
         }
