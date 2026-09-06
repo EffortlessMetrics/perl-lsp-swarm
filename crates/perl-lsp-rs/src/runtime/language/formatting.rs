@@ -127,13 +127,13 @@ impl LspServer {
             //
             // Clone from text_arc rather than text to avoid the double-store
             // overhead — text_arc is the canonical copy (#4999).
-            let text = {
+            let (text, captured_generation) = {
                 let documents = self.documents_guard();
                 let doc = self
                     .get_document(&documents, uri)
                     .ok_or_else(|| document_not_open_error(uri))?;
                 match doc.text_for_user_answers() {
-                    Some(text) => text.to_string(),
+                    Some(text) => (text.to_string(), doc.current_generation()),
                     None => {
                         return Err(JsonRpcError {
                             code: CONTENT_MODIFIED,
@@ -148,6 +148,14 @@ impl LspServer {
             let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
             match formatter.format_document(&text, &options) {
                 Ok(edits) => {
+                    if !self.user_answer_text_is_current(uri, captured_generation) {
+                        return Err(JsonRpcError {
+                            code: CONTENT_MODIFIED,
+                            message: "Document changed while formatting was running; no edits were returned."
+                                .to_string(),
+                            data: None,
+                        });
+                    }
                     let lsp_edits: Vec<Value> = edits
                         .into_iter()
                         .map(|edit| {
@@ -447,6 +455,64 @@ mod tests {
             .and_then(|value| value.as_array().map(ToOwned::to_owned))
             .ok_or("expected formatting edits after full replacement")?;
         assert!(!recovered_edits.is_empty(), "accepted full replacement must restore formatting");
+        Ok(())
+    }
+
+    fn ranged_violation(uri: &str, version: i32) -> Value {
+        json!({
+            "textDocument": { "uri": uri, "version": version },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 1 }
+                },
+                "text": "x"
+            }]
+        })
+    }
+
+    #[test]
+    fn handle_formatting_does_not_publish_in_flight_predecessor_after_violation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///inflight_formatting.pl";
+        server.test_apply_did_open(uri, "sub hello{my $x=1;return $x;}\n", 1)?;
+
+        let snapshot = server
+            .snapshot_user_answer_text(uri)
+            .ok_or("open document must have a usable user-answer snapshot")?;
+        let computed = server.handle_formatting(Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })))?;
+        let computed_edits = computed
+            .and_then(|value| value.as_array().map(ToOwned::to_owned))
+            .ok_or("expected formatting edits before desync")?;
+        assert!(
+            !computed_edits.is_empty(),
+            "in-flight formatting must see the predecessor document"
+        );
+
+        server.handle_did_change(Some(ranged_violation(uri, 2)))?;
+        assert!(
+            !server.user_answer_text_is_current(uri, snapshot.generation),
+            "ranged violation must invalidate the captured formatting generation"
+        );
+
+        let error = server
+            .handle_formatting(Some(json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })))
+            .err()
+            .ok_or("live formatting after Full-sync violation must fail closed")?;
+        assert_eq!(error.code, CONTENT_MODIFIED);
+        assert!(
+            error.message.contains("full-document resync")
+                || error.message.contains("Document changed while formatting"),
+            "post-violation formatting must not publish predecessor edits: {}",
+            error.message
+        );
         Ok(())
     }
 
