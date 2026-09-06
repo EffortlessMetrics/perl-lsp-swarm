@@ -163,6 +163,40 @@ describe('workspace configuration event routing', () => {
     expect(handlers.onRestartRequired).not.toHaveBeenCalled();
   });
 
+  // The observer runs before classification, so a handler that reads state the
+  // classified handlers then mutate sees the pre-change value. Recording the call order
+  // fails if the hook is moved after the classification block rather than removed.
+  test('delivers to the unclassified observer before any classified handler', () => {
+    let listener: ((event: vscode.ConfigurationChangeEvent) => void) | undefined;
+    (vscode.workspace.onDidChangeConfiguration as jest.Mock).mockImplementation((callback) => {
+      listener = callback;
+      return { dispose: jest.fn() };
+    });
+
+    const calls: string[] = [];
+    registerWorkspaceConfigurationEvents({
+      onAnyConfigurationChanged: () => {
+        calls.push('any');
+      },
+      onLiveConfigurationChanged: () => {
+        calls.push('live');
+      },
+      onReconstructConfigurationChanged: () => {
+        calls.push('reconstruct');
+      },
+      onRestartRequired: () => {
+        calls.push('restart');
+      },
+    });
+
+    listener?.({
+      affectsConfiguration: (setting: string) =>
+        new Set(['perl-lsp.includePaths', 'perl-lsp.featureProfile']).has(setting),
+    } as vscode.ConfigurationChangeEvent);
+
+    expect(calls).toEqual(['any', 'live', 'restart']);
+  });
+
   test('a throwing unclassified observer cannot stop the classified handlers', () => {
     let listener: ((event: vscode.ConfigurationChangeEvent) => void) | undefined;
     (vscode.workspace.onDidChangeConfiguration as jest.Mock).mockImplementation((callback) => {
