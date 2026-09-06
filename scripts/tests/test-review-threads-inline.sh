@@ -53,10 +53,16 @@ set -euo pipefail
 printf '%s\n' "$*" >> "$GH_STUB_LOG"
 
 if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
+    if [[ "$(grep -c 'api graphql' "$GH_STUB_LOG")" -gt 3 ]]; then
+        echo 'gh stub: pagination call budget exceeded' >&2
+        exit 1
+    fi
     # The cursor must match the one page 1 handed out. A stub that serves page 2
     # for any query containing `after:` would let a paginator that forwards a
     # stale or hard-coded cursor pass test_threads_paginates.
-    if printf '%s' "$*" | grep -qF 'after: "CURSOR-PAGE-1"'; then
+    expected_cursor='"CURSOR-PAGE-1"'
+    [[ -z "${GH_STUB_EXPECTED_CURSOR:-}" ]] || expected_cursor="$GH_STUB_EXPECTED_CURSOR"
+    if printf '%s' "$*" | grep -qF "after: $expected_cursor"; then
         cat "$GH_STUB_DIR/threads_page2.json"
     elif printf '%s' "$*" | grep -q 'after:'; then
         printf '%s\n' '{"errors":[{"message":"gh stub: pagination requested with an unexpected cursor"}]}' >&2
@@ -101,7 +107,7 @@ chmod +x "$STUB_BIN/gh"
 GH_STUB_LOG="$TMP_ROOT/gh-calls.log"
 export GH_STUB_LOG GH_STUB_DIR="$STUB_DIR"
 
-reset_stub() { : > "$GH_STUB_LOG"; rm -f "$STUB_DIR/posted_payload.json"; unset GH_STUB_REVIEWS_FAIL; }
+reset_stub() { : > "$GH_STUB_LOG"; rm -f "$STUB_DIR/posted_payload.json"; unset GH_STUB_REVIEWS_FAIL GH_STUB_EXPECTED_CURSOR; }
 
 # ── fixtures: a two-page reviewThreads connection ───────────────────────────
 thread_node() {
@@ -350,6 +356,146 @@ test_threads_survives_large_payload() {
     fi
 }
 
+# A malformed page is not a zero-thread result, even after valid earlier pages.
+# Keep stdout separate: an error must not leave a usable partial summary behind.
+assert_threads_page_rejected() {
+    local label="$1" expected_calls="$2" status=0 out
+    out="$(PATH="$STUB_BIN:$PATH" bash "$THREADS" 9999 test-owner/test-repo \
+        --unresolved-only --json 2>"$TMP_ROOT/thread-page.err")" || status=$?
+    if [[ "$status" -eq 2 && -z "$out" && "$(graphql_calls)" -eq "$expected_calls" ]] \
+        && grep -q 'ERROR:' "$TMP_ROOT/thread-page.err"; then
+        pass "threads: $label fails closed without a partial summary"
+    else
+        fail "threads: $label — exit=$status calls=$(graphql_calls) stdout=$out stderr=$(cat "$TMP_ROOT/thread-page.err")"
+    fi
+}
+
+test_threads_page_contract() {
+    local page label filter
+    cp "$STUB_DIR/threads_page1.json" "$TMP_ROOT/page1.contract-backup"
+    cp "$STUB_DIR/threads_page2.json" "$TMP_ROOT/page2.contract-backup"
+    # Apply every malformed shape to the first AND second response. First-page
+    # validation alone must not make a partial accumulated list authoritative.
+    for page in 1 2; do
+        while IFS='|' read -r label filter; do
+            reset_stub
+            cp "$TMP_ROOT/page1.contract-backup" "$STUB_DIR/threads_page1.json"
+            cp "$TMP_ROOT/page2.contract-backup" "$STUB_DIR/threads_page2.json"
+            jq "$filter" "$TMP_ROOT/page${page}.contract-backup" \
+                > "$STUB_DIR/threads_page${page}.json"
+            assert_threads_page_rejected "page $page $label" "$page"
+        done <<'CASES'
+missing pageInfo|del(.data.repository.pullRequest.reviewThreads.pageInfo)
+null pageInfo|.data.repository.pullRequest.reviewThreads.pageInfo = null
+missing hasNextPage|del(.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage)
+null hasNextPage|.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage = null
+string hasNextPage|.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage = "false"
+numeric hasNextPage|.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage = 0
+missing endCursor|del(.data.repository.pullRequest.reviewThreads.pageInfo.endCursor)
+numeric endCursor|.data.repository.pullRequest.reviewThreads.pageInfo.endCursor = 7
+empty continuing cursor|.data.repository.pullRequest.reviewThreads.pageInfo = {hasNextPage:true,endCursor:""}
+null continuing cursor|.data.repository.pullRequest.reviewThreads.pageInfo = {hasNextPage:true,endCursor:null}
+empty continuing page|.data.repository.pullRequest.reviewThreads.nodes = [] | .data.repository.pullRequest.reviewThreads.pageInfo = {hasNextPage:true,endCursor:"CURSOR-PAGE-1"}
+null nodes|.data.repository.pullRequest.reviewThreads.nodes = null
+object nodes|.data.repository.pullRequest.reviewThreads.nodes = {}
+null node|.data.repository.pullRequest.reviewThreads.nodes = [null]
+missing thread ID|del(.data.repository.pullRequest.reviewThreads.nodes[0].id)
+empty thread ID|.data.repository.pullRequest.reviewThreads.nodes[0].id = ""
+numeric thread ID|.data.repository.pullRequest.reviewThreads.nodes[0].id = 1
+missing resolution|del(.data.repository.pullRequest.reviewThreads.nodes[0].isResolved)
+null resolution|.data.repository.pullRequest.reviewThreads.nodes[0].isResolved = null
+string resolution|.data.repository.pullRequest.reviewThreads.nodes[0].isResolved = "false"
+numeric resolution|.data.repository.pullRequest.reviewThreads.nodes[0].isResolved = 0
+missing outdated state|del(.data.repository.pullRequest.reviewThreads.nodes[0].isOutdated)
+null outdated state|.data.repository.pullRequest.reviewThreads.nodes[0].isOutdated = null
+string outdated state|.data.repository.pullRequest.reviewThreads.nodes[0].isOutdated = "true"
+partial GraphQL errors|.errors = [{message:"partial review-thread response"}]
+malformed errors|.errors = "partial failure"
+CASES
+    done
+    cp "$TMP_ROOT/page1.contract-backup" "$STUB_DIR/threads_page1.json"
+    cp "$TMP_ROOT/page2.contract-backup" "$STUB_DIR/threads_page2.json"
+}
+
+test_threads_rejects_invalid_response_stream() {
+    cp "$STUB_DIR/threads_page1.json" "$TMP_ROOT/page1.stream-backup"
+    local shape
+    for shape in empty truncated multiple; do
+        reset_stub
+        case "$shape" in
+            empty) : > "$STUB_DIR/threads_page1.json" ;;
+            truncated) printf '{"data":' > "$STUB_DIR/threads_page1.json" ;;
+            multiple) cat "$TMP_ROOT/page1.stream-backup" "$TMP_ROOT/page1.stream-backup" > "$STUB_DIR/threads_page1.json" ;;
+        esac
+        assert_threads_page_rejected "$shape JSON response" 1
+    done
+    cp "$TMP_ROOT/page1.stream-backup" "$STUB_DIR/threads_page1.json"
+}
+
+test_threads_refuses_cursor_cycle() {
+    reset_stub
+    cp "$STUB_DIR/threads_page2.json" "$TMP_ROOT/page2.cycle-backup"
+    jq '.data.repository.pullRequest.reviewThreads.pageInfo =
+        {hasNextPage:true,endCursor:"CURSOR-PAGE-1"}' \
+        "$TMP_ROOT/page2.cycle-backup" > "$STUB_DIR/threads_page2.json"
+    assert_threads_page_rejected 'repeated cursor' 2
+    cp "$TMP_ROOT/page2.cycle-backup" "$STUB_DIR/threads_page2.json"
+}
+
+test_threads_complete_empty_page() {
+    reset_stub
+    cp "$STUB_DIR/threads_page1.json" "$TMP_ROOT/page1.empty-backup"
+    jq '.data.repository.pullRequest.reviewThreads |=
+        (.nodes = [] | .pageInfo = {hasNextPage:false,endCursor:null})' \
+        "$TMP_ROOT/page1.empty-backup" > "$STUB_DIR/threads_page1.json"
+    run_threads 9999 test-owner/test-repo --unresolved-only --json
+    if [[ "$RUN_EXIT" -eq 0 && "$(graphql_calls)" -eq 1 ]] \
+        && jq -e '.thread_count == 0 and .unresolved_count == 0 and .threads == []' >/dev/null <<<"$RUN_OUT"; then
+        pass 'threads: a complete empty connection is still a valid zero'
+    else
+        fail "threads empty page — exit=$RUN_EXIT out=$RUN_OUT"
+    fi
+    cp "$TMP_ROOT/page1.empty-backup" "$STUB_DIR/threads_page1.json"
+}
+
+test_threads_nullable_metadata() {
+    reset_stub
+    cp "$STUB_DIR/threads_page2.json" "$TMP_ROOT/page2.nullable-backup"
+    jq '.errors = [] | .data.repository.pullRequest.reviewThreads.nodes[0].comments.nodes[0].author = null' \
+        "$TMP_ROOT/page2.nullable-backup" > "$STUB_DIR/threads_page2.json"
+    run_threads 9999 test-owner/test-repo --unresolved-only --json
+    if [[ "$RUN_EXIT" -eq 0 ]] \
+        && jq -e '.unresolved_count == 2 and .unresolved_outdated == 1
+            and (.threads[] | select(.id == "PRRT_page2_outdated")
+                | .author == "unknown" and .line == 44 and .line_is_original)' >/dev/null <<<"$RUN_OUT"; then
+        pass 'threads: nullable author, outdated-line fallback, and empty errors remain supported'
+    else
+        fail "threads nullable metadata — exit=$RUN_EXIT out=$RUN_OUT"
+    fi
+    cp "$TMP_ROOT/page2.nullable-backup" "$STUB_DIR/threads_page2.json"
+}
+
+test_threads_opaque_cursor() {
+    cp "$STUB_DIR/threads_page1.json" "$TMP_ROOT/page1.cursor-backup"
+    local cursor
+    for cursor in '"null"' '"cursor\"quoted\\path\n"'; do
+        reset_stub
+        export GH_STUB_EXPECTED_CURSOR="$cursor"
+        jq --argjson cursor "$cursor" '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor = $cursor' \
+            "$TMP_ROOT/page1.cursor-backup" > "$STUB_DIR/threads_page1.json"
+        run_threads 9999 test-owner/test-repo --unresolved-only --json
+        if [[ "$RUN_EXIT" -eq 0 && "$(graphql_calls)" -eq 2 ]] \
+            && jq -e '.unresolved_count == 2 and (.threads | map(.id)) ==
+                ["PRRT_page1_active", "PRRT_page2_outdated"]' >/dev/null <<<"$RUN_OUT"; then
+            pass "threads: opaque cursor $cursor reaches the next page unchanged"
+        else
+            fail "threads opaque cursor $cursor — exit=$RUN_EXIT calls=$(graphql_calls) out=$RUN_OUT"
+        fi
+    done
+    cp "$TMP_ROOT/page1.cursor-backup" "$STUB_DIR/threads_page1.json"
+    unset GH_STUB_EXPECTED_CURSOR
+}
+
 # ═══ inline ═════════════════════════════════════════════════════════════════
 
 findings_file() { printf '%s' "$1" > "$TMP_ROOT/findings.json"; printf '%s' "$TMP_ROOT/findings.json"; }
@@ -565,6 +711,12 @@ test_threads_usage_error
 test_threads_is_read_only
 test_threads_refuses_truncation
 test_threads_survives_large_payload
+test_threads_page_contract
+test_threads_rejects_invalid_response_stream
+test_threads_refuses_cursor_cycle
+test_threads_complete_empty_page
+test_threads_nullable_metadata
+test_threads_opaque_cursor
 test_inline_posts_one_review
 test_inline_reads_stdin
 test_inline_rejects_unaddressable_line
