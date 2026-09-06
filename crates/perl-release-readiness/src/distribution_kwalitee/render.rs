@@ -10,7 +10,7 @@ pub fn render_distribution_kwalitee_catalog_markdown(
     let core = catalog.metric.iter().filter(|metric| metric.participates_in_core_score).count();
     let mut out = String::from(
         "# Native CPANTS-compatible catalog v1\n\n\
-         > Generated from `crates/perl-kwalitee/distribution_kwalitee_catalog.v1.toml`.\n\
+         > Generated from `crates/perl-release-readiness/distribution_kwalitee_catalog.v1.toml`.\n\
          > Do not edit this table independently.\n\n\
          ## Contract\n\n",
     );

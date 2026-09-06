@@ -28,7 +28,6 @@
 | perl-dap | — | 804 |
 | perl-diagnostics | — | 44 |
 | perl-incremental-parsing | — | 13 |
-| perl-kwalitee | — | 82 |
 | perl-lexer | — | 234 |
 | perl-line-index | — | 40 |
 | perl-lsp | — | 1792 |
@@ -44,6 +43,7 @@
 | perl-position-tracking | — | 73 |
 | perl-pragma | — | 1 |
 | perl-regex | — | 80 |
+| perl-release-readiness | — | 150 |
 | perl-ripr-facts | — | 147 |
 | perl-semantic-analyzer | — | 532 |
 | perl-semantic-facts | — | 253 |
