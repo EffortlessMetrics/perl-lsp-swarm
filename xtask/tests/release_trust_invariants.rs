@@ -299,3 +299,46 @@ fn controller_mandatory_id_without_row_fails() -> TestResult {
         .push(json!("not_a_seeded_invariant"));
     expect_violation(&registry, "has no row")
 }
+
+#[test]
+fn superseded_negative_control_owner_fails() -> TestResult {
+    let mut registry = canonical_registry()?;
+    let owner = owner_mut(&mut registry, 8507)?;
+    owner["status"] = json!("superseded");
+    owner["successor"] = json!(4343);
+    expect_violation(
+        &registry,
+        "negative_control_catalog.`producer_removed_while_schema_field_remains`: owner issue 8507 is superseded",
+    )
+}
+
+#[test]
+fn duplicate_release_consumer_fails() -> TestResult {
+    let mut registry = canonical_registry()?;
+    invariant_mut(&mut registry, "false_exact")?["release_consumers"] = json!([4346, 4346]);
+    expect_violation(&registry, "non-unique")
+}
+
+#[test]
+fn missing_release_consumer_fails() -> TestResult {
+    let mut registry = canonical_registry()?;
+    invariant_mut(&mut registry, "false_exact")?["release_consumers"] = json!([1]);
+    expect_violation(&registry, "release_consumer")
+}
+
+#[test]
+fn superseded_release_consumer_fails() -> TestResult {
+    let mut registry = canonical_registry()?;
+    let owner = owner_mut(&mut registry, 4351)?;
+    owner["status"] = json!("superseded");
+    owner["successor"] = json!(4343);
+    expect_violation(&registry, "release_consumer")
+}
+
+#[test]
+fn missing_supported_envelope_ref_fails() -> TestResult {
+    let mut registry = canonical_registry()?;
+    invariant_mut(&mut registry, "false_exact")?["applicability"]["supported_envelope_ref"] =
+        json!(1);
+    expect_violation(&registry, "supported_envelope_ref")
+}

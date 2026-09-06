@@ -88,6 +88,19 @@ fn validate_registry(registry: &TrustInvariantRegistry) -> Result<(), RegistryEr
     RegistryError::from_violations(violations)
 }
 
+fn require_current_owner(
+    owners: &BTreeMap<u32, &super::model::OwnerAuthority>,
+    issue: u32,
+    context: &str,
+    violations: &mut Vec<String>,
+) {
+    match owners.get(&issue) {
+        Some(owner) if matches!(owner.status, AuthorityStatus::Current) => {}
+        Some(_) => violations.push(format!("{context}: owner issue {issue} is superseded")),
+        None => violations.push(format!("{context}: owner issue {issue} is missing")),
+    }
+}
+
 fn validate_owner_authorities<'a>(
     authorities: &'a [super::model::OwnerAuthority],
     violations: &mut Vec<String>,
@@ -161,19 +174,12 @@ fn validate_producer_authorities<'a>(
                 authority.producer_kind.as_str()
             ));
         }
-        match owners.get(&authority.owner_issue) {
-            Some(owner) if matches!(owner.status, AuthorityStatus::Current) => {}
-            Some(_) => violations.push(format!(
-                "producer_authorities.`{}`: owner issue {} is superseded",
-                authority.producer_kind.as_str(),
-                authority.owner_issue
-            )),
-            None => violations.push(format!(
-                "producer_authorities.`{}`: owner issue {} is missing",
-                authority.producer_kind.as_str(),
-                authority.owner_issue
-            )),
-        }
+        require_current_owner(
+            owners,
+            authority.owner_issue,
+            &format!("producer_authorities.`{}`", authority.producer_kind.as_str()),
+            violations,
+        );
         match authority.status {
             AuthorityStatus::Current => {
                 if authority.successor.is_some() {
@@ -231,12 +237,12 @@ fn validate_negative_controls<'a>(
             violations
                 .push(format!("negative_control_catalog.`{}`: description is empty", control.id));
         }
-        if !owners.contains_key(&control.owner_issue) {
-            violations.push(format!(
-                "negative_control_catalog.`{}`: owner issue {} is missing",
-                control.id, control.owner_issue
-            ));
-        }
+        require_current_owner(
+            owners,
+            control.owner_issue,
+            &format!("negative_control_catalog.`{}`", control.id),
+            violations,
+        );
     }
     ids
 }
@@ -268,17 +274,12 @@ fn validate_invariants(
         }
         previous = Some(row.invariant_id.as_str());
 
-        match owners.get(&row.owner_issue) {
-            Some(owner) if matches!(owner.status, AuthorityStatus::Current) => {}
-            Some(_) => violations.push(format!(
-                "invariant `{}`: owner issue {} is superseded; bind a current owner",
-                row.invariant_id, row.owner_issue
-            )),
-            None => violations.push(format!(
-                "invariant `{}`: owner issue {} is missing",
-                row.invariant_id, row.owner_issue
-            )),
-        }
+        require_current_owner(
+            owners,
+            row.owner_issue,
+            &format!("invariant `{}`", row.invariant_id),
+            violations,
+        );
 
         match producers.get(&row.producer_kind) {
             Some(producer) if matches!(producer.status, AuthorityStatus::Current) => {}
@@ -308,6 +309,12 @@ fn validate_invariants(
                 row.invariant_id
             ));
         }
+        require_current_owner(
+            owners,
+            row.applicability.supported_envelope_ref,
+            &format!("invariant `{}` supported_envelope_ref", row.invariant_id),
+            violations,
+        );
         if row.negative_control_ids.is_empty() {
             violations
                 .push(format!("invariant `{}`: negative_control_ids is empty", row.invariant_id));
@@ -330,6 +337,21 @@ fn validate_invariants(
         if row.release_consumers.is_empty() {
             violations
                 .push(format!("invariant `{}`: release_consumers is empty", row.invariant_id));
+        }
+        let mut consumer_seen = BTreeSet::new();
+        for consumer in &row.release_consumers {
+            if !consumer_seen.insert(*consumer) {
+                violations.push(format!(
+                    "invariant `{}`: duplicate release_consumer {consumer}",
+                    row.invariant_id
+                ));
+            }
+            require_current_owner(
+                owners,
+                *consumer,
+                &format!("invariant `{}` release_consumer", row.invariant_id),
+                violations,
+            );
         }
         if row.claim_boundary.trim().is_empty() {
             violations.push(format!("invariant `{}`: claim_boundary is empty", row.invariant_id));
@@ -357,17 +379,12 @@ fn validate_controller_requirements(
                 requirement.controller_issue
             ));
         }
-        match owners.get(&requirement.controller_issue) {
-            Some(owner) if matches!(owner.status, AuthorityStatus::Current) => {}
-            Some(_) => violations.push(format!(
-                "controller_requirements.#{}: controller is superseded",
-                requirement.controller_issue
-            )),
-            None => violations.push(format!(
-                "controller_requirements.#{}: controller owner is missing",
-                requirement.controller_issue
-            )),
-        }
+        require_current_owner(
+            owners,
+            requirement.controller_issue,
+            &format!("controller_requirements.#{}", requirement.controller_issue),
+            violations,
+        );
         if requirement.mandatory_invariant_ids.is_empty() {
             violations.push(format!(
                 "controller_requirements.#{}: mandatory_invariant_ids is empty",
