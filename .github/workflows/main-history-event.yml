@@ -1,0 +1,137 @@
+name: Main History Event
+
+# Observe exact `main` push-event movement and publish one durable receipt.
+#
+# #10306: the repository can verify a completed Git graph, but it produced no
+# event-bound observation when `main` moved non-fast-forward. This workflow binds
+# GitHub's delivered push subjects (`before`, `after`, `ref`, and the
+# created/deleted/forced flags) to the typed ancestry authority added by #10304
+# and keeps the two propositions on separate axes.
+#
+# Deliberate boundaries:
+#   * read-only. `contents: read`, no persisted credentials, and no branch, tag,
+#     PR, issue, release, or ref mutation. This detector observes a push after
+#     the fact; it is not prevention and must never be represented as such.
+#   * no independent ancestry logic lives here. The workflow forwards the exact
+#     event subjects to one repository command and reports its verdict. It never
+#     parses fetch prose and never re-derives the history relation in YAML —
+#     that is precisely the mistake behind the false August 15 re-root
+#     diagnosis. `main_history_event_workflow_contract` enforces this.
+#   * it does not read live branch-protection or ruleset state. That authority
+#     belongs to the `release_live_controls` observer (#9403 / #8551), and this
+#     workflow must not grow a second settings model.
+#
+# Known limitation: GitHub does not dispatch `push` workflows for a deleted
+# branch, so the `deleted_ref` verdict is reachable through the command and its
+# tests but not through this trigger. Deletion control remains owned by the live
+# branch-protection observer above.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+concurrency:
+  group: main-history-event-${{ github.ref }}
+  # Each push carries its own irreplaceable before/after subject: a superseded
+  # run cannot be reconstructed from a later one, so runs queue instead of
+  # cancelling.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  classify:
+    name: Classify main push movement
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the exact event commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The complete graph is required: a shallow checkout cannot tell a
+          # rewritten history from a retained-boundary artifact, and the command
+          # correctly refuses to answer on one.
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache: true
+          cache-key-suffix: main-history-event
+
+      - name: Classify the delivered push event
+        id: classify
+        env:
+          # Exact platform subjects, passed at step scope as environment values
+          # rather than interpolated into the script body.
+          EVENT_BEFORE: ${{ github.event.before }}
+          EVENT_AFTER: ${{ github.sha }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_FORCED: ${{ github.event.forced }}
+          EVENT_CREATED: ${{ github.event.created }}
+          EVENT_DELETED: ${{ github.event.deleted }}
+          RECEIPT_PATH: target/history/main-event.json
+        run: |
+          set -euo pipefail
+          arguments=(
+            --repo .
+            --before "${EVENT_BEFORE}"
+            --after "${EVENT_AFTER}"
+            --ref "${EVENT_REF}"
+            --output "${RECEIPT_PATH}"
+          )
+          if [ "${EVENT_FORCED}" = "true" ]; then
+            arguments+=(--event-forced)
+          fi
+          if [ "${EVENT_CREATED}" = "true" ]; then
+            arguments+=(--event-created)
+          fi
+          if [ "${EVENT_DELETED}" = "true" ]; then
+            arguments+=(--event-deleted)
+          fi
+
+          # The verdict is recorded rather than raised here so the receipt is
+          # always uploaded, including — especially — when the detector is red.
+          set +e
+          cargo run --locked -p xtask --bin main-history-event -- "${arguments[@]}"
+          status=$?
+          set -e
+          echo "status=${status}" >> "${GITHUB_OUTPUT}"
+          echo "receipt=${RECEIPT_PATH}" >> "${GITHUB_OUTPUT}"
+
+      - name: Publish the history-event receipt
+        if: always() && steps.classify.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: main-history-event-receipt-${{ github.sha }}
+          path: target/history/main-event.json
+          # A missing receipt is a failed observation, not a quiet skip.
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce the detector verdict
+        if: always() && steps.classify.outcome != 'skipped'
+        env:
+          CLASSIFY_STATUS: ${{ steps.classify.outputs.status }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLASSIFY_STATUS}" ]; then
+            echo "::error::the history-event classifier produced no verdict"
+            exit 1
+          fi
+          if [ "${CLASSIFY_STATUS}" != "0" ]; then
+            echo "::error::main history-event detector reported a blocking verdict (exit ${CLASSIFY_STATUS}); see the uploaded receipt"
+            exit 1
+          fi
+          echo "main history-event detector: fast-forward movement proven"
