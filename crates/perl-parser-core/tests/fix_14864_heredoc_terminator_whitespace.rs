@@ -64,6 +64,22 @@ fn second_of_two_heredocs_padded_terminator_closes_region() -> Result<(), Box<dy
     require_trailing_code(source, "my $after")
 }
 
+#[test]
+fn both_of_two_heredocs_padded_terminators_close_regions() -> Result<(), Box<dyn std::error::Error>>
+{
+    let source = "my $a = <<A;\na-body\nA  \nmy $t = <<EOF;\nbody\nEOF  \nmy $after = 1;\n";
+    require_trailing_code(source, "my $after")?;
+    let index = SourceRegionIndex::build(source);
+    let mid = source.find("my $t").ok_or("missing second opener")?;
+    assert_eq!(
+        index.kind_at_offset(mid),
+        SourceRegionKind::Code,
+        "code between two padded closes must stay code, regions: {:?}",
+        index.regions()
+    );
+    Ok(())
+}
+
 /// Opposite direction: trailing non-whitespace is not consumed, so the body
 /// stays open and following text must not become `Code`.
 #[test]

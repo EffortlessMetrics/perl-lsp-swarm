@@ -41,6 +41,9 @@ pub(crate) fn collect_regions(source: &str) -> Vec<SourceRegion> {
 /// Clip or drop only EOF-reaching recovery that starts inside a *closed*
 /// heredoc body or exactly at its terminator line. Later independent recovery
 /// (an unclosed quote after the padded close) keeps its own span.
+///
+/// `heredoc_regions` is produced in source order by `scan_heredoc_regions`;
+/// the first closed body that contains or abuts `region.start` is the owner.
 fn suppress_padded_terminator_recovery(
     lexer_regions: &mut Vec<SourceRegion>,
     heredoc_regions: &[SourceRegion],
@@ -332,13 +335,18 @@ mod tests {
 
     /// Retention: a truly unclosed quote after a padded close must still be
     /// recovery. The clip is not a blanket drop of every EOF-reaching span.
+    /// The line scanner anchors that span at the final character.
     #[test]
     fn unclosed_quote_after_padded_terminator_stays_recovery() {
         let source = "my $t = <<EOF;\nbody\nEOF  \nmy $x = \"open\n";
         let regions = collect_regions(source);
+        let last = source.char_indices().next_back().map(|(offset, _)| offset);
         assert!(
-            regions.iter().any(|region| region.kind == SourceRegionKind::RecoveryAmbiguous),
-            "an unclosed quote after the padded close must stay recovery, got: {regions:?}"
+            last.is_some_and(|offset| regions
+                .iter()
+                .any(|region| region.kind == SourceRegionKind::RecoveryAmbiguous
+                    && region.contains_offset(offset))),
+            "an unclosed quote after the padded close must keep trailing recovery, got: {regions:?}"
         );
     }
 }
