@@ -161,7 +161,7 @@ fn hash_key_data_round_trips_exactly() -> TestResult {
     for key in keys {
         let mut candidate = lexical_candidate("frame#1", "pad:%opts@2");
         candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
-        candidate.member = Some(MutationMember::HashKey(key.to_string()));
+        candidate.member = Some(MutationMember::HashKey(key.as_bytes().to_vec()));
         candidate.inspected_value = Some(InspectedValueIdentity {
             value_node: "node-2".to_string(),
             referent: Some("HASH(0xbeef)".to_string()),
@@ -170,7 +170,7 @@ fn hash_key_data_round_trips_exactly() -> TestResult {
 
         let target = bind(&candidate)?;
         match target.location().member() {
-            MutationMember::HashKey(observed) if observed == key => {}
+            MutationMember::HashKey(observed) if observed.as_slice() == key.as_bytes() => {}
             other => return Err(format!("key {key:?} did not round-trip, got {other:?}")),
         }
     }
@@ -697,7 +697,7 @@ fn receipts_redact_private_key_and_value_payload() -> TestResult {
 
     let mut candidate = lexical_candidate("frame#1", "pad:%creds@4");
     candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
-    candidate.member = Some(MutationMember::HashKey(secret_key.to_string()));
+    candidate.member = Some(MutationMember::HashKey(secret_key.as_bytes().to_vec()));
     candidate.inspected_value = Some(InspectedValueIdentity {
         value_node: "node-4".to_string(),
         referent: Some("HASH(0xfeed)".to_string()),
@@ -914,7 +914,7 @@ fn receipts_distinguish_different_storage_cells() -> TestResult {
     let key_receipt = |key: &str| -> TestResult<perl_dap::mutation::MutationTargetReceipt> {
         let mut candidate = lexical_candidate("frame#1", "pad:%opts@2");
         candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
-        candidate.member = Some(MutationMember::HashKey(key.to_string()));
+        candidate.member = Some(MutationMember::HashKey(key.as_bytes().to_vec()));
         candidate.inspected_value = Some(InspectedValueIdentity {
             value_node: "node".to_string(),
             referent: Some("HASH(0x1)".to_string()),
@@ -950,7 +950,7 @@ fn debug_formatting_does_not_leak_payload() -> TestResult {
         return Err(format!("Debug did not mark the value redacted: {rendered}"));
     }
 
-    let member = MutationMember::HashKey(secret_key.to_string());
+    let member = MutationMember::HashKey(secret_key.as_bytes().to_vec());
     let rendered_member = format!("{member:?}");
     if rendered_member.contains(secret_key) {
         return Err(format!("Debug leaked the hash key: {rendered_member}"));
@@ -965,7 +965,7 @@ fn debug_formatting_does_not_leak_payload() -> TestResult {
     // Composition: a containing type's derived Debug must inherit redaction.
     let mut candidate = lexical_candidate("frame#1", "pad:%creds@4");
     candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
-    candidate.member = Some(MutationMember::HashKey(secret_key.to_string()));
+    candidate.member = Some(MutationMember::HashKey(secret_key.as_bytes().to_vec()));
     candidate.inspected_value = Some(InspectedValueIdentity {
         value_node: "node".to_string(),
         referent: Some("HASH(0x1)".to_string()),
@@ -985,6 +985,66 @@ fn debug_formatting_does_not_leak_payload() -> TestResult {
     let outcome = success_outcome();
     if format!("{outcome:?}").contains("observed") && format!("{outcome:?}").contains("pad:$x@0") {
         return Err("Debug leaked the observed binding identity".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_non_utf8_hash_key_round_trips_exactly() -> TestResult {
+    // `$h{"\xff\xfe"}` is an ordinary Perl entry and is not valid UTF-8.
+    // A String-typed key could not hold it, so acquisition would have had to
+    // lossily convert -- producing a key that addresses a different cell -- or
+    // drop the row entirely. Representing it exactly is what lets #11310
+    // record the row and refuse it honestly.
+    let raw_keys: [&[u8]; 4] = [
+        &[0xff, 0xfe],
+        &[0x80],       // lone continuation byte
+        &[0xc3, 0x28], // invalid 2-byte sequence
+        &[0xe2, 0x82], // truncated euro sign
+    ];
+    for raw in raw_keys {
+        if std::str::from_utf8(raw).is_ok() {
+            return Err(format!("fixture {raw:?} was valid UTF-8; it proves nothing"));
+        }
+
+        let mut candidate = lexical_candidate("frame#1", "pad:%bytes@3");
+        candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
+        candidate.member = Some(MutationMember::HashKey(raw.to_vec()));
+        candidate.inspected_value = Some(InspectedValueIdentity {
+            value_node: "node".to_string(),
+            referent: Some("HASH(0x1)".to_string()),
+            value_authority_generation: 11,
+        });
+
+        let target = bind(&candidate)?;
+        match target.location().member() {
+            MutationMember::HashKey(observed) if observed.as_slice() == raw => {}
+            other => return Err(format!("{raw:?} did not round-trip, got {other:?}")),
+        }
+
+        // And the receipt still discriminates it without carrying the bytes.
+        let receipt = target.receipt_projection();
+        if receipt.key_bytes != Some(raw.len()) {
+            return Err(format!("{raw:?} lost its redacted length"));
+        }
+    }
+
+    // Two byte keys differing only in content stay distinct in the receipt.
+    let fingerprint = |raw: &[u8]| -> TestResult<perl_dap::mutation::MutationTargetReceipt> {
+        let mut candidate = lexical_candidate("frame#1", "pad:%bytes@3");
+        candidate.kind = Some(MutationLocationKind::CurrentFrameHashEntry);
+        candidate.member = Some(MutationMember::HashKey(raw.to_vec()));
+        candidate.inspected_value = Some(InspectedValueIdentity {
+            value_node: "node".to_string(),
+            referent: Some("HASH(0x1)".to_string()),
+            value_authority_generation: 11,
+        });
+        Ok(bind(&candidate)?.receipt_projection())
+    };
+    let first = fingerprint(&[0xff, 0xfe])?;
+    let second = fingerprint(&[0xfe, 0xff])?;
+    if first.location_fingerprint == second.location_fingerprint {
+        return Err("two byte keys shared a location fingerprint".to_string());
     }
     Ok(())
 }

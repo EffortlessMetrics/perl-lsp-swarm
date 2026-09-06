@@ -48,6 +48,15 @@ use serde::Serialize;
 /// Version of the supported mutation-target profile.
 pub const MUTATION_TARGET_PROFILE_VERSION: u32 = 1;
 
+/// Versioned domain tag mixed into every mutation-location fingerprint.
+///
+/// [`ContentDigest`] is domain-separated for *content*, which does not
+/// separate one use of it from another. Opening the hashed input with this tag
+/// keeps a location identity from colliding with some other digest over the
+/// same bytes, and versions the encoding so a later field change is a
+/// deliberate identity change rather than a silent collision.
+const MUTATION_LOCATION_DIGEST_DOMAIN: &[u8] = b"perl-lsp:dap:mutation-location:v1";
+
 /// Kind of storage a location denotes.
 ///
 /// The two deferred variants are representable so that acquisition can record
@@ -85,14 +94,27 @@ impl MutationLocationKind {
 /// concern and never reaches this type, so an empty key, a key containing a
 /// quote, a backslash, a control character, or a digit-looking key stays
 /// exactly the bytes the runtime observed.
+///
+/// # Why the key is bytes and not a `String`
+///
+/// A Perl hash key is a byte string. `$h{"\xff\xfe"}` is an ordinary entry
+/// and is not valid UTF-8, so a `String` cannot hold it — acquisition would
+/// have to lossily convert the key or drop the row, and the contract would
+/// silently lose entries it claims to address exactly.
+///
+/// Representing the key exactly does not make every key *editable*: DAP is
+/// JSON, so a client cannot name a non-UTF-8 key in a request. The point is
+/// that #11310 can record such a row and refuse it explicitly — as
+/// [`WritabilityDisposition::Unaddressable`] — instead of mangling it into a
+/// key that addresses a different cell.
 #[derive(Clone, PartialEq, Eq)]
 pub enum MutationMember {
     /// The whole scalar binding.
     WholeScalar,
     /// An exact bounded array index.
     ArrayIndex(i64),
-    /// Exact hash key data.
-    HashKey(String),
+    /// Exact hash key data, as the bytes the runtime observed.
+    HashKey(Vec<u8>),
 }
 
 impl fmt::Debug for MutationMember {
@@ -483,13 +505,16 @@ impl MutationTarget {
     /// spelling, or hash key data, into the receipt.
     ///
     /// Every field is length-prefixed before hashing, so no two different
-    /// field splits can produce the same input.
+    /// field splits can produce the same input, and the input opens with a
+    /// versioned mutation-location tag so a location identity cannot collide
+    /// with a content digest of the same bytes taken for another purpose.
     fn location_fingerprint(&self) -> ContentDigest {
         fn push(bytes: &mut Vec<u8>, field: &[u8]) {
             bytes.extend_from_slice(&(field.len() as u64).to_be_bytes());
             bytes.extend_from_slice(field);
         }
         let mut bytes = Vec::new();
+        push(&mut bytes, MUTATION_LOCATION_DIGEST_DOMAIN);
         push(&mut bytes, self.location.frame_identity().as_bytes());
         push(&mut bytes, self.location.binding_identity().as_bytes());
         match self.location.member() {
@@ -500,7 +525,7 @@ impl MutationTarget {
             }
             MutationMember::HashKey(key) => {
                 push(&mut bytes, b"key");
-                push(&mut bytes, key.as_bytes());
+                push(&mut bytes, key);
             }
         }
         ContentDigest::of_bytes(&bytes)
