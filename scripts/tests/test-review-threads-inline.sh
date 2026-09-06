@@ -475,6 +475,15 @@ test_threads_nullable_metadata() {
     cp "$TMP_ROOT/page2.nullable-backup" "$STUB_DIR/threads_page2.json"
 }
 
+test_threads_projection_failure_is_normalized() {
+    reset_stub
+    cp "$STUB_DIR/threads_page1.json" "$TMP_ROOT/page1.projection-backup"
+    jq '.data.repository.pullRequest.reviewThreads.nodes[0].comments = 7' \
+        "$TMP_ROOT/page1.projection-backup" > "$STUB_DIR/threads_page1.json"
+    assert_threads_page_rejected 'malformed ancillary metadata' 2
+    cp "$TMP_ROOT/page1.projection-backup" "$STUB_DIR/threads_page1.json"
+}
+
 test_threads_opaque_cursor() {
     cp "$STUB_DIR/threads_page1.json" "$TMP_ROOT/page1.cursor-backup"
     local cursor
@@ -716,6 +725,7 @@ test_threads_rejects_invalid_response_stream
 test_threads_refuses_cursor_cycle
 test_threads_complete_empty_page
 test_threads_nullable_metadata
+test_threads_projection_failure_is_normalized
 test_threads_opaque_cursor
 test_inline_posts_one_review
 test_inline_reads_stdin

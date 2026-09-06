@@ -189,7 +189,7 @@ done
 
 # ── Projection ──────────────────────────────────────────────────────────────
 PROJECTED_FILE="$WORK_DIR/projected.json"
-jq -c --argjson unresolved_only "$UNRESOLVED_ONLY" -s 'add // []
+if ! jq -c --argjson unresolved_only "$UNRESOLVED_ONLY" -s 'add // []
     |
     def excerpt:
         (. // "")
@@ -215,7 +215,12 @@ jq -c --argjson unresolved_only "$UNRESOLVED_ONLY" -s 'add // []
         excerpt: (.comments.nodes[0].body | excerpt)
     })
     | if $unresolved_only == 1 then map(select(.isResolved == false)) else . end
-' "$PAGES_FILE" > "$PROJECTED_FILE"
+' "$PAGES_FILE" > "$PROJECTED_FILE" 2>"$WORK_DIR/project.err"; then
+    echo "ERROR: malformed review-thread metadata for $REPO#$PR;" >&2
+    echo "       refusing to report an incomplete thread projection." >&2
+    cat "$WORK_DIR/project.err" >&2 || true
+    exit 2
+fi
 
 SUMMARY_FILE="$WORK_DIR/summary.json"
 jq -n --slurpfile projected "$PROJECTED_FILE" --arg pr "$PR" --arg repo "$REPO" '
