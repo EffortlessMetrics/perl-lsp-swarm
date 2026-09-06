@@ -634,11 +634,71 @@ fn is_checkbox(receipt: &str) -> bool {
 
 fn is_issue_prose(receipt: &str) -> bool {
     let trimmed = receipt.trim();
-    if let Some(rest) = trimmed.strip_prefix('#') {
-        return !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit());
+    if is_bare_issue_ref(trimmed) {
+        return true;
     }
-    let lower = trimmed.to_ascii_lowercase();
-    lower.starts_with("closes #") || lower.starts_with("close #") || lower.starts_with("issue #")
+    contains_issue_closure_ref(&trimmed.to_ascii_lowercase())
+}
+
+fn is_bare_issue_ref(receipt: &str) -> bool {
+    let Some(rest) = receipt.strip_prefix('#') else {
+        return false;
+    };
+    !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn contains_issue_closure_ref(lower: &str) -> bool {
+    // GitHub closing keywords plus an explicit `issue #N` form. Longer
+    // spellings are listed first so `closes` is not reduced to `close`.
+    const KEYWORDS: [&str; 10] = [
+        "closes", "closed", "close", "fixes", "fixed", "fix", "resolves", "resolved", "resolve",
+        "issue",
+    ];
+    for keyword in KEYWORDS {
+        let mut from = 0;
+        while from < lower.len() {
+            let Some(rel) = lower[from..].find(keyword) else {
+                break;
+            };
+            let idx = from + rel;
+            if keyword_at_word_boundary(lower, idx, keyword.len())
+                && issue_ref_after_keyword(lower, idx + keyword.len())
+            {
+                return true;
+            }
+            from = idx.saturating_add(1);
+        }
+    }
+    false
+}
+
+fn keyword_at_word_boundary(text: &str, start: usize, len: usize) -> bool {
+    let before_ok = start == 0
+        || text
+            .as_bytes()
+            .get(start.saturating_sub(1))
+            .is_some_and(|byte| !byte.is_ascii_alphanumeric());
+    let end = start.saturating_add(len);
+    let after_ok = end == text.len()
+        || text.as_bytes().get(end).is_some_and(|byte| !byte.is_ascii_alphanumeric());
+    before_ok && after_ok
+}
+
+fn issue_ref_after_keyword(lower: &str, after_keyword: usize) -> bool {
+    let rest = match lower.get(after_keyword..) {
+        Some(rest) => rest.trim_start_matches(|ch: char| {
+            ch.is_ascii_whitespace() || matches!(ch, ':' | ',' | '-')
+        }),
+        None => return false,
+    };
+    starts_with_issue_ref(rest)
+}
+
+fn starts_with_issue_ref(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix('#') else {
+        return false;
+    };
+    rest.bytes().take_while(|byte| byte.is_ascii_digit()).count() > 0
 }
 
 fn looks_stale(receipt: &str) -> bool {
@@ -879,6 +939,62 @@ mod tests {
             .insert("hir_snapshot".to_string(), full_looking_hir_receipts());
     }
 
+    fn semantic_receipts() -> Vec<String> {
+        vec!["receipt://control.postfix_modifier/gold/positive".to_string()]
+    }
+
+    fn pir_receipts() -> Vec<String> {
+        vec!["receipt://control.postfix_modifier/pir/branch-edges".to_string()]
+    }
+
+    fn apply_compatible_full_capability(
+        ledger: &mut ConceptLedger,
+        matrix: &mut ProofMatrix,
+    ) -> Result<()> {
+        {
+            let concept = postfix(ledger)?;
+            concept.parser_ast = "parsed".to_string();
+            concept.flat_hir = "modeled".to_string();
+            concept.body_hir = "modeled".to_string();
+            concept.pir_a = "modeled".to_string();
+            concept.compile_effects_world = "not_applicable".to_string();
+            concept.eir_profile = "executable".to_string();
+            concept.gold = "proven".to_string();
+            concept.oracle = "proven".to_string();
+            concept.composition = "proven".to_string();
+            concept.provider_eligibility = "qualified".to_string();
+        }
+        let requirement = postfix_req(matrix)?;
+        apply_full_looking_hir(requirement);
+        requirement.positive_gold = Some(ProofStatus::Satisfied);
+        requirement.negative_gold = Some(ProofStatus::Satisfied);
+        requirement.boundary_gold = Some(ProofStatus::Satisfied);
+        requirement.recovery_gold = Some(ProofStatus::Satisfied);
+        requirement.pir_snapshot = Some(ProofStatus::Satisfied);
+        requirement.verifier_mutation = Some(ProofStatus::Satisfied);
+        requirement.real_perl_oracle = Some(ProofStatus::Satisfied);
+        requirement.composition_coverage = Some(ProofStatus::Satisfied);
+        requirement.eir_differential = Some(ProofStatus::Satisfied);
+        for class in ["positive_gold", "negative_gold", "boundary_gold", "recovery_gold"] {
+            requirement.evidence_by_class.insert(class.to_string(), semantic_receipts());
+        }
+        requirement.evidence_by_class.insert("pir_snapshot".to_string(), pir_receipts());
+        requirement.evidence_by_class.insert("verifier_mutation".to_string(), pir_receipts());
+        requirement.evidence_by_class.insert(
+            "real_perl_oracle".to_string(),
+            vec!["receipt://control.postfix_modifier/oracle/real-perl".to_string()],
+        );
+        requirement.evidence_by_class.insert(
+            "composition_coverage".to_string(),
+            vec!["receipt://control.postfix_modifier/composition/loop-control".to_string()],
+        );
+        requirement.evidence_by_class.insert(
+            "eir_differential".to_string(),
+            vec!["receipt://control.postfix_modifier/eir/executable".to_string()],
+        );
+        Ok(())
+    }
+
     fn full_looking_hir_receipts() -> Vec<String> {
         [
             "receipt://control.postfix_modifier/flat-hir/if",
@@ -1066,6 +1182,46 @@ mod tests {
     }
 
     #[test]
+    fn github_closing_keywords_cannot_satisfy_semantic_cells() -> Result<()> {
+        for receipt in [
+            "Fixes #13281",
+            "Fixed #13281",
+            "Fix #13281",
+            "Resolves #13281",
+            "Resolved #13281",
+            "This PR closes #13281",
+            "close:#4886",
+        ] {
+            let (mut ledger, mut matrix) = committed()?;
+            postfix(&mut ledger)?.gold = "proven".to_string();
+            {
+                let requirement = postfix_req(&mut matrix)?;
+                requirement.positive_gold = Some(ProofStatus::Satisfied);
+                requirement.negative_gold = Some(ProofStatus::Satisfied);
+                requirement.boundary_gold = Some(ProofStatus::Satisfied);
+                requirement.recovery_gold = Some(ProofStatus::Satisfied);
+                for class in ["positive_gold", "negative_gold", "boundary_gold", "recovery_gold"] {
+                    requirement
+                        .evidence_by_class
+                        .insert(class.to_string(), vec![receipt.to_string()]);
+                }
+            }
+            let view = derive_postfix_capability(&ledger, &matrix)?;
+            assert_eq!(
+                view.cell(CellId::Semantic)?.status,
+                CellStatus::Rejected,
+                "{receipt} must be issue prose"
+            );
+            assert!(
+                view.cell(CellId::Semantic)?.reason.contains("issue_prose"),
+                "{receipt}: {}",
+                view.cell(CellId::Semantic)?.reason
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn stale_and_not_run_required_layers_block_with_their_status() -> Result<()> {
         let (mut ledger, mut matrix) = committed()?;
         postfix(&mut ledger)?.oracle = "proven".to_string();
@@ -1121,6 +1277,29 @@ mod tests {
         let error = evaluate_closure_gate(&view, &ledger, &matrix, &[])
             .expect_err("gold=proven without semantic evidence must fail");
         assert!(error.to_string().contains("gold=proven"));
+        Ok(())
+    }
+
+    #[test]
+    fn honest_full_capability_allows_completion_claims() -> Result<()> {
+        let (mut ledger, mut matrix) = committed()?;
+        apply_compatible_full_capability(&mut ledger, &mut matrix)?;
+        let view = derive_postfix_capability(&ledger, &matrix)?;
+        assert!(view.fully_closed()?, "compatible non-HIR evidence must close required cells");
+        assert_eq!(view.cell(CellId::Semantic)?.status, CellStatus::Proven);
+        assert_eq!(view.cell(CellId::Pir)?.status, CellStatus::Proven);
+        assert_eq!(view.cell(CellId::Oracle)?.status, CellStatus::Proven);
+        assert_eq!(view.cell(CellId::Composition)?.status, CellStatus::Proven);
+        assert_eq!(view.cell(CellId::Execution)?.status, CellStatus::Proven);
+        assert_eq!(view.cell(CellId::Editor)?.status, CellStatus::Proven);
+        assert_eq!(view.cell(CellId::Effects)?.status, CellStatus::NotApplicable);
+        let docs = [(
+            "docs/project/status/perl_compiler_concepts.md",
+            "Postfix statement modifiers are fully supported.\n",
+        )];
+        let report = evaluate_closure_gate(&view, &ledger, &matrix, &docs)?;
+        assert!(report.contains("full_capability_closed: true"), "{report}");
+        assert!(report.contains("postfix capability closure: closed"), "{report}");
         Ok(())
     }
 }
