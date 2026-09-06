@@ -18,9 +18,9 @@
 //!   generic `CARGO_BUILD_*` mappings, including when the dedicated var is
 //!   empty;
 //! - no automatic `.cargo/config.local.toml` (not a Cargo-native file);
-//! - Cargo 1.95 follows top-level `include`; this resolver does not. Presence
+//! - unstable `include` is an explicit deviation: it is not followed; presence
 //!   keeps `cargo_config_wrapper_not_resolved` rather than applying or ignoring
-//!   included wrappers, so an include-only wrapper cannot hash as "no wrapper";
+//!   included wrappers;
 //! - relative wrapper values with a directory component are resolved from the
 //!   parent of the directory that holds the config file (project `.cargo/` or
 //!   `$CARGO_HOME`), matching stable Cargo; environment values use the
