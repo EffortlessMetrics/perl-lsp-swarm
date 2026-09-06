@@ -1549,6 +1549,20 @@ const ALLOWED_ALLOW_FIELDS: &[&str] = &[
     "generated_by",
 ];
 
+const STRING_ALLOW_FIELDS: &[&str] = &[
+    "id",
+    "glob",
+    "path",
+    "kind",
+    "language",
+    "surface",
+    "classification",
+    "owner",
+    "reason",
+    "broad_glob_reason",
+    "generated_by",
+];
+
 const KNOWN_CLASSIFICATIONS: &[&str] =
     &["production", "test", "tooling", "config", "documentation", "generated"];
 
@@ -1762,6 +1776,14 @@ fn validate_allow_schema_entry(
     for field in REQUIRED_ALLOW_FIELDS {
         if !entry.contains_key(*field) {
             errors.push(format!("{entry_id}: missing required field `{field}`"));
+        }
+    }
+
+    for field in STRING_ALLOW_FIELDS {
+        if let Some(value) = entry.get(*field)
+            && value.as_str().is_none()
+        {
+            errors.push(format!("{entry_id}: `{field}` must be a string"));
         }
     }
 
@@ -4840,6 +4862,26 @@ review_after = "2026-06-01"
         assert_shared_allow_schema_rejects(
             &valid.replace("path = \"docs/ok.md\"", "glob = \"docs/**\""),
             &["broad_glob_reason"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("id = \"ok\"", "id = 1"),
+            &["`id` must be a string"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "path = 2"),
+            &["`path` must be a string"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "glob = 3"),
+            &["`glob` must be a string"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("classification = \"documentation\"", "classification = 4"),
+            &["`classification` must be a string"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "glob = 3\npath = 2"),
+            &["cannot set both", "`glob` must be a string", "`path` must be a string"],
         )?;
 
         let duplicate_matcher = canonical_allow_document(&format!(
