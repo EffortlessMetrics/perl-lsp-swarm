@@ -17,15 +17,22 @@ pub const TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION: &str = "perl_core_harness.target
 /// but both require the same host capability, so both declare this predicate.
 pub const CONTROLLING_TERMINAL_CAPABILITY: &str = "controlling_terminal";
 
-/// The `t/TEST` no-TTY mechanism: suppresses the terminal-dependent tests.
+/// The only environment mechanism that selects the no-terminal path.
 ///
-/// Distinct from [`HARNESS_NO_TTY_ENV`]; see [`TargetTerminalPolicy`].
+/// `runtests` sets it in the `tty = N` branch, and `minitest_notty` sets it
+/// directly; either way it is what makes a run skip terminal-dependent tests.
 pub const RUNTESTS_NO_TTY_ENV: &str = "PERL_SKIP_TTY_TEST";
 
-/// The `t/harness` no-TTY mechanism: suppresses interactive harness output.
+/// A TAP::Harness *display* variable — deliberately not a terminal mechanism.
 ///
-/// Distinct from [`RUNTESTS_NO_TTY_ENV`]; see [`TargetTerminalPolicy`].
-pub const HARNESS_NO_TTY_ENV: &str = "HARNESS_NOTTY";
+/// Despite the name, `HARNESS_NOTTY` only makes TAP::Harness format output as
+/// though stdout were not a console. It does not resolve the terminal: upstream
+/// `test_harness_notty` runs `HARNESS_NOTTY=1 TESTFILE=harness runtests choose`,
+/// so its terminal is auto-detected exactly like plain `test_harness`. Treating
+/// it as equivalent to [`RUNTESTS_NO_TTY_ENV`] would let a row claim the
+/// no-terminal path while still redirecting stdin from `/dev/tty`, which is why
+/// [`TargetSelectionContract::validate`] refuses that conflation.
+pub const HARNESS_DISPLAY_NO_TTY_ENV: &str = "HARNESS_NOTTY";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -93,10 +100,10 @@ pub enum TargetPerlRuntime {
 /// How a target resolves the controlling terminal it runs under.
 ///
 /// The policy is not free-form annotation: [`TargetSelectionContract::validate`]
-/// requires it to agree with the row's declared capability predicates and
-/// no-TTY mechanism environment. `PERL_SKIP_TTY_TEST` and `HARNESS_NOTTY`
-/// suppress different behavior in different runners, so a row may declare at
-/// most one of them and never both.
+/// requires it to agree with the row's declared capability predicates and its
+/// no-terminal mechanism. Only [`RUNTESTS_NO_TTY_ENV`] resolves the terminal;
+/// [`HARNESS_DISPLAY_NO_TTY_ENV`] changes output formatting and never makes a
+/// row [`TargetTerminalPolicy::NoTty`].
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TargetTerminalPolicy {
