@@ -761,3 +761,336 @@ fn missing_vocabulary_is_not_a_clean_zero() {
     .expect("check");
     assert!(!findings.ok, "missing vocabulary became a clean zero: {:?}", findings.findings);
 }
+
+#[test]
+fn failed_source_is_not_converted_absent() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/tests/sibling.rs"),
+        "#[test]\nfn sibling() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("sibling");
+    let first = inventory_at(temp.path());
+    let site = first
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.site_family == "panic!")
+        .expect("panic site");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": site.path,
+                "enclosing_test_or_function": site.entrypoint,
+                "macro_family": site.site_family,
+                "normalized_snippet": site.source_identity,
+                "selector_identity": site.selector_identity,
+                "accepted_reason": "retired conversion.",
+                "state": "retired"
+            }]
+        })
+        .to_string(),
+    );
+    let matched = inventory_at(temp.path());
+    assert!(
+        matched.rows.iter().any(|row| {
+            row.kind == "site"
+                && row.path == site.path
+                && row.status == DebtStatus::StaleRegistry
+                && row.registry_relation == "matched_retired"
+        }),
+        "retired identity on live source was not stale_registry: {:?}",
+        matched.rows
+    );
+
+    fs::write(temp.path().join("crates/demo/tests/known.rs"), "fn not rust {{{").expect("broken");
+    let broken = inventory_at(temp.path());
+    assert!(
+        broken.instruments.iter().any(|instrument| {
+            instrument.kind == "source_parse"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject.ends_with("tests/known.rs")
+        }),
+        "broken source was not source_parse not_proven: {:?}",
+        broken.instruments
+    );
+    assert!(
+        broken.rows.iter().any(|row| {
+            row.kind == "registry"
+                && row.path.ends_with("tests/known.rs")
+                && row.status == DebtStatus::InstrumentNotProven
+                && row.registry_relation == "source_not_proven"
+        }),
+        "failed source was treated as absence: {:?}",
+        broken.rows
+    );
+    assert!(
+        !broken.rows.iter().any(|row| {
+            row.path.ends_with("tests/known.rs") && row.status == DebtStatus::ConvertedAbsent
+        }),
+        "failed source became converted_absent: {:?}",
+        broken.rows
+    );
+    assert!(
+        broken.rows.iter().any(|row| {
+            row.kind == "site"
+                && row.path.ends_with("tests/sibling.rs")
+                && row.site_family == "unwrap"
+        }),
+        "unrelated parsed sibling lost its observed site: {:?}",
+        broken.rows
+    );
+    assert!(!broken.counts.observation_complete);
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &broken,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(result.ok, "failed-source observation integrity should stay ok: {:?}", result.findings);
+}
+
+#[test]
+fn retired_parsed_removal_is_converted_absent() {
+    let temp = fixture_root();
+    let first = inventory_at(temp.path());
+    let site = first
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.site_family == "panic!")
+        .expect("panic site");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": site.path,
+                "enclosing_test_or_function": site.entrypoint,
+                "macro_family": site.site_family,
+                "normalized_snippet": site.source_identity,
+                "selector_identity": site.selector_identity,
+                "accepted_reason": "retired conversion.",
+                "state": "retired"
+            }]
+        })
+        .to_string(),
+    );
+    fs::write(temp.path().join("crates/demo/tests/known.rs"), "#[test]\nfn known_panic() {}\n")
+        .expect("removed site");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.kind == "registry"
+                && row.path.ends_with("tests/known.rs")
+                && row.status == DebtStatus::ConvertedAbsent
+                && row.registry_relation == "retired_absent_from_source"
+        }),
+        "parsed retired removal was not converted_absent: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn workspace_root_package_is_in_population() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[workspace]
+members = ["crates/demo"]
+resolver = "2"
+
+[package]
+name = "root-tool"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .expect("workspace+package");
+    let crate_root = temp.path().join("crates/demo");
+    fs::create_dir_all(crate_root.join("src")).expect("demo src");
+    fs::write(
+        crate_root.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("demo manifest");
+    fs::write(crate_root.join("src/lib.rs"), "pub fn ready() {}\n").expect("demo lib");
+    fs::create_dir_all(temp.path().join("src")).expect("root src");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "#[cfg(test)]\nmod tests { #[test] fn root() { let _ = Some(1).unwrap(); } }\n",
+    )
+    .expect("root lib");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.population.packages.iter().any(|package| package.name == "root-tool"),
+        "root [package] omitted: {:?}",
+        inventory.population.packages
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/lib.rs")
+                && row.site_family == "unwrap"
+                && row.package == "root-tool"
+        }),
+        "root-package cfg(test) unwrap omitted: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn excluded_member_is_not_population() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[workspace]
+members = ["crates/*"]
+exclude = ["crates/skipped"]
+resolver = "2"
+"#,
+    )
+    .expect("workspace");
+    for name in ["demo", "skipped"] {
+        let crate_root = temp.path().join("crates").join(name);
+        fs::create_dir_all(crate_root.join("src")).expect("src");
+        fs::create_dir_all(crate_root.join("tests")).expect("tests");
+        fs::write(
+            crate_root.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        )
+        .expect("manifest");
+        fs::write(crate_root.join("src/lib.rs"), "pub fn ready() {}\n").expect("lib");
+        fs::write(
+            crate_root.join("tests/debt.rs"),
+            "#[test]\nfn debt() { let _ = Some(1).unwrap(); }\n",
+        )
+        .expect("test");
+    }
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.population.packages.iter().any(|package| package.name == "demo"),
+        "included member missing: {:?}",
+        inventory.population.packages
+    );
+    assert!(
+        !inventory.population.packages.iter().any(|package| package.name == "skipped"),
+        "excluded member leaked into population: {:?}",
+        inventory.population.packages
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.path.contains("crates/skipped")),
+        "excluded member sites leaked: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn missing_member_manifest_is_not_proven() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "pub fn ready() {}\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/demo\", \"crates/ghost\"]\nresolver = \"2\"\n",
+    )
+    .expect("members");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "test_topology"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject.ends_with("crates/ghost/Cargo.toml")
+        }),
+        "missing member was a silent skip: {:?}",
+        inventory.instruments
+    );
+    assert!(!inventory.counts.observation_complete);
+}
+
+#[test]
+fn custom_test_target_helper_unwrap_is_debt() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(temp.path(), "demo", "pub fn ready() {}\n", &[]);
+    fs::write(
+        temp.path().join("crates/demo/Cargo.toml"),
+        r#"[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+
+[[test]]
+name = "custom"
+path = "checks/custom.rs"
+"#,
+    )
+    .expect("custom target");
+    fs::create_dir_all(temp.path().join("crates/demo/checks")).expect("checks");
+    fs::write(
+        temp.path().join("crates/demo/checks/custom.rs"),
+        "fn helper() { let _ = Some(1).unwrap(); }\n#[test]\nfn uses_helper() { helper(); }\n",
+    )
+    .expect("custom.rs");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.population.files.iter().any(|file| {
+            file.path.ends_with("checks/custom.rs")
+                && file.target_kind == xtask::no_panic_debt::TargetKind::IntegrationTest
+        }),
+        "custom [[test]] path omitted or not a test target: {:?}",
+        inventory.population.files
+    );
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| { row.path.ends_with("checks/custom.rs") && row.site_family == "unwrap" }),
+        "helper unwrap outside #[test] in a custom test target was omitted: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn detached_tests_fixture_is_not_executable_population() {
+    let temp = fixture_root();
+    fs::create_dir_all(temp.path().join("crates/demo/tests/fixtures")).expect("fixtures");
+    fs::write(
+        temp.path().join("crates/demo/tests/fixtures/orphan.rs"),
+        "fn not_a_target() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("orphan");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        !inventory
+            .population
+            .files
+            .iter()
+            .any(|file| file.path.ends_with("tests/fixtures/orphan.rs")),
+        "detached fixture counted as executable test population: {:?}",
+        inventory.population.files
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.path.ends_with("tests/fixtures/orphan.rs")),
+        "detached fixture became test debt: {:?}",
+        inventory.rows
+    );
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(result.ok, "detached fixture failed integrity: {:?}", result.findings);
+}

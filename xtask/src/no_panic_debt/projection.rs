@@ -24,6 +24,7 @@ pub fn render_human(inventory: &Inventory) -> String {
     let _ = writeln!(out, "- unowned: {}", inventory.counts.unowned);
     let _ = writeln!(out, "- stale_registry: {}", inventory.counts.stale_registry);
     let _ = writeln!(out, "- instrument_not_proven: {}", inventory.counts.instrument_not_proven);
+    let _ = writeln!(out, "- observation_complete: {}", inventory.counts.observation_complete);
     let _ = writeln!(out);
     let _ = writeln!(out, "## Status");
     for (status, count) in &inventory.counts.by_status {

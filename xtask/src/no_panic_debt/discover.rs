@@ -22,10 +22,12 @@ pub(crate) fn scan(
     let mut declarations = Vec::new();
     let mut instruments = Vec::new();
     let mut extra_files = BTreeSet::new();
+    let mut covered_paths = BTreeSet::new();
 
     for file in &topology.files {
         match scan_file(root, file, vocabulary, true, false) {
             Ok(mut scanned) => {
+                covered_paths.insert(file.path.clone());
                 extra_files.extend(scanned.external_modules);
                 entrypoints.append(&mut scanned.entrypoints);
                 sites.append(&mut scanned.sites);
@@ -61,6 +63,7 @@ pub(crate) fn scan(
         });
         match scan_file(root, &file, vocabulary, true, true) {
             Ok(mut scanned) => {
+                covered_paths.insert(file.path.clone());
                 pending.extend(scanned.external_modules);
                 entrypoints.append(&mut scanned.entrypoints);
                 sites.append(&mut scanned.sites);
@@ -103,7 +106,7 @@ pub(crate) fn scan(
             && left.lint == right.lint
             && left.form == right.form
     });
-    Ok(Discovered { entrypoints, sites, declarations, instruments })
+    Ok(Discovered { entrypoints, sites, declarations, instruments, covered_paths })
 }
 
 struct ScannedFile {

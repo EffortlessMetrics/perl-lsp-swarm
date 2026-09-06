@@ -2,7 +2,7 @@ use super::model::{DebtStatus, InstrumentStatus, Inventory};
 use super::projection::{canonical_json, semantic_delta};
 use super::read_to_string;
 use color_eyre::eyre::{Result, eyre};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct CheckRequest<'a> {
     pub root: &'a Path,
@@ -131,6 +131,19 @@ pub fn integrity_findings(root: &Path, inventory: &Inventory) -> Vec<String> {
                 row.path
             ));
         }
+        if matches!(row.status, DebtStatus::ConvertedAbsent | DebtStatus::StaleRegistry)
+            && row.kind == "registry"
+            && inventory.instruments.iter().any(|instrument| {
+                instrument.kind == "source_parse"
+                    && instrument.status == InstrumentStatus::NotProven
+                    && instrument.subject == row.path
+            })
+        {
+            findings.push(format!(
+                "absence claimed without successful coverage of {}:{}",
+                row.path, row.entrypoint
+            ));
+        }
     }
 
     let on_disk_tests = collect_test_files(root, inventory);
@@ -159,44 +172,53 @@ fn load_inventory(path: &Path) -> Result<Inventory> {
 }
 
 fn collect_test_files(root: &Path, inventory: &Inventory) -> Vec<String> {
-    let mut roots = std::collections::BTreeSet::new();
-    roots.insert(root.join("crates"));
-    roots.insert(root.join("xtask"));
+    let mut package_roots = std::collections::BTreeSet::new();
+    package_roots.insert(root.join("crates"));
+    package_roots.insert(root.join("xtask"));
     for package in &inventory.population.packages {
         if let Some(parent) = Path::new(&package.manifest).parent() {
-            roots.insert(root.join(parent));
+            package_roots.insert(root.join(parent));
         }
     }
     let mut files = Vec::new();
-    for base in roots {
-        if !base.exists() {
-            continue;
-        }
-        for entry in walkdir::WalkDir::new(&base).into_iter().filter_entry(|entry| {
-            let name = entry.file_name();
-            name != "target" && name != ".git"
-        }) {
-            let Ok(entry) = entry else {
-                continue;
-            };
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
-                continue;
-            }
-            let relative = super::normalize_path(path, root);
-            if relative.contains("/tests/")
-                || relative.ends_with("_test.rs")
-                || relative.ends_with("_tests.rs")
-                || relative.ends_with("/tests.rs")
-            {
-                files.push(relative);
-            }
-        }
+    let mut seen = std::collections::BTreeSet::new();
+    for base in package_roots {
+        collect_package_test_files(root, &base, &mut files, &mut seen);
     }
     files.sort();
     files.dedup();
     files
+}
+
+fn collect_package_test_files(
+    root: &Path,
+    base: &Path,
+    files: &mut Vec<String>,
+    seen: &mut std::collections::BTreeSet<PathBuf>,
+) {
+    let manifest = base.join("Cargo.toml");
+    if manifest.is_file() {
+        if !seen.insert(manifest) {
+            return;
+        }
+        files.extend(super::topology::test_bearing_files_for_package(root, base));
+        return;
+    }
+    if !base.is_dir() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    let mut children: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
+    children.sort();
+    for child in children {
+        let name = child.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        if name == "target" || name == ".git" {
+            continue;
+        }
+        if child.is_dir() && child.join("Cargo.toml").is_file() {
+            collect_package_test_files(root, &child, files, seen);
+        }
+    }
 }

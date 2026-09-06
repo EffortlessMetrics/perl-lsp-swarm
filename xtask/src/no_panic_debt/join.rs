@@ -131,13 +131,51 @@ pub(crate) fn join(
         });
     }
 
+    let failed_paths: BTreeSet<String> = discovered
+        .instruments
+        .iter()
+        .filter(|instrument| {
+            instrument.kind == "source_parse" && instrument.status == InstrumentStatus::NotProven
+        })
+        .map(|instrument| instrument.subject.clone())
+        .collect();
+
     for (key, record) in &registry {
         if seen_registry.contains(key) {
             continue;
         }
-        let status = match record.state {
-            RegistryState::Retired => DebtStatus::ConvertedAbsent,
-            RegistryState::Active => DebtStatus::StaleRegistry,
+        let coverage =
+            source_coverage(request.root, &key.path, &discovered.covered_paths, &failed_paths);
+        let (status, relation, limitations) = match coverage {
+            SourceCoverage::Covered | SourceCoverage::Absent => match record.state {
+                RegistryState::Retired => (
+                    DebtStatus::ConvertedAbsent,
+                    "retired_absent_from_source".to_string(),
+                    vec!["joined from ci/panic_test_identities.json".to_string()],
+                ),
+                RegistryState::Active => (
+                    DebtStatus::StaleRegistry,
+                    "active_absent_from_source".to_string(),
+                    vec!["joined from ci/panic_test_identities.json".to_string()],
+                ),
+            },
+            SourceCoverage::Failed => (
+                DebtStatus::InstrumentNotProven,
+                "source_not_proven".to_string(),
+                vec![
+                    "joined from ci/panic_test_identities.json".to_string(),
+                    "source identity was not successfully inspected".to_string(),
+                ],
+            ),
+            SourceCoverage::Unscanned => (
+                DebtStatus::InstrumentNotProven,
+                "source_uncovered".to_string(),
+                vec![
+                    "joined from ci/panic_test_identities.json".to_string(),
+                    "source identity exists but was outside the scanned test population"
+                        .to_string(),
+                ],
+            ),
         };
         rows.push(DebtRow {
             kind: "registry".to_string(),
@@ -150,14 +188,11 @@ pub(crate) fn join(
             selector_identity: key.selector_identity.clone(),
             declaration_identity: String::new(),
             declaration_scope: String::new(),
-            registry_relation: match record.state {
-                RegistryState::Active => "active_absent_from_source".to_string(),
-                RegistryState::Retired => "retired_absent_from_source".to_string(),
-            },
+            registry_relation: relation,
             owner: record.accepted_reason.clone(),
             status,
             proof_requirement: "registry-join".to_string(),
-            limitations: vec!["joined from ci/panic_test_identities.json".to_string()],
+            limitations,
         });
     }
 
@@ -197,11 +232,13 @@ pub(crate) fn join(
         "observation only; not a second allowlist".to_string(),
         "ordinary generation does not call GitHub".to_string(),
         "assert!/assert_eq! are not classified as panic-family debt".to_string(),
+        "population is Cargo autodiscovery plus explicit target paths; cargo-metadata cfg/target tables are not a second interpreter".to_string(),
     ];
-    if instruments.iter().any(|instrument| instrument.status == InstrumentStatus::NotProven) {
-        limitations.push(
-            "one or more instruments are not_proven; counts are not a complete zero".to_string(),
-        );
+    if instruments.iter().any(|instrument| instrument.status == InstrumentStatus::NotProven)
+        || rows.iter().any(|row| row.status == DebtStatus::InstrumentNotProven)
+    {
+        limitations
+            .push("observation_complete is false; counts are not a complete zero".to_string());
     }
 
     let population = Population {
@@ -301,9 +338,35 @@ fn derive_counts(
             .iter()
             .filter(|instrument| instrument.status == InstrumentStatus::NotProven)
             .count(),
+        observation_complete: instruments
+            .iter()
+            .all(|instrument| instrument.status != InstrumentStatus::NotProven)
+            && rows.iter().all(|row| row.status != DebtStatus::InstrumentNotProven),
         by_family: by_family.into_iter().collect(),
         by_status: by_status.into_iter().collect(),
     }
+}
+
+enum SourceCoverage {
+    Covered,
+    Absent,
+    Failed,
+    Unscanned,
+}
+
+fn source_coverage(
+    root: &Path,
+    path: &str,
+    covered: &BTreeSet<String>,
+    failed: &BTreeSet<String>,
+) -> SourceCoverage {
+    if failed.contains(path) {
+        return SourceCoverage::Failed;
+    }
+    if covered.contains(path) {
+        return SourceCoverage::Covered;
+    }
+    if root.join(path).is_file() { SourceCoverage::Unscanned } else { SourceCoverage::Absent }
 }
 
 fn load_registry(path: &Path) -> Result<BTreeMap<RegistryKey, RegistryRecord>> {

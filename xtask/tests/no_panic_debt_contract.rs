@@ -21,7 +21,9 @@ fn schema_and_producer_are_versioned() {
     assert_eq!(inventory.producer, "cargo xtask no-panic debt inventory");
     assert_eq!(inventory.repository_commit, "fixture");
     assert!(inventory.counts.files > 0);
+    assert!(inventory.counts.observation_complete, "complete fixture was marked incomplete");
     assert!(render_human(&inventory).contains(SCHEMA));
+    assert!(render_human(&inventory).contains("observation_complete"));
 }
 
 #[test]

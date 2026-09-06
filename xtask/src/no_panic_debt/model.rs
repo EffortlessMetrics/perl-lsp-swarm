@@ -203,6 +203,8 @@ pub struct DerivedCounts {
     pub unowned: usize,
     pub stale_registry: usize,
     pub instrument_not_proven: usize,
+    #[serde(default)]
+    pub observation_complete: bool,
     pub by_family: Vec<(String, usize)>,
     pub by_status: Vec<(String, usize)>,
 }
@@ -242,6 +244,7 @@ pub(crate) struct Discovered {
     pub sites: Vec<RawSite>,
     pub declarations: Vec<RawDeclaration>,
     pub instruments: Vec<Instrument>,
+    pub covered_paths: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug)]
