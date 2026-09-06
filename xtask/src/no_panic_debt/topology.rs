@@ -61,8 +61,8 @@ pub(crate) fn discover(root: &Path, vocabulary: &Vocabulary) -> Result<Topology>
 
     let mut packages = Vec::new();
     let mut files = Vec::new();
-    for package_root in package_roots {
-        match load_package(root, &package_root) {
+    for package_root in &package_roots {
+        match load_package(root, package_root) {
             Ok((package, package_files)) => {
                 packages.push(package);
                 files.extend(package_files);
