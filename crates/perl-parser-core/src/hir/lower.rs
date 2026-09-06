@@ -2902,6 +2902,10 @@ fn variable_decl_bindings(declarator: &str, node: &Node) -> Vec<VariableBinding>
         }
         _ => {
             if let Some(binding) = variable_binding(node) {
+                // Computed `*{$name}` captures are not a static declaration name.
+                if binding.sigil == "*" && !is_direct_glob_name(&binding.name) {
+                    return Vec::new();
+                }
                 return vec![binding];
             }
             // `my $cache->{key}` declares the base lexical, not the hash slot.
@@ -2957,7 +2961,7 @@ fn named_variable_or_glob(node: &Node) -> Option<(&str, String)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone())),
         NodeKind::VariableWithAttributes { variable, .. } => named_variable_or_glob(variable),
-        NodeKind::Typeglob { name } => Some(("*", name.clone())),
+        NodeKind::Typeglob { name } if is_direct_glob_name(name) => Some(("*", name.clone())),
         _ => None,
     }
 }
@@ -2974,7 +2978,7 @@ fn is_arrow_postfix_op(op: &str) -> bool {
 fn declared_base_variable(node: &Node) -> Option<(&str, String, &Node)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone(), node)),
-        NodeKind::Typeglob { name } => Some(("*", name.clone(), node)),
+        NodeKind::Typeglob { name } if is_direct_glob_name(name) => Some(("*", name.clone(), node)),
         NodeKind::VariableWithAttributes { variable, .. } => declared_base_variable(variable),
         NodeKind::Binary { op, left, .. } if is_arrow_postfix_op(op) => {
             declared_base_variable(left)
@@ -3522,6 +3526,12 @@ impl<'a> BodyBuilder2<'a> {
         match (initializer, &variable.kind) {
             (None, NodeKind::Assignment { .. }) => self.lower_expr(variable),
             (None, _) => self.lower_expr_as_place(target, AccessMode::Write),
+            (Some(init_node), _) if matches!(&init_node.kind, NodeKind::Assignment { .. }) => {
+                // Compound `my $cache->{key} += 1` stores the RMW assignment in
+                // `initializer`. Lower that node once; wrapping it in another
+                // simple Assign would duplicate the place.
+                self.lower_expr(init_node)
+            }
             (Some(init_node), _) => {
                 let place_id = self.lower_expr_as_place(target, AccessMode::Write);
                 let rhs_id = self.lower_expr(init_node);

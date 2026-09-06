@@ -417,6 +417,73 @@ fn arrow_postfix_my_recovers_the_declared_base() -> Result<(), String> {
 }
 
 #[test]
+fn computed_typeglob_local_is_not_a_static_symbol() -> Result<(), String> {
+    let source = "local *{$name} = \\&foo;";
+    let file = canonical_body(source)?;
+    let body = body_of(&file)?;
+    let graph = pir_of(&file);
+    require_no_placeholder(body, &graph, source)?;
+    if let_names(body).iter().any(|name| *name == "$name" || *name == "name") {
+        return Err(format!("computed glob must not become a named Let: {:?}", let_names(body)));
+    }
+    if pir_writes_name(&graph, "$name") || pir_writes_name(&graph, "name") {
+        return Err("computed glob must not stash-write the capture text".to_string());
+    }
+    let first_pass = file.items.iter().find_map(|item| match &item.kind {
+        HirKind::VariableDecl(declaration) => Some(declaration),
+        _ => None,
+    });
+    if let Some(declaration) = first_pass {
+        let names: Vec<&str> =
+            declaration.variables.iter().map(|binding| binding.name.as_str()).collect();
+        if names.iter().any(|name| *name == "$name" || *name == "name") {
+            return Err(format!("first-pass must not bind the capture text: {names:?}"));
+        }
+    }
+    assert_clean_parse(source);
+    let mirror = lower_body(&parse(source));
+    if let_names(&mirror).iter().any(|name| *name == "$name" || *name == "name") {
+        return Err("mirror computed glob must not become a named Let".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn compound_postfix_my_keeps_one_rmw_assign() -> Result<(), String> {
+    let source = "my $cache->{key} += 1;";
+    let file = canonical_body(source)?;
+    let body = body_of(&file)?;
+    let graph = pir_of(&file);
+    require_no_placeholder(body, &graph, source)?;
+    named_let(body, "cache", Sigil::Scalar, DeclStorageClass::My)?;
+    element_assign(
+        body,
+        "cache",
+        SubscriptKind::Hash,
+        AccessMode::ReadModifyWrite,
+        AssignMode::ReadModifyWrite,
+    )?;
+    let simple_wraps = body
+        .exprs
+        .iter()
+        .filter(|expr| {
+            matches!(
+                expr,
+                HirExpr::Assign { lhs, mode: AssignMode::Simple, .. }
+                    if matches!(body.expr(*lhs), Some(HirExpr::Assign { mode: AssignMode::ReadModifyWrite, .. }))
+            )
+        })
+        .count();
+    if simple_wraps != 0 {
+        return Err("compound postfix must not wrap RMW in a second simple Assign".to_string());
+    }
+    if !pir_writes_name(&graph, "cache") {
+        return Err(format!("compound postfix my must still lexical-write cache, got {graph:?}"));
+    }
+    Ok(())
+}
+
+#[test]
 fn arrow_postfix_local_is_element_localization_not_a_container_binding() -> Result<(), String> {
     // Class falsifier: recovering every Binary.left would turn this into Let `obj`.
     let source = "local $obj->{key} = 1;";

@@ -773,27 +773,37 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
                             VariableKind::Package,
                             AccessMode::Write,
                         ),
-                        (Some(init_node), _) => {
-                            let place_id = lower_place(
+                        (Some(init_node), _) => match &init_node.kind {
+                            NodeKind::Assignment { lhs, rhs, op } => lower_assignment(
                                 builder,
-                                binding_node,
+                                init_node,
+                                lhs,
+                                rhs,
+                                op,
                                 VariableKind::Package,
-                                AccessMode::Write,
-                            );
-                            let rhs_id = lower_expr(builder, init_node);
-                            let assign_range = SourceLocation {
-                                start: binding_node.location.start,
-                                end: init_node.location.end,
-                            };
-                            builder.alloc_expr(
-                                HirExpr::Assign {
-                                    lhs: place_id,
-                                    rhs: rhs_id,
-                                    mode: AssignMode::Simple,
-                                },
-                                assign_range,
-                            )
-                        }
+                            ),
+                            _ => {
+                                let place_id = lower_place(
+                                    builder,
+                                    binding_node,
+                                    VariableKind::Package,
+                                    AccessMode::Write,
+                                );
+                                let rhs_id = lower_expr(builder, init_node);
+                                let assign_range = SourceLocation {
+                                    start: binding_node.location.start,
+                                    end: init_node.location.end,
+                                };
+                                builder.alloc_expr(
+                                    HirExpr::Assign {
+                                        lhs: place_id,
+                                        rhs: rhs_id,
+                                        mode: AssignMode::Simple,
+                                    },
+                                    assign_range,
+                                )
+                            }
+                        },
                     };
                     // Arrow-postfix `my $cache->{key}` still declares `$cache`.
                     // Direct-subscript `local` stays a place write, not a Let.
@@ -829,7 +839,7 @@ fn named_variable_from_node(node: &Node) -> Option<(&str, String)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone())),
         NodeKind::VariableWithAttributes { variable, .. } => named_variable_from_node(variable),
-        NodeKind::Typeglob { name } => Some(("*", name.clone())),
+        NodeKind::Typeglob { name } if is_direct_typeglob_name(name) => Some(("*", name.clone())),
         _ => None,
     }
 }
@@ -838,10 +848,33 @@ fn is_arrow_postfix_op(op: &str) -> bool {
     matches!(op, "->" | "->{}" | "->[]")
 }
 
+fn is_direct_typeglob_name(name: &str) -> bool {
+    // Mirror of `is_direct_glob_name` in `hir::lower` until #5813. Computed
+    // `*{EXPR}` captures (`$name`, `foo()`, `'Sym'`) are not declaration names.
+    if name.chars().all(|ch| ch == '_' || ch == ':' || ch.is_ascii_alphanumeric())
+        && name.chars().next().is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+    {
+        return true;
+    }
+    if let Some(rest) = name.strip_prefix('^')
+        && rest.chars().all(|ch| ch == '_' || ch == ':' || ch.is_ascii_alphanumeric())
+        && rest.chars().next().is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+    {
+        return true;
+    }
+    let mut chars = name.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some(ch), None) if !ch.is_ascii_alphanumeric() && ch != '_'
+    )
+}
+
 fn declared_base_variable(node: &Node) -> Option<(&str, String, &Node)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone(), node)),
-        NodeKind::Typeglob { name } => Some(("*", name.clone(), node)),
+        NodeKind::Typeglob { name } if is_direct_typeglob_name(name) => {
+            Some(("*", name.clone(), node))
+        }
         NodeKind::VariableWithAttributes { variable, .. } => declared_base_variable(variable),
         NodeKind::Binary { op, left, .. } if is_arrow_postfix_op(op) => {
             declared_base_variable(left)
