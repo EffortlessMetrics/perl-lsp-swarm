@@ -113,11 +113,17 @@ pub fn build_project_model(
         // Distribution-metadata facts: metadata files are not "parsed" as Perl,
         // but when DIST is requested their content is read for name/version/
         // license/prereqs.
-        if role == FileRole::DistMetadata
-            && request.fact_classes.contains(FactClasses::DIST)
-            && let Some(facts) = extract_dist_metadata(&file_id, &relative_path, &content)
-        {
-            model.dist_metadata.push(facts);
+        if role == FileRole::DistMetadata && request.fact_classes.contains(FactClasses::DIST) {
+            if let Some(facts) = extract_dist_metadata(&file_id, &relative_path, &content) {
+                model.dist_metadata.push(facts);
+            }
+            if let Some(facts) = crate::dist_authoring::parse_dist_authoring(
+                file_id.clone(),
+                &relative_path,
+                &content,
+            ) {
+                model.dist_authoring.push(facts);
+            }
         }
 
         // POD facts are read from raw source (independent of code parsing), so a
@@ -137,9 +143,9 @@ pub fn build_project_model(
 }
 
 /// Extract distribution-metadata facts from a metadata file, dispatched by
-/// filename. Only `META.json` and `cpanfile` are read today (PR 7); other
-/// metadata formats (`Makefile.PL`, `Build.PL`, `dist.ini`, `META.yml`) are
-/// indexed as files but not yet content-parsed.
+/// filename. `META.json` and `cpanfile` remain final/advisory metadata.
+/// Authoring files (`Makefile.PL`, `Build.PL`, `dist.ini`) are parsed by
+/// [`crate::dist_authoring`]. `META.yml` stays indexed until that source lands.
 fn extract_dist_metadata(
     file_id: &FileId,
     relative_path: &str,
