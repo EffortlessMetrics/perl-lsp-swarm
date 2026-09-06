@@ -79,8 +79,18 @@ mod tests {
     };
 
     struct SilentRule(&'static str);
-    struct PanicRule(&'static str);
+    struct FlagRule {
+        id: &'static str,
+        called: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
     struct EmittingRule(&'static str);
+
+    impl FlagRule {
+        fn new(id: &'static str) -> (Self, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+            let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            (Self { id, called: std::sync::Arc::clone(&called) }, called)
+        }
+    }
 
     impl CriticRule for SilentRule {
         fn id(&self) -> &'static str {
@@ -98,9 +108,9 @@ mod tests {
         fn check(&self, _ctx: &CriticContext<'_>, _out: &mut Vec<CriticFinding>) {}
     }
 
-    impl CriticRule for PanicRule {
+    impl CriticRule for FlagRule {
         fn id(&self) -> &'static str {
-            self.0
+            self.id
         }
 
         fn category(&self) -> CriticCategory {
@@ -112,7 +122,7 @@ mod tests {
         }
 
         fn check(&self, _ctx: &CriticContext<'_>, _out: &mut Vec<CriticFinding>) {
-            panic!("enabled_rule_count must not invoke CriticRule::check");
+            self.called.store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -179,15 +189,19 @@ mod tests {
 
     #[test]
     fn exclude_reduces_registered_count_without_running_rules() {
-        let registry = NativeCriticRegistry::with_rules(vec![
-            Box::new(PanicRule("rule.a")),
-            Box::new(PanicRule("rule.b")),
-        ]);
+        let (first, first_called) = FlagRule::new("rule.a");
+        let (second, second_called) = FlagRule::new("rule.b");
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(first), Box::new(second)]);
         let full = CriticConfig::default();
         let excluded = CriticConfig { exclude: vec!["rule.b".to_string()], ..Default::default() };
 
         assert_eq!(NativeCriticWorkReceipt::planned(&registry, &full).rules_registered, 2);
         assert_eq!(NativeCriticWorkReceipt::planned(&registry, &excluded).rules_registered, 1);
+        assert!(
+            !first_called.load(std::sync::atomic::Ordering::SeqCst)
+                && !second_called.load(std::sync::atomic::Ordering::SeqCst),
+            "planned registration must not invoke CriticRule::check"
+        );
     }
 
     #[test]
