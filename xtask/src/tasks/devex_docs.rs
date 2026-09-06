@@ -278,6 +278,23 @@ mod tests {
     }
 
     #[test]
+    fn join_trailing_backslash_continuations_strips_whitespace_after_backslash() {
+        let joined = join_trailing_backslash_continuations("just pr-fast \\  \n\t--locked\n");
+        assert_eq!(joined[0].text, "just pr-fast --locked");
+        assert!(joined[0].continued);
+    }
+
+    #[test]
+    fn join_trailing_backslash_continuations_joins_multiple_continuations() {
+        let joined = join_trailing_backslash_continuations(
+            "cargo xtask fmt \\\n    --check \\\n    --all\n",
+        );
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined[0].text, "cargo xtask fmt --check --all");
+        assert!(joined[0].continued);
+    }
+
+    #[test]
     fn join_trailing_backslash_continuations_keeps_uncontinued_lines() {
         let joined = join_trailing_backslash_continuations("just pr-fast\n    --locked\n");
         assert_eq!(
