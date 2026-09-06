@@ -1556,6 +1556,7 @@ fn checkpoint_apply_edit_after() {
     let mut cp = LexerCheckpoint::at_position(50);
     cp.apply_edit(60, 10, 5); // Edit after checkpoint
     assert_eq!(cp.position(), 50); // No change
+    assert!(!cp.is_invalidated(), "edit after position must not invalidate");
 }
 
 #[test]

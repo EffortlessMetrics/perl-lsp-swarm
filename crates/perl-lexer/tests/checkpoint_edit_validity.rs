@@ -1,8 +1,8 @@
 //! Edit invalidation fails closed: overlapping or shifted checkpoints are not
 //! rewritten as default-state origins at the edit start.
 
+use perl_lexer::PerlLexer;
 use perl_lexer::checkpoint::Checkpointable;
-use perl_lexer::{LexerCheckpoint, PerlLexer};
 
 #[test]
 fn shifted_replay_position_fails_closed_without_target_source_coordinates() {
@@ -60,13 +60,12 @@ fn exact_boundary_edit_keeps_a_live_checkpoint_replayable() {
         }
     }
     let mut checkpoint = lexer.checkpoint();
-    if checkpoint.position() != 8 {
-        checkpoint = LexerCheckpoint::origin(source);
-    }
+    assert_eq!(checkpoint.position(), 8, "source must produce a token boundary at byte 8");
 
-    assert!(checkpoint.try_apply_edit(8, 2, 5) || checkpoint.position() == 0);
-    if checkpoint.position() == 8 {
-        assert!(!checkpoint.is_invalidated());
-        assert!(checkpoint.is_valid_for(source));
-    }
+    assert!(
+        checkpoint.try_apply_edit(8, 2, 5),
+        "edit beginning exactly at a live boundary must remain a restart"
+    );
+    assert!(!checkpoint.is_invalidated());
+    assert!(checkpoint.is_valid_for(source));
 }

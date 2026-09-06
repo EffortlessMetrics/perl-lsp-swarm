@@ -180,6 +180,15 @@ fn different_logical_sources_fail_closed() {
 }
 
 #[test]
+fn unbound_source_vs_bound_source_fails_closed() {
+    let source = "my $x = 1;";
+    let unbound = PerlLexer::new(source).checkpoint();
+    let mut bound = PerlLexer::new(source);
+    bound.bind_logical_source(logical_source("lib/A.pm"));
+    assert_eq!(bound.validate_restore(&unbound), Err(CheckpointRestoreError::WrongSource));
+}
+
+#[test]
 fn unknown_schema_fails_closed() {
     let source = "my $x = 1;";
     let mut checkpoint = PerlLexer::new(source).checkpoint();
