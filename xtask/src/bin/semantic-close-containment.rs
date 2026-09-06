@@ -1186,7 +1186,9 @@ fn relation_scoped_section_text(
 /// Units are sentences inside Markdown paragraphs. A whitespace-only line is
 /// a paragraph break, matching rendered Markdown rather than a literal `\n\n`.
 /// Sentence ends are `.`, `!`, or `?` followed by whitespace or end of text,
-/// except inside Markdown inline code spans (matched backtick runs).
+/// except inside Markdown inline code spans (matched backtick runs). A
+/// backtick escaped by an odd-length backslash run is literal prose and does
+/// not open or close a span.
 /// A unit that mentions some other issue and does not mention the closed issue
 /// is a neighboring-issue disclaimer. Unnumbered prose still counts: atomic
 /// closes often describe "the remaining work" without repeating `#N`, even
@@ -1241,6 +1243,10 @@ fn split_sentences(text: &str) -> Vec<String> {
             break;
         };
         if character == '`' {
+            if backtick_is_escaped(text, index) {
+                index += 1;
+                continue;
+            }
             let run = text[index..].chars().take_while(|next| *next == '`').count();
             if let Some(span_end) = matching_inline_code_span_end(text, index, run) {
                 index = span_end;
@@ -1293,6 +1299,14 @@ fn matching_inline_code_span_end(text: &str, opener_start: usize, run: usize) ->
         index += character.len_utf8();
     }
     None
+}
+
+fn backtick_is_escaped(text: &str, index: usize) -> bool {
+    let Some(prefix) = text.get(..index) else {
+        return false;
+    };
+    let backslashes = prefix.chars().rev().take_while(|character| *character == '\\').count();
+    backslashes % 2 == 1
 }
 
 fn foreign_issue_disclaimer(text: &str, key: &IssueKey, current_repository: &str) -> bool {
@@ -1460,7 +1474,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 17] = [
+    const FIXTURES: [(&str, &str); 18] = [
         (
             "invalid-phase-terminal-5023-5001",
             include_str!(concat!(
@@ -1515,6 +1529,13 @@ mod tests {
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-tracked-by-neighbor.json"
+            )),
+        ),
+        (
+            "invalid-explicit-unproven-escaped-backtick",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-escaped-backtick.json"
             )),
         ),
         (
@@ -1835,6 +1856,26 @@ mod tests {
         assert!(
             !explicitly_not_proven_required_work(&attributable_inline_bang),
             "a `!` inside an inline code span must not split off the neighbor reference: {attributable_inline_bang:?}"
+        );
+        assert!(
+            explicitly_not_proven_required_work(inline_bang),
+            "unfiltered inline-bang neighbor text must still show why attribution is load-bearing"
+        );
+
+        let inline_dot = "Complete behavior is not established for `$x. meth $y`; see #11.";
+        let attributable_inline_dot =
+            exclusion_text_attributable_to_closed_issue(inline_dot, &key, current);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_inline_dot),
+            "a `.` inside an inline code span must not split off the neighbor reference: {attributable_inline_dot:?}"
+        );
+
+        let escaped = "This PR does not prove the complete remaining work for \\`foo? bar\\`. That work is tracked by #11.";
+        let attributable_escaped =
+            exclusion_text_attributable_to_closed_issue(escaped, &key, current);
+        assert!(
+            explicitly_not_proven_required_work(&attributable_escaped),
+            "escaped backticks must not hide an unnumbered closed-issue exclusion: {attributable_escaped:?}"
         );
     }
 
