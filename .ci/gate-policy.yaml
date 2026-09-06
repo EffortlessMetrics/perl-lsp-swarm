@@ -1676,6 +1676,22 @@ gates:
       - contract
       - generated
 
+  - name: release_trust_invariants
+    tier: merge_gate
+    description: "Validate policy/release-trust-invariants.v1.json and its generated status projection"
+    required: true
+    command: cargo xtask release-trust-invariants check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+      - release
+
   - name: compiler_proof_policy
     tier: merge_gate
     description: "Validate contracts/compiler/perl_compiler_proof_policy.v1.toml against the concept ledger and its generated status doc"

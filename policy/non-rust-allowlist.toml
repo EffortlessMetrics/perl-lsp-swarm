@@ -1323,6 +1323,22 @@ created = "2026-08-08"
 review_after = "2026-11-08"
 
 [[allow]]
+id = "non-rust-release-trust-invariants-schema"
+path = "schemas/release_trust_invariants.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "JSON Schema for the release_trust_invariants.v1 registry (#9392). The xtask checker enforces closed vocabularies and owner/producer/denominator currentness without consuming live candidate receipts."
+covered_by = [
+  "cargo xtask release-trust-invariants check",
+  "cargo test -p xtask --locked --test release_trust_invariants",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
+
+[[allow]]
 id = "non-rust-release-candidate-artifacts-schema"
 path = "schemas/release_candidate_artifacts.v1.schema.json"
 kind = "release_contract"
