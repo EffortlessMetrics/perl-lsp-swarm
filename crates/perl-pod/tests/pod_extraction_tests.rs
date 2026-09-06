@@ -1247,6 +1247,7 @@ fn extract_pod_rejects_malformed_unknown_and_lookalike_commands_without_panic() 
         "=cutlery",
         "=headache",
         "=head10 not a heading",
+        "=head1:",
         "=cut!",
         "=heаd1 confusable",
         "=overboard",
