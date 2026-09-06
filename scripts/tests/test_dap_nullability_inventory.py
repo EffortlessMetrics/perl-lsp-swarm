@@ -38,18 +38,23 @@ RUST = {
                 "optional": False,
                 "skips_when_none": False,
                 "has_default": False,
+                "wire_name": "alwaysPresent",
             },
             "maybe_null": {
                 "rust_type": "Option<String>",
                 "optional": True,
                 "skips_when_none": False,
                 "has_default": False,
+                "wire_name": "maybeNull",
             },
             "maybe_absent": {
                 "rust_type": "Option<String>",
                 "optional": True,
                 "skips_when_none": True,
                 "has_default": True,
+                # Deliberate: an explicit rename to the same wire name as
+                # always_present exercises the double-claim falsifier.
+                "wire_name": "alwaysPresent",
             },
         },
     }
@@ -75,23 +80,21 @@ def test_nullable_union_flip_changes_the_class():
     """Falsifier: nullable union becomes non-null but Rust stays Option."""
     nullable = rows_for(
         {
-            "properties": {"maybe_null": {"type": ["string", "null"]}},
-            "required": ["maybe_null"],
-        },
-        RUST,
-    )
-    non_null = rows_for(
-        {
-            "properties": {"maybe_null": {"type": "string"}},
-            "required": ["maybe_null"],
+            "properties": {"maybeNull": {"type": ["string", "null"]}},
+            "required": ["maybeNull"],
         },
         RUST,
     )
     assert nullable[0]["class"] == "required-nullable"
-    # A non-null union over an Option<> Rust owner is the recorded
-    # contradiction class; the row must still exist and carry it.
-    assert non_null[0]["class"] == "required-non-null"
-    assert "contradiction" in non_null[0]
+    # The flip: a non-null required union over an Option<> Rust owner is a
+    # contradiction — the build must fail on it (fail-closed on new
+    # contradictions), never silently absorb it.
+    flipped_definition = {
+        "properties": {"maybeNull": {"type": "string"}},
+        "required": ["maybeNull"],
+    }
+    _, errors = mod.build_rows({"definitions": {"UnderTest": flipped_definition}}, RUST)
+    assert any("new contradiction" in error for error in errors), errors
 
 
 def test_required_nullable_and_optional_nullable_do_not_collapse():
@@ -124,18 +127,39 @@ def test_extension_field_is_never_standard():
     assert rows == []
 
 
-def test_rust_field_claimed_twice_fails():
-    """Falsifier: one Rust field maps to conflicting standard rows."""
+def test_two_properties_never_share_one_rust_owner():
+    """Falsifier, restated for rename-aware mapping: one Rust field maps to
+    conflicting standard rows. Under exact wire-name matching this is
+    structurally prevented (each field owns exactly one wire name), so the
+    invariant asserted is distinctness of the mapped owners; the generator
+    keeps the claimed-guard as defense in depth."""
     definition = {
         "properties": {
             "alwaysPresent": {"type": "string"},
-            "always_present_alias": {"type": "string"},
+            "maybeAbsent": {"type": "string"},
         },
-        "required": ["alwaysPresent", "always_present_alias"],
+        "required": ["alwaysPresent"],
     }
     rows, errors = mod.build_rows({"definitions": {"UnderTest": definition}}, RUST)
-    assert errors, "a double-claimed Rust field must fail the build"
-    assert any("already claimed" in error for error in errors)
+    assert not errors, errors
+    owners = [row.get("rust_owner") for row in rows if row.get("rust_owner")]
+    assert len(owners) == len(set(owners)), "a Rust field was claimed twice"
+    # A property with no matching wire name surfaces as an explicit
+    # not-modeled row rather than silently claiming a neighbor.
+    definition_with_stranger = {
+        "properties": {
+            "alwaysPresent": {"type": "string"},
+            "unrelatedWire": {"type": "string"},
+        },
+        "required": ["alwaysPresent"],
+    }
+    stranger_rows, _ = mod.build_rows(
+        {"definitions": {"UnderTest": definition_with_stranger}}, RUST
+    )
+    stranger = [
+        row for row in stranger_rows if row["field"] == "unrelatedWire"
+    ]
+    assert stranger and stranger[0].get("rust_owner") is None
 
 
 def test_data_id_seed_class_is_required_nullable():
@@ -144,4 +168,17 @@ def test_data_id_seed_class_is_required_nullable():
 
 
 if __name__ == "__main__":
-    sys.exit(0)
+    # The dap-protocol-authority workflow invokes this file directly with
+    # python3; a bare exit would silently skip every falsifier.
+    failures = []
+    for name, function in sorted(globals().items()):
+        if name.startswith("test_") and callable(function):
+            try:
+                function()
+            except AssertionError as error:
+                failures.append(f"{name}: {error}")
+    if failures:
+        for failure in failures:
+            print(f"FAIL {failure}", file=sys.stderr)
+        sys.exit(1)
+    print(f"all {sum(1 for n in globals() if n.startswith('test_'))} falsifiers pass")

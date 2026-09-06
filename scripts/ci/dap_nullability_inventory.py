@@ -43,6 +43,22 @@ CLASSES = (
     "optional-nullable",
 )
 
+# Schema definitions whose Rust owners use project-specific names rather
+# than the schema definition name (fn_8H): without the alias the row is
+# wrongly reported as unsupported even though the field is modeled.
+RUST_OWNER_ALIASES = {
+    "Variable": "ProtocolVariable",
+    "StackFrame": "ProtocolStackFrame",
+    "ExceptionBreakpointsFilter": "ExceptionBreakpointFilter",
+}
+
+# Contradictions verified on main and accepted until their serde migration
+# (non-goal of the inventory PR). Any contradiction OUTSIDE this set fails
+# the build — the inventory must never silently absorb a new mismatch.
+KNOWN_CONTRADICTIONS = {
+    ("SourceArguments", "sourceReference"),
+}
+
 STRUCT_RE = re.compile(r"#\[serde\(([^)]*)\)\]\s*pub struct (\w+)\s*\{(.*?)\n\}", re.S)
 FIELD_RE = re.compile(r"(#\[serde\(([^)]*)\)\]\s*)?pub (\w+):\s*([^,\n]+),")
 
@@ -100,11 +116,17 @@ def parse_rust_structs() -> dict:
             optional = rust_type.startswith("Option<")
             skips_when_none = "skip_serializing_if" in attrs
             has_default = "default" in attrs
+            rename = None
+            rename_match = re.search(r'rename\s*=\s*"([^"]+)"', attrs)
+            if rename_match:
+                rename = rename_match.group(1)
             fields[rust_name] = {
                 "rust_type": rust_type,
                 "optional": optional,
                 "skips_when_none": skips_when_none,
                 "has_default": has_default,
+                "wire_name": rename
+                or (snake_to_camel(rust_name) if rename_all == "camelCase" else rust_name),
             }
         structs[name] = {"rename_all": rename_all, "fields": fields}
     return structs
@@ -116,14 +138,9 @@ def snake_to_camel(name: str) -> str:
 
 
 def rust_field_for(wire_name: str, struct: dict) -> tuple[str, dict] | None:
-    """Find the Rust field a camelCase wire property maps to."""
+    """Find the Rust field a wire property maps to (rename-aware)."""
     for rust_name, meta in struct["fields"].items():
-        wire = (
-            snake_to_camel(rust_name)
-            if struct["rename_all"] == "camelCase"
-            else rust_name
-        )
-        if wire == wire_name:
+        if meta["wire_name"] == wire_name:
             return rust_name, meta
     return None
 
@@ -183,6 +200,37 @@ def build_rows(schema: dict, rust: dict) -> tuple[list[dict], list[str]]:
     claimed: dict[tuple[str, str], str] = {}
     for def_name in sorted(definitions):
         definition = definitions[def_name]
+        composed_properties = None
+        for branch in definition.get("allOf", []):
+            if isinstance(branch, dict) and branch.get("properties"):
+                composed_properties = branch["properties"]
+                break
+        if composed_properties is not None:
+            # Non-response composed definitions (requests, events): their
+            # envelope fields belong to the inventory too.
+            required = set(definition.get("allOf", [])[0].get("required", []))
+            for branch in definition.get("allOf", []):
+                if isinstance(branch, dict):
+                    required.update(branch.get("required", []))
+            for wire_name in sorted(composed_properties):
+                property_schema = composed_properties[wire_name]
+                schema_nullable = is_nullable_schema(property_schema)
+                schema_required = wire_name in required
+                row_class = classify(schema_required, schema_nullable)
+                mapped = rust_field_for(wire_name, rust.get(def_name, {"fields": {}})) or (
+                    rust_field_for(wire_name, rust.get(f"{def_name}Body", {"fields": {}}))
+                )
+                rows.append(
+                    {
+                        "definition": def_name,
+                        "field": wire_name,
+                        "class": row_class,
+                        "rust_owner": f"{def_name}::{mapped[0]}" if mapped else None,
+                        "rust_type": mapped[1]["rust_type"] if mapped else None,
+                        "reason": None if mapped else "not modeled in protocol.rs",
+                    }
+                )
+            continue
         body_properties = response_body_properties(definition, definitions)
         if body_properties is not None:
             # Response definitions: rows are the body payload's fields. The
@@ -222,7 +270,9 @@ def build_rows(schema: dict, rust: dict) -> tuple[list[dict], list[str]]:
         if not properties:
             continue
         required = set(definition.get("required", []))
-        owner = rust.get(def_name)
+        owner = rust.get(def_name) or rust.get(
+            RUST_OWNER_ALIASES.get(def_name, "")
+        )
         if owner is None:
             for wire_name in sorted(properties):
                 rows.append(
@@ -285,6 +335,10 @@ def build_rows(schema: dict, rust: dict) -> tuple[list[dict], list[str]]:
             }
             if contradiction:
                 row["contradiction"] = contradiction
+                if (def_name, wire_name) not in KNOWN_CONTRADICTIONS:
+                    errors.append(
+                        f"{def_name}.{wire_name}: new contradiction — {contradiction}"
+                    )
             rows.append(row)
     return rows, errors
 
@@ -311,7 +365,7 @@ def main() -> int:
     report = {
         "schema_version": "dap_nullability_inventory.v1",
         "upstream_sha256": hashlib.sha256(PINNED_SCHEMA.read_bytes()).hexdigest(),
-        "protocol_rs_rows": len(rows),
+        "schema_field_rows": len(rows),
         "class_counts": {
             class_name: sum(1 for row in rows if row["class"] == class_name)
             for class_name in sorted({row["class"] for row in rows})
