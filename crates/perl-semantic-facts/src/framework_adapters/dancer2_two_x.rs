@@ -284,18 +284,69 @@ pub fn dancer2_two_x_descriptor() -> AdapterDescriptor {
 ///
 /// Only the descriptor-owned `Dancer2` selector participates; a resolved
 /// `Dancer2::Core` module never activates this adapter, and a resolved 1.x
-/// identity fails the reviewed 2.x constraint explicitly.
+/// identity fails the reviewed 2.x constraint explicitly. A foreign
+/// descriptor (not this adapter's id) fails closed instead of detecting, a
+/// pre-admission cancellation wins over any evidence, and matching selector
+/// evaluations with contradictory terminal outcomes surface as `Conflicting`
+/// rather than silently picking one.
 #[must_use]
 pub fn detect_dancer2_two_x(input: &AdapterDetectionInput) -> AdapterDetectionResult {
     let descriptor = &input.descriptor;
-    let Some(evaluation) = input.module_observation.evaluations.iter().find(
-        |evaluation: &&ModuleSelectorEvaluation| {
+    if descriptor.adapter_id != DANCER2_TWO_X_ADAPTER_ID {
+        return AdapterDetectionResult::for_input(
+            input,
+            DetectionOutcome::Unsupported {
+                reason: format!(
+                    "foreign descriptor `{}` (adapter id {}) cannot drive the Dancer2 2.x detector",
+                    descriptor.name, descriptor.adapter_id.0
+                ),
+            },
+        );
+    }
+    if input.cancellation.is_cancelled {
+        return AdapterDetectionResult::for_input(input, DetectionOutcome::Cancelled);
+    }
+    let matching: Vec<&ModuleSelectorEvaluation> = input
+        .module_observation
+        .evaluations
+        .iter()
+        .filter(|evaluation: &&ModuleSelectorEvaluation| {
             descriptor
                 .required_module_selectors
                 .iter()
                 .any(|selector| selector == &evaluation.selector)
-        },
-    ) else {
+        })
+        .collect();
+    if matching.is_empty() {
+        return AdapterDetectionResult::for_input(
+            input,
+            DetectionOutcome::Unavailable { reason: UnavailableReason::NoModulesAvailable },
+        );
+    }
+    let any_matched = matching
+        .iter()
+        .any(|evaluation| matches!(evaluation.outcome, ModuleSelectorOutcome::Matched { .. }));
+    let any_absent = matching
+        .iter()
+        .any(|evaluation| matches!(evaluation.outcome, ModuleSelectorOutcome::Absent));
+    if any_matched && any_absent {
+        return AdapterDetectionResult::for_input(
+            input,
+            DetectionOutcome::Conflicting {
+                conflict_descriptions: vec![format!(
+                    "{} matching selector evaluations disagree: both a matched and an absent \
+                     terminal outcome were observed for {}",
+                    matching.len(),
+                    descriptor.required_module_selectors.join(", ")
+                )],
+            },
+        );
+    }
+    let Some(evaluation) = matching
+        .iter()
+        .find(|evaluation| matches!(evaluation.outcome, ModuleSelectorOutcome::Matched { .. }))
+        .or_else(|| matching.first())
+    else {
         return AdapterDetectionResult::for_input(
             input,
             DetectionOutcome::Unavailable { reason: UnavailableReason::NoModulesAvailable },
@@ -1223,6 +1274,10 @@ mod tests {
         )
     }
 
+    fn absent_selector(selector: &str, _generation: &str) -> ModuleSelectorEvaluation {
+        ModuleSelectorEvaluation::new(selector.to_string(), ModuleSelectorOutcome::Absent)
+    }
+
     fn detected() -> AdapterDetectionResult {
         detect_dancer2_two_x(&detection_input(
             vec![matched_two_x(
@@ -1408,9 +1463,7 @@ mod tests {
         // `q{...}` is ONE string argument: word-splitting never applies. The
         // escaped close stays literal text, so the exclusion is the whole
         // inner string minus the leading `!` — not a truncation at `\\}`.
-        let evidence = parse_dancer2_two_x_import_args(&[
-            "q{!get \\} !post}".to_string(),
-        ]);
+        let evidence = parse_dancer2_two_x_import_args(&["q{!get \\} !post}".to_string()]);
         assert_eq!(
             evidence.excluded_keywords,
             vec!["get \\} !post".to_string()],
@@ -1535,6 +1588,64 @@ mod tests {
             evidence.appname,
             Some(AppNameSelection::Literal("$app".to_string())),
             "single quotes never interpolate: the sigil is literal text"
+        );
+    }
+
+    #[test]
+    fn cancelled_admission_returns_cancelled_not_detected() {
+        use crate::framework::AdapterCancellation;
+        let mut input = detection_input(
+            vec![matched_two_x(
+                Some("2.0.1"),
+                "gen-1",
+                crate::framework::DetectionEvidenceClass::ResolvedModule,
+            )],
+            "gen-1",
+        );
+        input.cancellation = AdapterCancellation::cancelled();
+        let result = detect_dancer2_two_x(&input);
+        assert_eq!(result.outcome, DetectionOutcome::Cancelled);
+    }
+
+    #[test]
+    fn foreign_descriptor_fails_closed_without_detecting() {
+        use crate::framework::AdapterId;
+        let mut input = detection_input(
+            vec![matched_two_x(
+                Some("2.0.1"),
+                "gen-1",
+                crate::framework::DetectionEvidenceClass::ResolvedModule,
+            )],
+            "gen-1",
+        );
+        input.descriptor.adapter_id = AdapterId(u64::MAX);
+        input.descriptor.name = "some-other-adapter".to_string();
+        let result = detect_dancer2_two_x(&input);
+        assert!(
+            !matches!(result.outcome, DetectionOutcome::Detected { .. }),
+            "a foreign descriptor must not produce a Dancer2 detection: {:?}",
+            result.outcome
+        );
+    }
+
+    #[test]
+    fn contradictory_terminal_observations_surface_as_conflicting() {
+        let input = detection_input(
+            vec![
+                matched_two_x(
+                    Some("2.0.1"),
+                    "gen-1",
+                    crate::framework::DetectionEvidenceClass::ResolvedModule,
+                ),
+                absent_selector("Dancer2", "gen-1"),
+            ],
+            "gen-1",
+        );
+        let result = detect_dancer2_two_x(&input);
+        assert!(
+            matches!(result.outcome, DetectionOutcome::Conflicting { .. }),
+            "matched + absent must surface as Conflicting, got {:?}",
+            result.outcome
         );
     }
 }
