@@ -274,7 +274,12 @@ fn plugin_keyword_surfaces_mint_nothing() {
     let code = "package App;\nuse Dancer2;\nuse Dancer2::Plugin 'session';\n";
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
-    let found = extract_dancer2_two_x_activation_sites(&ast, code, FileId(1), SourceGeneration::known("gen-1"));
+    let found = extract_dancer2_two_x_activation_sites(
+        &ast,
+        code,
+        FileId(1),
+        SourceGeneration::known("gen-1"),
+    );
     assert_eq!(found.len(), 1, "only the exact `use Dancer2` activates");
     let facts = dancer2_two_x_activation_facts(
         &detected_two_x("2.0.1"),
@@ -448,7 +453,12 @@ fn dancer2_two_x_skeleton_drives_end_to_end_activation() {
     let app_source = must(std::fs::read_to_string(format!("{skeleton_root}/t/basic.t")));
     let mut parser = Parser::new(&app_source);
     let ast = must(parser.parse());
-    let found = extract_dancer2_two_x_activation_sites(&ast, &app_source, FileId(21), SourceGeneration::known("gen-1"));
+    let found = extract_dancer2_two_x_activation_sites(
+        &ast,
+        &app_source,
+        FileId(21),
+        SourceGeneration::known("gen-1"),
+    );
     assert_eq!(found.len(), 2, "the skeleton carries two package apps");
     assert_eq!(found[0].package.as_deref(), Some("MyApp2x"));
     assert_eq!(found[1].package.as_deref(), Some("MyApp2xAPI"));
