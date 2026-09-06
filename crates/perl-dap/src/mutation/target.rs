@@ -217,6 +217,38 @@ pub enum WritabilityDisposition {
     NotProven,
 }
 
+/// Why a location was *not* writable.
+///
+/// This is [`WritabilityDisposition`] minus [`WritabilityDisposition::Writable`],
+/// and it exists so a refusal cannot carry the one disposition that would
+/// contradict it. A `NotWritable(Writable)` refusal or a
+/// `ReadOnlyOrUnaddressable(Writable)` outcome is not merely untested — it is
+/// unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RefusedWritability {
+    /// Proven present but not writable.
+    ReadOnly,
+    /// Present but with no addressable storage cell.
+    Unaddressable,
+    /// Writability was never established. Uncertainty fails closed.
+    NotProven,
+}
+
+impl RefusedWritability {
+    /// The refusal a disposition names, or `None` when it is writable.
+    ///
+    /// Returning `None` for [`WritabilityDisposition::Writable`] is the point:
+    /// there is no refusal to build from it.
+    pub fn from_disposition(disposition: WritabilityDisposition) -> Option<Self> {
+        match disposition {
+            WritabilityDisposition::Writable => None,
+            WritabilityDisposition::ReadOnly => Some(Self::ReadOnly),
+            WritabilityDisposition::Unaddressable => Some(Self::Unaddressable),
+            WritabilityDisposition::NotProven => Some(Self::NotProven),
+        }
+    }
+}
+
 /// Admitted writable operation subject cohort.
 ///
 /// Exactly the three v1 cohorts. A deferred or incoherent location kind has no
@@ -285,8 +317,11 @@ pub enum MutationTargetBindingError {
     #[error("container member requires a proven referent identity")]
     MissingReferentForContainerMember,
     /// The location is not proven writable.
+    ///
+    /// Carries [`RefusedWritability`], so this refusal cannot claim the
+    /// location was writable.
     #[error("mutation location is not writable: {0:?}")]
-    NotWritable(WritabilityDisposition),
+    NotWritable(RefusedWritability),
     /// The accompanying value observation belongs to another suspension.
     #[error("inspected value identity was observed under a different value authority")]
     StaleValueObservation,
@@ -359,8 +394,8 @@ impl MutationTargetCandidate {
         if observation_is_stale {
             return Err(MutationTargetBindingError::StaleValueObservation);
         }
-        if self.writability != WritabilityDisposition::Writable {
-            return Err(MutationTargetBindingError::NotWritable(self.writability));
+        if let Some(refusal) = RefusedWritability::from_disposition(self.writability) {
+            return Err(MutationTargetBindingError::NotWritable(refusal));
         }
 
         Ok(MutationTarget {
@@ -431,6 +466,7 @@ impl MutationTarget {
             key_bytes,
             session_generation: self.location.session_generation(),
             suspension_generation: self.location.suspension_generation(),
+            value_authority_generation: self.location.value_authority_generation(),
             profile_version: self.profile_version,
         }
     }
@@ -451,6 +487,12 @@ pub struct MutationTargetReceipt {
     pub session_generation: u64,
     /// Suspension generation the target was bound under.
     pub suspension_generation: u64,
+    /// Value-authority generation the target was bound under.
+    ///
+    /// Without this, two targets bound under different observed values during
+    /// one suspension would produce identical receipts, and a consumer could
+    /// not tell which observation authorized an edit.
+    pub value_authority_generation: u64,
     /// Supported-target profile version.
     pub profile_version: u32,
 }

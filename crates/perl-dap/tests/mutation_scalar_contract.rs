@@ -20,8 +20,9 @@ use perl_dap::mutation::{
     MUTATION_STRUCTURED_VALUE_SCHEMA_VERSION, MutationDeadline, MutationLocationKind,
     MutationMember, MutationOperation, MutationOrigin, MutationOutcome, MutationTarget,
     MutationTargetBindingError, MutationTargetCandidate, MutationTargetCohort, MutationValue,
-    MutationValueKind, MutationValueProfile, ObservedReadBack, ResponseValueFormat,
-    StructuredMutationLimits, WritabilityDisposition, parse_structured_mutation,
+    MutationValueKind, MutationValueProfile, ObservedReadBack, RefusedWritability,
+    ResponseValueFormat, StructuredMutationLimits, WritabilityDisposition,
+    parse_structured_mutation,
 };
 
 type TestResult<T = ()> = Result<T, String>;
@@ -227,17 +228,22 @@ fn writability_fails_closed_and_uncertainty_never_binds() -> TestResult {
     if WritabilityDisposition::default() != WritabilityDisposition::NotProven {
         return Err("writability default must be NotProven".to_string());
     }
-    for disposition in [
-        WritabilityDisposition::ReadOnly,
-        WritabilityDisposition::Unaddressable,
-        WritabilityDisposition::NotProven,
+    for (disposition, refusal) in [
+        (WritabilityDisposition::ReadOnly, RefusedWritability::ReadOnly),
+        (WritabilityDisposition::Unaddressable, RefusedWritability::Unaddressable),
+        (WritabilityDisposition::NotProven, RefusedWritability::NotProven),
     ] {
         let mut candidate = lexical_candidate("frame#1", "pad:$x@0");
         candidate.writability = disposition;
         let error = binding_error(&candidate)?;
-        if error != MutationTargetBindingError::NotWritable(disposition) {
+        if error != MutationTargetBindingError::NotWritable(refusal) {
             return Err(format!("expected a not-writable refusal, got {error:?}"));
         }
+    }
+
+    // The one disposition a refusal must never be able to carry.
+    if RefusedWritability::from_disposition(WritabilityDisposition::Writable).is_some() {
+        return Err("a writable location must yield no refusal".to_string());
     }
     Ok(())
 }
@@ -525,7 +531,7 @@ fn before_dispatch_outcomes() -> Vec<MutationOutcome> {
         MutationOutcome::StaleSuspension,
         MutationOutcome::StaleValueAuthority,
         MutationOutcome::UnknownOrWrongContainerMember,
-        MutationOutcome::ReadOnlyOrUnaddressable(WritabilityDisposition::ReadOnly),
+        MutationOutcome::ReadOnlyOrUnaddressable(RefusedWritability::ReadOnly),
         MutationOutcome::UnsupportedFrameOrTargetCohort,
         MutationOutcome::ValueParseRefused,
         MutationOutcome::TimeoutBeforeDispatch,
@@ -791,6 +797,80 @@ fn the_receipt_is_the_serializable_projection() -> TestResult {
     let rendered = serde_json::to_string(&op.receipt_projection()).map_err(|e| e.to_string())?;
     if !rendered.contains("operation_id") {
         return Err("the receipt lost its identity under serialization".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn receipts_distinguish_targets_bound_under_different_value_authorities() -> TestResult {
+    // Two edits in one suspension, against the same location, but authorized
+    // by different observations. If the receipt dropped value authority, a
+    // consumer could not tell which observed value authorized which edit.
+    let mut first = lexical_candidate("frame#1", "pad:$x@0");
+    first.value_authority_generation = Some(11);
+    let mut second = lexical_candidate("frame#1", "pad:$x@0");
+    second.value_authority_generation = Some(12);
+
+    let first_receipt = bind(&first)?.receipt_projection();
+    let second_receipt = bind(&second)?.receipt_projection();
+
+    if first_receipt.value_authority_generation != 11
+        || second_receipt.value_authority_generation != 12
+    {
+        return Err("receipts lost the value authority".to_string());
+    }
+    if first_receipt == second_receipt {
+        return Err("receipts did not distinguish the two value authorities".to_string());
+    }
+    // Everything else about them is identical, so authority is what separates them.
+    if first_receipt.session_generation != second_receipt.session_generation
+        || first_receipt.suspension_generation != second_receipt.suspension_generation
+    {
+        return Err("the fixture failed to hold the other generations equal".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn unsupported_receipts_keep_the_exact_refusing_cell() -> TestResult {
+    // The backend seam promises to name the backend/mode/profile cell that
+    // refused. Raw outcomes are deliberately unserializable, so if the receipt
+    // dropped the cell the durable evidence would say only "unsupported".
+    let native = MutationOutcome::Unsupported {
+        backend: "native".to_string(),
+        mode: "perl5db".to_string(),
+        profile: MutationValueProfile::ScalarV1,
+    };
+    let peer = MutationOutcome::Unsupported {
+        backend: "external-peer".to_string(),
+        mode: "ptkdb".to_string(),
+        profile: MutationValueProfile::ScalarV1,
+    };
+
+    let native_receipt = native.receipt_projection();
+    let peer_receipt = peer.receipt_projection();
+
+    let cell = native_receipt
+        .unsupported_cell
+        .as_ref()
+        .ok_or_else(|| "unsupported receipt lost its cell".to_string())?;
+    if cell.backend != "native" || cell.mode != "perl5db" {
+        return Err(format!("unexpected refusing cell {cell:?}"));
+    }
+    if native_receipt == peer_receipt {
+        return Err("two different refusing cells produced one receipt".to_string());
+    }
+
+    // Only Unsupported carries a cell.
+    for outcome in before_dispatch_outcomes()
+        .into_iter()
+        .chain(after_dispatch_outcomes())
+        .chain([success_outcome()])
+    {
+        let carries = outcome.receipt_projection().unsupported_cell.is_some();
+        if carries != matches!(outcome, MutationOutcome::Unsupported { .. }) {
+            return Err(format!("{outcome:?} carried the wrong unsupported-cell state"));
+        }
     }
     Ok(())
 }

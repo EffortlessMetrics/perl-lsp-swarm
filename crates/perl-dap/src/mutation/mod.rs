@@ -53,7 +53,10 @@ pub use operation::{
     MutationDeadline, MutationOperation, MutationOperationReceipt, MutationOrigin,
     ResponseValueFormat,
 };
-pub use outcome::{MutationOutcome, MutationOutcomeReceipt, ObservedReadBack, PossibleApplication};
+pub use outcome::{
+    MutationOutcome, MutationOutcomeReceipt, ObservedReadBack, PossibleApplication,
+    UnsupportedCellReceipt,
+};
 pub use scalar_value::{
     ExactInteger, MUTATION_SCALAR_VALUE_SCHEMA_VERSION, MutationValue, MutationValueKind,
     MutationValueProfile, MutationValueReceipt,
@@ -66,5 +69,6 @@ pub use structured_value::{
 pub use target::{
     InspectedValueIdentity, MUTATION_TARGET_PROFILE_VERSION, MutationLocationKind,
     MutationLocationProvenance, MutationMember, MutationTarget, MutationTargetBindingError,
-    MutationTargetCandidate, MutationTargetCohort, MutationTargetReceipt, WritabilityDisposition,
+    MutationTargetCandidate, MutationTargetCohort, MutationTargetReceipt, RefusedWritability,
+    WritabilityDisposition,
 };

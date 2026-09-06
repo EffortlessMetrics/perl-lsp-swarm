@@ -20,7 +20,7 @@
 use serde::Serialize;
 
 use super::scalar_value::{MutationValue, MutationValueProfile};
-use super::target::WritabilityDisposition;
+use super::target::RefusedWritability;
 
 /// Explicit claim that a dispatched mutation may already have been applied.
 ///
@@ -88,7 +88,10 @@ pub enum MutationOutcome {
     /// The container or member no longer resolves, or resolves elsewhere.
     UnknownOrWrongContainerMember,
     /// The location exists but cannot be written.
-    ReadOnlyOrUnaddressable(WritabilityDisposition),
+    ///
+    /// Carries [`RefusedWritability`], which has no `Writable` value, so this
+    /// refusal cannot contradict itself.
+    ReadOnlyOrUnaddressable(RefusedWritability),
     /// The frame or target cohort is outside the supported table.
     UnsupportedFrameOrTargetCohort,
     /// The value text was refused by the value parser.
@@ -233,12 +236,37 @@ impl MutationOutcome {
             read_back_value: self
                 .observed_read_back()
                 .map(|r| r.observed_value.receipt_projection()),
+            unsupported_cell: match self {
+                Self::Unsupported { backend, mode, profile } => Some(UnsupportedCellReceipt {
+                    backend: backend.clone(),
+                    mode: mode.clone(),
+                    profile: *profile,
+                }),
+                _ => None,
+            },
         }
     }
 }
 
+/// The exact backend/mode/profile cell that refused as unsupported.
+///
+/// Backend and mode are this adapter's own identifiers, never debuggee data,
+/// so they are receipt-safe. They are retained because the backend seam
+/// promises to name the cell that refused, and the raw outcome is
+/// deliberately not serializable — without this the durable evidence would
+/// say only "unsupported" and lose which capability cell it was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnsupportedCellReceipt {
+    /// Backend name that refused.
+    pub backend: String,
+    /// Backend mode cell.
+    pub mode: String,
+    /// Value profile that was offered.
+    pub profile: MutationValueProfile,
+}
+
 /// Redacted projection of an outcome for receipts and diagnostics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MutationOutcomeReceipt {
     /// Closed-vocabulary outcome class.
     pub class: &'static str,
@@ -250,4 +278,7 @@ pub struct MutationOutcomeReceipt {
     pub invalidates_value_authority: bool,
     /// Redacted projection of the observed read-back value, when any.
     pub read_back_value: Option<super::scalar_value::MutationValueReceipt>,
+    /// The exact cell that refused, populated only for
+    /// [`MutationOutcome::Unsupported`].
+    pub unsupported_cell: Option<UnsupportedCellReceipt>,
 }

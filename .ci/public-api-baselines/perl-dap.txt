@@ -1280,7 +1280,7 @@ pub perl_dap::mutation::MutationOutcome::ReadBackMalformedAfterPossibleMutation
 pub perl_dap::mutation::MutationOutcome::ReadBackMissingAfterPossibleMutation
 pub perl_dap::mutation::MutationOutcome::ReadBackOpaqueOrResourceLimited
 pub perl_dap::mutation::MutationOutcome::ReadBackTargetMismatch
-pub perl_dap::mutation::MutationOutcome::ReadOnlyOrUnaddressable(perl_dap::mutation::WritabilityDisposition)
+pub perl_dap::mutation::MutationOutcome::ReadOnlyOrUnaddressable(perl_dap::mutation::RefusedWritability)
 pub perl_dap::mutation::MutationOutcome::StaleSession
 pub perl_dap::mutation::MutationOutcome::StaleSuspension
 pub perl_dap::mutation::MutationOutcome::StaleValueAuthority
@@ -1315,7 +1315,7 @@ pub perl_dap::mutation::MutationTargetBindingError::MissingReferentForContainerM
 pub perl_dap::mutation::MutationTargetBindingError::MissingSessionGeneration
 pub perl_dap::mutation::MutationTargetBindingError::MissingSuspensionGeneration
 pub perl_dap::mutation::MutationTargetBindingError::MissingValueAuthorityGeneration
-pub perl_dap::mutation::MutationTargetBindingError::NotWritable(perl_dap::mutation::WritabilityDisposition)
+pub perl_dap::mutation::MutationTargetBindingError::NotWritable(perl_dap::mutation::RefusedWritability)
 pub perl_dap::mutation::MutationTargetBindingError::StaleValueObservation
 pub perl_dap::mutation::MutationTargetBindingError::UnsupportedLocationKind(perl_dap::mutation::MutationLocationKind)
 pub fn perl_dap::mutation::MutationTargetBindingError::clone(&self) -> perl_dap::mutation::MutationTargetBindingError
@@ -1359,6 +1359,15 @@ pub fn perl_dap::mutation::MutationValueProfile::clone(&self) -> perl_dap::mutat
 pub fn perl_dap::mutation::MutationValueProfile::eq(&self, other: &perl_dap::mutation::MutationValueProfile) -> bool
 pub fn perl_dap::mutation::MutationValueProfile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::mutation::MutationValueProfile::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub enum perl_dap::mutation::RefusedWritability
+pub perl_dap::mutation::RefusedWritability::NotProven
+pub perl_dap::mutation::RefusedWritability::ReadOnly
+pub perl_dap::mutation::RefusedWritability::Unaddressable
+pub fn perl_dap::mutation::RefusedWritability::from_disposition(disposition: perl_dap::mutation::WritabilityDisposition) -> core::option::Option<Self>
+pub fn perl_dap::mutation::RefusedWritability::clone(&self) -> perl_dap::mutation::RefusedWritability
+pub fn perl_dap::mutation::RefusedWritability::eq(&self, other: &perl_dap::mutation::RefusedWritability) -> bool
+pub fn perl_dap::mutation::RefusedWritability::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::RefusedWritability::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub perl_dap::mutation::StructuredRefusal::AggregateTooLarge
 pub perl_dap::mutation::StructuredRefusal::AggregateTooLarge::limit: usize
 pub perl_dap::mutation::StructuredRefusal::DepthExceeded
@@ -1485,6 +1494,7 @@ pub perl_dap::mutation::MutationOutcomeReceipt::class: &'static str
 pub perl_dap::mutation::MutationOutcomeReceipt::invalidates_value_authority: bool
 pub perl_dap::mutation::MutationOutcomeReceipt::possible_application: bool
 pub perl_dap::mutation::MutationOutcomeReceipt::read_back_value: core::option::Option<perl_dap::mutation::MutationValueReceipt>
+pub perl_dap::mutation::MutationOutcomeReceipt::unsupported_cell: core::option::Option<perl_dap::mutation::UnsupportedCellReceipt>
 pub fn perl_dap::mutation::MutationOutcomeReceipt::clone(&self) -> perl_dap::mutation::MutationOutcomeReceipt
 pub fn perl_dap::mutation::MutationOutcomeReceipt::eq(&self, other: &perl_dap::mutation::MutationOutcomeReceipt) -> bool
 pub fn perl_dap::mutation::MutationOutcomeReceipt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1530,6 +1540,7 @@ pub perl_dap::mutation::MutationTargetReceipt::member_kind: &'static str
 pub perl_dap::mutation::MutationTargetReceipt::profile_version: u32
 pub perl_dap::mutation::MutationTargetReceipt::session_generation: u64
 pub perl_dap::mutation::MutationTargetReceipt::suspension_generation: u64
+pub perl_dap::mutation::MutationTargetReceipt::value_authority_generation: u64
 pub fn perl_dap::mutation::MutationTargetReceipt::clone(&self) -> perl_dap::mutation::MutationTargetReceipt
 pub fn perl_dap::mutation::MutationTargetReceipt::eq(&self, other: &perl_dap::mutation::MutationTargetReceipt) -> bool
 pub fn perl_dap::mutation::MutationTargetReceipt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1575,6 +1586,14 @@ pub fn perl_dap::mutation::StructuredMutationLimits::clone(&self) -> perl_dap::m
 pub fn perl_dap::mutation::StructuredMutationLimits::eq(&self, other: &perl_dap::mutation::StructuredMutationLimits) -> bool
 pub fn perl_dap::mutation::StructuredMutationLimits::default() -> Self
 pub fn perl_dap::mutation::StructuredMutationLimits::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::mutation::UnsupportedCellReceipt
+pub perl_dap::mutation::UnsupportedCellReceipt::backend: alloc::string::String
+pub perl_dap::mutation::UnsupportedCellReceipt::mode: alloc::string::String
+pub perl_dap::mutation::UnsupportedCellReceipt::profile: perl_dap::mutation::MutationValueProfile
+pub fn perl_dap::mutation::UnsupportedCellReceipt::clone(&self) -> perl_dap::mutation::UnsupportedCellReceipt
+pub fn perl_dap::mutation::UnsupportedCellReceipt::eq(&self, other: &perl_dap::mutation::UnsupportedCellReceipt) -> bool
+pub fn perl_dap::mutation::UnsupportedCellReceipt::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::UnsupportedCellReceipt::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub const perl_dap::mutation::MUTATION_SCALAR_VALUE_SCHEMA_VERSION: u32
 pub const perl_dap::mutation::MUTATION_STRUCTURED_VALUE_SCHEMA_VERSION: u32
 pub const perl_dap::mutation::MUTATION_TARGET_PROFILE_VERSION: u32
