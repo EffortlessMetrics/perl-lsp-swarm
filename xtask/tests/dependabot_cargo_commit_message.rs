@@ -90,6 +90,23 @@ updates:
     )
 }
 
+/// GitHub documents only `include: "scope"`. A different string must not
+/// silently skip the composition contract.
+#[test]
+fn include_other_than_scope_is_rejected() -> Result<()> {
+    must_err_containing(
+        r#"
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    commit-message:
+      prefix: "chore"
+      include: "not-scope"
+"#,
+        "found `not-scope`",
+    )
+}
+
 /// Keeping `prefix: "chore(deps)"` and deleting `include` also yields a
 /// single-looking `chore(deps): ...` title, but by the wrong mechanism, and
 /// it still cannot emit `deps-dev`.

@@ -98,10 +98,6 @@ pub fn rendered_title_prefix(prefix: &str, include: &str, dependency_type: &str)
     if include == "scope" { format!("{prefix}({dependency_type})") } else { prefix.to_owned() }
 }
 
-fn scope_count(rendered: &str) -> usize {
-    rendered.chars().filter(|c| *c == '(').count()
-}
-
 /// Accept only `prefix: "chore"` plus `include: "scope"`.
 ///
 /// That is the combination that renders `chore(deps)` / `chore(deps-dev)`
@@ -123,20 +119,6 @@ pub fn assert_single_cargo_scope(msg: &CargoCommitMessage) -> Result<()> {
             msg.prefix,
             rendered_title_prefix(&msg.prefix, &msg.include, "deps")
         );
-    }
-    for dependency_type in ["deps", "deps-dev"] {
-        let rendered = rendered_title_prefix(&msg.prefix, &msg.include, dependency_type);
-        if scope_count(&rendered) != 1 {
-            bail!(
-                "rendered Cargo title prefix `{rendered}` must contain exactly one \
-                 parenthetical scope; found {} (#13477)",
-                scope_count(&rendered)
-            );
-        }
-        let expected = format!("chore({dependency_type})");
-        if rendered != expected {
-            bail!("expected rendered prefix `{expected}`, got `{rendered}` (#13477)");
-        }
     }
     Ok(())
 }
