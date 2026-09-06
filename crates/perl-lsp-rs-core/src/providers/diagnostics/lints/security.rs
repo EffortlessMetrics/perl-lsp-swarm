@@ -1694,7 +1694,7 @@ mod tests {
         r#"my $dbh = DBI->connect("dbi:Pg:dbname=x", "u", "p");"#
     }
 
-    fn pl607<'a>(diags: &'a [Diagnostic]) -> Option<&'a Diagnostic> {
+    fn pl607(diags: &[Diagnostic]) -> Option<&Diagnostic> {
         diags.iter().find(|d| d.code.as_deref() == Some("PL607"))
     }
 

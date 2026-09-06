@@ -11,7 +11,8 @@ fn completions_at_end(source: &str) -> Vec<CompletionItem> {
 
 fn completions_at_marker(source: &str) -> Vec<CompletionItem> {
     const MARKER: &str = "<|>";
-    let position = source.find(MARKER).expect("completion marker should be present");
+    assert!(source.contains(MARKER), "completion marker should be present");
+    let position = source.find(MARKER).unwrap_or_default();
     let source = source.replacen(MARKER, "", 1);
     let ast = Parser::new(&source).parse_with_recovery().ast;
     CompletionProvider::new_with_index_and_source(&ast, &source, None)

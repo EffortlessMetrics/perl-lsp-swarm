@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 mod build_catalog {
     use perl_test_must::{must_err_with, must_with};
 

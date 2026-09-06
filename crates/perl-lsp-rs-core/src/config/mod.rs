@@ -3182,7 +3182,7 @@ mod tests {
         let (merged, conflicts) = merge_project_configs_for_server(&inputs);
 
         assert_eq!(
-            merged.critic.include.as_ref().map(Vec::as_slice),
+            merged.critic.include.as_deref(),
             Some(&["ProhibitGrep".to_string()][..])
         );
         assert_eq!(conflicts.len(), 1);

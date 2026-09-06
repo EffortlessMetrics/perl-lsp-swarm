@@ -2069,7 +2069,7 @@ mod tests {
         ));
 
         let oversized: Vec<&str> =
-            std::iter::repeat("x").take(MAX_FIELDS_PER_OBSERVATION + 1).collect();
+            std::iter::repeat_n("x", MAX_FIELDS_PER_OBSERVATION + 1).collect();
         assert!(matches!(
             draft.expect_canonical_fields(&oversized),
             Err(ObservationError::TooManyFields { .. })

@@ -17,7 +17,7 @@ use super::{
     SuppressionReason, SurfaceInputs, WatcherPlanDecision, WatcherWithholdReason,
 };
 use crate::features::policy::FeatureProfile;
-use crate::protocol::capabilities::{BuildFlags, capabilities_json, get_supported_commands};
+use crate::protocol::capabilities::{capabilities_json, get_supported_commands};
 use crate::protocol::final_surface_inventory::{census_profiles, flatten_surface_pointers};
 
 /// Minimal client evidence: no declarations at all.

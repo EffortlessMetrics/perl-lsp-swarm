@@ -486,7 +486,7 @@ mod tests {
     fn u64_above_i64_max() {
         // Construct a u64 value above i64::MAX directly in the JSON value.
         // serde_json stores this as N::PosInt(u64) with value > i64::MAX.
-        let big: u64 = u64::from(i64::MAX as u64) + 1; // i64::MAX + 1
+        let big: u64 = (i64::MAX as u64) + 1; // i64::MAX + 1
         let value = serde_json::Value::Number(serde_json::Number::from(big));
         let params = json!({"textDocument": {"version": value}});
         assert_eq!(

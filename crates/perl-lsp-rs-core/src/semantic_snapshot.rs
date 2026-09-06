@@ -2535,7 +2535,8 @@ mod tests {
 
     /// Build valid parts for each of the twelve terminal states.
     fn parts_for_terminal(terminal: SemanticSnapshotTerminalState) -> FileSemanticSnapshotParts {
-        let mut parts = match terminal {
+        
+        match terminal {
             SemanticSnapshotTerminalState::Unavailable
             | SemanticSnapshotTerminalState::Cancelled
             | SemanticSnapshotTerminalState::BudgetExhausted
@@ -2618,8 +2619,7 @@ mod tests {
                 parts.terminal_state = terminal;
                 parts
             }
-        };
-        parts
+        }
     }
 
     // ── Schema version ────────────────────────────────────────────────────
