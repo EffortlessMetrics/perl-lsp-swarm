@@ -6,8 +6,8 @@
 //! generated projections must pass and stay byte-deterministic.
 
 use super::{
-    INVALID_DIR, MANIFEST_PATH, SHUFFLED_PATH, canonical_form, render_explain_static,
-    render_projections, title_fingerprint, validate_document,
+    INVALID_DIR, MANIFEST_PATH, SHUFFLED_PATH, canonical_form, invalid_fixture_names,
+    render_explain_static, render_projections, title_fingerprint, validate_document,
 };
 use color_eyre::eyre::{Result, bail, eyre};
 use serde_json::{Map, Value};
@@ -130,6 +130,13 @@ fn every_expected_invalid_fixture_fails_with_named_code() -> Result<()> {
     if expected.len() < 12 {
         bail!("all twelve #10980 rejection classes stay discriminated (found {})", expected.len());
     }
+    let present = invalid_fixture_names(&repo_root()?)?;
+    let listed: std::collections::BTreeSet<String> = expected.keys().cloned().collect();
+    if present != listed {
+        bail!(
+            "fixture files and expected_errors.json keys must be the same set: {present:?} vs {listed:?}"
+        );
+    }
     for (filename, expected_code) in expected {
         let expected_code =
             expected_code.as_str().ok_or_else(|| eyre!("{filename}: string reason code"))?;
@@ -140,12 +147,12 @@ fn every_expected_invalid_fixture_fails_with_named_code() -> Result<()> {
             continue;
         }
         let doc = load(&format!("{INVALID_DIR}/{filename}"))?;
-        let actual = codes(&doc);
+        let actual: std::collections::BTreeSet<String> = codes(&doc).into_iter().collect();
         if actual.is_empty() {
             bail!("invalid/{filename} unexpectedly validated cleanly");
         }
-        if !actual.iter().any(|code| code == expected_code) {
-            bail!("invalid/{filename}: expected {expected_code}, got {actual:?}");
+        if actual.len() != 1 || !actual.contains(expected_code) {
+            bail!("invalid/{filename}: expected exactly {expected_code}, got {actual:?}");
         }
     }
     Ok(())

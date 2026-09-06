@@ -146,6 +146,10 @@
     {
       "key": "perl_corpus.external_repository",
       "authority": "d"
+    },
+    {
+      "key": "perl_corpus.static_cases",
+      "authority": "e"
     }
   ],
   "external_authorities": [
@@ -494,7 +498,7 @@
       "known_candidate_lineage_refs": [],
       "candidate_reuse_policy": "reuse an existing coherent candidate before creating one",
       "exclusive_conflict_keys": [
-        "perl_corpus.external_repository"
+        "perl_corpus.static_cases"
       ],
       "likely_owned_surfaces": [
         "x"

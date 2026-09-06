@@ -146,6 +146,10 @@
     {
       "key": "perl_corpus.external_repository",
       "authority": "d"
+    },
+    {
+      "key": "perl_corpus.static_cases",
+      "authority": "e"
     }
   ],
   "external_authorities": [
@@ -202,27 +206,39 @@
       "transferred_to": null,
       "known_candidate_lineage_refs": [],
       "candidate_reuse_policy": "reuse an existing coherent candidate before creating one",
-      "exclusive_conflict_keys": [],
-      "likely_owned_surfaces": [],
-      "forbidden_surfaces": [],
-      "positive_proof_obligations": [],
-      "first_falsifier": "",
-      "negative_controls": [],
-      "repository_verification": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.static_cases"
+      ],
+      "likely_owned_surfaces": [
+        "x"
+      ],
+      "forbidden_surfaces": [
+        "y"
+      ],
+      "positive_proof_obligations": [
+        "p"
+      ],
+      "first_falsifier": "a worded falsifier for the selectable controller",
+      "negative_controls": [
+        "n"
+      ],
+      "repository_verification": [
+        "cargo test"
+      ],
       "owned_generated_artifacts": [],
       "spec": {
         "requirement": "optional",
         "owner": "#8826"
       },
-      "claim_ceiling": "fixture claim ceiling bounded to one authority result",
+      "claim_ceiling": "a worded ceiling for the selectable controller",
       "stop_conditions": [
-        "fixture stop condition"
+        "a worded stop condition"
       ],
       "authority_before": "before pc_ctrl",
       "authority_after": "after pc_ctrl establishes its authority",
       "legacy_exit": {
-        "owner": null,
-        "condition": null
+        "owner": "#8826",
+        "condition": "removed"
       }
     },
     {

@@ -146,6 +146,10 @@
     {
       "key": "perl_corpus.external_repository",
       "authority": "d"
+    },
+    {
+      "key": "perl_corpus.static_cases",
+      "authority": "e"
     }
   ],
   "external_authorities": [

@@ -107,11 +107,13 @@ pub struct Violation {
 }
 
 impl Violation {
+    /// One named rejection with its bounded detail.
     fn new(code: &str, detail: impl Into<String>) -> Self {
         Self { code: code.to_string(), detail: detail.into() }
     }
 }
 
+/// Reason codes of a violation list, in report order.
 fn violation_codes(violations: &[Violation]) -> Vec<&str> {
     violations.iter().map(|violation| violation.code.as_str()).collect()
 }
@@ -120,10 +122,12 @@ fn violation_codes(violations: &[Violation]) -> Vec<&str> {
 // Small accessors over the untyped document.
 // ---------------------------------------------------------------------------
 
+/// A string field, or `""` when absent or not a string.
 fn str_field<'a>(node: &'a Map<String, Value>, key: &str) -> &'a str {
     node.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
+/// The string items of an array field, in manifest order.
 fn strings<'a>(node: &'a Map<String, Value>, key: &str) -> Vec<&'a str> {
     node.get(key)
         .and_then(Value::as_array)
@@ -131,6 +135,7 @@ fn strings<'a>(node: &'a Map<String, Value>, key: &str) -> Vec<&'a str> {
         .unwrap_or_default()
 }
 
+/// The object items of a top-level array field, in manifest order.
 fn objects<'a>(doc: &'a Value, key: &str) -> Vec<&'a Map<String, Value>> {
     doc.get(key)
         .and_then(Value::as_array)
@@ -138,10 +143,12 @@ fn objects<'a>(doc: &'a Value, key: &str) -> Vec<&'a Map<String, Value>> {
         .unwrap_or_default()
 }
 
+/// Whether a boolean field is exactly `true`.
 fn is_true(node: &Map<String, Value>, key: &str) -> bool {
     node.get(key).and_then(Value::as_bool) == Some(true)
 }
 
+/// A non-blank string field, or `None`.
 fn optional_str<'a>(node: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
     node.get(key).and_then(Value::as_str).filter(|value| !value.trim().is_empty())
 }
@@ -157,6 +164,8 @@ pub fn title_fingerprint(title: &str) -> String {
     hex
 }
 
+/// A symbolic authority such as `#EXPLICIT-AUTHORIZATION`, as opposed to a
+/// numeric issue reference.
 fn is_symbolic_authority(target: &str) -> bool {
     target.starts_with('#') && target.chars().nth(1).is_some_and(|ch| ch.is_ascii_uppercase())
 }
@@ -165,6 +174,8 @@ fn is_symbolic_authority(target: &str) -> bool {
 // Stable-byte hygiene.
 // ---------------------------------------------------------------------------
 
+/// A run of 32 or more lowercase hex digits: a commit coordinate, never a
+/// stable fact.
 fn looks_like_commit_hash(text: &str) -> bool {
     let mut run = 0usize;
     for ch in text.chars() {
@@ -180,6 +191,7 @@ fn looks_like_commit_hash(text: &str) -> bool {
     false
 }
 
+/// Reject banned state keys and live coordinates anywhere in the document.
 fn walk_stable_bytes(value: &Value, path: &str, violations: &mut Vec<Violation>) {
     match value {
         Value::Object(map) => {
@@ -224,6 +236,7 @@ struct Vocabulary<'a> {
     lineages: BTreeSet<&'a str>,
 }
 
+/// Check the closed vocabularies and collect them for the node laws.
 fn vocabulary_problems<'a>(doc: &'a Value, violations: &mut Vec<Violation>) -> Vocabulary<'a> {
     let mut selectable_by_role = BTreeMap::new();
     for entry in objects(doc, "role_vocabulary") {
@@ -325,6 +338,7 @@ fn vocabulary_problems<'a>(doc: &'a Value, violations: &mut Vec<Violation>) -> V
 // Node laws.
 // ---------------------------------------------------------------------------
 
+/// Per-node identity, role, supersession, authority, and contract laws.
 fn node_problems(doc: &Value, vocab: &Vocabulary<'_>, violations: &mut Vec<Violation>) {
     let nodes = objects(doc, "nodes");
     let ids: BTreeSet<&str> = nodes.iter().map(|node| str_field(node, "node_id")).collect();
@@ -521,6 +535,8 @@ struct Graph<'a> {
     hard_ordering: BTreeMap<&'a str, BTreeSet<&'a str>>,
 }
 
+/// Per-edge target, class, horizon, and authorization laws; returns the
+/// ordering graphs for the cycle and conflict laws.
 fn edge_problems<'a>(
     doc: &'a Value,
     vocab: &Vocabulary<'_>,
@@ -656,6 +672,7 @@ fn edge_problems<'a>(
     Graph { ordering, hard_ordering }
 }
 
+/// First hard/evidence cycle, as the node path that closes it.
 fn find_cycle<'a>(graph: &Graph<'a>) -> Option<Vec<&'a str>> {
     fn visit<'a>(
         node: &'a str,
@@ -715,6 +732,7 @@ fn reachability<'a>(graph: &Graph<'a>) -> BTreeMap<&'a str, BTreeSet<&'a str>> {
     closure
 }
 
+/// Two selectable owners of one exclusive key must be serialized by a hard path.
 fn conflict_problems(doc: &Value, graph: &Graph<'_>, violations: &mut Vec<Violation>) {
     let nodes = objects(doc, "nodes");
     let closure = reachability(graph);
@@ -769,12 +787,30 @@ pub fn validate_document(doc: &Value) -> Vec<Violation> {
 // Loading.
 // ---------------------------------------------------------------------------
 
+/// Names of every `*.json` fixture in the invalid directory except the
+/// expectation map itself, so coverage can be compared as an exact set.
+pub fn invalid_fixture_names(root: &Path) -> Result<BTreeSet<String>> {
+    let dir = root.join(INVALID_DIR);
+    let mut names = BTreeSet::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry =
+            entry.with_context(|| format!("failed to read an entry of {}", dir.display()))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".json") && name != EXPECTED_ERRORS_FILENAME {
+            names.insert(name);
+        }
+    }
+    Ok(names)
+}
+
+/// Read one JSON document with the path in every error.
 fn load_json(path: &Path) -> Result<Value> {
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     serde_json::from_str(&text).with_context(|| format!("invalid JSON in {}", path.display()))
 }
 
+/// JSON Schema violations of a document against the closed schema.
 fn schema_failures(root: &Path, manifest: &Value) -> Result<Vec<String>> {
     let schema = load_json(&root.join(SCHEMA_PATH))?;
     let validator = jsonschema::validator_for(&schema)
@@ -805,6 +841,7 @@ struct ProjectedNode<'a> {
     id: &'a str,
 }
 
+/// Nodes in canonical (`node_id`) order for every projection.
 fn projected_nodes(doc: &Value) -> Vec<ProjectedNode<'_>> {
     let mut nodes: Vec<ProjectedNode<'_>> = objects(doc, "nodes")
         .into_iter()
@@ -838,6 +875,7 @@ fn sorted_strings<'a>(node: &'a Map<String, Value>, key: &str) -> Vec<&'a str> {
     items
 }
 
+/// A string list field as a sorted JSON array.
 fn sorted_string_value(node: &Map<String, Value>, key: &str) -> Value {
     Value::Array(
         sorted_strings(node, key).into_iter().map(|s| Value::String(s.to_string())).collect(),
@@ -889,6 +927,7 @@ fn conflict_classes(doc: &Value) -> BTreeMap<String, Vec<Vec<String>>> {
     result
 }
 
+/// Machine projection: per-node typed edges, keys, counts, writer classes.
 fn render_json(doc: &Value, digest: &str) -> Result<String> {
     let mut nodes = Vec::new();
     for entry in projected_nodes(doc) {
@@ -984,6 +1023,7 @@ fn render_json(doc: &Value, digest: &str) -> Result<String> {
     Ok(text)
 }
 
+/// Reviewer projection: per-phase tables, writer classes, lineages.
 fn render_markdown(doc: &Value, digest: &str) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# perl_corpus_train.v1 — stable authority graph");
@@ -1088,6 +1128,7 @@ fn render_markdown(doc: &Value, digest: &str) -> String {
     out
 }
 
+/// Graphviz projection with edge style by dependency class.
 fn render_dot(doc: &Value) -> String {
     let mut out = String::new();
     out.push_str("digraph perl_corpus_train {\n  rankdir=LR;\n  node [shape=box, fontsize=10];\n");
@@ -1122,10 +1163,14 @@ fn render_dot(doc: &Value) -> String {
     out
 }
 
+/// Mermaid-safe identifier for a node id or authority reference.
 fn mermaid_id(id: &str) -> String {
     id.replace(['#', '-', ' '], "_")
 }
 
+/// Mermaid flowchart projection. Every edge endpoint is declared with its
+/// label first, including external authorities, so an undeclared identifier
+/// never renders as its mangled id.
 fn render_mermaid(doc: &Value) -> String {
     let mut out = String::new();
     out.push_str("flowchart LR\n");
@@ -1138,6 +1183,17 @@ fn render_mermaid(doc: &Value) -> String {
             str_field(entry.node, "issue_ref"),
             str_field(entry.node, "role")
         );
+    }
+    let mut externals: BTreeSet<&str> = BTreeSet::new();
+    for entry in projected_nodes(doc) {
+        for (target, _) in dependency_triples(entry.node) {
+            if target.starts_with('#') {
+                externals.insert(target);
+            }
+        }
+    }
+    for target in externals {
+        let _ = writeln!(out, "  {}([\"{} external authority\"])", mermaid_id(target), target);
     }
     for entry in projected_nodes(doc) {
         for (target, class) in dependency_triples(entry.node) {
@@ -1169,6 +1225,7 @@ pub fn render_projections(doc: &Value) -> Result<Vec<(&'static str, String)>> {
     ])
 }
 
+/// Committed projections that differ from a fresh render, or are missing.
 fn projection_drift(root: &Path, doc: &Value) -> Result<Vec<String>> {
     let mut failures = Vec::new();
     for (name, expected) in render_projections(doc)? {
@@ -1188,6 +1245,7 @@ fn projection_drift(root: &Path, doc: &Value) -> Result<Vec<String>> {
 // explain-static.
 // ---------------------------------------------------------------------------
 
+/// One labelled bullet list in the static packet.
 fn render_list(out: &mut String, label: &str, items: &[&str]) {
     let _ = writeln!(out, "{label}:");
     if items.is_empty() {
@@ -1334,14 +1392,34 @@ pub fn run_check() -> Result<()> {
     if expected.is_empty() {
         bail!("{EXPECTED_ERRORS_FILENAME}: at least one expectation required");
     }
+    // The fixture directory and the expectation map must name exactly the
+    // same files: an unlisted fixture is dead proof, a missing one is a lie.
+    let present = invalid_fixture_names(&root)?;
+    let listed: BTreeSet<String> = expected.keys().cloned().collect();
+    for unlisted in present.difference(&listed) {
+        failures.push(format!(
+            "invalid/{unlisted}: fixture present but not listed in {EXPECTED_ERRORS_FILENAME}"
+        ));
+    }
+    for missing in listed.difference(&present) {
+        failures
+            .push(format!("invalid/{missing}: listed in {EXPECTED_ERRORS_FILENAME} but absent"));
+    }
     for (filename, expected_code) in expected {
         let Some(expected_code) = expected_code.as_str() else {
             bail!("{EXPECTED_ERRORS_FILENAME}: {filename} must name a string reason code");
         };
+        if !present.contains(filename) {
+            continue;
+        }
         let doc = load_json(&root.join(INVALID_DIR).join(filename))?;
-        let codes = if expected_code == "SCHEMA_VIOLATION" {
+        let codes: BTreeSet<String> = if expected_code == "SCHEMA_VIOLATION" {
             let schema = schema_failures(&root, &doc)?;
-            if schema.is_empty() { Vec::new() } else { vec!["SCHEMA_VIOLATION".to_string()] }
+            if schema.is_empty() {
+                BTreeSet::new()
+            } else {
+                BTreeSet::from(["SCHEMA_VIOLATION".to_string()])
+            }
         } else {
             let schema = schema_failures(&root, &doc)?;
             if !schema.is_empty() {
@@ -1352,13 +1430,16 @@ pub fn run_check() -> Result<()> {
             }
             violation_codes(&validate_document(&doc)).iter().map(|c| c.to_string()).collect()
         };
+        // Exactly one law discriminates each fixture: a second code means the
+        // fixture no longer isolates the law it is named for.
+        let want: BTreeSet<String> = BTreeSet::from([expected_code.to_string()]);
         if codes.is_empty() {
             failures.push(format!(
                 "invalid/{filename}: expected failure {expected_code}, document validated"
             ));
-        } else if !codes.iter().any(|code| code == expected_code) {
+        } else if codes != want {
             failures.push(format!(
-                "invalid/{filename}: expected failure {expected_code}, got {codes:?}"
+                "invalid/{filename}: expected exactly {{{expected_code}}}, got {codes:?}"
             ));
         }
     }
