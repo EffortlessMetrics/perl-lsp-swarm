@@ -322,90 +322,10 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
         .get("allow")
         .and_then(toml::Value::as_array)
         .ok_or_else(|| eyre!("allowlist must define an allow array"))?;
-    let tables: Vec<&toml::map::Map<String, toml::Value>> =
-        entries.iter().filter_map(toml::Value::as_table).collect();
-    if let Some(conflict) = mispaired_provenance_conflicts(&tables).first() {
-        bail!("mispaired provenance: {conflict}");
-    }
-    let mut matchers = std::collections::BTreeSet::new();
-    for (index, raw) in entries.iter().enumerate() {
-        let table = raw.as_table().ok_or_else(|| eyre!("allow entry {index} is not a table"))?;
-        for key in table.keys() {
-            if !ALLOWED_ALLOW_FIELDS.contains(&key.as_str()) {
-                bail!("allow entry {index} has unknown field {key}");
-            }
-        }
-        let retired = table.get("retired").and_then(toml::Value::as_bool).unwrap_or(false);
-        if retired {
-            continue;
-        }
-        let id = table
-            .get("id")
-            .and_then(toml::Value::as_str)
-            .ok_or_else(|| eyre!("allow entry {index} missing id"))?;
-        let glob = table.get("glob").and_then(toml::Value::as_str);
-        let path = table.get("path").and_then(toml::Value::as_str);
-        if glob.is_some() == path.is_some() {
-            bail!("allow entry {id} must set exactly one matcher");
-        }
-        let matcher = glob.or(path).ok_or_else(|| eyre!("allow entry {id} has no matcher"))?;
-        if matcher.starts_with("./")
-            || matcher.starts_with('/')
-            || matcher.contains('\\')
-            || matcher.trim() != matcher
-        {
-            bail!("invalid repository-relative matcher in allow entry {id}");
-        }
-        if !matchers.insert(matcher.to_string()) {
-            bail!("duplicate matcher {matcher}");
-        }
-        if let Some(glob) = glob {
-            Pattern::new(glob).with_context(|| format!("invalid glob in allow entry {id}"))?;
-            if is_policy_broad_glob(glob)
-                && table
-                    .get("broad_glob_reason")
-                    .and_then(toml::Value::as_str)
-                    .is_none_or(|reason| reason.trim().is_empty())
-            {
-                bail!("broad glob in allow entry {id} lacks broad_glob_reason");
-            }
-        }
-        let classification =
-            table.get("classification").and_then(toml::Value::as_str).unwrap_or("");
-        if !KNOWN_CLASSIFICATIONS.contains(&classification) {
-            bail!("unknown classification {classification} in allow entry {id}");
-        }
-        let covered_by = table
-            .get("covered_by")
-            .ok_or_else(|| eyre!("allow entry {id} is missing covered_by"))?;
-        let coverage = covered_by.as_array();
-        if coverage.is_none_or(|items| !items.iter().all(|item| item.as_str().is_some())) {
-            bail!("allow entry {id} covered_by must be a list of strings");
-        }
-        if COVERAGE_REQUIRING_CLASSIFICATIONS.contains(&classification)
-            && coverage.is_none_or(Vec::is_empty)
-        {
-            bail!("allow entry {id} requires at least one covered_by entry");
-        }
-        let mut dates = BTreeMap::new();
-        for field in ["created", "review_after", "expires"] {
-            if let Some(date) = table.get(field).and_then(toml::Value::as_str) {
-                let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                    .with_context(|| format!("invalid {field} date in allow entry {id}"))?;
-                dates.insert(field, parsed);
-            }
-        }
-        if let (Some(created), Some(review_after)) =
-            (dates.get("created"), dates.get("review_after"))
-            && created >= review_after
-        {
-            bail!("created date is after review_after in allow entry {id}");
-        }
-        if let (Some(created), Some(expires)) = (dates.get("created"), dates.get("expires"))
-            && expires <= created
-        {
-            bail!("expires date is not after created in allow entry {id}");
-        }
+    let mut errors = Vec::new();
+    validate_allow_document_entries(entries, &mut errors);
+    if !errors.is_empty() {
+        bail!("{}", errors.join("; "));
     }
     Ok(())
 }
@@ -1629,6 +1549,20 @@ const ALLOWED_ALLOW_FIELDS: &[&str] = &[
     "generated_by",
 ];
 
+const STRING_ALLOW_FIELDS: &[&str] = &[
+    "id",
+    "glob",
+    "path",
+    "kind",
+    "language",
+    "surface",
+    "classification",
+    "owner",
+    "reason",
+    "broad_glob_reason",
+    "generated_by",
+];
+
 const KNOWN_CLASSIFICATIONS: &[&str] =
     &["production", "test", "tooling", "config", "documentation", "generated"];
 
@@ -1726,17 +1660,45 @@ fn validate_policy_table(
         return 0;
     };
 
+    let source_label = path.display().to_string();
+    validate_policy_entries(entries, table_name, strict_allow_schema, Some(&source_label), errors);
+    entries.len()
+}
+
+/// Canonical allow-array schema, identity, matcher uniqueness, and provenance.
+///
+/// Exact-tree receipts and ordinary `validate-policy` both walk this path so a
+/// schema-field change cannot be applied to only one surface.
+fn validate_allow_document_entries(entries: &[toml::Value], errors: &mut Vec<String>) {
+    validate_policy_entries(entries, "allow", true, None, errors);
+}
+
+fn policy_entry_error(source_label: Option<&str>, message: String) -> String {
+    match source_label {
+        Some(label) => format!("{label}: {message}"),
+        None => message,
+    }
+}
+
+fn validate_policy_entries(
+    entries: &[toml::Value],
+    table_name: &str,
+    strict_allow_schema: bool,
+    source_label: Option<&str>,
+    errors: &mut Vec<String>,
+) {
     let mut seen_ids: BTreeMap<String, usize> = BTreeMap::new();
     let mut seen_matchers: BTreeMap<String, String> = BTreeMap::new();
     let mut coherence_tables: Vec<&toml::map::Map<String, toml::Value>> = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         let Some(table) = entry.as_table() else {
-            errors
-                .push(format!("{}: `{table_name}` entry #{index} must be a table", path.display()));
+            errors.push(policy_entry_error(
+                source_label,
+                format!("`{table_name}` entry #{index} must be a table"),
+            ));
             continue;
         };
         coherence_tables.push(table);
-
         if strict_allow_schema {
             validate_allow_schema_entry(table, index, errors);
         }
@@ -1765,11 +1727,12 @@ fn validate_policy_table(
 
     if table_name == "allow" {
         for conflict in mispaired_provenance_conflicts(&coherence_tables) {
-            errors.push(format!("{}: mispaired provenance: {conflict}", path.display()));
+            errors.push(policy_entry_error(
+                source_label,
+                format!("mispaired provenance: {conflict}"),
+            ));
         }
     }
-
-    entries.len()
 }
 
 fn validate_allow_schema_entry(
@@ -1805,11 +1768,22 @@ fn validate_allow_schema_entry(
                 ));
             }
         }
+        if has_glob && Pattern::new(matcher).is_err() {
+            errors.push(format!("{entry_id}: invalid glob `{matcher}`"));
+        }
     }
 
     for field in REQUIRED_ALLOW_FIELDS {
         if !entry.contains_key(*field) {
             errors.push(format!("{entry_id}: missing required field `{field}`"));
+        }
+    }
+
+    for field in STRING_ALLOW_FIELDS {
+        if let Some(value) = entry.get(*field)
+            && value.as_str().is_none()
+        {
+            errors.push(format!("{entry_id}: `{field}` must be a string"));
         }
     }
 
@@ -3258,7 +3232,7 @@ fn render_migration_candidates_markdown(candidates: &[MigrationCandidate]) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use color_eyre::eyre::ensure;
+    use color_eyre::eyre::{ensure, eyre};
 
     fn make_entry(
         id: &str,
@@ -3402,7 +3376,11 @@ review_after = "2026-06-01"
         std::fs::write(&allowlist_path, mispaired_allowlist_fixture())?;
         let mut errors = Vec::new();
         validate_policy_table(&allowlist_path, "allow", true, &mut errors);
-        assert!(errors.iter().any(|error| error.contains("provenance is mispaired")), "{errors:?}");
+        assert!(
+            errors.iter().any(|error| error
+                .contains(&format!("{}: mispaired provenance", allowlist_path.display()))),
+            "{errors:?}"
+        );
 
         let marker_path = temp.path().join("markers.toml");
         std::fs::write(
@@ -4731,6 +4709,228 @@ review_after = "2026-08-13"
                 validation.errors
             );
         }
+        Ok(())
+    }
+
+    fn canonical_allow_document(entries: &str) -> String {
+        format!("schema_version = 1\npolicy = \"non-rust-allowlist\"\n{entries}")
+    }
+
+    fn valid_allow_entry(id: &str, path: &str, reason: &str) -> String {
+        format!(
+            r#"
+[[allow]]
+id = "{id}"
+path = "{path}"
+kind = "doc"
+language = "markdown"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "{reason}"
+covered_by = ["manual review"]
+created = "2026-01-01"
+review_after = "2026-06-01"
+"#
+        )
+    }
+
+    fn validate_shared_allow_schema_surfaces(document: &str) -> Result<(String, Vec<String>)> {
+        let exact = validate_exact_policy_bytes(document.as_bytes())
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_default();
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("allow.toml");
+        fs::write(&path, document)?;
+        let mut ordinary = Vec::new();
+        let _ = validate_policy_table(&path, "allow", true, &mut ordinary);
+        Ok((exact, ordinary))
+    }
+
+    fn assert_shared_allow_schema_rejects(document: &str, needles: &[&str]) -> Result<()> {
+        let (exact, ordinary) = validate_shared_allow_schema_surfaces(document)?;
+        ensure!(!exact.is_empty(), "exact-tree accepted malformed allowlist: {document}");
+        ensure!(!ordinary.is_empty(), "ordinary policy accepted malformed allowlist: {document}");
+        for needle in needles {
+            ensure!(exact.contains(needle), "exact-tree missed {needle:?} in {exact:?}");
+            ensure!(
+                ordinary.iter().any(|error| error.contains(*needle)),
+                "ordinary policy missed {needle:?} in {ordinary:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn valid_allowlist_passes_exact_tree_and_ordinary_schema_surfaces() -> Result<()> {
+        let document = canonical_allow_document(&format!(
+            "{}{}",
+            valid_allow_entry("entry-a", "docs/a.md", "Documents alpha."),
+            valid_allow_entry("entry-b", "docs/b.md", "Documents beta.")
+        ));
+        validate_exact_policy_bytes(document.as_bytes())?;
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("allow.toml");
+        fs::write(&path, &document)?;
+        let mut errors = Vec::new();
+        assert_eq!(validate_policy_table(&path, "allow", true, &mut errors), 2);
+        ensure!(errors.is_empty(), "unexpected ordinary errors: {errors:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_allow_fields_fail_exact_tree_and_ordinary_schema_surfaces() -> Result<()> {
+        let valid =
+            canonical_allow_document(&valid_allow_entry("ok", "docs/ok.md", "Valid control row."));
+
+        assert_shared_allow_schema_rejects(
+            &valid.replace(
+                "review_after = \"2026-06-01\"\n",
+                "review_after = \"2026-06-01\"\nunknown = \"field\"\n",
+            ),
+            &["unknown field"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "glob = \"docs/**\"\npath = \"docs/ok.md\""),
+            &["cannot set both"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"\n", ""),
+            &["must set either `glob` or `path`"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "path = \"./docs/ok.md\""),
+            &["without leading `./`"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "path = \"docs\\\\ok.md\""),
+            &["Windows backslashes"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "path = \" docs/ok.md \""),
+            &["surrounding whitespace"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("classification = \"documentation\"", "classification = \"surprise\""),
+            &["classification `surprise`"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("covered_by = [\"manual review\"]", "covered_by = \"manual review\""),
+            &["`covered_by` must be a list of strings"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("covered_by = [\"manual review\"]\n", ""),
+            &["missing required field `covered_by`"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid
+                .replace("classification = \"documentation\"", "classification = \"production\"")
+                .replace("covered_by = [\"manual review\"]", "covered_by = []"),
+            &["requires at least one `covered_by` entry"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("created = \"2026-01-01\"", "created = \"not-a-date\""),
+            &["`created` is not a real date"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("review_after = \"2026-06-01\"", "review_after = \"2026-01-01\""),
+            &["`review_after` must be after `created`"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace(
+                "review_after = \"2026-06-01\"\n",
+                "review_after = \"2026-06-01\"\nexpires = \"2026-01-01\"\n",
+            ),
+            &["`expires` must be after `created`"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("owner = \"docs\"\n", ""),
+            &["missing required field `owner`"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace(
+                "review_after = \"2026-06-01\"\n",
+                "review_after = \"2026-06-01\"\nretired = \"no\"\n",
+            ),
+            &["`retired` must be a boolean"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "glob = \"[\""),
+            &["invalid glob"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "glob = \"docs/**\""),
+            &["broad_glob_reason"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("id = \"ok\"", "id = 1"),
+            &["`id` must be a string"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "path = 2"),
+            &["`path` must be a string"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "glob = 3"),
+            &["`glob` must be a string"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("classification = \"documentation\"", "classification = 4"),
+            &["`classification` must be a string"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "glob = 3\npath = 2"),
+            &["cannot set both", "`glob` must be a string", "`path` must be a string"],
+        )?;
+
+        let duplicate_matcher = canonical_allow_document(&format!(
+            "{}{}",
+            valid_allow_entry("first", "README.md", "First readme."),
+            valid_allow_entry("second", "README.md", "Second readme.")
+        ));
+        assert_shared_allow_schema_rejects(&duplicate_matcher, &["duplicate matcher `README.md`"])?;
+
+        let duplicate_id = canonical_allow_document(&format!(
+            "{}{}",
+            valid_allow_entry("same-id", "docs/a.md", "First id."),
+            valid_allow_entry("same-id", "docs/b.md", "Second id.")
+        ));
+        assert_shared_allow_schema_rejects(&duplicate_id, &["duplicate id"])?;
+        assert_shared_allow_schema_rejects(
+            &mispaired_allowlist_fixture(),
+            &["provenance is mispaired"],
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn committed_allowlist_passes_exact_tree_and_ordinary_schema_surfaces() -> Result<()> {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest_dir.parent().ok_or_else(|| eyre!("xtask must be in a subdirectory"))?;
+        let allowlist = root.join("policy/non-rust-allowlist.toml");
+        let document = fs::read_to_string(&allowlist)?;
+        validate_exact_policy_bytes(document.as_bytes())?;
+        let mut errors = Vec::new();
+        let count = validate_policy_table(&allowlist, "allow", true, &mut errors);
+        ensure!(count > 0, "committed allowlist must contain allow entries");
+        ensure!(errors.is_empty(), "committed allowlist failed ordinary schema: {errors:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn documentation_empty_covered_by_is_not_a_schema_error_on_either_surface() -> Result<()> {
+        let document = canonical_allow_document(
+            &valid_allow_entry("docs-empty", "docs/ok.md", "Docs may omit coverage items.")
+                .replace("covered_by = [\"manual review\"]", "covered_by = []"),
+        );
+        validate_exact_policy_bytes(document.as_bytes())?;
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("allow.toml");
+        fs::write(&path, &document)?;
+        let mut errors = Vec::new();
+        assert_eq!(validate_policy_table(&path, "allow", true, &mut errors), 1);
+        ensure!(errors.is_empty(), "unexpected ordinary errors: {errors:?}");
         Ok(())
     }
 
