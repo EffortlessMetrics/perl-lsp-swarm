@@ -271,9 +271,8 @@ def build_rows(schema: dict, rust: dict) -> tuple[list[dict], list[str]]:
         if not properties:
             continue
         required = set(definition.get("required", []))
-        owner = rust.get(def_name) or rust.get(
-            RUST_OWNER_ALIASES.get(def_name, "")
-        )
+        owner_name = RUST_OWNER_ALIASES.get(def_name) or def_name
+        owner = rust.get(owner_name)
         if owner is None:
             for wire_name in sorted(properties):
                 rows.append(
@@ -330,7 +329,7 @@ def build_rows(schema: dict, rust: dict) -> tuple[list[dict], list[str]]:
                 "definition": def_name,
                 "field": wire_name,
                 "class": row_class,
-                "rust_owner": f"{def_name}::{rust_name}",
+                "rust_owner": f"{owner_name}::{rust_name}",
                 "rust_type": meta["rust_type"],
                 "serde_skips_when_none": meta["skips_when_none"],
             }
