@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14155,
-  "reason": "Refreshes a stale size-only row. out/extension.js on current main packages at 1640957 bytes where the baseline landed in #14719 recorded 1636669; extension source landed after that baseline (#14474, #14624, #14755, #14760) and the smoke's transition instrument now fails every unrelated PR with 'total bytes grew from 1814627 to 1818915'. Measured from a clean npm ci, npm run package, and the transition instrument's own archive projection at current main. The 29-file package is unchanged: no file additions, removals, or permission loosening.",
-  "base_baseline_file_sha256": "a966dac61b30ed8f950dc9910b5dfaf354ff131cf797dcd7ea24f6b1fa756c2a",
-  "candidate_baseline_file_sha256": "bc56a9d640213d509add8c24f807a35efdce01fccce5fd9c6f2b0a380f7441fd",
-  "base_inventory_sha256": "71c92a4b4282c160e4db6417312fa3622a9ba9a8266bce7fbe6172b9ad5004f1",
-  "candidate_inventory_sha256": "114b0ad804f9267deabbdc0bcc0a1ba92d7436c207447727c82f287077a45d8d"
+  "owner_issue": 14966,
+  "reason": "Size-only growth from the live legacy-setting reader (#14966). out/extension.js grows from 1640957 to 1672044 bytes because two new modules — configurationMigrationLive.ts and configurationMigrationHost.ts — join the bundle, together with the activation wiring in extension.ts and the unclassified configuration hook in extensionWorkspaceEvents.ts. Measured by running npm ci and npm run bundle at this candidate; the same command at 81452cf reproduces the 1668379 bytes the hosted current-source Linux smoke measured for that commit, so the local instrument matches the hosted one byte for byte. The 29-file package is otherwise unchanged: no file additions, removals, renames, or permission loosening, and every other recorded size is identical.",
+  "base_baseline_file_sha256": "bc56a9d640213d509add8c24f807a35efdce01fccce5fd9c6f2b0a380f7441fd",
+  "candidate_baseline_file_sha256": "44d6451c4908f78746e45e319a56200ffde1d89e56c6465fda5c163979c44dc2",
+  "base_inventory_sha256": "114b0ad804f9267deabbdc0bcc0a1ba92d7436c207447727c82f287077a45d8d",
+  "candidate_inventory_sha256": "91838bb804137463404dce51e12b425ff8c19f0f5794f325379985a8475c3f42"
 }
