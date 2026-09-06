@@ -444,6 +444,55 @@ def allowlist_covered_workflows(allowlist: dict[str, Any]) -> set[str]:
     return workflows
 
 
+def _github_glob_regex(pattern: str) -> str:
+    """Translate a GitHub Actions path-filter glob to a fullmatch regex.
+
+    Actions uses picomatch: `**` crosses `/`; `*` and `?` do not. This is that
+    subset, not a glob library: no character classes, extglobs, or negation.
+    """
+    parts: list[str] = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**", index):
+            rest = index + 2
+            if rest < len(pattern) and pattern[rest] == "/":
+                parts.append("(?:.*/)?")
+                index = rest + 1
+                continue
+            parts.append(".*")
+            index = rest
+            continue
+        char = pattern[index]
+        if char == "*":
+            parts.append("[^/]*")
+        elif char == "?":
+            parts.append("[^/]")
+        else:
+            parts.append(re.escape(char))
+        index += 1
+    return r"\A" + "".join(parts) + r"\Z"
+
+
+def path_filter_matches(path: str, pattern: str) -> bool:
+    """True when `pattern` would include `path` in a GitHub `paths:` filter."""
+    path = posix(path)
+    pattern = posix(pattern)
+    if path == pattern:
+        return True
+    if not any(char in pattern for char in "*?"):
+        return False
+    return re.fullmatch(_github_glob_regex(pattern), path) is not None
+
+
+def self_path_filtered(relative_path: str, workflow_text: str) -> bool:
+    """True when any `on.pull_request.paths` entry matches this workflow file."""
+    filters = parse_event_filters(workflow_text, "pull_request")
+    if not filters.has_paths_key:
+        return False
+    own = posix(relative_path)
+    return any(path_filter_matches(own, pattern) for pattern in filters.paths)
+
+
 def is_contract_workflow(
     relative_path: str,
     workflow_text: str,
@@ -451,9 +500,13 @@ def is_contract_workflow(
 ) -> bool:
     """A docs/agents contract workflow is self-path-filtered and runs a
     `control_plane_contract_test` unittest or `python3 tests/*.py` script.
+
+    Self-path-filtered means GitHub would schedule the workflow when its own
+    file changes: an exact `paths:` entry or a glob that matches that file.
+    `paths-ignore` alone is not this class; GitHub forbids combining `paths`
+    and `paths-ignore` on one event.
     """
-    own = posix(relative_path)
-    if own not in event_paths(workflow_text, "pull_request"):
+    if not self_path_filtered(relative_path, workflow_text):
         return False
     return bool(unittest_targets(run_commands(workflow_text)) & contract_tests)
 
@@ -912,6 +965,78 @@ jobs:
         }
         discovered = discover_contract_workflows(
             {".github/workflows/new-docs-contract.yml": workflow}, allowlist
+        )
+        self.assertEqual(discovered, set())
+
+    def test_wildcard_self_path_filter_is_discovered(self) -> None:
+        workflow = """\
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+jobs:
+  check:
+    steps:
+      - run: python3 tests/test_glob_docs_contract.py
+"""
+        allowlist = {
+            "allow": [
+                {
+                    "kind": CONTROL_PLANE_KIND,
+                    "path": "tests/test_glob_docs_contract.py",
+                }
+            ]
+        }
+        discovered = discover_contract_workflows(
+            {".github/workflows/glob-docs-contract.yml": workflow}, allowlist
+        )
+        self.assertEqual(discovered, {".github/workflows/glob-docs-contract.yml"})
+        self.assertTrue(
+            path_filter_matches(
+                ".github/workflows/glob-docs-contract.yml",
+                ".github/workflows/**",
+            )
+        )
+        self.assertTrue(
+            path_filter_matches(
+                ".github/workflows/glob-docs-contract.yml",
+                ".github/workflows/*.yml",
+            )
+        )
+        self.assertFalse(
+            path_filter_matches(
+                ".github/workflows/glob-docs-contract.yml",
+                ".github/*",
+            )
+        )
+        self.assertFalse(
+            path_filter_matches(
+                ".github/workflows/nested/glob-docs-contract.yml",
+                ".github/workflows/*.yml",
+            )
+        )
+
+    def test_paths_ignore_alone_is_not_self_filtered(self) -> None:
+        workflow = """\
+on:
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+jobs:
+  check:
+    steps:
+      - run: python3 tests/test_glob_docs_contract.py
+"""
+        allowlist = {
+            "allow": [
+                {
+                    "kind": CONTROL_PLANE_KIND,
+                    "path": "tests/test_glob_docs_contract.py",
+                }
+            ]
+        }
+        discovered = discover_contract_workflows(
+            {".github/workflows/glob-docs-contract.yml": workflow}, allowlist
         )
         self.assertEqual(discovered, set())
 
