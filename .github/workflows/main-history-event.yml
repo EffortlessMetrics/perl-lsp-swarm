@@ -21,10 +21,15 @@ name: Main History Event
 #     belongs to the `release_live_controls` observer (#9403 / #8551), and this
 #     workflow must not grow a second settings model.
 #
-# Known limitation: GitHub does not dispatch `push` workflows for a deleted
-# branch, so the `deleted_ref` verdict is reachable through the command and its
-# tests but not through this trigger. Deletion control remains owned by the live
-# branch-protection observer above.
+# On ref deletion: a `push` event is still delivered with `deleted: true`, but
+# `github.sha` reverts to the default branch tip rather than naming the deleted
+# ref's commit. The classifier is therefore fed `github.event.after` — the
+# delivered payload subject, which is the zero object name for a deletion — so
+# the receipt records what the platform actually sent instead of an unrelated
+# tip. The `deleted_ref` verdict is driven by the delivered flag and that zero
+# name, never by the checked-out SHA. Because this workflow filters on
+# `branches: [main]`, the deletion path is only reachable if `main` itself is
+# deleted; prevention remains with the live branch-protection observer above.
 
 # `push` is the only trigger. A `workflow_dispatch` run carries no push payload,
 # so `github.event.before` and the created/deleted/forced flags would all be
@@ -81,7 +86,10 @@ jobs:
           # Exact platform subjects, passed at step scope as environment values
           # rather than interpolated into the script body.
           EVENT_BEFORE: ${{ github.event.before }}
-          EVENT_AFTER: ${{ github.sha }}
+          # The delivered payload subject, not `github.sha`: the two agree for an
+          # ordinary push, but on a ref deletion `github.sha` reverts to the
+          # default branch tip while `github.event.after` is the zero name.
+          EVENT_AFTER: ${{ github.event.after }}
           EVENT_REF: ${{ github.ref }}
           EVENT_FORCED: ${{ github.event.forced }}
           EVENT_CREATED: ${{ github.event.created }}
@@ -135,8 +143,23 @@ jobs:
             echo "::error::the history-event classifier produced no verdict"
             exit 1
           fi
-          if [ "${CLASSIFY_STATUS}" != "0" ]; then
-            echo "::error::main history-event detector reported a blocking verdict (exit ${CLASSIFY_STATUS}); see the uploaded receipt"
-            exit 1
-          fi
-          echo "main history-event detector: fast-forward movement proven"
+          # Distinguish the blocking classes: a proven rewrite and an
+          # unverifiable graph are very different operator situations, and an
+          # instrument failure is not a history finding at all.
+          case "${CLASSIFY_STATUS}" in
+            0)
+              echo "main history-event detector: movement proven safe"
+              ;;
+            2)
+              echo "::error::main moved destructively, or moved non-fast-forward with no force push reported. See the uploaded receipt."
+              exit 1
+              ;;
+            3)
+              echo "::error::main movement could NOT be verified (incomplete object graph). This is not proof of a rewrite, and not proof of safety. See the uploaded receipt."
+              exit 1
+              ;;
+            *)
+              echo "::error::the history-event detector failed to produce a verdict (exit ${CLASSIFY_STATUS}): invalid event subject or instrument failure, not a history finding. See the uploaded receipt."
+              exit 1
+              ;;
+          esac

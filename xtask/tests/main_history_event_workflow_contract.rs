@@ -6,7 +6,9 @@
 //! exactly what a well-meaning later edit erodes, so they are asserted directly
 //! against the workflow source.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
+use serde_yaml_ng::Value;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -23,25 +25,78 @@ fn workflow_source() -> Result<String> {
     fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))
 }
 
+/// Parse the workflow so structural properties are asserted against the document
+/// GitHub will execute rather than against its current formatting.
+fn workflow_document() -> Result<Value> {
+    Ok(serde_yaml_ng::from_str(&workflow_source()?)?)
+}
+
+fn mapping_value<'a>(value: &'a Value, key: &str) -> Result<&'a Value> {
+    value
+        .as_mapping()
+        .ok_or_else(|| anyhow!("expected YAML mapping while looking for `{key}`"))?
+        .get(Value::String(key.to_string()))
+        .ok_or_else(|| anyhow!("missing YAML key `{key}`"))
+}
+
+fn string_map(value: &Value) -> Result<BTreeMap<String, String>> {
+    value
+        .as_mapping()
+        .ok_or_else(|| anyhow!("expected YAML mapping"))?
+        .iter()
+        .map(|(key, value)| {
+            let key = key.as_str().ok_or_else(|| anyhow!("expected string key"))?.to_string();
+            let value = value.as_str().ok_or_else(|| anyhow!("expected string value"))?.to_string();
+            Ok((key, value))
+        })
+        .collect()
+}
+
+/// The detector's single job, by its declared id.
+fn classify_job() -> Result<Value> {
+    Ok(mapping_value(mapping_value(&workflow_document()?, "jobs")?, "classify")?.clone())
+}
+
+fn named_step(job: &Value, name: &str) -> Result<Value> {
+    mapping_value(job, "steps")?
+        .as_sequence()
+        .ok_or_else(|| anyhow!("expected a step sequence"))?
+        .iter()
+        .find(|step| mapping_value(step, "name").ok().and_then(Value::as_str) == Some(name))
+        .cloned()
+        .ok_or_else(|| anyhow!("missing workflow step `{name}`"))
+}
+
 /// The detector must never gain mutation authority: the whole point of keeping
 /// it out of `post-merge-status.yml` was to deny it a writer's trust boundary.
+///
+/// Asserted as an exact permission set rather than as the absence of a few
+/// known-bad spellings. A denylist would admit every scope it forgot to name —
+/// `id-token: write` alone would let the job mint an OIDC token for external
+/// auth, which is nobody's idea of read-only.
 #[test]
 fn workflow_has_no_write_authority() -> Result<()> {
-    let source = workflow_source()?;
+    let document = workflow_document()?;
+    let expected = BTreeMap::from([("contents".to_string(), "read".to_string())]);
 
-    assert!(
-        source.contains("permissions:\n  contents: read"),
-        "workflow-level permissions must be read-only"
+    let workflow_permissions = string_map(mapping_value(&document, "permissions")?)?;
+    assert_eq!(
+        workflow_permissions, expected,
+        "workflow-level permissions must be exactly {{contents: read}}"
     );
-    assert!(!source.contains("write-all"), "the detector must never request write-all");
-    assert!(!source.contains("contents: write"), "the detector must not acquire contents: write");
-    assert!(
-        !source.contains("pull-requests: write"),
-        "the detector must not acquire pull-requests: write"
+
+    let job = classify_job()?;
+    let job_permissions = string_map(mapping_value(&job, "permissions")?)?;
+    assert_eq!(
+        job_permissions, expected,
+        "job-level permissions must be exactly {{contents: read}}"
     );
-    assert!(!source.contains("issues: write"), "the detector must not acquire issues: write");
-    assert!(
-        source.contains("persist-credentials: false"),
+
+    let checkout = named_step(&job, "Checkout the exact event commit")?;
+    let with = mapping_value(&checkout, "with")?;
+    assert_eq!(
+        mapping_value(with, "persist-credentials")?,
+        &Value::Bool(false),
         "the checkout must not persist credentials"
     );
     Ok(())
@@ -98,19 +153,32 @@ fn missing_receipt_upload_is_an_error_not_a_warning() -> Result<()> {
 
 /// The receipt has to survive the blocking verdict it explains, so the upload
 /// must not be skipped when the classifier reports a rewrite.
+/// Scoped to the upload step's own `if:` expression. A raw suffix search would
+/// be satisfied by the *next* step's `always()` guard, so weakening the upload's
+/// condition would silently stop publishing receipts for exactly the blocking
+/// verdicts they explain, while this test stayed green.
 #[test]
 fn receipt_is_published_even_when_the_verdict_blocks() -> Result<()> {
-    let source = workflow_source()?;
-    let (_, upload) = source
-        .split_once("Publish the history-event receipt")
-        .context("the workflow no longer contains the receipt-upload step")?;
+    let job = classify_job()?;
 
+    let upload = named_step(&job, "Publish the history-event receipt")?;
+    let upload_condition = mapping_value(&upload, "if")?
+        .as_str()
+        .ok_or_else(|| anyhow!("the upload step's `if:` must be an expression string"))?
+        .to_string();
     assert!(
-        upload.contains("if: always()"),
-        "the receipt upload must run even after a blocking verdict"
+        upload_condition.contains("always()"),
+        "the receipt upload must run even after a blocking verdict, but its condition is \
+         {upload_condition:?}"
     );
+
+    let enforce = named_step(&job, "Enforce the detector verdict")?;
+    let enforce_condition = mapping_value(&enforce, "if")?
+        .as_str()
+        .ok_or_else(|| anyhow!("the enforce step's `if:` must be an expression string"))?
+        .to_string();
     assert!(
-        source.contains("Enforce the detector verdict"),
+        enforce_condition.contains("always()"),
         "a blocking verdict must still fail the run after the receipt is published"
     );
     Ok(())
@@ -188,7 +256,10 @@ fn exact_event_subjects_are_forwarded_at_step_scope() -> Result<()> {
 
     for subject in [
         "EVENT_BEFORE: ${{ github.event.before }}",
-        "EVENT_AFTER: ${{ github.sha }}",
+        // The delivered payload subject, not `github.sha`: on a ref deletion
+        // `github.sha` reverts to the default branch tip, which would put an
+        // unrelated commit in the receipt.
+        "EVENT_AFTER: ${{ github.event.after }}",
         "EVENT_REF: ${{ github.ref }}",
         "EVENT_FORCED: ${{ github.event.forced }}",
         "EVENT_CREATED: ${{ github.event.created }}",
@@ -196,5 +267,9 @@ fn exact_event_subjects_are_forwarded_at_step_scope() -> Result<()> {
     ] {
         assert!(source.contains(subject), "the workflow must forward {subject}");
     }
+    assert!(
+        !source.contains("EVENT_AFTER: ${{ github.sha }}"),
+        "`github.sha` is not the delivered after-subject on a ref deletion"
+    );
     Ok(())
 }

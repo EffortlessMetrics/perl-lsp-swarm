@@ -68,6 +68,17 @@ pub enum EventGraphAgreement {
     Agrees,
     /// History moved non-fast-forward without the platform reporting a force push.
     Contradicts,
+    /// The platform reported a force push, but the graph proves no history was lost.
+    ///
+    /// This pair is recorded rather than resolved. Whether GitHub derives
+    /// `forced` from the client's push option or from the server-side ref
+    /// relationship is not settled by its published schema, and the two readings
+    /// disagree about whether this combination is routine or anomalous. What the
+    /// graph does prove is that the before commit is still contained in the after
+    /// commit, so no history was lost — the detector states that and declines to
+    /// infer the rest, instead of flattening the pair into either `Agrees` or
+    /// `Contradicts` on an unverified premise.
+    ForceReportedWithoutHistoryLoss,
     /// The local graph was not proven, so no agreement can be derived.
     CannotVerify,
 }
@@ -79,15 +90,21 @@ impl EventGraphAgreement {
         match self {
             Self::Agrees => "agrees",
             Self::Contradicts => "contradicts",
+            Self::ForceReportedWithoutHistoryLoss => "force_reported_without_history_loss",
             Self::CannotVerify => "cannot_verify",
         }
     }
 
-    /// Exit contribution for an unexplained history rewrite.
+    /// Exit contribution for evidence that does not agree.
+    ///
+    /// A force push reported against a ref whose protection forbids one is worth
+    /// an operator's attention even though no history was lost, so it surfaces as
+    /// unresolved (3) rather than as a proven rewrite (2) or silent success.
     const fn exit_code(self) -> u8 {
         match self {
             Self::Agrees | Self::CannotVerify => 0,
             Self::Contradicts => 2,
+            Self::ForceReportedWithoutHistoryLoss => 3,
         }
     }
 }
@@ -356,15 +373,24 @@ fn verdict_for(disposition: &AncestryDisposition) -> HistoryEventVerdict {
 
 /// Derive whether the platform flag and the proven graph can both be true.
 ///
-/// GitHub's `forced` field reports the flag the pusher used, not whether history
-/// was lost: `git push --force` that happens to fast-forward is still delivered
-/// as `forced: true`. A force-flagged fast-forward is therefore compatible
-/// evidence, not a contradiction, and both axes stay separately readable in the
-/// receipt. The genuinely impossible combination is the reverse — history that
-/// moved non-fast-forward while the platform reported no force push.
+/// The one combination impossible under any reading is history moving
+/// non-fast-forward while the platform reported no force push: that is
+/// `Contradicts`. Its mirror — a reported force push over a graph that proves a
+/// fast-forward — is deliberately *not* folded into `Agrees`. GitHub's published
+/// schema ("whether this push was a force push of the `ref`") does not settle
+/// whether `forced` records the client's push option or the server-side ref
+/// relationship, and the two readings disagree about whether that pair is routine
+/// or anomalous. It gets its own state so the receipt reports what is proven —
+/// no history was lost — without asserting the unproven part.
 const fn agreement_for(forced: bool, disposition: &AncestryDisposition) -> EventGraphAgreement {
     match disposition {
-        AncestryDisposition::Ancestor => EventGraphAgreement::Agrees,
+        AncestryDisposition::Ancestor => {
+            if forced {
+                EventGraphAgreement::ForceReportedWithoutHistoryLoss
+            } else {
+                EventGraphAgreement::Agrees
+            }
+        }
         AncestryDisposition::Diverged | AncestryDisposition::Unrelated => {
             if forced {
                 EventGraphAgreement::Agrees
@@ -384,7 +410,7 @@ fn limitations_for(forced: bool, disposition: &AncestryDisposition) -> Vec<Strin
     let mut limitations = Vec::new();
     if forced && matches!(disposition, AncestryDisposition::Ancestor) {
         limitations.push(
-            "the platform reported a force push while the graph proves a fast-forward; GitHub's `forced` flag records the push option, not history loss, so both observations are retained without inferring a rewrite"
+            "the platform reported a force push while the graph proves the before commit is still contained in the after commit: no history was lost, but the two observations are not reconciled here, because GitHub's schema does not settle whether `forced` records the push option or the server-side ref relationship"
                 .to_string(),
         );
     }
@@ -413,6 +439,11 @@ fn reason_for(
             graph.reason
         );
     }
+    if matches!(agreement, EventGraphAgreement::ForceReportedWithoutHistoryLoss) {
+        return
+            "the platform reported a force push, and the graph proves no history was lost; the ref should not accept a force push at all, so the report is surfaced rather than resolved"
+                .to_string();
+    }
     match verdict {
         HistoryEventVerdict::FastForward => {
             "the before commit is a proven ancestor of the after commit".to_string()
@@ -434,6 +465,23 @@ fn invalid_event(event: &PushEvent<'_>) -> Option<String> {
     if is_zero_object_id(event.before) && is_zero_object_id(event.after) {
         return Some("the delivered event has neither a before nor an after commit".to_string());
     }
+    // A create/delete flag short-circuits the graph comparison entirely, so a
+    // flag that disagrees with its own object name must never be taken at face
+    // value: trusting `created: true` beside a real before commit would skip
+    // ancestry and report success over history the detector never examined.
+    // Only this direction is rejected — an all-zero object name still implies
+    // creation or deletion on its own, because there is genuinely no commit on
+    // that side to compare against.
+    if event.created && !is_zero_object_id(event.before) {
+        return Some(
+            "the delivered event claims ref creation but names a real before commit".to_string(),
+        );
+    }
+    if event.deleted && !is_zero_object_id(event.after) {
+        return Some(
+            "the delivered event claims ref deletion but names a real after commit".to_string(),
+        );
+    }
     if event.before.trim().is_empty() {
         return Some("the delivered event has no before revision".to_string());
     }
@@ -445,12 +493,15 @@ fn invalid_event(event: &PushEvent<'_>) -> Option<String> {
 
 /// Whether a delivered revision is the all-zero object name.
 ///
-/// GitHub spells an absent side of a push as an all-zero object name. The digest
-/// length is not pinned here so that a SHA-256 repository, whose zero object
-/// name is longer, is recognized by the same rule.
+/// GitHub spells an absent side of a push as an all-zero object name.
+///
+/// The length is checked against the two real digest widths — SHA-1 and SHA-256
+/// — rather than accepting any run of zeros. Without that floor a stray `"0"`
+/// from upstream env plumbing would be read as "ref created", silently skipping
+/// the graph comparison for a push that had a perfectly good before commit.
 fn is_zero_object_id(value: &str) -> bool {
     let value = value.trim();
-    !value.is_empty() && value.bytes().all(|byte| byte == b'0')
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte == b'0')
 }
 
 fn display_option(value: Option<&str>) -> &str {
@@ -552,11 +603,11 @@ mod tests {
         Ok(())
     }
 
-    /// GitHub reports `forced` for the push option, not for history loss, so a
-    /// force-flagged fast-forward is not a rewrite. Both axes stay readable and
-    /// the pair is recorded rather than normalized away in either direction.
+    /// A reported force push over a proven fast-forward is neither excused nor
+    /// called a rewrite. Both axes stay readable, the pair gets its own state,
+    /// and it surfaces for an operator instead of passing silently.
     #[test]
-    fn force_flagged_fast_forward_retains_both_axes_without_claiming_a_rewrite() -> Result<()> {
+    fn force_reported_over_a_fast_forward_is_surfaced_not_resolved() -> Result<()> {
         let repository = initialized_repository()?;
         let before = git(repository.path(), &["rev-parse", "HEAD"])?;
         commit_file(repository.path(), "second.txt", "second\n", "second")?;
@@ -570,11 +621,70 @@ mod tests {
         // ... beside the independent graph result, neither overwriting the other.
         assert_eq!(receipt.graph_disposition, Some(AncestryDisposition::Ancestor));
         assert_eq!(receipt.verdict, HistoryEventVerdict::FastForward);
+        // The pair is its own state: not flattened into agreement, not a rewrite.
+        assert_eq!(receipt.agreement, EventGraphAgreement::ForceReportedWithoutHistoryLoss);
+        assert_ne!(receipt.agreement, EventGraphAgreement::Agrees);
+        assert_ne!(receipt.agreement, EventGraphAgreement::Contradicts);
         assert!(
-            receipt.limitations.iter().any(|item| item.contains("records the push option")),
+            receipt.limitations.iter().any(|item| item.contains("no history was lost")),
             "the force-flag/fast-forward pair must be explained, not silently dropped"
         );
-        assert!(!receipt.is_blocking());
+        assert!(receipt.is_blocking(), "a force push reported against main must not pass silently");
+        assert_eq!(receipt.exit_code(), 3, "unresolved evidence, not a proven rewrite");
+        Ok(())
+    }
+
+    /// A create/delete flag skips the graph comparison entirely, so a flag that
+    /// disagrees with its own object name must fail closed. Trusting
+    /// `created: true` beside a real before commit would report success over a
+    /// re-rooted history the detector never examined.
+    #[test]
+    fn a_create_or_delete_flag_contradicting_its_object_name_is_invalid() -> Result<()> {
+        let repository = initialized_repository()?;
+        let before = git(repository.path(), &["rev-parse", "HEAD"])?;
+        git(repository.path(), &["switch", "--orphan", "rebuilt"])?;
+        git(repository.path(), &["rm", "-rf", "--ignore-unmatch", "."])?;
+        commit_file(repository.path(), "rebuilt.txt", "rebuilt\n", "rebuilt")?;
+        let after = git(repository.path(), &["rev-parse", "HEAD"])?;
+
+        // Without the flag this exact pair is a proven re-rooting.
+        let honest = classify_push_event(repository.path(), &event(&before, &after, false));
+        assert_eq!(honest.verdict, HistoryEventVerdict::NonFastForward);
+
+        // A `created` flag must not turn it into a green created_ref.
+        let mut lying = event(&before, &after, false);
+        lying.created = true;
+        let receipt = classify_push_event(repository.path(), &lying);
+        assert_eq!(receipt.verdict, HistoryEventVerdict::InvalidEvent);
+        assert_ne!(receipt.verdict, HistoryEventVerdict::CreatedRef);
+        assert!(receipt.is_blocking(), "a contradicted creation flag must never report success");
+
+        // The same for a `deleted` flag naming a live after commit.
+        let mut deleted = event(&before, &after, false);
+        deleted.deleted = true;
+        let receipt = classify_push_event(repository.path(), &deleted);
+        assert_eq!(receipt.verdict, HistoryEventVerdict::InvalidEvent);
+        assert_ne!(receipt.verdict, HistoryEventVerdict::DeletedRef);
+        Ok(())
+    }
+
+    /// A short run of zeros is not an object name. Reading `"0"` as one would
+    /// silently skip the graph for a push that had a real before commit.
+    #[test]
+    fn a_truncated_zero_value_is_not_a_zero_object_name() -> Result<()> {
+        let repository = initialized_repository()?;
+        let after = git(repository.path(), &["rev-parse", "HEAD"])?;
+
+        let receipt = classify_push_event(repository.path(), &event("0", &after, false));
+
+        assert_ne!(
+            receipt.verdict,
+            HistoryEventVerdict::CreatedRef,
+            "a one-character `0` must not be mistaken for a created ref"
+        );
+        assert_eq!(receipt.verdict, HistoryEventVerdict::NotProven);
+        assert_eq!(receipt.graph_disposition, Some(AncestryDisposition::NotProvenMissingObject));
+        assert!(receipt.is_blocking());
         Ok(())
     }
 

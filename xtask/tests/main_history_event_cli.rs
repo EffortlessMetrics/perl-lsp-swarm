@@ -111,22 +111,44 @@ fn receipt_is_written_for_a_blocking_verdict() -> Result<()> {
 
 /// The receipt keeps GitHub's delivered flags beside the independently proven
 /// graph, so neither axis can be reconstructed from the other.
+///
+/// A reported force push over a proven fast-forward exits 3: no history was
+/// lost, so it is not a rewrite (2), but `main` should not accept a force push
+/// at all, so it does not pass silently either.
 #[test]
-fn receipt_retains_both_the_event_and_graph_axes() -> Result<()> {
+fn force_reported_over_a_fast_forward_retains_both_axes_and_exits_three() -> Result<()> {
     let repository = initialized_repository()?;
     let before = git(repository.path(), &["rev-parse", "HEAD"])?;
     commit_file(repository.path(), "second.txt", "second\n", "second")?;
 
     let output = run_cli(repository.path(), &before, "HEAD", &["--event-forced", "--json"])?;
 
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(3));
     let receipt: Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(receipt["event_shape"], "forced");
     assert_eq!(receipt["event_forced"], true);
     assert_eq!(receipt["graph_disposition"], "ancestor");
     assert_eq!(receipt["verdict"], "fast_forward");
+    assert_eq!(receipt["agreement"], "force_reported_without_history_loss");
     assert!(receipt["graph"]["merge_base"].is_string());
     assert_eq!(receipt["graph"]["is_shallow_repository"], false);
+    Ok(())
+}
+
+/// An ordinary push with no force flag is the only genuinely green path.
+#[test]
+fn ordinary_fast_forward_agrees_and_exits_zero() -> Result<()> {
+    let repository = initialized_repository()?;
+    let before = git(repository.path(), &["rev-parse", "HEAD"])?;
+    commit_file(repository.path(), "second.txt", "second\n", "second")?;
+
+    let output = run_cli(repository.path(), &before, "HEAD", &["--json"])?;
+
+    assert_eq!(output.status.code(), Some(0));
+    let receipt: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(receipt["event_shape"], "ordinary");
+    assert_eq!(receipt["verdict"], "fast_forward");
+    assert_eq!(receipt["agreement"], "agrees");
     Ok(())
 }
 
