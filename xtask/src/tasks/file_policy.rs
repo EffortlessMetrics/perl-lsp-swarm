@@ -379,17 +379,29 @@ fn find_matching_prepared_entry<'a>(
 // git ls-files
 // ---------------------------------------------------------------------------
 
-/// Decode NUL-terminated git path output into repo-relative forward-slash paths.
+/// Decode NUL-terminated git path output as UTF-8 without rewriting separators.
+///
+/// Exact-tree listings must stay lossless: Unix Git permits a literal `\` in a
+/// tree name, and allowlist `path` entries reject backslashes, so rewriting
+/// `\` to `/` can match an unapproved file against a different allowlisted
+/// path. Host Git on Windows may still emit `\` as a directory separator in
+/// `ls-files` / `diff` output; those inventory consumers normalize separately.
 fn decode_git_nul_paths(bytes: &[u8]) -> Result<Vec<String>> {
     bytes
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
         .map(|path| {
-            let path =
-                std::str::from_utf8(path).with_context(|| "git produced a non-UTF-8 path")?;
-            Ok(path.replace('\\', "/"))
+            std::str::from_utf8(path)
+                .with_context(|| "git produced a non-UTF-8 path")
+                .map(str::to_string)
         })
         .collect()
+}
+
+/// Rewrite host separators so inventory paths compare against slash-separated
+/// allowlist entries. Do not use this on exact-tree `ls-tree` names.
+fn host_normalize_git_path(path: String) -> String {
+    path.replace('\\', "/")
 }
 
 /// Run `git ls-files` from `root` and return a sorted list of repo-relative
@@ -398,7 +410,7 @@ pub fn list_tracked_files(root: &Path) -> Result<Vec<String>> {
     let stdout = git_object(root, &["ls-files", "-z"])?;
     let mut files: Vec<String> = decode_git_nul_paths(&stdout)?
         .into_iter()
-        .map(|path| path.trim_start_matches("./").to_string())
+        .map(|path| host_normalize_git_path(path).trim_start_matches("./").to_string())
         .collect();
     files.sort_unstable();
     files.dedup();
@@ -1494,7 +1506,7 @@ fn added_paths_since(root: &Path, baseline: &str) -> Result<Vec<String>> {
     .with_context(|| {
         format!("running `git diff --name-only --no-renames --diff-filter=A -z {range}`")
     })?;
-    decode_git_nul_paths(&stdout)
+    Ok(decode_git_nul_paths(&stdout)?.into_iter().map(host_normalize_git_path).collect())
 }
 
 /// Escape a literal value for embedding in one Markdown table cell so the
@@ -5463,6 +5475,53 @@ review_after = "2026-06-01"
         assert!(error.to_string().contains("notes.txt"));
         let receipt: ExactTreePolicyReceipt = serde_json::from_str(&fs::read_to_string(receipt)?)?;
         assert_eq!(receipt.new_unclassified_paths, vec!["notes.txt"]);
+        assert_eq!(receipt.outcome, "fail");
+        Ok(())
+    }
+
+    #[test]
+    fn decode_git_nul_paths_preserves_literal_backslash() -> Result<()> {
+        let paths = decode_git_nul_paths(b"scripts\\legacy.py\0README.md\0")?;
+        assert_eq!(paths, vec!["scripts\\legacy.py".to_string(), "README.md".to_string()]);
+        assert_eq!(host_normalize_git_path(paths[0].clone()), "scripts/legacy.py");
+        Ok(())
+    }
+
+    /// Unix Git can store a filename containing `\`. Rewriting that byte into
+    /// `/` before exact-tree classification would match a different slash
+    /// allowlist path and accept unapproved debt.
+    #[cfg(unix)]
+    #[test]
+    fn exact_tree_rejects_backslash_filename_that_collides_with_slash_allowlist() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        let mut slash = make_entry("slash-path", None, Some("scripts/legacy.py"), "tooling");
+        slash.covered_by = vec!["exact-tree-backslash-collision".to_string()];
+        slash.reason =
+            "Slash-separated allowlist path that must not match a literal backslash filename."
+                .to_string();
+        slash.review_after = "2999-01-01".to_string();
+        let allowlist = format!(
+            "{}\n[[allow]]\n{}",
+            readme_allowlist_toml()?,
+            toml::to_string(&slash).context("serializing slash-path allowlist fixture")?
+        );
+        write_fixture(temp.path(), "policy/non-rust-allowlist.toml", &allowlist)?;
+        write_fixture(temp.path(), "scripts\\legacy.py", "print('unclassified')\n")?;
+        let subject = commit_fixture(temp.path(), "backslash filename")?;
+        let receipt = temp.path().join("backslash.json");
+        let error = non_rust_exact_tree(temp.path(), &base, &subject, None, &receipt, None, None)
+            .expect_err("literal backslash filename must stay unclassified");
+        let message = error.to_string();
+        assert!(
+            message.contains("scripts\\legacy.py"),
+            "gate must name the lossless tree path, got {message}"
+        );
+        assert!(
+            !message.contains("scripts/legacy.py"),
+            "slash allowlist path must not appear as the unclassified name, got {message}"
+        );
+        let receipt: ExactTreePolicyReceipt = serde_json::from_str(&fs::read_to_string(receipt)?)?;
+        assert_eq!(receipt.new_unclassified_paths, vec!["scripts\\legacy.py"]);
         assert_eq!(receipt.outcome, "fail");
         Ok(())
     }
