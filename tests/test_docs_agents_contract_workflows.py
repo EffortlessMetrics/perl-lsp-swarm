@@ -164,11 +164,24 @@ def run_commands(workflow_text: str) -> tuple[str, ...]:
     return tuple(commands)
 
 
+def _invokes_python_tests(command: str) -> bool:
+    """True when a workflow `run:` invokes stdlib unittest or a `tests/*.py` script.
+
+    The hosted shard runner rejects `python3 -m unittest` (`-m` is an unsupported
+    nested interpreter command), so this gate's own production command is
+    `python3 tests/test_docs_agents_contract_workflows.py`. A fifth contract
+    workflow that copies that form must still be discovered.
+    """
+    if "python3 -m unittest" in command or "python -m unittest" in command:
+        return True
+    return re.search(r"\bpython3?\s+tests/", command) is not None
+
+
 def unittest_targets(commands: Iterable[str]) -> set[str]:
-    """Map `python3 -m unittest` arguments onto `tests/*.py` paths."""
+    """Map python unittest/script invocations onto `tests/*.py` paths."""
     targets: set[str] = set()
     for command in commands:
-        if "python3 -m unittest" not in command and "python -m unittest" not in command:
+        if not _invokes_python_tests(command):
             continue
         for token in UNITTEST_TOKEN.findall(command):
             token = token.rstrip(",")
@@ -220,7 +233,7 @@ def is_contract_workflow(
     contract_tests: set[str],
 ) -> bool:
     """A docs/agents contract workflow is self-path-filtered and runs a
-    `control_plane_contract_test` unittest.
+    `control_plane_contract_test` unittest or `python3 tests/*.py` script.
     """
     own = posix(relative_path)
     if own not in event_paths(workflow_text, "pull_request"):
@@ -795,6 +808,45 @@ jobs:
                 ["python3 -m unittest tests.test_worked_lane_corpus"]
             ),
             {"tests/test_worked_lane_corpus.py"},
+        )
+
+    def test_script_form_control_plane_workflow_is_discovered(self) -> None:
+        """Copying this gate's `python3 tests/*.py` invocation must not opt out."""
+        workflow = """\
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/script-docs-contract.yml'
+jobs:
+  check:
+    steps:
+      - run: python3 tests/test_script_docs_contract.py
+"""
+        allowlist = {
+            "allow": [
+                {
+                    "kind": CONTROL_PLANE_KIND,
+                    "path": "tests/test_script_docs_contract.py",
+                }
+            ]
+        }
+        discovered = discover_contract_workflows(
+            {".github/workflows/script-docs-contract.yml": workflow}, allowlist
+        )
+        self.assertEqual(discovered, {".github/workflows/script-docs-contract.yml"})
+
+    def test_script_form_maps_to_test_path(self) -> None:
+        self.assertEqual(
+            unittest_targets(
+                ["python3 tests/test_docs_agents_contract_workflows.py"]
+            ),
+            {"tests/test_docs_agents_contract_workflows.py"},
+        )
+
+    def test_non_python_mention_of_tests_is_not_a_unittest_target(self) -> None:
+        self.assertEqual(
+            unittest_targets(["echo tests/test_script_docs_contract.py"]),
+            set(),
         )
 
     def test_live_discovery_matches_registered_present_class(self) -> None:
