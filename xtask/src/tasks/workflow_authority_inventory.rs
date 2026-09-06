@@ -117,11 +117,11 @@ pub fn run(receipt: Option<PathBuf>) -> Result<()> {
         .with_context(|| "serialize workflow credential inventory")?;
     match receipt {
         Some(path) => {
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    fs::create_dir_all(parent)
-                        .with_context(|| format!("creating {}", parent.display()))?;
-                }
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("creating {}", parent.display()))?;
             }
             fs::write(&path, &json).with_context(|| format!("writing {}", path.display()))?;
             println!(
