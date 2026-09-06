@@ -55,7 +55,7 @@ CI hasn't broken since their last look).
 
 | Job | Timeout | Scope |
 |-----|---------|-------|
-| `pr-smoke` | 35 min | Format, scoped clippy, scoped test, integration-test compile |
+| `pr-smoke` | 75 min | Format, scoped clippy, scoped test, integration-test compile |
 | `merge-gate-shards` | 20 min | Bounded merge-gate shards via gate policy (see Section 2) |
 | `merge-gate` | 2 min | Aggregates shard results into the required merge-blocking status |
 | `ux-tests` | 15 min | UX regression suite against live binary |
@@ -308,8 +308,9 @@ check rather than no check.
 
 ### Timeout Classification
 
-`pr-smoke` has a 35-minute GitHub job timeout and wraps `xtask gates --tier pr-fast`
-with a 30-minute runner watchdog. Individual shell-backed gates still use their
+`pr-smoke` has a 75-minute GitHub job timeout and wraps `xtask gates --tier pr-fast`
+with a 45-minute runner watchdog, leaving setup and receipt/telemetry headroom.
+Individual shell-backed gates still use their
 `.ci/gate-policy.yaml` `timeout_seconds` values. On Unix runners, xtask delegates those
 per-gate deadlines to GNU `timeout` when available so a timed-out cargo or test command
 terminates as a process group, writes a receipt entry with `status: "timeout"`, and does
@@ -695,4 +696,3 @@ The JSON receipt classifies the first observed failure and provides reproduction
 | `server_crash` | `crash_fix` | Fix crash before merge |
 | `new_test_bug` | `test_fix` | Fix test logic and rerun |
 | `unknown` | `triage` | Inspect logs and add classifier coverage |
-
