@@ -898,7 +898,7 @@ impl Lowerer {
                 self.visit_children(node, confidence);
             }
             NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
-                let variables = variable_decl_bindings(variable);
+                let variables = variable_decl_bindings(declarator, variable);
                 let initializer = declaration_initializer_node(variable, initializer.as_deref());
                 let item_id = self.push_item(
                     node,
@@ -2894,11 +2894,29 @@ fn is_isa_target(node: &Node) -> bool {
         if sigil == "@" && package_and_symbol(name, None).1 == "ISA")
 }
 
-fn variable_decl_bindings(node: &Node) -> Vec<VariableBinding> {
+fn variable_decl_bindings(declarator: &str, node: &Node) -> Vec<VariableBinding> {
     match &node.kind {
-        NodeKind::Assignment { lhs, .. } => variable_binding(lhs).into_iter().collect(),
-        NodeKind::VariableWithAttributes { variable, .. } => variable_decl_bindings(variable),
-        _ => variable_binding(node).into_iter().collect(),
+        NodeKind::Assignment { lhs, .. } => variable_decl_bindings(declarator, lhs),
+        NodeKind::VariableWithAttributes { variable, .. } => {
+            variable_decl_bindings(declarator, variable)
+        }
+        _ => {
+            if let Some(binding) = variable_binding(node) {
+                return vec![binding];
+            }
+            // `my $cache->{key}` declares the base lexical, not the hash slot.
+            // Direct-subscript `local $ENV{PATH}` must not bind `ENV`.
+            if declarator != "local"
+                && let Some((sigil, name, binding_node)) = declared_base_variable(node)
+            {
+                return vec![VariableBinding {
+                    sigil: sigil.to_string(),
+                    name,
+                    range: binding_node.location,
+                }];
+            }
+            Vec::new()
+        }
     }
 }
 
@@ -2934,13 +2952,65 @@ fn declaration_target_node(variable: &Node) -> &Node {
     }
 }
 
-/// A declaration target that is a named variable (optionally with attributes).
-fn named_variable_binding(node: &Node) -> Option<(&str, String)> {
+/// A declaration target that is itself a named variable or typeglob.
+fn named_variable_or_glob(node: &Node) -> Option<(&str, String)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone())),
-        NodeKind::VariableWithAttributes { variable, .. } => named_variable_binding(variable),
+        NodeKind::VariableWithAttributes { variable, .. } => named_variable_or_glob(variable),
+        NodeKind::Typeglob { name } => Some(("*", name.clone())),
         _ => None,
     }
+}
+
+fn is_arrow_postfix_op(op: &str) -> bool {
+    matches!(op, "->" | "->{}" | "->[]")
+}
+
+/// Walk only arrow-postfix / method-call objects to the declared base name.
+///
+/// Direct `[]`/`{}` subscripts are not walked: `local $ENV{PATH}` must not
+/// become a binding of `ENV`. `local $obj->{key}` is likewise an element
+/// localization, not a binding of `$obj`.
+fn declared_base_variable(node: &Node) -> Option<(&str, String, &Node)> {
+    match &node.kind {
+        NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone(), node)),
+        NodeKind::Typeglob { name } => Some(("*", name.clone(), node)),
+        NodeKind::VariableWithAttributes { variable, .. } => declared_base_variable(variable),
+        NodeKind::Binary { op, left, .. } if is_arrow_postfix_op(op) => {
+            declared_base_variable(left)
+        }
+        NodeKind::MethodCall { object, .. } => declared_base_variable(object),
+        _ => None,
+    }
+}
+
+struct NamedDeclTarget<'a> {
+    sigil_str: &'a str,
+    var_name: String,
+    binding_node: &'a Node,
+    recovered_from_postfix: bool,
+}
+
+fn named_declaration_target<'a>(declarator: &str, target: &'a Node) -> Option<NamedDeclTarget<'a>> {
+    if let Some((sigil_str, var_name)) = named_variable_or_glob(target) {
+        return Some(NamedDeclTarget {
+            sigil_str,
+            var_name,
+            binding_node: target,
+            recovered_from_postfix: false,
+        });
+    }
+    if declarator != "local"
+        && let Some((sigil_str, var_name, binding_node)) = declared_base_variable(target)
+    {
+        return Some(NamedDeclTarget {
+            sigil_str,
+            var_name,
+            binding_node,
+            recovered_from_postfix: true,
+        });
+    }
+    None
 }
 
 fn require_target(argument: Option<&Node>) -> Option<String> {
@@ -3339,9 +3409,11 @@ impl<'a> BodyBuilder2<'a> {
         }
     }
 
-    /// Named-variable declarations stay `Let`. A `local` whose target is not a
-    /// named `Variable` is a dynamic-scope write of that place, not a binding
-    /// named `<unknown>`.
+    /// Named-variable / typeglob declarations stay `Let`. A `local` whose
+    /// target is an element, slice, or other non-binding place is a
+    /// dynamic-scope write of that place, not a binding named `<unknown>`.
+    /// Non-`local` arrow-postfix forms (`my $cache->{key}`) recover the
+    /// declared base name and keep the postfix write as the initializer.
     fn lower_variable_declaration_stmt(
         &mut self,
         declarator: &str,
@@ -3349,17 +3421,30 @@ impl<'a> BodyBuilder2<'a> {
         initializer: Option<&Node>,
         range: crate::SourceLocation,
     ) -> HirStmtId {
-        let binding_node = declaration_target_node(variable);
-        match named_variable_binding(binding_node) {
-            Some((sigil_str, var_name)) => self.lower_named_declaration_let(
+        let target = declaration_target_node(variable);
+        match named_declaration_target(declarator, target) {
+            Some(named) if !named.recovered_from_postfix => self.lower_named_declaration_let(
                 declarator,
                 variable,
                 initializer,
-                binding_node,
-                sigil_str,
-                var_name,
+                named.binding_node,
+                named.sigil_str,
+                named.var_name,
                 range,
             ),
+            Some(named) => {
+                let init = Some(self.lower_complex_local_effect(variable, initializer));
+                self.alloc_stmt(
+                    HirStmt::Let {
+                        name: named.var_name,
+                        sigil: sigil_from_str(named.sigil_str),
+                        storage: storage_class_for_decl(declarator),
+                        init,
+                        binding_range: named.binding_node.location,
+                    },
+                    range,
+                )
+            }
             None => {
                 let effect = self.lower_complex_local_effect(variable, initializer);
                 self.alloc_stmt(HirStmt::Expr(effect), range)
@@ -3639,7 +3724,7 @@ impl<'a> BodyBuilder2<'a> {
 
             NodeKind::VariableDeclaration { declarator, variable, initializer, .. }
                 if declarator == "local"
-                    && named_variable_binding(declaration_target_node(variable)).is_none() =>
+                    && named_variable_or_glob(declaration_target_node(variable)).is_none() =>
             {
                 // Expression-position complex `local` (`foo(local($ENV{PATH}) = …)`)
                 // is not a named binding. Lower the real write/RMW/bare place so
@@ -4228,7 +4313,7 @@ impl<'a> BodyBuilder2<'a> {
 }
 
 fn variable_name(node: &Node) -> (&str, String) {
-    named_variable_binding(node).unwrap_or_else(|| ("$", String::from("<unknown>")))
+    named_variable_or_glob(node).unwrap_or_else(|| ("$", String::from("<unknown>")))
 }
 
 fn statement_modifier_kind(modifier: &str) -> StatementModifierKind {

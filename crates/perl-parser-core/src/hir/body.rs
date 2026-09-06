@@ -795,6 +795,23 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
                             )
                         }
                     };
+                    // Arrow-postfix `my $cache->{key}` still declares `$cache`.
+                    // Direct-subscript `local` stays a place write, not a Let.
+                    if declarator != "local"
+                        && let Some((sigil_str, var_name, recovered)) =
+                            declared_base_variable(binding_node)
+                    {
+                        return builder.alloc_stmt(
+                            HirStmt::Let {
+                                name: var_name,
+                                sigil: Sigil::from_str(sigil_str),
+                                storage: DeclStorageClass::from_str(declarator),
+                                init: Some(effect_id),
+                                binding_range: recovered.location,
+                            },
+                            range,
+                        );
+                    }
                     builder.alloc_stmt(HirStmt::Expr(effect_id), range)
                 }
             }
@@ -812,6 +829,24 @@ fn named_variable_from_node(node: &Node) -> Option<(&str, String)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone())),
         NodeKind::VariableWithAttributes { variable, .. } => named_variable_from_node(variable),
+        NodeKind::Typeglob { name } => Some(("*", name.clone())),
+        _ => None,
+    }
+}
+
+fn is_arrow_postfix_op(op: &str) -> bool {
+    matches!(op, "->" | "->{}" | "->[]")
+}
+
+fn declared_base_variable(node: &Node) -> Option<(&str, String, &Node)> {
+    match &node.kind {
+        NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone(), node)),
+        NodeKind::Typeglob { name } => Some(("*", name.clone(), node)),
+        NodeKind::VariableWithAttributes { variable, .. } => declared_base_variable(variable),
+        NodeKind::Binary { op, left, .. } if is_arrow_postfix_op(op) => {
+            declared_base_variable(left)
+        }
+        NodeKind::MethodCall { object, .. } => declared_base_variable(object),
         _ => None,
     }
 }

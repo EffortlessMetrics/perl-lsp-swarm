@@ -4,13 +4,15 @@
 //! are not named-variable declarations. Canonical body HIR must lower the real
 //! target place (element, slice, or fail-closed opaque) and PIR-A must never
 //! emit `StashWrite { name: "<unknown>" }`. Named `local $x` stays a `Let`.
+//! Typeglob `local *FH` and arrow-postfix `my $cache->{key}` recover the real
+//! declared name; arrow-element `local $obj->{key}` does not bind `$obj`.
 
 mod cpan_test_helpers;
 
 use cpan_test_helpers::{assert_clean_parse, parse};
 use perl_parser_core::hir::{
-    AccessMode, AssignMode, DeclStorageClass, HirBody, HirExpr, HirStmt, SubscriptKind, lower_ast,
-    lower_body,
+    AccessMode, AssignMode, DeclStorageClass, HirBody, HirExpr, HirKind, HirStmt, Sigil,
+    SubscriptKind, lower_ast, lower_body,
 };
 use perl_parser_core::pir::{PirGraph, PirOperation, lower_hir_bodies};
 use perl_parser_core::{Parser, hir::HirFile};
@@ -118,15 +120,46 @@ fn element_assign(
     ))
 }
 
-fn named_local_let(body: &HirBody, name: &str) -> Result<(), String> {
+fn named_let(
+    body: &HirBody,
+    name: &str,
+    sigil: Sigil,
+    storage: DeclStorageClass,
+) -> Result<(), String> {
     for stmt in body.stmts.iter() {
-        if let HirStmt::Let { name: got, storage: DeclStorageClass::Local, .. } = stmt
+        if let HirStmt::Let { name: got, sigil: got_sigil, storage: got_storage, .. } = stmt
             && got == name
+            && *got_sigil == sigil
+            && *got_storage == storage
         {
             return Ok(());
         }
     }
-    Err(format!("expected named local Let {name:?}"))
+    Err(format!("expected Let {name:?} sigil={sigil:?} storage={storage:?}"))
+}
+
+fn named_local_let(body: &HirBody, name: &str) -> Result<(), String> {
+    named_let(body, name, Sigil::Scalar, DeclStorageClass::Local)
+}
+
+fn let_names(body: &HirBody) -> Vec<&str> {
+    body.stmts
+        .iter()
+        .filter_map(|stmt| match stmt {
+            HirStmt::Let { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn pir_writes_name(graph: &PirGraph, name: &str) -> bool {
+    graph.nodes.iter().any(|node| match &node.operation {
+        PirOperation::StashWrite { symbol } | PirOperation::StashModify { symbol, .. } => {
+            symbol.name == name
+        }
+        PirOperation::LexicalWrite { name: lexical } => lexical.name == name,
+        _ => false,
+    })
 }
 
 fn pir_has_assign(graph: &PirGraph) -> bool {
@@ -340,6 +373,71 @@ fn recovered_element_local_does_not_become_a_placeholder() -> Result<(), String>
 }
 
 #[test]
+fn local_typeglob_binds_the_real_glob_name() -> Result<(), String> {
+    let source = "local *FH;";
+    let file = canonical_body(source)?;
+    let body = body_of(&file)?;
+    let graph = pir_of(&file);
+    require_no_placeholder(body, &graph, source)?;
+    named_let(body, "FH", Sigil::Glob, DeclStorageClass::Local)?;
+    if !pir_writes_name(&graph, "FH") {
+        return Err(format!("local *FH must stash-write FH, got {graph:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn arrow_postfix_my_recovers_the_declared_base() -> Result<(), String> {
+    let source = "my $cache->{key} = [1,2,3];";
+    let file = canonical_body(source)?;
+    let body = body_of(&file)?;
+    let graph = pir_of(&file);
+    require_no_placeholder(body, &graph, source)?;
+    named_let(body, "cache", Sigil::Scalar, DeclStorageClass::My)?;
+    element_assign(body, "cache", SubscriptKind::Hash, AccessMode::Write, AssignMode::Simple)?;
+    if !pir_writes_name(&graph, "cache") {
+        return Err(format!("postfix my must lexical-write cache, got {graph:?}"));
+    }
+    if pir_unsupported(&graph, "Subscript") == 0 {
+        return Err(format!("postfix assignment must keep the hash subscript: {graph:?}"));
+    }
+    let first_pass = file.items.iter().find_map(|item| match &item.kind {
+        HirKind::VariableDecl(declaration) => Some(declaration),
+        _ => None,
+    });
+    let Some(declaration) = first_pass else {
+        return Err("postfix my must remain a first-pass VariableDecl".to_string());
+    };
+    let names: Vec<&str> =
+        declaration.variables.iter().map(|binding| binding.name.as_str()).collect();
+    if names != ["cache"] {
+        return Err(format!("first-pass must bind cache, not the hash slot: {names:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn arrow_postfix_local_is_element_localization_not_a_container_binding() -> Result<(), String> {
+    // Class falsifier: recovering every Binary.left would turn this into Let `obj`.
+    let source = "local $obj->{key} = 1;";
+    let file = canonical_body(source)?;
+    let body = body_of(&file)?;
+    let graph = pir_of(&file);
+    require_no_placeholder(body, &graph, source)?;
+    element_assign(body, "obj", SubscriptKind::Hash, AccessMode::Write, AssignMode::Simple)?;
+    if let_names(body).contains(&"obj") {
+        return Err("element local via arrow must not bind the container".to_string());
+    }
+    if body.stmts.iter().any(|stmt| matches!(stmt, HirStmt::Let { .. })) {
+        return Err("arrow-element local must stay a place write, not a Let".to_string());
+    }
+    if pir_writes_name(&graph, "obj") {
+        return Err("arrow-element local must not stash-write the container".to_string());
+    }
+    Ok(())
+}
+
+#[test]
 fn mirror_statement_form_rejects_placeholder_let() -> Result<(), String> {
     // The test-only mirror does not model Subscript places (#5813). It still
     // must not emit a named `<unknown>` Let for a statement-level element local.
@@ -356,5 +454,23 @@ fn mirror_statement_form_rejects_placeholder_let() -> Result<(), String> {
     if !assign {
         return Err("mirror must keep the embedded assignment".to_string());
     }
+    Ok(())
+}
+
+#[test]
+fn mirror_recovers_typeglob_and_postfix_my_without_placeholder() -> Result<(), String> {
+    assert_clean_parse("local *FH;");
+    let glob_body = lower_body(&parse("local *FH;"));
+    if !placeholder_lets(&glob_body).is_empty() {
+        return Err("mirror local *FH must not invent <unknown>".to_string());
+    }
+    named_let(&glob_body, "FH", Sigil::Glob, DeclStorageClass::Local)?;
+
+    assert_clean_parse("my $cache->{key} = [1,2,3];");
+    let postfix_body = lower_body(&parse("my $cache->{key} = [1,2,3];"));
+    if !placeholder_lets(&postfix_body).is_empty() || placeholder_variables(&postfix_body) != 0 {
+        return Err("mirror postfix my must not invent <unknown>".to_string());
+    }
+    named_let(&postfix_body, "cache", Sigil::Scalar, DeclStorageClass::My)?;
     Ok(())
 }
