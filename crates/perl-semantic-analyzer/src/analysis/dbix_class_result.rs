@@ -111,8 +111,13 @@ impl PartialResultSite {
 /// framework semantics. Unrelated static `base`/`parent` declarations are
 /// ignored, while dynamic or malformed parents remain explicit boundaries
 /// because they could resolve to the reviewed module only at runtime.
+///
+/// Shadow status (#13140): no production consumer wires this extractor yet,
+/// so it stays crate-visible and is exercised by its in-module tests until
+/// the extraction and the checked adapter meet in a comparison consumer.
 #[must_use]
-pub fn extract_dbix_class_result_sites(
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn extract_dbix_class_result_sites(
     ast: &Node,
     file_id: FileId,
     generation: SourceGeneration,
