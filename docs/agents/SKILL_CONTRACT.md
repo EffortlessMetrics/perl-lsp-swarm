@@ -238,6 +238,15 @@ candidate.
 
 - one claim normally has one current candidate;
 - one writer mutates that candidate branch/worktree at a time;
+- immediately before mutation, use the current typed writer-preflight/admission
+  authority when available, or establish the exact candidate, head, and mutation owner
+  from live evidence; missing, stale, or contradictory evidence is `NOT_PROVEN`;
+- a context that establishes another current writer does not mutate that candidate; it
+  may continue as a reviewer or move to another claim;
+- if commits from multiple contexts have already reached the branch, merge rather than
+  rewrite history, then return the candidate to one writer;
+- the writer role is exclusive, the review role is not: research, review, and
+  comment on an existing candidate need no claim and no wait;
 - focused research, oracle, proof, review, and CI evidence work may assist;
 - helpers do not inspect sibling claim implementation details or touched-file overlap as
   routine ownership checks;

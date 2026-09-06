@@ -259,6 +259,32 @@ only duplicate claims, same-candidate writers, explicit prerequisites, destructi
 shared runtime state, actual conflicts, or demonstrated combined-tree interactions.
 Behind-only movement requires no action.
 
+### The exclusive role is writer, not reader
+
+Mutation is exclusive; reading is not. Arriving at an existing candidate to research,
+review, challenge, or comment requires no claim, no check for a current writer, and no
+wait. Duplicate review is cheap and buys a second detection surface from
+changed attention, which is what substantive review asks for and cannot get from
+identity alone. A session that finds another writer already on a candidate reviews it
+and posts what it found; it does not push, and it does not stand down from reviewing.
+
+Duplicate review composes only when each session posts its findings to the durable
+GitHub surface. Two silent reviews are two contexts rediscovering the same defect and
+disagreeing invisibly; two posted reviews are joined evidence.
+
+Do not gate reading. A claim ceremony, reservation, or persistent writer-liveness
+signal ahead of research or review serializes the cheap half of the work and goes stale.
+Mutation is different: immediately before a write, consume the current typed
+writer-preflight/admission authority when available, or establish the exact candidate,
+head, and mutation ownership from live evidence. Missing, stale, or contradictory
+writer evidence is `NOT_PROVEN`; an established second writer is a hard stop. This is a
+just-in-time write check, not durable coordination state.
+
+If a collision is discovered only after commits from multiple contexts have reached the
+branch, preserve those commits by merging rather than rewriting history, then return
+the candidate to one writer. A second writer does not gain permission to keep mutating
+merely because merge is safer than force-push.
+
 ## Proof ladder
 
 ```text
