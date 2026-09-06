@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { BinaryDownloader } from './downloader';
+import { isPerlLanguageId } from './languageIdentity';
 
 const SERVER_DEBUG_TEST_COMMAND = 'perl.debugTest';
 export const VSCODE_DEBUG_TEST_COMMAND = 'perl-lsp.debugTest';
@@ -295,7 +296,7 @@ export async function offerDebugConfigOnFirstPerlOpen(
   if (_debugConfigPromptShown) {
     return;
   }
-  if (document.languageId !== 'perl') {
+  if (!isPerlLanguageId(document.languageId)) {
     return;
   }
 
@@ -802,7 +803,7 @@ export class PerlDebugConfigurationProvider implements vscode.DebugConfiguration
     // If launch.json is missing or empty
     if (!config.type && !config.request && !config.name) {
       const editor = vscode.window.activeTextEditor;
-      if (editor && editor.document.languageId === 'perl') {
+      if (editor && isPerlLanguageId(editor.document.languageId)) {
         config.type = 'perl';
         config.name = 'Launch Perl';
         config.request = 'launch';

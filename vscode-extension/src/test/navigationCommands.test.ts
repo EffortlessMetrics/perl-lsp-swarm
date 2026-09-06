@@ -53,6 +53,32 @@ describe('navigation command implementations', () => {
     );
   });
 
+  test('keeps test actions enabled for a perl5 alias editor (#7699)', async () => {
+    setActiveEditor(makeEditor('perl5'));
+    (vscode.window.showQuickPick as jest.Mock).mockResolvedValueOnce(undefined);
+
+    await showStatusMenuCommand();
+
+    const items = (vscode.window.showQuickPick as jest.Mock).mock.calls[0]?.[0] as Array<{
+      command?: string;
+      disabled?: boolean;
+    }>;
+    expect(items.find((item) => item.command === 'perl-lsp.runTests')?.disabled).toBe(false);
+  });
+
+  test('still disables test actions for a non-Perl editor (path rules unchanged)', async () => {
+    setActiveEditor(makeEditor('markdown', '/workspace/README.md'));
+    (vscode.window.showQuickPick as jest.Mock).mockResolvedValueOnce(undefined);
+
+    await showStatusMenuCommand();
+
+    const items = (vscode.window.showQuickPick as jest.Mock).mock.calls[0]?.[0] as Array<{
+      command?: string;
+      disabled?: boolean;
+    }>;
+    expect(items.find((item) => item.command === 'perl-lsp.runTests')?.disabled).toBe(true);
+  });
+
   test('offers recovery actions when the server is unavailable', async () => {
     const outputChannel = { show: jest.fn() };
     const deps = dependencies({

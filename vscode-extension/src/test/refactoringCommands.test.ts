@@ -81,6 +81,39 @@ describe('refactoring command implementations', () => {
     expect(vscode.window.showWarningMessage).toHaveBeenCalledWith('server unavailable');
   });
 
+  test('reaches server-availability for a perl5 alias editor (#7699)', async () => {
+    setActiveEditor(
+      makeEditor({
+        document: {
+          languageId: 'perl5',
+          uri: { toString: () => 'file:///workspace/lib/Example.pm' },
+        },
+      }),
+    );
+
+    await extractVariableCommand(dependencies());
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith('server unavailable');
+    expect(vscode.window.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  test('still refuses a non-Perl editor before any server interaction', async () => {
+    setActiveEditor(
+      makeEditor({
+        document: {
+          languageId: 'javascript',
+          uri: { toString: () => 'file:///workspace/lib/Example.js' },
+        },
+      }),
+    );
+
+    await extractVariableCommand(dependencies());
+
+    expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+      'Extract Variable requires an active Perl file with a selection',
+    );
+  });
+
   test('requests a variable action with the selected range and applies its edit', async () => {
     const editor = makeEditor();
     setActiveEditor(editor);

@@ -76,9 +76,9 @@ describe('perl-lsp.previewPod command (issue #2062)', () => {
     expect(entry).toBeDefined();
   });
 
-  test('perl-lsp.previewPod is guarded by editorLangId == perl', () => {
+  test('perl-lsp.previewPod is guarded by the perl-or-perl5 language gate', () => {
     const entry = paletteEntries.find((e: PaletteEntry) => e.command === 'perl-lsp.previewPod');
-    expect(entry?.when).toContain('editorLangId == perl');
+    expect(entry?.when).toContain('editorLangId == perl || editorLangId == perl5');
   });
 });
 

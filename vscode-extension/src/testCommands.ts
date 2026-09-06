@@ -3,6 +3,7 @@ import type { LanguageClient } from 'vscode-languageclient/node';
 import { parseDebugTestLaunchTarget } from './debugAdapter';
 import type { PerlTestAdapter } from './testAdapter';
 import { selectTestCommandAtPosition } from './runTestAtCursor';
+import { isPerlLanguageId } from './languageIdentity';
 
 type TestLanguageClient = Pick<LanguageClient, 'sendRequest'>;
 type TestAdapter = Pick<PerlTestAdapter, 'runFileTests'>;
@@ -39,7 +40,7 @@ export async function runTestsCommand(
 
   if (!targetUri) {
     const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'perl') {
+    if (!editor || !isPerlLanguageId(editor.document.languageId)) {
       vscode.window.showErrorMessage('No active Perl file to test');
       return;
     }
@@ -81,7 +82,7 @@ export async function runTestsCommand(
 /** Run the test code lens that contains the active cursor. */
 export async function runTestAtCursorCommand(dependencies: TestCommandDependencies): Promise<void> {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'perl') {
+  if (!editor || !isPerlLanguageId(editor.document.languageId)) {
     vscode.window.showErrorMessage('Run Test at Cursor requires an active Perl file');
     return;
   }
@@ -126,7 +127,7 @@ async function runProveTask(name: string, args: string[], cwd?: string): Promise
 /** Run prove against the active Perl file. */
 export async function runCurrentTestWithProve(): Promise<void> {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'perl') {
+  if (!editor || !isPerlLanguageId(editor.document.languageId)) {
     vscode.window.showErrorMessage('No active Perl file to run');
     return;
   }
