@@ -257,7 +257,7 @@ fn parse_content_length(header: &str) -> ContentLengthParse {
     found.map_or(ContentLengthParse::Missing, ContentLengthParse::Found)
 }
 
-pub(crate) fn find_header_start(hay: &[u8]) -> Option<usize> {
+fn find_header_start(hay: &[u8]) -> Option<usize> {
     hay.windows(HEADER_SENTINEL.len())
         .position(|window| window.eq_ignore_ascii_case(HEADER_SENTINEL))
 }

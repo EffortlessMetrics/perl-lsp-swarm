@@ -27,6 +27,41 @@ fn framed_request(id: u64, method: &str) -> Vec<u8> {
     framed(body.as_bytes())
 }
 
+fn invalid_utf8_secondary_header_frame(content_length: usize, body: &[u8]) -> Vec<u8> {
+    let mut payload = format!("Content-Length: {content_length}\r\n").into_bytes();
+    payload.push(0xFF);
+    payload.extend_from_slice(b"\r\n\r\n");
+    payload.extend_from_slice(body);
+    payload
+}
+
+fn expect_invalid_header_utf8_then_method(
+    payload: Vec<u8>,
+    capacity: usize,
+    method: &str,
+) -> io::Result<()> {
+    let mut reader = BufReader::with_capacity(capacity, Cursor::new(payload));
+    match read_message_outcome(&mut reader)? {
+        Some(Err(IncomingMessageError::Framing(FramingError::InvalidHeaderUtf8))) => {}
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected InvalidHeaderUtf8, got {other:?}"),
+            ));
+        }
+    }
+    let recovered = read_message(&mut reader)?.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::UnexpectedEof, format!("expected recovered {method}"))
+    })?;
+    if recovered.method != method {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("expected method {method}, got {}", recovered.method),
+        ));
+    }
+    Ok(())
+}
+
 fn invalid_utf8_json_body() -> Vec<u8> {
     let mut body =
         format!(r#"{{"jsonrpc":"2.0","id":1,"method":"test","params":{{"text":"abc{SECRET}"#)
@@ -481,6 +516,30 @@ fn read_message_does_not_consume_next_frame_when_malformed_body_is_missing() -> 
                 format!("expected recovered stateful request, got {other:?}"),
             ));
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn read_message_consumes_claimed_body_even_when_it_contains_content_length_text() -> io::Result<()>
+{
+    // Searching leftover payload for a Content-Length sentinel would start
+    // the next read inside this body and lose the following valid frame.
+    let body =
+        br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"text":"Content-Length: 99"}}"#;
+    let mut payload = invalid_utf8_secondary_header_frame(body.len(), body);
+    payload.extend(framed_request(10, "after-sentinel-in-body"));
+    expect_invalid_header_utf8_then_method(payload, 4096, "after-sentinel-in-body")
+}
+
+#[test]
+fn read_message_does_not_consume_next_frame_across_small_bufreader_capacities() -> io::Result<()> {
+    let mut payload = invalid_utf8_secondary_header_frame(64, &[]);
+    payload.extend(framed_request(11, "after-small-buffer"));
+    // The header sentinel is 15 bytes. Capacities below, at, and above that
+    // length must still treat a following header prefix as the next frame.
+    for capacity in [1, 8, 14, 15, 16] {
+        expect_invalid_header_utf8_then_method(payload.clone(), capacity, "after-small-buffer")?;
     }
     Ok(())
 }

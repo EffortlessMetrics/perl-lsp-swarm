@@ -412,35 +412,38 @@ fn drain_to_header_end(reader: &mut dyn BufRead) -> io::Result<()> {
     }
 }
 
-/// Skip leftover malformed-frame bytes without consuming a following frame.
+fn looks_like_content_length_header(bytes: &[u8]) -> bool {
+    const SENTINEL: &[u8] = b"content-length:";
+    if bytes.is_empty() {
+        return false;
+    }
+    let prefix_len = bytes.len().min(SENTINEL.len());
+    match (bytes.get(..prefix_len), SENTINEL.get(..prefix_len)) {
+        (Some(prefix), Some(expected)) => prefix.eq_ignore_ascii_case(expected),
+        _ => false,
+    }
+}
+
+/// Recover a following frame after an invalid header without scanning payload
+/// bytes for a `Content-Length` sentinel.
 ///
-/// The one-shot helper has no persistent framer buffer. After an invalid
-/// header, skip to the next `Content-Length` sentinel already in the BufRead,
-/// or skip at most a previously parsed in-limit length of non-header bytes.
-/// Do not pull additional bytes to satisfy that length: the next frame may
-/// already be the remaining stream.
-fn resync_after_malformed_header(
+/// If the next buffered bytes already look like a header (including a prefix
+/// split across a small `BufRead` buffer), the claimed body was omitted and
+/// must not be consumed. Otherwise consume an in-limit claimed body so a
+/// leftover payload cannot be reread as headers.
+fn recover_after_malformed_header(
     reader: &mut dyn BufRead,
     claimed_length: Option<usize>,
 ) -> io::Result<()> {
-    let mut remaining = claimed_length.filter(|&len| len > 0 && len <= MAX_FRAME_SIZE).unwrap_or(0);
-
-    loop {
-        let available = reader.fill_buf()?;
-        if available.is_empty() {
-            return Ok(());
-        }
-        if let Some(prefix) = super::framing::find_header_start(available) {
-            reader.consume(prefix);
-            return Ok(());
-        }
-        if remaining == 0 {
-            return Ok(());
-        }
-        let skip = available.len().min(remaining);
-        remaining -= skip;
-        reader.consume(skip);
+    let Some(length) = claimed_length.filter(|&len| len > 0 && len <= MAX_FRAME_SIZE) else {
+        return Ok(());
+    };
+    let available = reader.fill_buf()?;
+    if available.is_empty() || looks_like_content_length_header(available) {
+        return Ok(());
     }
+    let mut limited = reader.take(length as u64);
+    io::copy(&mut limited, &mut io::sink()).map(|_| ())
 }
 
 /// Read one LSP message from a buffered reader as a typed one-frame outcome.
@@ -468,7 +471,7 @@ pub fn read_message_outcome(
             Ok(header) => header,
             Err(_) => {
                 drain_to_header_end(reader)?;
-                resync_after_malformed_header(reader, content_length)?;
+                recover_after_malformed_header(reader, content_length)?;
                 return Ok(Some(Err(IncomingMessageError::Framing(
                     FramingError::InvalidHeaderUtf8,
                 ))));
