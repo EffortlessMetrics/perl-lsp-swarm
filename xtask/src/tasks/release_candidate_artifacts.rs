@@ -10,7 +10,7 @@ use crate::utils::project_root;
 use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -49,6 +49,9 @@ pub struct VerifyConfig {
     pub producer_run_id: Option<String>,
     pub now: Option<DateTime<Utc>>,
     pub rebuild_attempt: bool,
+    /// Optional topology document. When supplied, its bytes must match the
+    /// frozen `release_topology_digest`.
+    pub topology: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -56,15 +59,6 @@ pub struct VerifyConfig {
 pub enum TransportKind {
     StagingDirectory,
     GithubActionsArtifact,
-}
-
-impl TransportKind {
-    fn as_schema_str(self) -> &'static str {
-        match self {
-            Self::StagingDirectory => "staging_directory",
-            Self::GithubActionsArtifact => "github_actions_artifact",
-        }
-    }
 }
 
 impl std::str::FromStr for TransportKind {
@@ -412,6 +406,23 @@ fn verify_packet(config: &VerifyConfig) -> Result<VerificationReceipt> {
             "packet fields were edited without regenerating packet_digest",
         )
         .into());
+    }
+    if let Some(topology_path) = &config.topology {
+        let topology = load_topology(topology_path)?;
+        if topology.digest != packet.release_topology_digest {
+            return Err(HandoffError::new(
+                ReasonCode::TopologyDigestMismatch,
+                "supplied topology bytes do not match the frozen release_topology_digest; version identity is not sufficient",
+            )
+            .into());
+        }
+        if topology.frozen_product_sha != packet.release_repo_sha {
+            return Err(HandoffError::new(
+                ReasonCode::TopologyDigestMismatch,
+                "supplied topology frozen_product_sha does not match the frozen release-repo SHA",
+            )
+            .into());
+        }
     }
     if packet.publish_authorized {
         return Err(HandoffError::new(
@@ -998,6 +1009,7 @@ fn verify_cfg(dirs: &ScenarioDirs) -> VerifyConfig {
         producer_run_id: Some("run-1".to_string()),
         now: None,
         rebuild_attempt: false,
+        topology: Some(dirs.topology.clone()),
     }
 }
 
@@ -1053,15 +1065,8 @@ fn cross_run_check(topology: &Path) -> Result<()> {
 fn topology_digest_check(topology: &Path) -> Result<()> {
     let dirs = scenario_dirs(topology)?;
     let packet = freeze_packet(&freeze_cfg(&dirs, "run-1", "set-rc1"))?;
-    let mut edited: Map<String, Value> = serde_json::to_value(&packet)?
-        .as_object()
-        .cloned()
-        .ok_or_else(|| eyre!("packet object"))?;
-    edited.insert("release_topology_digest".to_string(), Value::String("b".repeat(64)));
-    let packet: CandidateArtifactPacket = serde_json::from_value(Value::Object(edited))?;
-    // Keep declared digest so schema passes; verification of a substituted
-    // topology document is freeze-time: freeze a same-version topology with a
-    // different archive membership.
+    serde_json::to_writer_pretty(File::create(&dirs.packet)?, &packet)?;
+    let original_digest = packet.release_topology_digest.clone();
     let mut alt = serde_json::from_slice::<Value>(&fs::read(&dirs.topology)?)?;
     if let Some(targets) = alt.get_mut("binary_targets").and_then(Value::as_array_mut)
         && let Some(first) = targets.get_mut(0)
@@ -1071,20 +1076,20 @@ fn topology_digest_check(topology: &Path) -> Result<()> {
         first["target"] = Value::String("aarch64-unknown-linux-gnu".to_string());
     }
     fs::write(&dirs.topology, serde_json::to_vec_pretty(&alt)?)?;
+    expect_verify_reason(verify_packet(&verify_cfg(&dirs)), ReasonCode::TopologyDigestMismatch)?;
     fs::write(
         dirs.staging.join("perllsp-0.18.0-aarch64-unknown-linux-gnu.tar.gz"),
         b"alt-archive\n",
     )?;
     let _ = fs::remove_file(dirs.staging.join("perllsp-0.18.0-x86_64-unknown-linux-gnu.tar.gz"));
     let alt_packet = freeze_packet(&freeze_cfg(&dirs, "run-1", "set-rc1"))?;
-    if alt_packet.release_topology_digest == packet.release_topology_digest {
+    if alt_packet.release_topology_digest == original_digest {
         bail!("same-version topology edit did not change topology digest");
     }
-    if alt_packet.release == packet.release {
-        Ok(())
-    } else {
-        bail!("topology digest control changed the release version")
+    if alt_packet.release != packet.release {
+        bail!("topology digest control changed the release version");
     }
+    Ok(())
 }
 
 fn version_metadata_check(topology: &Path) -> Result<()> {

@@ -3856,6 +3856,9 @@ enum ReleaseCommand {
         /// Fail closed if a publisher attempts to rebuild instead of retrieving.
         #[arg(long)]
         rebuild_attempt: bool,
+        /// Optional topology document whose bytes must match the frozen digest.
+        #[arg(long)]
+        topology: Option<PathBuf>,
     },
     /// Validate schema, freeze/verify happy path, and every #9092 negative control.
     CheckCandidateArtifacts,
@@ -5602,6 +5605,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 producer_run_id,
                 now,
                 rebuild_attempt,
+                topology,
             } => release_candidate_artifacts::verify(release_candidate_artifacts::VerifyConfig {
                 packet,
                 staging,
@@ -5610,6 +5614,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 producer_run_id,
                 now: parse_optional_rfc3339(now)?,
                 rebuild_attempt,
+                topology,
             }),
             ReleaseCommand::CheckCandidateArtifacts => release_candidate_artifacts::check(),
         },
