@@ -119,6 +119,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "compiler_concept_ledger": {"lanes": ["merge_gate_shards"]},
     "compiler_proof_policy": {"lanes": ["merge_gate_shards"]},
     "compiler_concept_proof": {"lanes": ["merge_gate_shards"]},
+    "postfix_capability_closure": {"lanes": ["merge_gate_shards"]},
     "release_trust_invariants": {"lanes": ["merge_gate_shards"]},
 
     # commit-tier staged-tree hygiene (local pre-commit; not CI)
