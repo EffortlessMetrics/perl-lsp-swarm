@@ -1109,3 +1109,32 @@ fn a_resolvable_dependency_context_is_not_landing_evidence() -> Result<()> {
     .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
     Ok(())
 }
+
+#[test]
+fn candidate_order_does_not_change_the_reconcile_packet() -> Result<()> {
+    // The supplied array is an unordered set: the same two candidates listed
+    // either way round must adjudicate to the same packet. Before the sort,
+    // both the frontier digest and the rendered bytes followed arrival order.
+    let root = fixture_tree("candidate-order")?;
+    let inputs = default_fixture(&root)?;
+    let first = json!({"identity": "PR #8800", "state": "stale_base", "facts": "unpushed work"});
+    let second =
+        json!({"identity": "PR #8801", "state": "dirty_or_unpushed_unique_work", "facts": "wip"});
+
+    let render = |candidates: Value| -> Result<(String, String)> {
+        let doc = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+            .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+        let bytes = render_builder_packet(&doc, PacketProjection::Machine)?;
+        Ok((doc["frontier"]["digest"].as_str().unwrap_or_default().to_string(), bytes))
+    };
+
+    let (forward_digest, forward_bytes) = render(json!([first.clone(), second.clone()]))?;
+    let (reversed_digest, reversed_bytes) = render(json!([second, first]))?;
+
+    assert_eq!(
+        forward_digest, reversed_digest,
+        "candidate order must not change the frontier digest"
+    );
+    assert_eq!(forward_bytes, reversed_bytes, "candidate order must not change packet bytes");
+    Ok(())
+}

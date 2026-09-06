@@ -509,18 +509,36 @@ fn compose_packet_document(
     // it is not evidence that the claim is free.
     if is_coding && live_gate == LiveGate::Enforced {
         let observed = live.filter(|live| live.candidate_state == "observed");
-        if observed.is_none() {
-            let detail = match live {
-                None => "no live candidate observation was supplied (--live-observation); a \
-                         coding packet must not assume the claim is vacant"
+        // Devin raised that an `observed` candidate carrying no `collision_state`
+        // can still be admitted, so a writer may be sent to a candidate another
+        // writer already owns. That is a real hole, and it is NOT closable here:
+        // this repository encodes an observed *vacancy* as `observed` with a
+        // free-text identity and no collision state (see
+        // `fixtures/emacs_train_packet/observed_no_candidate.v1.json`), so
+        // "observed with no collision facts" is ambiguous between "nothing is
+        // there" and "something is there and nobody looked at ownership".
+        // The shared #10872 `live_observation` is closed
+        // (`additionalProperties: false`, exactly four fields) and its
+        // `candidate_state` enum is `not_observed | observed`, so no field can
+        // carry the distinction and this adapter does not own that schema.
+        // Requiring collision facts unconditionally would reject every legitimate
+        // vacancy and make coding packets unissuable. Tracked against
+        // #10872/#10930 with the rest of the vocabulary gap.
+        let detail = match (observed, live) {
+            (Some(_), _) => None,
+            (None, None) => Some(
+                "no live candidate observation was supplied (--live-observation); a coding \
+                 packet must not assume the claim is vacant"
                     .to_string(),
-                Some(live) => format!(
-                    "the supplied live observation is {}; only an explicit complete \
-                     `observed` observation establishes whether a candidate exists, and \
-                     absence of knowledge is never vacancy",
-                    live.candidate_state
-                ),
-            };
+            ),
+            (None, Some(live)) => Some(format!(
+                "the supplied live observation is {}; only an explicit complete `observed` \
+                 observation establishes whether a candidate exists, and absence of knowledge \
+                 is never vacancy",
+                live.candidate_state
+            )),
+        };
+        if let Some(detail) = detail {
             return Err(Refusal::new(
                 &node.node_id,
                 profile,
@@ -622,7 +640,7 @@ fn compose_packet_document(
         "surfaces": surfaces_object(node, &implementation_paths, context, write_boundary, &write_paths),
         "proof": proof_object(node),
         "verification": verification_object(node, context),
-        "delivery": delivery_object(node),
+        "delivery": delivery_object(node, live),
         "stop": stop_object(node),
     });
 
@@ -1077,13 +1095,24 @@ fn verification_object(node: &TrainNode, context: &NodeContextPacket) -> Value {
     json!({"steps": steps})
 }
 
-fn delivery_object(node: &TrainNode) -> Value {
+fn delivery_object(node: &TrainNode, live: Option<&LiveObservation>) -> Value {
     let old_path_disposition =
         if node.exits.old_path.starts_with("none") { "none" } else { "replaced" };
     let mut limitations = node.limitations.clone();
-    limitations.push(
-        "offline composition: live candidate state is not observed (#10930 unlanded)".to_string(),
-    );
+    // An admitted coding packet is bound to an observed candidate, so claiming
+    // the live state is unobserved would be false. Record what was actually
+    // observed instead.
+    let observed = live.filter(|live| live.candidate_state == "observed");
+    match observed {
+        Some(observed) => limitations.push(format!(
+            "live candidate observed: {}",
+            observed.collision_state.as_deref().unwrap_or("collision state not stated")
+        )),
+        None => limitations.push(
+            "offline composition: live candidate state is not observed (#10930 unlanded)"
+                .to_string(),
+        ),
+    }
     let remaining = if node.successors.is_empty() {
         node.rollback.stop.clone()
     } else {
@@ -1645,6 +1674,7 @@ pub fn compose_reconcile_packet(
         ));
     }
     let mut blocking_edges = Vec::new();
+    let mut normalized: Vec<(String, String, String)> = Vec::new();
     let mut seen_identities: BTreeSet<String> = BTreeSet::new();
     // The adjudication the reviewer must make is over the candidates' *facts*
     // (dirty/unpushed work, stack, base, ownership, salvage), not their names.
@@ -1745,9 +1775,18 @@ pub fn compose_reconcile_packet(
                 ),
             ));
         }
+        normalized.push((identity.to_string(), state, facts.to_string()));
+    }
+    // The supplied array is an unordered set of candidates: reconciliation
+    // adjudicates the same set however the caller happened to list it. Sorting
+    // by exact identity before hashing and rendering keeps the packet identity
+    // a function of the candidates themselves, not of their arrival order.
+    // Identities are already proven unique above, so this order is total.
+    normalized.sort_by(|left, right| left.0.cmp(&right.0));
+    for (identity, state, facts) in &normalized {
         candidate_binding.push_str(identity);
         candidate_binding.push('\u{1f}');
-        candidate_binding.push_str(&state);
+        candidate_binding.push_str(state);
         candidate_binding.push('\u{1f}');
         candidate_binding.push_str(facts);
         candidate_binding.push('\u{1e}');
