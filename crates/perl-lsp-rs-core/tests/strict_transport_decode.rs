@@ -436,6 +436,56 @@ fn read_message_discards_known_body_after_invalid_utf8_secondary_header() -> io:
 }
 
 #[test]
+fn read_message_does_not_consume_next_frame_when_malformed_body_is_missing() -> io::Result<()> {
+    // Claimed Content-Length with no body: blindly discarding N bytes would
+    // eat the following valid frame. Resync must stop at the next sentinel.
+    let mut payload = b"Content-Length: 64\r\n".to_vec();
+    payload.push(0xFF);
+    payload.extend_from_slice(b"\r\n\r\n");
+    payload.extend(framed_request(8, "after-missing-body"));
+
+    let mut reader = BufReader::with_capacity(4096, Cursor::new(payload.clone()));
+    match read_message_outcome(&mut reader)? {
+        Some(Err(IncomingMessageError::Framing(FramingError::InvalidHeaderUtf8))) => {}
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected InvalidHeaderUtf8, got {other:?}"),
+            ));
+        }
+    }
+    let recovered = read_message(&mut reader)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "expected recovered request after omitted malformed body",
+        )
+    })?;
+    assert_eq!(recovered.method, "after-missing-body");
+
+    let mut cursor = Cursor::new(payload);
+    let mut stateful = ContentLengthMessageReader::new();
+    match stateful.read_next_outcome(&mut cursor)? {
+        Some(Err(IncomingMessageError::Framing(FramingError::InvalidHeaderUtf8))) => {}
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected stateful InvalidHeaderUtf8, got {other:?}"),
+            ));
+        }
+    }
+    match stateful.read_next_outcome(&mut cursor)? {
+        Some(Ok(request)) => assert_eq!(request.method, "after-missing-body"),
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected recovered stateful request, got {other:?}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn read_message_rejects_invalid_utf8_without_losing_next_frame() -> io::Result<()> {
     let mut payload = framed(&invalid_utf8_json_body());
     payload.extend(framed_request(9, "second"));

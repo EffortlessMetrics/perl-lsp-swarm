@@ -412,15 +412,35 @@ fn drain_to_header_end(reader: &mut dyn BufRead) -> io::Result<()> {
     }
 }
 
-/// Discard a body whose `Content-Length` was already parsed before a later
-/// header-block failure. The one-shot helper has no sentinel resync, so
-/// leaving those bytes would make the next call treat the body as headers.
-fn discard_known_body(reader: &mut dyn BufRead, length: usize) -> io::Result<()> {
-    if length == 0 || length > MAX_FRAME_SIZE {
-        return Ok(());
+/// Skip leftover malformed-frame bytes without consuming a following frame.
+///
+/// The one-shot helper has no persistent framer buffer. After an invalid
+/// header, skip to the next `Content-Length` sentinel already in the BufRead,
+/// or skip at most a previously parsed in-limit length of non-header bytes.
+/// Do not pull additional bytes to satisfy that length: the next frame may
+/// already be the remaining stream.
+fn resync_after_malformed_header(
+    reader: &mut dyn BufRead,
+    claimed_length: Option<usize>,
+) -> io::Result<()> {
+    let mut remaining = claimed_length.filter(|&len| len > 0 && len <= MAX_FRAME_SIZE).unwrap_or(0);
+
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(());
+        }
+        if let Some(prefix) = super::framing::find_header_start(available) {
+            reader.consume(prefix);
+            return Ok(());
+        }
+        if remaining == 0 {
+            return Ok(());
+        }
+        let skip = available.len().min(remaining);
+        remaining -= skip;
+        reader.consume(skip);
     }
-    let mut limited = reader.take(length as u64);
-    io::copy(&mut limited, &mut io::sink()).map(|_| ())
 }
 
 /// Read one LSP message from a buffered reader as a typed one-frame outcome.
@@ -448,9 +468,7 @@ pub fn read_message_outcome(
             Ok(header) => header,
             Err(_) => {
                 drain_to_header_end(reader)?;
-                if let Some(length) = content_length {
-                    discard_known_body(reader, length)?;
-                }
+                resync_after_malformed_header(reader, content_length)?;
                 return Ok(Some(Err(IncomingMessageError::Framing(
                     FramingError::InvalidHeaderUtf8,
                 ))));
