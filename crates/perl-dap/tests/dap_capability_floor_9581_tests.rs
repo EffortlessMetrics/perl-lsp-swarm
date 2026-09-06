@@ -19,6 +19,10 @@
 //! independent contract (#9581). One field's future receipt never widens
 //! another: every disposition names exactly its own capability row.
 
+#[path = "common/dap_core_capability_witnesses.rs"]
+mod dap_core_capability_witnesses;
+
+use dap_core_capability_witnesses::DAP_CORE_DERIVED_TRUE_SIBLINGS;
 use perl_dap::{DapMessage, DebugAdapter};
 use serde_json::{Value, json};
 
@@ -98,14 +102,15 @@ fn core_launch_breakpoint_and_control_cells_stay_advertised() -> TestResult {
     let body = initialize_body(&mut adapter)?;
 
     // Positive controls: rows still bound to `dap.core` on current main.
-    // `supportsFunctionBreakpoints`/`supportsConditionalBreakpoints` (#9578),
-    // `supportsSetVariable` (#8354), and `supportsGotoTargetsRequest` (#9064)
-    // are fail-closed by their own authorities and are asserted there, not here.
-    for capability in
-        ["supportsConfigurationDoneRequest", "supportTerminateDebuggee", "supportsTerminateRequest"]
-    {
+    // The shared table is the anti-flattening witness list (#14933); #9581
+    // must not keep a private copy that can drift when a later floor closes
+    // one of these rows. `supportsFunctionBreakpoints` /
+    // `supportsConditionalBreakpoints` (#9578), `supportsSetVariable` (#8354),
+    // and `supportsGotoTargetsRequest` (#9064) are fail-closed by their own
+    // authorities and are asserted there, not here.
+    for capability in DAP_CORE_DERIVED_TRUE_SIBLINGS {
         let value = body
-            .get(capability)
+            .get(*capability)
             .and_then(Value::as_bool)
             .ok_or_else(|| format!("`{capability}` must be present as a boolean"))?;
         assert!(value, "`{capability}` is outside the #9581 floor and must stay advertised");
