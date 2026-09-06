@@ -1572,6 +1572,23 @@ gates:
       - docs
       - generated
 
+  - name: docs_agents_contract_workflows
+    tier: merge_gate
+    description: "Assert each registered docs/agents contract workflow still exists (deletion cannot silently stop enforcement)"
+    required: true
+    # Invoked as a script, not `python3 -m unittest …`: the shard runner
+    # rejects `-m` as an unsupported nested interpreter command.
+    command: python3 tests/test_docs_agents_contract_workflows.py
+    timeout_seconds: 30
+    retry_count: 0
+    budgets:
+      max_duration_ms: 10000
+    quarantine: false
+    tags:
+      - policy
+      - ci
+      - docs
+
   - name: must_context_check
     tier: merge_gate
     # ADVISORY on landing (#14291). The blocking-failure filter in
