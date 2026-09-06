@@ -19,10 +19,13 @@ from typing import BinaryIO
 
 RIPR_TIMEOUT_SECONDS = 15 * 60
 TERMINATION_GRACE_SECONDS = 5
+POST_EXIT_READER_SECONDS = 1.0
+HUNG_READER_JOIN_SECONDS = 0.05
 STDERR_DIAGNOSTIC_LIMIT = 2_048
 PRODUCER_STDOUT_LIMIT = 64 * 1_024
 PRODUCER_STDERR_LIMIT = 64 * 1_024
 STREAM_READ_CHUNK_SIZE = 8 * 1_024
+HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC = "ripr output stream hung after process exit"
 WINDOWS_JOB_LAUNCHER_FLAG = "--windows-job-launcher"
 EXPECTED_COUNT_FIELDS = (
     "unsuppressed_exposure_gaps",
@@ -239,11 +242,14 @@ def terminate_process_tree(
 
 
 def finish_readers(
-    readers: list[threading.Thread], streams: list[tuple[str, BinaryIO]]
+    readers: list[threading.Thread],
+    streams: list[tuple[str, BinaryIO]],
+    *,
+    join_timeout: float = TERMINATION_GRACE_SECONDS,
 ) -> str | None:
     """Close pipe streams only after every bounded reader is terminal."""
     for reader in readers:
-        reader.join(timeout=TERMINATION_GRACE_SECONDS)
+        reader.join(timeout=join_timeout)
     still_running = [reader.name for reader in readers if reader.is_alive()]
     if still_running:
         return "output readers did not stop: " + ", ".join(still_running)
@@ -306,6 +312,98 @@ def read_bounded_stream(
         if len(chunk) > remaining:
             overflow.put((stream_name, limit))
             return
+
+
+def hung_stream_after_process_exit(reader_names: list[str]) -> RuntimeError:
+    names = ", ".join(reader_names) if reader_names else "unknown"
+    return RuntimeError(
+        f"{HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC} ({names}); "
+        "its process tree was terminated"
+    )
+
+
+def is_hung_stream_after_exit(failure: RuntimeError | None) -> bool:
+    return failure is not None and HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC in str(failure)
+
+
+def decide_direct_ripr_wait(
+    *,
+    overflow: RiprOutputLimitExceeded | None,
+    reader_failure: str | None,
+    process_exited: bool,
+    readers_done: bool,
+    hung_reader_names: list[str],
+    now: float,
+    deadline: float,
+    timeout_seconds: float,
+    process_exited_at: float | None,
+    post_exit_reader_seconds: float,
+) -> tuple[bool, RuntimeError | None, float | None]:
+    """Classify one poll of the direct RIPR capture loop.
+
+    Returns ``(done, failure, process_exited_at)``. A completed poll with
+    ``failure is None`` means both the process and every reader are terminal.
+    """
+    if overflow is not None:
+        return True, overflow, process_exited_at
+    if reader_failure is not None:
+        return (
+            True,
+            RuntimeError(
+                f"ripr output reader failed: {reader_failure}; "
+                "its process tree was terminated"
+            ),
+            process_exited_at,
+        )
+    if process_exited:
+        if process_exited_at is None:
+            process_exited_at = now
+        if readers_done:
+            return True, None, process_exited_at
+        hang_deadline = min(process_exited_at + post_exit_reader_seconds, deadline)
+        if now >= hang_deadline:
+            return True, hung_stream_after_process_exit(hung_reader_names), process_exited_at
+        return False, None, process_exited_at
+    if now >= deadline:
+        return (
+            True,
+            RuntimeError(
+                f"ripr check timed out after {timeout_seconds:g}s and its process tree was terminated"
+            ),
+            process_exited_at,
+        )
+    return False, None, process_exited_at
+
+
+def wait_for_direct_ripr_capture(
+    process: subprocess.Popen[bytes],
+    readers: list[threading.Thread],
+    overflow: queue.Queue[tuple[str, int]],
+    reader_failures: queue.Queue[tuple[str, BaseException]],
+    timeout_seconds: float,
+    *,
+    post_exit_reader_seconds: float = POST_EXIT_READER_SECONDS,
+) -> RuntimeError | None:
+    """Wait until capture completes, fails closed, or a stream hangs after exit."""
+    deadline = time.monotonic() + timeout_seconds
+    process_exited_at: float | None = None
+    while True:
+        hung_reader_names = [reader.name for reader in readers if reader.is_alive()]
+        done, failure, process_exited_at = decide_direct_ripr_wait(
+            overflow=take_overflow(overflow),
+            reader_failure=take_reader_failures(reader_failures),
+            process_exited=process.poll() is not None,
+            readers_done=not hung_reader_names,
+            hung_reader_names=hung_reader_names,
+            now=time.monotonic(),
+            deadline=deadline,
+            timeout_seconds=timeout_seconds,
+            process_exited_at=process_exited_at,
+            post_exit_reader_seconds=post_exit_reader_seconds,
+        )
+        if done:
+            return failure
+        time.sleep(0.01)
 
 
 def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
@@ -420,29 +518,10 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
             reader.start()
             started_readers.append(reader)
 
-        deadline = time.monotonic() + timeout_seconds
-        failure: RuntimeError | None = None
-        while True:
-            failure = take_overflow(overflow)
-            if failure is not None:
-                break
-            reader_failure = take_reader_failures(reader_failures)
-            if reader_failure is not None:
-                failure = RuntimeError(
-                    f"ripr output reader failed: {reader_failure}; "
-                    "its process tree was terminated"
-                )
-                break
-            if process.poll() is not None and all(
-                not reader.is_alive() for reader in readers
-            ):
-                break
-            if time.monotonic() >= deadline:
-                failure = RuntimeError(
-                    f"ripr check timed out after {timeout_seconds:g}s and its process tree was terminated"
-                )
-                break
-            time.sleep(0.01)
+        failure = wait_for_direct_ripr_capture(
+            process, readers, overflow, reader_failures, timeout_seconds
+        )
+        hung_after_exit = is_hung_stream_after_exit(failure)
 
         cleanup_failures = (
             terminate_process_tree(process, windows_job=windows_job)
@@ -450,7 +529,11 @@ def run_ripr(root: Path, timeout_seconds: float = RIPR_TIMEOUT_SECONDS) -> str:
             else []
         )
         reader_failure = finish_readers(
-            readers, [("stdout", process.stdout), ("stderr", process.stderr)]
+            readers,
+            [("stdout", process.stdout), ("stderr", process.stderr)],
+            join_timeout=(
+                HUNG_READER_JOIN_SECONDS if hung_after_exit else TERMINATION_GRACE_SECONDS
+            ),
         )
         if reader_failure is not None:
             cleanup_failures.append(reader_failure)

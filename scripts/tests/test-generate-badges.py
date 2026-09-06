@@ -7,6 +7,7 @@ from pathlib import Path, PosixPath
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -148,6 +149,62 @@ class ReadFailureStream(io.BytesIO):
 class NonOSErrorReadFailureStream(io.BytesIO):
     def read1(self, size=-1):
         raise ValueError("simulated non-os read crash")
+
+
+class HungReadStream(io.BytesIO):
+    """A producer stream whose ``read1`` blocks until ``block`` is set."""
+
+    def __init__(self, prefix: bytes = b"", block: threading.Event | None = None):
+        super().__init__()
+        self.prefix = prefix
+        self.block = block if block is not None else threading.Event()
+        self.delivered_prefix = False
+
+    def read1(self, size=-1):
+        if self.prefix and not self.delivered_prefix:
+            self.delivered_prefix = True
+            return self.prefix
+        self.block.wait()
+        return b""
+
+
+class DelayedFinishStream(io.BytesIO):
+    """A stream that pauses briefly, then delivers a complete payload and EOF."""
+
+    def __init__(self, payload: bytes, delay_seconds: float):
+        super().__init__()
+        self.payload = payload
+        self.delay_seconds = delay_seconds
+        self.stage = 0
+
+    def read1(self, size=-1):
+        if self.stage == 0:
+            self.stage = 1
+            time.sleep(self.delay_seconds)
+            return self.payload
+        return b""
+
+
+class StillRunningProcess:
+    """A Popen stand-in that never reports exit."""
+
+    pid = 790
+
+    def __init__(self, stdout: io.BytesIO, stderr: io.BytesIO):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.stdin = io.BytesIO()
+        self.returncode = None
+        self.killed = False
+
+    def poll(self):
+        return None
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self, timeout):
+        return self.returncode
 
 
 class FakeWindowsJob:
@@ -452,17 +509,32 @@ class GenerateBadgesTests(unittest.TestCase):
 class DirectRiprContainmentProof(unittest.TestCase):
     """Containment proof for the direct RIPR capture inside generate-badges.py.
 
-    This suite owns the bounded-capture, reader-failure, and Windows
-    job-lifecycle regressions from #14030. It lives beside the generator it
-    exercises so that a change to `scripts/generate-badges.py` selects it:
-    while it lived in the `generate-badges-wrapper` shell pack (#14184), a
-    generator-only edit selected `ripr-badge-endpoints` and never ran it.
+    This suite owns the bounded-capture, reader-failure, hung-stream, and Windows
+    job-lifecycle regressions from #14030 and #14185. It lives beside the
+    generator it exercises so that a change to `scripts/generate-badges.py`
+    selects it: while it lived in the `generate-badges-wrapper` shell pack
+    (#14184), a generator-only edit selected `ripr-badge-endpoints` and never
+    ran it.
     """
 
     def assert_process_tree_terminated(self, terminate) -> None:
         terminate.assert_called_once()
         _, kwargs = terminate.call_args
         self.assertIsNone(kwargs.get("windows_job"))
+
+    def capture_run_ripr(self, process, timeout_seconds: float):
+        terminate = mock.Mock(return_value=[])
+        started = time.monotonic()
+        try:
+            with mock.patch.object(
+                generator.subprocess, "Popen", return_value=process
+            ), mock.patch.object(
+                generator, "terminate_process_tree", terminate
+            ):
+                stdout = generator.run_ripr(REPO_ROOT, timeout_seconds=timeout_seconds)
+        except BaseException as error:
+            return error, time.monotonic() - started, terminate
+        return stdout, time.monotonic() - started, terminate
 
     def test_prompt_exit_oversized_stdout_is_rejected_at_the_cap(self):
         process = TerminalProcess(
@@ -541,6 +613,226 @@ class DirectRiprContainmentProof(unittest.TestCase):
             ):
                 generator.run_ripr(REPO_ROOT, timeout_seconds=1)
         self.assert_process_tree_terminated(terminate)
+
+    def test_hung_stdout_after_exit_fails_closed_before_ripr_timeout(self):
+        process = TerminalProcess(HungReadStream(), io.BytesIO())
+        error, elapsed, terminate = self.capture_run_ripr(
+            process, generator.RIPR_TIMEOUT_SECONDS
+        )
+        self.assertIsInstance(error, RuntimeError)
+        message = str(error)
+        self.assertIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, message)
+        self.assertIn("ripr-stdout-reader", message)
+        self.assertNotIn("timed out after", message)
+        self.assertLess(elapsed, 15)
+        self.assertLess(elapsed, generator.RIPR_TIMEOUT_SECONDS / 4)
+        self.assert_process_tree_terminated(terminate)
+
+    def test_hung_stderr_after_exit_names_the_hung_reader(self):
+        payload = json.dumps({"counts": VALID_COUNTS}).encode() + b"\n"
+        process = TerminalProcess(io.BytesIO(payload), HungReadStream())
+        error, elapsed, terminate = self.capture_run_ripr(
+            process, generator.RIPR_TIMEOUT_SECONDS
+        )
+        self.assertIsInstance(error, RuntimeError)
+        message = str(error)
+        self.assertIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, message)
+        self.assertIn("ripr-stderr-reader", message)
+        self.assertNotIn("timed out after", message)
+        self.assertLess(elapsed, 15)
+        self.assert_process_tree_terminated(terminate)
+
+    def test_prefix_then_hung_stdout_is_not_accepted(self):
+        payload = json.dumps({"counts": VALID_COUNTS}).encode() + b"\n"
+        process = TerminalProcess(HungReadStream(prefix=payload), io.BytesIO())
+        error, elapsed, terminate = self.capture_run_ripr(
+            process, generator.RIPR_TIMEOUT_SECONDS
+        )
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, str(error))
+        self.assertNotIn("timed out after", str(error))
+        self.assertLess(elapsed, 15)
+        self.assert_process_tree_terminated(terminate)
+
+    def test_both_streams_hung_after_exit_name_each_reader(self):
+        process = TerminalProcess(HungReadStream(), HungReadStream())
+        error, elapsed, terminate = self.capture_run_ripr(
+            process, generator.RIPR_TIMEOUT_SECONDS
+        )
+        self.assertIsInstance(error, RuntimeError)
+        message = str(error)
+        self.assertIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, message)
+        self.assertIn("ripr-stdout-reader", message)
+        self.assertIn("ripr-stderr-reader", message)
+        self.assertNotIn("timed out after", message)
+        self.assertLess(elapsed, 15)
+        self.assert_process_tree_terminated(terminate)
+
+    def test_brief_post_exit_drain_still_succeeds(self):
+        payload = json.dumps({"counts": VALID_COUNTS}).encode() + b"\n"
+        process = TerminalProcess(
+            DelayedFinishStream(payload, delay_seconds=0.2),
+            io.BytesIO(),
+        )
+        result, elapsed, terminate = self.capture_run_ripr(process, timeout_seconds=5)
+        self.assertIsInstance(result, str)
+        self.assertEqual(result, payload.decode("utf-8"))
+        self.assertLess(elapsed, 5)
+        terminate.assert_not_called()
+
+    def test_drain_past_the_post_exit_window_fails_as_hung(self):
+        payload = json.dumps({"counts": VALID_COUNTS}).encode() + b"\n"
+        process = TerminalProcess(
+            DelayedFinishStream(
+                payload,
+                delay_seconds=generator.POST_EXIT_READER_SECONDS + 0.6,
+            ),
+            io.BytesIO(),
+        )
+        error, elapsed, terminate = self.capture_run_ripr(
+            process, generator.RIPR_TIMEOUT_SECONDS
+        )
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, str(error))
+        self.assertNotIn("timed out after", str(error))
+        self.assertLess(elapsed, 15)
+        self.assert_process_tree_terminated(terminate)
+
+    def test_still_running_producer_keeps_generic_timeout_when_readers_hang(self):
+        process = StillRunningProcess(HungReadStream(), io.BytesIO())
+        error, elapsed, terminate = self.capture_run_ripr(process, timeout_seconds=0.4)
+        self.assertIsInstance(error, RuntimeError)
+        message = str(error)
+        self.assertIn("timed out after 0.4s", message)
+        self.assertNotIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, message)
+        self.assertGreaterEqual(elapsed, 0.4)
+        self.assertLess(elapsed, 20)
+        self.assert_process_tree_terminated(terminate)
+
+    def test_decide_prefers_reader_failure_over_hung_window(self):
+        done, failure, exited_at = generator.decide_direct_ripr_wait(
+            overflow=None,
+            reader_failure="stdout read failed: simulated hang interrupted",
+            process_exited=True,
+            readers_done=False,
+            hung_reader_names=["ripr-stdout-reader"],
+            now=10.0,
+            deadline=900.0,
+            timeout_seconds=900.0,
+            process_exited_at=0.0,
+            post_exit_reader_seconds=1.0,
+        )
+        self.assertTrue(done)
+        self.assertEqual(exited_at, 0.0)
+        self.assertIn("stdout read failed: simulated hang interrupted", str(failure))
+        self.assertNotIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, str(failure))
+
+    def test_decide_prefers_overflow_over_a_hung_reader(self):
+        overflow = generator.RiprOutputLimitExceeded("stdout", 8)
+        done, failure, exited_at = generator.decide_direct_ripr_wait(
+            overflow=overflow,
+            reader_failure=None,
+            process_exited=True,
+            readers_done=False,
+            hung_reader_names=["ripr-stdout-reader"],
+            now=10.0,
+            deadline=900.0,
+            timeout_seconds=900.0,
+            process_exited_at=0.0,
+            post_exit_reader_seconds=1.0,
+        )
+        self.assertTrue(done)
+        self.assertIs(failure, overflow)
+        self.assertEqual(exited_at, 0.0)
+
+    def test_decide_hung_stream_fires_well_before_ripr_deadline(self):
+        done, failure, exited_at = generator.decide_direct_ripr_wait(
+            overflow=None,
+            reader_failure=None,
+            process_exited=True,
+            readers_done=False,
+            hung_reader_names=["ripr-stdout-reader"],
+            now=1.0,
+            deadline=900.0,
+            timeout_seconds=900.0,
+            process_exited_at=0.0,
+            post_exit_reader_seconds=1.0,
+        )
+        self.assertTrue(done)
+        self.assertEqual(exited_at, 0.0)
+        self.assertIsInstance(failure, RuntimeError)
+        self.assertIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, str(failure))
+        self.assertIn("ripr-stdout-reader", str(failure))
+        self.assertNotIn("timed out after", str(failure))
+
+    def test_decide_continues_while_post_exit_drain_window_is_open(self):
+        done, failure, exited_at = generator.decide_direct_ripr_wait(
+            overflow=None,
+            reader_failure=None,
+            process_exited=True,
+            readers_done=False,
+            hung_reader_names=["ripr-stdout-reader"],
+            now=0.5,
+            deadline=900.0,
+            timeout_seconds=900.0,
+            process_exited_at=None,
+            post_exit_reader_seconds=1.0,
+        )
+        self.assertFalse(done)
+        self.assertIsNone(failure)
+        self.assertEqual(exited_at, 0.5)
+
+    def test_decide_clamped_post_exit_window_still_uses_hung_diagnostic(self):
+        done, failure, _ = generator.decide_direct_ripr_wait(
+            overflow=None,
+            reader_failure=None,
+            process_exited=True,
+            readers_done=False,
+            hung_reader_names=["ripr-stderr-reader"],
+            now=1.0,
+            deadline=1.0,
+            timeout_seconds=1.0,
+            process_exited_at=0.0,
+            post_exit_reader_seconds=10.0,
+        )
+        self.assertTrue(done)
+        self.assertIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, str(failure))
+        self.assertNotIn("timed out after", str(failure))
+
+    def test_decide_running_producer_uses_generic_timeout(self):
+        done, failure, exited_at = generator.decide_direct_ripr_wait(
+            overflow=None,
+            reader_failure=None,
+            process_exited=False,
+            readers_done=False,
+            hung_reader_names=["ripr-stdout-reader"],
+            now=900.0,
+            deadline=900.0,
+            timeout_seconds=900.0,
+            process_exited_at=None,
+            post_exit_reader_seconds=1.0,
+        )
+        self.assertTrue(done)
+        self.assertIsNone(exited_at)
+        self.assertIn("timed out after 900s", str(failure))
+        self.assertNotIn(generator.HUNG_STREAM_AFTER_EXIT_DIAGNOSTIC, str(failure))
+
+    def test_decide_process_exit_with_readers_done_completes(self):
+        done, failure, exited_at = generator.decide_direct_ripr_wait(
+            overflow=None,
+            reader_failure=None,
+            process_exited=True,
+            readers_done=True,
+            hung_reader_names=[],
+            now=0.01,
+            deadline=900.0,
+            timeout_seconds=900.0,
+            process_exited_at=None,
+            post_exit_reader_seconds=1.0,
+        )
+        self.assertTrue(done)
+        self.assertIsNone(failure)
+        self.assertEqual(exited_at, 0.01)
 
     def test_failed_windows_launch_closes_the_job(self):
         job = FakeWindowsJob()
