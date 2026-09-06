@@ -51,6 +51,9 @@ pub fn run(command: &str, args: impl Iterator<Item = String>) -> Result<()> {
         "observe-discovery" => {
             crate::observed_discovery::capture::observe_discovery_from_options(options)
         }
+        "observe-invocations" => {
+            crate::invocation_trace::instrument::observe_invocations_from_options(options)
+        }
         _ => bail!("unknown perl-core-harness-artifacts command: {command}"),
     }
 }

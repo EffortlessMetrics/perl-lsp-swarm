@@ -134,6 +134,12 @@ pub mod invocation_trace {
     /// Strict byte-level frame decoder and row-state derivation.
     #[path = "decode.rs"]
     pub mod decode;
+    /// Exact supervised instrumented-runner capture route (#12285):
+    /// disposable exact-anchor patch, isolated private trace channel, bounded
+    /// supervision, and strict receipt assembly through the landed
+    /// constructors.
+    #[path = "instrument.rs"]
+    pub mod instrument;
     /// Receipt, frame, field-state, row, subject, and work types.
     #[path = "model.rs"]
     pub mod model;
@@ -159,6 +165,17 @@ pub mod invocation_trace {
         trace_receipt_freshness,
     };
     pub use decode::derive_row_state;
+    // `EffectiveInvocationFields` carries these types in public fields, so
+    // instrumented-capture consumers (including the fixture binary) need them
+    // nameable through the same module.
+    pub use crate::runner_model::{RunnerScheduling, SourceForm};
+    pub use instrument::{
+        EXACT_PATCH_SCHEMA_VERSION, ExactPatchOp, ExactPatchSpec,
+        INSTRUMENTATION_WORK_SCHEMA_VERSION, InstrumentationState, InstrumentationWorkReceiptV1,
+        InstrumentedObservation, ObserveInvocationsConfig, PATCH_TOOL_IDENTITY,
+        PatchApplicationError, apply_exact_patch, instrumentation_payload_digest,
+        observe_invocations, observe_invocations_command, validate_instrumentation_work,
+    };
     pub use model::{
         CanonicalInvocationProjection, CapturePoint, EffectiveInvocationField,
         EffectiveInvocationFields, EffectiveInvocationRow, EffectiveInvocationTraceReceiptV1,
