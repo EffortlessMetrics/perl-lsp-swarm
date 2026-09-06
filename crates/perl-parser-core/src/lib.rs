@@ -132,8 +132,8 @@ pub use syntax::qualified_name;
 pub use syntax::quote::{parse_quote_operator_content, parse_qw_words};
 /// Source-generation-bound regex analysis records and freshness identities.
 pub use syntax::regex_analysis::{
-    REGEX_ANALYSIS_MODEL_VERSION, RegexAnalysisAvailability, RegexAnalysisId, RegexAnalysisRecord,
-    RegexAnalysisTable, RegexSourceDigest, RetainedRegexPatternAnalysis,
+    REGEX_ANALYSIS_MODEL_VERSION, RegexAnalysisAvailability, RegexAnalysisFamily, RegexAnalysisId,
+    RegexAnalysisRecord, RegexAnalysisTable, RegexSourceDigest, RetainedRegexPatternAnalysis,
 };
 /// Generation-bound lexical source region index.
 pub use syntax::source_context::{

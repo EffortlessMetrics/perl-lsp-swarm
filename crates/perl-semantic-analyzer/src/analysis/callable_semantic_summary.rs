@@ -38,10 +38,11 @@
 //!   to the innermost callable through the HIR scope graph, and referenced
 //!   by [`CallableFactRef::HirItem`] identity.
 //! - HIR body expressions the per-body PIR lowering does not model
-//!   ([`HirExpr::Opaque`], subscripts, heredocs, readlines, globs) are
-//!   counted as declared `missing` evidence in the `Place`/`Effect` facets,
-//!   so a body containing unmodeled expressions can never report those
-//!   facets `Complete`.
+//!   ([`HirExpr::Opaque`], subscripts, heredocs, readlines, globs, and the
+//!   regex families — regex literals, matches, substitutions and
+//!   transliterations) are counted as declared `missing` evidence in the
+//!   `Place`/`Effect` facets, so a body containing unmodeled expressions can
+//!   never report those facets `Complete`.
 //! - Phase blocks (`BEGIN`/`CHECK`/`UNITCHECK`/...) own neither a
 //!   `SubDecl`/`MethodDecl` item nor an [`HirBody`] in this substrate, so
 //!   they are not admitted callables; every admitted callable is a runtime
@@ -438,7 +439,34 @@ fn count_unmodeled(body: &HirBody) -> u32 {
             | HirExpr::Subscript(_)
             | HirExpr::Heredoc { .. }
             | HirExpr::Readline { .. }
-            | HirExpr::Glob { .. } => count = count.saturating_add(1),
+            | HirExpr::Glob { .. }
+            // Regex families (#7136). Canonical body HIR models these as typed
+            // forms, but per-body PIR lowering still records all four as
+            // unsupported (canonical PIR-A regex operations are #7137), so they
+            // remain unmodeled for this law.
+            //
+            // This is deliberately wider than restoring the previous behavior,
+            // and the difference is worth stating: before the families were
+            // typed, only the unbound form was counted (`qr//` and bare
+            // `/.../` lowered to `Opaque`), while a bound `$x =~ …` lowered to
+            // `HirExpr::Call` and was not counted. A callable whose only
+            // unmodeled content is a bound match, substitution or
+            // transliteration therefore reported `Complete` before and reports
+            // `Limited` now.
+            //
+            // That downgrade is the honest reading of this law rather than an
+            // accident of the refactor: `s///` and `tr///` write a place PIR
+            // does not record, and a match writes capture/match state, so a
+            // body containing one has evidence this assembler cannot see. The
+            // contrast with `HirExpr::Call` — which is also PIR-unsupported yet
+            // still leaves `Place` complete — is consistent for the same
+            // reason: a call's places are its arguments, which *are* modeled,
+            // and its `Effect` facet is already blocked separately by the
+            // unresolved outbound-call dependency.
+            | HirExpr::Regex(_)
+            | HirExpr::Match(_)
+            | HirExpr::Substitution(_)
+            | HirExpr::Transliteration(_) => count = count.saturating_add(1),
             _ => {}
         }
     }
@@ -515,6 +543,15 @@ fn body_identity(
         // Full operation payload (Debug covers names/operators/kinds — never
         // source text): two equal-length but different operations are
         // different bodies.
+        //
+        // Scope limit: this holds for operations that *become* PIR nodes. A
+        // construct the per-body lowering records as unsupported emits no node
+        // and so contributes nothing here — regex-family operations are the
+        // clearest case, and `/foo/i`, `/foo/g` and `/bar/i` in an otherwise
+        // identical callable currently share one identity. That predates the
+        // typed regex variants (a bound match was previously an unsupported
+        // `Call`, an unbound one an `Opaque`) and is tracked by #14645. Do not
+        // read the sentence above as covering every edit to a body.
         fingerprint = fingerprint.field("op", &format!("{:?}", node.operation)).field(
             "op-anchor",
             &node

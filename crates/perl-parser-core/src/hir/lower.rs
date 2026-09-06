@@ -5,11 +5,14 @@ use perl_pragma::{CompileTimePragmaEnvironment, PragmaSnapshot};
 use perl_semantic_facts::AnchorId;
 use std::collections::BTreeMap;
 
+use crate::syntax::regex_analysis::RegexAnalysisFamily;
+
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
-    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirStmt,
-    HirStmtId, HirSubscript, HirVariable, Sigil, SubscriptKind, UnaryMode, VariableKind,
-    diamond_expr, glob_expr, heredoc_expr, readline_expr,
+    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirRegex,
+    HirRegexMatch, HirRegexTarget, HirStmt, HirStmtId, HirSubscript, HirSubstitution,
+    HirTransliteration, HirVariable, RegexAnalysisAnchor, ReplacementEvaluation, Sigil,
+    SubscriptKind, UnaryMode, VariableKind, diamond_expr, glob_expr, heredoc_expr, readline_expr,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -3112,6 +3115,23 @@ fn classify_regex_target(expr: &Node) -> (RegexTargetKind, &'static str) {
     }
 }
 
+/// Whether a bound regex-family operand is a parser-synthesized default topic.
+///
+/// An unbound `s///` / `tr///` applies to `$_`. The parser materializes that
+/// operand as a zero-width `Identifier` node literally named `"$_"` — a
+/// fabricated identifier standing in for the implicit topic. Recognizing it
+/// here keeps that fabrication out of canonical body HIR, so an implicit topic
+/// stays distinguishable from an explicitly written `$_ =~ s///` (which parses
+/// as a real `Variable` node with a non-empty source range).
+///
+/// Both conditions are load-bearing: a source-visible bareword can never be
+/// named `$_`, and the zero-width range independently marks the node as
+/// synthesized rather than written.
+fn is_synthesized_default_topic(expr: &Node) -> bool {
+    matches!(&expr.kind, NodeKind::Identifier { name } if name == "$_")
+        && expr.location.start == expr.location.end
+}
+
 fn variable_binding(node: &Node) -> Option<VariableBinding> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => {
@@ -3317,6 +3337,27 @@ impl<'a> BodyBuilder2<'a> {
         let idx = self.exprs.alloc(expr);
         self.source_map.expr_ranges.push(range);
         HirExprId(idx)
+    }
+
+    /// Lower the operand of a `=~` / `!~` bound regex-family operator (#7136).
+    ///
+    /// The target is lowered exactly once, before the operator node is
+    /// allocated, so source evaluation order is preserved for a call-produced
+    /// target such as `make_target() =~ /x/`.
+    ///
+    /// Place-vs-expression classification reuses the flat path's
+    /// [`classify_regex_target`] rather than introducing a second classifier.
+    ///
+    /// A parser-synthesized `$_` operand is recorded as
+    /// [`HirRegexTarget::DefaultTopic`] so that an implicit topic stays
+    /// distinguishable from an explicitly written `$_ =~ /x/`.
+    fn lower_regex_target(&mut self, expr: &Node) -> HirRegexTarget {
+        if is_synthesized_default_topic(expr) {
+            return HirRegexTarget::DefaultTopic;
+        }
+        let (kind, ast_kind) = classify_regex_target(expr);
+        let id = self.lower_expr(expr);
+        HirRegexTarget::Bound { expr: id, kind, ast_kind }
     }
 
     fn alloc_stmt(&mut self, stmt: HirStmt, range: SourceLocation) -> HirStmtId {
@@ -3861,67 +3902,82 @@ impl<'a> BodyBuilder2<'a> {
 
             NodeKind::Glob { pattern } => self.alloc_expr(glob_expr(pattern), range),
 
-            // Regex/Match/Substitution lowering (#5043): these are important
-            // for effect analysis because has_embedded_code means the pattern
-            // or replacement can execute arbitrary Perl code via (?{...}) or
-            // the /e modifier. Lower the matched expression as a structured
-            // child so variable reads are captured.
-            NodeKind::Regex { has_embedded_code: _, .. } => {
-                // A bare regex literal (qr//) has no target expression to lower.
-                // Model as Opaque but tag it so effect analysis can check for
-                // embedded code without string sniffing.
-                self.alloc_expr(HirExpr::Opaque { ast_kind: "Regex".to_string() }, range)
-            }
-
-            NodeKind::Match { expr, has_embedded_code, negated: _, .. } => {
-                // Lower the matched expression so variable reads are captured.
-                // The match itself is modeled as a Call so effect analysis can
-                // see it as a potential code-execution site when
-                // has_embedded_code is true.
-                let arg_ids = vec![self.lower_expr(expr)];
+            // Regex-family lowering (#7136, superseding the #5043 shells).
+            //
+            // Each family gets a first-class typed body form. The previous
+            // fallback modeled these as `Opaque`/`Call`, which erased negation,
+            // modifiers, `/r` mutation mode and (for `qr//`) embedded code, and
+            // encoded the embedded-code fact by mangling the `ast_kind` string.
+            //
+            // Pattern text is never copied or rescanned here: each construct
+            // carries a `RegexAnalysisAnchor` holding its enclosing source
+            // range, which a consumer resolves against the canonical retained
+            // analysis table from #7018 via `find_enclosed_by`. For a bound
+            // operator that range covers the target and binding operator too,
+            // so it is an enclosing anchor and not an exact record key — see
+            // `RegexAnalysisAnchor`.
+            NodeKind::Regex { modifiers, has_embedded_code, .. } => {
+                // Unbound regex construct. The AST does not distinguish `qr//`
+                // (regex value) from an unbound `m//` or bare `/.../` against
+                // the default topic, so this form claims neither.
                 self.alloc_expr(
-                    HirExpr::Call {
-                        args: arg_ids,
-                        ast_kind: if *has_embedded_code {
-                            "MatchWithEmbeddedCode".to_string()
-                        } else {
-                            "Match".to_string()
+                    HirExpr::Regex(HirRegex {
+                        modifiers: modifiers.clone(),
+                        embedded_code: *has_embedded_code,
+                        analysis: RegexAnalysisAnchor {
+                            full_range: range,
+                            family: RegexAnalysisFamily::Regex,
                         },
-                        callee_span: None,
-                    },
+                    }),
                     range,
                 )
             }
 
-            NodeKind::Substitution { expr, has_embedded_code, .. } => {
-                // Lower the target expression. Substitution with /e modifier
-                // evaluates the replacement as Perl code — model as Call so
-                // effect analysis can see the code-execution site.
-                let arg_ids = vec![self.lower_expr(expr)];
+            NodeKind::Match { expr, modifiers, has_embedded_code, negated, .. } => {
+                let target = self.lower_regex_target(expr);
                 self.alloc_expr(
-                    HirExpr::Call {
-                        args: arg_ids,
-                        ast_kind: if *has_embedded_code {
-                            "SubstitutionWithEmbeddedCode".to_string()
-                        } else {
-                            "Substitution".to_string()
+                    HirExpr::Match(HirRegexMatch {
+                        target,
+                        negated: *negated,
+                        modifiers: modifiers.clone(),
+                        embedded_code: *has_embedded_code,
+                        analysis: RegexAnalysisAnchor {
+                            full_range: range,
+                            family: RegexAnalysisFamily::Match,
                         },
-                        callee_span: None,
-                    },
+                    }),
                     range,
                 )
             }
 
-            NodeKind::Transliteration { expr, .. } => {
-                // tr/// has no code execution risk but the target expression
-                // should still be lowered for variable reads.
-                let arg_ids = vec![self.lower_expr(expr)];
+            NodeKind::Substitution { expr, modifiers, has_embedded_code, negated, .. } => {
+                let target = self.lower_regex_target(expr);
                 self.alloc_expr(
-                    HirExpr::Call {
-                        args: arg_ids,
-                        ast_kind: "Transliteration".to_string(),
-                        callee_span: None,
-                    },
+                    HirExpr::Substitution(HirSubstitution {
+                        target,
+                        negated: *negated,
+                        replacement: ReplacementEvaluation::from_modifiers(modifiers),
+                        modifiers: modifiers.clone(),
+                        embedded_code: *has_embedded_code,
+                        analysis: RegexAnalysisAnchor {
+                            full_range: range,
+                            family: RegexAnalysisFamily::Substitution,
+                        },
+                    }),
+                    range,
+                )
+            }
+
+            NodeKind::Transliteration { expr, modifiers, negated, .. } => {
+                // tr/// is a character-list operator, not a regex: it carries
+                // no analysis anchor and must never reach pattern analysis.
+                let target = self.lower_regex_target(expr);
+                self.alloc_expr(
+                    HirExpr::Transliteration(HirTransliteration {
+                        target,
+                        negated: *negated,
+                        modifiers: modifiers.clone(),
+                    }),
                     range,
                 )
             }
