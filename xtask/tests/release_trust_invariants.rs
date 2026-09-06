@@ -32,28 +32,51 @@ fn expect_violation(value: &Value, needle: &str) -> TestResult {
     Ok(())
 }
 
-fn invariant_mut<'a>(registry: &'a mut Value, invariant_id: &str) -> Option<&'a mut Value> {
-    registry
-        .get_mut("invariants")?
-        .as_array_mut()?
-        .iter_mut()
-        .find(|row| row.get("invariant_id").and_then(Value::as_str) == Some(invariant_id))
+fn missing(label: &str) -> Box<dyn Error> {
+    format!("missing {label}").into()
 }
 
-fn owner_mut(registry: &mut Value, issue: u64) -> Option<&mut Value> {
+fn invariant_mut<'a>(registry: &'a mut Value, invariant_id: &str) -> TestResult<&'a mut Value> {
     registry
-        .get_mut("owner_authorities")?
-        .as_array_mut()?
-        .iter_mut()
-        .find(|owner| owner.get("issue").and_then(Value::as_u64) == Some(issue))
+        .get_mut("invariants")
+        .and_then(Value::as_array_mut)
+        .and_then(|rows| {
+            rows.iter_mut()
+                .find(|row| row.get("invariant_id").and_then(Value::as_str) == Some(invariant_id))
+        })
+        .ok_or_else(|| missing(&format!("invariant `{invariant_id}`")))
 }
 
-fn producer_mut<'a>(registry: &'a mut Value, kind: &str) -> Option<&'a mut Value> {
+fn owner_mut(registry: &mut Value, issue: u64) -> TestResult<&mut Value> {
     registry
-        .get_mut("producer_authorities")?
-        .as_array_mut()?
-        .iter_mut()
-        .find(|producer| producer.get("producer_kind").and_then(Value::as_str) == Some(kind))
+        .get_mut("owner_authorities")
+        .and_then(Value::as_array_mut)
+        .and_then(|owners| {
+            owners
+                .iter_mut()
+                .find(|owner| owner.get("issue").and_then(Value::as_u64) == Some(issue))
+        })
+        .ok_or_else(|| missing(&format!("owner #{issue}")))
+}
+
+fn producer_mut<'a>(registry: &'a mut Value, kind: &str) -> TestResult<&'a mut Value> {
+    registry
+        .get_mut("producer_authorities")
+        .and_then(Value::as_array_mut)
+        .and_then(|producers| {
+            producers.iter_mut().find(|producer| {
+                producer.get("producer_kind").and_then(Value::as_str) == Some(kind)
+            })
+        })
+        .ok_or_else(|| missing(&format!("producer `{kind}`")))
+}
+
+fn object_mut(value: &mut Value) -> TestResult<&mut serde_json::Map<String, Value>> {
+    value.as_object_mut().ok_or_else(|| missing("JSON object"))
+}
+
+fn array_mut(value: &mut Value) -> TestResult<&mut Vec<Value>> {
+    value.as_array_mut().ok_or_else(|| missing("JSON array"))
 }
 
 #[test]
@@ -113,7 +136,7 @@ fn generated_projection_diverges_from_registry() -> TestResult {
 #[test]
 fn invariant_bound_to_superseded_owner_fails_even_with_successor() -> TestResult {
     let mut registry = canonical_registry()?;
-    let owner = owner_mut(&mut registry, 3099).expect("3099");
+    let owner = owner_mut(&mut registry, 3099)?;
     owner["status"] = json!("superseded");
     owner["successor"] = json!(8507);
     expect_violation(&registry, "owner issue 3099 is superseded")
@@ -122,7 +145,7 @@ fn invariant_bound_to_superseded_owner_fails_even_with_successor() -> TestResult
 #[test]
 fn controller_requirements_cover_body_zero_budget_sets() -> TestResult {
     let registry = load_and_validate(&repo_root()).map_err(|error| error.to_string())?;
-    let set_for = |issue: u32| -> BTreeSet<&str> {
+    let set_for = |issue: u32| -> TestResult<BTreeSet<&str>> {
         registry
             .controller_requirements
             .iter()
@@ -130,10 +153,10 @@ fn controller_requirements_cover_body_zero_budget_sets() -> TestResult {
             .map(|requirement| {
                 requirement.mandatory_invariant_ids.iter().map(String::as_str).collect()
             })
-            .unwrap_or_default()
+            .ok_or_else(|| missing(&format!("controller #{issue}")))
     };
     assert_eq!(
-        set_for(5900),
+        set_for(5900)?,
         BTreeSet::from([
             "broken_documented_install",
             "false_exact",
@@ -146,7 +169,7 @@ fn controller_requirements_cover_body_zero_budget_sets() -> TestResult {
         ])
     );
     assert_eq!(
-        set_for(4346),
+        set_for(4346)?,
         BTreeSet::from([
             "blocked_or_not_proven_child_as_pass",
             "broken_documented_install",
@@ -167,7 +190,7 @@ fn controller_requirements_cover_body_zero_budget_sets() -> TestResult {
         ])
     );
     assert_eq!(
-        set_for(4350),
+        set_for(4350)?,
         BTreeSet::from([
             "false_exact",
             "missing_required_subject",
@@ -184,47 +207,42 @@ fn controller_requirements_cover_body_zero_budget_sets() -> TestResult {
             "wrong_target_or_version",
         ])
     );
-    let union: BTreeSet<&str> = set_for(5900)
-        .union(&set_for(4346))
-        .copied()
-        .collect::<BTreeSet<_>>()
-        .union(&set_for(4350))
-        .copied()
-        .collect();
-    assert_eq!(set_for(4343), union);
+    let experience = set_for(5900)?;
+    let installed = set_for(4346)?;
+    let candidate = set_for(4350)?;
+    let mut union = experience.clone();
+    union.extend(installed);
+    union.extend(candidate);
+    assert_eq!(set_for(4343)?, union);
     Ok(())
 }
 
 #[test]
 fn duplicate_invariant_id_fails() -> TestResult {
     let mut registry = canonical_registry()?;
-    let duplicate = invariant_mut(&mut registry, "false_exact").expect("false_exact").clone();
-    registry["invariants"].as_array_mut().expect("invariants").push(duplicate);
+    let duplicate = invariant_mut(&mut registry, "false_exact")?.clone();
+    array_mut(&mut registry["invariants"])?.push(duplicate);
     expect_violation(&registry, "duplicate invariant_id")
 }
 
 #[test]
 fn mandatory_invariant_without_producer_fails() -> TestResult {
     let mut registry = canonical_registry()?;
-    invariant_mut(&mut registry, "false_exact")
-        .expect("false_exact")
-        .as_object_mut()
-        .expect("object")
-        .remove("producer_kind");
+    object_mut(invariant_mut(&mut registry, "false_exact")?)?.remove("producer_kind");
     expect_violation(&registry, "producer_kind")
 }
 
 #[test]
 fn owner_issue_missing_fails() -> TestResult {
     let mut registry = canonical_registry()?;
-    invariant_mut(&mut registry, "false_exact").expect("false_exact")["owner_issue"] = json!(1);
+    invariant_mut(&mut registry, "false_exact")?["owner_issue"] = json!(1);
     expect_violation(&registry, "owner issue 1 is missing")
 }
 
 #[test]
 fn owner_superseded_without_successor_fails() -> TestResult {
     let mut registry = canonical_registry()?;
-    let owner = owner_mut(&mut registry, 3099).expect("3099");
+    let owner = owner_mut(&mut registry, 3099)?;
     owner["status"] = json!("superseded");
     expect_violation(&registry, "superseded owner has no successor")
 }
@@ -232,15 +250,14 @@ fn owner_superseded_without_successor_fails() -> TestResult {
 #[test]
 fn unknown_producer_kind_fails_schema() -> TestResult {
     let mut registry = canonical_registry()?;
-    invariant_mut(&mut registry, "false_exact").expect("false_exact")["producer_kind"] =
-        json!("not_a_real_producer");
+    invariant_mut(&mut registry, "false_exact")?["producer_kind"] = json!("not_a_real_producer");
     expect_violation(&registry, "schema")
 }
 
 #[test]
 fn superseded_producer_without_successor_fails() -> TestResult {
     let mut registry = canonical_registry()?;
-    let producer = producer_mut(&mut registry, "provider_decision_receipt").expect("producer");
+    let producer = producer_mut(&mut registry, "provider_decision_receipt")?;
     producer["status"] = json!("superseded");
     expect_violation(&registry, "superseded producer has no successor")
 }
@@ -248,7 +265,7 @@ fn superseded_producer_without_successor_fails() -> TestResult {
 #[test]
 fn ownerless_producer_authority_fails() -> TestResult {
     let mut registry = canonical_registry()?;
-    let producer = producer_mut(&mut registry, "provider_decision_receipt").expect("producer");
+    let producer = producer_mut(&mut registry, "provider_decision_receipt")?;
     producer["owner_issue"] = json!(1);
     expect_violation(&registry, "owner issue 1 is missing")
 }
@@ -256,29 +273,21 @@ fn ownerless_producer_authority_fails() -> TestResult {
 #[test]
 fn denominator_omitted_fails() -> TestResult {
     let mut registry = canonical_registry()?;
-    invariant_mut(&mut registry, "false_exact")
-        .expect("false_exact")
-        .as_object_mut()
-        .expect("object")
-        .remove("denominator");
+    object_mut(invariant_mut(&mut registry, "false_exact")?)?.remove("denominator");
     expect_violation(&registry, "denominator")
 }
 
 #[test]
 fn applicability_omitted_fails() -> TestResult {
     let mut registry = canonical_registry()?;
-    invariant_mut(&mut registry, "false_exact")
-        .expect("false_exact")
-        .as_object_mut()
-        .expect("object")
-        .remove("applicability");
+    object_mut(invariant_mut(&mut registry, "false_exact")?)?.remove("applicability");
     expect_violation(&registry, "applicability")
 }
 
 #[test]
 fn unknown_negative_control_id_fails() -> TestResult {
     let mut registry = canonical_registry()?;
-    invariant_mut(&mut registry, "false_exact").expect("false_exact")["negative_control_ids"] =
+    invariant_mut(&mut registry, "false_exact")?["negative_control_ids"] =
         json!(["not_a_named_control"]);
     expect_violation(&registry, "unknown negative_control_id")
 }
@@ -286,9 +295,7 @@ fn unknown_negative_control_id_fails() -> TestResult {
 #[test]
 fn controller_mandatory_id_without_row_fails() -> TestResult {
     let mut registry = canonical_registry()?;
-    registry["controller_requirements"][0]["mandatory_invariant_ids"]
-        .as_array_mut()
-        .expect("ids")
+    array_mut(&mut registry["controller_requirements"][0]["mandatory_invariant_ids"])?
         .push(json!("not_a_seeded_invariant"));
     expect_violation(&registry, "has no row")
 }
