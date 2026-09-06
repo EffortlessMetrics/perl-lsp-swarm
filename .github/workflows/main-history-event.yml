@@ -21,6 +21,20 @@ name: Main History Event
 #     belongs to the `release_live_controls` observer (#9403 / #8551), and this
 #     workflow must not grow a second settings model.
 #
+# Two limits are inherent to observing pushes from inside the history being
+# observed, and neither is repairable here. They bound what this lane can claim;
+# prevention remains with the live branch-protection controls above.
+#
+#   1. GitHub evaluates a `push` workflow from the pushed revision, so a reset to
+#      a commit that predates this file dispatches nothing at all. A destructive
+#      push can therefore erase its own detector, and the absence of a run is not
+#      evidence of a safe push.
+#   2. A rewind commonly leaves `github.event.before` unreachable from every ref,
+#      and a clone fetches only reachable objects. The classifier then reports
+#      `not_proven_missing_object` rather than proving the rewrite. That still
+#      fails closed and still retains the delivered `forced` flag, but it is
+#      weaker evidence than a proven `non_fast_forward`.
+#
 # On ref deletion: a `push` event is still delivered with `deleted: true`, but
 # `github.sha` reverts to the default branch tip rather than naming the deleted
 # ref's commit. The classifier is therefore fed `github.event.after` — the
@@ -127,7 +141,11 @@ jobs:
         if: always() && steps.classify.outcome != 'skipped'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: main-history-event-receipt-${{ github.sha }}
+          # `github.sha` alone is not an event identity: `main` returning to the
+          # same commit produces distinct pushes that share it, and those repeated
+          # resets are the shape most worth telling apart. The run id makes each
+          # observation addressable without consulting run metadata.
+          name: main-history-event-receipt-${{ github.sha }}-${{ github.run_id }}
           path: target/history/main-event.json
           # A missing receipt is a failed observation, not a quiet skip.
           if-no-files-found: error
@@ -156,6 +174,10 @@ jobs:
               ;;
             3)
               echo "::error::main movement could NOT be verified (incomplete object graph). This is not proof of a rewrite, and not proof of safety. See the uploaded receipt."
+              exit 1
+              ;;
+            5)
+              echo "::error::GitHub reported a force push on main. The graph proves no history was lost, but this ref should not accept a force push at all. See the uploaded receipt."
               exit 1
               ;;
             *)

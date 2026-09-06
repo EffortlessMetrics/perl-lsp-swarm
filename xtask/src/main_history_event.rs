@@ -98,13 +98,15 @@ impl EventGraphAgreement {
     /// Exit contribution for evidence that does not agree.
     ///
     /// A force push reported against a ref whose protection forbids one is worth
-    /// an operator's attention even though no history was lost, so it surfaces as
-    /// unresolved (3) rather than as a proven rewrite (2) or silent success.
+    /// an operator's attention even though no history was lost. It gets its own
+    /// code rather than sharing `3` with an unprovable graph: those are opposite
+    /// situations — here the graph *is* proven — and a shared code would force
+    /// the hosted check to describe one of them wrongly.
     const fn exit_code(self) -> u8 {
         match self {
             Self::Agrees | Self::CannotVerify => 0,
             Self::Contradicts => 2,
-            Self::ForceReportedWithoutHistoryLoss => 3,
+            Self::ForceReportedWithoutHistoryLoss => 5,
         }
     }
 }
@@ -630,7 +632,11 @@ mod tests {
             "the force-flag/fast-forward pair must be explained, not silently dropped"
         );
         assert!(receipt.is_blocking(), "a force push reported against main must not pass silently");
-        assert_eq!(receipt.exit_code(), 3, "unresolved evidence, not a proven rewrite");
+        assert_eq!(
+            receipt.exit_code(),
+            5,
+            "its own code: the graph is proven here, unlike an unverifiable one at 3"
+        );
         Ok(())
     }
 

@@ -217,6 +217,33 @@ fn no_push_receipt_can_be_displaced_by_a_later_push() -> Result<()> {
     Ok(())
 }
 
+/// The hosted check must describe the blocking class it actually got. Exit 3
+/// (unprovable graph) and exit 5 (force reported over a *proven* fast-forward)
+/// are opposite situations, so a shared branch would state one of them wrongly.
+#[test]
+fn every_blocking_exit_class_has_its_own_hosted_message() -> Result<()> {
+    let job = classify_job()?;
+    let enforce = named_step(&job, "Enforce the detector verdict")?;
+    let script = mapping_value(&enforce, "run")?
+        .as_str()
+        .ok_or_else(|| anyhow!("the enforce step must carry a shell script"))?
+        .to_string();
+
+    for (class, expected) in
+        [("2", "destructively"), ("3", "could NOT be verified"), ("5", "force push")]
+    {
+        assert!(
+            script.contains(&format!("{class})")),
+            "the enforce step must handle blocking exit class {class}"
+        );
+        assert!(
+            script.contains(expected),
+            "exit class {class} must be described as {expected:?}, not folded into another class"
+        );
+    }
+    Ok(())
+}
+
 /// A `workflow_dispatch` run carries no push payload, so every manual run would
 /// classify as `invalid_event` and fail. The detector is push-bound by nature.
 #[test]
