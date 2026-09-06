@@ -8,6 +8,6 @@ body: >-
   direct-call uses of `x` as repetition.
 time: 2026-09-06T09:30:00Z
 custom:
-  PR: "0"
+  PR: "14963"
   Slug: parser-string-repetition-literal-term-rhs
   Breaking: "no"
