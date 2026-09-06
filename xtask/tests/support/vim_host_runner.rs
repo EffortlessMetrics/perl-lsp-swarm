@@ -770,6 +770,26 @@ pub enum DriverEventKind {
     SaveOwnerConfigured,
     SaveSettlementObserved,
     StaleResultHoldObserved,
+    /// #11401 host-reopen lifecycle events. Like the freshness kinds these may
+    /// repeat within one host session, with monotone 1-based indexes and
+    /// per-kind caps enforced here. The buffer kinds bind the same-host
+    /// close/wipe+reopen chain (old and new buffer numbers, unchanged server
+    /// generation); the pending kinds bind a started pending action's wire
+    /// identity, its identity-bound cancellation, and the observed rejection
+    /// of a late old result against the replacement document instance. The
+    /// earlier journeys never emit them.
+    BufferWiped,
+    BufferReopened,
+    PendingActionStarted,
+    PendingActionCancelled,
+    LateResultRejected,
+    /// One #11401 host session settled its own product result (the repeated
+    /// denominator's per-iteration observation) and is about to exit through
+    /// its designed exit path.
+    SessionIterationSettled,
+    /// The #11401 driver initiated the user-equivalent host exit (`:qa!`);
+    /// the supervisor owns the actual exit observation.
+    HostExitInitiated,
     ShutdownStarted,
     ShutdownCompleted,
     DriverFailed,
@@ -821,6 +841,12 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
     let mut save_owner_index = 0_u32;
     let mut save_settlement_index = 0_u32;
     let mut save_hold_index = 0_u32;
+    // Monotone last-seen indexes for the #11401 repeating lifecycle kinds.
+    let mut lifecycle_wipe_index = 0_u32;
+    let mut lifecycle_reopen_index = 0_u32;
+    let mut lifecycle_pending_index = 0_u32;
+    let mut lifecycle_pending_cancel_index = 0_u32;
+    let mut lifecycle_late_result_index = 0_u32;
 
     for (index, event) in events.iter().enumerate() {
         ensure!(event.schema_version == DRIVER_SCHEMA_VERSION, "unexpected driver event schema");
@@ -1148,6 +1174,193 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 );
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
+            DriverEventKind::BufferWiped => {
+                validate_repeating_lifecycle_event(
+                    event,
+                    "wipe_index",
+                    BUFFER_WIPE_CAP,
+                    &mut lifecycle_wipe_index,
+                )?;
+                ensure!(
+                    event.details.get("didclose_sent") == Some(&"1".to_string()),
+                    "buffer_wiped must bind the real client didClose flush path"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("bufnr")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some(),
+                    "buffer_wiped must report the wiped buffer number"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::BufferReopened => {
+                validate_repeating_lifecycle_event(
+                    event,
+                    "reopen_index",
+                    BUFFER_REOPEN_CAP,
+                    &mut lifecycle_reopen_index,
+                )?;
+                ensure!(
+                    event.details.get("same_path") == Some(&"1".to_string()),
+                    "buffer_reopened must bind the same governed path"
+                );
+                let old_bufnr =
+                    event.details.get("old_bufnr").and_then(|value| value.parse::<u32>().ok());
+                let new_bufnr =
+                    event.details.get("new_bufnr").and_then(|value| value.parse::<u32>().ok());
+                ensure!(
+                    old_bufnr.is_some() && new_bufnr.is_some(),
+                    "buffer_reopened must report numeric old and new buffer numbers"
+                );
+                ensure!(
+                    old_bufnr != new_bufnr,
+                    "buffer_reopened must bind a changed document instance; a same-buffer \
+                     observation is not a reopen"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("server_init_count")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some(),
+                    "buffer_reopened must report the server init generation at the reopen (the \
+                     same-host law: no server restart may hide inside a buffer reopen)"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::PendingActionStarted => {
+                validate_repeating_lifecycle_event(
+                    event,
+                    "pending_index",
+                    PENDING_ACTION_CAP,
+                    &mut lifecycle_pending_index,
+                )?;
+                ensure!(
+                    event.details.get("method") == Some(&"textDocument/documentSymbol".to_string()),
+                    "pending_action_started must name the deterministic pending observation \
+                     method"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("request_id")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some_and(|id| id > 0),
+                    "pending_action_started must bind the positive wire request identity"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("target_bufnr")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some(),
+                    "pending_action_started must report the target buffer number"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::PendingActionCancelled => {
+                validate_referencing_lifecycle_event(
+                    event,
+                    "cancel_index",
+                    "pending_index",
+                    PENDING_CANCEL_CAP,
+                    &mut lifecycle_pending_cancel_index,
+                    lifecycle_pending_index,
+                )?;
+                ensure!(
+                    event.details.get("cancel_sent") == Some(&"1".to_string()),
+                    "pending_action_cancelled must bind the identity-bound cancellation send"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("request_id")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some_and(|id| id > 0),
+                    "pending_action_cancelled must bind the cancelled request identity"
+                );
+                ensure!(
+                    event.details.get("notification_count") == Some(&"0".to_string()),
+                    "pending_action_cancelled must prove zero admissions after cancellation; a \
+                     cancelled result that was delivered is a contract violation, never a pass"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::LateResultRejected => {
+                validate_referencing_lifecycle_event(
+                    event,
+                    "late_index",
+                    "pending_index",
+                    LATE_RESULT_CAP,
+                    &mut lifecycle_late_result_index,
+                    lifecycle_pending_index,
+                )?;
+                ensure!(
+                    event.details.get("response_delivered") == Some(&"1".to_string()),
+                    "late_result_rejected must prove the old operation completed (the response \
+                     arrived); an uncompleted observation is not a late result"
+                );
+                ensure!(
+                    event.details.get("replacement_state_unchanged") == Some(&"1".to_string()),
+                    "late_result_rejected must prove the replacement instance stayed unchanged \
+                     across the bounded observation window"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("window_ms")
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .is_some_and(|window| window >= MIN_STALE_WINDOW_MS),
+                    "late_result_rejected must carry a bounded observation window of at least \
+                     {MIN_STALE_WINDOW_MS}ms"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("request_id")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some_and(|id| id > 0),
+                    "late_result_rejected must bind the late request identity"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::SessionIterationSettled => {
+                ensure!(
+                    singleton.insert(DriverEventKind::SessionIterationSettled),
+                    "duplicate singleton driver event"
+                );
+                ensure!(
+                    matches!(
+                        event.details.get("session_role").map(String::as_str),
+                        Some("full_lifecycle_session")
+                            | Some("replacement_host_session")
+                            | Some("assertion_failure_session")
+                            | Some("timeout_interruption_session")
+                            | Some("server_restart_relabel_session")
+                    ),
+                    "session_iteration_settled must name its exact designed session role"
+                );
+                ensure!(
+                    event.details.contains_key("iteration_index")
+                        && event.details.contains_key("product_result"),
+                    "session_iteration_settled must bind its iteration denominator index and \
+                     product result"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::HostExitInitiated => {
+                ensure!(
+                    singleton.insert(DriverEventKind::HostExitInitiated),
+                    "duplicate singleton driver event"
+                );
+                ensure!(
+                    event.details.get("exit_path") == Some(&"user_qa".to_string()),
+                    "host_exit_initiated must bind the user-equivalent exit path"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
             kind => {
                 ensure!(singleton.insert(kind), "duplicate singleton driver event");
                 let rank = lifecycle_rank(kind);
@@ -1202,23 +1415,37 @@ fn lifecycle_rank(kind: DriverEventKind) -> u8 {
         DriverEventKind::DefectStateObserved => 41,
         DriverEventKind::DefectFixApplied => 42,
         DriverEventKind::CurrentStateObserved => 43,
-        // The #11390 freshness-generation tier: the four repeating kinds share
-        // one rank (their phases interleave legitimately — a mutation, its
+        // The #11390 freshness-generation tier: the repeating kinds share one
+        // rank because their phases legitimately interleave (a mutation, its
         // stale-hold window, its materialization, its current observation),
-        // with per-kind monotone indexes carrying the order. All strictly
-        // before shutdown. The #11396 save-format kinds join the same tier for
-        // the same reason: source/config mutations and materializations
-        // interleave with save settlements inside one journey.
+        // with per-kind monotone indexes carrying the order. The #11396
+        // save-format kinds and the #11401 host-reopen kinds join the same
+        // tier for the same reason: source/config mutations, materializations,
+        // save settlements, pending actions, and buffer wipes/reopens all
+        // interleave inside one journey. All strictly before the session
+        // settlement and shutdown tiers.
         DriverEventKind::ExternalMutationApplied
         | DriverEventKind::StaleGenerationHeld
         | DriverEventKind::ClientMaterializationApplied
         | DriverEventKind::GenerationCurrentObserved
+        | DriverEventKind::BufferWiped
+        | DriverEventKind::BufferReopened
+        | DriverEventKind::PendingActionStarted
+        | DriverEventKind::PendingActionCancelled
+        | DriverEventKind::LateResultRejected
         | DriverEventKind::SaveOwnerConfigured
         | DriverEventKind::SaveSettlementObserved
         | DriverEventKind::StaleResultHoldObserved => 44,
+        // The session's own product result settles strictly before its
+        // terminal path (orderly stop, forced failure, or the indefinite
+        // barrier of the timeout shape).
+        DriverEventKind::SessionIterationSettled => 49,
         DriverEventKind::ShutdownStarted => 50,
         DriverEventKind::ShutdownCompleted => 51,
         DriverEventKind::DriverFailed => 51,
+        // The user-equivalent exit initiation is the last driver-side event of
+        // an orderly session (the supervisor owns the exit observation).
+        DriverEventKind::HostExitInitiated => 52,
     }
 }
 
@@ -1238,6 +1465,16 @@ pub const GENERATION_CURRENT_CAP: u32 = 12;
 pub const SAVE_OWNER_CONFIGURED_CAP: u32 = 8;
 pub const SAVE_SETTLEMENT_CAP: u32 = 10;
 pub const STALE_RESULT_HOLD_CAP: u32 = 4;
+/// Per-kind occurrence caps for the #11401 repeating lifecycle events: one
+/// wipe/reopen chain, up to three pending actions (identity-bound cancel,
+/// late-result document route, in-flight-at-exit host route), one observed
+/// late rejection per journey shape. A stream exceeding a cap is an
+/// instrument fault, never evidence.
+pub const BUFFER_WIPE_CAP: u32 = 2;
+pub const BUFFER_REOPEN_CAP: u32 = 2;
+pub const PENDING_ACTION_CAP: u32 = 3;
+pub const PENDING_CANCEL_CAP: u32 = 2;
+pub const LATE_RESULT_CAP: u32 = 2;
 /// The minimum honest absence-observation window for a stale-generation hold:
 /// below this the "no spontaneous republish" claim carries no observation.
 pub const MIN_STALE_WINDOW_MS: u64 = 2000;
@@ -1262,6 +1499,46 @@ fn validate_repeating_save_event(
     last_index: &mut u32,
 ) -> Result<()> {
     validate_repeating_index(event, index_key, cap, last_index)
+}
+
+/// Validate one repeating #11401 lifecycle event: same monotone, gap-free,
+/// capped index law as the freshness kinds.
+fn validate_repeating_lifecycle_event(
+    event: &DriverEvent,
+    index_key: &str,
+    cap: u32,
+    last_index: &mut u32,
+) -> Result<()> {
+    validate_repeating_index(event, index_key, cap, last_index)
+}
+
+/// Validate one #11401 lifecycle event that references an already-started
+/// pending action (a cancellation or a late-result observation of pending
+/// action N): its per-kind occurrence index (`occurrence_key`) is monotone,
+/// gap-free, and capped, and its referenced pending index
+/// (`reference_key`) must name a pending action that already started — the
+/// pending-action namespace is shared with `pending_action_started`, so a
+/// cancel or late claim for an unstarted action is rejected here.
+fn validate_referencing_lifecycle_event(
+    event: &DriverEvent,
+    occurrence_key: &str,
+    reference_key: &str,
+    cap: u32,
+    last_index: &mut u32,
+    started_index: u32,
+) -> Result<()> {
+    let referenced =
+        event
+            .details
+            .get(reference_key)
+            .and_then(|value| value.parse::<u32>().ok())
+            .with_context(|| format!("lifecycle event omitted a numeric {reference_key}"))?;
+    ensure!(
+        referenced >= 1 && referenced <= started_index,
+        "lifecycle event {reference_key} {referenced} references a pending action that has not \
+         started (started so far: {started_index})"
+    );
+    validate_repeating_index(event, occurrence_key, cap, last_index)
 }
 
 fn validate_repeating_index(

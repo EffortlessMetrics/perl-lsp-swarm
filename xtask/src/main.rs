@@ -2871,6 +2871,12 @@ enum VimEditorCompatCommand {
     /// legitimate no-change bytes, distinct disabled/refused/failure
     /// dispositions, and stale-result rejection — against the governed save
     /// fixture.
+    /// `host-reopen-lifecycle` (#11401) runs the eight-cell host-reopen
+    /// journey — buffer close/reopen, full host exit and replacement launch,
+    /// the workspace not-exposed disposition, identity-bound cancellation,
+    /// late-result rejection, finite repeated sessions, normal terminal
+    /// cleanup, and forced-failure cleanup — as a finite sequence of hermetic
+    /// host sessions over one shared fixture.
     Run {
         /// Exact client subject id (see
         /// `xtask::vim_host_run::VimClientSubject::known_ids`).
@@ -2878,13 +2884,14 @@ enum VimEditorCompatCommand {
         subject: String,
 
         /// Hermetic journey to execute: host-lifecycle, bootstrap-diagnostics,
-        /// freshness-generations, or save-format.
+        /// freshness-generations, save-format, or host-reopen-lifecycle.
         #[arg(long, default_value = "host-lifecycle")]
         journey: String,
 
         /// Fixture variant for the bootstrap-diagnostics,
-        /// freshness-generations, and save-format journeys (canonical must
-        /// pass; the negative controls must fail with their typed reason).
+        /// freshness-generations, save-format, and host-reopen-lifecycle
+        /// journeys (canonical must pass; the negative controls must fail
+        /// with their typed reason).
         #[arg(long, default_value = "canonical")]
         fixture_variant: String,
 
@@ -5109,6 +5116,67 @@ fn run_cli(cli: Cli) -> Result<()> {
                         }
                         return Ok(());
                     }
+                    if journey == "host-reopen-lifecycle" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_lifecycle_run::LifecycleFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_lifecycle_run::host_lifecycle_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim host-reopen-lifecycle run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} failure_reason={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         failure_reason={:?}",
+                                        outcome.failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim host-reopen-lifecycle run did not pass: {result:?} \
+                                         failure_reason={:?}",
+                                        outcome.failure_reason
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     if journey == "freshness-generations" {
                         // Same subject law as the host-lifecycle path: an
                         // unknown subject id is a typed error before any run,
@@ -5230,7 +5298,8 @@ fn run_cli(cli: Cli) -> Result<()> {
                     if journey != "host-lifecycle" {
                         return Err(eyre!(
                             "unknown journey {journey}: known journeys are host-lifecycle, \
-                             bootstrap-diagnostics, freshness-generations, save-format"
+                             bootstrap-diagnostics, freshness-generations, save-format, \
+                             host-reopen-lifecycle"
                         ));
                     }
                     let outcome = xtask::vim_host_run::host_run_from_cli(
