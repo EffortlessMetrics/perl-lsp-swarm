@@ -60,7 +60,7 @@ fn core_source(rel_path: &str) -> Result<String, String> {
         .map_err(|error| format!("production source {} must be readable: {error}", path.display()))
 }
 
-fn load_sources<'a>(rel_paths: &'a [&str]) -> Result<Vec<(&'a str, String)>, String> {
+fn load_sources<'a>(rel_paths: &[&'a str]) -> Result<Vec<(&'a str, String)>, String> {
     rel_paths
         .iter()
         .copied()
