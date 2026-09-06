@@ -933,6 +933,45 @@ UNAVAILABLE_WARN
                 self.assertAuthorityError(self._production_rows)
         path.write_text(original, encoding="utf-8")
 
+    def test_peer_public_dispatch_must_preserve_capability_admission(self) -> None:
+        path = self.root / PEER_DISPATCH_PATHS[0]
+        original = path.read_text(encoding="utf-8")
+        route = original.replace(
+            "    pub fn dispatch(\n",
+            "    fn dispatch_unchecked(\n",
+            1,
+        )
+        wrapper = (
+            "    pub fn dispatch(\n"
+            "        &mut self, request_seq: i64, command: &str,\n"
+            "        arguments: Option<Value>,\n"
+            "    ) -> Vec<DapMessage> {\n"
+            "        self.dispatch_with_capability_floor(request_seq, command, arguments)\n"
+            "    }\n\n"
+            "    pub fn dispatch_with_capability_floor(\n"
+            "        &mut self, request_seq: i64, command: &str,\n"
+            "        arguments: Option<Value>,\n"
+            "    ) -> Vec<DapMessage> {\n"
+            "        if let Some(response) = self.secondary_floor_response(\n"
+            "            request_seq, command, arguments.as_ref()\n"
+            "        ) { return vec![response]; }\n"
+            "        self.dispatch_unchecked(request_seq, command, arguments)\n"
+            "    }\n\n"
+        )
+        paired = route.replace("impl PeerBridge {\n", "impl PeerBridge {\n" + wrapper, 1)
+        path.write_text(paired, encoding="utf-8")
+        try:
+            self._production_rows()
+            bypass = paired.replace(
+                "self.dispatch_with_capability_floor(request_seq, command, arguments)",
+                "self.dispatch_unchecked(request_seq, command, arguments)",
+                1,
+            )
+            path.write_text(bypass, encoding="utf-8")
+            self.assertAuthorityError(self._production_rows)
+        finally:
+            path.write_text(original, encoding="utf-8")
+
     def test_peer_route_must_match_catalog_availability(self) -> None:
         path = self.root / PEER_DISPATCH_PATHS[0]
         source = path.read_text(encoding="utf-8")
