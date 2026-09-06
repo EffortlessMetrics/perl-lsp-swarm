@@ -94,17 +94,9 @@
       "rule": "expression_in_run_source"
     },
     {
-      "evidence": "--baseline-rev ${{ steps.baseline.outputs.baseline }} \\",
-      "fingerprint": "0aa33ea02f9b07438e4662f393d73bcecf4d13fa1b54f17a86b80e844b0a87a9",
-      "line": 896,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/ci-nightly.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
       "evidence": "./scripts/fuzz-bounded --duration \"$DURATION\" -- ${{ matrix.target }}",
       "fingerprint": "1280b2d11347138b12bb80cd22f40c4c62825d0f77b2cb41cde7324deaa81b9d",
-      "line": 1202,
+      "line": 1232,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci-nightly.yml",
       "rule": "expression_in_run_source"
@@ -128,7 +120,7 @@
     {
       "evidence": "run: cargo install cargo-fuzz --locked",
       "fingerprint": "5a4ef3769199185cb371e7b50b2e58016b7b462d070b2ef91ed52cbd40894ff9",
-      "line": 1197,
+      "line": 1227,
       "message": "cargo install must use --version, --path, or --git with --rev",
       "path": ".github/workflows/ci-nightly.yml",
       "rule": "floating_cargo_install"
@@ -264,7 +256,7 @@
     {
       "evidence": "--output target/test-results/gate-shard-${{ matrix.name }}-junit.xml \\",
       "fingerprint": "f097825769c65399a652916281a93e3557e601a52e609ef78a595acf4381cdb0",
-      "line": 1194,
+      "line": 1209,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci.yml",
       "rule": "expression_in_run_source"
@@ -272,7 +264,7 @@
     {
       "evidence": "--suite-name \"gate-${{ matrix.name }}\"",
       "fingerprint": "091efb47cec2aa64b6564c5850f019a950312b27edb24715db5aa3cf82d0339b",
-      "line": 1195,
+      "line": 1210,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci.yml",
       "rule": "expression_in_run_source"
@@ -280,7 +272,7 @@
     {
       "evidence": "--workflow \"${{ github.workflow }}\" \\",
       "fingerprint": "e588951892d7da00ab5f3301e6ed04086c45944a2b0f34d1d931a9d7190e4ef3",
-      "line": 1208,
+      "line": 1223,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci.yml",
       "rule": "expression_in_run_source"
@@ -288,7 +280,7 @@
     {
       "evidence": "--sha \"${{ github.sha }}\" \\",
       "fingerprint": "f250c8d7750939bbb1bbc76a566cf5fe5a27124d71f24f334b34afd6d418d58b",
-      "line": 1209,
+      "line": 1224,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci.yml",
       "rule": "expression_in_run_source"
@@ -296,7 +288,7 @@
     {
       "evidence": "--pr \"${{ github.event.pull_request.number || 0 }}\" \\",
       "fingerprint": "d33c454fea4c696db19fbba3d087e2bd904012e2ca691c7ebbfb3f5c3f4b535a",
-      "line": 1210,
+      "line": 1225,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci.yml",
       "rule": "expression_in_run_source"
@@ -304,7 +296,7 @@
     {
       "evidence": "--json-out \"target/ci/ci-actuals-${{ matrix.name }}.json\" || true",
       "fingerprint": "303ae927d5a51f99906b10595afda23880916588de594790c60b9f9d93995281",
-      "line": 1211,
+      "line": 1226,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci.yml",
       "rule": "expression_in_run_source"
@@ -312,7 +304,7 @@
     {
       "evidence": "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
       "fingerprint": "71d9ef5616ad3050a32c807d47c8322f66ff623be33c05582cd7c2ded029e1f9",
-      "line": 264,
+      "line": 271,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -320,7 +312,7 @@
     {
       "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
       "fingerprint": "628bdf405054ab7618f32b9cef45b70a6f35a7ae174d6db558d838db27335b78",
-      "line": 425,
+      "line": 432,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -328,7 +320,7 @@
     {
       "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
       "fingerprint": "898d987e3247e0cf2d592a3c054b21ff84a1dd487f0aa07ff313259a78a9b84a",
-      "line": 745,
+      "line": 760,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -336,7 +328,7 @@
     {
       "evidence": "token: ${{ secrets.CODECOV_TOKEN }}",
       "fingerprint": "032fd9ee46cbf4fc5f9c2b3f691b7c75cae0046502b33ff166e0928ddbefb33e",
-      "line": 962,
+      "line": 977,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -344,7 +336,7 @@
     {
       "evidence": "CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}",
       "fingerprint": "40a3c7e5839aaafdd1e6c2d87710a13d276bcaf06419a72a5c50675de3224768",
-      "line": 965,
+      "line": 980,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -352,7 +344,7 @@
     {
       "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
       "fingerprint": "71b257ba94e451ddf8934f5b400fc7e0634daceb48d6ffe2e54e33cf87194627",
-      "line": 1026,
+      "line": 1041,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -360,7 +352,7 @@
     {
       "evidence": "token: ${{ secrets.CODECOV_TOKEN }}",
       "fingerprint": "a77a563231e864f755492b740bbbebdee32e3a364c5c5f57f0e2b23c1f41683c",
-      "line": 1229,
+      "line": 1244,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -368,7 +360,7 @@
     {
       "evidence": "CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}",
       "fingerprint": "ad98dc7df4122b78a1476ca29593e2806b180999a9e9e4df3302f3919e3d8eaa",
-      "line": 1232,
+      "line": 1247,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -376,7 +368,7 @@
     {
       "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
       "fingerprint": "6bb9cb30d700ffe49f96105a960aa3258f4a8a082975d3d3afb53cc3ee831f3e",
-      "line": 1344,
+      "line": 1359,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -384,7 +376,7 @@
     {
       "evidence": "token: ${{ secrets.CODECOV_TOKEN }}",
       "fingerprint": "7dccb113c08ddf6483727dc82c21234329743d195b7c395be943e859ad61f789",
-      "line": 1484,
+      "line": 1499,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -392,7 +384,7 @@
     {
       "evidence": "CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}",
       "fingerprint": "80a068d4c889e32944e0ae2bbf29ed65033e5a488dd827c91f3893d39349d3f8",
-      "line": 1487,
+      "line": 1502,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -400,7 +392,7 @@
     {
       "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
       "fingerprint": "39da5683794bc002cfd2dd8571b2bcaef69c635f8b7bb5e80f22ee09a959cfbc",
-      "line": 1567,
+      "line": 1582,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -408,7 +400,7 @@
     {
       "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
       "fingerprint": "0c3d26282dab7be7a0db8177266b8ebc03876f22c15642b5f556e49c318f5bb6",
-      "line": 1712,
+      "line": 1727,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"

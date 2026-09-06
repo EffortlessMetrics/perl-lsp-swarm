@@ -358,4 +358,23 @@ else
   fail "empty ratchet list invoked the generator: $(cat "${CHECK_EMPTY_LOG}")"
 fi
 
+# A duplicate entry must fail loud instead of checking (or regenerating) the
+# same crate twice.
+write_ratchet_list perl-uri perl-uri
+CHECK_DUP_OUTPUT="${TMPDIR_BASE}/check-dup.txt"
+CHECK_DUP_LOG="${TMPDIR_BASE}/check-dup.log"
+if run_recipe nonempty public-api-check "${CHECK_DUP_OUTPUT}" "${CHECK_DUP_LOG}"; then
+  check_dup_code=0
+else
+  check_dup_code=$?
+fi
+assert_exit_nonzero "duplicate ratchet entry fails public-api-check closed" "${check_dup_code}"
+assert_contains "duplicate ratchet entry is named" \
+  "lists a crate twice: perl-uri" "${CHECK_DUP_OUTPUT}"
+if [[ ! -s "${CHECK_DUP_LOG}" ]]; then
+  pass "duplicate ratchet entry never invokes the generator"
+else
+  fail "duplicate ratchet entry invoked the generator: $(cat "${CHECK_DUP_LOG}")"
+fi
+
 echo "=== public-api ratchet regression fixture passed ==="

@@ -158,12 +158,16 @@ fn load_api_ratchet_inputs(root: &Path, meta: &NoDepsMetadata) -> Result<ApiRatc
         }
         // Only a regular file is a baseline; a directory or special file under
         // a `.txt` name has a non-zero length but no API surface, so it must
-        // not count as a non-empty baseline.
+        // not count as a non-empty baseline. "Non-empty" means at least one
+        // line with content: a whitespace-only file records no API either.
         let metadata = entry.metadata()?;
         if !metadata.is_file() {
             bail!("{} is not a regular file; only baseline files belong here", path.display());
         }
-        baselines.insert(crate_name.to_string(), metadata.len() > 0);
+        let content =
+            fs::read_to_string(&path).wrap_err_with(|| format!("reading {}", path.display()))?;
+        let non_empty = content.lines().any(|line| !line.trim().is_empty());
+        baselines.insert(crate_name.to_string(), non_empty);
     }
 
     let ws_ids: HashSet<&str> = meta.workspace_members.iter().map(String::as_str).collect();
@@ -448,6 +452,7 @@ mod tests {
             ("ratchet-crates.txt", "perl-uri # facade\n"),
             ("perl-uri.txt", "pub fn f()\n"),
             ("perl-empty.txt", ""),
+            ("perl-blank.txt", "\n  \n\t\n"),
             ("notes.md", "not a baseline\n"),
         ] {
             if let Err(err) = fs::write(baseline_dir.join(name), content) {
@@ -461,7 +466,11 @@ mod tests {
         };
         assert_eq!(
             inputs,
-            ratchet_inputs(&["perl-uri"], &[("perl-uri", true), ("perl-empty", false)], &[])
+            ratchet_inputs(
+                &["perl-uri"],
+                &[("perl-uri", true), ("perl-empty", false), ("perl-blank", false)],
+                &[]
+            )
         );
     }
 

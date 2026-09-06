@@ -2328,7 +2328,8 @@ _public-api-install:
 #
 # An empty list is an error, not "nothing to check": callers assign the output
 # (`crates="$(just _api-ratchet-crates)"`) so a failure here aborts them under
-# `set -e` instead of iterating zero times and reporting a vacuous pass.
+# `set -e` instead of iterating zero times and reporting a vacuous pass. A
+# duplicate entry is an error too, so no caller checks a crate twice.
 [private]
 _api-ratchet-crates:
     #!/usr/bin/env bash
@@ -2337,6 +2338,11 @@ _api-ratchet-crates:
     crates="$(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$list" | grep -v '^$' || true)"
     if [ -z "$crates" ]; then
         echo "ERROR: $list lists no crates; both API ratchets would be vacuous" >&2
+        exit 1
+    fi
+    duplicates="$(printf '%s\n' "$crates" | sort | uniq -d)"
+    if [ -n "$duplicates" ]; then
+        echo "ERROR: $list lists a crate twice: $(printf '%s' "$duplicates" | tr '\n' ' ')" >&2
         exit 1
     fi
     printf '%s\n' "$crates"
