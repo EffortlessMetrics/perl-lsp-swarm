@@ -8,6 +8,10 @@
 //! env-injected `${{ github.token }}` keeps `GithubToken` and also records
 //! `EnvInjectedToken`. OIDC `id-token: write` is a new kind, not a re-label of
 //! `secrets.*`.
+//!
+//! This slice recognizes explicit mapping `id-token: write` at workflow or job
+//! scope. GitHub's `permissions: write-all` shorthand is residual, not an OIDC
+//! derivation here.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -563,6 +567,41 @@ jobs:
         let oidc = must_kind(&derivations_of(&yaml), CredentialDerivationKind::OidcIdTokenWrite);
         assert_eq!(oidc.generation, 2);
         assert!(oidc.path.ends_with("permissions.id-token"), "{}", oidc.path);
+    }
+
+    #[test]
+    fn workflow_level_oidc_id_token_write_is_recognized() {
+        let yaml = r"
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  example:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo federated
+";
+        let oidc = must_kind(&derivations_of(yaml), CredentialDerivationKind::OidcIdTokenWrite);
+        assert_eq!(oidc.generation, 2);
+        assert!(oidc.job.is_none(), "workflow-level OIDC has no job: {:?}", oidc.job);
+        assert_eq!(oidc.path, "permissions.id-token");
+        assert!(!kinds_of(yaml).contains(&CredentialDerivationKind::SecretExpression));
+    }
+
+    #[test]
+    fn write_all_permissions_are_not_oidc_in_this_slice() {
+        let yaml = r"
+permissions: write-all
+jobs:
+  example:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo residual
+";
+        assert!(
+            !kinds_of(yaml).contains(&CredentialDerivationKind::OidcIdTokenWrite),
+            "permissions: write-all is residual, not a silent OIDC kind"
+        );
     }
 
     #[test]
