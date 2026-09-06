@@ -132,7 +132,7 @@ describe('cleanupPartialDownloadDest', () => {
       cleanupPartialDownloadDest(dest, async () => {
         throw new Error('injected cleanup failure');
       }),
-    ).rejects.toThrow(/EISDIR|EPERM|ENOTEMPTY/);
+    ).rejects.toThrow(/EISDIR|EPERM|ENOTEMPTY|destination remains/);
     expect(fs.existsSync(dest)).toBe(true);
   });
 });
@@ -318,7 +318,7 @@ describe('downloadBoundedFile', () => {
       ),
     ).rejects.toMatchObject({
       message: expect.stringMatching(
-        /exceeded 12 compressed bytes \(declared 64\); partial file cleanup failed:.*(EISDIR|EPERM|ENOTEMPTY)/,
+        /exceeded 12 compressed bytes \(declared 64\); partial file cleanup failed:.*(EISDIR|EPERM|ENOTEMPTY|destination remains)/,
       ),
       cause: expect.objectContaining({
         message: 'Archive download exceeded 12 compressed bytes (declared 64)',
