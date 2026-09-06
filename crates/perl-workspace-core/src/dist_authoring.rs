@@ -1029,17 +1029,17 @@ impl<'a> DistCollector<'a> {
     }
 
     fn nested_static_string(&mut self, field: &ScanPair, dynamic: &mut bool) -> Option<String> {
-        if field.value.is_dynamic() {
-            *dynamic = true;
-            self.limitation(
-                "dynamic_value",
-                format!("`{}` is not a static literal", field.key),
-                Some(field.value_start),
-                Some(field.value_end),
-            );
-            return None;
+        if let ScanValue::String(raw) = &field.value {
+            return Some(raw.clone());
         }
-        field.value.as_str().map(ToOwned::to_owned)
+        *dynamic = true;
+        self.limitation(
+            "dynamic_value",
+            format!("`{}` is not a static literal", field.key),
+            Some(field.value_start),
+            Some(field.value_end),
+        );
+        None
     }
 
     fn dynamic_pair(&mut self, kind: DistDeclarationKind, pair: &ScanPair) {

@@ -139,12 +139,9 @@ fn makefile_pl_extracts_literal_identity_and_v1_prereq_phases() {
     assert!(mapped.contains(&("Module::Build", "build", "requires", Some("0.42"))));
     assert!(mapped.contains(&("Test::More", "test", "requires", Some("0.98"))));
     assert!(facts.resources.iter().any(|r| r.kind == "homepage"));
-    assert!(
-        facts
-            .resources
-            .iter()
-            .any(|r| r.kind == "repository" && r.type_name.as_deref() == Some("git"))
-    );
+    assert!(facts.resources.iter().any(|r| r.kind == "repository"
+        && r.type_name.as_deref() == Some("git")
+        && r.url.as_deref() == Some("https://example.invalid/foo.git")));
     assert!(facts.provides.iter().any(|p| p.module == "Foo::Bar"));
     assert!(!facts.declarations.is_empty());
     assert!(facts.declarations.iter().all(|d| d.range.end_byte >= d.range.start_byte));
@@ -1052,6 +1049,36 @@ WriteMakefile(
         },
         provides => {
             'Foo::Bar' => { file => $path, version => '1.23' },
+        },
+    },
+);
+"#;
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    let repo = facts.resources.iter().find(|r| r.kind == "repository").unwrap();
+    assert!(repo.url.is_none());
+    assert_eq!(repo.type_name.as_deref(), Some("git"));
+    assert!(facts.declarations.iter().any(|d| d.key == "repository" && d.dynamic));
+    let provided = facts.provides.iter().find(|p| p.module == "Foo::Bar").unwrap();
+    assert!(provided.file.is_none());
+    assert_eq!(provided.version.as_deref(), Some("1.23"));
+    assert!(facts.declarations.iter().any(|d| d.key == "Foo::Bar" && d.dynamic));
+    assert!(facts.limitations.iter().any(|l| l.kind == "dynamic_value"));
+}
+
+#[test]
+fn nested_array_resource_and_provides_fields_are_not_static() {
+    let src = r#"
+WriteMakefile(
+    NAME => 'Foo::Bar',
+    META_MERGE => {
+        resources => {
+            repository => {
+                url => ['https://example.invalid/foo.git'],
+                type => 'git',
+            },
+        },
+        provides => {
+            'Foo::Bar' => { file => ['lib/Foo/Bar.pm'], version => '1.23' },
         },
     },
 );
