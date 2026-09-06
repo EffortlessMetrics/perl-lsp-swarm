@@ -13,12 +13,17 @@ use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(100);
+const SHUTDOWN_RUNNING: u8 = 0;
+const SHUTDOWN_STARTED: u8 = 1;
+const SHUTDOWN_EXIT_SENT: u8 = 2;
+const SHUTDOWN_COMPLETE: u8 = 3;
+const STDERR_TAIL_LINES: usize = 20;
 
 fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
@@ -41,6 +46,13 @@ pub enum LspEvent {
     Other { method: String, params: Value },
 }
 
+/// Evidence returned only after a protocol-correct, zero-status shutdown.
+#[derive(Debug)]
+pub struct UxGracefulShutdown {
+    /// Exact process exit status observed after the `exit` notification.
+    pub status: ExitStatus,
+}
+
 /// A lightweight LSP client that speaks directly to a spawned perl-lsp process.
 pub struct UxClient {
     child: Mutex<Child>,
@@ -52,6 +64,7 @@ pub struct UxClient {
     responses: Arc<Mutex<VecDeque<Value>>>,
     /// Stderr lines captured from the server process.
     stderr_lines: Arc<Mutex<Vec<String>>>,
+    shutdown_state: AtomicU8,
     _stdout_thread: std::thread::JoinHandle<()>,
     _stderr_thread: std::thread::JoinHandle<()>,
 }
@@ -140,6 +153,7 @@ impl UxClient {
             events,
             responses,
             stderr_lines,
+            shutdown_state: AtomicU8::new(SHUTDOWN_RUNNING),
             _stdout_thread,
             _stderr_thread,
         };
@@ -344,6 +358,61 @@ impl UxClient {
         self.stderr_lines.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Complete the legal LSP lifecycle and prove a zero-status process exit.
+    ///
+    /// A successful result requires a matching JSON-RPC shutdown response with
+    /// an explicit `null` result, followed by `exit`, followed by bounded
+    /// zero-status process termination. A second call fails before emitting a
+    /// second normal lifecycle sequence. Destructor cleanup remains fallback,
+    /// not evidence.
+    pub fn shutdown_and_exit(&self, timeout: Duration) -> Result<UxGracefulShutdown> {
+        self.shutdown_state
+            .compare_exchange(
+                SHUTDOWN_RUNNING,
+                SHUTDOWN_STARTED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .map_err(|state| {
+                anyhow!("explicit LSP shutdown already started or completed (state={state})")
+            })?;
+
+        let response = self
+            .request("shutdown", Value::Null, timeout)
+            .context("explicit LSP shutdown request failed")?;
+        validate_shutdown_response(&response)?;
+
+        self.notify("exit", Value::Null)
+            .context("failed to send LSP exit notification after accepted shutdown")?;
+        self.shutdown_state.store(SHUTDOWN_EXIT_SENT, Ordering::SeqCst);
+
+        let deadline = Instant::now() + timeout;
+        loop {
+            let status = {
+                let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
+                child.try_wait().context("failed to poll perl-lsp process exit")?
+            };
+            if let Some(status) = status {
+                self.shutdown_state.store(SHUTDOWN_COMPLETE, Ordering::SeqCst);
+                if !status.success() {
+                    return Err(anyhow!(
+                        "perl-lsp exited unsuccessfully after legal shutdown: {status}; stderr={}",
+                        self.stderr_tail()
+                    ));
+                }
+                return Ok(UxGracefulShutdown { status });
+            }
+            if Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "perl-lsp did not exit within {}ms after accepted shutdown; stderr={}",
+                    timeout.as_millis(),
+                    self.stderr_tail()
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     /// Wait up to `timeout` for any `window/showMessage` containing `needle`.
     pub fn wait_for_message(&self, needle: &str, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
@@ -403,6 +472,27 @@ impl UxClient {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
+
+    fn stderr_tail(&self) -> String {
+        let lines = self.stderr_lines.lock().unwrap_or_else(|e| e.into_inner());
+        lines[lines.len().saturating_sub(STDERR_TAIL_LINES)..].join("\n")
+    }
+}
+
+fn validate_shutdown_response(response: &Value) -> Result<()> {
+    if response.get("jsonrpc") != Some(&json!("2.0")) {
+        return Err(anyhow!("shutdown response omitted JSON-RPC 2.0: {response}"));
+    }
+    if let Some(error) = response.get("error") {
+        return Err(anyhow!("shutdown returned JSON-RPC error: {error}"));
+    }
+    let result = response
+        .get("result")
+        .ok_or_else(|| anyhow!("shutdown response omitted result: {response}"))?;
+    if !result.is_null() {
+        return Err(anyhow!("shutdown result must be null, got: {response}"));
+    }
+    Ok(())
 }
 
 fn merge_json(target: &mut Value, overlay: &Value) {
@@ -426,18 +516,28 @@ fn merge_json(target: &mut Value, overlay: &Value) {
 
 impl Drop for UxClient {
     fn drop(&mut self) {
-        // Best-effort graceful shutdown.
-        let shutdown = r#"{"jsonrpc":"2.0","id":999998,"method":"shutdown","params":{}}"#;
-        let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
-        if let Ok(mut stdin) = self.stdin.lock() {
-            for body in [shutdown, exit] {
-                let hdr = format!("Content-Length: {}\r\n\r\n", body.len());
-                let _ = stdin.write_all(hdr.as_bytes());
-                let _ = stdin.write_all(body.as_bytes());
-                let _ = stdin.flush();
+        let shutdown_state = self.shutdown_state.load(Ordering::SeqCst);
+        if shutdown_state == SHUTDOWN_COMPLETE {
+            return;
+        }
+
+        // Best-effort graceful shutdown only for clients that never started an
+        // explicit terminal sequence. A failed explicit sequence must not emit
+        // a second normal shutdown/exit pair and cannot become graceful proof.
+        if shutdown_state == SHUTDOWN_RUNNING {
+            let shutdown = r#"{"jsonrpc":"2.0","id":999998,"method":"shutdown","params":{}}"#;
+            let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
+            if let Ok(mut stdin) = self.stdin.lock() {
+                for body in [shutdown, exit] {
+                    let hdr = format!("Content-Length: {}\r\n\r\n", body.len());
+                    let _ = stdin.write_all(hdr.as_bytes());
+                    let _ = stdin.write_all(body.as_bytes());
+                    let _ = stdin.flush();
+                }
             }
         }
-        // Wait briefly for graceful exit then force-kill.
+
+        // Wait briefly for any already-sent terminal sequence, then force-kill.
         for _ in 0..50 {
             if let Ok(mut child) = self.child.lock()
                 && child.try_wait().ok().flatten().is_some()
@@ -530,4 +630,38 @@ fn build_command(binary_path: &str, config: &ScenarioConfig) -> Result<Command> 
     }
 
     Ok(cmd)
+}
+
+#[cfg(test)]
+mod shutdown_response_tests {
+    use super::validate_shutdown_response;
+    use serde_json::json;
+
+    #[test]
+    fn shutdown_response_requires_jsonrpc_null_result_and_no_error() {
+        assert!(
+            validate_shutdown_response(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": null
+            }))
+            .is_ok()
+        );
+
+        for invalid in [
+            json!({"id": 1, "result": null}),
+            json!({"jsonrpc": "2.0", "id": 1}),
+            json!({"jsonrpc": "2.0", "id": 1, "result": {}}),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": -32603, "message": "failed"}
+            }),
+        ] {
+            assert!(
+                validate_shutdown_response(&invalid).is_err(),
+                "invalid shutdown response was accepted: {invalid}"
+            );
+        }
+    }
 }
