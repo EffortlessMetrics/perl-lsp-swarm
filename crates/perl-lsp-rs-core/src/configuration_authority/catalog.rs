@@ -1057,6 +1057,20 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         ["declared_dependencies", "META.json", "cpanfile"]
     ),
     authority!(
+        "workspace.detected_dependency_include_paths",
+        Workspace.detected_dependency_include_paths,
+        DerivedWorkspaceFolder,
+        DerivedList,
+        PROJECT_METADATA,
+        Validation::Derived,
+        RecomputeDerived,
+        Ordinary,
+        DerivedDigestOnly,
+        WorkspaceDiscovery,
+        DISCOVERY,
+        ["detected_dependency_include_paths", "refresh_dependency_include_paths"]
+    ),
+    authority!(
         "workspace.discovery_extra_extensions",
         Workspace.discovery_extra_extensions,
         WorkspaceFolder,

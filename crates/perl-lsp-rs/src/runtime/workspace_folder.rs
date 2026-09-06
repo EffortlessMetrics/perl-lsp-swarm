@@ -86,6 +86,27 @@ impl WorkspaceFolderState {
         }
     }
 
+    /// Refresh metadata-derived facts from per-source captured reads (#13640).
+    ///
+    /// Declared dependencies come from `reads`, so an open metadata buffer's
+    /// staged text is authoritative and an unreadable source keeps only its own
+    /// previous entries. Dependency-manager include roots are reconciled from
+    /// the filesystem regardless: those markers are existence probes, so an
+    /// unreadable declaration file must not stop a deleted `carton.lock` from
+    /// retiring its root.
+    pub fn refresh_workspace_metadata_from_reads(
+        &mut self,
+        reads: &[(
+            perl_lsp_rs_core::config::DeclaredDependencySource,
+            perl_lsp_rs_core::config::MetadataSourceRead,
+        )],
+    ) {
+        self.effective_workspace_config.apply_declared_dependency_reads(reads);
+        if let Some(path) = self.path.as_deref() {
+            self.effective_workspace_config.refresh_dependency_include_paths(path);
+        }
+    }
+
     /// Get the URI as a string reference.
     #[must_use]
     pub fn uri(&self) -> &str {
@@ -178,6 +199,63 @@ mod tests {
         assert_eq!(
             folder.effective_workspace_config.include_paths,
             vec!["lib", ".", "local/lib/perl5"]
+        );
+        Ok(())
+    }
+
+    /// Invalidation must be reversible (#13640): a root this detector
+    /// contributed is retired once its markers are gone, so deleting the lock
+    /// file does not leave a stale include root behind.
+    #[test]
+    fn refresh_workspace_metadata_retires_a_detected_include_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(temp.path().join("carton.lock"), "snapshot\n")?;
+        let mut config = WorkspaceConfig::default();
+        config.include_paths = vec!["lib".to_string(), ".".to_string()];
+        let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
+            .with_path(temp.path().to_path_buf())
+            .with_effective_workspace_config(config);
+
+        folder.refresh_workspace_metadata();
+        assert_eq!(
+            folder.effective_workspace_config.include_paths,
+            vec!["lib", ".", "local/lib/perl5"],
+            "the detected root is contributed while its marker exists"
+        );
+
+        std::fs::remove_file(temp.path().join("carton.lock"))?;
+        folder.refresh_workspace_metadata();
+
+        assert_eq!(
+            folder.effective_workspace_config.include_paths,
+            vec!["lib", "."],
+            "a detected root must be retired once its marker is gone"
+        );
+        Ok(())
+    }
+
+    /// A path the user configured is never removed, even when the detector
+    /// also reports it and its marker later disappears.
+    #[test]
+    fn refresh_workspace_metadata_never_retires_a_configured_include_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(temp.path().join("carton.lock"), "snapshot\n")?;
+        let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
+            .with_path(temp.path().to_path_buf());
+
+        // The default config already configures `local/lib/perl5`.
+        folder.refresh_workspace_metadata();
+        std::fs::remove_file(temp.path().join("carton.lock"))?;
+        folder.refresh_workspace_metadata();
+
+        assert_eq!(
+            folder.effective_workspace_config.include_paths,
+            vec!["lib", ".", "local/lib/perl5"],
+            "a user-configured include path is never claimed or retired by detection"
         );
         Ok(())
     }

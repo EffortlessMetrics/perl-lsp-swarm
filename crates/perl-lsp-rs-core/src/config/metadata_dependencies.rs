@@ -63,6 +63,21 @@ pub enum DeclaredDependencySource {
 }
 
 impl DeclaredDependencySource {
+    /// Every declared-dependency metadata source, in detection order.
+    ///
+    /// [`detect_declared_dependencies`] iterates this list, so it is the exact
+    /// set of workspace-root files that produce declared-dependency facts.
+    /// `super::project_metadata` classifies watched paths from the same list
+    /// (#13640), which keeps detection and invalidation from drifting apart.
+    pub const ALL: [Self; 6] = [
+        Self::Cpanfile,
+        Self::MakefilePl,
+        Self::BuildPl,
+        Self::DistIni,
+        Self::MetaJson,
+        Self::MetaYml,
+    ];
+
     /// User-facing file label for this metadata source.
     #[must_use]
     pub fn display_name(self) -> &'static str {
@@ -73,6 +88,27 @@ impl DeclaredDependencySource {
             Self::DistIni => "dist.ini",
             Self::MetaJson => "META.json",
             Self::MetaYml => "META.yml",
+        }
+    }
+
+    /// Workspace-root-relative file name this source is read from.
+    ///
+    /// Identical to [`Self::display_name`]; named separately because callers
+    /// resolving a path depend on it being the on-disk spelling.
+    #[must_use]
+    pub fn file_name(self) -> &'static str {
+        self.display_name()
+    }
+
+    /// Literal extractor applied to this source's contents.
+    fn extractor(self) -> fn(&str) -> Vec<DeclaredDependency> {
+        match self {
+            Self::Cpanfile => extract_cpanfile_requirements,
+            Self::MakefilePl => extract_makefile_pl_requirements,
+            Self::BuildPl => extract_build_pl_requirements,
+            Self::DistIni => extract_dist_ini_requirements,
+            Self::MetaJson => extract_meta_json_requirements,
+            Self::MetaYml => extract_meta_yml_requirements,
         }
     }
 }
@@ -117,41 +153,71 @@ const BUILD_PL_KEYS: &[&str] =
 const META_RELATION_KEYS: &[&str] =
     &["requires", "recommends", "build_requires", "test_requires", "configure_requires"];
 
+/// Authoritative text captured for one declared-dependency metadata source.
+///
+/// The watcher route (#13640) resolves each source exactly once per refresh and
+/// passes the outcome here, so detection consumes the same bytes the caller
+/// already observed. That removes the read-twice window in which a source could
+/// succeed during a readability probe and then fail when the detector reopened
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetadataSourceRead {
+    /// Authoritative text: the file's bytes, or an open buffer's staged text.
+    Text(String),
+    /// The source does not exist and declares nothing.
+    Absent,
+    /// The source exists but could not be read as text.
+    Unreadable,
+}
+
+/// Compose declared dependencies from per-source captured reads.
+///
+/// Sources are consumed in [`DeclaredDependencySource::ALL`] order and the
+/// first declaration of a module wins, matching
+/// [`detect_declared_dependencies`].
+///
+/// Retention is per source, not per folder: an [`MetadataSourceRead::Unreadable`]
+/// source contributes its entries from `previous`, so an unreadable `META.yml`
+/// cannot erase what a readable `cpanfile` declares, and an unknown source is
+/// never silently downgraded to "declares nothing". An
+/// [`MetadataSourceRead::Absent`] source contributes nothing, which is how a
+/// genuine delete drops its declarations.
+#[must_use]
+pub fn declared_dependencies_from_reads(
+    reads: &[(DeclaredDependencySource, MetadataSourceRead)],
+    previous: &[DeclaredDependency],
+) -> Vec<DeclaredDependency> {
+    let mut dependencies = Vec::new();
+    for (source, read) in reads {
+        match read {
+            MetadataSourceRead::Text(text) => {
+                for dependency in source.extractor()(text) {
+                    push_unique(&mut dependencies, dependency);
+                }
+            }
+            MetadataSourceRead::Absent => {}
+            MetadataSourceRead::Unreadable => {
+                for dependency in previous.iter().filter(|entry| entry.source == *source) {
+                    push_unique(&mut dependencies, dependency.clone());
+                }
+            }
+        }
+    }
+    dependencies
+}
+
 /// Detect declared dependencies from common workspace-root metadata files.
 #[must_use]
 pub fn detect_declared_dependencies(workspace_root: &Path) -> Vec<DeclaredDependency> {
     let mut dependencies = Vec::new();
 
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("cpanfile"),
-        extract_cpanfile_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("Makefile.PL"),
-        extract_makefile_pl_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("Build.PL"),
-        extract_build_pl_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("dist.ini"),
-        extract_dist_ini_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("META.json"),
-        extract_meta_json_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("META.yml"),
-        extract_meta_yml_requirements,
-    );
+    for source in DeclaredDependencySource::ALL {
+        collect_from_file(
+            &mut dependencies,
+            &workspace_root.join(source.file_name()),
+            source.extractor(),
+        );
+    }
 
     dependencies
 }
