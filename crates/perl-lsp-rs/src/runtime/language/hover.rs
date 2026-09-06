@@ -205,6 +205,7 @@ impl LspServer {
                         doc.text_arc.to_string(),
                         hover_range,
                         doc.full_sync_required(),
+                        doc.current_generation(),
                     )
                 })
             };
@@ -218,9 +219,19 @@ impl LspServer {
             }
 
             let t_analyze_start = std::time::Instant::now();
-            let (extracted, live_compiler_context, hover_range) = match locked {
-                Some((_, _, _, _, true)) => (HoverExtracted::None, None, None),
-                Some((offset, parsed, text, range, false)) => {
+            let (extracted, live_compiler_context, hover_range, captured_generation) = match locked
+            {
+                Some((_, _, _, _, true, _)) | None => {
+                    if timing_on {
+                        crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(
+                            "provider.hover.analyze",
+                            crate::runtime::timing::elapsed_ms(t_analyze_start),
+                            crate::runtime::timing::uri_tail(uri),
+                        ));
+                    }
+                    return Ok(Some(json!(null)));
+                }
+                Some((offset, parsed, text, range, false, generation)) => {
                     // Generation-bound source-region evidence (#5003). Beyond the
                     // dispatcher trace, it now routes the generic fallback paths:
                     // semantic/index lookups and the token/builtin fallback only
@@ -281,7 +292,12 @@ impl LspServer {
                                     "value": content,
                                 }
                             });
-                            return Ok(Self::inject_hover_range_opt(value, &range));
+                            return Ok(Some(self.publish_user_answer_value(
+                                uri,
+                                generation,
+                                Self::inject_hover_range_opt(value, &range).unwrap_or(json!(null)),
+                                json!(null),
+                            )));
                         }
                         // Check for `use Module` at this offset first
                         let extracted = if let Some(module_name) =
@@ -321,18 +337,15 @@ impl LspServer {
                         } else {
                             self.extract_symbol_hover(uri, ast, &text, offset, &parsed)
                         };
-                        (extracted, live_compiler_context, range)
+                        (extracted, live_compiler_context, range, generation)
                     } else {
                         (
                             Self::extract_token_hover(uri, &text, offset, source_region.as_deref()),
                             live_compiler_context,
                             range,
+                            generation,
                         )
                     }
-                }
-                None => {
-                    set_hover_trace_source_region_kind(None);
-                    (HoverExtracted::None, None, None)
                 }
             };
             if timing_on {
@@ -349,9 +362,17 @@ impl LspServer {
                     if let Some(compiler_hover) =
                         self.try_live_compiler_hover(Some(&value), live_compiler_context.as_ref())
                     {
-                        return Self::inject_hover_range(compiler_hover, &hover_range);
+                        return self.publish_hover_answer(
+                            uri,
+                            captured_generation,
+                            Self::inject_hover_range_opt(compiler_hover, &hover_range),
+                        );
                     }
-                    return Ok(Self::inject_hover_range_opt(value, &hover_range));
+                    return self.publish_hover_answer(
+                        uri,
+                        captured_generation,
+                        Self::inject_hover_range_opt(value, &hover_range),
+                    );
                 }
                 HoverExtracted::UseModule(module_name, doc_text, doc_uri, doc_offset) => {
                     let hv = self.build_module_hover(
@@ -360,12 +381,20 @@ impl LspServer {
                         &doc_uri,
                         Some(doc_offset),
                     );
-                    return Ok(Self::inject_hover_range_opt(hv, &hover_range));
+                    return self.publish_hover_answer(
+                        uri,
+                        captured_generation,
+                        Self::inject_hover_range_opt(hv, &hover_range),
+                    );
                 }
                 HoverExtracted::PossiblePackage(pkg_name, doc_text, doc_uri, doc_offset) => {
                     let hv =
                         self.build_module_hover(&pkg_name, &doc_text, &doc_uri, Some(doc_offset));
-                    return Ok(Self::inject_hover_range_opt(hv, &hover_range));
+                    return self.publish_hover_answer(
+                        uri,
+                        captured_generation,
+                        Self::inject_hover_range_opt(hv, &hover_range),
+                    );
                 }
                 #[cfg(feature = "workspace")]
                 HoverExtracted::InheritedMethod(
@@ -379,7 +408,11 @@ impl LspServer {
                         if let Some(hover_value) =
                             self.build_inherited_method_hover(&receiver_pkg, &method_name, &doc_uri)
                         {
-                            return Self::inject_hover_range(hover_value, &hover_range);
+                            return self.publish_hover_answer(
+                                uri,
+                                captured_generation,
+                                Self::inject_hover_range_opt(hover_value, &hover_range),
+                            );
                         }
                     }
                     // The workspace lookup found nothing (or the index is stale).
@@ -396,9 +429,17 @@ impl LspServer {
                             Some(&hover_value),
                             live_compiler_context.as_ref(),
                         ) {
-                            return Self::inject_hover_range(compiler_hover, &hover_range);
+                            return self.publish_hover_answer(
+                                uri,
+                                captured_generation,
+                                Self::inject_hover_range_opt(compiler_hover, &hover_range),
+                            );
                         }
-                        return Self::inject_hover_range(hover_value, &hover_range);
+                        return self.publish_hover_answer(
+                            uri,
+                            captured_generation,
+                            Self::inject_hover_range_opt(hover_value, &hover_range),
+                        );
                     }
                 }
                 #[cfg(not(feature = "workspace"))]
@@ -407,21 +448,32 @@ impl LspServer {
                     if let Some(compiler_hover) =
                         self.try_live_compiler_hover(None, live_compiler_context.as_ref())
                     {
-                        return Self::inject_hover_range(compiler_hover, &hover_range);
+                        return self.publish_hover_answer(
+                            uri,
+                            captured_generation,
+                            Self::inject_hover_range_opt(compiler_hover, &hover_range),
+                        );
                     }
                 }
             }
+            self.publish_hover_answer(uri, captured_generation, Some(json!(null)))
+        } else {
+            Ok(Some(json!(null)))
         }
-
-        Ok(Some(json!(null)))
     }
 
-    /// Inject the `range` field into a hover response value. (#5085)
-    fn inject_hover_range(
-        value: Value,
-        range: &Option<Value>,
+    fn publish_hover_answer(
+        &self,
+        uri: &str,
+        generation: u32,
+        value: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        Ok(Self::inject_hover_range_opt(value, range))
+        Ok(Some(self.publish_user_answer_value(
+            uri,
+            generation,
+            value.unwrap_or(json!(null)),
+            json!(null),
+        )))
     }
 
     fn inject_hover_range_opt(mut value: Value, range: &Option<Value>) -> Option<Value> {

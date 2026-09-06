@@ -1510,6 +1510,22 @@ impl LspServer {
         item
     }
 
+    fn empty_completion_list() -> Value {
+        json!({"isIncomplete": false, "items": []})
+    }
+
+    fn publish_completion_answer(&self, uri: &str, generation: Option<u32>, value: Value) -> Value {
+        match generation {
+            Some(generation) => self.publish_user_answer_value(
+                uri,
+                generation,
+                value,
+                Self::empty_completion_list(),
+            ),
+            None => Self::empty_completion_list(),
+        }
+    }
+
     /// Handle completion request
     pub(crate) fn handle_completion(
         &self,
@@ -1555,9 +1571,12 @@ impl LspServer {
             // just this one -- for the full analysis duration below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
-            let doc_owned = {
+            let (doc_owned, captured_generation) = {
                 let documents = self.documents_guard();
-                self.get_document(&documents, uri).cloned()
+                match self.get_document(&documents, uri) {
+                    Some(doc) => (Some(doc.clone()), Some(doc.current_generation())),
+                    None => (None, None),
+                }
             };
             // documents guard dropped here
             if timing_on {
@@ -1805,11 +1824,15 @@ impl LspServer {
                 ));
             }
             if let Some(response) = response {
-                return Ok(Some(response));
+                return Ok(Some(self.publish_completion_answer(
+                    uri,
+                    captured_generation,
+                    response,
+                )));
             }
         }
 
-        Ok(Some(json!({"isIncomplete": false, "items": []})))
+        Ok(Some(Self::empty_completion_list()))
     }
 
     /// Handle completion request with cancellation support
@@ -1900,9 +1923,12 @@ impl LspServer {
             // below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
-            let doc_owned = {
+            let (doc_owned, captured_generation) = {
                 let documents = self.documents_guard();
-                self.get_document(&documents, uri).cloned()
+                match self.get_document(&documents, uri) {
+                    Some(doc) => (Some(doc.clone()), Some(doc.current_generation())),
+                    None => (None, None),
+                }
             };
             // documents guard dropped here
             if timing_on {
@@ -2192,10 +2218,14 @@ impl LspServer {
                 ))
             };
             if let Some(response) = response {
-                return Ok(Some(response));
+                return Ok(Some(self.publish_completion_answer(
+                    uri,
+                    captured_generation,
+                    response,
+                )));
             }
 
-            Ok(Some(json!({"isIncomplete": false, "items": []})))
+            Ok(Some(Self::empty_completion_list()))
         } else {
             self.handle_completion(params)
         }
@@ -3685,6 +3715,77 @@ mod tests {
             "full-document recovery must restore AST-backed completion: {recovered:?}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn completion_does_not_publish_in_flight_predecessor_after_violation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/inflight_completion.pl";
+        let predecessor =
+            "package InflightCompletion;\nsub unique_pred_for_inflight {}\nunique_pred_for_inf\n";
+
+        server.test_apply_did_open(uri, predecessor, 1)?;
+        let snapshot = server
+            .snapshot_user_answer_text(uri)
+            .ok_or("open document must have a usable user-answer snapshot")?;
+        let computed = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "position": { "line": 2, "character": 19 }
+            })))?
+            .ok_or("in-flight completion must return a result")?;
+        let live_labels = completion_item_labels(&computed)?;
+        assert!(
+            live_labels.iter().any(|label| label.contains("unique_pred_for_inflight")),
+            "in-flight completion must see the predecessor subroutine: {computed}"
+        );
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 1, "character": 4 },
+                    "end": { "line": 1, "character": 28 }
+                },
+                "text": "renamed"
+            }]
+        })))?;
+        assert!(
+            !server.user_answer_text_is_current(uri, snapshot.generation),
+            "ranged violation must invalidate the captured user-answer generation"
+        );
+        let published = server.publish_completion_answer(uri, Some(snapshot.generation), computed);
+        let published_labels = completion_item_labels(&published)?;
+        assert!(
+            published_labels.is_empty(),
+            "in-flight predecessor completions must not publish after invalidation: {published}"
+        );
+
+        let live = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "position": { "line": 2, "character": 19 }
+            })))?
+            .ok_or("live completion must return a result")?;
+        let live_after = completion_item_labels(&live)?;
+        assert!(
+            live_after.is_empty(),
+            "live completion after Full-sync violation must fail closed: {live}"
+        );
+        Ok(())
+    }
+
+    fn completion_item_labels(value: &Value) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let items = value
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or("completion must return an items array")?;
+        Ok(items
+            .iter()
+            .filter_map(|item| item.get("label").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect())
     }
 
     #[test]
