@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12808 |
-| Rust-family files | 4026 |
-| Non-Rust files | 8782 |
-| Allowlisted | 6545 |
+| Total tracked files | 12818 |
+| Rust-family files | 4033 |
+| Non-Rust files | 8785 |
+| Allowlisted | 6548 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 514 |
-| documentation | 2865 |
+| config | 516 |
+| documentation | 2866 |
 | generated | 2 |
 | production | 357 |
 | test | 2118 |
@@ -5321,6 +5321,7 @@
 | `docs/project/status/receiver_facts.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/release-ux-backlog.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/release.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/project/status/release_trust_invariants.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/semantic_capability_dashboard.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/semantic_scorecard.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/semantic_scorecard.md` | documentation | `non-rust-docs-tree` | docs |
@@ -6486,6 +6487,7 @@
 | `policy/release-channel-actuals.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/release-container-actuals.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/release-tag-provenance.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/release-trust-invariants.v1.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/repository-topology.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/review-surfaces.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ripr-suppressions.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -6529,6 +6531,7 @@
 | `schemas/publication_runtime_identity.v1.schema.json` | config | `non-rust-publication-runtime-identity-schema` | release/ci |
 | `schemas/release_candidate_artifacts.v1.schema.json` | config | `non-rust-release-candidate-artifacts-schema` | release/ci |
 | `schemas/release_topology.v1.schema.json` | config | `non-rust-release-topology-schema` | release/ci |
+| `schemas/release_trust_invariants.v1.schema.json` | config | `non-rust-release-trust-invariants-schema` | release/ci |
 | `schemas/stage_closure_projection.v1.schema.json` | config | `non-rust-stage-closure-projection-schema` | tooling/agent-review |
 | `schemas/standalone_candidate.v1.schema.json` | config | `non-rust-standalone-candidate-schema` | release/ci |
 | `schemas/standalone_current_selection.v1.schema.json` | config | `non-rust-standalone-current-selection-schema` | release/ci |
