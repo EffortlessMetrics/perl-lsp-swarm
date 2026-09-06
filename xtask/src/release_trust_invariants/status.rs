@@ -19,7 +19,7 @@ pub fn render_status(registry: &TrustInvariantRegistry) -> String {
         registry.parent_issue,
         super::model::REGISTRY_PATH
     ));
-    markdown.push_str(&format!("{}\n\n", registry.claim_boundary));
+    markdown.push_str(&format!("{}\n\n", markdown_inline(&registry.claim_boundary)));
     markdown.push_str("## Owner authorities\n\n");
     markdown.push_str("| Issue | Status | Successor | Title |\n| --- | --- | --- | --- |\n");
     for owner in &registry.owner_authorities {
