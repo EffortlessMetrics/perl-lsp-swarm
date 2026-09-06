@@ -1550,12 +1550,15 @@ pub fn run_check() -> Result<()> {
         }
         let doc = load_json(&root.join(INVALID_DIR).join(filename))?;
         let codes: BTreeSet<String> = if expected_code == "SCHEMA_VIOLATION" {
-            let schema = schema_failures(&root, &doc)?;
-            if schema.is_empty() {
-                BTreeSet::new()
-            } else {
-                BTreeSet::from(["SCHEMA_VIOLATION".to_string()])
+            // The schema must be the sole discriminator: the semantic layer
+            // still runs so a schema fixture that also trips a graph law is
+            // reported as a second code rather than concealed.
+            let mut codes: BTreeSet<String> = BTreeSet::new();
+            if !schema_failures(&root, &doc)?.is_empty() {
+                codes.insert("SCHEMA_VIOLATION".to_string());
             }
+            codes.extend(violation_codes(&validate_document(&doc)).iter().map(|c| c.to_string()));
+            codes
         } else {
             let schema = schema_failures(&root, &doc)?;
             if !schema.is_empty() {

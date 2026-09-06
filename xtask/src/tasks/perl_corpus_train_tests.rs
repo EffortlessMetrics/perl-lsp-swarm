@@ -140,14 +140,19 @@ fn every_expected_invalid_fixture_fails_with_named_code() -> Result<()> {
     for (filename, expected_code) in expected {
         let expected_code =
             expected_code.as_str().ok_or_else(|| eyre!("{filename}: string reason code"))?;
-        if expected_code == "SCHEMA_VIOLATION" {
-            // Schema-level fixtures are exercised by the gate command itself
-            // (`run_check`), which applies the JSON Schema; the semantic layer
-            // is not the discriminating instrument for them.
-            continue;
-        }
         let doc = load(&format!("{INVALID_DIR}/{filename}"))?;
         let actual: std::collections::BTreeSet<String> = codes(&doc).into_iter().collect();
+        if expected_code == "SCHEMA_VIOLATION" {
+            // The JSON Schema is applied by the gate command itself
+            // (`run_check`); here the semantic layer must stay silent so the
+            // schema remains the sole discriminator for the fixture.
+            if !actual.is_empty() {
+                bail!(
+                    "invalid/{filename}: a schema fixture must not also trip a graph law, got {actual:?}"
+                );
+            }
+            continue;
+        }
         if actual.is_empty() {
             bail!("invalid/{filename} unexpectedly validated cleanly");
         }
