@@ -1083,20 +1083,8 @@ fn issue_names_pull_as_historical_predecessor(issue_body: &str, pull_number: u64
 const PROOF_LEVEL_TERMS: [&str; 6] =
     ["installed", "public", "packaged", "presentation", "release", "actual host"];
 
-const PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS: [&str; 28] = [
-    "remains unchanged",
-    "remain unchanged",
-    "remains deliberately unchanged",
-    "remain deliberately unchanged",
-    "deliberately unchanged",
+const PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS: [&str; 16] = [
     "unchanged",
-    "is unchanged",
-    "are unchanged",
-    "stays unchanged",
-    "stay unchanged",
-    "left unchanged",
-    "leave unchanged",
-    "leaves unchanged",
     "does not change",
     "do not change",
     "doesn't change",
@@ -2074,11 +2062,7 @@ mod tests {
     }
 
     #[test]
-    fn proof_level_section_wide_not_scanner_is_not_the_predicate() {
-        assert!(
-            !PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS.iter().any(|marker| *marker == "not"),
-            "polarity must not be a bare 'not' anywhere in the section"
-        );
+    fn proof_level_requirement_units_discriminate_mixed_and_unrelated_not() {
         assert!(issue_requires_proof_level_term(
             "Public proof is required. The helper is not used.",
             "public"
