@@ -33,9 +33,13 @@ guessed.
       merged-window truncation (unavoidable at this merge velocity) degrades
       only merged facts to a per-node limitation without gating viability.
 - [x] MERGE_READY_RECOMMENDATION requires review currency, resolved threads and
-      current receipts; all three are typed blockers live (unreachable), and the
-      branch is covered by synthetic-fact unit tests including the
-      open-threads/core-receipt/exact-process false-greens.
+      current receipts. Review currency and thread resolution became observable
+      in #14237 (gated read-only GraphQL) and are now reported as blockers only
+      when the instrument genuinely cannot bind them; current behavior receipts
+      remain an unconditional typed blocker while #11619 has no producer, so the
+      recommendation stays unreachable from live observation on one blocker
+      instead of three. The branch is covered by synthetic-fact unit tests
+      including the open-threads/core-receipt/exact-process false-greens.
 - [x] Merged PRs are landed only on local-HEAD ancestry; otherwise pending
       current-tree probe. Main movement alone invalidates nothing.
 - [x] All adapter subprocesses route through one read-only allowlist asserted by

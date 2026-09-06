@@ -100,7 +100,6 @@ fn observation_inventory_is_read_only() {
             "apply",
             "restore",
             "stash",
-            "gh api",
             "pr merge",
             "pr close",
             "pr edit",
@@ -119,6 +118,196 @@ fn observation_inventory_is_read_only() {
     }
     assert!(observation_command_inventory().iter().any(|entry| entry.starts_with("git ")));
     assert!(observation_command_inventory().iter().any(|entry| entry.starts_with("gh ")));
+    // `gh api` is a general-purpose HTTP client and cannot be blanket-trusted.
+    // The only admitted shape is the gated GraphQL read: every other `gh api`
+    // entry is mutative until proven otherwise.
+    for entry in observation_command_inventory() {
+        if entry.starts_with("gh api") {
+            assert!(
+                entry.starts_with("gh api graphql -f query="),
+                "the only admitted gh api shape is the gated read-only GraphQL query, got {entry:?}"
+            );
+        }
+    }
+}
+
+/// The list leg must not be weaker than the GraphQL leg it is now joined with:
+/// a valid-but-not-a-list response is an instrument failure, never an empty
+/// population. Includes the opposite-direction control, because a gate that
+/// rejects everything would also pass the negative cases.
+#[test]
+fn a_non_array_pr_list_response_is_instrument_failure_not_absence() -> Result<()> {
+    // Opposite direction first: an empty array is a real, usable observation
+    // of zero PRs and must stay Ok.
+    assert!(list_rows("[]", "open").map_err(|e| e.to_string()).is_ok());
+    let rows = list_rows(r#"[{"number":1},{"number":2}]"#, "open")
+        .map_err(|error| color_eyre::eyre::eyre!("a populated list must parse: {error}"))?;
+    assert_eq!(rows.len(), 2);
+
+    // A syntactically valid non-array root cannot establish absence. `gh`
+    // returns an object for several non-list outcomes, and an empty open
+    // window additionally reports `open_truncated == false`, so accepting one
+    // of these would prove "no candidate exists" from a response that never
+    // listed anything.
+    for body in [
+        r#"{"message":"Not Found","documentation_url":"..."}"#,
+        r#"{}"#,
+        r#""unexpected string""#,
+        "null",
+        "0",
+        "false",
+    ] {
+        let error = list_rows(body, "open")
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("{body} must fail the instrument"))?;
+        assert!(
+            error.to_string().contains("not the expected array"),
+            "expected a shape failure for {body}, got: {error}"
+        );
+    }
+
+    // Malformed JSON stays a failure too.
+    assert!(list_rows("{ not json", "open").is_err());
+    Ok(())
+}
+
+/// The read-only law for GraphQL lives in the document, not the HTTP verb:
+/// `gh api graphql` is a POST either way.
+#[test]
+fn graphql_read_only_law_is_carried_by_the_document() {
+    // The document this observer actually sends must pass its own gate.
+    assert!(args_read_only(
+        "gh",
+        &[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={GH_REVIEW_GRAPHQL}"),
+            "-F",
+            "owner=EffortlessMetrics",
+            "-F",
+            "name=perl-lsp-swarm",
+            "-F",
+            "pr=14237",
+        ],
+    ));
+
+    for rejected in [
+        // A write operation, transported identically to a query.
+        "query=mutation { addComment(input: {}) { clientMutationId } }",
+        // A write smuggled in behind a legitimate-looking read.
+        "query=query Read { viewer { login } } mutation Write { closePullRequest { id } }",
+        "query=subscription Watch { x }",
+        // No operation keyword at all.
+        "query=",
+        "query={ viewer { login } }",
+        // Not a query field.
+        "mutation=mutation { x }",
+    ] {
+        assert!(
+            !args_read_only("gh", &["api", "graphql", "-f", rejected]),
+            "expected rejection for {rejected:?}"
+        );
+    }
+
+    // Flags outside the observation contract are rejected wholesale, and a
+    // variable may never carry a second document.
+    assert!(!args_read_only("gh", &["api", "graphql", "-X", "POST", "-f", "query=query A { b }"]));
+    assert!(!args_read_only("gh", &["api", "graphql", "--input", "body.json"]));
+    assert!(!args_read_only("gh", &["api", "graphql"]));
+    assert!(!args_read_only(
+        "gh",
+        &["api", "graphql", "-f", "query=query A { b }", "-F", "x=mutation { y }"],
+    ));
+    // Exactly one document; a second `-f query=` is a rejected shape.
+    assert!(!args_read_only(
+        "gh",
+        &["api", "graphql", "-f", "query=query A { b }", "-f", "query=query C { d }"],
+    ));
+    // A non-graphql api path stays rejected.
+    assert!(!args_read_only("gh", &["api", "repos/x/y/pulls"]));
+
+    // `gh` lifts `query` and `operationName` out of the variable map into the
+    // top level of the request body, so they are not variables at all and must
+    // not pass the inert-variable shape check.
+    for reserved in ["query=Something", "operationName=Something"] {
+        assert!(
+            !args_read_only("gh", &["api", "graphql", "-f", "query=query A { b }", "-F", reserved]),
+            "reserved top-level field {reserved:?} must not pass as an inert variable"
+        );
+    }
+}
+
+/// `explain` must not print a fact as observed and then summarize it as
+/// unavailable in the same report.
+#[test]
+fn explain_unavailable_summary_matches_the_observed_facts() -> Result<()> {
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let manifest = loaded()?;
+
+    // E00A's sole candidate is PR 2002: its review sits on a superseded
+    // commit (currency IS observed — the answer is "no") while its thread page
+    // is truncated (resolution is genuinely unprovable). The summary must
+    // separate the two rather than lumping both under "unavailable".
+    let mixed = render_explain(&snapshot, &manifest, "E00A")?;
+    assert!(mixed.contains("reviewed_commit_is_head: no"), "{mixed}");
+    assert!(mixed.contains("truncated=true"), "{mixed}");
+    assert!(
+        !mixed.contains("reviewed-commit comparison"),
+        "the comparison succeeded here and must not be summarized as unavailable: {mixed}"
+    );
+    assert!(
+        mixed.contains("review threads"),
+        "a truncated thread page is genuinely unavailable and must be named: {mixed}"
+    );
+    // Semantic currency is unconditionally unavailable, comparison or not.
+    assert!(mixed.contains("review-head currency"), "{mixed}");
+    // Behavior receipts have no producer (#11619) and stay unconditional.
+    assert!(mixed.contains("behavior receipts"), "{mixed}");
+
+    // E00C holds two candidates: 2004 is fully observed, 2003 has no review
+    // instrument at all. The node-level summary takes the weaker candidate, so
+    // both facts are named — conservative, and not a contradiction with 2004's
+    // own observed lines above it.
+    let mixed_candidates = render_explain(&snapshot, &manifest, "E00C")?;
+    assert!(mixed_candidates.contains("reviewed_commit_is_head: yes"), "{mixed_candidates}");
+    assert!(mixed_candidates.contains("reviewed-commit comparison"), "{mixed_candidates}");
+    assert!(mixed_candidates.contains("review threads"), "{mixed_candidates}");
+    Ok(())
+}
+
+/// Review facts are fetched after the PR list, so the head they describe must
+/// be the head the list reported or they bind to nothing.
+#[test]
+fn review_facts_do_not_bind_across_a_moved_head() {
+    let listed = "a".repeat(40);
+    let moved = "b".repeat(40);
+
+    assert!(review_facts_bind_to_listed_head(&listed, &listed));
+    // A push landed between the list read and the review read.
+    assert!(!review_facts_bind_to_listed_head(&listed, &moved));
+    // An unusable oid on either side binds nothing.
+    assert!(!review_facts_bind_to_listed_head("", &listed));
+    assert!(!review_facts_bind_to_listed_head(&listed, ""));
+    assert!(!review_facts_bind_to_listed_head("", ""));
+}
+
+/// A review page that did not cover every review cannot prove currency: the
+/// omitted review is exactly the one that might be stale.
+#[test]
+fn truncated_review_page_cannot_prove_currency() {
+    let head = "a".repeat(40);
+    // Every *observed* review is on the head, but the page was incomplete.
+    assert_eq!(
+        review_commit_matches_head(&head, &[review_at(Some(&head)), review_at(Some(&head))], true),
+        None,
+        "an incomplete review page must never report currency"
+    );
+    // The same observation with a complete page does prove it.
+    assert_eq!(
+        review_commit_matches_head(&head, &[review_at(Some(&head)), review_at(Some(&head))], false),
+        Some(true)
+    );
 }
 
 #[test]
@@ -140,6 +329,8 @@ fn non_read_only_commands_are_rejected_before_spawning() -> Result<()> {
         ("gh", vec!["pr", "review", "3001", "--approve"]),
         ("gh", vec!["issue", "close", "11627"]),
         ("gh", vec!["api", "-X", "POST", "repos/x/y/pulls"]),
+        ("gh", vec!["api", "graphql", "-f", "query=mutation { closePullRequest { id } }"]),
+        ("gh", vec!["api", "graphql", "-X", "POST", "-f", "query=query A { b }"]),
         ("curl", vec!["https://example.invalid"]),
     ] {
         let refusal = run_observation(None, program, &args)
@@ -425,6 +616,242 @@ fn merge_ready_requires_threads_receipts_and_currency() {
     assert!(classified.reasons.contains(&"review_threads_unresolved".to_string()));
 }
 
+fn review_at(commit: Option<&str>) -> ReviewFacts {
+    ReviewFacts {
+        author_login: "reviewer".to_string(),
+        state: "APPROVED".to_string(),
+        submitted_at: Some("2026-08-30T00:00:00Z".to_string()),
+        commit_oid: commit.map(str::to_string),
+    }
+}
+
+/// The commit comparison is exact and fail-closed. It is a diagnostic: the
+/// classifier must never turn it into a currency verdict (see
+/// `semantic_currency_is_never_derived_from_a_head_sha`).
+#[test]
+fn reviewed_commit_comparison_is_bound_to_the_observed_commit() {
+    let head = "a".repeat(40);
+    let stale = "b".repeat(40);
+
+    assert_eq!(review_commit_matches_head(&head, &[review_at(Some(&head))], false), Some(true));
+    // The head moved after the review was submitted: definitively not current.
+    assert_eq!(review_commit_matches_head(&head, &[review_at(Some(&stale))], false), Some(false));
+    // One stale review among current ones still blocks currency.
+    assert_eq!(
+        review_commit_matches_head(
+            &head,
+            &[review_at(Some(&head)), review_at(Some(&stale))],
+            false
+        ),
+        Some(false)
+    );
+    // Unbindable inputs stay unprovable — never Some(true), and never
+    // Some(false) either: "cannot tell" must not raise head_moved_after_review.
+    assert_eq!(review_commit_matches_head(&head, &[review_at(None)], false), None);
+    assert_eq!(review_commit_matches_head(&head, &[review_at(Some(""))], false), None);
+    assert_eq!(review_commit_matches_head("", &[review_at(Some(&head))], false), None);
+    assert_eq!(review_commit_matches_head(&head, &[], false), None);
+    // An incomplete review page cannot prove currency: the omitted review is
+    // exactly the one that might be stale.
+    assert_eq!(review_commit_matches_head(&head, &[review_at(Some(&head))], true), None);
+}
+
+/// An unobserved or truncated thread page can never read as resolved.
+#[test]
+fn thread_resolution_never_passes_on_partial_observation() {
+    let observed = |total: usize, unresolved: usize, truncated: bool| ReviewThreadFacts {
+        observed: true,
+        total,
+        unresolved,
+        truncated,
+    };
+
+    assert_eq!(threads_resolved(&observed(3, 0, false)), Some(true));
+    assert_eq!(threads_resolved(&observed(3, 1, false)), Some(false));
+    // Zero threads observed is a real "nothing unresolved".
+    assert_eq!(threads_resolved(&observed(0, 0, false)), Some(true));
+    // Truncated: no unresolved thread was *seen*, which is not the same as
+    // none existing.
+    assert_eq!(threads_resolved(&observed(500, 0, true)), None);
+    // No instrument ran at all.
+    assert_eq!(threads_resolved(&ReviewThreadFacts::default()), None);
+}
+
+/// The typed blockers must name only what is actually unobservable. Behavior
+/// receipts have no producer in this tree (#11619) and stay blocking; thread
+/// resolution stops being claimed as unobservable once it is observed.
+#[test]
+fn observed_thread_resolution_stops_being_reported_as_a_blocker() {
+    let mut facts = facts_base();
+    let mut candidate = open_candidate();
+    candidate.review_decision = "APPROVED".to_string();
+    candidate.has_reviews = true;
+    candidate.threads_resolved = Some(true);
+    facts.open_bound = vec![candidate.clone()];
+
+    let classified = classify(&facts);
+    // Still not merge-ready: receipts remain a real blocker.
+    assert_eq!(classified.action, Action::NotProven);
+    assert!(
+        classified.limitations.contains(&"behavior_receipts_not_observable".to_string()),
+        "receipts have no producer yet and must stay a typed blocker"
+    );
+    assert!(!classified.limitations.contains(&"review_threads_not_observable".to_string()));
+
+    // When the thread instrument genuinely could not bind it, the blocker
+    // comes back.
+    candidate.threads_resolved = None;
+    facts.open_bound = vec![candidate];
+    let classified = classify(&facts);
+    assert!(classified.limitations.contains(&"review_threads_not_observable".to_string()));
+}
+
+/// The repository's currentness authority is explicit that a head SHA is not a
+/// review-validity token: `docs/agents/REVIEW_CURRENTNESS.md` ("Review is
+/// semantic, not exact-head", "A SHA change by itself appears nowhere in this
+/// table") and `AGENTS.md` ("head SHA change alone -> no review invalidation").
+///
+/// So a differing reviewed commit is reported as a diagnostic and never as an
+/// invalidated review, and semantic currency stays a typed blocker.
+#[test]
+fn semantic_currency_is_never_derived_from_a_head_sha() {
+    let mut facts = facts_base();
+    let mut candidate = open_candidate();
+    candidate.has_reviews = true;
+    // The reviewed commit is not the head — e.g. a later formatting-only push.
+    candidate.reviewed_commit_is_head = Some(false);
+    candidate.threads_resolved = Some(true);
+    facts.open_bound = vec![candidate.clone()];
+
+    let classified = classify(&facts);
+    assert_eq!(classified.action, Action::Review);
+    // The diagnostic is reported...
+    assert!(classified.reasons.contains(&"reviewed_commit_differs_from_head".to_string()));
+    // ...but it must never assert that the review was invalidated.
+    assert!(
+        !classified.flags.contains(&"head_moved_after_review".to_string()),
+        "a SHA delta alone must not assert review invalidation: {:?}",
+        classified.flags
+    );
+    // Semantic currency remains unobservable regardless of the comparison.
+    assert!(classified.limitations.contains(&"review_head_currency_not_observable".to_string()));
+
+    // The same holds when the reviewed commit IS the head: matching SHAs do
+    // not prove the review is semantically current either.
+    candidate.reviewed_commit_is_head = Some(true);
+    facts.open_bound = vec![candidate];
+    let classified = classify(&facts);
+    assert!(
+        classified.limitations.contains(&"review_head_currency_not_observable".to_string()),
+        "a matching SHA must not manufacture currency: {:?}",
+        classified.limitations
+    );
+    assert!(!classified.reasons.contains(&"reviewed_commit_differs_from_head".to_string()));
+}
+
+/// End-to-end: the observed review facts survive raw -> snapshot normalization
+/// and derive the same way the classifier consumes them.
+#[test]
+fn corpus_carries_observed_review_facts_through_normalization() -> Result<()> {
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let pr = |number: u64| {
+        snapshot
+            .semantic
+            .github
+            .prs
+            .iter()
+            .find(|pr| pr.number == number)
+            .unwrap_or_else(|| panic!("fixture PR {number} must normalize"))
+    };
+
+    // 2004: review bound to the observed head, every thread observed+resolved.
+    let approved = pr(2004);
+    assert_eq!(approved.latest_reviews[0].commit_oid.as_deref(), Some(approved.head_oid.as_str()));
+    assert!(approved.review_threads.observed);
+    assert!(!approved.review_threads.truncated);
+    assert_eq!(
+        review_commit_matches_head(
+            &approved.head_oid,
+            &approved.latest_reviews,
+            approved.review_page_truncated
+        ),
+        Some(true)
+    );
+    assert_eq!(threads_resolved(&approved.review_threads), Some(true));
+
+    // 2002: review left on a superseded commit, thread page truncated.
+    let stale = pr(2002);
+    assert_ne!(stale.latest_reviews[0].commit_oid.as_deref(), Some(stale.head_oid.as_str()));
+    assert_eq!(
+        review_commit_matches_head(
+            &stale.head_oid,
+            &stale.latest_reviews,
+            stale.review_page_truncated
+        ),
+        Some(false)
+    );
+    assert!(stale.review_threads.truncated);
+    assert_eq!(
+        threads_resolved(&stale.review_threads),
+        None,
+        "a truncated thread page must never resolve"
+    );
+
+    // The production constructor is where currency could most easily be
+    // re-derived from the commit comparison by accident, so pin it directly:
+    // #2001's review IS on its head, and the currency input must still be
+    // None. A matching SHA is not semantic currency.
+    let view = candidate_view(pr(2001));
+    assert_eq!(
+        view.reviewed_commit_is_head,
+        Some(true),
+        "the diagnostic comparison must still be reported"
+    );
+    assert_eq!(
+        view.review_on_head, None,
+        "candidate_view must never derive semantic currency from a head SHA"
+    );
+
+    // The REVIEW route through the whole pipeline: M01's candidate #2001 has
+    // an opinionated review bound to its head and every thread resolved. The
+    // observed thread resolution must reach the classifier, while review-head
+    // currency stays a typed blocker even though the SHAs match — matching
+    // commits do not manufacture semantic currency.
+    let m01 = node(&snapshot, "M01")?;
+    assert_eq!(m01.action, "REVIEW");
+    assert!(
+        !m01.limitations.iter().any(|limitation| limitation == "review_threads_not_observable"),
+        "observed thread resolution must not be reported as a blocker: {:?}",
+        m01.limitations
+    );
+    assert!(
+        m01.limitations
+            .iter()
+            .any(|limitation| limitation == "review_head_currency_not_observable"),
+        "semantic currency is never derivable from a head SHA: {:?}",
+        m01.limitations
+    );
+    assert!(
+        !m01.action_reasons.iter().any(|reason| reason == "reviewed_commit_differs_from_head"),
+        "this candidate's review IS on the head commit: {:?}",
+        m01.action_reasons
+    );
+
+    // A candidate with no review instrument at all keeps both facts unobserved.
+    let unobserved = pr(2003);
+    assert!(!unobserved.review_threads.observed);
+    assert_eq!(threads_resolved(&unobserved.review_threads), None);
+    assert_eq!(
+        review_commit_matches_head(
+            &unobserved.head_oid,
+            &unobserved.latest_reviews,
+            unobserved.review_page_truncated
+        ),
+        None
+    );
+    Ok(())
+}
+
 #[test]
 fn main_movement_alone_changes_no_action() -> Result<()> {
     // Falsifier 17: classification consumes no main-SHA input, so unrelated
@@ -455,7 +882,7 @@ fn corpus_classifies_every_expected_action() -> Result<()> {
         ("CTRL", "STOP", "controller_selected_as_implementation"),
         ("E00A", "REPAIR", "review_changes_requested"),
         ("E00C", "RECONCILE", "multiple_bound_candidates_need_bounded_ownership_decision"),
-        ("M01", "REVIEW", "review_pending"),
+        ("M01", "REVIEW", "review_head_currency_not_proven"),
         ("M07A", "RECONCILE", "unique_work_surface:local_branch:wip/10573-context-contract"),
         ("M07B", "RECONCILE", "closed_candidate_unique_work_needs_salvage_decision"),
         ("M07C", "RECONCILE", "binding_agreement_failed_needs_bounded_ownership_decision"),
@@ -549,6 +976,42 @@ fn normalization_is_deterministic_and_observed_at_stays_outside_the_digest() -> 
         "observed_at must not participate in the semantic digest"
     );
     assert_ne!(first.observed_at, shifted_snapshot.observed_at);
+    Ok(())
+}
+
+#[test]
+/// A snapshot written before #14237 must be rejected as an *older schema*,
+/// never as a tampered one.
+///
+/// Those fields are `#[serde(default)]`, so a version-1 file still
+/// deserializes — but its stored digest was computed over the old canonical
+/// representation, so recomputing it after load necessarily disagrees. Left at
+/// version 1 that disagreement came out of the tamper-detection path, which
+/// accuses an honest operator of altering their snapshot and hides the real
+/// remedy (re-run `refresh`). The version check must run first and own it.
+#[test]
+fn a_pre_change_snapshot_is_rejected_as_older_schema_not_as_tampering() -> Result<()> {
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    assert_eq!(snapshot.schema_version, LIVE_SCHEMA_VERSION);
+    assert!(LIVE_SCHEMA_VERSION > 1, "the representation changed, so the version must too");
+
+    // Stand in for a file written by the previous schema: same schema name,
+    // the version it carried, and a digest that cannot match the new
+    // representation.
+    let mut legacy = snapshot.clone();
+    legacy.schema_version = 1;
+    let temp = std::env::temp_dir().join("module-train-live-legacy-v1.json");
+    std::fs::write(&temp, serde_json::to_vec(&legacy)?)?;
+
+    let error = load_snapshot(&temp)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("a superseded schema version must fail closed"))?;
+    let text = error.to_string();
+    assert!(text.contains("schema_version mismatch"), "got: {text}");
+    assert!(
+        !text.contains("digest drift"),
+        "an older snapshot is not tampering, and must not be reported as it: {text}"
+    );
     Ok(())
 }
 
@@ -742,6 +1205,26 @@ fn gh_queries_are_bound_to_the_checkout_repository() {
         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
         assert!(args_read_only("gh", &borrowed), "repo-bound gh shapes stay read-only: {args:?}");
     }
+
+    // The GraphQL read carries the same origin-derived selector, split into
+    // the document's typed owner/name variables rather than a --repo flag. It
+    // must be just as repo-bound: an unqualified query would observe whatever
+    // repository the ambient environment names.
+    let graphql = gh_graphql_review_args(3001, "EffortlessMetrics", "perl-lsp-swarm");
+    assert!(
+        graphql.iter().any(|arg| arg == "owner=EffortlessMetrics"),
+        "graphql query must carry the origin-derived owner: {graphql:?}"
+    );
+    assert!(
+        graphql.iter().any(|arg| arg == "name=perl-lsp-swarm"),
+        "graphql query must carry the origin-derived name: {graphql:?}"
+    );
+    assert!(
+        graphql.iter().any(|arg| arg == "pr=3001"),
+        "graphql query must carry the exact PR number: {graphql:?}"
+    );
+    let borrowed: Vec<&str> = graphql.iter().map(String::as_str).collect();
+    assert!(args_read_only("gh", &borrowed), "the graphql shape stays read-only: {graphql:?}");
 }
 
 #[test]
