@@ -1,206 +1,492 @@
-/// Red-TDD tests for #1756: ReDoS vulnerability fixes in heredoc anti-pattern detectors
+//! Scan-bound and coverage proof for the heredoc anti-pattern detectors.
+//!
+//! Every assertion here runs through [`AntiPatternDetector::detect_all`], the
+//! same entry point the LSP diagnostics provider calls. An earlier revision of
+//! this file re-declared private copies of the detector regexes and asserted
+//! against those copies, so it stayed green no matter what the detectors did;
+//! it also probed `Regex::captures`, while production consumes the patterns
+//! through `captures_iter`. Both gaps are closed here (#3597).
+//!
+//! Two guardrail dimensions are proved:
+//!
+//! * **Coverage** — the multi-line constructs that #3568's newline exclusion
+//!   silently dropped are detected again, and single-line detection is unchanged.
+//! * **Scan bound** — adversarial input stays linear and fast. The absolute
+//!   ceilings catch a large-constant regression (notably the `{0,N}`-bounded
+//!   candidate rejected in #3597, which is ~6600x slower on the dense shape);
+//!   the scaling assertion catches a superlinear regression.
+
+use perl_parser::heredoc_anti_patterns::{AntiPattern, AntiPatternDetector, Diagnostic};
+use std::time::{Duration, Instant};
+
+fn detect(code: &str) -> Vec<Diagnostic> {
+    AntiPatternDetector::new().detect_all(code)
+}
+
+fn has_regex_code_block(code: &str) -> bool {
+    detect(code).iter().any(|d| matches!(d.pattern, AntiPattern::RegexCodeBlockHeredoc { .. }))
+}
+
+fn has_eval_string(code: &str) -> bool {
+    detect(code).iter().any(|d| matches!(d.pattern, AntiPattern::EvalStringHeredoc { .. }))
+}
+
+fn has_dynamic_delimiter(code: &str) -> bool {
+    detect(code).iter().any(|d| matches!(d.pattern, AntiPattern::DynamicHeredocDelimiter { .. }))
+}
+
+/// Median of five `detect_all` runs, to keep wall-clock guardrails stable
+/// under noisy shared CI runners.
+fn median_detect_time(code: &str) -> Duration {
+    let mut samples: Vec<Duration> = (0..5)
+        .map(|_| {
+            let start = Instant::now();
+            let found = detect(code);
+            let elapsed = start.elapsed();
+            // Keep the work observable so it cannot be optimized away.
+            assert!(found.len() < usize::MAX);
+            elapsed
+        })
+        .collect();
+    samples.sort_unstable();
+    samples[2]
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: multi-line constructs restored (#3597)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn antip_detects_multiline_regex_code_block_heredoc() {
+    // A heredoc inside a `(?{ ... })` regex code block. The construct is
+    // multi-line by necessity: the heredoc body must reach its terminator.
+    // #3568's `[^}\n]*` could not cross the newline, so this was undetected.
+    let code = "m/pattern(?{\n    print <<'MATCH';\nMatch text\nMATCH\n})/;\n";
+
+    assert!(
+        has_regex_code_block(code),
+        "multi-line heredoc inside a regex code block must be reported; \
+         got {:?}",
+        detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn antip_detects_nested_multiline_regex_code_block_heredoc() {
+    let code = "qr/x(?{ if (1) { 1 } print <<'MATCH';\nbody\nMATCH\n})/;\n";
+
+    assert!(
+        has_regex_code_block(code),
+        "a heredoc after a nested block must be reported; got {:?}",
+        detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+fn regex_code_block_count(code: &str) -> usize {
+    detect(code)
+        .iter()
+        .filter(|d| matches!(d.pattern, AntiPattern::RegexCodeBlockHeredoc { .. }))
+        .count()
+}
+
+#[test]
+fn antip_heredoc_body_braces_do_not_suppress_the_block() {
+    // Braces in heredoc *text* are data, not Perl block structure. Before the
+    // body mask, a lone `{` inflated the brace depth, the outer `(?{ ... })`
+    // never closed, and the diagnostic vanished from valid code (#14352).
+    for (label, code) in [
+        ("unmatched open brace", "qr/x(?{ print <<'M';\ntext with { brace\nM\n})/;\n"),
+        ("unmatched close brace", "qr/x(?{ print <<'M';\ntext with } brace\nM\n})/;\n"),
+        ("bare delimiter", "qr/x(?{ print <<M;\nhas { brace\nM\n})/;\n"),
+        ("double-quoted delimiter", "qr/x(?{ print <<\"M\";\nhas { brace\nM\n})/;\n"),
+        // Perl's indented form is `<<~`; there is no `<<-` heredoc in Perl.
+        ("indented delimiter", "qr/x(?{ print <<~'M';\n  has { brace\n  M\n})/;\n"),
+        ("stacked delimiters", "qr/x(?{ print <<'A', <<'B';\n{ a\nA\n{ b\nB\n})/;\n"),
+    ] {
+        assert!(
+            has_regex_code_block(code),
+            "{label}: a brace in heredoc text must not suppress the diagnostic; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn antip_malformed_block_does_not_blind_the_rest_of_the_file() {
+    // The scan stops at an unmatched outer block to stay linear, so an
+    // unbalanced brace in heredoc data used to disable detection for every
+    // later block in the file, not just its own (#14352).
+    let code = "qr/x(?{ print <<'M';\n{ unbalanced\nM\n})/;\nqr/y(?{ print <<'N';\nok\nN\n})/;\n";
+
+    assert_eq!(
+        regex_code_block_count(code),
+        2,
+        "both blocks must be reported; got {:?}",
+        detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn antip_heredoc_body_does_not_fabricate_a_regex_code_block() {
+    // The opposite direction: a `}` in heredoc text could close a block that
+    // was never opened, and body text resembling `(?{ … <<` could be read as
+    // an opener. Masking the body has to close both directions, not just the
+    // suppression one.
+    for (label, code) in [
+        ("body closes then opens", "my $t = <<'M';\n} (?{ x << y }\nM\nprint $t;\n"),
+        ("body opener only", "print <<'M';\n} (?{ a << b }\nM\n"),
+        ("indented body opener", "print <<~'M';\n  } (?{ a << b }\n  M\n"),
+    ] {
+        assert_eq!(
+            regex_code_block_count(code),
+            0,
+            "{label}: heredoc text must not fabricate a code block; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    // Control: the mask must not swallow a real block that merely follows one.
+    assert!(
+        has_regex_code_block(
+            "print <<'M';\n} (?{ a << b }\nM\nqr/y(?{ print <<'N';\nok\nN\n})/;\n"
+        ),
+        "a real block after a masked body must still be reported"
+    );
+}
+
+#[test]
+fn antip_body_mask_never_outruns_a_proven_terminator() {
+    // The mask blanks bodies, and blanking is what hides constructs from the
+    // detector, so a `<<WORD` that is not really a heredoc must cost nothing.
+    // Masking to end-of-file on a declaration whose terminator never appears
+    // would turn one misread token into a file-wide blind spot.
+    for (label, code) in [
+        ("left shift, no terminator", "my $x = 1<<FOO;\nqr/y(?{ print <<'N';\nok\nN\n})/;\n"),
+        (
+            "unterminated heredoc before a block",
+            "print <<'GONE';\nnever closed\nqr/y(?{ print <<'N';\nok\nN\n})/;\n",
+        ),
+        (
+            "stacked pair, only the first terminates",
+            "print <<'A', <<'GONE';\na\nA\nqr/y(?{ print <<'N';\nok\nN\n})/;\n",
+        ),
+    ] {
+        assert!(
+            has_regex_code_block(code),
+            "{label}: an unterminated declaration must not blank the rest of the file; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn antip_body_mask_handles_crlf_terminators() {
+    // A CRLF file ends the terminator line with `\r`. Comparing the raw line
+    // against the delimiter never matches there, so every heredoc read as
+    // unterminated — which, with the fail-safe above, silently degrades to no
+    // masking at all rather than to a wrong answer. Both directions are
+    // asserted: the body must still be masked, and detection must still work.
+    let cascade = "qr/x(?{ print <<'M';\r\n{ unbalanced\r\nM\r\n})/;\r\nqr/y(?{ print <<'N';\r\nok\r\nN\r\n})/;\r\n";
+    assert_eq!(
+        regex_code_block_count(cascade),
+        2,
+        "CRLF bodies must be masked so a brace in one body cannot blind the next block; got {:?}",
+        detect(cascade).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let indented = "qr/x(?{ print <<~'M';\r\n  has { brace\r\n  M\r\n})/;\r\n";
+    assert!(
+        has_regex_code_block(indented),
+        "an indented CRLF heredoc body must be masked too; got {:?}",
+        detect(indented).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn antip_body_mask_covers_every_heredoc_delimiter_spelling() {
+    // Perl spells a heredoc delimiter five ways. A spelling the mask does not
+    // recognise leaves its body live, and a brace in that body suppresses the
+    // very diagnostic the body sits inside.
+    for (label, code) in [
+        ("bare", "qr/x(?{ print <<M;\nhas { brace\nM\n})/;\n"),
+        ("single-quoted", "qr/x(?{ print <<'M';\nhas { brace\nM\n})/;\n"),
+        ("double-quoted", "qr/x(?{ print <<\"M\";\nhas { brace\nM\n})/;\n"),
+        ("backtick", "qr/x(?{ print <<`CMD`;\nhas { brace\nCMD\n})/;\n"),
+        ("backslash-escaped", "qr/x(?{ print <<\\LAB;\nhas { brace\nLAB\n})/;\n"),
+    ] {
+        assert!(
+            has_regex_code_block(code),
+            "{label}: this delimiter spelling must be masked; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn antip_detects_multiline_eval_string_heredoc() {
+    // An eval string declaring a heredoc must span newlines to reach the
+    // terminator, so `[^\n']*` dropped every real occurrence.
+    let code = "eval 'print <<\"EVAL\";\nbody text\nEVAL\n';\n";
+
+    assert!(
+        has_eval_string(code),
+        "multi-line heredoc inside an eval string must be reported; got {:?}",
+        detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn antip_dynamic_delimiter_keeps_its_newline_horizon() {
+    // Deliberately NOT widened. A dynamic delimiter has no reason to span
+    // newlines, so crossing them would only add false positives on multi-line
+    // left shifts (see `antip_multiline_left_shift_is_not_a_dynamic_delimiter`)
+    // without recovering any real detection.
+    let code = "my $content = <<${\nVARNAME};\n";
+
+    assert!(
+        !has_dynamic_delimiter(code),
+        "dynamic delimiter must not cross a newline; got {:?}",
+        detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Coverage regression guards: single-line detection is unchanged
+// ---------------------------------------------------------------------------
+
+#[test]
+fn antip_still_detects_single_line_constructs() {
+    assert!(has_regex_code_block("m/a(?{b<<'X'})c/;\n"), "single-line regex code block");
+    assert!(has_eval_string("eval 'print <<EOF;';\n"), "single-line eval string");
+    assert!(has_dynamic_delimiter("my $x = <<${FOO_BAR};\n"), "single-line dynamic delimiter");
+    assert!(has_dynamic_delimiter("my $x = <<$delimiter;\n"), "bare scalar delimiter");
+}
+
+// ---------------------------------------------------------------------------
+// Negative controls
+// ---------------------------------------------------------------------------
+
+#[test]
+fn antip_reports_nothing_on_ordinary_perl() {
+    // Negative control for the whole suite: if this ever fires, the positive
+    // assertions above prove nothing.
+    let code = "use strict;\nuse warnings;\n\nsub add {\n    my ($a, $b) = @_;\n    return $a + $b;\n}\n\nprint add(1, 2), \"\\n\";\n";
+
+    let found = detect(code);
+    assert!(
+        found.is_empty(),
+        "ordinary Perl must produce no anti-pattern diagnostics; got {:?}",
+        found.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn antip_ignores_constructs_inside_comments_and_strings() {
+    // `mask_non_code_regions` blanks these before the scan. Widening the
+    // character classes must not let a commented or quoted construct through.
+    let code = "# my $x = <<${NAME};\nmy $s = \"a <<${NAME} b\";\n";
+
+    let found = detect(code);
+    assert!(
+        found.is_empty(),
+        "commented and quoted constructs must not be reported; got {:?}",
+        found.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn antip_eval_fragment_in_a_comment_does_not_seed_a_match() {
+    // The eval detector must scan raw source, because masking would blank the
+    // contents of the very quoted string it needs to look inside. It therefore
+    // checks each match origin against the masked view instead. Without that
+    // check, an `eval '` fragment in a comment joins unrelated later lines.
+    let code = "# eval '\nmy $x = 1 << 2;\nmy $s = 'ok';\n";
+
+    assert!(
+        !has_eval_string(code),
+        "an eval fragment inside a comment must not be reported; got {:?}",
+        detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Same origin check on one line, and inside a string literal.
+    assert!(!has_eval_string("# eval 'x<<y';\n"), "commented eval must not be reported");
+    assert!(
+        !has_eval_string("my $s = \"eval 'x<<y'\";\n"),
+        "an eval fragment inside a string literal must not be reported"
+    );
+}
+
+#[test]
+fn antip_widened_branches_are_masked_inside_comments_and_strings() {
+    // `antip_ignores_constructs_inside_comments_and_strings` only exercises the
+    // dynamic-delimiter pattern, which this PR does not widen. These are the
+    // equivalent controls for the two branches that *were* widened, so a
+    // regression in either direction cannot ship green.
+    for (label, code) in [
+        // Eval: a commented `eval '` bridging to a later quoted string.
+        ("eval bridging from a comment", "# eval '\nmy $s = 'a <<'B';\n';\n"),
+        // Eval: origin inside a string literal rather than a comment.
+        ("eval inside a string literal", "my $s = \"eval 'x<<y'\";\n"),
+        // Regex code block anchored in a comment, closing on a later line.
+        ("regex code block from a comment", "# (?{ some\n<<'X' })c\n"),
+    ] {
+        let found = detect(code);
+        assert!(
+            found.is_empty(),
+            "{label}: masked region must not seed a diagnostic; got {:?}",
+            found.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn antip_eval_keyword_is_not_matched_as_an_identifier_suffix() {
+    // Without a leading `\b`, `myeval '...<<...'` matched at the `eval` suffix
+    // and reported PL805 on a valid custom-function call.
+    assert!(!has_eval_string("myeval 'print <<EOF;';\n"), "single-line custom eval-like call");
+    assert!(
+        !has_eval_string("myeval 'print <<\"E\";\nbody\nE\n';\n"),
+        "multi-line custom eval-like call"
+    );
+
+    // `\b` alone still admits a package-qualified call, because `:` is not a
+    // word character. Those are calls to some other function of that name.
+    assert!(!has_eval_string("Foo::eval 'print <<EOF;';\n"), "package-qualified eval");
+    assert!(!has_eval_string("Foo::Bar::eval 'print <<EOF;';\n"), "deeply qualified eval");
+    assert!(
+        !has_eval_string("Foo::eval 'print <<\"E\";\nbody\nE\n';\n"),
+        "multi-line package-qualified eval"
+    );
+
+    // The real keyword still reports, including under its explicit spellings.
+    assert!(has_eval_string("eval 'print <<EOF;';\n"), "bare eval must still be reported");
+    assert!(
+        has_eval_string("my $r = eval 'print <<EOF;';\n"),
+        "eval after an assignment must still be reported"
+    );
+    assert!(
+        has_eval_string("sub f { eval 'print <<EOF;'; }\n"),
+        "eval inside a block must still be reported"
+    );
+    assert!(
+        has_eval_string("CORE::eval 'print <<EOF;';\n"),
+        "CORE::eval names the builtin explicitly and must still be reported"
+    );
+
+    // `CORE::GLOBAL::` is the override slot, not the builtin: calling it by name
+    // invokes a user-defined replacement, so it belongs with `Foo::eval`.
+    assert!(
+        !has_eval_string("CORE::GLOBAL::eval 'print <<EOF;';\n"),
+        "CORE::GLOBAL::eval is a user override, not the builtin"
+    );
+}
+
+#[test]
+fn antip_multiline_left_shift_is_not_a_dynamic_delimiter() {
+    // `1 << ${...}` is a left shift of a scalar dereference, not a heredoc.
+    // Keeping the dynamic-delimiter newline horizon keeps this out.
+    let code = "my $x = 1 << ${\nfoo};\n";
+
+    assert!(
+        !has_dynamic_delimiter(code),
+        "a multi-line left shift must not be reported as a dynamic delimiter; got {:?}",
+        detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn antip_unterminated_constructs_do_not_match() {
+    // The scan bound comes from each negated class excluding its own
+    // terminator, so an unterminated construct must simply not match rather
+    // than run to end of file. This is the property that replaces the `\n`
+    // horizon; if it regresses, the guardrails below lose their meaning.
+    let never_closed = format!("m/x(?{{{}<<{}", "a".repeat(4096), "b".repeat(4096));
+    assert!(
+        !has_regex_code_block(&never_closed),
+        "an unclosed regex code block must not be reported"
+    );
+
+    let unclosed_eval = format!("eval '{}<<{}", "a".repeat(4096), "b".repeat(4096));
+    assert!(!has_eval_string(&unclosed_eval), "an unclosed eval string must not be reported");
+}
+
+// ---------------------------------------------------------------------------
+// Scan bound
+// ---------------------------------------------------------------------------
+
+/// Dense candidate starts that never close — the shape that forces the engine
+/// to consider every start position.
 ///
-/// These tests verify that the bounded regex patterns prevent catastrophic backtracking
-/// on pathological input (unclosed delimiters with large repetitive content).
-/// Each test measures regex completion time and asserts completion in <10ms.
-use regex::Regex;
-use std::time::Instant;
-
+/// Measured on current main at 40 KB: ~0.1 ms for the shipped patterns and
+/// ~582 ms for the rejected `{0,2000}`-bounded candidate. The 150 ms ceiling
+/// sits far above the former and well below the latter, so it discriminates
+/// without flaking on a slow runner.
 #[test]
-fn test_antip_no_redos_dynamic_5kb_unclosed() {
-    /// Test that DYNAMIC_DELIMITER_PATTERN does not trigger ReDoS on unclosed brace.
-    /// Input: `<<${` followed by 5KB of 'a' characters (no closing `}`).
-    /// Expected: Regex completes in <10ms (linear scan, not O(n²) backtracking).
-    let pathological_input = format!("{}{}", "<<${", "a".repeat(5000));
+fn antip_dense_unclosed_input_stays_bounded() {
+    let code = "(?{<<".repeat(8000);
+    assert_eq!(code.len(), 40_000);
 
-    // Create the FIXED pattern (with \n boundary)
-    let pattern = Regex::new(r"<<\s*\$\{[^}\n]+\}|<<\s*\$\w+|<<\s*`[^`\n]+`")
-        .expect("Pattern should compile");
+    let elapsed = median_detect_time(&code);
 
-    let start = Instant::now();
-    let _ = pattern.captures(&pathological_input);
-    let elapsed = start.elapsed();
-
-    // Must complete in less than 10ms to prove no ReDoS
     assert!(
-        elapsed.as_millis() < 10,
-        "DYNAMIC_DELIMITER_PATTERN took {}ms on 5KB unclosed brace input; expected <10ms (ReDoS detected)",
-        elapsed.as_millis()
+        elapsed < Duration::from_millis(150),
+        "detect_all took {:?} on 40KB of dense unclosed candidates; expected <150ms",
+        elapsed
     );
 }
 
+/// The same bound where the constructs actually close, so `captures_iter`
+/// performs many successive searches — the case the `regex` crate documents as
+/// `O(m*n^2)` in the general worst case.
 #[test]
-fn test_antip_no_redos_regex_5kb_unclosed() {
-    /// Test that REGEX_HEREDOC_PATTERN does not trigger ReDoS on unclosed brace in (?{...}).
-    /// Input: `(?{aaaa...aaaa<<` followed by 5KB of 'a' characters (no closing `}`).
-    /// Expected: Regex completes in <10ms.
-    let pathological_input = format!("{}{}{}", "(?{", "a".repeat(5000), "<<");
+fn antip_many_matches_stay_bounded() {
+    let code = "m/a(?{b<<'X'})c/;\n".repeat(4000);
 
-    // Create the FIXED pattern (with \n boundary)
-    let pattern = Regex::new(r"\(\?\{[^}\n]*<<[^}\n]*\}").expect("Pattern should compile");
-
-    let start = Instant::now();
-    let _ = pattern.captures(&pathological_input);
-    let elapsed = start.elapsed();
+    let elapsed = median_detect_time(&code);
 
     assert!(
-        elapsed.as_millis() < 10,
-        "REGEX_HEREDOC_PATTERN took {}ms on 5KB unclosed brace input; expected <10ms (ReDoS detected)",
-        elapsed.as_millis()
+        elapsed < Duration::from_millis(150),
+        "detect_all took {:?} on 4000 matching constructs; expected <150ms",
+        elapsed
     );
 }
 
+/// Scan work must stay linear in input size. A superlinear regression shows up
+/// here even if the absolute ceilings above are still met.
 #[test]
-fn test_antip_no_redos_eval_5kb_unclosed() {
-    /// Test that EVAL_HEREDOC_PATTERN does not trigger ReDoS on unclosed quote in eval.
-    /// Input: `eval 'aaaa...aaaa<<` followed by 5KB of 'a' characters (no closing quote).
-    /// Expected: Regex completes in <10ms.
-    let pathological_input = format!("{}{}{}", "eval '", "a".repeat(5000), "<<");
+fn antip_scan_work_scales_linearly() {
+    let small = "(?{<<".repeat(4000);
+    let large = "(?{<<".repeat(16_000);
+    assert_eq!(large.len(), small.len() * 4);
 
-    // Create the FIXED pattern (with \n boundary)
-    let pattern = Regex::new(r#"eval\s+(?:'[^\n']*<<[^\n']*'|"[^\n"]*<<[^\n"]*")"#)
-        .expect("Pattern should compile");
+    let small_time = median_detect_time(&small).as_nanos().max(1);
+    let large_time = median_detect_time(&large).as_nanos().max(1);
 
-    let start = Instant::now();
-    let _ = pattern.captures(&pathological_input);
-    let elapsed = start.elapsed();
-
+    // Quadratic growth over a 4x input would be ~16x. Allow 8x for constant
+    // overhead and runner noise; that still separates linear from quadratic.
+    let ratio = large_time / small_time;
     assert!(
-        elapsed.as_millis() < 10,
-        "EVAL_HEREDOC_PATTERN took {}ms on 5KB unclosed quote input; expected <10ms (ReDoS detected)",
-        elapsed.as_millis()
+        ratio <= 8,
+        "detect_all grew {}x over a 4x input increase ({}ns -> {}ns); expected roughly linear",
+        ratio,
+        small_time,
+        large_time
     );
 }
 
+/// A realistic file must not regress.
 #[test]
-fn test_antip_no_redos_export_5kb_unclosed() {
-    /// Test that EXPORT_QW_RE does not trigger ReDoS on unclosed qw delimiter.
-    /// Input: `@EXPORT = qw(aaaa...aaaa` followed by 5KB of 'a' characters (no closing `)`)
-    /// Expected: Regex completes in <10ms.
-    let pathological_input = format!("{}{}", "@EXPORT = qw(", "a".repeat(5000));
-
-    // Create the FIXED pattern (with \n boundary)
-    let pattern = Regex::new(r"@EXPORT(?:_OK)?\s*=\s*qw[(\[{/<|!]([^\n)\]}/|!>]+)[)\]}/|!>]")
-        .expect("Pattern should compile");
-
-    let start = Instant::now();
-    let _ = pattern.captures(&pathological_input);
-    let elapsed = start.elapsed();
-
-    assert!(
-        elapsed.as_millis() < 10,
-        "EXPORT_QW_RE took {}ms on 5KB unclosed delimiter input; expected <10ms (ReDoS detected)",
-        elapsed.as_millis()
-    );
-}
-
-#[test]
-fn test_antip_dynamic_delimiter_valid() {
-    /// Verify that valid `<<${varname}` patterns are still detected after the fix.
-    /// This is a positive test ensuring the bounded pattern does not break valid detection.
-    let valid_input = "my $x = <<${FOO_BAR};";
-    let pattern = Regex::new(r"<<\s*\$\{[^}\n]+\}|<<\s*\$\w+|<<\s*`[^`\n]+`")
-        .expect("Pattern should compile");
-
-    let matches = pattern.find(valid_input);
-
-    assert!(matches.is_some(), "Valid dynamic delimiter <<${{FOO_BAR}} should be detected");
-}
-
-#[test]
-fn test_antip_regex_heredoc_valid() {
-    /// Verify that valid `(?{...<<...})` patterns are still detected.
-    let valid_input = "/(?{print <<'EOF'})/ or die;";
-    let pattern = Regex::new(r"\(\?\{[^}\n]*<<[^}\n]*\}").expect("Pattern should compile");
-
-    let matches = pattern.find(valid_input);
-
-    assert!(matches.is_some(), "Valid regex heredoc (?{{...<<...}}) should be detected");
-}
-
-#[test]
-fn test_antip_eval_heredoc_valid() {
-    /// Verify that valid `eval '...<<...'` patterns are still detected.
-    let valid_input = "eval 'my $x = <<EOF;'";
-    let pattern = Regex::new(r#"eval\s+(?:'[^\n']*<<[^\n']*'|"[^\n"]*<<[^\n"]*")"#)
-        .expect("Pattern should compile");
-
-    let matches = pattern.find(valid_input);
-
-    assert!(matches.is_some(), "Valid eval heredoc should be detected");
-}
-
-#[test]
-fn test_antip_export_qw_valid() {
-    /// Verify that valid `@EXPORT = qw(...)` lists are still detected.
-    let valid_input = "@EXPORT = qw(foo bar baz);";
-    let pattern = Regex::new(r"@EXPORT(?:_OK)?\s*=\s*qw[(\[{/<|!]([^\n)\]}/|!>]+)[)\]}/|!>]")
-        .expect("Pattern should compile");
-
-    let matches = pattern.find(valid_input);
-
-    assert!(matches.is_some(), "Valid @EXPORT qw list should be detected");
-}
-
-#[test]
-fn test_antip_delimiter_in_string() {
-    /// Test that heredoc patterns inside string literals don't cause false matches.
-    /// Note: In the actual detector, mask_non_code_regions() is called first to blank out
-    /// string contents. This test verifies the fixed pattern itself doesn't match naively.
-    let code_with_string = r#"print "use this <<${ pattern";"#;
-    let pattern = Regex::new(r"<<\s*\$\{[^}\n]+\}|<<\s*\$\w+|<<\s*`[^`\n]+`")
-        .expect("Pattern should compile");
-
-    // The raw pattern will match the literal <<${ in the string.
-    // The detector's mask_non_code_regions() function prevents this false positive.
-    // This test documents that the pattern itself needs the masking layer.
-    let _matches = pattern.find(code_with_string);
-
-    // Note: The actual safety comes from mask_non_code_regions(), not the pattern itself.
-    // This test ensures the pattern at least completes quickly on normal input.
-}
-
-#[test]
-fn test_antip_normal_file_performance() {
-    /// Test that the detector completes in <100ms on a realistic 1000-line Perl file.
-    /// This ensures the fix does not cause performance regression on normal code.
+fn antip_normal_file_performance() {
     let mut code = String::new();
     for i in 0..1000 {
-        code.push_str(&format!("sub routine_{} {{ my $x = {}; }} # line {}\n", i, i, i));
+        code.push_str(&format!("sub routine_{i} {{ my $x = {i}; }} # line {i}\n"));
     }
 
-    let pattern = Regex::new(r"<<\s*\$\{[^}\n]+\}|<<\s*\$\w+|<<\s*`[^`\n]+`")
-        .expect("Pattern should compile");
-
-    let start = Instant::now();
-    for _ in pattern.captures_iter(&code) {
-        // Count matches but don't accumulate
-    }
-    let elapsed = start.elapsed();
+    let elapsed = median_detect_time(&code);
 
     assert!(
-        elapsed.as_millis() < 100,
-        "Detector on 1000-line file took {}ms; expected <100ms (performance regression)",
-        elapsed.as_millis()
-    );
-}
-
-#[test]
-fn test_antip_multiline_pattern_not_matched() {
-    /// Test that multiline anti-patterns spanning `\n` are NOT detected.
-    /// This is an acceptable tradeoff: the line-boundary anchoring (`\n`) prevents DoS
-    /// but misses rare multiline cases.
-    ///
-    /// Example: `<<${` on line 1, `}` on line 2 should NOT be matched.
-    let multiline_input = "<<${\nVARNAME}";
-    let pattern = Regex::new(r"<<\s*\$\{[^}\n]+\}|<<\s*\$\w+|<<\s*`[^`\n]+`")
-        .expect("Pattern should compile");
-
-    let matches = pattern.find(multiline_input);
-
-    // After fix, multiline patterns should NOT match (bounded by \n)
-    assert!(
-        matches.is_none(),
-        "Multiline pattern spanning newline should not be matched (acceptable tradeoff)"
+        elapsed < Duration::from_millis(100),
+        "detect_all took {:?} on a 1000-line file; expected <100ms",
+        elapsed
     );
 }

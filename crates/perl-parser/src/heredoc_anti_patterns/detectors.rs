@@ -226,7 +226,13 @@ impl PatternDetector for BeginTimeHeredocDetector {
 // Dynamic delimiter detector
 struct DynamicDelimiterDetector;
 
-/// Pattern for identifying dynamic heredoc delimiters
+/// Pattern for identifying dynamic heredoc delimiters.
+///
+/// Deliberately keeps the newline horizon that #3597 removed from the regex
+/// code block and eval patterns. Those two constructs must span newlines to
+/// reach a terminator; a dynamic delimiter has no such need, so widening this
+/// one would only add false positives on multi-line left shifts such as
+/// `1 << ${\nfoo}` without recovering any real detection.
 static DYNAMIC_DELIMITER_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| match Regex::new(r"<<\s*\$\{[^}\n]+\}|<<\s*\$\w+|<<\s*`[^`\n]+`") {
         Ok(re) => re,
@@ -332,12 +338,168 @@ impl PatternDetector for SourceFilterDetector {
 // Regex heredoc detector
 struct RegexHeredocDetector;
 
-/// Pattern for identifying heredocs inside regex code blocks
-static REGEX_HEREDOC_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r"\(\?\{[^}\n]*<<[^}\n]*\}") {
+/// A heredoc declaration: `<<EOF`, `<<'EOF'`, `<<"EOF"`, ``<<`CMD` ``,
+/// `<<\EOF`, and the `<<~` indented forms. A bare or backslash delimiter must
+/// be adjacent to `<<` — whitespace before an unquoted word makes it a left
+/// shift, not a heredoc — while the quoted forms may be separated. Perl has no
+/// `<<-` heredoc; that spelling is shell and is deliberately not matched.
+static HEREDOC_DECL_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    match Regex::new(
+        r#"<<(~?)(?:\s*'([^'\n]*)'|\s*"([^"\n]*)"|\s*`([^`\n]*)`|\\([A-Za-z_]\w*)|([A-Za-z_]\w*))"#,
+    ) {
         Ok(re) => re,
-        Err(_) => unreachable!("REGEX_HEREDOC_PATTERN regex failed to compile"),
-    });
+        Err(_) => unreachable!("HEREDOC_DECL_PATTERN regex failed to compile"),
+    }
+});
+
+/// Byte ranges of heredoc *bodies* in `code`, terminator line included and the
+/// `<<DELIM` declaration excluded.
+///
+/// `scan_code` is the masked view, used only to reject a declaration that
+/// begins inside a comment or string literal. Both views substitute
+/// byte-for-byte, so offsets index either identically.
+fn heredoc_body_ranges(code: &str, scan_code: &str) -> Vec<(usize, usize)> {
+    let declarations: Vec<(usize, bool, &str)> = HEREDOC_DECL_PATTERN
+        .captures_iter(code)
+        .filter_map(|capture| {
+            let whole = capture.get(0)?;
+            if scan_code.get(whole.start()..whole.start() + 2) != Some("<<") {
+                return None;
+            }
+            let indented = capture.get(1).is_some_and(|tilde| !tilde.as_str().is_empty());
+            let delimiter = (2..=6).find_map(|group| capture.get(group))?.as_str();
+            (!delimiter.is_empty()).then_some((whole.start(), indented, delimiter))
+        })
+        .collect();
+
+    if declarations.is_empty() {
+        return Vec::new();
+    }
+
+    // (start, end-without-newline, end-with-newline) for each line.
+    let mut lines = Vec::new();
+    let mut line_start = 0;
+    for (idx, byte) in code.bytes().enumerate() {
+        if byte == b'\n' {
+            lines.push((line_start, idx, idx + 1));
+            line_start = idx + 1;
+        }
+    }
+    if line_start <= code.len() {
+        lines.push((line_start, code.len(), code.len()));
+    }
+
+    let mut ranges = Vec::new();
+    let mut index = 0;
+
+    while index < lines.len() {
+        let (start, end, after) = lines[index];
+        // Declarations on this line stack: their bodies follow in order.
+        let on_this_line: Vec<_> =
+            declarations.iter().filter(|(at, _, _)| *at >= start && *at < end).collect();
+
+        if on_this_line.is_empty() {
+            index += 1;
+            continue;
+        }
+
+        let body_start = after;
+        let mut cursor = index + 1;
+        // Only bodies whose terminator was actually seen may be blanked. A
+        // declaration that never terminates — an unterminated heredoc, or a
+        // left shift such as `1 << FOO` that only looks like one — must not
+        // blank the remainder of the file, because blanking is what hides
+        // later constructs from the detector. Mis-reading `<<` then costs
+        // nothing rather than blinding every subsequent line.
+        let mut terminated_through = None;
+
+        for (_, indented, delimiter) in on_this_line {
+            let mut found = false;
+            while cursor < lines.len() {
+                let (body_line_start, body_line_end, _) = lines[cursor];
+                // A CRLF file ends each line with `\r`; the terminator is the
+                // delimiter alone, so compare against the line without it.
+                let text = code[body_line_start..body_line_end].trim_end_matches('\r');
+                let terminated =
+                    if *indented { text.trim() == *delimiter } else { text == *delimiter };
+                cursor += 1;
+                if terminated {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                break;
+            }
+            terminated_through = Some(cursor);
+        }
+
+        let resume = match terminated_through {
+            Some(cursor) => {
+                let body_end = lines[cursor - 1].2;
+                if body_end > body_start {
+                    ranges.push((body_start, body_end));
+                }
+                cursor
+            }
+            None => index + 1,
+        };
+
+        index = resume.max(index + 1);
+    }
+
+    ranges
+}
+
+/// Blank `ranges` in `scan_code`, preserving newlines and byte length so the
+/// result still indexes identically to the source.
+fn blank_ranges(scan_code: &str, ranges: &[(usize, usize)]) -> String {
+    if ranges.is_empty() {
+        return scan_code.to_string();
+    }
+
+    let mut bytes = scan_code.as_bytes().to_vec();
+    for &(start, end) in ranges {
+        let end = end.min(bytes.len());
+        if start >= end {
+            continue;
+        }
+        for byte in &mut bytes[start..end] {
+            if *byte != b'\n' {
+                *byte = b' ';
+            }
+        }
+    }
+
+    // Ranges are line-aligned, so no multi-byte character is split and every
+    // replacement byte is ASCII; the fallback keeps this total regardless.
+    String::from_utf8(bytes).unwrap_or_else(|_| scan_code.to_string())
+}
+
+fn regex_code_block_matches(scan_code: &str) -> Vec<usize> {
+    let mut matches = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(relative_start) = scan_code[search_from..].find("(?{") {
+        let start = search_from + relative_start;
+        let opening_brace = start + 2;
+
+        // A malformed outer block cannot contain a complete diagnostic. Stop
+        // here rather than rescanning the same suffix from every nested
+        // candidate and turning malformed input into quadratic work.
+        let Some(closing_brace) = find_matching_brace(scan_code, opening_brace) else {
+            break;
+        };
+
+        if scan_code[opening_brace + 1..closing_brace].contains("<<") {
+            matches.push(start);
+        }
+
+        search_from = closing_brace + 1;
+    }
+
+    matches
+}
 
 impl PatternDetector for RegexHeredocDetector {
     fn detect(
@@ -346,21 +508,22 @@ impl PatternDetector for RegexHeredocDetector {
         offset: usize,
         line_starts: &[usize],
     ) -> Vec<(AntiPattern, Location)> {
-        let mut results = Vec::new();
-        let scan_code = mask_non_code_regions(code);
-
-        for cap in REGEX_HEREDOC_PATTERN.captures_iter(&scan_code) {
-            if let Some(match_pos) = cap.get(0) {
-                let location = location_from_start(line_starts, offset, match_pos.start());
-
-                results.push((
-                    AntiPattern::RegexCodeBlockHeredoc { location: location.clone() },
-                    location,
-                ));
-            }
-        }
-
-        results
+        // Braces in heredoc *text* are data, not Perl block structure, and
+        // `mask_non_code_regions` does not blank heredoc bodies. Without this
+        // second pass an unmatched `{` in a body suppresses the diagnostic —
+        // and, because the scan stops at an unmatched outer block, every later
+        // one too — while a `}` in a body can fabricate a block boundary that
+        // was never there. Masking locally keeps the shared mask, which feeds
+        // all seven detectors, unchanged (#14352).
+        let masked = mask_non_code_regions(code);
+        let scan_code = blank_ranges(&masked, &heredoc_body_ranges(code, &masked));
+        regex_code_block_matches(&scan_code)
+            .into_iter()
+            .map(|start| {
+                let location = location_from_start(line_starts, offset, start);
+                (AntiPattern::RegexCodeBlockHeredoc { location: location.clone() }, location)
+            })
+            .collect()
     }
 
     fn diagnose(&self, pattern: &AntiPattern) -> Option<Diagnostic> {
@@ -382,12 +545,53 @@ impl PatternDetector for RegexHeredocDetector {
 // Eval heredoc detector
 struct EvalHeredocDetector;
 
-/// Pattern for identifying heredocs inside eval strings
+/// The keyword every [`EVAL_HEREDOC_PATTERN`] match starts with, used to check a
+/// match origin against the masked view of the source.
+const EVAL_KEYWORD: &str = "eval";
+
+/// Pattern for identifying heredocs inside eval strings.
+///
+/// An `eval` string that declares a heredoc must span newlines to reach its
+/// terminator, so the class is bounded by the closing quote alone rather than by
+/// a newline horizon. See the module docs for the governing measurement (#3597).
 static EVAL_HEREDOC_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r#"eval\s+(?:'[^\n']*<<[^\n']*'|"[^\n"]*<<[^\n"]*")"#) {
+    LazyLock::new(|| match Regex::new(r#"\beval\s+(?:'[^']*<<[^']*'|"[^"]*<<[^"]*")"#) {
         Ok(re) => re,
         Err(_) => unreachable!("EVAL_HEREDOC_PATTERN regex failed to compile"),
     });
+
+/// Whether the `eval` matched at `start` is the builtin rather than a lookalike.
+///
+/// `scan_code` is the masked view, which substitutes byte-for-byte, so `start`
+/// indexes it and the raw source identically. Two lookalikes are rejected:
+///
+/// * a match seeded inside a comment or string literal — masking blanks those,
+///   so the keyword no longer reads as `eval` at this offset;
+/// * a package-qualified call such as `Foo::eval`, which the pattern's leading
+///   `\b` admits because `:` is not a word character.
+///
+/// `CORE::eval` is the one qualified spelling that stays: it explicitly names
+/// the builtin and bypasses any override. `CORE::GLOBAL::eval` deliberately does
+/// *not* — that package is the override slot, so calling it by name invokes a
+/// user-defined replacement, which is the same "some other function" case as
+/// `Foo::eval`.
+fn eval_match_is_builtin(scan_code: &str, start: usize) -> bool {
+    if scan_code.get(start..start + EVAL_KEYWORD.len()) != Some(EVAL_KEYWORD) {
+        return false;
+    }
+
+    let prefix = &scan_code[..start];
+    let path_start = prefix
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !(ch.is_alphanumeric() || *ch == '_' || *ch == ':'))
+        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+
+    match prefix[path_start..].strip_suffix("::") {
+        None => true,
+        Some(qualifier) => qualifier == "CORE",
+    }
+}
 
 impl PatternDetector for EvalHeredocDetector {
     fn detect(
@@ -398,9 +602,20 @@ impl PatternDetector for EvalHeredocDetector {
     ) -> Vec<(AntiPattern, Location)> {
         let mut results = Vec::new();
 
+        // This detector must scan raw source: masking blanks the contents of
+        // the very quoted string it needs to look inside. So the mask is used
+        // only to reject matches that *begin* in a comment or string literal.
+        // `mask_non_code_regions` substitutes byte-for-byte, so offsets align.
+        let scan_code = mask_non_code_regions(code);
+
         for cap in EVAL_HEREDOC_PATTERN.captures_iter(code) {
             if let Some(match_pos) = cap.get(0) {
-                let location = location_from_start(line_starts, offset, match_pos.start());
+                let start = match_pos.start();
+                if !eval_match_is_builtin(&scan_code, start) {
+                    continue;
+                }
+
+                let location = location_from_start(line_starts, offset, start);
 
                 results.push((
                     AntiPattern::EvalStringHeredoc { location: location.clone() },

@@ -88,4 +88,51 @@ mod tests {
         assert_eq!(diagnostic.code.as_deref(), Some("PL800"));
         assert!(!diagnostic.fixable);
     }
+
+    fn provider_codes(source: &str) -> Vec<String> {
+        let output = Parser::new(source).parse_with_recovery();
+        let ast = Arc::new(output.ast);
+        DiagnosticsProvider::new()
+            .get_diagnostics(&ast, &output.diagnostics, source, None)
+            .into_iter()
+            .filter_map(|diagnostic| diagnostic.code)
+            .collect()
+    }
+
+    #[test]
+    fn multiline_regex_code_block_heredoc_reaches_provider_as_pl804() {
+        // #3597: the newline horizon introduced by #3568 made this construct
+        // invisible to the user even though it is the shape real Perl uses.
+        let source = "m/pattern(?{\n    print <<'MATCH';\nMatch text\nMATCH\n})/;\n";
+
+        let codes = provider_codes(source);
+        assert!(
+            codes.iter().any(|code| code == "PL804"),
+            "multi-line regex code block heredoc must surface as PL804; got {codes:?}"
+        );
+    }
+
+    #[test]
+    fn multiline_eval_string_heredoc_reaches_provider_as_pl805() {
+        let source = "eval 'print <<\"EVAL\";\nbody text\nEVAL\n';\n";
+
+        let codes = provider_codes(source);
+        assert!(
+            codes.iter().any(|code| code == "PL805"),
+            "multi-line eval string heredoc must surface as PL805; got {codes:?}"
+        );
+    }
+
+    #[test]
+    fn ordinary_perl_surfaces_no_heredoc_antipattern_codes() {
+        // Negative control: the two assertions above are only meaningful if a
+        // clean file stays free of PL80x codes.
+        let source = "use strict;\nuse warnings;\n\nsub add {\n    my ($a, $b) = @_;\n    return $a + $b;\n}\n";
+
+        let codes = provider_codes(source);
+        assert!(
+            !codes.iter().any(|code| code.starts_with("PL80")),
+            "ordinary Perl must not surface heredoc anti-pattern codes; got {codes:?}"
+        );
+    }
 }
