@@ -25,12 +25,15 @@ use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::framework_adapters::dancer2_two_x::{
     Dancer2TwoXImportEvidence, parse_dancer2_two_x_import_args,
 };
-use perl_semantic_facts::{AnchorId, FileId};
+use perl_semantic_facts::{AnchorId, FileId, SourceGeneration};
 
 /// One exact `use Dancer2 ...;` activation site in a source file.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dancer2TwoXActivationSite {
+    /// Source generation the site was extracted from; exact activation
+    /// requires the detection generation to match it.
+    pub source_generation: SourceGeneration,
     /// Caller package at the activating import (application identity scope).
     pub package: Option<String>,
     /// File the import appears in.
@@ -75,6 +78,7 @@ pub fn extract_dancer2_two_x_activation_sites(
     ast: &Node,
     source: &str,
     file_id: FileId,
+    generation: SourceGeneration,
 ) -> Vec<Dancer2TwoXActivationSite> {
     // Package-scoped named subs own their glob for the whole file at compile
     // time, so the shadow relation is order-independent within the file
@@ -91,7 +95,15 @@ pub fn extract_dancer2_two_x_activation_sites(
     // An unqualified file's caller package is `main` in Perl; it is the
     // default application identity scope for script-style Dancer2 apps.
     let mut current_package: Option<String> = Some("main".to_string());
-    walk_activation_sites(ast, source, file_id, &mut current_package, &package_subs, &mut sites);
+    walk_activation_sites(
+        ast,
+        source,
+        file_id,
+        generation.clone(),
+        &mut current_package,
+        &package_subs,
+        &mut sites,
+    );
     sites
 }
 
@@ -342,6 +354,7 @@ fn walk_activation_sites(
     node: &Node,
     source: &str,
     file_id: FileId,
+    generation: SourceGeneration,
     current_package: &mut Option<String>,
     package_subs: &[(String, String)],
     sites: &mut Vec<Dancer2TwoXActivationSite>,
@@ -386,6 +399,7 @@ fn walk_activation_sites(
             }
             sites.push(Dancer2TwoXActivationSite {
                 package: current_package.clone(),
+                source_generation: generation.clone(),
                 file_id,
                 anchor_id: AnchorId(node.location.start as u64),
                 span_start_byte: span_start,
@@ -394,7 +408,7 @@ fn walk_activation_sites(
             });
         }
         NodeKind::Package { name, block: Some(block), .. } => {
-            walk_package_block(block, name, source, file_id, package_subs, sites);
+            walk_package_block(block, name, source, file_id, generation, package_subs, sites);
             return;
         }
         NodeKind::Package { name, block: None, .. } => {
@@ -408,6 +422,7 @@ fn walk_activation_sites(
                     statement,
                     source,
                     file_id,
+                    generation.clone(),
                     current_package,
                     package_subs,
                     sites,
@@ -425,6 +440,7 @@ fn walk_activation_sites(
                     statement,
                     source,
                     file_id,
+                    generation.clone(),
                     &mut block_package,
                     package_subs,
                     sites,
@@ -435,7 +451,15 @@ fn walk_activation_sites(
         _ => {}
     }
     for child in node.children() {
-        walk_activation_sites(child, source, file_id, current_package, package_subs, sites);
+        walk_activation_sites(
+            child,
+            source,
+            file_id,
+            generation.clone(),
+            current_package,
+            package_subs,
+            sites,
+        );
     }
 }
 
@@ -452,6 +476,7 @@ fn walk_package_block(
     name: &str,
     source: &str,
     file_id: FileId,
+    generation: SourceGeneration,
     package_subs: &[(String, String)],
     sites: &mut Vec<Dancer2TwoXActivationSite>,
 ) {
@@ -462,6 +487,7 @@ fn walk_package_block(
                 statement,
                 source,
                 file_id,
+                generation.clone(),
                 &mut package_scope,
                 package_subs,
                 sites,
@@ -478,9 +504,16 @@ mod tests {
     use perl_tdd_support::must;
 
     fn sites(code: &str) -> Vec<Dancer2TwoXActivationSite> {
+        sites_with_generation(code, SourceGeneration::known("gen-1"))
+    }
+
+    fn sites_with_generation(
+        code: &str,
+        generation: SourceGeneration,
+    ) -> Vec<Dancer2TwoXActivationSite> {
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
-        extract_dancer2_two_x_activation_sites(&ast, code, FileId(1))
+        extract_dancer2_two_x_activation_sites(&ast, code, FileId(1), generation)
     }
 
     #[test]
