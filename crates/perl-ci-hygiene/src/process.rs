@@ -208,7 +208,9 @@ fn run_captured(
 /// Stdin is written on the calling thread. Scoped threads drain stdout and
 /// stderr so a child that writes before reading cannot fill the pipes and
 /// deadlock the parent. Stdin is closed after the write so the child observes
-/// EOF. Threads are joined before return on both success and failure.
+/// EOF. If the stdin write fails, the immediate child is killed so collectors
+/// cannot block on a still-open output pipe. Threads are joined before return
+/// on both success and failure.
 fn run_captured_with_stdin(
     repo_root: &Path,
     command: &str,
@@ -236,6 +238,12 @@ fn run_captured_with_stdin(
         });
         let write_result = stdin.write_all(stdin_bytes).and_then(|()| stdin.flush());
         drop(stdin);
+        if write_result.is_err() {
+            // A child that closed stdin but is still alive would otherwise
+            // leave the collectors blocked on output EOF. Kill the immediate
+            // child so pipes close, joins finish, and wait can reap.
+            let _ = child.kill();
+        }
         (write_result, join_stream(stdout_thread), join_stream(stderr_thread))
     });
 

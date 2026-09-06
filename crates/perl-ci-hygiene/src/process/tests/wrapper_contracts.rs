@@ -8,6 +8,8 @@ use super::{TempDir, TestResult};
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::os::fd::FromRawFd;
 use std::process::ExitStatus;
 use std::time::Duration;
 
@@ -24,6 +26,7 @@ pub(super) const STDIN_DIGEST_MARKER: &str = "__PERL_CI_HYGIENE_STDIN_DIGEST__";
 pub(super) const STDOUT_BEFORE_STDIN_MARKER: &str = "__PERL_CI_HYGIENE_STDOUT_BEFORE_STDIN__";
 pub(super) const STDERR_BEFORE_STDIN_MARKER: &str = "__PERL_CI_HYGIENE_STDERR_BEFORE_STDIN__";
 pub(super) const EARLY_EXIT_MARKER: &str = "__PERL_CI_HYGIENE_EARLY_EXIT__";
+pub(super) const CLOSED_STDIN_MARKER: &str = "__PERL_CI_HYGIENE_CLOSED_STDIN__";
 const ENV_MARKER: &str = "__PERL_CI_HYGIENE_ENV__";
 const CWD_MARKER: &str = "__PERL_CI_HYGIENE_CWD_SENTINEL__";
 const ARGS_MARKER: &str = "__PERL_CI_HYGIENE_ARGS__";
@@ -84,6 +87,29 @@ fn emit_fixture_output(stdin_payload: Option<&str>) -> TestResult {
     stdout.flush()?;
     stderr.flush()?;
     Ok(())
+}
+
+fn close_stdin_keep_stdout() -> TestResult {
+    #[cfg(unix)]
+    {
+        // SAFETY: this fixture inherited fd 0 as stdin. Owning and dropping it
+        // closes the read end so the parent observes EPIPE while this process
+        // keeps stdout open and stays alive.
+        let stdin = unsafe { std::fs::File::from_raw_fd(0) };
+        drop(stdin);
+        let mut stdout = io::stdout().lock();
+        writeln!(stdout, "{CLOSED_STDIN_MARKER}")?;
+        stdout.flush()?;
+        loop {
+            std::thread::sleep(Duration::from_secs(30));
+        }
+    }
+    #[cfg(not(unix))]
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "close-stdin-keep-stdout is a Unix pipe-closure fixture",
+    )
+    .into())
 }
 
 /// Exact libtest-owned child. Inert unless `PERL_CI_HYGIENE_PROCESS_FIXTURE` is set,
@@ -198,6 +224,7 @@ fn process_fixture_child() -> TestResult {
             stdout.flush()?;
             std::process::exit(3);
         }
+        "close-stdin-keep-stdout" => close_stdin_keep_stdout(),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unknown process fixture scenario: {other}"),

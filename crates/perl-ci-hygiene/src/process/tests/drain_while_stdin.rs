@@ -115,6 +115,13 @@ fn run_driver_scenario(scenario: &str) -> TestResult<String> {
             &fixture_env("early-exit-without-stdin"),
             &payload,
         )),
+        "closed-stdin-live-child" => report_helper_result(command_with_input_with_status(
+            temp.path(),
+            &command,
+            &args,
+            &fixture_env("close-stdin-keep-stdout"),
+            &payload,
+        )),
         other => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -269,6 +276,35 @@ fn early_child_exit_during_stdin_write_is_a_typed_error() -> TestResult {
     assert!(
         report.contains("child exit 3"),
         "write error should retain child status, got {report}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn closed_stdin_while_child_still_running_returns_write_error() -> TestResult {
+    let disposition = observe_driver("closed-stdin-live-child")?;
+    let (status, stdout, stderr) = match disposition {
+        DriverDisposition::Completed { status, stdout, stderr } => (status, stdout, stderr),
+        DriverDisposition::WatchdogDeadlock { stdout, stderr } => {
+            return Err(io::Error::other(format!(
+                "closed-stdin helper deadlocked under watchdog; stdout={stdout}; stderr={stderr}"
+            ))
+            .into());
+        }
+    };
+    assert!(
+        status.success(),
+        "closed-stdin driver failed: {status:?}; stdout={stdout}; stderr={stderr}"
+    );
+    let report = driver_result_line(&stdout).ok_or_else(|| {
+        io::Error::other(format!(
+            "driver did not emit a result line; stdout={stdout}; stderr={stderr}"
+        ))
+    })?;
+    assert!(
+        report.starts_with("err:write:") && report.contains("writing to stdin"),
+        "expected typed stdin write error after kill-on-write-failure, got {report}; stderr={stderr}"
     );
     Ok(())
 }
