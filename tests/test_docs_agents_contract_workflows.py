@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 import tomllib
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -80,19 +81,96 @@ def top_level_block(text: str, key: str) -> str:
     return "\n".join(lines[start:end])
 
 
-def event_paths(workflow_text: str, event: str) -> set[str]:
-    """Collect `on.<event>.paths` entries without a YAML library.
+@dataclass(frozen=True)
+class EventFilters:
+    """Trigger filters for one `on.<event>` mapping.
 
-    Handles single-quoted, double-quoted, and bare scalars. Folded/glob
-    entries are returned as written; callers compare exact own-path membership.
+    Distinguishes a missing event from an unfiltered event. `paths` and
+    `paths-ignore` are parsed from block lists and flow-style sequences.
     """
+
+    present: bool
+    paths: frozenset[str] = frozenset()
+    paths_ignore: frozenset[str] = frozenset()
+    has_paths_key: bool = False
+    has_paths_ignore_key: bool = False
+
+    @property
+    def unfiltered(self) -> bool:
+        return self.present and not self.has_paths_key and not self.has_paths_ignore_key
+
+
+def _unquote_yaml_scalar(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and (
+        (value.startswith("'") and value.endswith("'"))
+        or (value.startswith('"') and value.endswith('"'))
+    ):
+        return value[1:-1]
+    return value
+
+
+def _flow_sequence(value: str) -> tuple[str, ...]:
+    text = value.strip()
+    if not (text.startswith("[") and text.endswith("]")):
+        return ()
+    inner = text[1:-1].strip()
+    if not inner:
+        return ()
+    return tuple(
+        _unquote_yaml_scalar(part) for part in inner.split(",") if part.strip()
+    )
+
+
+def _filter_key_kind(stripped: str, key: str) -> str | None:
+    """Return `block`, `flow`, or None. `paths` must not match `paths-ignore`."""
+    prefix = f"{key}:"
+    if stripped == prefix:
+        return "block"
+    if stripped.startswith(prefix + "[") or stripped.startswith(prefix + " ["):
+        return "flow"
+    if stripped.startswith(prefix + " ") and not stripped.startswith(prefix + " -"):
+        remainder = stripped[len(prefix) :].lstrip()
+        if remainder.startswith("["):
+            return "flow"
+    return None
+
+
+def _parse_filter_list(block: list[str], key: str) -> tuple[bool, frozenset[str]]:
+    for index, line in enumerate(block):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        kind = _filter_key_kind(stripped, key)
+        if kind is None:
+            continue
+        if kind == "flow":
+            remainder = stripped.split(":", 1)[1]
+            return True, frozenset(_flow_sequence(remainder))
+        items: set[str] = set()
+        key_indent = _indent(line)
+        for child in block[index + 1 :]:
+            child_stripped = child.strip()
+            if not child_stripped or child_stripped.startswith("#"):
+                continue
+            if _indent(child) <= key_indent:
+                break
+            if not child_stripped.startswith("- "):
+                continue
+            items.add(_unquote_yaml_scalar(child_stripped[2:]))
+        return True, frozenset(items)
+    return False, frozenset()
+
+
+def parse_event_filters(workflow_text: str, event: str) -> EventFilters:
+    """Parse `on.<event>` path filters without a YAML library."""
     on_block = top_level_block(workflow_text, "on")
     lines = on_block.splitlines()
     marker = f"  {event}:"
     try:
         start = next(index for index, line in enumerate(lines) if line.startswith(marker))
     except StopIteration:
-        return set()
+        return EventFilters(present=False)
 
     event_indent = _indent(lines[start])
     end = len(lines)
@@ -105,30 +183,20 @@ def event_paths(workflow_text: str, event: str) -> set[str]:
             break
 
     block = lines[start:end]
-    try:
-        paths_index = next(
-            index for index, line in enumerate(block) if line.strip() == "paths:"
-        )
-    except StopIteration:
-        return set()
+    has_paths, paths = _parse_filter_list(block, "paths")
+    has_ignore, ignored = _parse_filter_list(block, "paths-ignore")
+    return EventFilters(
+        present=True,
+        paths=paths,
+        paths_ignore=ignored,
+        has_paths_key=has_paths,
+        has_paths_ignore_key=has_ignore,
+    )
 
-    paths_indent = _indent(block[paths_index])
-    paths: set[str] = set()
-    for line in block[paths_index + 1 :]:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if _indent(line) <= paths_indent:
-            break
-        if not stripped.startswith("- "):
-            continue
-        value = stripped[2:].strip()
-        if (value.startswith("'") and value.endswith("'")) or (
-            value.startswith('"') and value.endswith('"')
-        ):
-            value = value[1:-1]
-        paths.add(value)
-    return paths
+
+def event_paths(workflow_text: str, event: str) -> set[str]:
+    """Collect `on.<event>.paths` entries (block or flow-style)."""
+    return set(parse_event_filters(workflow_text, event).paths)
 
 
 def run_commands(workflow_text: str) -> tuple[str, ...]:
@@ -384,13 +452,22 @@ def host_gate_errors(
 ) -> list[str]:
     errors: list[str] = []
     try:
-        pull_request_paths = event_paths(ci_workflow_text, "pull_request")
+        pull_request = parse_event_filters(ci_workflow_text, "pull_request")
     except AssertionError as error:
         return [str(error)]
-    if pull_request_paths:
+    if not pull_request.present:
+        errors.append(
+            "host workflow `.github/workflows/ci.yml` must declare on.pull_request"
+        )
+    elif not pull_request.unfiltered:
+        found: list[str] = []
+        if pull_request.has_paths_key:
+            found.append(f"paths={sorted(pull_request.paths)!r}")
+        if pull_request.has_paths_ignore_key:
+            found.append(f"paths-ignore={sorted(pull_request.paths_ignore)!r}")
         errors.append(
             "host workflow `.github/workflows/ci.yml` on.pull_request must have "
-            f"no path filter; found {sorted(pull_request_paths)!r}"
+            f"no path filter; found {', '.join(found)}"
         )
 
     shard_gates = policy_shard_gates(ci_workflow_text)
@@ -865,6 +942,24 @@ jobs:
         self.assertEqual(membership_errors(discovered, registered), [])
         self.assertTrue(discovered <= registered)
 
+    def test_flow_style_self_path_counts(self) -> None:
+        workflow = """\
+on:
+  pull_request:
+    paths: ['.github/workflows/flow.yml', 'docs/agents/README.md']
+jobs:
+  check:
+    steps:
+      - run: python3 -m unittest tests/test_flow.py
+"""
+        self.assertTrue(
+            is_contract_workflow(
+                ".github/workflows/flow.yml",
+                workflow,
+                {"tests/test_flow.py"},
+            )
+        )
+
     def test_unquoted_self_path_counts(self) -> None:
         workflow = """\
 on:
@@ -886,6 +981,50 @@ jobs:
 
 
 class HostGateTests(unittest.TestCase):
+    def test_missing_pull_request_event_on_host_is_caught(self) -> None:
+        ci = """\
+on:
+  push:
+    branches: [main]
+jobs:
+  merge-gate-shards:
+    strategy:
+      matrix:
+        include:
+          - name: policy
+            gates: docs_agents_contract_workflows
+"""
+        policy = """\
+  - name: docs_agents_contract_workflows
+    required: true
+    command: python3 tests/test_docs_agents_contract_workflows.py
+"""
+        errors = host_gate_errors(ci, policy)
+        self.assertTrue(any("must declare on.pull_request" in error for error in errors), errors)
+
+    def test_paths_ignore_on_host_is_caught(self) -> None:
+        ci = """\
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '.github/workflows/**'
+jobs:
+  merge-gate-shards:
+    strategy:
+      matrix:
+        include:
+          - name: policy
+            gates: docs_agents_contract_workflows
+"""
+        policy = """\
+  - name: docs_agents_contract_workflows
+    required: true
+    command: python3 tests/test_docs_agents_contract_workflows.py
+"""
+        errors = host_gate_errors(ci, policy)
+        self.assertTrue(any("paths-ignore" in error for error in errors), errors)
+
     def test_path_filter_on_host_is_caught(self) -> None:
         ci = """\
 on:
