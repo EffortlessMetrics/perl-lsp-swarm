@@ -2366,12 +2366,16 @@ impl WorkspaceIndex {
         // the reference walk is unified (declarations are a separable
         // follow-up; see `FileExtractionBundle::build_unified`'s doc
         // comment).
+        let file_hir = perl_parser_core::hir::lower_ast(&ast);
+        let package_edges = package_edges_from_stash_graph(&file_hir.stash_graph);
+        let inherited_method_aliases = self.inherited_method_aliases(&package_edges);
         let mut bundle = FileExtractionBundle::build_unified(
             &ast,
             &uri_str,
             content_hash,
             &mut candidate_document,
             folder_uri,
+            &inherited_method_aliases,
         );
         // `build_unified` builds its own `FileIndex` (it has no notion of
         // this call's `generation` parameter) -- restore it here, exactly
@@ -2407,8 +2411,6 @@ impl WorkspaceIndex {
         // file's module export sets (#2587), so the exporter's @EXPORT/@EXPORT_OK
         // facts reach the import/export index rather than being computed and
         // discarded.
-        let file_hir = perl_parser_core::hir::lower_ast(&ast);
-        let package_edges = package_edges_from_stash_graph(&file_hir.stash_graph);
         let module_export_sets = file_hir.stash_graph.export_sets();
 
         // Update the index, refresh the global symbol cache, and replace this file's
@@ -3632,6 +3634,59 @@ impl WorkspaceIndex {
         )
     }
 
+    /// Resolve statically named inherited method calls against declarations
+    /// already present in the workspace. Reference extraction runs before a
+    /// file is committed, so its local name map cannot see declarations from
+    /// a parent file; this alias map keeps that cross-file identity at the
+    /// canonical fact boundary instead of making providers rediscover it.
+    fn inherited_method_aliases(
+        &self,
+        package_edges: &[PackageEdge],
+    ) -> std::collections::BTreeMap<String, EntityId> {
+        let shards = self.fact_shards.read();
+
+        // Collect every candidate entity per alias key before admitting any
+        // alias. `fact_shards` is a HashMap, so a direct insert would let
+        // shard visit order -- not Perl semantics -- silently pick the winner
+        // whenever two direct parents define the same method or a parent
+        // package is reopened across shards. Only an unambiguous single
+        // declaration is admitted; ambiguous names stay absent so the
+        // occurrence remains honestly unresolved (#812: stale or ambiguous
+        // parent/MRO facts remain qualified or refused).
+        let mut candidates: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeSet<EntityId>,
+        > = std::collections::BTreeMap::new();
+
+        for edge in package_edges.iter().filter(|edge| edge.kind == PackageEdgeKind::Inherits) {
+            let parent_prefix = format!("{}::", edge.to_package);
+            for shard in shards.values() {
+                for entity in &shard.entities {
+                    let Some(method_name) = entity.canonical_name.strip_prefix(&parent_prefix)
+                    else {
+                        continue;
+                    };
+                    if method_name.contains("::")
+                        || !matches!(entity.kind, EntityKind::Method | EntityKind::Subroutine)
+                    {
+                        continue;
+                    }
+                    candidates
+                        .entry(format!("{}::{}", edge.from_package, method_name))
+                        .or_default()
+                        .insert(entity.id);
+                }
+            }
+        }
+
+        candidates
+            .into_iter()
+            .filter_map(|(name, ids)| {
+                if ids.len() == 1 { ids.into_iter().next().map(|id| (name, id)) } else { None }
+            })
+            .collect()
+    }
+
     /// **Production canonical builder for the unified reference traversal
     /// (perl-lsp-swarm#1711-B cutover).** Identical to
     /// [`Self::build_canonical_fact_shard_for_ast`] except it takes an
@@ -3653,6 +3708,7 @@ impl WorkspaceIndex {
         content_hash: u64,
         ast: &Node,
         refs: &[perl_symbol::surface::r#ref::SymbolRef],
+        inherited_method_aliases: &std::collections::BTreeMap<String, EntityId>,
     ) -> FileFactShard {
         let file_id = Self::hash_uri_to_file_id(uri);
 
@@ -3663,8 +3719,15 @@ impl WorkspaceIndex {
         reindex_metrics::record_decl_extract(decl_start.elapsed());
         let decl_facts = symbol_decls_to_semantic_facts(&decls, file_id);
 
-        let entity_ids_by_name: std::collections::BTreeMap<String, EntityId> =
+        let mut entity_ids_by_name: std::collections::BTreeMap<String, EntityId> =
             decl_facts.entities.iter().map(|e| (e.canonical_name.clone(), e.id)).collect();
+        // Own declarations rank above inherited aliases (#812: own overrides
+        // rank above inherited methods) -- insert aliases only for vacant
+        // names so a child file's local declaration keeps its own entity
+        // identity instead of being overwritten by the parent's.
+        for (name, entity_id) in inherited_method_aliases {
+            entity_ids_by_name.entry(name.clone()).or_insert(*entity_id);
+        }
         let ref_facts = symbol_refs_to_semantic_facts(refs, file_id, &entity_ids_by_name);
 
         #[cfg(test)]
@@ -5193,6 +5256,7 @@ impl FileExtractionBundle {
         content_hash: u64,
         doc: &mut Document,
         folder_uri: Option<String>,
+        inherited_method_aliases: &std::collections::BTreeMap<String, EntityId>,
     ) -> Self {
         let mut file_index = FileIndex {
             source_uri: uri_str.to_string(),
@@ -5213,6 +5277,7 @@ impl FileExtractionBundle {
             content_hash,
             ast,
             &symbol_refs,
+            inherited_method_aliases,
         );
 
         let file_id = WorkspaceIndex::hash_uri_to_file_id(uri_str);
@@ -10400,6 +10465,156 @@ Utils::process_data();
     }
 
     #[test]
+    fn test_production_inherited_method_identity_spans_semantic_consumers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::semantic::queries::{QueryContext, SemanticQueries};
+
+        let index = WorkspaceIndex::new();
+        let parent_uri = must(url::Url::parse("file:///test/workspace/identity-parent.pm"));
+        let child_uri = must(url::Url::parse("file:///test/workspace/identity-child.pl"));
+        let child_source = "package Child;\nuse parent 'Parent';\nChild->greet();\n1;\n";
+
+        must(index.index_file(parent_uri, "package Parent;\nsub greet { 1 }\n1;\n".to_string()));
+        must(index.index_file(child_uri.clone(), child_source.to_string()));
+
+        let identity = index
+            .with_semantic_queries_for_uri(child_uri.as_str(), |file_id, queries| {
+                // Resolve the call anchor first: the defining symbol must be
+                // derived from the occurrence the provider is actually asked
+                // about, never supplied as a static class name. A broken
+                // call-site binding now fails this chain instead of leaving a
+                // name-keyed comparison green.
+                let call_offset = u32::try_from(
+                    child_source.find("Child->greet()").expect("call site present")
+                        + "Child->".len(),
+                )
+                .expect("call anchor offset fits u32");
+                let (call_entity, call_occurrence) = queries.symbol_at(file_id, call_offset)?;
+                let candidate = queries.method_candidates("Child", "greet").first()?.clone();
+                let context = QueryContext::new(file_id, None, Some(call_offset));
+                let definition =
+                    queries.definitions(&call_entity.canonical_name, &context).first()?.clone();
+                let references = queries.references(call_entity.id);
+                Some((call_entity, call_occurrence, candidate, definition, references))
+            })
+            .ok_or("missing semantic queries for inherited identity")?
+            .ok_or("inherited method identity chain did not resolve")?;
+
+        assert_eq!(identity.0.canonical_name, "Parent::greet");
+        assert_eq!(identity.1.entity_id, Some(identity.0.id));
+        assert_eq!(identity.2.entity_id, identity.0.id);
+        assert_eq!(identity.3.entity_id, identity.0.id);
+        assert_eq!(identity.3.canonical_name, "Parent::greet");
+        assert_eq!(identity.4.len(), 1);
+        assert_eq!(identity.4[0].entity_id, Some(identity.0.id));
+        Ok(())
+    }
+
+    #[test]
+    fn test_inherited_alias_does_not_displace_child_override()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::semantic::queries::SemanticQueries;
+
+        let index = WorkspaceIndex::new();
+        let parent_uri = must(url::Url::parse("file:///test/workspace/override-parent.pm"));
+        let child_uri = must(url::Url::parse("file:///test/workspace/override-child.pl"));
+        let child_source =
+            "package Child;\nuse parent 'Parent';\nsub greet { 2 }\nChild->greet();\n1;\n";
+
+        must(index.index_file(parent_uri, "package Parent;\nsub greet { 1 }\n1;\n".to_string()));
+        must(index.index_file(child_uri.clone(), child_source.to_string()));
+
+        // #812 law: own overrides rank above inherited methods. The alias map
+        // must only fill vacant names, never overwrite a declaration extracted
+        // from the child file itself.
+        let override_entity = index
+            .with_semantic_queries_for_uri(child_uri.as_str(), |file_id, queries| {
+                let call_offset = u32::try_from(
+                    child_source.find("Child->greet()").expect("call site present")
+                        + "Child->".len(),
+                )
+                .expect("call anchor offset fits u32");
+                queries.symbol_at(file_id, call_offset).map(|(entity, _)| entity)
+            })
+            .ok_or("missing semantic queries for override control")?
+            .ok_or("overriding call site did not resolve to its own declaration")?;
+
+        assert_eq!(
+            override_entity.canonical_name, "Child::greet",
+            "the child's own override must keep its own identity at the call site"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_inherited_alias_refuses_ambiguous_parents_instead_of_last_win()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::semantic::queries::SemanticQueries;
+
+        let index = WorkspaceIndex::new();
+        let parent_a_uri = must(url::Url::parse("file:///test/workspace/ambig-parent-a.pm"));
+        let parent_b_uri = must(url::Url::parse("file:///test/workspace/ambig-parent-b.pm"));
+        let parent_b_reopen_uri =
+            must(url::Url::parse("file:///test/workspace/ambig-parent-b-reopen.pm"));
+        let child_ab_uri = must(url::Url::parse("file:///test/workspace/ambig-child-ab.pl"));
+        let child_b_uri = must(url::Url::parse("file:///test/workspace/ambig-child-b.pl"));
+        let child_b2_uri = must(url::Url::parse("file:///test/workspace/ambig-child-b2.pl"));
+        let child_ab_source =
+            "package ChildAB;\nuse parent qw(ParentA ParentB);\nChildAB->greet();\n1;\n";
+        let child_b_source = "package ChildB;\nuse parent 'ParentB';\nChildB->greet();\n1;\n";
+
+        must(index.index_file(parent_a_uri, "package ParentA;\nsub greet { 1 }\n1;\n".to_string()));
+        must(index.index_file(parent_b_uri, "package ParentB;\nsub greet { 2 }\n1;\n".to_string()));
+        must(index.index_file(child_ab_uri.clone(), child_ab_source.to_string()));
+        must(index.index_file(child_b_uri.clone(), child_b_source.to_string()));
+
+        let call_offset = |source: &str| {
+            u32::try_from(source.find("->greet()").expect("call site present") + "->".len())
+                .expect("call anchor offset fits u32")
+        };
+        let call_name = |uri: &str, source: &'static str| {
+            index
+                .with_semantic_queries_for_uri(uri, |file_id, queries| {
+                    queries
+                        .symbol_at(file_id, call_offset(source))
+                        .map(|(entity, _)| entity.canonical_name)
+                })
+                .flatten()
+        };
+
+        // Two direct parents defining the same method must not collapse to
+        // whichever shard the HashMap visits last (#812: ambiguous parent/MRO
+        // facts are refused, not silently resolved).
+        let child_ab_name = call_name(child_ab_uri.as_str(), child_ab_source);
+        assert!(
+            child_ab_name.is_none(),
+            "ambiguous two-parent alias must stay unresolved, got {child_ab_name:?}"
+        );
+
+        // A single unambiguous parent alias must still resolve.
+        let child_b_name = call_name(child_b_uri.as_str(), child_b_source);
+        assert_eq!(
+            child_b_name.as_deref(),
+            Some("ParentB::greet"),
+            "a single unambiguous parent alias must still resolve"
+        );
+
+        // A parent method reopened across shards is a second candidate: a
+        // freshly indexed child must refuse the alias instead of silently
+        // last-winning.
+        must(index.index_file(
+            parent_b_reopen_uri,
+            "package ParentB;\nsub greet { 3 }\n1;\n".to_string(),
+        ));
+        let child_b2_name = call_name(child_b2_uri.as_str(), child_b_source);
+        assert!(
+            child_b2_name.is_none(),
+            "reopened parent method must refuse the alias, got {child_b2_name:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_batch_indexing_populates_hir_inheritance_package_graph() {
         let index = WorkspaceIndex::new();
         let child_url = must(url::Url::parse("file:///test/workspace/batch-child.pl"));
@@ -13972,7 +14187,14 @@ mod extraction_bundle_shadow_compare {
     fn build_bundle_unified(uri: &str, text: &str, ast: &Node) -> FileExtractionBundle {
         let content_hash = content_hash_of(text);
         let mut doc = Document::new(uri.to_string(), 1, text.to_string());
-        FileExtractionBundle::build_unified(ast, uri, content_hash, &mut doc, None)
+        FileExtractionBundle::build_unified(
+            ast,
+            uri,
+            content_hash,
+            &mut doc,
+            None,
+            &std::collections::BTreeMap::new(),
+        )
     }
 
     /// Assert full structural parity between the two independently-computed
