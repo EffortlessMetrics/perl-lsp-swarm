@@ -4283,37 +4283,36 @@ impl<'a> BodyBuilder2<'a> {
         match &node.kind {
             NodeKind::Variable { .. } => self.lower_expr_as_place(node, AccessMode::Write),
             NodeKind::VariableDeclaration { declarator, variable, .. } => {
-                let (sigil, name) = variable_name(variable);
-                let kind = match declarator.as_str() {
-                    "our" => VariableKind::Package,
-                    _ => VariableKind::Lexical,
-                };
-                // Anchor at the variable token, not the whole `my $i` declaration
-                // span — mirrors the statement-level VariableDeclaration path,
-                // which anchors at `variable.location` (body.rs). Anchoring at
-                // `node.location` widens PIR lexical-write anchors to include
-                // the declarator keyword (#12191/#12274).
-                let binding_node = match &variable.kind {
-                    NodeKind::VariableWithAttributes { variable, .. } => variable.as_ref(),
-                    _ => variable.as_ref(),
-                };
-                self.alloc_expr(
-                    HirExpr::Variable(HirVariable {
-                        sigil: sigil_from_str(sigil),
-                        name: name.to_string(),
-                        kind,
-                        access: AccessMode::Write,
-                    }),
-                    binding_node.location,
-                )
+                let target = declaration_target_node(variable);
+                match named_declaration_target(declarator, target) {
+                    Some(named) if !named.recovered_from_postfix => {
+                        let kind = match declarator.as_str() {
+                            "our" => VariableKind::Package,
+                            _ => VariableKind::Lexical,
+                        };
+                        // Anchor at the variable token, not the whole `my $i`
+                        // declaration span — mirrors the statement-level path
+                        // (#12191/#12274).
+                        let binding_node = match &named.binding_node.kind {
+                            NodeKind::VariableWithAttributes { variable, .. } => variable.as_ref(),
+                            _ => named.binding_node,
+                        };
+                        self.alloc_expr(
+                            HirExpr::Variable(HirVariable {
+                                sigil: sigil_from_str(named.sigil_str),
+                                name: named.var_name,
+                                kind,
+                                access: AccessMode::Write,
+                            }),
+                            binding_node.location,
+                        )
+                    }
+                    _ => self.lower_expr_as_place(target, AccessMode::Write),
+                }
             }
             _ => self.lower_expr(node),
         }
     }
-}
-
-fn variable_name(node: &Node) -> (&str, String) {
-    named_variable_or_glob(node).unwrap_or_else(|| ("$", String::from("<unknown>")))
 }
 
 fn statement_modifier_kind(modifier: &str) -> StatementModifierKind {

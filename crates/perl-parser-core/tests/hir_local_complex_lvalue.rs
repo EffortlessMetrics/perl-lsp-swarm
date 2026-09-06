@@ -474,3 +474,54 @@ fn mirror_recovers_typeglob_and_postfix_my_without_placeholder() -> Result<(), S
     named_let(&postfix_body, "cache", Sigil::Scalar, DeclStorageClass::My)?;
     Ok(())
 }
+
+#[test]
+fn foreach_element_local_iterator_does_not_invent_unknown() -> Result<(), String> {
+    let source = "foreach local $ENV{PATH} (qw(a)) { 1 }";
+    let file = canonical_body(source)?;
+    let body = body_of(&file)?;
+    let graph = pir_of(&file);
+    require_no_placeholder(body, &graph, source)?;
+    let found = body.exprs.iter().any(|expr| {
+        matches!(
+            expr,
+            HirExpr::Subscript(subscript)
+                if subscript.kind == SubscriptKind::Hash
+                    && matches!(
+                        body.expr(subscript.container),
+                        Some(HirExpr::Variable(variable)) if variable.name == "ENV"
+                    )
+        )
+    });
+    if !found {
+        return Err("foreach element-local iterator must lower the hash place".to_string());
+    }
+    if body
+        .exprs
+        .iter()
+        .any(|expr| matches!(expr, HirExpr::Variable(variable) if variable.name == PLACEHOLDER))
+    {
+        return Err("foreach element-local iterator must not synthesize <unknown>".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn foreach_named_local_iterator_still_binds() -> Result<(), String> {
+    let source = "foreach local $x (@a) { 1 }";
+    let file = canonical_body(source)?;
+    let body = body_of(&file)?;
+    let graph = pir_of(&file);
+    require_no_placeholder(body, &graph, source)?;
+    let found = body.exprs.iter().any(|expr| {
+        matches!(
+            expr,
+            HirExpr::Variable(variable)
+                if variable.name == "x" && variable.access == AccessMode::Write
+        )
+    });
+    if !found {
+        return Err("named foreach local iterator must remain a write of x".to_string());
+    }
+    Ok(())
+}
