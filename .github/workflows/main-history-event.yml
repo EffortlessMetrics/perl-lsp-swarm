@@ -36,15 +36,13 @@ on:
     branches:
       - main
 
-concurrency:
-  # Keyed by the exact event commit, so two distinct pushes can never share a
-  # group. `cancel-in-progress: false` alone would not be enough: a group admits
-  # one running and one pending run, and a newly queued run displaces the
-  # pending one — during a merge burst that would silently discard the receipt
-  # for an intermediate push, which is precisely the evidence this lane exists
-  # to retain.
-  group: main-history-event-${{ github.sha }}
-  cancel-in-progress: false
+# No `concurrency:` group, deliberately. A group admits one running and one
+# pending run, and a newly queued run displaces the pending one, so any shared
+# group can silently discard a push's receipt — `cancel-in-progress: false` does
+# not prevent that. Keying by `github.sha` is not sufficient either: `main`
+# returning to the same commit produces distinct push events that share a SHA,
+# and that is the force-push shape this lane most needs to observe. Every run
+# stays independent so no observation can ever be displaced by another.
 
 permissions:
   contents: read

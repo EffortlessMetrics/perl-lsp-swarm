@@ -117,26 +117,34 @@ fn receipt_is_published_even_when_the_verdict_blocks() -> Result<()> {
 }
 
 /// Each push carries an irreplaceable before/after subject, so no run may cancel
-/// or displace another. `cancel-in-progress: false` is necessary but not
-/// sufficient: a concurrency group holds one running plus one pending run, and a
-/// newly queued run displaces the pending one, so a group shared across pushes
-/// would silently drop an intermediate push's receipt during a merge burst.
-/// Keying the group by the exact event commit makes that structurally impossible.
+/// or displace another.
+///
+/// Any concurrency group is unsafe here, which is why the workflow declares
+/// none. A group admits one running plus one pending run and a newly queued run
+/// displaces the pending one, so `cancel-in-progress: false` does not save it.
+/// Keying by `github.sha` is not sufficient either: `main` returning to the same
+/// commit produces distinct push events sharing one SHA — and that repeated-reset
+/// shape is exactly the force-push behaviour this lane exists to observe, so the
+/// hole would open precisely when the evidence matters most.
 #[test]
 fn no_push_receipt_can_be_displaced_by_a_later_push() -> Result<()> {
     let source = workflow_source()?;
 
+    // Match the YAML key itself, at any nesting depth, rather than any mention:
+    // the surrounding comment explains why the key is absent and must not be
+    // mistaken for the key.
+    let declared: Vec<&str> = source
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with('#') && trimmed.starts_with("concurrency:")
+        })
+        .collect();
+
     assert!(
-        source.contains("cancel-in-progress: false"),
-        "history observations must not be cancelled"
-    );
-    assert!(
-        source.contains("group: main-history-event-${{ github.sha }}"),
-        "the concurrency group must be unique per event commit so no push can displace another"
-    );
-    assert!(
-        !source.contains("group: main-history-event-${{ github.ref }}"),
-        "a ref-keyed group is shared by every push to main and can discard a pending receipt"
+        declared.is_empty(),
+        "any concurrency group can displace a pending run and silently drop that push's receipt, \
+         but the workflow declares: {declared:?}"
     );
     Ok(())
 }
