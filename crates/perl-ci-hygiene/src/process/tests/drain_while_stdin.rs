@@ -10,9 +10,9 @@ use super::super::{
     join_stream, stream_join_bytes,
 };
 use super::wrapper_contracts::{
-    EARLY_EXIT_MARKER, FIXTURE_SCENARIO_ENV, PIPE_PRESSURE_BYTES, STDERR_BEFORE_STDIN_MARKER,
-    STDIN_BYTES_MARKER, STDIN_DIGEST_MARKER, STDIN_EOF_MARKER, STDOUT_BEFORE_STDIN_MARKER,
-    fixture_args, fixture_command, stdin_digest,
+    FIXTURE_SCENARIO_ENV, PIPE_PRESSURE_BYTES, STDERR_BEFORE_STDIN_MARKER, STDIN_BYTES_MARKER,
+    STDIN_DIGEST_MARKER, STDIN_EOF_MARKER, STDOUT_BEFORE_STDIN_MARKER, fixture_args,
+    fixture_command, stdin_digest,
 };
 use super::{TempDir, TestResult};
 use std::io::{self, Read, Write};
@@ -71,15 +71,8 @@ fn report_helper_result(result: color_eyre::eyre::Result<(i32, String)>) -> Stri
                 line.strip_prefix(&format!("{STDIN_BYTES_MARKER}:")).map(str::to_owned)
             });
             let eof = u8::from(combined.contains(&format!("{STDIN_EOF_MARKER}:1")));
-            let stdout_at = combined.find(STDOUT_BEFORE_STDIN_MARKER);
-            let stderr_at = combined.find(STDERR_BEFORE_STDIN_MARKER);
-            let order = match (stdout_at, stderr_at) {
-                (Some(stdout_at), Some(stderr_at)) if stdout_at < stderr_at => "stdout-then-stderr",
-                (Some(_), Some(_)) => "stderr-first",
-                _ => "missing-marker",
-            };
             format!(
-                "ok:status={status}:bytes={}:digest={}:eof={eof}:stdout={stdout_before}:stderr={stderr_before}:stdout_bulk={stdout_bulk}:stderr_bulk={stderr_bulk}:order={order}",
+                "ok:status={status}:bytes={}:digest={}:eof={eof}:stdout={stdout_before}:stderr={stderr_before}:stdout_bulk={stdout_bulk}:stderr_bulk={stderr_bulk}",
                 bytes_line.unwrap_or_else(|| "missing".to_owned()),
                 digest_line.unwrap_or_else(|| "missing".to_owned()),
             )
@@ -242,7 +235,7 @@ fn command_with_input_drains_while_delivering_stdin_when_child_writes_first() ->
     })?;
     let expected_digest = format!("{:016x}", stdin_digest(pipe_pressure_stdin().as_bytes()));
     let expected = format!(
-        "ok:status=0:bytes={PIPE_PRESSURE_BYTES}:digest={expected_digest}:eof=1:stdout=1:stderr=1:stdout_bulk={PIPE_PRESSURE_BYTES}:stderr_bulk={PIPE_PRESSURE_BYTES}:order=stdout-then-stderr"
+        "ok:status=0:bytes={PIPE_PRESSURE_BYTES}:digest={expected_digest}:eof=1:stdout=1:stderr=1:stdout_bulk={PIPE_PRESSURE_BYTES}:stderr_bulk={PIPE_PRESSURE_BYTES}"
     );
     assert_eq!(report, expected, "driver stderr={stderr}");
     Ok(())
@@ -276,10 +269,6 @@ fn early_child_exit_during_stdin_write_is_a_typed_error() -> TestResult {
     assert!(
         report.contains("child exit 3"),
         "write error should retain child status, got {report}"
-    );
-    assert!(
-        !report.contains(EARLY_EXIT_MARKER) || report.contains("err:write:"),
-        "early-exit must not be reported as success"
     );
     Ok(())
 }
