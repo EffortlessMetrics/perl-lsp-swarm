@@ -1476,6 +1476,13 @@ enum Commands {
         out: PathBuf,
     },
 
+    /// Enforce source-authority and instruction/data boundaries for the Zed
+    /// agent stage packets.
+    ZedTrain {
+        #[command(subcommand)]
+        command: ZedTrainCommand,
+    },
+
     /// Read-only upstream refresh and drift classification for the pinned
     /// vim-lsp subject (#11411). Advisory only: never a CI gate, never a pin
     /// update; live observation is gated behind --allow-network.
@@ -4859,6 +4866,25 @@ enum AgentCommand {
 }
 
 #[derive(Subcommand)]
+enum ZedTrainCommand {
+    /// Verify every stage-packet input is authority-classified, current, and
+    /// data-only, and that every packet generator is declared.
+    #[command(name = "source-check")]
+    SourceCheck {
+        /// Source-authority manifest JSON.
+        fixture: PathBuf,
+
+        /// Repository root used to resolve the packet-relative subjects.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+
+        /// Receipt JSON retained for clean and blocking verdicts.
+        #[arg(long, default_value = "target/receipts/zed-source-authority.json")]
+        out: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum WorktreeRecoveryCommand {
     /// Produce the evidence-only plan for explicit repository and candidate paths.
     Plan {
@@ -5864,6 +5890,11 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::PublicationDrift { input, repo_root, out } => {
             xtask::publication_drift::run_with_paths(input, repo_root, out)
         }
+        Commands::ZedTrain { command } => match command {
+            ZedTrainCommand::SourceCheck { fixture, repo_root, out } => {
+                xtask::source_authority::run_with_paths(fixture, repo_root, out)
+            }
+        },
         Commands::VimLspSubject {
             command:
                 VimLspSubjectCommand::Refresh { check, proposal, observation, allow_network, repo_root },
