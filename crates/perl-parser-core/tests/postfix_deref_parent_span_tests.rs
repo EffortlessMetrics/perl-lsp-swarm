@@ -91,7 +91,7 @@ fn last_index_star_form_does_not_swallow_following_arithmetic() {
     let ast = parse(source);
     let deref = must_some_with(find_star_unary(&ast, source, "->$#*", "$aref"), "->$#* Unary");
     assert_eq!(source_text(deref, source), Some("$aref->$#*"));
-    let plus = must_some_with(find_binary(&ast, source, "+"), "arithmetic parent of ->$#*");
+    let plus = must_some_with(find_binary(&ast, "+"), "arithmetic parent of ->$#*");
     assert_eq!(source_text(plus, source), Some("$aref->$#* + 1"));
     assert!(
         plus.location.end > deref.location.end,
@@ -176,14 +176,14 @@ fn slice_forms_remain_non_unary_star() {
     assert_clean_parse(source);
     let ast = parse(source);
 
-    let array_slice = must_some_with(find_binary(&ast, source, "->@[]"), "->@[] stays Binary");
+    let array_slice = must_some_with(find_binary(&ast, "->@[]"), "->@[] stays Binary");
     assert_eq!(source_text(array_slice, source), Some("$aref->@[0, 2]"));
     assert!(
         collect_star_unary(&ast, source, "->@*", "$aref").is_empty(),
         "array slice must not satisfy the star-form Unary"
     );
 
-    let hash_slice = must_some_with(find_binary(&ast, source, "->%{}"), "->%{} stays Binary");
+    let hash_slice = must_some_with(find_binary(&ast, "->%{}"), "->%{} stays Binary");
     assert_eq!(source_text(hash_slice, source), Some("$href->%{qw(a b)}"));
     assert!(
         collect_star_unary(&ast, source, "->%*", "$href").is_empty(),
@@ -245,21 +245,20 @@ fn collect_star_unary_into<'a>(
     }
 }
 
-fn find_binary<'a>(node: &'a Node, source: &str, op: &str) -> Option<&'a Node> {
+fn find_binary<'a>(node: &'a Node, op: &str) -> Option<&'a Node> {
     if let NodeKind::Binary { op: node_op, .. } = &node.kind
         && node_op == op
-        && source_text(node, source).is_some()
     {
         return Some(node);
     }
-    node.children().into_iter().find_map(|child| find_binary(child, source, op))
+    node.children().into_iter().find_map(|child| find_binary(child, op))
 }
 
 fn find_variable<'a>(node: &'a Node, source: &str, name: &str) -> Option<&'a Node> {
-    if source_text(node, source) == Some(name) {
-        if let NodeKind::Variable { .. } = &node.kind {
-            return Some(node);
-        }
+    if source_text(node, source) == Some(name)
+        && let NodeKind::Variable { .. } = &node.kind
+    {
+        return Some(node);
     }
     node.children().into_iter().find_map(|child| find_variable(child, source, name))
 }
