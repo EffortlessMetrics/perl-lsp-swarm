@@ -1180,25 +1180,84 @@ fn relation_scoped_section_text(
         .join("\n")
 }
 
-/// Keep claim-boundary / non-goal paragraphs whose exclusions can be attributed
-/// to the issue named in the closing relation.
+/// Keep claim-boundary / non-goal units whose exclusions can be attributed to the
+/// issue named in the closing relation.
 ///
-/// A paragraph that mentions some other issue and does not mention the closed
-/// issue is a neighboring-issue disclaimer, not a statement that this close
-/// left required work unproven. Unnumbered prose still counts: atomic closes
-/// often describe "the remaining work" without repeating `#N`.
+/// Units are sentences inside Markdown paragraphs. A whitespace-only line is
+/// a paragraph break, matching rendered Markdown rather than a literal `\n\n`.
+/// A unit that mentions some other issue and does not mention the closed issue
+/// is a neighboring-issue disclaimer. Unnumbered prose still counts: atomic
+/// closes often describe "the remaining work" without repeating `#N`, even
+/// when a later sentence names the issue that tracks that leftover.
 fn exclusion_text_attributable_to_closed_issue(
     text: &str,
     key: &IssueKey,
     current_repository: &str,
 ) -> String {
-    text.split("\n\n")
-        .filter(|paragraph| {
-            let paragraph = paragraph.trim();
-            !paragraph.is_empty() && !foreign_issue_disclaimer(paragraph, key, current_repository)
-        })
+    attribution_units(text)
+        .into_iter()
+        .filter(|unit| !foreign_issue_disclaimer(unit, key, current_repository))
         .collect::<Vec<_>>()
-        .join("\n\n")
+        .join(" ")
+}
+
+fn attribution_units(text: &str) -> Vec<String> {
+    markdown_paragraphs(text)
+        .into_iter()
+        .flat_map(|paragraph| split_sentences(&paragraph))
+        .filter(|unit| !unit.is_empty())
+        .collect()
+}
+
+fn markdown_paragraphs(text: &str) -> Vec<String> {
+    let mut paragraphs = Vec::new();
+    let mut current = String::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(line);
+    }
+    if !current.is_empty() {
+        paragraphs.push(current);
+    }
+    paragraphs
+}
+
+fn split_sentences(text: &str) -> Vec<String> {
+    let mut sentences = Vec::new();
+    let mut start = 0;
+    for (index, character) in text.char_indices() {
+        if character != '.' {
+            continue;
+        }
+        let after = index + character.len_utf8();
+        let boundary =
+            text.get(after..).and_then(|tail| tail.chars().next()).is_none_or(char::is_whitespace);
+        if !boundary {
+            continue;
+        }
+        if let Some(sentence) = text.get(start..after) {
+            let sentence = sentence.trim();
+            if !sentence.is_empty() {
+                sentences.push(sentence.to_string());
+            }
+        }
+        start = after;
+    }
+    if let Some(tail) = text.get(start..) {
+        let tail = tail.trim();
+        if !tail.is_empty() {
+            sentences.push(tail.to_string());
+        }
+    }
+    sentences
 }
 
 fn foreign_issue_disclaimer(text: &str, key: &IssueKey, current_repository: &str) -> bool {
@@ -1366,7 +1425,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 15] = [
+    const FIXTURES: [(&str, &str); 16] = [
         (
             "invalid-phase-terminal-5023-5001",
             include_str!(concat!(
@@ -1414,6 +1473,13 @@ mod tests {
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-named-closed-issue.json"
+            )),
+        ),
+        (
+            "invalid-explicit-unproven-tracked-by-neighbor",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-tracked-by-neighbor.json"
             )),
         ),
         (
@@ -1676,6 +1742,24 @@ mod tests {
         assert!(
             explicitly_not_proven_required_work(&attributable_named),
             "naming the closed issue must keep the exclusion: {attributable_named:?}"
+        );
+
+        let spaced =
+            "This PR proves #10's claim in full.\n \t\nWork owned by #11 is not established.";
+        let attributable_spaced =
+            exclusion_text_attributable_to_closed_issue(spaced, &key, current);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_spaced),
+            "whitespace-only blank lines must still drop the neighboring disclaimer: {attributable_spaced:?}"
+        );
+
+        let tracked =
+            "This PR does not prove the complete remaining work. That work is tracked by #11.";
+        let attributable_tracked =
+            exclusion_text_attributable_to_closed_issue(tracked, &key, current);
+        assert!(
+            explicitly_not_proven_required_work(&attributable_tracked),
+            "an unnumbered closed-issue exclusion must survive a later tracker sentence: {attributable_tracked:?}"
         );
     }
 
