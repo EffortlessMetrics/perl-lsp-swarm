@@ -26,6 +26,10 @@ use perl_lsp_rs_core::providers::navigation::references_shadow::{
     ReferencesCutoverResult, find_references_live_source_backed,
 };
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+use perl_lsp_rs_core::providers::semantic_port::{
+    SemanticQueriesResolveSource, accepted_generation_basis, resolve_at_position,
+};
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_semantic_facts::AnchorId;
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_workspace::semantic::queries::{QueryContext, SemanticQueries};
@@ -1619,6 +1623,11 @@ impl LspServer {
             );
         }
 
+        // One shared basis for this request (#8977). Built from the accepted
+        // view before any query so the cursor and its targets are resolved
+        // against the same generations.
+        let resolve_generation = accepted_generation_basis(workspace_index.as_ref(), uri);
+
         // Resolve the semantic outcome plus the declaration anchor when either
         // the caller wants it included or the P8 lexical slice needs to prove
         // this entity is an initialized lexical declaration.
@@ -1630,52 +1639,70 @@ impl LspServer {
                 // the cursor, fall back to a uniquely-matching definition
                 // candidate.  When resolving via definitions we keep the
                 // anchor around so we can include it as the declaration site.
-                let symbol_at = queries.symbol_at(file_id, byte_offset);
-                let symbol_at_found = symbol_at.is_some();
-                let entity_id =
-                    match symbol_at.as_ref().and_then(|(_, occurrence)| occurrence.entity_id) {
-                        Some(entity_id) => entity_id,
-                        None => {
-                            let exact_candidates: Vec<_> = queries
-                                .definitions(symbol, &ctx)
-                                .into_iter()
-                                .filter(|candidate| {
-                                    candidate.confidence == perl_semantic_facts::Confidence::High
-                                        && matches!(
+                //
+                // The cursor stage is the shared provider-neutral rule (#8977)
+                // rather than a references-private reading of `symbol_at`, so
+                // definition and references start from one occurrence identity.
+                // `bound_entity_id` reports what the producer published without
+                // asserting exactness, which keeps this path's acceptance
+                // identical to the previous `occurrence.entity_id` read.
+                //
+                // The name-keyed `definitions` fallback below stays here, in
+                // the provider: it matches by spelling, so it is deliberately
+                // not admitted as an exact identity by the shared layer.
+                let resolve_source = SemanticQueriesResolveSource::new(&queries);
+                let resolved_at_cursor = resolve_at_position(
+                    &resolve_source,
+                    file_id,
+                    byte_offset,
+                    &resolve_generation,
+                    false,
+                );
+                let symbol_at_found = resolved_at_cursor.occurrence_was_published();
+                let entity_id = match resolved_at_cursor.bound_entity_id() {
+                    Some(entity_id) => entity_id,
+                    None => {
+                        let exact_candidates: Vec<_> = queries
+                            .definitions(symbol, &ctx)
+                            .into_iter()
+                            .filter(|candidate| {
+                                candidate.confidence == perl_semantic_facts::Confidence::High
+                                    && matches!(
                                         candidate.provenance,
                                         perl_semantic_facts::Provenance::ExactAst
                                             | perl_semantic_facts::Provenance::ImportExportInference
                                             | perl_semantic_facts::Provenance::LiteralRequireImport
-                                    ) && workspace_index
+                                    )
+                                    && workspace_index
                                         .semantic_anchor_wire_location(candidate.anchor_id)
                                         .is_some()
-                                })
-                                .collect();
-                            match exact_candidates.as_slice() {
-                                [candidate] => candidate.entity_id,
-                                _ => {
-                                    return Some(Err(
-                                        SourceBackedReferenceDecline::EntityUnresolved {
-                                            symbol_at_found,
-                                            exact_candidate_count: exact_candidates.len(),
-                                        },
-                                    ));
-                                }
+                            })
+                            .collect();
+                        match exact_candidates.as_slice() {
+                            [candidate] => candidate.entity_id,
+                            _ => {
+                                return Some(Err(SourceBackedReferenceDecline::EntityUnresolved {
+                                    symbol_at_found,
+                                    exact_candidate_count: exact_candidates.len(),
+                                }));
                             }
                         }
-                    };
+                    }
+                };
 
                 // Find the declaration anchor for this entity.  We accept the
-                // anchor from `symbol_at` if the occurrence is a definition
-                // kind, or look up a high-confidence definition candidate
-                // otherwise.
+                // anchor from the resolved cursor occurrence if it is a
+                // definition kind, or look up a high-confidence definition
+                // candidate otherwise.  Reading it off the shared resolution
+                // (#8977) rather than re-querying `symbol_at` keeps this
+                // request to one cursor-identity step.
                 let decl_anchor: Option<AnchorId> = if include_declaration || sigil.is_some() {
                     use perl_semantic_facts::OccurrenceKind;
-                    let from_symbol_at = symbol_at
-                        .as_ref()
-                        .filter(|(_, occ)| occ.kind == OccurrenceKind::Definition)
-                        .map(|(_, occ)| occ.anchor_id);
-                    from_symbol_at.or_else(|| {
+                    let from_resolved_cursor = resolved_at_cursor
+                        .published_occurrence()
+                        .filter(|resolved| resolved.role == OccurrenceKind::Definition)
+                        .map(|resolved| resolved.occurrence_anchor_id);
+                    from_resolved_cursor.or_else(|| {
                         queries
                             .definitions(symbol, &ctx)
                             .into_iter()
