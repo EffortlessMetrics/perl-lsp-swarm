@@ -76,7 +76,26 @@ requires be explicit so #10864 does not redesign parser state.
       test written for exactly that property
 - [x] Source restored after each mutant
 
-### Step 7 — Verify
+### Step 7 — Repair the oracle after independent review
+
+Independent adversarial review of the candidate found that
+`admitted_adjust_blocks` matched on the node name alone, and that
+`method ADJUST { }` is a legal ordinary method declaration reaching
+`parse_method` — emitting the same `Method { name: "ADJUST" }` shape without
+ever consulting the class grammar context. The oracle could not tell the two
+apart, and its doc comment claimed it could.
+
+- [x] Oracle now also requires `name_span.is_none()`
+      (`parse_adjust_block` emits `None`; `parse_method` always records the
+      name token's span)
+- [x] Doc comment corrected to state the real distinction
+- [x] `an_ordinary_method_named_adjust_is_not_an_admitted_block` added, holding
+      the distinction in both directions (ordinary method not counted inside or
+      outside a class; a genuine block still counted)
+- [x] Mutants A/B/C re-run against the stricter oracle: 6 / 7 / 1 failures,
+      unchanged discrimination
+
+### Step 8 — Verify
 
 - [x] `cargo fmt -p perl-parser-core -- --check`
 - [x] `cargo clippy -p perl-parser-core --lib --locked -- -D warnings`

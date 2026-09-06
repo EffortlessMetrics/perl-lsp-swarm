@@ -24,11 +24,22 @@ use perl_tdd_support::{must, must_some};
 ///
 /// An admitted ADJUST block is emitted as a `Method` node named `ADJUST`
 /// (`parse_adjust_block`). Outside class grammar the same source stays an
-/// ordinary identifier expression, so this count is the exact admission
-/// signal — and it cannot be satisfied by an unrelated method that merely
-/// appears nearby.
+/// ordinary identifier expression, so this count is the admission signal.
+///
+/// The `name_span` check is load-bearing, not incidental. `ADJUST` is an
+/// ordinary identifier to the lexer, so `method ADJUST { }` is a legal
+/// method declaration that reaches `parse_method` through
+/// `TokenKind::Method` lookahead without consulting the class grammar
+/// context at all — and it also emits `Method { name: "ADJUST" }`. The two
+/// paths are told apart by their spans: `parse_adjust_block` emits
+/// `name_span: None` (there is no separate name token), while `parse_method`
+/// always records the name token's span. Matching on the name alone would
+/// make this oracle count an ordinary method as an admitted block.
+/// `an_ordinary_method_named_adjust_is_not_an_admitted_block` holds that
+/// distinction in place.
 fn admitted_adjust_blocks(node: &Node) -> usize {
-    let here = usize::from(matches!(&node.kind, NodeKind::Method { name, .. } if name == "ADJUST"));
+    let here = usize::from(matches!(&node.kind, NodeKind::Method { name, name_span, .. }
+            if name == "ADJUST" && name_span.is_none()));
     here + node.children().into_iter().map(admitted_adjust_blocks).sum::<usize>()
 }
 
@@ -189,6 +200,39 @@ fn no_class_declaration_node_is_emitted_for_statement_form() {
     assert!(
         !has_class(&parse("class Foo;")),
         "statement-form class must not yet emit a class declaration node"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The oracle itself must discriminate.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_ordinary_method_named_adjust_is_not_an_admitted_block() {
+    // `ADJUST` is an ordinary identifier to the lexer, so `method ADJUST { }`
+    // is a legal method declaration. It reaches `parse_method` through
+    // `TokenKind::Method` lookahead and never consults the class grammar
+    // context — yet it emits `Method { name: "ADJUST" }`, the same node kind
+    // an admitted block emits. If the oracle matched on the name alone it
+    // would count this, and every negative control in this file would be
+    // satisfiable by a construct that has nothing to do with class grammar.
+    assert_eq!(
+        adjust_blocks_in("method ADJUST { 1; }"),
+        0,
+        "an ordinary method named ADJUST is a method, not an admitted ADJUST block"
+    );
+    assert_eq!(
+        adjust_blocks_in("class Foo { method ADJUST { 1; } }"),
+        0,
+        "even inside class grammar, `method ADJUST` is parsed as a method declaration"
+    );
+
+    // And the real thing is still counted, so the discrimination is not
+    // achieved by simply never counting anything.
+    assert_eq!(
+        adjust_blocks_in("class Foo { ADJUST { 1; } }"),
+        1,
+        "a genuine ADJUST block must still be counted"
     );
 }
 
