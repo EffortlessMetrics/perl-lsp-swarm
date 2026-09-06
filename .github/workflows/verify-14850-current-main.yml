@@ -1,0 +1,105 @@
+name: Verify PR 14850 on current main
+
+on:
+  push:
+    branches:
+      - ops/verify-14850-current-main
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.actor == 'EffortlessSteven'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout control
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+
+      - name: Checkout exact current-main base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 15f6164264a7486b6c1c3b1e277b017933ace65f
+          path: target
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Verify source and existing PR head
+        working-directory: target
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '15f6164264a7486b6c1c3b1e277b017933ace65f'
+          test "$(git hash-object .github/workflows/ripr.yml)" = '62799d5ccfa9824cb6df82b254bf8c0fcfa1335f'
+          actual_pr_head="$(git ls-remote origin refs/heads/ci/ripr-hosted-timeout-75 | awk '{print $1}')"
+          test "$actual_pr_head" = '207c990e8aada1fc898caf771c98afb591672f6c'
+
+      - name: Rebuild the two hosted timeout edits
+        working-directory: target
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/ripr.yml')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_in_job(source: str, job: str) -> str:
+              marker = f'  {job}:\n'
+              start = source.find(marker)
+              if start < 0:
+                  raise SystemExit(f'missing job {job}')
+              next_start = source.find('\n  # -------------------------------------------------------------------------\n', start + len(marker))
+              if next_start < 0:
+                  next_start = len(source)
+              segment = source[start:next_start]
+              old = '    timeout-minutes: 45\n'
+              if segment.count(old) != 1:
+                  raise SystemExit(f'{job}: expected one 45-minute timeout, found {segment.count(old)}')
+              segment = segment.replace(old, '    timeout-minutes: 75\n', 1)
+              return source[:start] + segment + source[next_start:]
+
+          text = replace_in_job(text, 'ripr-github')
+          text = replace_in_job(text, 'ripr-fallback')
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          test "$(git diff --name-only)" = '.github/workflows/ripr.yml'
+          test "$(git diff --numstat | awk '{print $1 ":" $2}')" = '2:2'
+          test "$(git diff --unified=0 | grep -c '^+    timeout-minutes: 75$')" = '2'
+          test "$(git diff --unified=0 | grep -c '^-    timeout-minutes: 45$')" = '2'
+          git diff --check
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: 1.95.0
+
+      - name: Verify workflow contracts
+        working-directory: target
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/workflow_security_ratchet.py check --root . --baseline .ci/workflow-security-baseline.json
+          cargo run -p xtask --locked -- workflow-trigger-lint --policy .ci/policies/required-checks.toml --format json | tee /tmp/workflow-trigger-lint.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('/tmp/workflow-trigger-lint.json').read_text(encoding='utf-8'))
+          if data.get('overall_ok') is not True:
+              raise SystemExit('workflow-trigger-lint did not report overall_ok=true')
+          PY
+
+      - name: Commit verified candidate to staging ref
+        working-directory: target
+        run: |
+          set -euo pipefail
+          git config user.name 'EffortlessSteven'
+          git config user.email 'git@effortlesssteven.com'
+          git add .github/workflows/ripr.yml
+          git diff --cached --check
+          git commit -m 'ci(ripr): match hosted fallback timeouts to CX43'
+          git push --force origin HEAD:refs/heads/ops/verified-14850-current-main
