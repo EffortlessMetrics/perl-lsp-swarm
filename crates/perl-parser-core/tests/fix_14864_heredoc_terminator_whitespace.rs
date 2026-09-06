@@ -53,6 +53,20 @@ fn mixed_spaces_and_tabs_after_terminator_close_region() -> Result<(), Box<dyn s
 }
 
 #[test]
+fn empty_body_padded_terminator_closes_region() -> Result<(), Box<dyn std::error::Error>> {
+    let source = "my $t = <<EOF;\nEOF  \nmy $after = 1;\n";
+    let index = SourceRegionIndex::build(source);
+    let after = source.find("my $after").ok_or("missing trailing code")?;
+    assert_eq!(
+        index.kind_at_offset(after),
+        SourceRegionKind::Code,
+        "code after an empty padded terminator must stay code, regions: {:?}",
+        index.regions()
+    );
+    Ok(())
+}
+
+#[test]
 fn indented_heredoc_padded_terminator_closes_region() -> Result<(), Box<dyn std::error::Error>> {
     require_trailing_code("my $t = <<~EOF;\n    body\n    EOF  \nmy $after = 1;\n", "my $after")
 }
@@ -101,6 +115,17 @@ fn leading_whitespace_on_plain_terminator_does_not_close_region()
 fn vertical_tab_after_terminator_does_not_close_region() -> Result<(), Box<dyn std::error::Error>> {
     require_unterminated_following(
         "my $t = <<EOF;\nbody\nEOF\u{000b}\nmy $after = 1;\n",
+        "my $after",
+    )
+}
+
+/// `<<~` indent-prefix mismatch is a lexer near-miss, not trailing horizontal
+/// whitespace. The suppressor must not turn the following source into `Code`.
+#[test]
+fn over_indented_tilde_terminator_does_not_close_as_padding()
+-> Result<(), Box<dyn std::error::Error>> {
+    require_unterminated_following(
+        "my $t = <<~END;\n  body\n    END\nmy $after = 1;\n",
         "my $after",
     )
 }
