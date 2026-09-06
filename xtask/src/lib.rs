@@ -29,6 +29,7 @@ pub mod import_cleanup_train_manifest;
 pub mod lsp_runtime_train_manifest;
 pub mod native_helix_actions;
 pub mod native_neovim_actions;
+pub mod no_panic_debt;
 pub mod parser_accuracy_legacy_population;
 pub mod publication_drift;
 pub mod rust_hygiene;

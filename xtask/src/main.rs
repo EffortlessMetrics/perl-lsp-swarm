@@ -2653,6 +2653,12 @@ enum Commands {
         command: NonRustCommand,
     },
 
+    /// Exact-tree test panic-family debt denominator (#13397).
+    NoPanic {
+        #[command(subcommand)]
+        command: NoPanicCommand,
+    },
+
     /// Read-only policy obligation tooling.
     Policy {
         #[command(subcommand)]
@@ -2886,6 +2892,58 @@ enum VimEditorCompatCommand {
         /// Host run timeout in milliseconds (default 240000).
         #[arg(long, default_value_t = 240_000)]
         timeout_ms: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum NoPanicCommand {
+    /// Exact-tree test panic-family debt projection and checks.
+    Debt {
+        #[command(subcommand)]
+        command: NoPanicDebtCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum NoPanicDebtCommand {
+    /// Generate `test_panic_family_debt.v1` from current source.
+    Inventory {
+        /// Repository root. Defaults to the workspace enclosing the current directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Machine JSON path. Defaults to `target/policy/test_panic_family_debt.v1.json`.
+        #[arg(long)]
+        json: Option<PathBuf>,
+        /// Human Markdown path. Defaults to `target/policy/test_panic_family_debt.v1.md`.
+        #[arg(long)]
+        markdown: Option<PathBuf>,
+    },
+    /// Re-derive the denominator and fail on missing population, stale joins, or identity drift.
+    Check {
+        /// Repository root. Defaults to the workspace enclosing the current directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Previously generated artifact that must match current source.
+        #[arg(long)]
+        artifact: Option<PathBuf>,
+        /// Accepted artifact compared by identity, not by counts.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        /// Optional Clippy observation JSON. Aborted/missing targets are `not_proven`.
+        #[arg(long)]
+        clippy_observation: Option<PathBuf>,
+        /// Optional owner-state JSON. Ordinary checks do not call GitHub.
+        #[arg(long)]
+        owner_state: Option<PathBuf>,
+    },
+    /// Print the human projection for the current tree.
+    Report {
+        /// Repository root. Defaults to the workspace enclosing the current directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Optional machine JSON path.
+        #[arg(long)]
+        json: Option<PathBuf>,
     },
 }
 
@@ -6606,6 +6664,43 @@ fn run_cli(cli: Cli) -> Result<()> {
                 generator_receipt,
                 allow_manual_edits,
             } => generated_files::check(receipt, fixture, generator_receipt, allow_manual_edits),
+        },
+        Commands::NoPanic { command } => match command {
+            NoPanicCommand::Debt { command } => match command {
+                NoPanicDebtCommand::Inventory { root, json, markdown } => {
+                    let root = match root {
+                        Some(path) => path,
+                        None => utils::project_root()?,
+                    };
+                    xtask::no_panic_debt::run_inventory(&root, json, markdown)
+                }
+                NoPanicDebtCommand::Check {
+                    root,
+                    artifact,
+                    baseline,
+                    clippy_observation,
+                    owner_state,
+                } => {
+                    let root = match root {
+                        Some(path) => path,
+                        None => utils::project_root()?,
+                    };
+                    xtask::no_panic_debt::run_check(
+                        &root,
+                        artifact,
+                        baseline,
+                        clippy_observation,
+                        owner_state,
+                    )
+                }
+                NoPanicDebtCommand::Report { root, json } => {
+                    let root = match root {
+                        Some(path) => path,
+                        None => utils::project_root()?,
+                    };
+                    xtask::no_panic_debt::run_report(&root, json)
+                }
+            },
         },
         Commands::NonRust { command } => match command {
             NonRustCommand::ExactTree {
