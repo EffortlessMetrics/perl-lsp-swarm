@@ -539,19 +539,37 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
             .context("trusted workflow contract-version must be an integer")
     };
     let text = String::from_utf8(bytes).context("subject workflow is not UTF-8")?;
+    let subject_version = contract_version(&text)?;
     if !base_listing.is_empty() {
         let (_, base_bytes) = tree_file(root, base_sha, ".github/workflows/non-rust-policy.yml")?;
         let base_text = String::from_utf8(base_bytes).context("base workflow is not UTF-8")?;
         let base_version = contract_version(&base_text)?;
-        let subject_version = contract_version(&text)?;
         if !subject_matches_base && subject_version != base_version.saturating_add(1) {
             bail!(
                 "trusted workflow changes require exactly one contract-version increment (base {base_version}, subject {subject_version})"
             );
         }
-    } else {
-        contract_version(&text)?;
     }
+    if !subject_matches_base && subject_version == PREAPPROVED_SUBJECT_CONTRACT_VERSION {
+        // The preapproved structural contract is the reviewed upgrade path; a
+        // candidate that is not byte-for-byte that contract may still land as
+        // an in-family change, but only if it survives the shape scan below.
+        // Both rejections are surfaced so the failing gate is explicit.
+        if let Err(structural) = validate_preapproved_subject_workflow(&text) {
+            return scan_trusted_workflow_shape(&text).map_err(|legacy| {
+                eyre!(
+                    "{legacy}; the subject is also not the preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} contract: {structural}"
+                )
+            });
+        }
+        return Ok(());
+    }
+    scan_trusted_workflow_shape(&text)
+}
+
+/// In-family trusted-shape scan for a changed workflow: required v6-era
+/// substrings plus structural rejection of candidate-derived execution.
+fn scan_trusted_workflow_shape(text: &str) -> Result<()> {
     for required in [
         "pull_request_target:",
         "merge_group:",
@@ -589,7 +607,7 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
     // Validate the load-bearing steps structurally, so comments or unrelated
     // jobs cannot satisfy the trusted-base contract.
     let yaml: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&text).context("parsing trusted workflow YAML")?;
+        serde_yaml_ng::from_str(text).context("parsing trusted workflow YAML")?;
     let key = |name: &str| serde_yaml_ng::Value::String(name.to_string());
     let jobs = yaml
         .as_mapping()
@@ -834,6 +852,277 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
             bail!(
                 "subject workflow must not execute or import candidate-derived content: {forbidden}"
             );
+        }
+    }
+    Ok(())
+}
+
+/// Contract version the structural preapproval below binds. It must be exactly
+/// one above the trusted workflow on `main`, or the reviewed upgrade path is
+/// unreachable; `preapproved_contract_version_is_the_next_increment` fails
+/// closed when `main` moves without retargeting this constant.
+pub(crate) const PREAPPROVED_SUBJECT_CONTRACT_VERSION: u64 = 7;
+
+/// Canonical `with:` mapping of the preapproved checkout step.
+const PREAPPROVED_CHECKOUT_WITH: &str =
+    "ref: ${{ env.EVALUATOR_SHA }}\npersist-credentials: false\n";
+
+/// Canonical `with:` mapping of the preapproved receipt upload step. Both
+/// receipts live under `target/policy/`; a missing directory is an error so an
+/// approved workflow cannot silently drop the evidence it exists to publish.
+const PREAPPROVED_UPLOAD_WITH: &str = "name: non-rust-policy-${{ env.SUBJECT_SHA || env.SUBJECT_INPUT_SHA }}\npath: target/policy/\nif-no-files-found: error\nretention-days: 14\n";
+
+fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
+    let yaml: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(text).context("parsing preapproved v4 workflow YAML")?;
+    let key = |name: &str| serde_yaml_ng::Value::String(name.to_string());
+    if yaml
+        .as_mapping()
+        .and_then(|mapping| mapping.get(key("name")))
+        .and_then(serde_yaml_ng::Value::as_str)
+        != Some("Non-Rust policy")
+    {
+        bail!("preapproved v4 workflow must use the canonical name");
+    }
+    let on = yaml
+        .as_mapping()
+        .and_then(|mapping| mapping.get(key("on")))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .ok_or_else(|| eyre!("preapproved v4 workflow must define structured triggers"))?;
+    let expected_on: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+        "pull_request_target:\n  branches: [main, master]\n  types: [opened, synchronize, reopened, ready_for_review]\nmerge_group: {}\npush:\n  branches: [main, master]\nworkflow_dispatch:\n  inputs:\n    base_sha:\n      required: true\n      type: string\n    subject_sha:\n      required: true\n      type: string\n",
+    )?;
+    if on
+        != expected_on
+            .as_mapping()
+            .ok_or_else(|| eyre!("canonical trigger fixture is not a mapping"))?
+    {
+        bail!("preapproved v4 workflow trigger configuration is not canonical");
+    }
+    let permissions = yaml
+        .as_mapping()
+        .and_then(|mapping| mapping.get(key("permissions")))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .ok_or_else(|| eyre!("preapproved v4 workflow must define structured permissions"))?;
+    if permissions.len() != 1
+        || permissions.get(key("contents")).and_then(serde_yaml_ng::Value::as_str) != Some("read")
+    {
+        bail!("preapproved v4 workflow must grant only contents: read");
+    }
+    let jobs = yaml
+        .as_mapping()
+        .and_then(|mapping| mapping.get(key("jobs")))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .ok_or_else(|| eyre!("preapproved v4 workflow must define jobs mapping"))?;
+    if jobs.len() != 1 {
+        bail!("preapproved v4 workflow must define only the exact-tree job");
+    }
+    let job = jobs
+        .get(key("exact-tree"))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .ok_or_else(|| eyre!("preapproved v4 workflow must define exact-tree job"))?;
+    if job.get(key("name")).and_then(serde_yaml_ng::Value::as_str)
+        != Some("Non-Rust policy exact-tree")
+    {
+        bail!("preapproved v4 exact-tree job must use the canonical name");
+    }
+    if job.get(key("timeout-minutes")).and_then(serde_yaml_ng::Value::as_i64) != Some(10) {
+        bail!("preapproved v4 exact-tree job must use the canonical timeout");
+    }
+    let allowed_job_keys = ["name", "runs-on", "timeout-minutes", "env", "steps"];
+    if job.keys().any(|key| key.as_str().is_none_or(|name| !allowed_job_keys.contains(&name))) {
+        bail!("preapproved v4 exact-tree job contains an unapproved control field");
+    }
+    let allowed_step_keys = ["name", "id", "uses", "run", "with", "if", "continue-on-error"];
+    for step in
+        job.get(key("steps")).and_then(serde_yaml_ng::Value::as_sequence).into_iter().flatten()
+    {
+        let map =
+            step.as_mapping().ok_or_else(|| eyre!("preapproved v4 steps must be mappings"))?;
+        if map.keys().any(|key| key.as_str().is_none_or(|name| !allowed_step_keys.contains(&name)))
+        {
+            bail!("preapproved v4 step contains an unapproved control field");
+        }
+    }
+    if job.get(key("runs-on")).and_then(serde_yaml_ng::Value::as_str) != Some("ubuntu-24.04") {
+        bail!("preapproved v4 exact-tree job must use ubuntu-24.04");
+    }
+    let env = job
+        .get(key("env"))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .ok_or_else(|| eyre!("preapproved v4 exact-tree job must define env"))?;
+    let expected_env = [
+        (
+            "BASE_SHA",
+            "${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}",
+        ),
+        (
+            "SUBJECT_INPUT_SHA",
+            "${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event_name == 'workflow_dispatch' && inputs.subject_sha || github.event_name == 'push' && github.sha || '' }}",
+        ),
+        (
+            "PR_HEAD_SHA",
+            "${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || '' }}",
+        ),
+        (
+            "PR_NUMBER",
+            "${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || '' }}",
+        ),
+        (
+            "EVALUATOR_SHA",
+            "${{ github.event_name == 'push' && github.sha || github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || inputs.base_sha }}",
+        ),
+    ];
+    for (variable, expected) in expected_env {
+        let actual = env
+            .get(key(variable))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .ok_or_else(|| eyre!("preapproved v4 workflow identity {variable} must be a string"))?;
+        if actual != expected {
+            bail!("preapproved v4 workflow identity {variable} is not canonical");
+        }
+    }
+    // Job env reaches every trusted `cargo run` and `git` invocation, so an
+    // extra key (`GIT_CONFIG_*`, `RUSTFLAGS`, `CARGO_*`, ...) is an injection
+    // surface, not a harmless addition.
+    if env.len() != expected_env.len() {
+        bail!("preapproved v4 exact-tree job env contains an unapproved variable");
+    }
+    let steps = job
+        .get(key("steps"))
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .ok_or_else(|| eyre!("preapproved v4 exact-tree job must define steps"))?;
+    if steps.len() != 5 {
+        bail!("preapproved v4 exact-tree job must contain exactly five steps");
+    }
+    let step_run = |step: &serde_yaml_ng::Value| {
+        step.as_mapping()
+            .and_then(|map| map.get(key("run")))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .map(str::trim)
+            .map(str::to_owned)
+    };
+    let step_name = |step: &serde_yaml_ng::Value| {
+        step.as_mapping()
+            .and_then(|map| map.get(key("name")))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .map(str::to_owned)
+    };
+    let step_id = |step: &serde_yaml_ng::Value| {
+        step.as_mapping()
+            .and_then(|map| map.get(key("id")))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .map(str::to_owned)
+    };
+    let step_with = |step: &serde_yaml_ng::Value| {
+        step.as_mapping().and_then(|map| map.get(key("with"))).cloned()
+    };
+    let canonical_with = |fixture: &str| -> Result<serde_yaml_ng::Value> {
+        serde_yaml_ng::from_str(fixture).context("canonical with fixture is not YAML")
+    };
+    let checkout = steps.first().ok_or_else(|| eyre!("v4 checkout step is missing"))?;
+    let trusted_checkout = checkout
+        .as_mapping()
+        .and_then(|map| map.get(key("uses")))
+        .and_then(serde_yaml_ng::Value::as_str)
+        .is_some_and(|uses| uses == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
+        && step_with(checkout).as_ref() == Some(&canonical_with(PREAPPROVED_CHECKOUT_WITH)?);
+    if !trusted_checkout {
+        bail!("v4 must checkout the trusted evaluator SHA first with exactly the canonical inputs");
+    }
+    let materializer = steps.get(1).ok_or_else(|| eyre!("v4 materializer step is missing"))?;
+    let materializer_run = step_run(materializer);
+    if step_name(materializer).as_deref() != Some("Materialize trusted PR subject")
+        || step_id(materializer).as_deref() != Some("materialize")
+        || materializer_run.as_deref()
+            != Some(
+                "cargo run --locked -p xtask -- ci-subject-materialize --event-name \"$GITHUB_EVENT_NAME\" --event-path \"$GITHUB_EVENT_PATH\" --repository \"$GITHUB_REPOSITORY\" --github-sha \"$SUBJECT_INPUT_SHA\" --base-sha \"$BASE_SHA\" --head-sha \"$SUBJECT_INPUT_SHA\" --receipt target/policy/ci-subject-materialization.json --env-file \"$GITHUB_ENV\"",
+            )
+        || materializer
+            .as_mapping()
+            .and_then(|map| map.get(key("if")))
+            .is_some_and(|condition| condition.as_str() != Some("always()"))
+        || materializer
+            .as_mapping()
+            .and_then(|map| map.get(key("continue-on-error")))
+            .and_then(serde_yaml_ng::Value::as_bool)
+            != Some(true)
+    {
+        bail!("v4 materializer must be the exact trusted invocation");
+    }
+    let evaluator = steps.get(2).ok_or_else(|| eyre!("v4 evaluator step is missing"))?;
+    let expected_evaluator = "cargo run --locked -p xtask -- non-rust exact-tree --base-sha \"$BASE_SHA\" --subject-sha \"$SUBJECT_SHA\" ${PR_HEAD_SHA:+--pr-head-sha \"$PR_HEAD_SHA\"} --event-name \"$GITHUB_EVENT_NAME\" --repository \"$GITHUB_REPOSITORY\" --receipt target/policy/non-rust-policy-exact-tree.json";
+    let evaluator_run = step_run(evaluator);
+    if step_name(evaluator).as_deref() != Some("Run trusted exact-tree evaluator")
+        || step_id(evaluator).as_deref() != Some("evaluate")
+        || evaluator_run.as_deref() != Some(expected_evaluator)
+        || evaluator
+            .as_mapping()
+            .and_then(|map| map.get(key("if")))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .is_none_or(|condition| condition.trim() != "steps.materialize.outcome == 'success'")
+        || evaluator
+            .as_mapping()
+            .and_then(|map| map.get(key("continue-on-error")))
+            .and_then(serde_yaml_ng::Value::as_bool)
+            != Some(true)
+    {
+        bail!("v4 evaluator must be the exact trusted invocation");
+    }
+    let upload = steps.get(3).ok_or_else(|| eyre!("v4 receipt upload step is missing"))?;
+    if !upload
+        .as_mapping()
+        .and_then(|map| map.get(key("uses")))
+        .and_then(serde_yaml_ng::Value::as_str)
+        .is_some_and(|uses| {
+            uses == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+        })
+        || upload
+            .as_mapping()
+            .and_then(|map| map.get(key("if")))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .is_none_or(|condition| condition.trim() != "always()")
+    {
+        bail!("v4 must always upload receipts");
+    }
+    if step_with(upload).as_ref() != Some(&canonical_with(PREAPPROVED_UPLOAD_WITH)?) {
+        bail!("v4 receipt upload must use exactly the canonical artifact inputs");
+    }
+    let propagate = steps.get(4).ok_or_else(|| eyre!("v4 propagation step is missing"))?;
+    if step_name(propagate).as_deref() != Some("Propagate subject or policy failure")
+        || step_run(propagate).as_deref() != Some("exit 1")
+        || propagate
+            .as_mapping()
+            .and_then(|map| map.get(key("if")))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .is_none_or(|condition| condition.trim() != "always() && (steps.materialize.outcome == 'failure' || steps.evaluate.outcome == 'failure')")
+        || propagate
+            .as_mapping()
+            .and_then(|map| map.get(key("continue-on-error")))
+            .is_some_and(|value| value != &serde_yaml_ng::Value::Bool(false))
+    {
+        bail!("v4 must propagate retained materialization or evaluator failure");
+    }
+    for step in steps {
+        if let Some(uses) = step
+            .as_mapping()
+            .and_then(|map| map.get(key("uses")))
+            .and_then(serde_yaml_ng::Value::as_str)
+        {
+            let approved = [
+                "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+            ];
+            if !approved.contains(&uses) {
+                bail!("v4 action is not the approved immutable action: {uses}");
+            }
+        }
+        if let Some(run) = step_run(step)
+            && run != materializer_run.clone().unwrap_or_default()
+            && run != evaluator_run.clone().unwrap_or_default()
+            && run != "exit 1"
+        {
+            bail!("v4 contains an unapproved executable step");
         }
     }
     Ok(())
@@ -5248,6 +5537,270 @@ review_after = "2026-06-01"
         )?;
         let base = commit_fixture(temp.path(), "base")?;
         Ok((temp, base))
+    }
+
+    const PREAPPROVED_FIXTURE: &str = r#"# contract-version: 7
+name: Non-Rust policy
+on:
+  pull_request_target:
+    branches: [main, master]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group: {}
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        required: true
+        type: string
+      subject_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  exact-tree:
+    name: Non-Rust policy exact-tree
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BASE_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}
+      SUBJECT_INPUT_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event_name == 'workflow_dispatch' && inputs.subject_sha || github.event_name == 'push' && github.sha || '' }}
+      PR_HEAD_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || '' }}
+      PR_NUMBER: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || '' }}
+      EVALUATOR_SHA: ${{ github.event_name == 'push' && github.sha || github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || inputs.base_sha }}
+    steps:
+      - name: Checkout trusted evaluator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.EVALUATOR_SHA }}
+          persist-credentials: false
+      - name: Materialize trusted PR subject
+        id: materialize
+        continue-on-error: true
+        run: 'cargo run --locked -p xtask -- ci-subject-materialize --event-name "$GITHUB_EVENT_NAME" --event-path "$GITHUB_EVENT_PATH" --repository "$GITHUB_REPOSITORY" --github-sha "$SUBJECT_INPUT_SHA" --base-sha "$BASE_SHA" --head-sha "$SUBJECT_INPUT_SHA" --receipt target/policy/ci-subject-materialization.json --env-file "$GITHUB_ENV"'
+      - name: Run trusted exact-tree evaluator
+        id: evaluate
+        if: steps.materialize.outcome == 'success'
+        continue-on-error: true
+        run: 'cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json'
+      - name: Upload exact-tree receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: non-rust-policy-${{ env.SUBJECT_SHA || env.SUBJECT_INPUT_SHA }}
+          path: target/policy/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Propagate subject or policy failure
+        if: "always() && (steps.materialize.outcome == 'failure' || steps.evaluate.outcome == 'failure')"
+        run: exit 1
+"#;
+
+    #[test]
+    fn preapproved_workflow_rejects_control_plane_tampering() -> Result<()> {
+        let workflow = PREAPPROVED_FIXTURE;
+        validate_preapproved_subject_workflow(workflow)?;
+        let tampered = workflow.replace(
+            "      - name: Propagate subject or policy failure\n",
+            "      - name: Extra executable step\n        run: echo extra\n      - name: Propagate subject or policy failure\n",
+        );
+        ensure!(validate_preapproved_subject_workflow(&tampered).is_err());
+        let tampered_identity = workflow.replacen(
+            "${{ github.event_name == 'push' && github.sha || github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || inputs.base_sha }}",
+            "${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha }}",
+            1,
+        );
+        ensure!(
+            validate_preapproved_subject_workflow(&tampered_identity).is_err(),
+            "candidate-controlled subject identity must be rejected"
+        );
+        for (label, tampered) in [
+            (
+                "wrong job name",
+                workflow.replace("name: Non-Rust policy exact-tree", "name: lookalike"),
+            ),
+            ("wrong timeout", workflow.replace("timeout-minutes: 10", "timeout-minutes: 11")),
+            (
+                "wrong checkout action",
+                workflow.replace(
+                    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                    "actions/checkout@0123456789012345678901234567890123456789",
+                ),
+            ),
+            (
+                "wrong upload action",
+                workflow.replace(
+                    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+                    "actions/upload-artifact@0123456789012345678901234567890123456789",
+                ),
+            ),
+            (
+                "disabled trigger",
+                workflow.replace("branches: [main, master]", "branches: [release-only]"),
+            ),
+            ("disabled job", workflow.replace("  exact-tree:\n", "  exact-tree:\n    if: false\n")),
+            (
+                "disabled materializer",
+                workflow.replace(
+                    "        continue-on-error: true\n",
+                    "        if: false\n        continue-on-error: true\n",
+                ),
+            ),
+            (
+                "missing materializer continue-on-error",
+                workflow.replace("        continue-on-error: true\n        run: 'cargo run --locked -p xtask -- ci-subject-materialize", "        run: 'cargo run --locked -p xtask -- ci-subject-materialize"),
+            ),
+            (
+                "false evaluator continue-on-error",
+                workflow.replacen(
+                    "        continue-on-error: true\n        run: 'cargo run --locked -p xtask -- non-rust exact-tree",
+                    "        continue-on-error: false\n        run: 'cargo run --locked -p xtask -- non-rust exact-tree",
+                    1,
+                ),
+            ),
+            (
+                "boolean propagation bypass",
+                workflow.replace(
+                    "        run: exit 1\n",
+                    "        continue-on-error: true\n        run: exit 1\n",
+                ),
+            ),
+            (
+                "expression propagation bypass",
+                workflow.replace(
+                    "        run: exit 1\n",
+                    "        continue-on-error: ${{ true }}\n        run: exit 1\n",
+                ),
+            ),
+            (
+                "disabled receipt upload",
+                workflow.replace(
+                    "        if: always()\n        uses: actions/upload-artifact@",
+                    "        if: always() && false\n        uses: actions/upload-artifact@",
+                ),
+            ),
+            (
+                "extra job env key (git config injection)",
+                workflow.replace(
+                    "    steps:\n",
+                    "      GIT_CONFIG_COUNT: '1'\n    steps:\n",
+                ),
+            ),
+            (
+                "extra job env key (RUSTFLAGS)",
+                workflow.replace("    steps:\n", "      RUSTFLAGS: -Zunstable\n    steps:\n"),
+            ),
+            (
+                "checkout gains an unapproved input",
+                workflow.replace(
+                    "          persist-credentials: false\n",
+                    "          persist-credentials: false\n          repository: attacker/fork\n",
+                ),
+            ),
+            (
+                "checkout drops persist-credentials",
+                workflow.replace("          persist-credentials: false\n", ""),
+            ),
+            (
+                "upload loses its with block",
+                workflow.replace(
+                    "        with:\n          name: non-rust-policy-${{ env.SUBJECT_SHA || env.SUBJECT_INPUT_SHA }}\n          path: target/policy/\n          if-no-files-found: error\n          retention-days: 14\n",
+                    "",
+                ),
+            ),
+            (
+                "upload redirected away from the receipts",
+                workflow.replace("          path: target/policy/\n", "          path: /tmp/elsewhere\n"),
+            ),
+            (
+                "upload tolerates missing receipts",
+                workflow.replace("          if-no-files-found: error\n", "          if-no-files-found: ignore\n"),
+            ),
+            (
+                "upload step gains an executable body",
+                workflow.replace(
+                    "          retention-days: 14\n",
+                    "          retention-days: 14\n        run: echo leak\n",
+                ),
+            ),
+        ] {
+            ensure!(
+                validate_preapproved_subject_workflow(&tampered).is_err(),
+                "control-plane tampering must be rejected: {label}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The canonical preapproved text, as a subject against the real trusted
+    /// workflow on `main`, must be selected by `validate_subject_workflow` and
+    /// accepted end to end; the same text with one extra job env key must be
+    /// rejected on that same path. This is what proves the structural contract
+    /// is reachable rather than dead code behind a stale version number.
+    #[test]
+    fn preapproved_workflow_is_reachable_from_the_current_trusted_base() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        write_fixture(temp.path(), ".github/workflows/non-rust-policy.yml", PREAPPROVED_FIXTURE)?;
+        let subject = commit_fixture(temp.path(), "preapproved upgrade")?;
+        non_rust_exact_tree(
+            temp.path(),
+            &base,
+            &subject,
+            None,
+            &temp.path().join("preapproved.json"),
+            None,
+            None,
+        )
+        .context("canonical preapproved workflow must be accepted against the live base")?;
+
+        let (temp, base) = exact_fixture()?;
+        let tampered = PREAPPROVED_FIXTURE
+            .replace("    steps:\n", "      GIT_CONFIG_COUNT: '1'\n    steps:\n");
+        write_fixture(temp.path(), ".github/workflows/non-rust-policy.yml", &tampered)?;
+        let subject = commit_fixture(temp.path(), "tampered upgrade")?;
+        let error = non_rust_exact_tree(
+            temp.path(),
+            &base,
+            &subject,
+            None,
+            &temp.path().join("tampered.json"),
+            None,
+            None,
+        )
+        .expect_err("extra env key must be rejected on the reachable path");
+        assert!(
+            error.to_string().contains("unapproved variable"),
+            "rejection must come from the structural validator, got: {error}"
+        );
+        Ok(())
+    }
+
+    /// `main` bumping the trusted workflow's contract-version without retargeting
+    /// `PREAPPROVED_SUBJECT_CONTRACT_VERSION` would silently make the structural
+    /// preapproval unreachable again (the defect this test exists to catch).
+    #[test]
+    fn preapproved_contract_version_is_the_next_increment() -> Result<()> {
+        let live = include_str!("../../../.github/workflows/non-rust-policy.yml");
+        let live_version = live
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("# contract-version:"))
+            .map(str::trim)
+            .ok_or_else(|| eyre!("live workflow is missing contract-version"))?
+            .parse::<u64>()?;
+        assert_eq!(
+            PREAPPROVED_SUBJECT_CONTRACT_VERSION,
+            live_version + 1,
+            "retarget PREAPPROVED_SUBJECT_CONTRACT_VERSION to live + 1"
+        );
+        let fixture_version = PREAPPROVED_FIXTURE
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("# contract-version:"))
+            .map(str::trim)
+            .ok_or_else(|| eyre!("fixture is missing contract-version"))?
+            .parse::<u64>()?;
+        assert_eq!(fixture_version, PREAPPROVED_SUBJECT_CONTRACT_VERSION);
+        Ok(())
     }
 
     #[test]
