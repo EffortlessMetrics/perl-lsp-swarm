@@ -59,6 +59,9 @@ const NEVER_SELECTABLE_ROLES: &[&str] =
     &["controller", "decision", "external_action", "historical"];
 /// Roles whose authority move must name a legacy path exit.
 const EXIT_BEARING_ROLES: &[&str] = &["implementation", "cutover"];
+/// Closed dependency classes; the manifest's `dependency_classes` must declare
+/// exactly this set once each.
+const DEPENDENCY_CLASSES: &[&str] = &["hard", "evidence", "authorization"];
 
 /// Closed horizon order; the manifest's `release_horizons.rank` must agree.
 const HORIZON_ORDER: &[&str] = &[
@@ -174,12 +177,12 @@ fn is_symbolic_authority(target: &str) -> bool {
 // Stable-byte hygiene.
 // ---------------------------------------------------------------------------
 
-/// A run of 32 or more lowercase hex digits: a commit coordinate, never a
-/// stable fact.
+/// A run of 32 or more hex digits in either case: a commit coordinate, never
+/// a stable fact. (Title fingerprints are 16 digits and never reach the run.)
 fn looks_like_commit_hash(text: &str) -> bool {
     let mut run = 0usize;
     for ch in text.chars() {
-        if ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase() {
+        if ch.is_ascii_hexdigit() {
             run += 1;
             if run >= 32 {
                 return true;
@@ -253,6 +256,41 @@ fn vocabulary_problems<'a>(doc: &'a Value, violations: &mut Vec<Violation>) -> V
             violations.push(Violation::new(
                 "VOCABULARY_DRIFT",
                 format!("role_vocabulary {role}: duplicate role entry"),
+            ));
+        }
+    }
+    for role in SELECTABLE_ROLES.iter().chain(NEVER_SELECTABLE_ROLES) {
+        if !selectable_by_role.contains_key(role) {
+            violations.push(Violation::new(
+                "VOCABULARY_DRIFT",
+                format!("role_vocabulary: {role} is missing"),
+            ));
+        }
+    }
+
+    // The schema fixes the count and the enum; only this law rejects a
+    // duplicated class standing in for an omitted one.
+    let mut declared_classes = BTreeSet::new();
+    for entry in objects(doc, "dependency_classes") {
+        let class = str_field(entry, "class");
+        if !DEPENDENCY_CLASSES.contains(&class) {
+            violations.push(Violation::new(
+                "VOCABULARY_DRIFT",
+                format!("dependency_classes {class}: not a closed dependency class"),
+            ));
+        }
+        if !declared_classes.insert(class) {
+            violations.push(Violation::new(
+                "VOCABULARY_DRIFT",
+                format!("dependency_classes {class}: duplicate class entry"),
+            ));
+        }
+    }
+    for class in DEPENDENCY_CLASSES {
+        if !declared_classes.contains(class) {
+            violations.push(Violation::new(
+                "VOCABULARY_DRIFT",
+                format!("dependency_classes: {class} is missing"),
             ));
         }
     }
@@ -342,6 +380,7 @@ fn vocabulary_problems<'a>(doc: &'a Value, violations: &mut Vec<Violation>) -> V
 fn node_problems(doc: &Value, vocab: &Vocabulary<'_>, violations: &mut Vec<Violation>) {
     let nodes = objects(doc, "nodes");
     let ids: BTreeSet<&str> = nodes.iter().map(|node| str_field(node, "node_id")).collect();
+    let subjects: BTreeSet<&str> = nodes.iter().map(|node| str_field(node, "issue_ref")).collect();
     let mut seen_ids: BTreeSet<&str> = BTreeSet::new();
     let mut seen_subjects: BTreeSet<&str> = BTreeSet::new();
     let mut active_authorities: BTreeMap<&str, &str> = BTreeMap::new();
@@ -455,11 +494,13 @@ fn node_problems(doc: &Value, vocab: &Vocabulary<'_>, violations: &mut Vec<Viola
                 ));
             }
         }
+        // Numeric and symbolic alike: an authority is either a declared
+        // external authority or the subject of a node in this manifest.
         for authority in strings(node, "semantic_authority_refs") {
-            if is_symbolic_authority(authority) && !vocab.external_authorities.contains(authority) {
+            if !vocab.external_authorities.contains(authority) && !subjects.contains(authority) {
                 violations.push(Violation::new(
                     "UNKNOWN_EDGE_TARGET",
-                    format!("node {id}: semantic authority {authority} is not declared"),
+                    format!("node {id}: semantic authority {authority} is neither a declared external authority nor a node subject"),
                 ));
             }
         }

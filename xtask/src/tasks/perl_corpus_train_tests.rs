@@ -554,3 +554,73 @@ fn explain_static_renders_a_bounded_packet_without_readiness() -> Result<()> {
 fn gate_command_run_check_is_green_on_the_landed_tree() -> Result<()> {
     super::run_check()
 }
+
+#[test]
+fn uppercase_commit_hash_is_still_a_mutable_coordinate() -> Result<()> {
+    let mut doc = load(MANIFEST_PATH)?;
+    let node = node_mut(&mut doc, "pc_asset_path_10555")?;
+    set(
+        node,
+        "candidate_reuse_policy",
+        Value::String("resume main@BA8E2FBB00959D33848DE647CFB76FC477F3C569".to_string()),
+    );
+    assert_code(&doc, "MUTABLE_STATE_EMBEDDED")?;
+
+    // A 16-digit title fingerprint is not a commit coordinate.
+    let doc = load(MANIFEST_PATH)?;
+    if codes(&doc).iter().any(|code| code == "MUTABLE_STATE_EMBEDDED") {
+        bail!("uppercase title fingerprints must not read as commit hashes");
+    }
+    Ok(())
+}
+
+#[test]
+fn dependency_class_vocabulary_must_be_the_closed_unique_set() -> Result<()> {
+    // Duplicate `hard` in place of `authorization`: schema-valid (three enum
+    // entries) while the authorization edges keep using the omitted class.
+    let mut doc = load(MANIFEST_PATH)?;
+    let classes = doc
+        .get_mut("dependency_classes")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| eyre!("dependency_classes is an array"))?;
+    let hard = classes
+        .iter()
+        .find(|entry| entry.get("class").and_then(Value::as_str) == Some("hard"))
+        .cloned()
+        .ok_or_else(|| eyre!("hard is declared"))?;
+    classes.retain(|entry| entry.get("class").and_then(Value::as_str) != Some("authorization"));
+    classes.push(hard);
+    assert_code(&doc, "VOCABULARY_DRIFT")?;
+
+    // A missing role with the count kept by a duplicate is the same drift.
+    let mut doc = load(MANIFEST_PATH)?;
+    let roles = doc
+        .get_mut("role_vocabulary")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| eyre!("role_vocabulary is an array"))?;
+    let proof = roles
+        .iter()
+        .find(|entry| entry.get("role").and_then(Value::as_str) == Some("proof"))
+        .cloned()
+        .ok_or_else(|| eyre!("proof is declared"))?;
+    roles.retain(|entry| entry.get("role").and_then(Value::as_str) != Some("decision"));
+    roles.push(proof);
+    assert_code(&doc, "VOCABULARY_DRIFT")
+}
+
+#[test]
+fn numeric_semantic_authority_must_resolve_to_a_node_or_declared_authority() -> Result<()> {
+    let mut doc = load(MANIFEST_PATH)?;
+    let node = node_mut(&mut doc, "pc_asset_path_10555")?;
+    set(node, "semantic_authority_refs", string_list(&["#8826", "#99999"]));
+    assert_code(&doc, "UNKNOWN_EDGE_TARGET")?;
+
+    // A node subject that is not an external authority still resolves.
+    let mut doc = load(MANIFEST_PATH)?;
+    let node = node_mut(&mut doc, "pc_asset_path_10555")?;
+    set(node, "semantic_authority_refs", string_list(&["#8826", "#7705"]));
+    if codes(&doc).iter().any(|code| code == "UNKNOWN_EDGE_TARGET") {
+        bail!("a node subject is a resolvable semantic authority");
+    }
+    Ok(())
+}
