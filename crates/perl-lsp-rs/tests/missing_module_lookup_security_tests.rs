@@ -325,6 +325,14 @@ fn explain_missing_module_exists_only_inside_workspace() -> TestResult {
         RejectedClientIncludePathReason::Absolute,
         &rejected,
     )?;
+    // Applying includePaths=[absolute] replaces the default `lib` list with the
+    // admitted remainder (empty). A server that ignored client includePaths
+    // would still probe workspace `lib/Foo/Bar.pm` via defaults.
+    let ignored_defaults = lookup_result(&server, "Foo::Bar")?;
+    assert!(
+        !candidate_exists_values(&ignored_defaults)?.contains(&Some(true)),
+        "rejected-only includePaths must not leave default lib roots in place: {ignored_defaults}"
+    );
 
     Ok(())
 }
@@ -333,12 +341,12 @@ fn explain_missing_module_exists_only_inside_workspace() -> TestResult {
 fn explain_missing_module_keeps_relative_include_when_absolute_sibling_rejected() -> TestResult {
     let workspace_dir = TempDir::new()?;
     let outside_dir = TempDir::new()?;
-    write_module(workspace_dir.path(), "lib/Foo/Bar.pm", "Foo::Bar")?;
+    write_module(workspace_dir.path(), "vendor/lib/Foo/Bar.pm", "Foo::Bar")?;
     write_module(outside_dir.path(), "Oracle/Probe.pm", "Oracle::Probe")?;
 
     let outside_include_path = outside_dir.path().to_string_lossy().to_string();
     let init_options =
-        isolated_client_workspace(vec![json!("lib"), json!(outside_include_path)], None);
+        isolated_client_workspace(vec![json!("vendor/lib"), json!(outside_include_path)], None);
     let rejected = reject_client_include_paths(workspace_dir.path(), &init_options);
     assert!(
         rejected.iter().any(|entry| {
@@ -348,7 +356,7 @@ fn explain_missing_module_keeps_relative_include_when_absolute_sibling_rejected(
         "absolute sibling must be RejectedClientIncludePath::Absolute: {rejected:?}"
     );
     assert!(
-        !rejected.iter().any(|entry| entry.entry == "lib"),
+        !rejected.iter().any(|entry| entry.entry == "vendor/lib"),
         "contained relative includePaths entry must still be admitted: {rejected:?}"
     );
 
@@ -357,7 +365,7 @@ fn explain_missing_module_keeps_relative_include_when_absolute_sibling_rejected(
     let inside = lookup_result(&server, "Foo::Bar")?;
     assert!(
         candidate_exists_values(&inside)?.contains(&Some(true)),
-        "admitted relative include path must still probe in-workspace modules: {inside}"
+        "admitted non-default relative include path must still probe in-workspace modules: {inside}"
     );
 
     let outside = lookup_result(&server, "Oracle::Probe")?;
@@ -409,12 +417,12 @@ fn explain_missing_module_rejects_traversal_include_paths_without_outside_candid
 fn explain_missing_module_rejects_client_external_include_paths() -> TestResult {
     let workspace_dir = TempDir::new()?;
     let outside_dir = TempDir::new()?;
-    write_module(workspace_dir.path(), "lib/Foo/Bar.pm", "Foo::Bar")?;
+    write_module(workspace_dir.path(), "vendor/lib/Foo/Bar.pm", "Foo::Bar")?;
     write_module(outside_dir.path(), "Oracle/Probe.pm", "Oracle::Probe")?;
 
     let outside_include_path = outside_dir.path().to_string_lossy().to_string();
     let init_options = isolated_client_workspace(
-        vec![json!("lib")],
+        vec![json!("vendor/lib")],
         Some(json!({
             "externalIncludePaths": [outside_include_path]
         })),
@@ -438,7 +446,7 @@ fn explain_missing_module_rejects_client_external_include_paths() -> TestResult 
     let inside = lookup_result(&server, "Foo::Bar")?;
     assert!(
         candidate_exists_values(&inside)?.contains(&Some(true)),
-        "resource-scoped relative includePaths must still work: {inside}"
+        "non-default relative includePaths must still work when externalIncludePaths is rejected: {inside}"
     );
 
     let outside = lookup_result(&server, "Oracle::Probe")?;
