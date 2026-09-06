@@ -847,6 +847,8 @@ fn c_style_for_header_owns_semicolon(trimmed: &str) -> bool {
             TokenType::RightBrace => {
                 brace_depth = brace_depth.saturating_sub(1);
             }
+            TokenType::Keyword(name)
+                if !started_header && (name.as_ref() == "for" || name.as_ref() == "foreach") => {}
             _ if !started_header => {
                 // C-style headers are `for (` / `foreach (`, not `for my $i (`.
                 return false;
