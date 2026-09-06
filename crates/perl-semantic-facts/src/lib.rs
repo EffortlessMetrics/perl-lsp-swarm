@@ -24,6 +24,8 @@ pub mod hook;
 /// Dependency-neutral versioned contracts for interprocedural composition
 /// (#12672).
 pub mod interprocedural;
+/// Pure, generation-bound planning for conventional source-module moves.
+pub mod module_move;
 /// Transport-neutral reachability operation, work-budget, and
 /// terminal-outcome contract (#11553).
 pub mod reachability_operation;
