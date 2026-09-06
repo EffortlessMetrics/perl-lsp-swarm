@@ -209,3 +209,45 @@ $value =~ s/x/uc($value)/e;
 
     Ok(())
 }
+
+// ── Vendored-copy drift oracle (joint-refresh contract) ─────────────────
+//
+// bdd_workflows.rs exercises only the vendored constants while this suite
+// exercises only the upstream root files, so both suites can stay green
+// while the published loader silently ships stale query rules. Assert the
+// UPSTREAM_SNAPSHOT.md joint-refresh contract directly: each vendored copy
+// must equal its upstream source modulo the documented whitespace
+// normalization (trailing whitespace per line, trailing blank lines at EOF)
+// that the repository's binary-diff gate requires.
+
+fn normalized_query_lines(source: &str) -> String {
+    let mut lines: Vec<&str> = source.lines().map(str::trim_end).collect();
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+#[test]
+fn query_conformance_vendored_queries_match_upstream_modulo_documented_normalization() {
+    for (query_name, upstream, vendored) in [
+        (
+            "injections.scm",
+            include_str!("../../../tree-sitter-perl/queries/injections.scm"),
+            tree_sitter_perl_c::INJECTIONS_QUERY,
+        ),
+        (
+            "highlights.scm",
+            include_str!("../../../tree-sitter-perl/queries/highlights.scm"),
+            tree_sitter_perl_c::HIGHLIGHTS_QUERY,
+        ),
+    ] {
+        assert_eq!(
+            normalized_query_lines(upstream),
+            normalized_query_lines(vendored),
+            "vendored {query_name} drifted from the upstream snapshot; refresh both \
+             copies together per UPSTREAM_SNAPSHOT.md (the published loader must not \
+             ship stale query rules)"
+        );
+    }
+}
