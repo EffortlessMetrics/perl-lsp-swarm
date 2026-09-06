@@ -149,3 +149,42 @@ fn cargo_target_dir_collision_with_tracked_docs_does_not_publish() {
     assert_eq!(relative_path, root.join("target/token_performance_scorecard.json"));
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn cargo_target_dir_parent_alias_does_not_publish() {
+    let root = unique_temp_dir("parent-alias");
+    make_repo_layout(&root);
+    let aliased = root.join("docs/project/status/../status");
+    let path = resolve_artifact_path(&root, Some(&aliased), false)
+        .expect("parent-dir alias must fall back to repo target");
+    assert!(
+        !is_tracked_docs_artifact(&path),
+        "CARGO_TARGET_DIR parent-dir alias must not select tracked docs: {path:?}"
+    );
+    assert_eq!(path, root.join("target/token_performance_scorecard.json"));
+
+    let relative = Path::new("docs/project/status/../status");
+    let relative_path = resolve_artifact_path(&root, Some(relative), false)
+        .expect("relative parent-dir alias must fall back to repo target");
+    assert!(!is_tracked_docs_artifact(&relative_path));
+    assert_eq!(relative_path, root.join("target/token_performance_scorecard.json"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn cargo_target_dir_symlink_alias_does_not_publish() {
+    let root = unique_temp_dir("symlink-alias");
+    make_repo_layout(&root);
+    let alias = root.join("alias-status");
+    std::os::unix::fs::symlink(root.join("docs/project/status"), &alias)
+        .expect("symlink status dir");
+    let path = resolve_artifact_path(&root, Some(&alias), false)
+        .expect("symlink alias must fall back to repo target");
+    assert!(
+        !is_tracked_docs_artifact(&path),
+        "CARGO_TARGET_DIR symlink alias must not select tracked docs: {path:?}"
+    );
+    assert_eq!(path, root.join("target/token_performance_scorecard.json"));
+    let _ = fs::remove_dir_all(&root);
+}

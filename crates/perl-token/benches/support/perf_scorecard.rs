@@ -2,7 +2,7 @@ use perl_parser_core::percentile::nearest_rank_percentile;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Tracked scorecard consumed by `xtask update-status` parser rendering.
@@ -101,8 +101,9 @@ pub(crate) fn resolve_artifact_path(
     }
     if let Some(target_dir) = cargo_target_dir.filter(|path| !path.as_os_str().is_empty()) {
         let candidate = target_dir.join(LOCAL_ARTIFACT_FILE_NAME);
-        // `CARGO_TARGET_DIR=docs/project/status` must not bypass the publish gate.
-        if !is_tracked_docs_artifact(&candidate) {
+        // Ordinary runs must not write the tracked scorecard, including `..`
+        // spellings and directory aliases of `docs/project/status`.
+        if !would_write_tracked_docs(cwd, &candidate) {
             return Some(candidate);
         }
     }
@@ -110,7 +111,59 @@ pub(crate) fn resolve_artifact_path(
 }
 
 pub(crate) fn is_tracked_docs_artifact(path: &Path) -> bool {
-    path.ends_with(Path::new(TRACKED_ARTIFACT_RELATIVE_PATH))
+    normalize_lexically(path).ends_with(Path::new(TRACKED_ARTIFACT_RELATIVE_PATH))
+}
+
+fn would_write_tracked_docs(cwd: &Path, candidate: &Path) -> bool {
+    let resolved =
+        if candidate.is_absolute() { candidate.to_path_buf() } else { cwd.join(candidate) };
+    let lexical = normalize_lexically(&resolved);
+    if is_tracked_docs_artifact(&lexical) {
+        return true;
+    }
+    let Some(repo_root) = find_repo_root(cwd) else {
+        return false;
+    };
+    same_existing_file_or_parent(&lexical, &repo_root.join(TRACKED_ARTIFACT_RELATIVE_PATH))
+}
+
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    let _ = out.pop();
+                }
+                Some(Component::Prefix(_) | Component::RootDir) => {}
+                Some(Component::ParentDir | Component::CurDir) | None => out.push(component),
+            },
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn same_existing_file_or_parent(left: &Path, right: &Path) -> bool {
+    if let (Ok(canonical_left), Ok(canonical_right)) =
+        (fs::canonicalize(left), fs::canonicalize(right))
+    {
+        return canonical_left == canonical_right;
+    }
+    let Some((left_parent, left_name)) = left.parent().zip(left.file_name()) else {
+        return false;
+    };
+    let Some((right_parent, right_name)) = right.parent().zip(right.file_name()) else {
+        return false;
+    };
+    if left_name != right_name {
+        return false;
+    }
+    match (fs::canonicalize(left_parent), fs::canonicalize(right_parent)) {
+        (Ok(canonical_left), Ok(canonical_right)) => canonical_left == canonical_right,
+        _ => false,
+    }
 }
 
 fn find_artifact_path() -> Option<PathBuf> {
