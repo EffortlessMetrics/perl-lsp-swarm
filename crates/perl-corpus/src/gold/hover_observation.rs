@@ -69,7 +69,9 @@ pub enum HoverInstrumentFailure {
 pub struct HoverContent {
     /// Ordered sections in protocol order (`MarkedString[]` preserves order).
     pub sections: Vec<HoverContentSection>,
-    /// Sections joined with `\\n`, truncated to [`HOVER_RENDERED_TEXT_BOUND`].
+    /// Bounded diagnostic excerpt of the joined section text.
+    ///
+    /// Truncation is evidence-only. Substring assertions use [`Self::match_text`].
     pub rendered_text: String,
     /// Observed `Hover.range`, when present and well-formed.
     pub range: Option<HoverRange>,
@@ -167,6 +169,14 @@ impl HoverAssertionKind {
     }
 }
 
+impl HoverContent {
+    /// Full joined section text used by substring assertions.
+    #[must_use]
+    pub fn match_text(&self) -> String {
+        join_section_text(&self.sections)
+    }
+}
+
 impl HoverRange {
     /// LSP half-open containment: `start <= position < end`.
     #[must_use]
@@ -214,7 +224,7 @@ pub fn match_hover_assertion(
         }),
         HoverAssertionKind::HoverContains { needle } => {
             let content = require_content(observation, "hover_contains")?;
-            if content.rendered_text.contains(needle.as_str()) {
+            if content.match_text().contains(needle.as_str()) {
                 Ok(())
             } else {
                 Err(fail(format!(
@@ -225,7 +235,7 @@ pub fn match_hover_assertion(
         }
         HoverAssertionKind::HoverAbsent { needle } => {
             let content = require_content(observation, "hover_absent")?;
-            if content.rendered_text.contains(needle.as_str()) {
+            if content.match_text().contains(needle.as_str()) {
                 Err(fail(format!(
                     "hover_absent found forbidden needle {needle:?} in {:?}",
                     content.rendered_text
@@ -350,10 +360,11 @@ fn observe_hover_result(result: &Value) -> HoverObservation {
             HoverInstrumentFailure::UnsupportedContentsShape,
         );
     };
-    let rendered_text = bound_rendered_text(&sections);
-    if rendered_text.is_empty() {
+    let joined = join_section_text(&sections);
+    if joined.trim().is_empty() {
         return HoverObservation::InstrumentFailure(HoverInstrumentFailure::EmptyContents);
     }
+    let rendered_text = bound_text(joined);
 
     HoverObservation::Content(HoverContent { sections, rendered_text, range })
 }
@@ -405,10 +416,8 @@ fn marked_section(text: String, language: Option<String>) -> HoverContentSection
     HoverContentSection { text, form: HoverContentForm::MarkedString { language } }
 }
 
-fn bound_rendered_text(sections: &[HoverContentSection]) -> String {
-    let joined =
-        sections.iter().map(|section| section.text.as_str()).collect::<Vec<_>>().join("\n");
-    bound_text(joined)
+fn join_section_text(sections: &[HoverContentSection]) -> String {
+    sections.iter().map(|section| section.text.as_str()).collect::<Vec<_>>().join("\n")
 }
 
 fn bound_text(text: String) -> String {
@@ -788,6 +797,61 @@ mod tests {
             other => return Err(format!("expected bounded content, got {other:?}")),
         }
         Ok(())
+    }
+
+    #[test]
+    fn substring_assertions_use_full_text_past_the_render_bound() {
+        let prefix = "a".repeat(HOVER_RENDERED_TEXT_BOUND);
+        let observation = observe_hover_response(&markup(&format!("{prefix}NEEDLE")));
+        let content = match &observation {
+            HoverObservation::Content(content) => content,
+            other => panic!("expected content, got {other:?}"),
+        };
+        assert!(content.rendered_text.ends_with('…'));
+        assert!(!content.rendered_text.contains("NEEDLE"));
+        assert!(
+            match_hover_assertion(
+                &observation,
+                &assertion(HoverAssertionKind::HoverContains { needle: "NEEDLE".into() }, 0, 0)
+            )
+            .is_ok()
+        );
+        assert!(
+            match_hover_assertion(
+                &observation,
+                &assertion(HoverAssertionKind::HoverAbsent { needle: "NEEDLE".into() }, 0, 0)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn whitespace_only_and_blank_joined_sections_are_empty_contents() {
+        let whitespace = json!({"result": {"contents": {"kind": "plaintext", "value": "  \t  "}}});
+        assert!(matches!(
+            observe_hover_response(&whitespace),
+            HoverObservation::InstrumentFailure(HoverInstrumentFailure::EmptyContents)
+        ));
+        assert!(
+            match_hover_assertion(
+                &observe_hover_response(&whitespace),
+                &assertion(HoverAssertionKind::HoverNonNull, 0, 0)
+            )
+            .is_err()
+        );
+        assert!(
+            match_hover_assertion(
+                &observe_hover_response(&whitespace),
+                &assertion(HoverAssertionKind::HoverNull, 0, 0)
+            )
+            .is_err()
+        );
+
+        let blank_join = json!({"result": {"contents": ["", ""]}});
+        assert!(matches!(
+            observe_hover_response(&blank_join),
+            HoverObservation::InstrumentFailure(HoverInstrumentFailure::EmptyContents)
+        ));
     }
 
     #[test]
