@@ -1,0 +1,12 @@
+project: product
+component: Compatibility
+kind: Changed
+body: >-
+  Move the experimental tree-sitter-perl-rs semantic overlay behind the
+  non-default semantic-overlay feature so default and queries-only consumers
+  remain parser-only; callers using Tree::semantic_overlay must opt in.
+time: 2026-09-05T18:30:00Z
+custom:
+  PR: "7603"
+  Slug: tree-sitter-rs-semantic-overlay-feature
+  Breaking: "yes"
