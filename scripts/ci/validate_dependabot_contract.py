@@ -51,7 +51,7 @@ PLACEHOLDER_NAMES = frozenset(
 
 KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 DISCOVERY_RE = re.compile(
-    r"""--author\s+(?:["']app/dependabot["']|app/dependabot)"""
+    r"""gh\s+pr\s+list[^\n]*--author\s+(?:["']app/dependabot["']|app/dependabot)"""
 )
 LABEL_FILTER_RE = re.compile(
     r"""gh\s+pr\s+list[^\n]*--label\s+["']?dependencies["']?"""
@@ -65,6 +65,8 @@ SUBSHELL_MERGE_RE = re.compile(r"gh\s+pr\s+merge\s+\$\(\s*gh\s+pr\s+list")
 LOOPED_MERGE_RE = re.compile(
     r"\bfor\s+[A-Za-z_][A-Za-z0-9_]*\s+in\b[\s\S]{0,400}?"
     r"gh\s+pr\s+list[\s\S]{0,400}?gh\s+pr\s+merge"
+    r"|gh\s+pr\s+list[\s\S]{0,400}?"
+    r"\bfor\s+[A-Za-z_][A-Za-z0-9_]*\s+in\b[\s\S]{0,400}?gh\s+pr\s+merge"
     r"|\bwhile\s+read\b[\s\S]{0,400}?gh\s+pr\s+merge"
 )
 MERGE_TARGET_RE = re.compile(r"gh\s+pr\s+merge\s+(\S+)")
@@ -679,12 +681,13 @@ MANAGEMENT_SCHEDULE_HEADINGS = (
 
 
 def _inspect_management_schedules(management: str) -> list[Finding]:
-    """Require each ecosystem section to restate Monday/09:00, not a later sibling."""
+    """Require each ecosystem section to restate Weekly/Monday/09:00/UTC."""
     findings: list[Finding] = []
     posix = MANAGEMENT_GUIDE.as_posix()
+    required = ("Weekly", "Monday", "09:00", "UTC")
     for ecosystem, heading in MANAGEMENT_SCHEDULE_HEADINGS:
         section = _section(management, heading)
-        if "Monday" not in section or "09:00" not in section:
+        if not all(token in section for token in required):
             findings.append(
                 Finding(
                     "schedule-guide-drift",
@@ -1022,6 +1025,14 @@ def _pull_request_path_entries(text: str) -> set[str]:
     return entries
 
 
+def _has_run_command(text: str, command: str) -> bool:
+    """True when `command` is its own executable workflow line, not an echo/arg mention."""
+    for line in text.splitlines():
+        if line.strip() == command:
+            return True
+    return False
+
+
 def inspect_workflow_wiring(text: str) -> list[Finding]:
     """Require Policy Validators to execute this contract on governed edits."""
     findings: list[Finding] = []
@@ -1038,7 +1049,7 @@ def inspect_workflow_wiring(text: str) -> list[Finding]:
                     f"Policy Validators pull_request.paths must include {needle}",
                 )
             )
-    if REQUIRED_TEST_RUN not in active:
+    if not _has_run_command(active, REQUIRED_TEST_RUN):
         findings.append(
             Finding(
                 "workflow-tests-unwired",
@@ -1046,7 +1057,7 @@ def inspect_workflow_wiring(text: str) -> list[Finding]:
                 "Policy Validators must run the focused Dependabot contract tests",
             )
         )
-    if REQUIRED_VALIDATOR_RUN not in active:
+    if not _has_run_command(active, REQUIRED_VALIDATOR_RUN):
         findings.append(
             Finding(
                 "workflow-validator-unwired",

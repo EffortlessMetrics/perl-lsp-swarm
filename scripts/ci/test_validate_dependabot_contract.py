@@ -218,6 +218,20 @@ class NegativeControlTests(unittest.TestCase):
             _rewrite(tmp, QUICK_REFERENCE, lambda text: text + snippet)
             self.assertIn("pipe-into-merge", _ids(_findings(tmp)))
 
+    def test_assigned_list_then_for_loop_merge_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp = Path(temp)
+            _clone_surfaces(tmp)
+            snippet = (
+                "\n```bash\n"
+                'nums=$(gh pr list --author "app/dependabot" '
+                '--search "status:success")\n'
+                'for n in $nums; do gh pr merge "$n" --auto --squash; done\n'
+                "```\n"
+            )
+            _rewrite(tmp, QUICK_REFERENCE, lambda text: text + snippet)
+            self.assertIn("pipe-into-merge", _ids(_findings(tmp)))
+
     def test_status_success_called_patch_updates_without_version_delta_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp = Path(temp)
@@ -397,7 +411,55 @@ class NegativeControlTests(unittest.TestCase):
             _rewrite(tmp, MANAGEMENT_GUIDE, mutate)
             self.assertIn("schedule-guide-drift", _ids(_findings(tmp)))
 
-    def test_run_commands_do_not_satisfy_path_wiring(self) -> None:
+    def test_npm_weekly_to_daily_is_not_masked_by_monday(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp = Path(temp)
+            _clone_surfaces(tmp)
+            marker = (
+                "### npm Dependencies (VS Code Extension)\n\n"
+                "**Schedule**: Weekly on Monday at 09:00 UTC"
+            )
+            replacement = (
+                "### npm Dependencies (VS Code Extension)\n\n"
+                "**Schedule**: Daily on Monday at 09:00 UTC"
+            )
+
+            def mutate(text: str) -> str:
+                if marker not in text:
+                    raise AssertionError("npm schedule marker missing from fixture")
+                return text.replace(marker, replacement, 1)
+
+            _rewrite(tmp, MANAGEMENT_GUIDE, mutate)
+            self.assertIn("schedule-guide-drift", _ids(_findings(tmp)))
+
+    def test_echo_prefixed_run_commands_are_not_wiring(self) -> None:
+        workflow = (ROOT / POLICY_WORKFLOW).read_text(encoding="utf-8")
+        mutated = workflow.replace(
+            "          python3 scripts/ci/test_validate_dependabot_contract.py\n",
+            "          echo python3 scripts/ci/test_validate_dependabot_contract.py\n",
+            1,
+        ).replace(
+            "          python3 scripts/ci/validate_dependabot_contract.py --repo-root .\n",
+            "          echo python3 scripts/ci/validate_dependabot_contract.py --repo-root .\n",
+            1,
+        )
+        ids = _ids(inspect_workflow_wiring(mutated))
+        self.assertIn("workflow-tests-unwired", ids)
+        self.assertIn("workflow-validator-unwired", ids)
+
+    def test_echo_author_flag_is_not_dependabot_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp = Path(temp)
+            _clone_surfaces(tmp)
+            _rewrite(
+                tmp,
+                CONTRIBUTING_GUIDE,
+                lambda text: text.replace(
+                    'gh pr list --author "app/dependabot"',
+                    'echo --author "app/dependabot"',
+                ),
+            )
+            self.assertIn("app-dependabot-discovery-missing", _ids(_findings(tmp)))
         workflow = (ROOT / POLICY_WORKFLOW).read_text(encoding="utf-8")
         mutated = workflow.replace(
             "      - 'scripts/ci/validate_dependabot_contract.py'\n",
