@@ -1,0 +1,582 @@
+pub mod perl_lexer
+pub use perl_lexer::Position
+pub mod perl_lexer::api
+pub struct perl_lexer::api::BuiltinSignature
+pub perl_lexer::api::BuiltinSignature::documentation: &'static str
+pub perl_lexer::api::BuiltinSignature::signatures: alloc::vec::Vec<&'static str>
+pub struct perl_lexer::api::PositionTracker<'a>
+pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::byte_to_position(&self, byte: usize) -> perl_position_tracking::position::Position
+pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::new(source: &'a str) -> Self
+pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::wrap_token(&self, token: perl_lexer::token::Token) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
+pub struct perl_lexer::api::TokenWithPosition
+pub perl_lexer::api::TokenWithPosition::end_pos: perl_position_tracking::position::Position
+pub perl_lexer::api::TokenWithPosition::start_pos: perl_position_tracking::position::Position
+pub perl_lexer::api::TokenWithPosition::token: perl_lexer::token::Token
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::byte_range(&self) -> (usize, usize)
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::kind(&self) -> &perl_lexer::token::TokenType
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::new(token: perl_lexer::token::Token, start_pos: perl_position_tracking::position::Position, end_pos: perl_position_tracking::position::Position) -> Self
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::range(&self) -> perl_position_tracking::position::Range
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::text(&self) -> &str
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::clone(&self) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_lexer::api::DAP_COMPLETION_KEYWORDS: &[&str]
+pub const perl_lexer::api::KEYWORDS: &[&str]
+pub const perl_lexer::api::LEXER_KEYWORDS: &[&str]
+pub const perl_lexer::api::LSP_COMPLETION_KEYWORDS: &[&str]
+pub const perl_lexer::api::LSP_RUNTIME_COMPLETION_KEYWORDS: &[&str]
+pub const perl_lexer::api::PARSER_LSP_KEYWORDS: &[&str]
+pub const perl_lexer::api::RENAME_KEYWORDS: &[&str]
+pub static perl_lexer::api::BUILTIN_FULL_SIGS: phf::map::Map<&'static str, &'static [&'static str]>
+pub static perl_lexer::api::BUILTIN_SIGS: phf::map::Map<&'static str, &'static [&'static str]>
+pub fn perl_lexer::api::builtin_count() -> usize
+pub fn perl_lexer::api::code_slice(text: &str) -> &str
+pub fn perl_lexer::api::create_builtin_signatures() -> &'static std::collections::hash::map::HashMap<&'static str, perl_lexer::builtins::builtin_signatures::BuiltinSignature>
+pub fn perl_lexer::api::find_data_marker_byte(s: &str) -> core::option::Option<usize>
+pub fn perl_lexer::api::find_data_marker_byte_lexed(s: &str) -> core::option::Option<usize>
+pub fn perl_lexer::api::get_param_names(function_name: &str) -> &'static [&'static str]
+pub fn perl_lexer::api::is_builtin(function_name: &str) -> bool
+pub fn perl_lexer::api::is_dap_completion_keyword(token: &str) -> bool
+pub fn perl_lexer::api::is_keyword(token: &str) -> bool
+pub fn perl_lexer::api::is_lexer_keyword(token: &str) -> bool
+pub fn perl_lexer::api::is_lsp_completion_keyword(token: &str) -> bool
+pub fn perl_lexer::api::is_lsp_runtime_completion_keyword(token: &str) -> bool
+pub fn perl_lexer::api::is_parser_lsp_keyword(token: &str) -> bool
+pub fn perl_lexer::api::is_rename_keyword(token: &str) -> bool
+pub mod perl_lexer::builtins
+pub mod perl_lexer::builtins::builtin_signatures
+pub struct perl_lexer::builtins::builtin_signatures::BuiltinSignature
+pub perl_lexer::builtins::builtin_signatures::BuiltinSignature::documentation: &'static str
+pub perl_lexer::builtins::builtin_signatures::BuiltinSignature::signatures: alloc::vec::Vec<&'static str>
+pub fn perl_lexer::builtins::builtin_signatures::create_builtin_signatures() -> &'static std::collections::hash::map::HashMap<&'static str, perl_lexer::builtins::builtin_signatures::BuiltinSignature>
+pub mod perl_lexer::builtins::builtin_signatures_phf
+pub static perl_lexer::builtins::builtin_signatures_phf::BUILTIN_FULL_SIGS: phf::map::Map<&'static str, &'static [&'static str]>
+pub static perl_lexer::builtins::builtin_signatures_phf::BUILTIN_SIGS: phf::map::Map<&'static str, &'static [&'static str]>
+pub fn perl_lexer::builtins::builtin_signatures_phf::builtin_count() -> usize
+pub fn perl_lexer::builtins::builtin_signatures_phf::get_param_names(function_name: &str) -> &'static [&'static str]
+pub fn perl_lexer::builtins::builtin_signatures_phf::is_builtin(function_name: &str) -> bool
+pub fn perl_lexer::builtins::builtin_signatures_phf::try_get_param_names(function_name: &str) -> core::option::Option<&'static [&'static str]>
+pub mod perl_lexer::builtins::phf_lookup
+pub static perl_lexer::builtins::phf_lookup::BUILTIN_FULL_SIGS: phf::map::Map<&'static str, &'static [&'static str]>
+pub static perl_lexer::builtins::phf_lookup::BUILTIN_SIGS: phf::map::Map<&'static str, &'static [&'static str]>
+pub fn perl_lexer::builtins::phf_lookup::builtin_count() -> usize
+pub fn perl_lexer::builtins::phf_lookup::get_param_names(function_name: &str) -> &'static [&'static str]
+pub fn perl_lexer::builtins::phf_lookup::is_builtin(function_name: &str) -> bool
+pub fn perl_lexer::builtins::phf_lookup::try_get_param_names(function_name: &str) -> core::option::Option<&'static [&'static str]>
+pub mod perl_lexer::checkpoint
+pub enum perl_lexer::checkpoint::CheckpointContext
+pub perl_lexer::checkpoint::CheckpointContext::Format
+pub perl_lexer::checkpoint::CheckpointContext::Format::start_position: usize
+pub perl_lexer::checkpoint::CheckpointContext::Heredoc
+pub perl_lexer::checkpoint::CheckpointContext::Heredoc::is_interpolated: bool
+pub perl_lexer::checkpoint::CheckpointContext::Heredoc::terminator: alloc::string::String
+pub perl_lexer::checkpoint::CheckpointContext::Normal
+pub perl_lexer::checkpoint::CheckpointContext::QuoteLike
+pub perl_lexer::checkpoint::CheckpointContext::QuoteLike::delimiter: char
+pub perl_lexer::checkpoint::CheckpointContext::QuoteLike::is_paired: bool
+pub perl_lexer::checkpoint::CheckpointContext::QuoteLike::operator: alloc::string::String
+pub perl_lexer::checkpoint::CheckpointContext::Regex
+pub perl_lexer::checkpoint::CheckpointContext::Regex::delimiter: char
+pub perl_lexer::checkpoint::CheckpointContext::Regex::flags_position: core::option::Option<usize>
+pub fn perl_lexer::checkpoint::CheckpointContext::clone(&self) -> perl_lexer::checkpoint::CheckpointContext
+pub fn perl_lexer::checkpoint::CheckpointContext::eq(&self, other: &perl_lexer::checkpoint::CheckpointContext) -> bool
+pub fn perl_lexer::checkpoint::CheckpointContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::checkpoint::CheckpointCache
+pub fn perl_lexer::CheckpointCache::add(&mut self, checkpoint: perl_lexer::LexerCheckpoint)
+pub fn perl_lexer::CheckpointCache::apply_edit(&mut self, start: usize, old_len: usize, new_len: usize)
+pub fn perl_lexer::CheckpointCache::clear(&mut self)
+pub fn perl_lexer::CheckpointCache::find_after(&self, position: usize) -> core::option::Option<&perl_lexer::LexerCheckpoint>
+pub fn perl_lexer::CheckpointCache::find_before(&self, position: usize) -> core::option::Option<&perl_lexer::LexerCheckpoint>
+pub fn perl_lexer::CheckpointCache::is_empty(&self) -> bool
+pub fn perl_lexer::CheckpointCache::len(&self) -> usize
+pub fn perl_lexer::CheckpointCache::new(max_checkpoints: usize) -> Self
+pub struct perl_lexer::checkpoint::CheckpointDiff
+pub perl_lexer::checkpoint::CheckpointDiff::context_changed: bool
+pub perl_lexer::checkpoint::CheckpointDiff::delimiter_stack_changed: bool
+pub perl_lexer::checkpoint::CheckpointDiff::eof_state_changed: bool
+pub perl_lexer::checkpoint::CheckpointDiff::mode_changed: bool
+pub perl_lexer::checkpoint::CheckpointDiff::position_delta: isize
+pub perl_lexer::checkpoint::CheckpointDiff::prototype_state_changed: bool
+pub fn perl_lexer::checkpoint::CheckpointDiff::has_state_changes(&self) -> bool
+pub fn perl_lexer::checkpoint::CheckpointDiff::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::checkpoint::LexerCheckpoint
+pub perl_lexer::checkpoint::LexerCheckpoint::after_arrow: bool
+pub perl_lexer::checkpoint::LexerCheckpoint::after_newline: bool
+pub perl_lexer::checkpoint::LexerCheckpoint::after_sub: bool
+pub perl_lexer::checkpoint::LexerCheckpoint::after_var_subscript: bool
+pub perl_lexer::checkpoint::LexerCheckpoint::context: perl_lexer::checkpoint::CheckpointContext
+pub perl_lexer::checkpoint::LexerCheckpoint::current_pos: perl_position_tracking::position::Position
+pub perl_lexer::checkpoint::LexerCheckpoint::current_quote_op: core::option::Option<perl_lexer::checkpoint::QuoteOperatorCheckpoint>
+pub perl_lexer::checkpoint::LexerCheckpoint::delimiter_stack: alloc::vec::Vec<char>
+pub perl_lexer::checkpoint::LexerCheckpoint::emit_heredoc_body_tokens: bool
+pub perl_lexer::checkpoint::LexerCheckpoint::eof_emitted: bool
+pub perl_lexer::checkpoint::LexerCheckpoint::hash_brace_depth: usize
+pub perl_lexer::checkpoint::LexerCheckpoint::in_prototype: bool
+pub perl_lexer::checkpoint::LexerCheckpoint::line_start_offset: usize
+pub perl_lexer::checkpoint::LexerCheckpoint::mode: perl_lexer::mode::LexerMode
+pub perl_lexer::checkpoint::LexerCheckpoint::paren_depth: usize
+pub perl_lexer::checkpoint::LexerCheckpoint::parse_interpolation: bool
+pub perl_lexer::checkpoint::LexerCheckpoint::pending_heredocs: alloc::vec::Vec<perl_lexer::checkpoint::PendingHeredocCheckpoint>
+pub perl_lexer::checkpoint::LexerCheckpoint::position: usize
+pub perl_lexer::checkpoint::LexerCheckpoint::prototype_depth: usize
+pub perl_lexer::checkpoint::LexerCheckpoint::qw_recovery_enabled: bool
+pub fn perl_lexer::LexerCheckpoint::apply_edit(&mut self, start: usize, old_len: usize, new_len: usize)
+pub fn perl_lexer::LexerCheckpoint::at_position(position: usize) -> Self
+pub fn perl_lexer::LexerCheckpoint::diff(&self, other: &Self) -> perl_lexer::checkpoint::CheckpointDiff
+pub fn perl_lexer::LexerCheckpoint::is_at_start(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::is_timeout_sensitive(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::is_valid_for(&self, input: &str) -> bool
+pub fn perl_lexer::LexerCheckpoint::new() -> Self
+pub fn perl_lexer::LexerCheckpoint::try_apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) -> bool
+pub fn perl_lexer::LexerCheckpoint::clone(&self) -> perl_lexer::LexerCheckpoint
+pub fn perl_lexer::LexerCheckpoint::eq(&self, other: &perl_lexer::LexerCheckpoint) -> bool
+pub fn perl_lexer::LexerCheckpoint::default() -> Self
+pub fn perl_lexer::LexerCheckpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::LexerCheckpoint::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::checkpoint::PendingHeredocCheckpoint
+pub perl_lexer::checkpoint::PendingHeredocCheckpoint::allow_indent: bool
+pub perl_lexer::checkpoint::PendingHeredocCheckpoint::body_start: usize
+pub perl_lexer::checkpoint::PendingHeredocCheckpoint::interpolates: bool
+pub perl_lexer::checkpoint::PendingHeredocCheckpoint::label: alloc::string::String
+pub fn perl_lexer::checkpoint::PendingHeredocCheckpoint::clone(&self) -> perl_lexer::checkpoint::PendingHeredocCheckpoint
+pub fn perl_lexer::checkpoint::PendingHeredocCheckpoint::eq(&self, other: &perl_lexer::checkpoint::PendingHeredocCheckpoint) -> bool
+pub fn perl_lexer::checkpoint::PendingHeredocCheckpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::checkpoint::QuoteOperatorCheckpoint
+pub perl_lexer::checkpoint::QuoteOperatorCheckpoint::delimiter: char
+pub perl_lexer::checkpoint::QuoteOperatorCheckpoint::operator: alloc::string::String
+pub perl_lexer::checkpoint::QuoteOperatorCheckpoint::start_pos: usize
+pub fn perl_lexer::checkpoint::QuoteOperatorCheckpoint::clone(&self) -> perl_lexer::checkpoint::QuoteOperatorCheckpoint
+pub fn perl_lexer::checkpoint::QuoteOperatorCheckpoint::eq(&self, other: &perl_lexer::checkpoint::QuoteOperatorCheckpoint) -> bool
+pub fn perl_lexer::checkpoint::QuoteOperatorCheckpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub trait perl_lexer::checkpoint::Checkpointable
+pub fn perl_lexer::checkpoint::Checkpointable::can_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> bool
+pub fn perl_lexer::checkpoint::Checkpointable::checkpoint(&self) -> perl_lexer::LexerCheckpoint
+pub fn perl_lexer::checkpoint::Checkpointable::restore(&mut self, checkpoint: &perl_lexer::LexerCheckpoint)
+pub fn perl_lexer::PerlLexer<'_>::can_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> bool
+pub fn perl_lexer::PerlLexer<'_>::checkpoint(&self) -> perl_lexer::LexerCheckpoint
+pub fn perl_lexer::PerlLexer<'_>::restore(&mut self, checkpoint: &perl_lexer::LexerCheckpoint)
+pub mod perl_lexer::config
+pub struct perl_lexer::config::LexerConfig
+pub perl_lexer::config::LexerConfig::max_lookahead: usize
+pub perl_lexer::config::LexerConfig::parse_interpolation: bool
+pub perl_lexer::config::LexerConfig::symbol_table: core::option::Option<perl_lexer::symbol_table::LocalSymbolTable>
+pub perl_lexer::config::LexerConfig::track_positions: bool
+pub const perl_lexer::config::LexerConfig::DEFAULT_MAX_LOOKAHEAD: usize
+pub const perl_lexer::config::LexerConfig::POSITIONS_ARE_ALWAYS_TRACKED: bool
+pub fn perl_lexer::config::LexerConfig::has_symbol_table(&self) -> bool
+pub fn perl_lexer::config::LexerConfig::interpolation_enabled(&self) -> bool
+pub fn perl_lexer::config::LexerConfig::lookahead_limit(&self) -> usize
+pub fn perl_lexer::config::LexerConfig::permits_lookahead_offset(&self, offset: usize) -> bool
+pub fn perl_lexer::config::LexerConfig::clone(&self) -> perl_lexer::config::LexerConfig
+pub fn perl_lexer::config::LexerConfig::default() -> Self
+pub fn perl_lexer::config::LexerConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod perl_lexer::error
+pub enum perl_lexer::error::LexerError
+pub perl_lexer::error::LexerError::HeredocError
+pub perl_lexer::error::LexerError::HeredocError::position: usize
+pub perl_lexer::error::LexerError::HeredocError::reason: alloc::string::String
+pub perl_lexer::error::LexerError::InvalidEscape
+pub perl_lexer::error::LexerError::InvalidEscape::char: char
+pub perl_lexer::error::LexerError::InvalidEscape::position: usize
+pub perl_lexer::error::LexerError::InvalidNumber
+pub perl_lexer::error::LexerError::InvalidNumber::position: usize
+pub perl_lexer::error::LexerError::InvalidNumber::reason: alloc::string::String
+pub perl_lexer::error::LexerError::InvalidUtf8
+pub perl_lexer::error::LexerError::InvalidUtf8::position: usize
+pub perl_lexer::error::LexerError::Other(alloc::string::String)
+pub perl_lexer::error::LexerError::UnexpectedChar
+pub perl_lexer::error::LexerError::UnexpectedChar::char: char
+pub perl_lexer::error::LexerError::UnexpectedChar::position: usize
+pub perl_lexer::error::LexerError::UnterminatedRegex
+pub perl_lexer::error::LexerError::UnterminatedRegex::position: usize
+pub perl_lexer::error::LexerError::UnterminatedString
+pub perl_lexer::error::LexerError::UnterminatedString::position: usize
+pub fn perl_lexer::error::LexerError::position(&self) -> core::option::Option<usize>
+pub fn perl_lexer::error::LexerError::clone(&self) -> perl_lexer::error::LexerError
+pub fn perl_lexer::error::LexerError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::error::LexerError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub type perl_lexer::error::Result<T> = core::result::Result<T, perl_lexer::error::LexerError>
+pub mod perl_lexer::keywords
+pub const perl_lexer::keywords::DAP_COMPLETION_KEYWORDS: &[&str]
+pub const perl_lexer::keywords::KEYWORDS: &[&str]
+pub const perl_lexer::keywords::LEXER_KEYWORDS: &[&str]
+pub const perl_lexer::keywords::LSP_COMPLETION_KEYWORDS: &[&str]
+pub const perl_lexer::keywords::LSP_RUNTIME_COMPLETION_KEYWORDS: &[&str]
+pub const perl_lexer::keywords::PARSER_LSP_KEYWORDS: &[&str]
+pub const perl_lexer::keywords::RENAME_KEYWORDS: &[&str]
+pub fn perl_lexer::keywords::is_dap_completion_keyword(token: &str) -> bool
+pub fn perl_lexer::keywords::is_keyword(token: &str) -> bool
+pub fn perl_lexer::keywords::is_lexer_keyword(token: &str) -> bool
+pub fn perl_lexer::keywords::is_lsp_completion_keyword(token: &str) -> bool
+pub fn perl_lexer::keywords::is_lsp_runtime_completion_keyword(token: &str) -> bool
+pub fn perl_lexer::keywords::is_parser_lsp_keyword(token: &str) -> bool
+pub fn perl_lexer::keywords::is_rename_keyword(token: &str) -> bool
+pub mod perl_lexer::limits
+pub const perl_lexer::limits::MAX_REGEX_PARSE_STEPS: usize
+pub mod perl_lexer::mode
+pub enum perl_lexer::mode::LexerMode
+pub perl_lexer::mode::LexerMode::ExpectDelimiter
+pub perl_lexer::mode::LexerMode::ExpectOperator
+pub perl_lexer::mode::LexerMode::ExpectTerm
+pub perl_lexer::mode::LexerMode::InDataSection
+pub perl_lexer::mode::LexerMode::InFormatBody
+pub fn perl_lexer::mode::LexerMode::is_expect_delimiter(&self) -> bool
+pub fn perl_lexer::mode::LexerMode::is_expect_operator(&self) -> bool
+pub fn perl_lexer::mode::LexerMode::is_expect_term(&self) -> bool
+pub fn perl_lexer::mode::LexerMode::clone(&self) -> perl_lexer::mode::LexerMode
+pub fn perl_lexer::mode::LexerMode::eq(&self, other: &perl_lexer::mode::LexerMode) -> bool
+pub fn perl_lexer::mode::LexerMode::default() -> perl_lexer::mode::LexerMode
+pub fn perl_lexer::mode::LexerMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod perl_lexer::numeric
+pub enum perl_lexer::numeric::NumericBase
+pub perl_lexer::numeric::NumericBase::Binary
+pub perl_lexer::numeric::NumericBase::Decimal
+pub perl_lexer::numeric::NumericBase::ExplicitOctal
+pub perl_lexer::numeric::NumericBase::Hexadecimal
+pub perl_lexer::numeric::NumericBase::LegacyOctal
+pub fn perl_lexer::numeric::NumericBase::clone(&self) -> perl_lexer::numeric::NumericBase
+pub fn perl_lexer::numeric::NumericBase::eq(&self, other: &perl_lexer::numeric::NumericBase) -> bool
+pub fn perl_lexer::numeric::NumericBase::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::numeric::parse_perl_integer(s: &str) -> core::option::Option<(u64, perl_lexer::numeric::NumericBase)>
+pub mod perl_lexer::symbol_table
+pub struct perl_lexer::symbol_table::LocalSymbolTable
+pub fn perl_lexer::symbol_table::LocalSymbolTable::is_empty(&self) -> bool
+pub fn perl_lexer::symbol_table::LocalSymbolTable::is_known_sub(&self, name: &str) -> bool
+pub fn perl_lexer::symbol_table::LocalSymbolTable::len(&self) -> usize
+pub fn perl_lexer::symbol_table::LocalSymbolTable::scan_subs(input: &str) -> Self
+pub fn perl_lexer::symbol_table::LocalSymbolTable::clone(&self) -> perl_lexer::symbol_table::LocalSymbolTable
+pub fn perl_lexer::symbol_table::LocalSymbolTable::default() -> perl_lexer::symbol_table::LocalSymbolTable
+pub fn perl_lexer::symbol_table::LocalSymbolTable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod perl_lexer::token
+pub enum perl_lexer::token::StringPart
+pub perl_lexer::token::StringPart::ArraySlice(alloc::sync::Arc<str>)
+pub perl_lexer::token::StringPart::Expression(alloc::sync::Arc<str>)
+pub perl_lexer::token::StringPart::Literal(alloc::sync::Arc<str>)
+pub perl_lexer::token::StringPart::MethodCall(alloc::sync::Arc<str>)
+pub perl_lexer::token::StringPart::Variable(alloc::sync::Arc<str>)
+pub fn perl_lexer::token::StringPart::clone(&self) -> perl_lexer::token::StringPart
+pub fn perl_lexer::token::StringPart::eq(&self, other: &perl_lexer::token::StringPart) -> bool
+pub fn perl_lexer::token::StringPart::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lexer::token::TokenType
+pub perl_lexer::token::TokenType::Arrow
+pub perl_lexer::token::TokenType::Colon
+pub perl_lexer::token::TokenType::Comma
+pub perl_lexer::token::TokenType::Comment(alloc::sync::Arc<str>)
+pub perl_lexer::token::TokenType::DataBody(alloc::sync::Arc<str>)
+pub perl_lexer::token::TokenType::DataMarker(alloc::sync::Arc<str>)
+pub perl_lexer::token::TokenType::Division
+pub perl_lexer::token::TokenType::EOF
+pub perl_lexer::token::TokenType::Error(alloc::sync::Arc<str>)
+pub perl_lexer::token::TokenType::FatComma
+pub perl_lexer::token::TokenType::FormatBody(alloc::sync::Arc<str>)
+pub perl_lexer::token::TokenType::HeredocBody(alloc::sync::Arc<str>)
+pub perl_lexer::token::TokenType::HeredocStart
+pub perl_lexer::token::TokenType::Identifier(alloc::sync::Arc<str>)
+pub perl_lexer::token::TokenType::InterpolatedHeredocBody(alloc::vec::Vec<perl_lexer::token::StringPart>)
+pub perl_lexer::token::TokenType::InterpolatedString(alloc::vec::Vec<perl_lexer::token::StringPart>)
+pub perl_lexer::token::TokenType::Keyword(alloc::sync::Arc<str>)
+pub perl_lexer::token::TokenType::LeftBrace
+pub perl_lexer::token::TokenType::LeftBracket
+pub perl_lexer::token::TokenType::LeftParen
+pub perl_lexer::token::TokenType::Newline
+pub perl_lexer::token::TokenType::Number(alloc::sync::Arc<str>)
+pub perl_lexer::token::TokenType::Operator(alloc::sync::Arc<str>)
+pub perl_lexer::token::TokenType::Pod
+pub perl_lexer::token::TokenType::QuoteCommand
+pub perl_lexer::token::TokenType::QuoteDouble(alloc::vec::Vec<perl_lexer::token::StringPart>)
+pub perl_lexer::token::TokenType::QuoteRegex
+pub perl_lexer::token::TokenType::QuoteSingle
+pub perl_lexer::token::TokenType::QuoteWords
+pub perl_lexer::token::TokenType::RegexMatch
+pub perl_lexer::token::TokenType::RightBrace
+pub perl_lexer::token::TokenType::RightBracket
+pub perl_lexer::token::TokenType::RightParen
+pub perl_lexer::token::TokenType::Semicolon
+pub perl_lexer::token::TokenType::StringLiteral
+pub perl_lexer::token::TokenType::Substitution
+pub perl_lexer::token::TokenType::Transliteration
+pub perl_lexer::token::TokenType::UnknownRest
+pub perl_lexer::token::TokenType::Version(alloc::sync::Arc<str>)
+pub perl_lexer::token::TokenType::Whitespace
+pub fn perl_lexer::token::TokenType::is_recovery_token(&self) -> bool
+pub fn perl_lexer::token::TokenType::is_trivia(&self) -> bool
+pub fn perl_lexer::token::TokenType::clone(&self) -> perl_lexer::token::TokenType
+pub fn perl_lexer::token::TokenType::eq(&self, other: &perl_lexer::token::TokenType) -> bool
+pub fn perl_lexer::token::TokenType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::token::Token
+pub perl_lexer::token::Token::end: usize
+pub perl_lexer::token::Token::start: usize
+pub perl_lexer::token::Token::text: alloc::sync::Arc<str>
+pub perl_lexer::token::Token::token_type: perl_lexer::token::TokenType
+pub fn perl_lexer::token::Token::is_empty(&self) -> bool
+pub fn perl_lexer::token::Token::len(&self) -> usize
+pub fn perl_lexer::token::Token::new(token_type: perl_lexer::token::TokenType, text: impl core::convert::Into<alloc::sync::Arc<str>>, start: usize, end: usize) -> Self
+pub fn perl_lexer::token::Token::clone(&self) -> perl_lexer::token::Token
+pub fn perl_lexer::token::Token::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod perl_lexer::tokenizer
+pub mod perl_lexer::tokenizer::token_wrapper
+pub struct perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>
+pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::byte_to_position(&self, byte: usize) -> perl_position_tracking::position::Position
+pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::new(source: &'a str) -> Self
+pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::wrap_token(&self, token: perl_lexer::token::Token) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
+pub struct perl_lexer::tokenizer::token_wrapper::TokenWithPosition
+pub perl_lexer::tokenizer::token_wrapper::TokenWithPosition::end_pos: perl_position_tracking::position::Position
+pub perl_lexer::tokenizer::token_wrapper::TokenWithPosition::start_pos: perl_position_tracking::position::Position
+pub perl_lexer::tokenizer::token_wrapper::TokenWithPosition::token: perl_lexer::token::Token
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::byte_range(&self) -> (usize, usize)
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::kind(&self) -> &perl_lexer::token::TokenType
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::new(token: perl_lexer::token::Token, start_pos: perl_position_tracking::position::Position, end_pos: perl_position_tracking::position::Position) -> Self
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::range(&self) -> perl_position_tracking::position::Range
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::text(&self) -> &str
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::clone(&self) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod perl_lexer::tokenizer::util
+pub fn perl_lexer::tokenizer::util::code_slice(text: &str) -> &str
+pub fn perl_lexer::tokenizer::util::find_data_marker_byte(s: &str) -> core::option::Option<usize>
+pub fn perl_lexer::tokenizer::util::find_data_marker_byte_lexed(s: &str) -> core::option::Option<usize>
+pub fn perl_lexer::tokenizer::util::split_code_and_data(text: &str) -> (&str, core::option::Option<&str>)
+pub struct perl_lexer::tokenizer::PositionTracker<'a>
+pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::byte_to_position(&self, byte: usize) -> perl_position_tracking::position::Position
+pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::new(source: &'a str) -> Self
+pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::wrap_token(&self, token: perl_lexer::token::Token) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
+pub struct perl_lexer::tokenizer::TokenWithPosition
+pub perl_lexer::tokenizer::TokenWithPosition::end_pos: perl_position_tracking::position::Position
+pub perl_lexer::tokenizer::TokenWithPosition::start_pos: perl_position_tracking::position::Position
+pub perl_lexer::tokenizer::TokenWithPosition::token: perl_lexer::token::Token
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::byte_range(&self) -> (usize, usize)
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::kind(&self) -> &perl_lexer::token::TokenType
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::new(token: perl_lexer::token::Token, start_pos: perl_position_tracking::position::Position, end_pos: perl_position_tracking::position::Position) -> Self
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::range(&self) -> perl_position_tracking::position::Range
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::text(&self) -> &str
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::clone(&self) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lexer::LexerError
+pub perl_lexer::LexerError::HeredocError
+pub perl_lexer::LexerError::HeredocError::position: usize
+pub perl_lexer::LexerError::HeredocError::reason: alloc::string::String
+pub perl_lexer::LexerError::InvalidEscape
+pub perl_lexer::LexerError::InvalidEscape::char: char
+pub perl_lexer::LexerError::InvalidEscape::position: usize
+pub perl_lexer::LexerError::InvalidNumber
+pub perl_lexer::LexerError::InvalidNumber::position: usize
+pub perl_lexer::LexerError::InvalidNumber::reason: alloc::string::String
+pub perl_lexer::LexerError::InvalidUtf8
+pub perl_lexer::LexerError::InvalidUtf8::position: usize
+pub perl_lexer::LexerError::Other(alloc::string::String)
+pub perl_lexer::LexerError::UnexpectedChar
+pub perl_lexer::LexerError::UnexpectedChar::char: char
+pub perl_lexer::LexerError::UnexpectedChar::position: usize
+pub perl_lexer::LexerError::UnterminatedRegex
+pub perl_lexer::LexerError::UnterminatedRegex::position: usize
+pub perl_lexer::LexerError::UnterminatedString
+pub perl_lexer::LexerError::UnterminatedString::position: usize
+pub fn perl_lexer::error::LexerError::position(&self) -> core::option::Option<usize>
+pub fn perl_lexer::error::LexerError::clone(&self) -> perl_lexer::error::LexerError
+pub fn perl_lexer::error::LexerError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::error::LexerError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lexer::LexerMode
+pub perl_lexer::LexerMode::ExpectDelimiter
+pub perl_lexer::LexerMode::ExpectOperator
+pub perl_lexer::LexerMode::ExpectTerm
+pub perl_lexer::LexerMode::InDataSection
+pub perl_lexer::LexerMode::InFormatBody
+pub fn perl_lexer::mode::LexerMode::is_expect_delimiter(&self) -> bool
+pub fn perl_lexer::mode::LexerMode::is_expect_operator(&self) -> bool
+pub fn perl_lexer::mode::LexerMode::is_expect_term(&self) -> bool
+pub fn perl_lexer::mode::LexerMode::clone(&self) -> perl_lexer::mode::LexerMode
+pub fn perl_lexer::mode::LexerMode::eq(&self, other: &perl_lexer::mode::LexerMode) -> bool
+pub fn perl_lexer::mode::LexerMode::default() -> perl_lexer::mode::LexerMode
+pub fn perl_lexer::mode::LexerMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lexer::StringPart
+pub perl_lexer::StringPart::ArraySlice(alloc::sync::Arc<str>)
+pub perl_lexer::StringPart::Expression(alloc::sync::Arc<str>)
+pub perl_lexer::StringPart::Literal(alloc::sync::Arc<str>)
+pub perl_lexer::StringPart::MethodCall(alloc::sync::Arc<str>)
+pub perl_lexer::StringPart::Variable(alloc::sync::Arc<str>)
+pub fn perl_lexer::token::StringPart::clone(&self) -> perl_lexer::token::StringPart
+pub fn perl_lexer::token::StringPart::eq(&self, other: &perl_lexer::token::StringPart) -> bool
+pub fn perl_lexer::token::StringPart::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lexer::TokenType
+pub perl_lexer::TokenType::Arrow
+pub perl_lexer::TokenType::Colon
+pub perl_lexer::TokenType::Comma
+pub perl_lexer::TokenType::Comment(alloc::sync::Arc<str>)
+pub perl_lexer::TokenType::DataBody(alloc::sync::Arc<str>)
+pub perl_lexer::TokenType::DataMarker(alloc::sync::Arc<str>)
+pub perl_lexer::TokenType::Division
+pub perl_lexer::TokenType::EOF
+pub perl_lexer::TokenType::Error(alloc::sync::Arc<str>)
+pub perl_lexer::TokenType::FatComma
+pub perl_lexer::TokenType::FormatBody(alloc::sync::Arc<str>)
+pub perl_lexer::TokenType::HeredocBody(alloc::sync::Arc<str>)
+pub perl_lexer::TokenType::HeredocStart
+pub perl_lexer::TokenType::Identifier(alloc::sync::Arc<str>)
+pub perl_lexer::TokenType::InterpolatedHeredocBody(alloc::vec::Vec<perl_lexer::token::StringPart>)
+pub perl_lexer::TokenType::InterpolatedString(alloc::vec::Vec<perl_lexer::token::StringPart>)
+pub perl_lexer::TokenType::Keyword(alloc::sync::Arc<str>)
+pub perl_lexer::TokenType::LeftBrace
+pub perl_lexer::TokenType::LeftBracket
+pub perl_lexer::TokenType::LeftParen
+pub perl_lexer::TokenType::Newline
+pub perl_lexer::TokenType::Number(alloc::sync::Arc<str>)
+pub perl_lexer::TokenType::Operator(alloc::sync::Arc<str>)
+pub perl_lexer::TokenType::Pod
+pub perl_lexer::TokenType::QuoteCommand
+pub perl_lexer::TokenType::QuoteDouble(alloc::vec::Vec<perl_lexer::token::StringPart>)
+pub perl_lexer::TokenType::QuoteRegex
+pub perl_lexer::TokenType::QuoteSingle
+pub perl_lexer::TokenType::QuoteWords
+pub perl_lexer::TokenType::RegexMatch
+pub perl_lexer::TokenType::RightBrace
+pub perl_lexer::TokenType::RightBracket
+pub perl_lexer::TokenType::RightParen
+pub perl_lexer::TokenType::Semicolon
+pub perl_lexer::TokenType::StringLiteral
+pub perl_lexer::TokenType::Substitution
+pub perl_lexer::TokenType::Transliteration
+pub perl_lexer::TokenType::UnknownRest
+pub perl_lexer::TokenType::Version(alloc::sync::Arc<str>)
+pub perl_lexer::TokenType::Whitespace
+pub fn perl_lexer::token::TokenType::is_recovery_token(&self) -> bool
+pub fn perl_lexer::token::TokenType::is_trivia(&self) -> bool
+pub fn perl_lexer::token::TokenType::clone(&self) -> perl_lexer::token::TokenType
+pub fn perl_lexer::token::TokenType::eq(&self, other: &perl_lexer::token::TokenType) -> bool
+pub fn perl_lexer::token::TokenType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::BuiltinSignature
+pub perl_lexer::BuiltinSignature::documentation: &'static str
+pub perl_lexer::BuiltinSignature::signatures: alloc::vec::Vec<&'static str>
+pub struct perl_lexer::CheckpointCache
+pub fn perl_lexer::CheckpointCache::add(&mut self, checkpoint: perl_lexer::LexerCheckpoint)
+pub fn perl_lexer::CheckpointCache::apply_edit(&mut self, start: usize, old_len: usize, new_len: usize)
+pub fn perl_lexer::CheckpointCache::clear(&mut self)
+pub fn perl_lexer::CheckpointCache::find_after(&self, position: usize) -> core::option::Option<&perl_lexer::LexerCheckpoint>
+pub fn perl_lexer::CheckpointCache::find_before(&self, position: usize) -> core::option::Option<&perl_lexer::LexerCheckpoint>
+pub fn perl_lexer::CheckpointCache::is_empty(&self) -> bool
+pub fn perl_lexer::CheckpointCache::len(&self) -> usize
+pub fn perl_lexer::CheckpointCache::new(max_checkpoints: usize) -> Self
+pub struct perl_lexer::LexerCheckpoint
+pub perl_lexer::LexerCheckpoint::after_arrow: bool
+pub perl_lexer::LexerCheckpoint::after_newline: bool
+pub perl_lexer::LexerCheckpoint::after_sub: bool
+pub perl_lexer::LexerCheckpoint::after_var_subscript: bool
+pub perl_lexer::LexerCheckpoint::context: perl_lexer::checkpoint::CheckpointContext
+pub perl_lexer::LexerCheckpoint::current_pos: perl_position_tracking::position::Position
+pub perl_lexer::LexerCheckpoint::current_quote_op: core::option::Option<perl_lexer::checkpoint::QuoteOperatorCheckpoint>
+pub perl_lexer::LexerCheckpoint::delimiter_stack: alloc::vec::Vec<char>
+pub perl_lexer::LexerCheckpoint::emit_heredoc_body_tokens: bool
+pub perl_lexer::LexerCheckpoint::eof_emitted: bool
+pub perl_lexer::LexerCheckpoint::hash_brace_depth: usize
+pub perl_lexer::LexerCheckpoint::in_prototype: bool
+pub perl_lexer::LexerCheckpoint::line_start_offset: usize
+pub perl_lexer::LexerCheckpoint::mode: perl_lexer::mode::LexerMode
+pub perl_lexer::LexerCheckpoint::paren_depth: usize
+pub perl_lexer::LexerCheckpoint::parse_interpolation: bool
+pub perl_lexer::LexerCheckpoint::pending_heredocs: alloc::vec::Vec<perl_lexer::checkpoint::PendingHeredocCheckpoint>
+pub perl_lexer::LexerCheckpoint::position: usize
+pub perl_lexer::LexerCheckpoint::prototype_depth: usize
+pub perl_lexer::LexerCheckpoint::qw_recovery_enabled: bool
+pub fn perl_lexer::LexerCheckpoint::apply_edit(&mut self, start: usize, old_len: usize, new_len: usize)
+pub fn perl_lexer::LexerCheckpoint::at_position(position: usize) -> Self
+pub fn perl_lexer::LexerCheckpoint::diff(&self, other: &Self) -> perl_lexer::checkpoint::CheckpointDiff
+pub fn perl_lexer::LexerCheckpoint::is_at_start(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::is_timeout_sensitive(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::is_valid_for(&self, input: &str) -> bool
+pub fn perl_lexer::LexerCheckpoint::new() -> Self
+pub fn perl_lexer::LexerCheckpoint::try_apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) -> bool
+pub fn perl_lexer::LexerCheckpoint::clone(&self) -> perl_lexer::LexerCheckpoint
+pub fn perl_lexer::LexerCheckpoint::eq(&self, other: &perl_lexer::LexerCheckpoint) -> bool
+pub fn perl_lexer::LexerCheckpoint::default() -> Self
+pub fn perl_lexer::LexerCheckpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::LexerCheckpoint::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::LexerConfig
+pub perl_lexer::LexerConfig::max_lookahead: usize
+pub perl_lexer::LexerConfig::parse_interpolation: bool
+pub perl_lexer::LexerConfig::symbol_table: core::option::Option<perl_lexer::symbol_table::LocalSymbolTable>
+pub perl_lexer::LexerConfig::track_positions: bool
+pub const perl_lexer::config::LexerConfig::DEFAULT_MAX_LOOKAHEAD: usize
+pub const perl_lexer::config::LexerConfig::POSITIONS_ARE_ALWAYS_TRACKED: bool
+pub fn perl_lexer::config::LexerConfig::has_symbol_table(&self) -> bool
+pub fn perl_lexer::config::LexerConfig::interpolation_enabled(&self) -> bool
+pub fn perl_lexer::config::LexerConfig::lookahead_limit(&self) -> usize
+pub fn perl_lexer::config::LexerConfig::permits_lookahead_offset(&self, offset: usize) -> bool
+pub fn perl_lexer::config::LexerConfig::clone(&self) -> perl_lexer::config::LexerConfig
+pub fn perl_lexer::config::LexerConfig::default() -> Self
+pub fn perl_lexer::config::LexerConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::LocalSymbolTable
+pub fn perl_lexer::symbol_table::LocalSymbolTable::is_empty(&self) -> bool
+pub fn perl_lexer::symbol_table::LocalSymbolTable::is_known_sub(&self, name: &str) -> bool
+pub fn perl_lexer::symbol_table::LocalSymbolTable::len(&self) -> usize
+pub fn perl_lexer::symbol_table::LocalSymbolTable::scan_subs(input: &str) -> Self
+pub fn perl_lexer::symbol_table::LocalSymbolTable::clone(&self) -> perl_lexer::symbol_table::LocalSymbolTable
+pub fn perl_lexer::symbol_table::LocalSymbolTable::default() -> perl_lexer::symbol_table::LocalSymbolTable
+pub fn perl_lexer::symbol_table::LocalSymbolTable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::PerlLexer<'a>
+pub fn perl_lexer::PerlLexer<'a>::collect_tokens(&mut self) -> alloc::vec::Vec<perl_lexer::token::Token>
+pub fn perl_lexer::PerlLexer<'a>::enter_format_mode(&mut self)
+pub fn perl_lexer::PerlLexer<'a>::next_token(&mut self) -> core::option::Option<perl_lexer::token::Token>
+pub fn perl_lexer::PerlLexer<'a>::peek_token(&mut self) -> core::option::Option<perl_lexer::token::Token>
+pub fn perl_lexer::PerlLexer<'a>::reset(&mut self)
+pub fn perl_lexer::PerlLexer<'a>::set_mode(&mut self, mode: perl_lexer::mode::LexerMode)
+pub fn perl_lexer::PerlLexer<'a>::with_body_tokens(input: &'a str) -> Self
+pub fn perl_lexer::PerlLexer<'a>::with_config_and_body_tokens(input: &'a str, config: perl_lexer::config::LexerConfig) -> Self
+pub fn perl_lexer::PerlLexer<'a>::new(input: &'a str) -> Self
+pub fn perl_lexer::PerlLexer<'a>::with_config(input: &'a str, config: perl_lexer::config::LexerConfig) -> Self
+pub fn perl_lexer::PerlLexer<'_>::can_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> bool
+pub fn perl_lexer::PerlLexer<'_>::checkpoint(&self) -> perl_lexer::LexerCheckpoint
+pub fn perl_lexer::PerlLexer<'_>::restore(&mut self, checkpoint: &perl_lexer::LexerCheckpoint)
+pub struct perl_lexer::PositionTracker<'a>
+pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::byte_to_position(&self, byte: usize) -> perl_position_tracking::position::Position
+pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::new(source: &'a str) -> Self
+pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::wrap_token(&self, token: perl_lexer::token::Token) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
+pub struct perl_lexer::Token
+pub perl_lexer::Token::end: usize
+pub perl_lexer::Token::start: usize
+pub perl_lexer::Token::text: alloc::sync::Arc<str>
+pub perl_lexer::Token::token_type: perl_lexer::token::TokenType
+pub fn perl_lexer::token::Token::is_empty(&self) -> bool
+pub fn perl_lexer::token::Token::len(&self) -> usize
+pub fn perl_lexer::token::Token::new(token_type: perl_lexer::token::TokenType, text: impl core::convert::Into<alloc::sync::Arc<str>>, start: usize, end: usize) -> Self
+pub fn perl_lexer::token::Token::clone(&self) -> perl_lexer::token::Token
+pub fn perl_lexer::token::Token::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::TokenWithPosition
+pub perl_lexer::TokenWithPosition::end_pos: perl_position_tracking::position::Position
+pub perl_lexer::TokenWithPosition::start_pos: perl_position_tracking::position::Position
+pub perl_lexer::TokenWithPosition::token: perl_lexer::token::Token
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::byte_range(&self) -> (usize, usize)
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::kind(&self) -> &perl_lexer::token::TokenType
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::new(token: perl_lexer::token::Token, start_pos: perl_position_tracking::position::Position, end_pos: perl_position_tracking::position::Position) -> Self
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::range(&self) -> perl_position_tracking::position::Range
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::text(&self) -> &str
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::clone(&self) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
+pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_lexer::DAP_COMPLETION_KEYWORDS: &[&str]
+pub const perl_lexer::KEYWORDS: &[&str]
+pub const perl_lexer::LEXER_KEYWORDS: &[&str]
+pub const perl_lexer::LSP_COMPLETION_KEYWORDS: &[&str]
+pub const perl_lexer::LSP_RUNTIME_COMPLETION_KEYWORDS: &[&str]
+pub const perl_lexer::MAX_REGEX_PARSE_STEPS: usize
+pub const perl_lexer::PARSER_LSP_KEYWORDS: &[&str]
+pub const perl_lexer::RENAME_KEYWORDS: &[&str]
+pub static perl_lexer::BUILTIN_FULL_SIGS: phf::map::Map<&'static str, &'static [&'static str]>
+pub static perl_lexer::BUILTIN_SIGS: phf::map::Map<&'static str, &'static [&'static str]>
+pub trait perl_lexer::Checkpointable
+pub fn perl_lexer::Checkpointable::can_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> bool
+pub fn perl_lexer::Checkpointable::checkpoint(&self) -> perl_lexer::LexerCheckpoint
+pub fn perl_lexer::Checkpointable::restore(&mut self, checkpoint: &perl_lexer::LexerCheckpoint)
+pub fn perl_lexer::PerlLexer<'_>::can_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> bool
+pub fn perl_lexer::PerlLexer<'_>::checkpoint(&self) -> perl_lexer::LexerCheckpoint
+pub fn perl_lexer::PerlLexer<'_>::restore(&mut self, checkpoint: &perl_lexer::LexerCheckpoint)
+pub fn perl_lexer::builtin_count() -> usize
+pub fn perl_lexer::code_slice(text: &str) -> &str
+pub fn perl_lexer::create_builtin_signatures() -> &'static std::collections::hash::map::HashMap<&'static str, perl_lexer::builtins::builtin_signatures::BuiltinSignature>
+pub fn perl_lexer::find_data_marker_byte(s: &str) -> core::option::Option<usize>
+pub fn perl_lexer::find_data_marker_byte_lexed(s: &str) -> core::option::Option<usize>
+pub fn perl_lexer::get_param_names(function_name: &str) -> &'static [&'static str]
+pub fn perl_lexer::is_builtin(function_name: &str) -> bool
+pub fn perl_lexer::is_dap_completion_keyword(token: &str) -> bool
+pub fn perl_lexer::is_keyword(token: &str) -> bool
+pub fn perl_lexer::is_lexer_keyword(token: &str) -> bool
+pub fn perl_lexer::is_lsp_completion_keyword(token: &str) -> bool
+pub fn perl_lexer::is_lsp_runtime_completion_keyword(token: &str) -> bool
+pub fn perl_lexer::is_parser_lsp_keyword(token: &str) -> bool
+pub fn perl_lexer::is_rename_keyword(token: &str) -> bool
+pub type perl_lexer::Result<T> = core::result::Result<T, perl_lexer::error::LexerError>

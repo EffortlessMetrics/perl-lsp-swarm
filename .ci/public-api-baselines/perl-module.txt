@@ -1,0 +1,440 @@
+pub mod perl_module
+pub mod perl_module::api
+pub enum perl_module::api::ImportBehavior
+pub perl_module::api::ImportBehavior::CallsImport
+pub perl_module::api::ImportBehavior::NoImport
+pub fn perl_module::ImportBehavior::clone(&self) -> perl_module::ImportBehavior
+pub fn perl_module::ImportBehavior::eq(&self, other: &perl_module::ImportBehavior) -> bool
+pub fn perl_module::ImportBehavior::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::api::ImportListForm
+pub perl_module::api::ImportListForm::Default
+pub perl_module::api::ImportListForm::Empty
+pub perl_module::api::ImportListForm::Explicit
+pub fn perl_module::ImportListForm::clone(&self) -> perl_module::ImportListForm
+pub fn perl_module::ImportListForm::eq(&self, other: &perl_module::ImportListForm) -> bool
+pub fn perl_module::ImportListForm::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::api::IncRootKind
+pub perl_module::api::IncRootKind::ExternalAbsolute
+pub perl_module::api::IncRootKind::FileLocalLexical
+pub perl_module::api::IncRootKind::InterpreterStartup
+pub perl_module::api::IncRootKind::Perl5LibEnv
+pub perl_module::api::IncRootKind::RuntimeDerived
+pub perl_module::api::IncRootKind::WorkspaceRelative
+pub fn perl_module::IncRootKind::clone(&self) -> perl_module::IncRootKind
+pub fn perl_module::IncRootKind::eq(&self, other: &perl_module::IncRootKind) -> bool
+pub fn perl_module::IncRootKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::api::LoadTiming
+pub perl_module::api::LoadTiming::CompileTime
+pub perl_module::api::LoadTiming::Runtime
+pub fn perl_module::LoadTiming::clone(&self) -> perl_module::LoadTiming
+pub fn perl_module::LoadTiming::eq(&self, other: &perl_module::LoadTiming) -> bool
+pub fn perl_module::LoadTiming::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::api::ModuleImportKind
+pub perl_module::api::ModuleImportKind::Require
+pub perl_module::api::ModuleImportKind::Use
+pub perl_module::api::ModuleImportKind::UseBase
+pub perl_module::api::ModuleImportKind::UseParent
+pub fn perl_module::ModuleImportKind::dispatch_semantics(self) -> perl_module::DispatchSemantics
+pub fn perl_module::ModuleImportKind::clone(&self) -> perl_module::ModuleImportKind
+pub fn perl_module::ModuleImportKind::eq(&self, other: &perl_module::ModuleImportKind) -> bool
+pub fn perl_module::ModuleImportKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::api::ModuleProvenanceClass
+pub perl_module::api::ModuleProvenanceClass::ClaimsSignature
+pub perl_module::api::ModuleProvenanceClass::Packaged
+pub perl_module::api::ModuleProvenanceClass::Unknown
+pub fn perl_module::ModuleProvenanceClass::clone(&self) -> perl_module::ModuleProvenanceClass
+pub fn perl_module::ModuleProvenanceClass::eq(&self, other: &perl_module::ModuleProvenanceClass) -> bool
+pub fn perl_module::ModuleProvenanceClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::api::ModuleReferenceKind
+pub perl_module::api::ModuleReferenceKind::Require
+pub perl_module::api::ModuleReferenceKind::Use
+pub fn perl_module::ModuleReferenceKind::clone(&self) -> perl_module::ModuleReferenceKind
+pub fn perl_module::ModuleReferenceKind::eq(&self, other: &perl_module::ModuleReferenceKind) -> bool
+pub fn perl_module::ModuleReferenceKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::api::ModuleUriResolution
+pub perl_module::api::ModuleUriResolution::NotFound
+pub perl_module::api::ModuleUriResolution::Resolved(alloc::string::String)
+pub perl_module::api::ModuleUriResolution::TimedOut
+pub fn perl_module::ModuleUriResolution::clone(&self) -> perl_module::ModuleUriResolution
+pub fn perl_module::ModuleUriResolution::eq(&self, other: &perl_module::ModuleUriResolution) -> bool
+pub fn perl_module::ModuleUriResolution::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::api::RequireForm
+pub perl_module::api::RequireForm::FilePath
+pub perl_module::api::RequireForm::ModuleName
+pub fn perl_module::RequireForm::clone(&self) -> perl_module::RequireForm
+pub fn perl_module::RequireForm::eq(&self, other: &perl_module::RequireForm) -> bool
+pub fn perl_module::RequireForm::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::api::UseLibAction
+pub perl_module::api::UseLibAction::Add(alloc::vec::Vec<perl_module::UseLibPath>)
+pub perl_module::api::UseLibAction::Remove(alloc::vec::Vec<perl_module::UseLibPath>)
+pub fn perl_module::UseLibAction::clone(&self) -> perl_module::UseLibAction
+pub fn perl_module::UseLibAction::eq(&self, other: &perl_module::UseLibAction) -> bool
+pub fn perl_module::UseLibAction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::api::DispatchSemantics
+pub perl_module::api::DispatchSemantics::import_behavior: perl_module::ImportBehavior
+pub perl_module::api::DispatchSemantics::load_timing: perl_module::LoadTiming
+pub fn perl_module::DispatchSemantics::hover_description(&self) -> &'static str
+pub fn perl_module::DispatchSemantics::clone(&self) -> perl_module::DispatchSemantics
+pub fn perl_module::DispatchSemantics::eq(&self, other: &perl_module::DispatchSemantics) -> bool
+pub fn perl_module::DispatchSemantics::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::api::IncRoot
+pub perl_module::api::IncRoot::kind: perl_module::IncRootKind
+pub perl_module::api::IncRoot::path: std::path::PathBuf
+pub perl_module::api::IncRoot::precedence: usize
+pub perl_module::api::IncRoot::source: alloc::string::String
+pub fn perl_module::IncRoot::clone(&self) -> perl_module::IncRoot
+pub fn perl_module::IncRoot::eq(&self, other: &perl_module::IncRoot) -> bool
+pub fn perl_module::IncRoot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::api::ModuleImportHead<'a>
+pub perl_module::api::ModuleImportHead::import_list: core::option::Option<perl_module::ImportListForm>
+pub perl_module::api::ModuleImportHead::kind: perl_module::ModuleImportKind
+pub perl_module::api::ModuleImportHead::token: &'a str
+pub perl_module::api::ModuleImportHead::token_end: usize
+pub perl_module::api::ModuleImportHead::token_start: usize
+pub fn perl_module::ModuleImportHead<'a>::require_form(&self) -> core::option::Option<perl_module::RequireForm>
+pub fn perl_module::ModuleImportHead<'a>::token_as_module_name(&self) -> alloc::string::String
+pub fn perl_module::ModuleImportHead<'a>::clone(&self) -> perl_module::ModuleImportHead<'a>
+pub fn perl_module::ModuleImportHead<'a>::eq(&self, other: &perl_module::ModuleImportHead<'a>) -> bool
+pub fn perl_module::ModuleImportHead<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::api::ModuleLineEdit
+pub perl_module::api::ModuleLineEdit::end_character: usize
+pub perl_module::api::ModuleLineEdit::line: usize
+pub perl_module::api::ModuleLineEdit::new_text: alloc::string::String
+pub perl_module::api::ModuleLineEdit::start_character: usize
+pub fn perl_module::ModuleLineEdit::clone(&self) -> perl_module::ModuleLineEdit
+pub fn perl_module::ModuleLineEdit::eq(&self, other: &perl_module::ModuleLineEdit) -> bool
+pub fn perl_module::ModuleLineEdit::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::api::ModuleProvenance
+pub perl_module::api::ModuleProvenance::has_checksums: bool
+pub perl_module::api::ModuleProvenance::has_meta: bool
+pub perl_module::api::ModuleProvenance::has_signature: bool
+pub const fn perl_module::ModuleProvenance::class(self) -> perl_module::ModuleProvenanceClass
+pub fn perl_module::ModuleProvenance::clone(&self) -> perl_module::ModuleProvenance
+pub fn perl_module::ModuleProvenance::eq(&self, other: &perl_module::ModuleProvenance) -> bool
+pub fn perl_module::ModuleProvenance::default() -> perl_module::ModuleProvenance
+pub fn perl_module::ModuleProvenance::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::api::ModuleReference<'a>
+pub perl_module::api::ModuleReference::kind: perl_module::ModuleReferenceKind
+pub perl_module::api::ModuleReference::module_end: usize
+pub perl_module::api::ModuleReference::module_name: &'a str
+pub perl_module::api::ModuleReference::module_start: usize
+pub fn perl_module::ModuleReference<'_>::canonical_module_name(&self) -> alloc::string::String
+pub fn perl_module::ModuleReference<'a>::clone(&self) -> perl_module::ModuleReference<'a>
+pub fn perl_module::ModuleReference<'a>::eq(&self, other: &perl_module::ModuleReference<'a>) -> bool
+pub fn perl_module::ModuleReference<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::api::ModuleTokenRange
+pub perl_module::api::ModuleTokenRange::end: usize
+pub perl_module::api::ModuleTokenRange::start: usize
+pub fn perl_module::ModuleTokenRange::clone(&self) -> perl_module::ModuleTokenRange
+pub fn perl_module::ModuleTokenRange::eq(&self, other: &perl_module::ModuleTokenRange) -> bool
+pub fn perl_module::ModuleTokenRange::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::api::ModuleTokenRangeIter<'a>
+pub fn perl_module::ModuleTokenRangeIter<'a>::clone(&self) -> perl_module::ModuleTokenRangeIter<'a>
+pub fn perl_module::ModuleTokenRangeIter<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub type perl_module::ModuleTokenRangeIter<'a>::Item = perl_module::ModuleTokenRange
+pub fn perl_module::ModuleTokenRangeIter<'a>::next(&mut self) -> core::option::Option<Self::Item>
+pub struct perl_module::api::ModuleTokenSpan
+pub perl_module::api::ModuleTokenSpan::end: usize
+pub perl_module::api::ModuleTokenSpan::start: usize
+pub fn perl_module::ModuleTokenSpan::clone(&self) -> perl_module::ModuleTokenSpan
+pub fn perl_module::ModuleTokenSpan::eq(&self, other: &perl_module::ModuleTokenSpan) -> bool
+pub fn perl_module::ModuleTokenSpan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_module::api::ModuleUriCandidate::inc_root: core::option::Option<perl_module::IncRoot>
+pub perl_module::api::ModuleUriCandidate::search_order: usize
+pub perl_module::api::ModuleUriCandidate::source: alloc::string::String
+pub perl_module::api::ModuleUriCandidate::uri: alloc::string::String
+pub fn perl_module::ModuleUriCandidate::clone(&self) -> perl_module::ModuleUriCandidate
+pub fn perl_module::ModuleUriCandidate::eq(&self, other: &perl_module::ModuleUriCandidate) -> bool
+pub fn perl_module::ModuleUriCandidate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_module::api::ModuleUriCandidateReport::candidates: alloc::vec::Vec<perl_module::ModuleUriCandidate>
+pub perl_module::api::ModuleUriCandidateReport::module_name: alloc::string::String
+pub perl_module::api::ModuleUriCandidateReport::relative_path: alloc::string::String
+pub perl_module::api::ModuleUriCandidateReport::timed_out: bool
+pub fn perl_module::ModuleUriCandidateReport::clone(&self) -> perl_module::ModuleUriCandidateReport
+pub fn perl_module::ModuleUriCandidateReport::eq(&self, other: &perl_module::ModuleUriCandidateReport) -> bool
+pub fn perl_module::ModuleUriCandidateReport::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::api::RequireImportEntry
+pub perl_module::api::RequireImportEntry::import_byte_offset: usize
+pub perl_module::api::RequireImportEntry::module: alloc::string::String
+pub perl_module::api::RequireImportEntry::require_byte_offset: usize
+pub perl_module::api::RequireImportEntry::symbol: alloc::string::String
+pub fn perl_module::RequireImportEntry::clone(&self) -> perl_module::RequireImportEntry
+pub fn perl_module::RequireImportEntry::eq(&self, other: &perl_module::RequireImportEntry) -> bool
+pub fn perl_module::RequireImportEntry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::api::UseLibOperation
+pub perl_module::api::UseLibOperation::action: perl_module::UseLibAction
+pub perl_module::api::UseLibOperation::end_offset: usize
+pub fn perl_module::UseLibOperation::clone(&self) -> perl_module::UseLibOperation
+pub fn perl_module::UseLibOperation::eq(&self, other: &perl_module::UseLibOperation) -> bool
+pub fn perl_module::UseLibOperation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::api::UseLibPath
+pub perl_module::api::UseLibPath::from_findbin: bool
+pub perl_module::api::UseLibPath::path: alloc::string::String
+pub fn perl_module::UseLibPath::clone(&self) -> perl_module::UseLibPath
+pub fn perl_module::UseLibPath::eq(&self, other: &perl_module::UseLibPath) -> bool
+pub fn perl_module::UseLibPath::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::api::apply_module_rename_edits(source: &str, edits: &[perl_module::ModuleLineEdit]) -> alloc::string::String
+pub fn perl_module::api::build_effective_inc_roots(include_paths: &[alloc::string::String], perl5lib_paths: &[alloc::string::String], use_perl5lib: bool, lexical_paths: &[alloc::string::String], system_paths: &[std::path::PathBuf]) -> alloc::vec::Vec<perl_module::IncRoot>
+pub fn perl_module::api::collect_module_uri_candidates_with_effective_inc(module_name: &str, open_document_uris: &[alloc::string::String], workspace_folders: &[alloc::string::String], effective_inc_roots: &[perl_module::IncRoot], timeout: core::time::Duration) -> perl_module::ModuleUriCandidateReport
+pub fn perl_module::api::contains_module_token(line: &str, module_name: &str) -> bool
+pub fn perl_module::api::contains_standalone_module_token(line: &str, module_name: &str) -> bool
+pub fn perl_module::api::detect_module_provenance(module_file: &std::path::Path, authority_root: &std::path::Path) -> perl_module::ModuleProvenance
+pub fn perl_module::api::extract_module_reference(text: &str, cursor_pos: usize) -> core::option::Option<alloc::string::String>
+pub fn perl_module::api::extract_module_reference_extended(text: &str, cursor_pos: usize) -> core::option::Option<alloc::string::String>
+pub fn perl_module::api::extract_require_import_symbols(source: &str) -> alloc::vec::Vec<perl_module::RequireImportEntry>
+pub fn perl_module::api::extract_use_lib_operations(source: &str) -> alloc::vec::Vec<perl_module::UseLibAction>
+pub fn perl_module::api::extract_use_lib_operations_with_offsets(source: &str) -> alloc::vec::Vec<perl_module::UseLibOperation>
+pub fn perl_module::api::extract_use_lib_paths(source: &str) -> alloc::vec::Vec<perl_module::UseLibPath>
+pub fn perl_module::api::file_path_to_module_name(file_path: &str) -> alloc::string::String
+pub fn perl_module::api::find_module_reference(text: &str, cursor_pos: usize) -> core::option::Option<perl_module::ModuleReference<'_>>
+pub fn perl_module::api::find_module_reference_extended(text: &str, cursor_pos: usize) -> core::option::Option<perl_module::ModuleReference<'_>>
+pub fn perl_module::api::find_standalone_module_token_ranges<'a>(line: &'a str, module_name: &'a str) -> perl_module::ModuleTokenRangeIter<'a>
+pub fn perl_module::api::has_standalone_module_token_boundaries(line: &str, start: usize, end: usize) -> bool
+pub fn perl_module::api::is_lookup_safe_module_name(module_name: &str) -> bool
+pub fn perl_module::api::is_module_identifier_char(ch: char) -> bool
+pub fn perl_module::api::is_module_token_char(ch: char) -> bool
+pub fn perl_module::api::legacy_package_separator(module_name: &str) -> alloc::borrow::Cow<'_, str>
+pub fn perl_module::api::line_references_isa_assignment(line: &str, module_name: &str) -> bool
+pub fn perl_module::api::line_references_module_import(line: &str, module_name: &str) -> bool
+pub fn perl_module::api::line_references_package_declaration(line: &str, module_name: &str) -> bool
+pub fn perl_module::api::line_references_qualified_call(line: &str, module_name: &str) -> bool
+pub fn perl_module::api::module_name_to_path(module_name: &str) -> alloc::string::String
+pub fn perl_module::api::module_path_to_name(module_path: &str) -> alloc::string::String
+pub fn perl_module::api::module_provenance_root(module_file: &std::path::Path, authority_root: &std::path::Path) -> core::option::Option<std::path::PathBuf>
+pub fn perl_module::api::module_variant_pairs(old_module: &str, new_module: &str) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub fn perl_module::api::no_lib_cancelled_paths_at_offset(source: &str, offset: usize, workspace_root: &std::path::Path, file_dir: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_module::api::no_lib_cancelled_paths_from_operations_at_offset(ops: &[perl_module::UseLibOperation], offset: usize, workspace_root: &std::path::Path, file_dir: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_module::api::normalize_package_separator(module_name: &str) -> alloc::borrow::Cow<'_, str>
+pub fn perl_module::api::parse_module_import_head(line: &str) -> core::option::Option<perl_module::ModuleImportHead<'_>>
+pub fn perl_module::api::parse_module_token(text: &str, start: usize) -> core::option::Option<perl_module::ModuleTokenSpan>
+pub fn perl_module::api::parse_qw_arg_list(trimmed: &str) -> core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub fn perl_module::api::plan_module_rename_edits(source: &str, old_module: &str, new_module: &str) -> alloc::vec::Vec<perl_module::ModuleLineEdit>
+pub fn perl_module::api::replace_module_name_prefix(line: &str, old_module: &str, new_module: &str) -> alloc::string::String
+pub fn perl_module::api::replace_module_token(line: &str, from: &str, to: &str) -> (alloc::string::String, bool)
+pub fn perl_module::api::resolve_known_export_tag(module: &str, tag: &str) -> core::option::Option<&'static [&'static str]>
+pub fn perl_module::api::resolve_module_path(root: &std::path::Path, module_name: &str, include_paths: &[alloc::string::String]) -> core::option::Option<std::path::PathBuf>
+pub fn perl_module::api::resolve_module_uri(module_name: &str, open_document_uris: &[alloc::string::String], workspace_folders: &[alloc::string::String], include_paths: &[alloc::string::String], use_system_inc: bool, system_inc: &[std::path::PathBuf], timeout: core::time::Duration) -> perl_module::ModuleUriResolution
+pub fn perl_module::api::resolve_module_uri_with_effective_inc(module_name: &str, open_document_uris: &[alloc::string::String], workspace_folders: &[alloc::string::String], effective_inc_roots: &[perl_module::IncRoot], timeout: core::time::Duration) -> perl_module::ModuleUriResolution
+pub fn perl_module::api::resolve_use_lib_paths(use_lib_paths: &[perl_module::UseLibPath], workspace_root: &std::path::Path, file_dir: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_module::api::resolve_use_lib_paths_from_operations_at_offset(ops: &[perl_module::UseLibOperation], offset: usize, workspace_root: &std::path::Path, file_dir: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_module::api::resolve_use_lib_paths_from_source(source: &str, workspace_root: &std::path::Path, file_dir: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_module::api::resolve_use_lib_paths_from_source_at_offset(source: &str, offset: usize, workspace_root: &std::path::Path, file_dir: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<alloc::string::String>
+pub enum perl_module::ImportBehavior
+pub perl_module::ImportBehavior::CallsImport
+pub perl_module::ImportBehavior::NoImport
+pub fn perl_module::ImportBehavior::clone(&self) -> perl_module::ImportBehavior
+pub fn perl_module::ImportBehavior::eq(&self, other: &perl_module::ImportBehavior) -> bool
+pub fn perl_module::ImportBehavior::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::ImportListForm
+pub perl_module::ImportListForm::Default
+pub perl_module::ImportListForm::Empty
+pub perl_module::ImportListForm::Explicit
+pub fn perl_module::ImportListForm::clone(&self) -> perl_module::ImportListForm
+pub fn perl_module::ImportListForm::eq(&self, other: &perl_module::ImportListForm) -> bool
+pub fn perl_module::ImportListForm::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::IncRootKind
+pub perl_module::IncRootKind::ExternalAbsolute
+pub perl_module::IncRootKind::FileLocalLexical
+pub perl_module::IncRootKind::InterpreterStartup
+pub perl_module::IncRootKind::Perl5LibEnv
+pub perl_module::IncRootKind::RuntimeDerived
+pub perl_module::IncRootKind::WorkspaceRelative
+pub fn perl_module::IncRootKind::clone(&self) -> perl_module::IncRootKind
+pub fn perl_module::IncRootKind::eq(&self, other: &perl_module::IncRootKind) -> bool
+pub fn perl_module::IncRootKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::LoadTiming
+pub perl_module::LoadTiming::CompileTime
+pub perl_module::LoadTiming::Runtime
+pub fn perl_module::LoadTiming::clone(&self) -> perl_module::LoadTiming
+pub fn perl_module::LoadTiming::eq(&self, other: &perl_module::LoadTiming) -> bool
+pub fn perl_module::LoadTiming::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::ModuleImportKind
+pub perl_module::ModuleImportKind::Require
+pub perl_module::ModuleImportKind::Use
+pub perl_module::ModuleImportKind::UseBase
+pub perl_module::ModuleImportKind::UseParent
+pub fn perl_module::ModuleImportKind::dispatch_semantics(self) -> perl_module::DispatchSemantics
+pub fn perl_module::ModuleImportKind::clone(&self) -> perl_module::ModuleImportKind
+pub fn perl_module::ModuleImportKind::eq(&self, other: &perl_module::ModuleImportKind) -> bool
+pub fn perl_module::ModuleImportKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::ModuleProvenanceClass
+pub perl_module::ModuleProvenanceClass::ClaimsSignature
+pub perl_module::ModuleProvenanceClass::Packaged
+pub perl_module::ModuleProvenanceClass::Unknown
+pub fn perl_module::ModuleProvenanceClass::clone(&self) -> perl_module::ModuleProvenanceClass
+pub fn perl_module::ModuleProvenanceClass::eq(&self, other: &perl_module::ModuleProvenanceClass) -> bool
+pub fn perl_module::ModuleProvenanceClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::ModuleReferenceKind
+pub perl_module::ModuleReferenceKind::Require
+pub perl_module::ModuleReferenceKind::Use
+pub fn perl_module::ModuleReferenceKind::clone(&self) -> perl_module::ModuleReferenceKind
+pub fn perl_module::ModuleReferenceKind::eq(&self, other: &perl_module::ModuleReferenceKind) -> bool
+pub fn perl_module::ModuleReferenceKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::ModuleUriResolution
+pub perl_module::ModuleUriResolution::NotFound
+pub perl_module::ModuleUriResolution::Resolved(alloc::string::String)
+pub perl_module::ModuleUriResolution::TimedOut
+pub fn perl_module::ModuleUriResolution::clone(&self) -> perl_module::ModuleUriResolution
+pub fn perl_module::ModuleUriResolution::eq(&self, other: &perl_module::ModuleUriResolution) -> bool
+pub fn perl_module::ModuleUriResolution::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::RequireForm
+pub perl_module::RequireForm::FilePath
+pub perl_module::RequireForm::ModuleName
+pub fn perl_module::RequireForm::clone(&self) -> perl_module::RequireForm
+pub fn perl_module::RequireForm::eq(&self, other: &perl_module::RequireForm) -> bool
+pub fn perl_module::RequireForm::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::UseLibAction
+pub perl_module::UseLibAction::Add(alloc::vec::Vec<perl_module::UseLibPath>)
+pub perl_module::UseLibAction::Remove(alloc::vec::Vec<perl_module::UseLibPath>)
+pub fn perl_module::UseLibAction::clone(&self) -> perl_module::UseLibAction
+pub fn perl_module::UseLibAction::eq(&self, other: &perl_module::UseLibAction) -> bool
+pub fn perl_module::UseLibAction::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::DispatchSemantics
+pub perl_module::DispatchSemantics::import_behavior: perl_module::ImportBehavior
+pub perl_module::DispatchSemantics::load_timing: perl_module::LoadTiming
+pub fn perl_module::DispatchSemantics::hover_description(&self) -> &'static str
+pub fn perl_module::DispatchSemantics::clone(&self) -> perl_module::DispatchSemantics
+pub fn perl_module::DispatchSemantics::eq(&self, other: &perl_module::DispatchSemantics) -> bool
+pub fn perl_module::DispatchSemantics::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::IncRoot
+pub perl_module::IncRoot::kind: perl_module::IncRootKind
+pub perl_module::IncRoot::path: std::path::PathBuf
+pub perl_module::IncRoot::precedence: usize
+pub perl_module::IncRoot::source: alloc::string::String
+pub fn perl_module::IncRoot::clone(&self) -> perl_module::IncRoot
+pub fn perl_module::IncRoot::eq(&self, other: &perl_module::IncRoot) -> bool
+pub fn perl_module::IncRoot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::ModuleImportHead<'a>
+pub perl_module::ModuleImportHead::import_list: core::option::Option<perl_module::ImportListForm>
+pub perl_module::ModuleImportHead::kind: perl_module::ModuleImportKind
+pub perl_module::ModuleImportHead::token: &'a str
+pub perl_module::ModuleImportHead::token_end: usize
+pub perl_module::ModuleImportHead::token_start: usize
+pub fn perl_module::ModuleImportHead<'a>::require_form(&self) -> core::option::Option<perl_module::RequireForm>
+pub fn perl_module::ModuleImportHead<'a>::token_as_module_name(&self) -> alloc::string::String
+pub fn perl_module::ModuleImportHead<'a>::clone(&self) -> perl_module::ModuleImportHead<'a>
+pub fn perl_module::ModuleImportHead<'a>::eq(&self, other: &perl_module::ModuleImportHead<'a>) -> bool
+pub fn perl_module::ModuleImportHead<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::ModuleLineEdit
+pub perl_module::ModuleLineEdit::end_character: usize
+pub perl_module::ModuleLineEdit::line: usize
+pub perl_module::ModuleLineEdit::new_text: alloc::string::String
+pub perl_module::ModuleLineEdit::start_character: usize
+pub fn perl_module::ModuleLineEdit::clone(&self) -> perl_module::ModuleLineEdit
+pub fn perl_module::ModuleLineEdit::eq(&self, other: &perl_module::ModuleLineEdit) -> bool
+pub fn perl_module::ModuleLineEdit::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::ModuleProvenance
+pub perl_module::ModuleProvenance::has_checksums: bool
+pub perl_module::ModuleProvenance::has_meta: bool
+pub perl_module::ModuleProvenance::has_signature: bool
+pub const fn perl_module::ModuleProvenance::class(self) -> perl_module::ModuleProvenanceClass
+pub fn perl_module::ModuleProvenance::clone(&self) -> perl_module::ModuleProvenance
+pub fn perl_module::ModuleProvenance::eq(&self, other: &perl_module::ModuleProvenance) -> bool
+pub fn perl_module::ModuleProvenance::default() -> perl_module::ModuleProvenance
+pub fn perl_module::ModuleProvenance::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::ModuleReference<'a>
+pub perl_module::ModuleReference::kind: perl_module::ModuleReferenceKind
+pub perl_module::ModuleReference::module_end: usize
+pub perl_module::ModuleReference::module_name: &'a str
+pub perl_module::ModuleReference::module_start: usize
+pub fn perl_module::ModuleReference<'_>::canonical_module_name(&self) -> alloc::string::String
+pub fn perl_module::ModuleReference<'a>::clone(&self) -> perl_module::ModuleReference<'a>
+pub fn perl_module::ModuleReference<'a>::eq(&self, other: &perl_module::ModuleReference<'a>) -> bool
+pub fn perl_module::ModuleReference<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::ModuleTokenRange
+pub perl_module::ModuleTokenRange::end: usize
+pub perl_module::ModuleTokenRange::start: usize
+pub fn perl_module::ModuleTokenRange::clone(&self) -> perl_module::ModuleTokenRange
+pub fn perl_module::ModuleTokenRange::eq(&self, other: &perl_module::ModuleTokenRange) -> bool
+pub fn perl_module::ModuleTokenRange::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::ModuleTokenRangeIter<'a>
+pub fn perl_module::ModuleTokenRangeIter<'a>::clone(&self) -> perl_module::ModuleTokenRangeIter<'a>
+pub fn perl_module::ModuleTokenRangeIter<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub type perl_module::ModuleTokenRangeIter<'a>::Item = perl_module::ModuleTokenRange
+pub fn perl_module::ModuleTokenRangeIter<'a>::next(&mut self) -> core::option::Option<Self::Item>
+pub struct perl_module::ModuleTokenSpan
+pub perl_module::ModuleTokenSpan::end: usize
+pub perl_module::ModuleTokenSpan::start: usize
+pub fn perl_module::ModuleTokenSpan::clone(&self) -> perl_module::ModuleTokenSpan
+pub fn perl_module::ModuleTokenSpan::eq(&self, other: &perl_module::ModuleTokenSpan) -> bool
+pub fn perl_module::ModuleTokenSpan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_module::ModuleUriCandidate::inc_root: core::option::Option<perl_module::IncRoot>
+pub perl_module::ModuleUriCandidate::search_order: usize
+pub perl_module::ModuleUriCandidate::source: alloc::string::String
+pub perl_module::ModuleUriCandidate::uri: alloc::string::String
+pub fn perl_module::ModuleUriCandidate::clone(&self) -> perl_module::ModuleUriCandidate
+pub fn perl_module::ModuleUriCandidate::eq(&self, other: &perl_module::ModuleUriCandidate) -> bool
+pub fn perl_module::ModuleUriCandidate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_module::ModuleUriCandidateReport::candidates: alloc::vec::Vec<perl_module::ModuleUriCandidate>
+pub perl_module::ModuleUriCandidateReport::module_name: alloc::string::String
+pub perl_module::ModuleUriCandidateReport::relative_path: alloc::string::String
+pub perl_module::ModuleUriCandidateReport::timed_out: bool
+pub fn perl_module::ModuleUriCandidateReport::clone(&self) -> perl_module::ModuleUriCandidateReport
+pub fn perl_module::ModuleUriCandidateReport::eq(&self, other: &perl_module::ModuleUriCandidateReport) -> bool
+pub fn perl_module::ModuleUriCandidateReport::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::RequireImportEntry
+pub perl_module::RequireImportEntry::import_byte_offset: usize
+pub perl_module::RequireImportEntry::module: alloc::string::String
+pub perl_module::RequireImportEntry::require_byte_offset: usize
+pub perl_module::RequireImportEntry::symbol: alloc::string::String
+pub fn perl_module::RequireImportEntry::clone(&self) -> perl_module::RequireImportEntry
+pub fn perl_module::RequireImportEntry::eq(&self, other: &perl_module::RequireImportEntry) -> bool
+pub fn perl_module::RequireImportEntry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::UseLibOperation
+pub perl_module::UseLibOperation::action: perl_module::UseLibAction
+pub perl_module::UseLibOperation::end_offset: usize
+pub fn perl_module::UseLibOperation::clone(&self) -> perl_module::UseLibOperation
+pub fn perl_module::UseLibOperation::eq(&self, other: &perl_module::UseLibOperation) -> bool
+pub fn perl_module::UseLibOperation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::UseLibPath
+pub perl_module::UseLibPath::from_findbin: bool
+pub perl_module::UseLibPath::path: alloc::string::String
+pub fn perl_module::UseLibPath::clone(&self) -> perl_module::UseLibPath
+pub fn perl_module::UseLibPath::eq(&self, other: &perl_module::UseLibPath) -> bool
+pub fn perl_module::UseLibPath::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::apply_module_rename_edits(source: &str, edits: &[perl_module::ModuleLineEdit]) -> alloc::string::String
+pub fn perl_module::build_effective_inc_roots(include_paths: &[alloc::string::String], perl5lib_paths: &[alloc::string::String], use_perl5lib: bool, lexical_paths: &[alloc::string::String], system_paths: &[std::path::PathBuf]) -> alloc::vec::Vec<perl_module::IncRoot>
+pub fn perl_module::collect_module_uri_candidates_with_effective_inc(module_name: &str, open_document_uris: &[alloc::string::String], workspace_folders: &[alloc::string::String], effective_inc_roots: &[perl_module::IncRoot], timeout: core::time::Duration) -> perl_module::ModuleUriCandidateReport
+pub fn perl_module::contains_module_token(line: &str, module_name: &str) -> bool
+pub fn perl_module::contains_standalone_module_token(line: &str, module_name: &str) -> bool
+pub fn perl_module::detect_module_provenance(module_file: &std::path::Path, authority_root: &std::path::Path) -> perl_module::ModuleProvenance
+pub fn perl_module::extract_module_reference(text: &str, cursor_pos: usize) -> core::option::Option<alloc::string::String>
+pub fn perl_module::extract_module_reference_extended(text: &str, cursor_pos: usize) -> core::option::Option<alloc::string::String>
+pub fn perl_module::extract_require_import_symbols(source: &str) -> alloc::vec::Vec<perl_module::RequireImportEntry>
+pub fn perl_module::extract_use_lib_operations(source: &str) -> alloc::vec::Vec<perl_module::UseLibAction>
+pub fn perl_module::extract_use_lib_operations_with_offsets(source: &str) -> alloc::vec::Vec<perl_module::UseLibOperation>
+pub fn perl_module::extract_use_lib_paths(source: &str) -> alloc::vec::Vec<perl_module::UseLibPath>
+pub fn perl_module::file_path_to_module_name(file_path: &str) -> alloc::string::String
+pub fn perl_module::find_module_reference(text: &str, cursor_pos: usize) -> core::option::Option<perl_module::ModuleReference<'_>>
+pub fn perl_module::find_module_reference_extended(text: &str, cursor_pos: usize) -> core::option::Option<perl_module::ModuleReference<'_>>
+pub fn perl_module::find_standalone_module_token_ranges<'a>(line: &'a str, module_name: &'a str) -> perl_module::ModuleTokenRangeIter<'a>
+pub fn perl_module::has_standalone_module_token_boundaries(line: &str, start: usize, end: usize) -> bool
+pub fn perl_module::is_lookup_safe_module_name(module_name: &str) -> bool
+pub fn perl_module::is_module_identifier_char(ch: char) -> bool
+pub fn perl_module::is_module_token_char(ch: char) -> bool
+pub fn perl_module::legacy_package_separator(module_name: &str) -> alloc::borrow::Cow<'_, str>
+pub fn perl_module::line_references_isa_assignment(line: &str, module_name: &str) -> bool
+pub fn perl_module::line_references_module_import(line: &str, module_name: &str) -> bool
+pub fn perl_module::line_references_package_declaration(line: &str, module_name: &str) -> bool
+pub fn perl_module::line_references_qualified_call(line: &str, module_name: &str) -> bool
+pub fn perl_module::module_name_to_path(module_name: &str) -> alloc::string::String
+pub fn perl_module::module_path_to_name(module_path: &str) -> alloc::string::String
+pub fn perl_module::module_provenance_root(module_file: &std::path::Path, authority_root: &std::path::Path) -> core::option::Option<std::path::PathBuf>
+pub fn perl_module::module_variant_pairs(old_module: &str, new_module: &str) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub fn perl_module::no_lib_cancelled_paths_at_offset(source: &str, offset: usize, workspace_root: &std::path::Path, file_dir: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_module::no_lib_cancelled_paths_from_operations_at_offset(ops: &[perl_module::UseLibOperation], offset: usize, workspace_root: &std::path::Path, file_dir: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_module::normalize_package_separator(module_name: &str) -> alloc::borrow::Cow<'_, str>
+pub fn perl_module::parse_module_import_head(line: &str) -> core::option::Option<perl_module::ModuleImportHead<'_>>
+pub fn perl_module::parse_module_token(text: &str, start: usize) -> core::option::Option<perl_module::ModuleTokenSpan>
+pub fn perl_module::parse_qw_arg_list(trimmed: &str) -> core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub fn perl_module::plan_module_rename_edits(source: &str, old_module: &str, new_module: &str) -> alloc::vec::Vec<perl_module::ModuleLineEdit>
+pub fn perl_module::replace_module_name_prefix(line: &str, old_module: &str, new_module: &str) -> alloc::string::String
+pub fn perl_module::replace_module_token(line: &str, from: &str, to: &str) -> (alloc::string::String, bool)
+pub fn perl_module::resolve_known_export_tag(module: &str, tag: &str) -> core::option::Option<&'static [&'static str]>
+pub fn perl_module::resolve_module_path(root: &std::path::Path, module_name: &str, include_paths: &[alloc::string::String]) -> core::option::Option<std::path::PathBuf>
+pub fn perl_module::resolve_module_uri(module_name: &str, open_document_uris: &[alloc::string::String], workspace_folders: &[alloc::string::String], include_paths: &[alloc::string::String], use_system_inc: bool, system_inc: &[std::path::PathBuf], timeout: core::time::Duration) -> perl_module::ModuleUriResolution
+pub fn perl_module::resolve_module_uri_with_effective_inc(module_name: &str, open_document_uris: &[alloc::string::String], workspace_folders: &[alloc::string::String], effective_inc_roots: &[perl_module::IncRoot], timeout: core::time::Duration) -> perl_module::ModuleUriResolution
+pub fn perl_module::resolve_use_lib_paths(use_lib_paths: &[perl_module::UseLibPath], workspace_root: &std::path::Path, file_dir: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_module::resolve_use_lib_paths_from_operations_at_offset(ops: &[perl_module::UseLibOperation], offset: usize, workspace_root: &std::path::Path, file_dir: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_module::resolve_use_lib_paths_from_source(source: &str, workspace_root: &std::path::Path, file_dir: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_module::resolve_use_lib_paths_from_source_at_offset(source: &str, offset: usize, workspace_root: &std::path::Path, file_dir: core::option::Option<&std::path::Path>) -> alloc::vec::Vec<alloc::string::String>

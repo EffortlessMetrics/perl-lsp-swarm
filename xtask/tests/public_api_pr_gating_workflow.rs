@@ -384,18 +384,24 @@ fn scope_selection_is_job_level_and_never_label_gated() -> Result<(), Box<dyn st
         "ci.yml excludes the labeled event on purpose; labels must not gate its jobs"
     );
 
-    let trigger_facade_paths = [
-        "crates/perl-parser/",
-        "crates/perl-lexer/",
-        "crates/perl-parser-core/",
-        "crates/perl-lsp-rs/",
-        "crates/perl-uri/",
-        "crates/perl-dap/",
-        "crates/perllsp/",
+    // #14607: the crates the rails check directly are not restated in the
+    // workflow; the selector reads the same single list the recipes read.
+    for anchor in [
         ".ci/public-api-baselines/",
-    ];
-    for facade_path in trigger_facade_paths {
-        assert!(workflow.contains(facade_path), "scope selector must cover {facade_path}");
+        "\"ratchet-crates.txt\"",
+        "def ratchet_crates():",
+        "for crate in ratchet_crates():",
+    ] {
+        assert!(
+            workflow.contains(anchor),
+            "scope selector must derive from the ratchet list: {anchor}"
+        );
+    }
+    for stale_literal in ["\"crates/perl-parser/\",", "\"crates/perllsp/\","] {
+        assert!(
+            !workflow.contains(stale_literal),
+            "scope selector must not restate the ratchet crate list: {stale_literal}"
+        );
     }
     assert!(
         workflow.contains("api_scope=true") && workflow.contains("api_scope=false"),
