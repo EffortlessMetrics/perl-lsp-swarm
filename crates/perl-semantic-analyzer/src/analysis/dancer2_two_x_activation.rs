@@ -300,17 +300,13 @@ fn spelled_version_requirement(source: &str, span_start: u32, span_end: u32) -> 
         return None;
     }
     let statement = source.get(start..end)?;
-    eprintln!("[dbg sv] start={start} end={end} statement={statement:?}");
     let Some(after_use_keyword) = skip_layout(statement).strip_prefix("use") else {
-        eprintln!("[dbg sv] no use keyword in {statement:?}");
         return None;
     };
     let Some(rest) = skip_layout(after_use_keyword).strip_prefix("Dancer2") else {
-        eprintln!("[dbg sv] no Dancer2 after use: {after_use_keyword:?}");
         return None;
     };
     let rest = skip_layout(rest);
-    eprintln!("[dbg sv] after module: {rest:?}");
     let body = rest.strip_prefix('v').unwrap_or(rest);
     if !body.starts_with(|c: char| c.is_ascii_digit()) {
         return None;
