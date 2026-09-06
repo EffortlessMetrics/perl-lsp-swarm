@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use perl_kwalitee::{
+use perl_release_readiness::{
     EvidencePaths, EvidenceRef, ExternalResult, IndicatorStatus, KwaliteeOptions, KwaliteeProfile,
     KwaliteeReceipt, indicator_ids,
 };
@@ -110,15 +110,16 @@ struct CurrentLegacySubject;
 
 impl LegacyParitySubject for CurrentLegacySubject {
     fn evaluate(&self, options: &KwaliteeOptions) -> KwaliteeReceipt {
-        perl_kwalitee::evaluate(options)
+        perl_release_readiness::evaluate(options)
     }
 
     fn read_legacy_receipt(&self, bytes: &[u8]) -> Result<KwaliteeReceipt, String> {
-        perl_kwalitee::read_legacy_receipt(bytes).map_err(|error| error.to_string())
+        perl_release_readiness::read_legacy_receipt(bytes).map_err(|error| error.to_string())
     }
 
     fn render_migration_reference(&self) -> Result<String, String> {
-        perl_kwalitee::render_legacy_migration_markdown().map_err(|error| error.to_string())
+        perl_release_readiness::render_legacy_migration_markdown()
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -618,7 +619,7 @@ fn evaluated_statuses(
 }
 
 /// The fixture receipts stamp `fixture-source`, so the frozen harness default
-/// (`commit = "unknown"`) never arms [`perl_kwalitee`] receipt freshness. These
+/// (`commit = "unknown"`) never arms [`perl_release_readiness`] receipt freshness. These
 /// cases prove that a matched commit reproduces the frozen statuses, a
 /// mismatched commit downgrades every otherwise-healthy receipt-backed row, and
 /// each downgrade is explained by a stale-receipt evidence note.
