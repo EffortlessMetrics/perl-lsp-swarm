@@ -24,8 +24,7 @@ pub(crate) fn scan(
     let mut extra_files = BTreeSet::new();
 
     for file in &topology.files {
-        let abs = root.join(&file.path);
-        match scan_file(root, file, vocabulary, true) {
+        match scan_file(root, file, vocabulary, true, false) {
             Ok(mut scanned) => {
                 extra_files.extend(scanned.external_modules);
                 entrypoints.append(&mut scanned.entrypoints);
@@ -33,32 +32,36 @@ pub(crate) fn scan(
                 declarations.append(&mut scanned.declarations);
                 instruments.append(&mut scanned.instruments);
             }
-            Err(err) => {
-                instruments.push(Instrument {
-                    kind: "source_parse".to_string(),
-                    subject: file.path.clone(),
-                    status: InstrumentStatus::NotProven,
-                    detail: err,
-                });
-                let _ = abs;
-            }
+            Err(err) => instruments.push(Instrument {
+                kind: "source_parse".to_string(),
+                subject: file.path.clone(),
+                status: InstrumentStatus::NotProven,
+                detail: err,
+            }),
         }
     }
 
-    for path in extra_files {
-        let relative = normalize_path(&path, root);
-        if topology.files.iter().any(|file| file.path == relative) {
+    let mut pending = extra_files;
+    let mut scanned_extra = BTreeSet::new();
+    while let Some(path) = pending.pop_first() {
+        if !scanned_extra.insert(path.clone()) {
             continue;
         }
-        let file = FileRecord {
+        let relative = normalize_path(&path, root);
+        let already = topology.files.iter().find(|file| file.path == relative);
+        if already.is_some_and(|file| is_complete_test_file(file.target_kind, &file.path)) {
+            continue;
+        }
+        let file = already.cloned().unwrap_or_else(|| FileRecord {
             package: package_from_path(root, &path).unwrap_or_else(|| "unknown".to_string()),
             target_kind: TargetKind::UnitTest,
             path: relative,
             feature: None,
             platform: None,
-        };
-        match scan_file(root, &file, vocabulary, true) {
+        });
+        match scan_file(root, &file, vocabulary, true, true) {
             Ok(mut scanned) => {
+                pending.extend(scanned.external_modules);
                 entrypoints.append(&mut scanned.entrypoints);
                 sites.append(&mut scanned.sites);
                 declarations.append(&mut scanned.declarations);
@@ -74,11 +77,21 @@ pub(crate) fn scan(
     }
 
     entrypoints.sort_by(|left, right| (&left.path, &left.name).cmp(&(&right.path, &right.name)));
+    entrypoints.dedup_by(|left, right| left.path == right.path && left.name == right.name);
     sites.sort_by(|left, right| {
         (&left.path, left.line, &left.family).cmp(&(&right.path, right.line, &right.family))
     });
+    sites.dedup_by(|left, right| {
+        left.path == right.path && left.line == right.line && left.family == right.family
+    });
     declarations.sort_by(|left, right| {
         (&left.path, left.line, &left.lint).cmp(&(&right.path, right.line, &right.lint))
+    });
+    declarations.dedup_by(|left, right| {
+        left.path == right.path
+            && left.line == right.line
+            && left.lint == right.lint
+            && left.form == right.form
     });
     Ok(Discovered { entrypoints, sites, declarations, instruments })
 }
@@ -96,18 +109,21 @@ fn scan_file(
     file: &FileRecord,
     vocabulary: &Vocabulary,
     follow_modules: bool,
+    treat_as_test: bool,
 ) -> Result<ScannedFile, String> {
     let abs = root.join(&file.path);
     let source = std::fs::read_to_string(&abs).map_err(|err| err.to_string())?;
+    let lines: Vec<&str> = source.lines().collect();
     let parsed = syn::parse_file(&source).map_err(|err| err.to_string())?;
     let complete = is_complete_test_file(file.target_kind, &file.path);
+    let module_dir = abs.parent().map(Path::to_path_buf).unwrap_or_else(|| abs.clone());
     let mut visitor = DebtVisitor {
-        root,
         file,
-        source: &source,
+        lines: &lines,
         vocabulary,
         follow_modules,
-        in_test: complete,
+        module_dir,
+        in_test: treat_as_test || complete,
         current_fn: "<file>".to_string(),
         current_feature: file.feature.clone(),
         current_platform: file.platform.clone(),
@@ -137,11 +153,11 @@ struct Covering {
 }
 
 struct DebtVisitor<'a> {
-    root: &'a Path,
     file: &'a FileRecord,
-    source: &'a str,
+    lines: &'a [&'a str],
     vocabulary: &'a Vocabulary,
     follow_modules: bool,
+    module_dir: PathBuf,
     in_test: bool,
     current_fn: String,
     current_feature: Option<String>,
@@ -230,7 +246,7 @@ impl DebtVisitor<'_> {
         } else if !self.vocabulary.method_families.contains(family) {
             return;
         }
-        let snippet = snippet_from_source(self.source, span);
+        let snippet = normalized_invocation(self.lines, span.start());
         let covering = self.covering_for(family);
         self.sites.push(RawSite {
             package: self.file.package.clone(),
@@ -257,22 +273,27 @@ impl<'ast> Visit<'ast> for DebtVisitor<'_> {
         let previous_test = self.in_test;
         let previous_feature = self.current_feature.clone();
         let previous_platform = self.current_platform.clone();
+        let previous_dir = self.module_dir.clone();
         if cfg_test {
             self.in_test = true;
         }
         self.current_feature = feature;
         self.current_platform = platform;
         self.push_attrs(&node.attrs, "module");
-        if node.content.is_none() && self.follow_modules && self.in_test {
-            if let Some(path) = resolve_mod_path(self.root, &self.file.path, node) {
-                self.external_modules.push(path);
-            }
+        if node.content.is_some() {
+            self.module_dir = inline_module_dir(&self.module_dir, node);
+        } else if self.follow_modules
+            && self.in_test
+            && let Some(path) = outline_module_path(&self.module_dir, node)
+        {
+            self.external_modules.push(path);
         }
         syn::visit::visit_item_mod(self, node);
         self.pop_attrs();
         self.in_test = previous_test;
         self.current_feature = previous_feature;
         self.current_platform = previous_platform;
+        self.module_dir = previous_dir;
     }
 
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
@@ -435,7 +456,7 @@ fn is_cfg_test_prefix(collapsed: &str) -> bool {
 fn extract_quoted_after(text: &str, prefix: &str) -> Option<String> {
     let start = text.find(prefix)? + prefix.len();
     let rest = text.get(start..)?;
-    let rest = rest.trim_start_matches(|ch| ch == '"' || ch == ' ');
+    let rest = rest.trim_start_matches(['"', ' ']);
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
 }
@@ -448,10 +469,10 @@ fn extract_owner(collapsed: &str) -> String {
             return format!("#{id}");
         }
     }
-    if collapsed.contains("reason=") {
-        if let Some(reason) = extract_quoted_after(collapsed, "reason=") {
-            return reason;
-        }
+    if collapsed.contains("reason=")
+        && let Some(reason) = extract_quoted_after(collapsed, "reason=")
+    {
+        return reason;
     }
     String::new()
 }
@@ -477,55 +498,87 @@ fn source_lint_matches(lint: &str, family: &str) -> bool {
     family_lint(family) == lint
 }
 
-fn snippet_from_source(source: &str, span: proc_macro2::Span) -> String {
-    let start = span.start();
-    let end = span.end();
-    let fragment = slice_source(source, start, end).unwrap_or_default();
-    fragment.split_whitespace().collect::<Vec<_>>().join(" ")
-}
+fn normalized_invocation(lines: &[&str], start: LineColumn) -> String {
+    let line_index = start.line.saturating_sub(1);
+    let mut text = String::new();
+    let mut depth = 0usize;
+    let mut started = false;
+    let mut in_string = false;
+    let mut escaped = false;
 
-fn slice_source(source: &str, start: LineColumn, end: LineColumn) -> Option<String> {
-    let mut lines = source.lines();
-    let start_line = start.line.checked_sub(1)?;
-    let end_line = end.line.checked_sub(1)?;
-    let first = lines.nth(start_line)?;
-    if start_line == end_line {
-        return first.get(start.column..end.column.max(start.column)).map(str::to_string);
-    }
-    let mut text = first.get(start.column..).unwrap_or("").to_string();
-    for (offset, line) in source.lines().enumerate() {
-        if offset <= start_line {
-            continue;
+    for (offset, line) in lines.iter().enumerate().skip(line_index).take(16) {
+        let scan_fragment =
+            if offset == line_index { line.get(start.column..).unwrap_or("") } else { line };
+        if !text.is_empty() {
+            text.push('\n');
         }
-        if offset > end_line {
+        text.push_str(line);
+        for ch in scan_fragment.chars() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            if ch == '"' {
+                in_string = true;
+                continue;
+            }
+            if ch == '(' || ch == '{' {
+                started = true;
+                depth += 1;
+            } else if (ch == ')' || ch == '}') && started {
+                depth = depth.saturating_sub(1);
+            }
+        }
+        if started && depth == 0 {
             break;
         }
-        text.push('\n');
-        if offset == end_line {
-            text.push_str(line.get(..end.column).unwrap_or(line));
-        } else {
-            text.push_str(line);
-        }
     }
-    Some(text)
+
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn resolve_mod_path(root: &Path, file: &str, node: &ItemMod) -> Option<PathBuf> {
-    let dir = root.join(file).parent()?.to_path_buf();
+fn path_attribute(node: &ItemMod) -> Option<String> {
     for attr in &node.attrs {
         if attr.path().is_ident("path")
             && let syn::Meta::NameValue(nv) = &attr.meta
             && let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(value), .. }) = &nv.value
         {
-            return Some(dir.join(value.value()));
+            return Some(value.value());
         }
     }
+    None
+}
+
+fn inline_module_dir(parent_dir: &Path, node: &ItemMod) -> PathBuf {
+    if let Some(path) = path_attribute(node) {
+        let resolved = parent_dir.join(path);
+        if resolved.is_file() {
+            return resolved
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| parent_dir.to_path_buf());
+        }
+        return resolved;
+    }
+    parent_dir.join(node.ident.to_string())
+}
+
+fn outline_module_path(module_dir: &Path, node: &ItemMod) -> Option<PathBuf> {
+    if let Some(path) = path_attribute(node) {
+        return Some(module_dir.join(path));
+    }
     let name = node.ident.to_string();
-    let sibling = dir.join(format!("{name}.rs"));
+    let sibling = module_dir.join(format!("{name}.rs"));
     if sibling.is_file() {
         return Some(sibling);
     }
-    let nested = dir.join(&name).join("mod.rs");
+    let nested = module_dir.join(&name).join("mod.rs");
     nested.is_file().then_some(nested)
 }
 

@@ -1,7 +1,7 @@
 use super::model::{
     ClippyTargetStatus, DebtRow, DebtStatus, DerivedCounts, Discovered, Instrument,
     InstrumentStatus, Inventory, InventoryRequest, PRODUCER, Population, RegistryKey,
-    RegistryRecord, RegistryState, SCHEMA, Topology, Vocabulary,
+    RegistryRecord, RegistryState, SCHEMA, Topology,
 };
 use super::vocabulary;
 use super::{normalize_path, read_to_string, sha256_hex};
@@ -13,7 +13,6 @@ use std::process::Command;
 
 pub(crate) fn join(
     request: InventoryRequest<'_>,
-    vocabulary: Vocabulary,
     topology: Topology,
     discovered: Discovered,
 ) -> Result<Inventory> {
@@ -205,7 +204,6 @@ pub(crate) fn join(
         entrypoints: discovered.entrypoints,
     };
     let counts = derive_counts(&population, &rows, &instruments);
-    let _ = vocabulary;
     Ok(Inventory {
         schema: SCHEMA.to_string(),
         producer: PRODUCER.to_string(),

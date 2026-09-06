@@ -1,6 +1,6 @@
 use super::model::{DebtStatus, InstrumentStatus, Inventory};
 use super::projection::{canonical_json, semantic_delta};
-use super::{build_inventory, read_to_string};
+use super::read_to_string;
 use color_eyre::eyre::{Result, eyre};
 use std::path::Path;
 
@@ -129,20 +129,6 @@ pub fn integrity_findings(root: &Path, inventory: &Inventory) -> Vec<String> {
         }
     }
 
-    let registry_paths: std::collections::BTreeSet<&str> = inventory
-        .rows
-        .iter()
-        .filter(|row| row.kind == "registry")
-        .map(|row| row.path.as_str())
-        .collect();
-    if !registry_paths.is_empty() {
-        let discovered_outside_registry = inventory.population.files.iter().any(|file| {
-            !registry_paths.contains(file.path.as_str())
-                && (file.path.contains("/tests/") || file.path.contains("#[cfg(test)]"))
-        });
-        let _ = discovered_outside_registry;
-    }
-
     let on_disk_tests = collect_test_files(root);
     let known: std::collections::BTreeSet<_> =
         inventory.population.files.iter().map(|file| file.path.as_str()).collect();
@@ -204,21 +190,4 @@ fn collect_test_files(root: &Path) -> Vec<String> {
     }
     files.sort();
     files
-}
-
-pub fn rebuild_matches(root: &Path, inventory: &Inventory) -> Result<bool> {
-    let rebuilt = build_inventory(super::model::InventoryRequest {
-        root,
-        repository_commit: Some(inventory.repository_commit.clone()),
-        ..super::model::InventoryRequest {
-            root,
-            registry_path: None,
-            lint_ledger_path: None,
-            lint_catalog_dir: None,
-            clippy_observation: None,
-            owner_state: None,
-            repository_commit: Some(inventory.repository_commit.clone()),
-        }
-    })?;
-    Ok(canonical_json(&rebuilt)? == canonical_json(inventory)?)
 }

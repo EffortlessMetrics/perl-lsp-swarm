@@ -1,4 +1,4 @@
-use super::model::{DebtStatus, Inventory};
+use super::model::Inventory;
 use color_eyre::eyre::{Result, eyre};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -62,7 +62,6 @@ pub fn render_human(inventory: &Inventory) -> String {
             let _ = writeln!(out, "- {limitation}");
         }
     }
-    let _ = DebtStatus::Unowned;
     out
 }
 

@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, dead_code)]
 
 use std::fs;
 use std::path::Path;

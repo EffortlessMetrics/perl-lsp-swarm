@@ -361,6 +361,147 @@ fn open_candidate_tree_is_not_landed_source() {
 }
 
 #[test]
+fn matching_registry_panic_is_intentional_exception() {
+    let temp = fixture_root();
+    let first = inventory_at(temp.path());
+    let site = first
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.site_family == "panic!")
+        .expect("panic site");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [{
+                "path": site.path,
+                "enclosing_test_or_function": site.entrypoint,
+                "macro_family": site.site_family,
+                "normalized_snippet": site.source_identity,
+                "selector_identity": site.selector_identity,
+                "accepted_reason": "Intentional test failure diagnostic.",
+                "state": "active"
+            }]
+        })
+        .to_string(),
+    );
+    let joined = inventory_at(temp.path());
+    assert!(
+        joined.rows.iter().any(|row| {
+            row.kind == "site"
+                && row.site_family == "panic!"
+                && row.status == DebtStatus::IntentionalExactException
+                && row.registry_relation == "matched_active"
+        }),
+        "exact registry identity did not join: {:?}",
+        joined.rows
+    );
+}
+
+#[test]
+fn nested_path_attr_inside_inline_module_is_not_resolved_against_src() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+pub mod nested {
+    #[cfg(test)]
+    #[path = "tests.rs"]
+    mod tests;
+
+    #[cfg(test)]
+    #[path = "test_support.rs"]
+    mod test_support;
+}
+"#,
+        &[],
+    );
+    let nested = temp.path().join("crates/demo/src/nested");
+    fs::create_dir_all(&nested).expect("nested");
+    fs::write(nested.join("tests.rs"), "#[test]\nfn nested_test() { let _ = Some(1).unwrap(); }\n")
+        .expect("tests");
+    fs::write(nested.join("test_support.rs"), "pub fn helper() { let _ = Some(1).unwrap(); }\n")
+        .expect("support");
+
+    let inventory = inventory_at(temp.path());
+    assert!(
+        !inventory.instruments.iter().any(|instrument| {
+            instrument.status == InstrumentStatus::NotProven
+                && (instrument.subject.ends_with("src/tests.rs")
+                    || instrument.subject.ends_with("src/test_support.rs"))
+        }),
+        "phantom src-relative #[path] was not_proven: {:?}",
+        inventory.instruments
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/nested/tests.rs") && row.site_family == "unwrap"
+        }),
+        "nested #[path] test site omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("src/nested/test_support.rs") && row.site_family == "unwrap"
+        }),
+        "cfg(test) helper unwrap omitted: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
+fn missing_cfg_test_path_module_is_not_proven() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        r#"
+pub mod nested {
+    #[cfg(test)]
+    #[path = "missing_tests.rs"]
+    mod tests;
+}
+"#,
+        &[],
+    );
+    fs::create_dir_all(temp.path().join("crates/demo/src/nested")).expect("nested");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "source_parse"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject.ends_with("src/nested/missing_tests.rs")
+        }),
+        "missing #[path] module was not not_proven: {:?}",
+        inventory.instruments
+    );
+    assert!(inventory.counts.instrument_not_proven > 0);
+}
+
+#[test]
+fn production_unwrap_is_not_test_debt() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "pub fn ready() -> u8 { Some(1).unwrap() }\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let inventory = inventory_at(temp.path());
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.kind == "site" && row.path.ends_with("src/lib.rs") && row.site_family == "unwrap"
+        }),
+        "production unwrap classified as test debt: {:?}",
+        inventory.rows
+    );
+}
+
+#[test]
 fn registry_is_not_the_discovery_denominator() {
     let temp = fixture_root();
     write_registry(temp.path(), r#"{"schema_version":1,"sites":[]}"#);

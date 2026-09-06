@@ -19,7 +19,7 @@ pub use model::{
 };
 pub use projection::{canonical_json, render_human, semantic_delta};
 
-use color_eyre::eyre::{Result, WrapErr, bail, eyre};
+use color_eyre::eyre::{Result, WrapErr, eyre};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -35,21 +35,21 @@ pub fn build_inventory(request: InventoryRequest<'_>) -> Result<Inventory> {
         vocabulary::load(request.root, request.lint_ledger_path, request.lint_catalog_dir)?;
     let topology = topology::discover(request.root, &vocabulary)?;
     let discovered = discover::scan(request.root, &topology, &vocabulary)?;
-    join::join(request, vocabulary, topology, discovered)
+    join::join(request, topology, discovered)
 }
 
-/// CLI: generate machine and human projections.
+/// CLI: generate machine and human projections. Returns the stdout summary.
 pub fn run_inventory(
     root: &Path,
     json_path: Option<PathBuf>,
     markdown_path: Option<PathBuf>,
-) -> Result<()> {
+) -> Result<String> {
     let inventory = build_inventory(InventoryRequest { root, ..InventoryRequest::default() })?;
     let json_path = json_path.unwrap_or_else(|| root.join(DEFAULT_JSON_PATH));
     let markdown_path = markdown_path.unwrap_or_else(|| root.join(DEFAULT_MARKDOWN_PATH));
     write_artifact(&json_path, &canonical_json(&inventory)?)?;
     write_artifact(&markdown_path, render_human(&inventory).as_bytes())?;
-    println!(
+    Ok(format!(
         "test_panic_family_debt.v1: files={} entrypoints={} rows={} instruments_not_proven={} json={} markdown={}",
         inventory.population.files.len(),
         inventory.population.entrypoints.len(),
@@ -61,8 +61,7 @@ pub fn run_inventory(
             .count(),
         json_path.display(),
         markdown_path.display()
-    );
-    Ok(())
+    ))
 }
 
 /// CLI: re-derive the denominator and fail on integrity or identity drift.
@@ -72,7 +71,7 @@ pub fn run_check(
     baseline: Option<PathBuf>,
     clippy_observation: Option<PathBuf>,
     owner_state: Option<PathBuf>,
-) -> Result<()> {
+) -> Result<CheckResult> {
     let clippy = clippy_observation.as_deref().map(load_clippy_observation).transpose()?;
     let owners = owner_state.as_deref().map(load_owner_state).transpose()?;
     let current = build_inventory(InventoryRequest {
@@ -81,29 +80,35 @@ pub fn run_check(
         owner_state: owners.as_ref(),
         ..InventoryRequest::default()
     })?;
-    let result = check_inventory(CheckRequest {
+    check_inventory(CheckRequest {
         root,
         current: &current,
         artifact: artifact.as_deref(),
         baseline: baseline.as_deref(),
-    })?;
-    print_check_result(&result);
-    if result.ok {
-        Ok(())
-    } else {
-        bail!("test_panic_family_debt.v1 check failed with {} finding(s)", result.findings.len());
-    }
+    })
 }
 
-/// CLI: print the human projection for the current tree.
-pub fn run_report(root: &Path, json_path: Option<PathBuf>) -> Result<()> {
+/// Format check findings for stdout.
+pub fn format_check_result(result: &CheckResult) -> String {
+    let mut out = format!(
+        "test_panic_family_debt.v1 check: ok={} findings={}",
+        result.ok,
+        result.findings.len()
+    );
+    for finding in &result.findings {
+        out.push_str("\n- ");
+        out.push_str(finding);
+    }
+    out
+}
+
+/// CLI: render the human projection for the current tree.
+pub fn run_report(root: &Path, json_path: Option<PathBuf>) -> Result<String> {
     let inventory = build_inventory(InventoryRequest { root, ..InventoryRequest::default() })?;
-    let markdown = render_human(&inventory);
     if let Some(path) = json_path {
         write_artifact(&path, &canonical_json(&inventory)?)?;
     }
-    print!("{markdown}");
-    Ok(())
+    Ok(render_human(&inventory))
 }
 
 fn load_clippy_observation(path: &Path) -> Result<ClippyObservation> {
@@ -129,17 +134,6 @@ fn write_artifact(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn print_check_result(result: &CheckResult) {
-    println!(
-        "test_panic_family_debt.v1 check: ok={} findings={}",
-        result.ok,
-        result.findings.len()
-    );
-    for finding in &result.findings {
-        println!("- {finding}");
-    }
-}
-
 impl Default for InventoryRequest<'_> {
     fn default() -> Self {
         Self {
@@ -159,18 +153,6 @@ impl InventoryRequest<'_> {
         self.registry_path
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.root.join("ci/panic_test_identities.json"))
-    }
-
-    pub(crate) fn lint_ledger_path(&self) -> PathBuf {
-        self.lint_ledger_path
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.root.join("policy/clippy-lints.toml"))
-    }
-
-    pub(crate) fn lint_catalog_dir(&self) -> PathBuf {
-        self.lint_catalog_dir
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.root.join("policy/clippy-lints.d"))
     }
 }
 

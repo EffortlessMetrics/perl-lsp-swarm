@@ -6672,7 +6672,9 @@ fn run_cli(cli: Cli) -> Result<()> {
                         Some(path) => path,
                         None => utils::project_root()?,
                     };
-                    xtask::no_panic_debt::run_inventory(&root, json, markdown)
+                    let summary = xtask::no_panic_debt::run_inventory(&root, json, markdown)?;
+                    println!("{summary}");
+                    Ok(())
                 }
                 NoPanicDebtCommand::Check {
                     root,
@@ -6685,20 +6687,30 @@ fn run_cli(cli: Cli) -> Result<()> {
                         Some(path) => path,
                         None => utils::project_root()?,
                     };
-                    xtask::no_panic_debt::run_check(
+                    let result = xtask::no_panic_debt::run_check(
                         &root,
                         artifact,
                         baseline,
                         clippy_observation,
                         owner_state,
-                    )
+                    )?;
+                    println!("{}", xtask::no_panic_debt::format_check_result(&result));
+                    if result.ok {
+                        Ok(())
+                    } else {
+                        Err(eyre!(
+                            "test_panic_family_debt.v1 check failed with {} finding(s)",
+                            result.findings.len()
+                        ))
+                    }
                 }
                 NoPanicDebtCommand::Report { root, json } => {
                     let root = match root {
                         Some(path) => path,
                         None => utils::project_root()?,
                     };
-                    xtask::no_panic_debt::run_report(&root, json)
+                    print!("{}", xtask::no_panic_debt::run_report(&root, json)?);
+                    Ok(())
                 }
             },
         },
