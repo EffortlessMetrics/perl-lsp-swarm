@@ -838,16 +838,13 @@ fn completion_claims(
 fn doc_completion_claims(name: &str, source: &str, view: &CapabilityView) -> Result<Vec<String>> {
     let mut claims = Vec::new();
     for (index, line) in source.lines().enumerate() {
-        if !line_mentions_postfix(line) {
-            continue;
-        }
         if let Some(overclaim) = table_overclaim(line, view)? {
             claims.push(format!("{name}:{} {overclaim}", index + 1));
         }
         if let Some(overclaim) = capability_status_table_overclaim(line) {
             claims.push(format!("{name}:{} {overclaim}", index + 1));
         }
-        if positive_completion_phrase(line) {
+        if line_mentions_postfix(line) && positive_completion_phrase(line) {
             claims.push(format!(
                 "{name}:{} claims postfix/statement-modifier completion: {}",
                 index + 1,
@@ -859,7 +856,7 @@ fn doc_completion_claims(name: &str, source: &str, view: &CapabilityView) -> Res
 }
 
 fn capability_status_table_overclaim(line: &str) -> Option<String> {
-    if !line.contains('|') || !line_mentions_postfix(line) {
+    if !line.contains('|') {
         return None;
     }
     let cells: Vec<&str> = line.split('|').map(str::trim).filter(|part| !part.is_empty()).collect();
@@ -871,7 +868,7 @@ fn capability_status_table_overclaim(line: &str) -> Option<String> {
     if capability.eq_ignore_ascii_case("Capability") || capability.starts_with("---") {
         return None;
     }
-    if state == "live" {
+    if line_mentions_postfix(capability) && state == "live" {
         return Some(format!(
             "capability table marks {capability} live without derived full-capability proof"
         ));
@@ -1313,6 +1310,22 @@ mod tests {
             !message.contains("Provider cutover"),
             "partial live on an unrelated row must not be a postfix completion claim: {message}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn unrelated_live_row_mentioning_postfix_elsewhere_is_not_a_claim() -> Result<()> {
+        let (ledger, mut matrix) = committed()?;
+        apply_full_looking_hir(postfix_req(&mut matrix)?);
+        let view = derive_postfix_capability(&ledger, &matrix)?;
+        let docs = [(
+            "docs/project/COMPILER_CAPABILITY_STATUS.md",
+            "| Capability | State | Owner issue | Evidence | Next proof |\n\
+             | --- | --- | --- | --- | --- |\n\
+             | HIR lowering | `live` | #8224 | postfix statement modifier shells | none |\n",
+        )];
+        let report = evaluate_closure_gate(&view, &ledger, &matrix, &docs)?;
+        assert!(report.contains("no designated surface claims completion"), "{report}");
         Ok(())
     }
 
