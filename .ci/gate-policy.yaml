@@ -1722,6 +1722,28 @@ gates:
       - contract
       - generated
 
+  # Overlay on the #6657/#6689 derived capability state. It does not replace
+  # the concept ledger, proof-policy, or per-class matrix gates: those still
+  # admit or reject individual cells. This gate only rejects marking the
+  # postfix statement-modifier umbrella / capability docs complete while
+  # required non-HIR layers remain missing (#13281).
+  - name: postfix_capability_closure
+    tier: merge_gate
+    description: "Reject HIR-only completion claims for control.postfix_modifier capability docs (#13281)"
+    required: true
+    command: >-
+      cargo test -p xtask --bin postfix-capability-closure --locked &&
+      cargo run --locked -p xtask --bin postfix-capability-closure -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - compiler
+
   # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
   # shard executes this gate; wire into parser_stack or corpus shard before
   # re-promotion.
