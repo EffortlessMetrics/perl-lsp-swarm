@@ -7,10 +7,12 @@ import {
   type ConfigurationTarget,
   type LegacyConfigurationSites,
   type LegacyMigrationOccurrence,
+  MAX_PUBLISHED_ENTRIES,
   authorizedTargetsForScope,
   describeLegacyMigrationEntry,
   legacyMigrationState,
   legacyMigrationStateEntry,
+  migrationStateFingerprint,
   readLegacyConfiguration,
   unwiredCanonicalValues,
 } from '../configurationMigrationLive';
@@ -349,6 +351,73 @@ describe('live legacy configuration reader', () => {
       'compatible_legacy',
     );
     expect(readLegacyConfiguration(registry, '0.18.0', sites)[0]?.runtime.status).toBe('expired');
+  });
+
+  // The folder term of the occurrence count is whatever the user has open, so retained
+  // state would otherwise grow without limit. Notices are emitted from the full
+  // occurrence list, so the cap costs no announcement.
+  test('published state is capped, and the remainder is counted rather than hidden', () => {
+    const { registry, key } = registryWithRow({ old_scope: 'workspace-folder' });
+    const folderCount = MAX_PUBLISHED_ENTRIES + 7;
+    const occurrences = readLegacyConfiguration(registry, EXTENSION_VERSION, (probed) =>
+      probed === key
+        ? {
+            workspaceFolders: Array.from({ length: folderCount }, (_unused, index) => ({
+              folderId: `folder:${index}`,
+              value: true,
+            })),
+          }
+        : {},
+    );
+    const state = legacyMigrationState(registry, EXTENSION_VERSION, occurrences);
+
+    expect(occurrences).toHaveLength(folderCount);
+    expect(state.entries).toHaveLength(MAX_PUBLISHED_ENTRIES);
+    expect(state.omittedEntryCount).toBe(7);
+    // Truncation keeps the natural order rather than an arbitrary subset.
+    expect(state.entries[0]?.folderId).toBe('folder:0');
+    expect(state.entries[MAX_PUBLISHED_ENTRIES - 1]?.folderId).toBe(
+      `folder:${MAX_PUBLISHED_ENTRIES - 1}`,
+    );
+  });
+
+  test('an uncapped profile reports nothing omitted', () => {
+    const state = legacyMigrationState(
+      V018_CONFIGURATION_MIGRATIONS,
+      EXTENSION_VERSION,
+      read({ user: { value: STALE_MCP_VALUE } }),
+    );
+
+    expect(state.entries).toHaveLength(1);
+    expect(state.omittedEntryCount).toBe(0);
+  });
+
+  // The cap makes the published entries a lossy view, so change detection cannot be built
+  // on them: a folder that gains the setting past the cap produces an identical published
+  // projection, and its notice would be suppressed if the fingerprint came from entries.
+  test('the fingerprint separates profiles that differ only past the cap', () => {
+    const { registry, key } = registryWithRow({ old_scope: 'workspace-folder' });
+    const readFolders = (count: number) =>
+      readLegacyConfiguration(registry, EXTENSION_VERSION, (probed) =>
+        probed === key
+          ? {
+              workspaceFolders: Array.from({ length: count }, (_unused, index) => ({
+                folderId: `folder:${index}`,
+                value: true,
+              })),
+            }
+          : {},
+      );
+
+    const before = readFolders(MAX_PUBLISHED_ENTRIES + 1);
+    const after = readFolders(MAX_PUBLISHED_ENTRIES + 2);
+
+    // The published projections are byte-identical: both truncate to the same entries.
+    expect(legacyMigrationState(registry, EXTENSION_VERSION, before).entries).toEqual(
+      legacyMigrationState(registry, EXTENSION_VERSION, after).entries,
+    );
+    // The fingerprint still separates them, so the added folder is announced.
+    expect(migrationStateFingerprint(before)).not.toBe(migrationStateFingerprint(after));
   });
 
   test('every reported target is one of the declared configuration targets', () => {

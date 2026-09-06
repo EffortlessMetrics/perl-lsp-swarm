@@ -133,12 +133,31 @@ export interface LegacyMigrationStateEntry extends SafeMigrationRuntimeSnapshot 
   readonly folderId: string | null;
 }
 
+/**
+ * The most entries a published state will carry.
+ *
+ * The occurrence count is `rows x (user + workspace + folders)`, and the folder term is
+ * whatever the user has open — nothing in the registry bounds it. Retained state that a
+ * profile can grow without limit is not bounded state, so the published array is capped
+ * and the remainder is counted rather than hidden.
+ *
+ * The cap governs only what is *published*. Notices are emitted from the full occurrence
+ * list, so no refusal goes unannounced because of it — which matters: refusals are how a
+ * `process_execution` setting in repository-controlled configuration is surfaced.
+ *
+ * 64 is far above any real multi-root workspace that also carries a removed setting in
+ * that many folders, so ordinary profiles never truncate.
+ */
+export const MAX_PUBLISHED_ENTRIES = 64;
+
 /** Bounded, redacted migration state for the whole profile. */
 export interface LegacyMigrationState {
   readonly registrySchemaVersion: string;
   readonly registryTargetRelease: string;
   readonly extensionVersion: string;
   readonly entries: readonly LegacyMigrationStateEntry[];
+  /** Occurrences past {@link MAX_PUBLISHED_ENTRIES}; every one was still announced. */
+  readonly omittedEntryCount: number;
 }
 
 interface SiteOccurrence {
@@ -293,18 +312,54 @@ export function legacyMigrationStateEntry(
   };
 }
 
-/** Redact interpreted occurrences into the state published to support surfaces. */
+/**
+ * Redact interpreted occurrences into the state published to support surfaces.
+ *
+ * Truncation keeps the natural order — per key, the user target, then workspace, then
+ * folders as the host listed them — so the entries that survive are the least
+ * folder-dependent ones, and the same profile always yields the same published state.
+ */
 export function legacyMigrationState(
   registry: ConfigurationMigrationRegistry,
   extensionVersion: string,
   occurrences: readonly LegacyMigrationOccurrence[],
 ): LegacyMigrationState {
+  const published = occurrences.slice(0, MAX_PUBLISHED_ENTRIES);
   return {
     registrySchemaVersion: registry.schema_version,
     registryTargetRelease: registry.target_release,
     extensionVersion,
-    entries: occurrences.map(legacyMigrationStateEntry),
+    entries: published.map(legacyMigrationStateEntry),
+    omittedEntryCount: occurrences.length - published.length,
   };
+}
+
+/**
+ * A compact identity for the whole occurrence set.
+ *
+ * Deliberately derived from every occurrence rather than from the published entries: the
+ * published array is capped, so using it to detect change would make two profiles that
+ * differ only past the cap look identical and silence the notices for the second one.
+ * Carries exactly the fields a notice is built from.
+ */
+export function migrationStateFingerprint(
+  occurrences: readonly LegacyMigrationOccurrence[],
+): string {
+  return occurrences
+    .map((occurrence) => {
+      const { runtime } = occurrence;
+      return [
+        occurrence.legacyKey,
+        occurrence.target,
+        occurrence.folderId ?? '',
+        runtime.status,
+        runtime.migration_id ?? '',
+        runtime.reason_code ?? '',
+        runtime.canonical_key_or_authority ?? '',
+        String(runtime.notice_required),
+      ].join('\u0001');
+    })
+    .join('\u0002');
 }
 
 const TARGET_DESCRIPTION: Readonly<Record<ConfigurationTarget, string>> = {

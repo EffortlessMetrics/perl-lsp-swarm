@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 14966,
-  "reason": "Size-only growth from the live legacy-setting reader (#14966). out/extension.js grows from 1640957 to 1673221 bytes because two new modules — configurationMigrationLive.ts and configurationMigrationHost.ts — join the bundle, together with the activation wiring in extension.ts, the unclassified configuration hook in extensionWorkspaceEvents.ts, and the workspace-folder watcher that keeps the published state matching the current folder set. Measured by running npm ci and npm run bundle at this candidate; the same command against 81452cf's sources reproduces exactly the 1668379 bytes the hosted current-source Linux smoke measured for that commit, so the local instrument matches the hosted one byte for byte rather than approximating it. The 29-file package is otherwise unchanged: no file additions, removals, renames, or permission loosening, and every other recorded size is identical.",
+  "reason": "Size-only growth from the live legacy-setting reader (#14966). out/extension.js grows from 1640957 to 1675187 bytes because two new modules — configurationMigrationLive.ts and configurationMigrationHost.ts — join the bundle, together with the activation wiring in extension.ts, the unclassified configuration hook in extensionWorkspaceEvents.ts, the workspace-folder watcher that keeps the published state matching the current folder set, and the published-entry cap with its full-occurrence change detection. Measured by running npm ci and npm run bundle at this candidate; the same command against 81452cf's sources reproduces exactly the 1668379 bytes the hosted current-source Linux smoke measured for that commit, so the local instrument matches the hosted one byte for byte rather than approximating it. The 29-file package is otherwise unchanged: no file additions, removals, renames, or permission loosening, and every other recorded size is identical.",
   "base_baseline_file_sha256": "bc56a9d640213d509add8c24f807a35efdce01fccce5fd9c6f2b0a380f7441fd",
-  "candidate_baseline_file_sha256": "0f1305859823fc225efccc18385d123ba4e36d8f7ea58d68ddab0386eaa3a069",
+  "candidate_baseline_file_sha256": "9b80146ec2f0f4a7ef38522b127429dfc612aa01d1c8e6d4e33e37c768e6de26",
   "base_inventory_sha256": "114b0ad804f9267deabbdc0bcc0a1ba92d7436c207447727c82f287077a45d8d",
-  "candidate_inventory_sha256": "b00b1dfba51dd75bf8825d178824b9ecd93c31bbc58ba4bf70c343247eb90ef3"
+  "candidate_inventory_sha256": "1a42390c7e64fd313065bd959fdcd1db6885894b838ac35be42996652edf4aeb"
 }

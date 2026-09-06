@@ -25,6 +25,7 @@ import {
   describeLegacyMigrationEntry,
   legacyMigrationState,
   legacyMigrationStateEntry,
+  migrationStateFingerprint,
   readLegacyConfiguration,
   unwiredCanonicalValues,
 } from './configurationMigrationLive';
@@ -128,7 +129,10 @@ export class LegacyMigrationSurface {
     );
     this.state = legacyMigrationState(this.registry, this.extensionVersion, occurrences);
 
-    const fingerprint = JSON.stringify(this.state.entries);
+    // Taken over every occurrence, not over the published entries: those are capped at
+    // `MAX_PUBLISHED_ENTRIES`, so a fingerprint built from them would treat two profiles
+    // that differ only past the cap as unchanged and say nothing about the second.
+    const fingerprint = migrationStateFingerprint(occurrences);
     if (fingerprint === this.lastStateFingerprint) {
       // Nothing the user could act on changed, so nothing is said again.
       return this.state;

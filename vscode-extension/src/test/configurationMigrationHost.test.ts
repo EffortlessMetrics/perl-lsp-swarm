@@ -7,6 +7,7 @@ import {
 } from '../configurationMigrationHost';
 import type { ConfigurationMigrationRegistry } from '../configurationMigrationRegistry';
 import { V018_CONFIGURATION_MIGRATIONS } from '../configurationMigrationRegistry';
+import { MAX_PUBLISHED_ENTRIES } from '../configurationMigrationLive';
 
 jest.mock('vscode');
 
@@ -336,6 +337,34 @@ describe('legacy migration host adapter', () => {
 
     expect(() => listener?.()).not.toThrow();
     expect(failures).toHaveLength(1);
+  });
+
+  // Change detection must not be built on the published entries, which are capped: a
+  // folder that gains the setting past the cap leaves them byte-identical, so a refresh
+  // keyed on entries would return early and never announce it.
+  test('a folder gaining the setting past the cap is still announced', () => {
+    const folderScoped: ConfigurationMigrationRegistry = {
+      ...compatibleRegistry(),
+      rows: [{ ...compatibleRegistry().rows[0]!, old_scope: 'workspace-folder' }],
+    };
+    const folders = (count: number) =>
+      Array.from({ length: count }, () => ({ workspaceFolderValue: STALE_MCP_VALUE }));
+
+    stubConfiguration({}, folders(MAX_PUBLISHED_ENTRIES + 1));
+    const { surface: reader, warnings } = surface(folderScoped);
+
+    const first = reader.refresh();
+    expect(first.entries).toHaveLength(MAX_PUBLISHED_ENTRIES);
+    expect(first.omittedEntryCount).toBe(1);
+    const noticesAfterFirst = warnings.length;
+    expect(noticesAfterFirst).toBe(MAX_PUBLISHED_ENTRIES + 1);
+
+    stubConfiguration({}, folders(MAX_PUBLISHED_ENTRIES + 2));
+    const second = reader.refresh();
+
+    expect(second.entries).toEqual(first.entries);
+    expect(second.omittedEntryCount).toBe(2);
+    expect(warnings.length).toBeGreaterThan(noticesAfterFirst);
   });
 
   test('a configuration change refreshes only when a registered legacy key changed', () => {
