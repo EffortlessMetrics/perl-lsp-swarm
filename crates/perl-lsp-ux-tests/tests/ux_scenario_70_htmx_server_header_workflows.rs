@@ -340,6 +340,39 @@ fn check_header(
         .map_err(Into::into)
 }
 
+const TRIGGER_PREFIX_SHAPES: [(&str, &str); 4] = [
+    ("HX-Trigger", "htmx request and response header"),
+    ("HX-Trigger-After-Settle", "htmx response header"),
+    ("HX-Trigger-After-Swap", "htmx response header"),
+    ("HX-Trigger-Name", "htmx request header"),
+];
+
+fn check_trigger_prefix(
+    recorder: &mut perl_lsp_ux_tests::UxRunRecorder,
+    site: &str,
+    items: &[Value],
+    source: &str,
+    line_needle: &str,
+) -> Result<()> {
+    recorder.check(
+        &format!("{site} is the exact catalog set including request-direction HX-Trigger-Name"),
+        trigger_prefix_set_is_exact(items),
+    )?;
+    for (label, detail) in TRIGGER_PREFIX_SHAPES {
+        check_header(
+            recorder,
+            format!("{site} {label} serializes with prefix-only textEdit"),
+            items,
+            source,
+            line_needle,
+            TRIGGER_PREFIX,
+            label,
+            detail,
+        )?;
+    }
+    Ok(())
+}
+
 fn prove_stack(
     recorder: &mut perl_lsp_ux_tests::UxRunRecorder,
     stack: Stack,
@@ -413,66 +446,22 @@ fn prove_stack(
     recorder.mark_request_start(&format!("{name} response_header_completion"));
     let response_items =
         complete(&harness, path, source, stack.response_trigger_needle, TRIGGER_PREFIX)?;
-    recorder.check(
-        &format!(
-            "{name} response-site HX-Tri is the exact catalog set including request-direction HX-Trigger-Name"
-        ),
-        trigger_prefix_set_is_exact(&response_items),
-    )?;
-    check_header(
+    check_trigger_prefix(
         recorder,
-        format!("{name} HX-Trigger serializes as request-and-response with prefix-only textEdit"),
+        &format!("{name} response-site HX-Tri"),
         &response_items,
         source,
         stack.response_trigger_needle,
-        TRIGGER_PREFIX,
-        "HX-Trigger",
-        "htmx request and response header",
-    )?;
-    check_header(
-        recorder,
-        format!(
-            "{name} HX-Trigger-After-Settle serializes as a response header with prefix-only textEdit"
-        ),
-        &response_items,
-        source,
-        stack.response_trigger_needle,
-        TRIGGER_PREFIX,
-        "HX-Trigger-After-Settle",
-        "htmx response header",
-    )?;
-    check_header(
-        recorder,
-        format!(
-            "{name} HX-Trigger-After-Swap serializes as a response header with prefix-only textEdit"
-        ),
-        &response_items,
-        source,
-        stack.response_trigger_needle,
-        TRIGGER_PREFIX,
-        "HX-Trigger-After-Swap",
-        "htmx response header",
-    )?;
-    check_header(
-        recorder,
-        format!(
-            "{name} HX-Trigger-Name serializes as a request header with prefix-only textEdit at the response site"
-        ),
-        &response_items,
-        source,
-        stack.response_trigger_needle,
-        TRIGGER_PREFIX,
-        "HX-Trigger-Name",
-        "htmx request header",
     )?;
 
     let request_trigger_items =
         complete(&harness, path, source, stack.request_trigger_needle, TRIGGER_PREFIX)?;
-    recorder.check(
-        &format!(
-            "{name} request-site HX-Tri is the same exact catalog set (call-site agnostic, not site-filtered)"
-        ),
-        trigger_prefix_set_is_exact(&request_trigger_items),
+    check_trigger_prefix(
+        recorder,
+        &format!("{name} request-site HX-Tri"),
+        &request_trigger_items,
+        source,
+        stack.request_trigger_needle,
     )?;
 
     let redirect_items = complete(&harness, path, source, stack.redirect_needle, REDIRECT_PREFIX)?;
