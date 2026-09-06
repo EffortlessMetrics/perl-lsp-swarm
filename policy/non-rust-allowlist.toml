@@ -3781,22 +3781,22 @@ review_after = "2027-02-20"
 
 [[allow]]
 id = "non-rust-distribution-kwalitee-catalog-v1"
-path = "crates/perl-kwalitee/distribution_kwalitee_catalog.v1.toml"
+path = "crates/perl-release-readiness/distribution_kwalitee_catalog.v1.toml"
 kind = "config"
 language = "toml"
 surface = "tooling"
 classification = "config"
 owner = "distribution/kwalitee"
-reason = "Frozen machine-readable CPANTS-compatible catalog v1 (#7170); decoded and validated by perl-kwalitee tests, not by a second runtime language."
+reason = "Frozen machine-readable CPANTS-compatible catalog v1 (#7170); decoded and validated by perl-release-readiness tests, not by a second runtime language."
 covered_by = [
-  "cargo test -p perl-kwalitee --all-targets --locked",
+  "cargo test -p perl-release-readiness --all-targets --locked",
 ]
 created = "2026-08-26"
 review_after = "2026-11-26"
 
 [[allow]]
 id = "non-rust-distribution-kwalitee-fixture-contract-v1"
-path = "crates/perl-kwalitee/distribution_kwalitee_fixtures.v1.toml"
+path = "crates/perl-release-readiness/distribution_kwalitee_fixtures.v1.toml"
 kind = "config"
 language = "toml"
 surface = "tooling"
@@ -3804,14 +3804,14 @@ classification = "config"
 owner = "distribution/kwalitee"
 reason = "Frozen fixture-identity contract for catalog v1 (#7170); expected facts are independently authored and catalog-bound."
 covered_by = [
-  "cargo test -p perl-kwalitee --all-targets --locked",
+  "cargo test -p perl-release-readiness --all-targets --locked",
 ]
 created = "2026-08-26"
 review_after = "2026-11-26"
 
 [[allow]]
 id = "non-rust-distribution-kwalitee-fixture-trees"
-glob = "crates/perl-kwalitee/fixtures/distribution/**"
+glob = "crates/perl-release-readiness/fixtures/distribution/**"
 kind = "language_fixture"
 language = "mixed"
 surface = "fixtures"
@@ -3819,7 +3819,7 @@ classification = "test"
 owner = "distribution/kwalitee"
 reason = "Committed catalog-bound distribution fixture trees for Kwalitee contract tests. Perl/metadata files are the subject under test, not runtime tooling."
 covered_by = [
-  "cargo test -p perl-kwalitee --all-targets --locked",
+  "cargo test -p perl-release-readiness --all-targets --locked",
 ]
 broad_glob_reason = "Each catalog metric may grow a reserved tree under a stable fixture id; the Rust fixture contract enumerates the allowed relative paths."
 created = "2026-08-26"

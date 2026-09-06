@@ -1,20 +1,21 @@
 //! Manifest and license indicators — parsed from `Cargo.toml` files.
 //!
 //! These are the cheapest indicators: they read the workspace root manifest and
-//! the `perl-kwalitee` crate manifest and answer three questions —
+//! the **historical** crate home (`crates/perl-kwalitee`) and answer three
+//! questions —
 //!
-//! - is the crate a declared workspace member?
+//! - is that historical path a declared workspace member?
 //! - is its publish policy intentional (explicitly private, or allowlisted)?
 //! - does it declare license metadata?
+//!
+//! The live package is `perl-release-readiness`. These indicators still target
+//! the frozen path so a namespace move cannot silently rewrite `perl_kwalitee.v1`.
 
 use std::path::Path;
 
 use crate::evidence::Outcome;
+use crate::historical_home::{HISTORICAL_CRATE_MEMBER_PATH, HISTORICAL_PACKAGE_NAME};
 use crate::indicator::EvidenceRef;
-
-/// Relative path of the crate under the workspace root.
-const CRATE_MEMBER_PATH: &str = "crates/perl-kwalitee";
-const CRATE_NAME: &str = "perl-kwalitee";
 
 /// Read + parse a TOML file, returning `None` on any error (missing/invalid).
 fn read_toml(path: &Path) -> Option<toml::Value> {
@@ -32,7 +33,7 @@ fn member_pattern_covers(pattern: &str, target: &str) -> bool {
         return true;
     }
     if let Some(prefix) = pattern.strip_suffix("/*") {
-        // `crates/*` covers `crates/perl-kwalitee` (a direct child, no deeper slash).
+        // `crates/*` covers `crates/perl-kwalitee` (historical frozen home).
         if let Some(rest) = target.strip_prefix(prefix).and_then(|r| r.strip_prefix('/')) {
             return !rest.contains('/');
         }
@@ -60,7 +61,7 @@ pub(crate) fn workspace_member_declared(repo_root: &Path) -> Outcome {
             members
                 .iter()
                 .filter_map(|v| v.as_str())
-                .any(|m| member_pattern_covers(m, CRATE_MEMBER_PATH))
+                .any(|m| member_pattern_covers(m, HISTORICAL_CRATE_MEMBER_PATH))
         })
         .unwrap_or(false);
 
@@ -69,7 +70,9 @@ pub(crate) fn workspace_member_declared(repo_root: &Path) -> Outcome {
     } else {
         Outcome::fail(
             evidence,
-            format!("Add \"{CRATE_MEMBER_PATH}\" to [workspace].members in the root Cargo.toml."),
+            format!(
+                "Add \"{HISTORICAL_CRATE_MEMBER_PATH}\" to [workspace].members in the root Cargo.toml."
+            ),
         )
     }
 }
@@ -81,17 +84,19 @@ pub(crate) fn workspace_member_declared(repo_root: &Path) -> Outcome {
 /// publish allowlist. An unset publish field with no allowlist entry is
 /// ambiguous and fails.
 pub(crate) fn publish_policy_clean(repo_root: &Path) -> Outcome {
-    let crate_manifest = repo_root.join(CRATE_MEMBER_PATH).join("Cargo.toml");
+    let crate_manifest = repo_root.join(HISTORICAL_CRATE_MEMBER_PATH).join("Cargo.toml");
     let root_manifest = repo_root.join("Cargo.toml");
     let evidence = vec![
-        EvidenceRef::file(format!("{CRATE_MEMBER_PATH}/Cargo.toml [package].publish")),
+        EvidenceRef::file(format!("{HISTORICAL_CRATE_MEMBER_PATH}/Cargo.toml [package].publish")),
         EvidenceRef::file("Cargo.toml [workspace.metadata.publish].allow"),
     ];
 
     let Some(crate_value) = read_toml(&crate_manifest) else {
         return Outcome::unverified(
             evidence,
-            format!("{CRATE_MEMBER_PATH}/Cargo.toml could not be read or parsed as TOML."),
+            format!(
+                "{HISTORICAL_CRATE_MEMBER_PATH}/Cargo.toml could not be read or parsed as TOML."
+            ),
         );
     };
 
@@ -125,7 +130,7 @@ pub(crate) fn publish_policy_clean(repo_root: &Path) -> Outcome {
         .and_then(|m| m.get("publish"))
         .and_then(|p| p.get("allow"))
         .and_then(|a| a.as_array())
-        .map(|allow| allow.iter().filter_map(|x| x.as_str()).any(|c| c == CRATE_NAME))
+        .map(|allow| allow.iter().filter_map(|x| x.as_str()).any(|c| c == HISTORICAL_PACKAGE_NAME))
         .unwrap_or(false);
 
     if allowlisted {
@@ -134,8 +139,8 @@ pub(crate) fn publish_policy_clean(repo_root: &Path) -> Outcome {
         Outcome::fail(
             evidence,
             format!(
-                "Publish policy is ambiguous: set `publish = false` in {CRATE_MEMBER_PATH}/Cargo.toml \
-                 while the schema stabilizes, or add \"{CRATE_NAME}\" to \
+                "Publish policy is ambiguous: set `publish = false` in {HISTORICAL_CRATE_MEMBER_PATH}/Cargo.toml \
+                 while the schema stabilizes, or add \"{HISTORICAL_PACKAGE_NAME}\" to \
                  [workspace.metadata.publish].allow once it is publishable."
             ),
         )
@@ -144,14 +149,17 @@ pub(crate) fn publish_policy_clean(repo_root: &Path) -> Outcome {
 
 /// `license.declared`.
 pub(crate) fn license_declared(repo_root: &Path) -> Outcome {
-    let crate_manifest = repo_root.join(CRATE_MEMBER_PATH).join("Cargo.toml");
-    let evidence =
-        vec![EvidenceRef::file(format!("{CRATE_MEMBER_PATH}/Cargo.toml [package].license"))];
+    let crate_manifest = repo_root.join(HISTORICAL_CRATE_MEMBER_PATH).join("Cargo.toml");
+    let evidence = vec![EvidenceRef::file(format!(
+        "{HISTORICAL_CRATE_MEMBER_PATH}/Cargo.toml [package].license"
+    ))];
 
     let Some(value) = read_toml(&crate_manifest) else {
         return Outcome::unverified(
             evidence,
-            format!("{CRATE_MEMBER_PATH}/Cargo.toml could not be read or parsed as TOML."),
+            format!(
+                "{HISTORICAL_CRATE_MEMBER_PATH}/Cargo.toml could not be read or parsed as TOML."
+            ),
         );
     };
 
@@ -185,7 +193,7 @@ pub(crate) fn license_declared(repo_root: &Path) -> Outcome {
             evidence,
             format!(
                 "Add `license.workspace = true` (or an explicit SPDX license) to \
-                 {CRATE_MEMBER_PATH}/Cargo.toml."
+                 {HISTORICAL_CRATE_MEMBER_PATH}/Cargo.toml."
             ),
         )
     }
@@ -295,5 +303,51 @@ mod tests {
         let root = dir.path();
         write(root, "crates/perl-kwalitee/Cargo.toml", "[package]\nname=\"perl-kwalitee\"\n");
         assert_eq!(license_declared(root).status, IndicatorStatus::Fail);
+    }
+
+    #[test]
+    fn live_release_readiness_member_does_not_satisfy_frozen_membership() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let root = dir.path();
+        write(root, "Cargo.toml", "[workspace]\nmembers = [\"crates/perl-release-readiness\"]\n");
+        write(
+            root,
+            "crates/perl-release-readiness/Cargo.toml",
+            "[package]\nname = \"perl-release-readiness\"\nlicense.workspace = true\npublish = false\n",
+        );
+        assert_eq!(
+            workspace_member_declared(root).status,
+            IndicatorStatus::Fail,
+            "the frozen indicator must keep looking at crates/perl-kwalitee"
+        );
+        assert_eq!(
+            publish_policy_clean(root).status,
+            IndicatorStatus::Unverified,
+            "publish policy must not retarget the live crate home"
+        );
+        assert_eq!(
+            license_declared(root).status,
+            IndicatorStatus::Unverified,
+            "license must not retarget the live crate home"
+        );
+    }
+
+    #[test]
+    fn historical_home_constants_stay_vacated_from_the_live_package() {
+        assert_eq!(HISTORICAL_CRATE_MEMBER_PATH, "crates/perl-kwalitee");
+        assert_eq!(HISTORICAL_PACKAGE_NAME, "perl-kwalitee");
+        assert_ne!(env!("CARGO_PKG_NAME"), HISTORICAL_PACKAGE_NAME);
+        assert_eq!(env!("CARGO_PKG_NAME"), "perl-release-readiness");
+        assert_eq!(env!("CARGO_CRATE_NAME"), "perl_release_readiness");
+        let live_home = Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(
+            live_home.ends_with("perl-release-readiness"),
+            "live crate home drifted: {}",
+            live_home.display()
+        );
+        assert!(
+            !live_home.ends_with(HISTORICAL_CRATE_MEMBER_PATH),
+            "historical path must not alias the live crate home"
+        );
     }
 }
