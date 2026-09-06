@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Scope diagnostics no longer treat a `my` declared in a statement modifier as visible to the statement it modifies. `print $x if my $x = 1;`, `die $err unless my $err = compute();` and `print $x until my $x = 0;` are rejected by the Perl compiler under `use strict`, and now report `UndeclaredVariable` instead of passing silently. A modifier declaration the statement does not use (`foo() while my $x = bar();`) stays undiagnosed."
+time: 2026-09-05T00:00:00Z
+custom:
+  PR: "14840"
+  Slug: statement-modifier-declaration-order-1772
+  Breaking: "no"
