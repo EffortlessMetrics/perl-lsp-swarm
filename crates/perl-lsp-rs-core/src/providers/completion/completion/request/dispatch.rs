@@ -858,7 +858,7 @@ fn c_style_for_header_owns_semicolon(trimmed: &str) -> bool {
 }
 
 fn last_for_keyword_start(source: &str) -> Option<usize> {
-    let mut last = None;
+    let mut last: Option<usize> = None;
     for keyword in ["foreach", "for"] {
         let mut end = source.len();
         while let Some(at) = source.get(..end).and_then(|prefix| prefix.rfind(keyword)) {
