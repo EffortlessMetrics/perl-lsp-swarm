@@ -150,10 +150,13 @@ fn backtick_devex_commands(text: &str) -> Vec<String> {
 
 fn line_devex_commands(text: &str) -> Vec<String> {
     let mut commands = Vec::new();
-    for body in markdown_regions(text) {
+    for (kind, body) in markdown_regions(text) {
         let logical =
             join_indented_flag_continuations(join_trailing_backslash_continuations(&body));
         for line in logical {
+            if !admits_line_command(kind, &line) {
+                continue;
+            }
             if let Some(command) = normalize_extracted_command(&line.text) {
                 push_unique_command(&mut commands, command);
             }
@@ -162,7 +165,35 @@ fn line_devex_commands(text: &str) -> Vec<String> {
     commands
 }
 
-fn markdown_regions(text: &str) -> Vec<String> {
+#[derive(Clone, Copy)]
+enum RegionKind {
+    Prose,
+    Fence,
+}
+
+fn admits_line_command(kind: RegionKind, line: &JoinedLine) -> bool {
+    match kind {
+        RegionKind::Fence => true,
+        RegionKind::Prose => {
+            line.continued
+                || looks_like_list_item(&line.text)
+                || is_env_prefixed_command_line(&line.text)
+        }
+    }
+}
+
+fn looks_like_list_item(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    strip_markdown_list_marker(trimmed) != trimmed
+}
+
+fn is_env_prefixed_command_line(line: &str) -> bool {
+    let without_list = strip_markdown_list_marker(line);
+    let without_env = strip_leading_env_assignments(without_list).trim();
+    without_env != without_list.trim() && is_governed_devex_command(without_env)
+}
+
+fn markdown_regions(text: &str) -> Vec<(RegionKind, String)> {
     let mut regions = Vec::new();
     let mut buf = String::new();
     let mut open: Option<(char, usize)> = None;
@@ -170,7 +201,7 @@ fn markdown_regions(text: &str) -> Vec<String> {
     for line in text.lines() {
         if let Some((ch, len)) = open {
             if is_closing_fence(line, ch, len) {
-                flush_region(&mut regions, &mut buf);
+                flush_region(&mut regions, RegionKind::Fence, &mut buf);
                 open = None;
                 continue;
             }
@@ -178,21 +209,22 @@ fn markdown_regions(text: &str) -> Vec<String> {
             continue;
         }
         if let Some(mark) = opening_fence(line) {
-            flush_region(&mut regions, &mut buf);
+            flush_region(&mut regions, RegionKind::Prose, &mut buf);
             open = Some(mark);
             continue;
         }
         push_region_line(&mut buf, line);
     }
-    flush_region(&mut regions, &mut buf);
+    let kind = if open.is_some() { RegionKind::Fence } else { RegionKind::Prose };
+    flush_region(&mut regions, kind, &mut buf);
     regions
 }
 
-fn flush_region(regions: &mut Vec<String>, buf: &mut String) {
+fn flush_region(regions: &mut Vec<(RegionKind, String)>, kind: RegionKind, buf: &mut String) {
     if buf.is_empty() {
         return;
     }
-    regions.push(std::mem::take(buf));
+    regions.push((kind, std::mem::take(buf)));
 }
 
 fn push_region_line(buf: &mut String, line: &str) {
@@ -487,14 +519,8 @@ mod tests {
 
         let commands = inline_devex_commands(text);
         assert!(
-            commands.iter().any(|command| command == "just stale-recipe"),
-            "the second recipe must remain its own extracted command: {commands:?}"
-        );
-        assert!(
-            !commands
-                .iter()
-                .any(|command| command.contains("pr-fast") && command.contains("stale-recipe")),
-            "a false join must not smuggle the second recipe into one continued command: {commands:?}"
+            !commands.iter().any(|command| command.contains("stale-recipe")),
+            "a false join must not smuggle the second recipe into one continued command, and uncontinued prose must not extract it: {commands:?}"
         );
 
         let just_recipes = BTreeSet::from(["pr-fast".to_string()]);
@@ -688,30 +714,26 @@ mod tests {
     #[test]
     fn markdown_split_does_not_join_sibling_or_prose_lines() {
         let sibling = inline_devex_commands("just pr-fast\njust stale-recipe\n");
-        assert_eq!(
-            sibling,
-            vec!["just pr-fast", "just stale-recipe"],
-            "uncontinued sibling commands must stay independent: {sibling:?}"
+        assert!(
+            sibling.is_empty(),
+            "uncontinued unfenced sibling lines stay outside the line extractor: {sibling:?}"
         );
 
         let indented_command = inline_devex_commands("just pr-fast\n    just stale-recipe\n");
-        assert_eq!(
-            indented_command,
-            vec!["just pr-fast", "just stale-recipe"],
+        assert!(
+            indented_command.is_empty(),
             "an indented new command is not a flag continuation: {indented_command:?}"
         );
 
         let prose = inline_devex_commands("just pr-fast\n    then commit the result\n");
-        assert_eq!(
-            prose,
-            vec!["just pr-fast"],
-            "indented prose that is not a flag must not join onto the command: {prose:?}"
+        assert!(
+            prose.is_empty(),
+            "indented prose that is not a flag must not join or extract an unfenced stem: {prose:?}"
         );
 
         let dashed_note = inline_devex_commands("just pr-fast\n    - then commit the result\n");
-        assert_eq!(
-            dashed_note,
-            vec!["just pr-fast"],
+        assert!(
+            dashed_note.is_empty(),
             "an indented dashed note is not a shell flag: {dashed_note:?}"
         );
 
@@ -788,6 +810,22 @@ mod tests {
     #[test]
     fn tilde_fenced_commands_enter_the_denominator() {
         assert_eq!(inline_devex_commands("~~~\njust pr-fast\n~~~\n"), vec!["just pr-fast"]);
+    }
+
+    #[test]
+    fn prose_and_html_comments_are_not_line_extracted() {
+        assert!(
+            inline_devex_commands("just kidding this is prose\n").is_empty(),
+            "ordinary prose beginning with just must not enter the denominator"
+        );
+        assert!(
+            inline_devex_commands("<!-- just stale-recipe -->\n").is_empty(),
+            "a single-line HTML comment must not enter the denominator"
+        );
+        assert!(
+            inline_devex_commands("<!--\njust stale-recipe\n-->\n").is_empty(),
+            "an HTML-comment body line must not enter the denominator"
+        );
     }
 
     #[test]
