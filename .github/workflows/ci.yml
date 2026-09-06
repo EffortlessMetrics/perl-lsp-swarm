@@ -145,7 +145,14 @@ jobs:
               except OSError:
                   return ()
               crates = (line.split("#", 1)[0].strip() for line in lines)
-              return tuple(crate for crate in crates if crate)
+              crates = tuple(crate for crate in crates if crate)
+              if not crates:
+                  # An empty list would silently shrink the api scope to the
+                  # baseline directory alone; publish-manifest-check rejects
+                  # that state, so fail here too rather than under-select.
+                  print("::error::" + RATCHET_LIST + " lists no crates", file=sys.stderr)
+                  raise SystemExit(1)
+              return crates
 
 
           def derive_prefixes():
@@ -696,6 +703,10 @@ jobs:
         # list `just semver-check-all` and `just public-api-check` read (#14607).
         run: |
           mapfile -t crates < <(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .ci/public-api-baselines/ratchet-crates.txt | grep -v '^$')
+          if [ "${#crates[@]}" -eq 0 ]; then
+            echo "::error::.ci/public-api-baselines/ratchet-crates.txt lists no crates; refusing a vacuous semver pass"
+            exit 1
+          fi
           for crate in "${crates[@]}"; do
             if cargo semver-checks check-release -p "${crate}" \
               --baseline-rev "${SEMVER_BASELINE}"; then

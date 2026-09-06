@@ -337,4 +337,25 @@ assert_exit_nonzero "listed crate without a baseline fails public-api-check clos
 assert_contains "missing baseline is reported for the listed crate" \
   "FAIL Missing baseline: .ci/public-api-baselines/perl-unbaselined.txt" "${CHECK_MISSING_OUTPUT}"
 
+# An empty list (only comments and blank lines) must fail loud, not iterate
+# zero times and report a vacuous pass.
+write_ratchet_list
+CHECK_EMPTY_OUTPUT="${TMPDIR_BASE}/check-empty.txt"
+CHECK_EMPTY_LOG="${TMPDIR_BASE}/check-empty.log"
+if run_recipe nonempty public-api-check "${CHECK_EMPTY_OUTPUT}" "${CHECK_EMPTY_LOG}"; then
+  check_empty_code=0
+else
+  check_empty_code=$?
+fi
+assert_exit_nonzero "empty ratchet list fails public-api-check closed" "${check_empty_code}"
+assert_contains "empty ratchet list is named as the cause" \
+  "ratchet-crates.txt lists no crates" "${CHECK_EMPTY_OUTPUT}"
+assert_not_contains "empty ratchet list does not claim any surface is unchanged" \
+  "API surface unchanged" "${CHECK_EMPTY_OUTPUT}"
+if [[ ! -s "${CHECK_EMPTY_LOG}" ]]; then
+  pass "empty ratchet list never invokes the generator"
+else
+  fail "empty ratchet list invoked the generator: $(cat "${CHECK_EMPTY_LOG}")"
+fi
+
 echo "=== public-api ratchet regression fixture passed ==="

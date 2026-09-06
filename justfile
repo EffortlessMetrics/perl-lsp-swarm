@@ -2275,7 +2275,8 @@ semver-check-all:
     set -euo pipefail
     echo "🔍 Checking API-ratcheted crates for SemVer breaking changes..."
     just _semver-check-install
-    for crate in $(just _api-ratchet-crates); do
+    crates="$(just _api-ratchet-crates)"
+    for crate in $crates; do
         just semver-check-package "$crate"
     done
 
@@ -2324,9 +2325,21 @@ _public-api-install:
 # Private helper: the crates both API ratchets guard. Single authority:
 # .ci/public-api-baselines/ratchet-crates.txt (#14607); admission is enforced
 # by `cargo xtask publish-manifest-check`.
+#
+# An empty list is an error, not "nothing to check": callers assign the output
+# (`crates="$(just _api-ratchet-crates)"`) so a failure here aborts them under
+# `set -e` instead of iterating zero times and reporting a vacuous pass.
 [private]
 _api-ratchet-crates:
-    @sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .ci/public-api-baselines/ratchet-crates.txt | grep -v '^$'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    list=".ci/public-api-baselines/ratchet-crates.txt"
+    crates="$(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$list" | grep -v '^$' || true)"
+    if [ -z "$crates" ]; then
+        echo "ERROR: $list lists no crates; both API ratchets would be vacuous" >&2
+        exit 1
+    fi
+    printf '%s\n' "$crates"
 
 # Check public API surface of the ratcheted crates against committed baselines
 public-api-check:
@@ -2338,7 +2351,8 @@ public-api-check:
     # (CI pins this channel; see the workflow install steps).
     rustc +nightly --version || echo "WARN: no nightly toolchain visible to cargo-public-api"
     FAILED=0
-    for crate in $(just _api-ratchet-crates); do
+    crates="$(just _api-ratchet-crates)"
+    for crate in $crates; do
         BASELINE=".ci/public-api-baselines/${crate}.txt"
         if [ ! -f "$BASELINE" ]; then
             echo "FAIL Missing baseline: $BASELINE (run: just public-api-update)"
@@ -2380,7 +2394,8 @@ public-api-update:
     just _public-api-install
     echo "Regenerating public API baselines..."
     mkdir -p .ci/public-api-baselines
-    for crate in $(just _api-ratchet-crates); do
+    crates="$(just _api-ratchet-crates)"
+    for crate in $crates; do
         # Fail closed: never overwrite a baseline with a failed or empty
         # generation — an empty baseline would make the ratchet vacuous
         # (#12861).
@@ -2409,7 +2424,8 @@ _semver-check-run:
     BASELINE="$(git tag | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
     EXIT_CODE=0
     echo "Using baseline: $BASELINE"
-    for crate in $(just _api-ratchet-crates); do
+    crates="$(just _api-ratchet-crates)"
+    for crate in $crates; do
         echo
         echo "Checking ${crate}..."
         cargo semver-checks check-release -p "$crate" --baseline-rev "$BASELINE" || EXIT_CODE=1

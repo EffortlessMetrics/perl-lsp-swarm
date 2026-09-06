@@ -156,8 +156,14 @@ fn load_api_ratchet_inputs(root: &Path, meta: &NoDepsMetadata) -> Result<ApiRatc
         if crate_name == "ratchet-crates" {
             continue;
         }
-        let non_empty = entry.metadata()?.len() > 0;
-        baselines.insert(crate_name.to_string(), non_empty);
+        // Only a regular file is a baseline; a directory or special file under
+        // a `.txt` name has a non-zero length but no API surface, so it must
+        // not count as a non-empty baseline.
+        let metadata = entry.metadata()?;
+        if !metadata.is_file() {
+            bail!("{} is not a regular file; only baseline files belong here", path.display());
+        }
+        baselines.insert(crate_name.to_string(), metadata.len() > 0);
     }
 
     let ws_ids: HashSet<&str> = meta.workspace_members.iter().map(String::as_str).collect();
@@ -180,6 +186,14 @@ pub(crate) fn check_api_ratchet(allowlist: &[String], inputs: &ApiRatchetInputs)
     let allowlist_set: HashSet<&str> = allowlist.iter().map(String::as_str).collect();
     let mut violations = Vec::new();
     let mut seen: HashSet<&str> = HashSet::new();
+
+    // Name the vacuous state directly rather than letting it surface only as
+    // "explicit publish crate not listed" (or not at all if none opt in).
+    if inputs.listed.is_empty() {
+        violations.push(format!(
+            "ratchet: {RATCHET_LIST_PATH} lists no crates; both API ratchets would be vacuous"
+        ));
+    }
 
     for name in &inputs.listed {
         if !seen.insert(name.as_str()) {
@@ -388,6 +402,67 @@ mod tests {
             &["perl-module"],
         );
         assert!(check_api_ratchet(&allowlist, &inputs).is_empty());
+    }
+
+    #[test]
+    fn ratchet_coverage_names_an_empty_list_even_when_nothing_opts_in() {
+        let allowlist = strings(&["perl-uri"]);
+        let inputs = ratchet_inputs(&[], &[], &[]);
+        let v = check_api_ratchet(&allowlist, &inputs);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert!(v[0].contains("lists no crates"), "{v:?}");
+    }
+
+    #[test]
+    fn baseline_walk_rejects_a_directory_under_a_txt_name() {
+        let root = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(err) => panic!("tempdir: {err}"),
+        };
+        let baseline_dir = root.path().join(BASELINE_DIR);
+        if let Err(err) = fs::create_dir_all(baseline_dir.join("perl-uri.txt")) {
+            panic!("create fixture: {err}");
+        }
+        if let Err(err) = fs::write(baseline_dir.join("ratchet-crates.txt"), "perl-uri\n") {
+            panic!("write list: {err}");
+        }
+        let meta = make_meta(vec![]);
+        let err = match load_api_ratchet_inputs(root.path(), &meta) {
+            Ok(inputs) => panic!("directory accepted as a baseline: {inputs:?}"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("perl-uri.txt is not a regular file"), "{err}");
+    }
+
+    #[test]
+    fn baseline_walk_reads_regular_files_and_their_emptiness() {
+        let root = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(err) => panic!("tempdir: {err}"),
+        };
+        let baseline_dir = root.path().join(BASELINE_DIR);
+        if let Err(err) = fs::create_dir_all(&baseline_dir) {
+            panic!("create fixture: {err}");
+        }
+        for (name, content) in [
+            ("ratchet-crates.txt", "perl-uri # facade\n"),
+            ("perl-uri.txt", "pub fn f()\n"),
+            ("perl-empty.txt", ""),
+            ("notes.md", "not a baseline\n"),
+        ] {
+            if let Err(err) = fs::write(baseline_dir.join(name), content) {
+                panic!("write {name}: {err}");
+            }
+        }
+        let meta = make_meta(vec![]);
+        let inputs = match load_api_ratchet_inputs(root.path(), &meta) {
+            Ok(inputs) => inputs,
+            Err(err) => panic!("load: {err}"),
+        };
+        assert_eq!(
+            inputs,
+            ratchet_inputs(&["perl-uri"], &[("perl-uri", true), ("perl-empty", false)], &[])
+        );
     }
 
     #[test]

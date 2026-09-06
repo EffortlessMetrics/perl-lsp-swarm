@@ -897,6 +897,10 @@ jobs:
           SEMVER_BASELINE: ${{ steps.baseline.outputs.baseline }}
         run: |
           mapfile -t crates < <(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .ci/public-api-baselines/ratchet-crates.txt | grep -v '^$')
+          if [ "${#crates[@]}" -eq 0 ]; then
+            echo "::error::.ci/public-api-baselines/ratchet-crates.txt lists no crates; refusing a vacuous semver pass"
+            exit 1
+          fi
           for crate in "${crates[@]}"; do
             if cargo semver-checks check-release -p "${crate}" --baseline-rev "${SEMVER_BASELINE}"; then
               echo "semver: ${crate} compatible with ${SEMVER_BASELINE}"
