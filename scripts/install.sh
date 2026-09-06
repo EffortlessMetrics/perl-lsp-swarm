@@ -27,10 +27,22 @@ PRINT_TARGET=0
 WITH_CLAUDE=0
 CLAUDE_SETUP_RESULT="not_requested"
 
+# Termux (Android/bionic) is detected from TERMUX_VERSION or the Termux usr/bin
+# sentinel. Tests may point the sentinel at a temp directory via
+# TERMUX_USR_BIN_OVERRIDE; production leaves it unset. One helper owns both
+# the INSTALL_DIR default and detect_platform so the two cannot drift.
+termux_usr_bin() {
+    printf '%s\n' "${TERMUX_USR_BIN_OVERRIDE:-/data/data/com.termux/files/usr/bin}"
+}
+
+is_termux_environment() {
+    [ -n "${TERMUX_VERSION:-}" ] || [ -d "$(termux_usr_bin)" ]
+}
+
 # Determine install directory: user-local by default, system-wide if explicitly set
 if [ -z "${INSTALL_DIR:-}" ]; then
-    if [ -n "${TERMUX_VERSION:-}" ] || [ -d "/data/data/com.termux/files/usr/bin" ]; then
-        INSTALL_DIR="/data/data/com.termux/files/usr/bin"
+    if is_termux_environment; then
+        INSTALL_DIR="$(termux_usr_bin)"
     elif [ -w /usr/local/bin ] 2>/dev/null; then
         INSTALL_DIR="/usr/local/bin"
     else
@@ -228,7 +240,7 @@ detect_platform() {
     SOURCE_TARGET=""
     INSTALL_MODE="release"
 
-    if [ -n "${TERMUX_VERSION:-}" ] || [ -d "/data/data/com.termux/files/usr/bin" ]; then
+    if is_termux_environment; then
         _termux=1
     fi
 

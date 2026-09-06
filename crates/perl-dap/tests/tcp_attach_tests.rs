@@ -478,7 +478,7 @@ fn test_tcp_attach_parked_reader_retires_on_disconnect_without_clobbering() {
     // legitimately queued. The retired reader's parked stopped event must
     // never join them — under the pre-fix behavior it would commit as soon as
     // this drain freed a slot.
-    let deadline = std::time::Instant::now() + Duration::from_millis(2000);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
     loop {
         match event_rx.recv_timeout(Duration::from_millis(200)) {
             Ok(DapEvent::Stopped { .. }) => {
@@ -635,6 +635,6 @@ fn test_tcp_attach_retired_reader_does_not_admit_late_buffered_output() {
 
     let _ = session.disconnect();
 
-    must(server1.join().map_err(|_| "Server 1 thread panicked".to_string()));
+    must(must(server1.join().map_err(|_| "Server 1 thread panicked".to_string())));
     must(server2.join().map_err(|_| "Server 2 thread panicked".to_string()));
 }

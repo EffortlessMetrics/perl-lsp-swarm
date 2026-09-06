@@ -96,6 +96,12 @@ curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTAL
 Supported release-archive platforms are Linux x86_64 and aarch64 (gnu or
 musl), macOS x86_64, and macOS aarch64.
 
+Termux is detected from `TERMUX_VERSION` or the Termux `usr/bin` directory.
+There is no Android/bionic release archive, so a Termux host selects
+source-build mode rather than a Linux gnu or musl asset. An explicit
+`INSTALL_DIR` still wins over the Termux prefix default
+(`/data/data/com.termux/files/usr/bin`).
+
 This bootstrap boundary proves only the identity of the downloaded
 `scripts/install.sh`. For POSIX release-download mode, the canonical installer
 now requires a local SHA-256 implementation, a downloadable `SHA256SUMS`,

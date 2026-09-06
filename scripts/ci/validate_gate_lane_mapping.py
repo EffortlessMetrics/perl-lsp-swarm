@@ -92,6 +92,10 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # explicit so gate-policy additions cannot silently leave the
     # policy/economics mapping incomplete.
     "must_context_check": {"lanes": ["merge_gate_shards"]},
+    # Always-running required existence check for docs/agents contract
+    # workflows (#14628). Lives in the policy shard so deleting one of those
+    # path-filtered workflows cannot silently stop enforcement.
+    "docs_agents_contract_workflows": {"lanes": ["merge_gate_shards"]},
     "compile_all_targets": {"lanes": ["check_all_targets"]},
     "lsp_smoke": {"lanes": ["ux_tests"]},
 
@@ -115,6 +119,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "compiler_concept_ledger": {"lanes": ["merge_gate_shards"]},
     "compiler_proof_policy": {"lanes": ["merge_gate_shards"]},
     "compiler_concept_proof": {"lanes": ["merge_gate_shards"]},
+    "release_trust_invariants": {"lanes": ["merge_gate_shards"]},
 
     # commit-tier staged-tree hygiene (local pre-commit; not CI)
     "staged_tree_identity": {"lanes": ["commit_checks"]},
