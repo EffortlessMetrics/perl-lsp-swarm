@@ -236,6 +236,40 @@ fn has_explicit_empty_import(source: &str, span_start: u32, span_end: u32) -> bo
     skip_layout(after_open).starts_with(')')
 }
 
+/// The complete contiguous version requirement the statement actually
+/// spells, read from its own source interval.
+///
+/// The parser folds only the requirement's leading numeric components into
+/// the module name, so `use Dancer2 2.0.1;` arrives as module `Dancer2 2.0`
+/// plus the separate tokens `.` and `1`. Reading the contiguous run of
+/// version characters from the source recovers the whole requirement; an
+/// unlocatable interval yields `None`, which consumes no continuation.
+fn spelled_version_requirement(source: &str, span_start: u32, span_end: u32) -> Option<String> {
+    let start = span_start as usize;
+    let end = (span_end as usize).min(source.len());
+    if start >= end {
+        return None;
+    }
+    let statement = source.get(start..end)?;
+    eprintln!("[dbg sv] start={start} end={end} statement={statement:?}");
+    let Some(after_use_keyword) = skip_layout(statement).strip_prefix("use") else {
+        eprintln!("[dbg sv] no use keyword in {statement:?}");
+        return None;
+    };
+    let Some(rest) = skip_layout(after_use_keyword).strip_prefix("Dancer2") else {
+        eprintln!("[dbg sv] no Dancer2 after use: {after_use_keyword:?}");
+        return None;
+    };
+    let rest = skip_layout(rest);
+    eprintln!("[dbg sv] after module: {rest:?}");
+    let body = rest.strip_prefix('v').unwrap_or(rest);
+    if !body.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let taken = body.chars().take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '_').count();
+    Some(rest[..(rest.len() - body.len()) + taken].to_string())
+}
+
 /// Skip Perl layout — whitespace and line comments — which may appear
 /// anywhere an empty import list is spelled out.
 fn skip_layout(rest: &str) -> &str {
@@ -279,8 +313,41 @@ fn walk_activation_sites(
         NodeKind::Use { module, .. } if is_exact_dancer2_two_x_import(module) => {
             let span_start = node.location.start.min(u32::MAX as usize) as u32;
             let span_end = node.location.end.min(u32::MAX as usize) as u32;
-            let mut evidence = parse_dancer2_two_x_import_args(node_args(node));
+            // The parser folds the version's leading components into the
+            // module name; the spelled requirement's remaining components
+            // arrive as separate leading tokens and are consumed here, so a
+            // contiguous three-part version does not degrade into unmodeled
+            // options. A whitespace-separated component is a genuine import
+            // argument and stays.
+            let spelled = spelled_version_requirement(source, span_start, span_end);
+            let mut node_args: Vec<String> = node_args(node).to_vec();
+            eprintln!("[dbg spelled] requirement={spelled:?} module={module:?}");
+            if let Some(requirement) = &spelled {
+                let folded = module.split_once(' ').map(|(_, version)| version).unwrap_or("");
+                if let Some(continuation) = requirement.strip_prefix(folded) {
+                    let mut joined = String::new();
+                    let mut keep = 0usize;
+                    for arg in node_args.iter() {
+                        let candidate = format!("{joined}{arg}");
+                        if candidate.len() <= continuation.len()
+                            && continuation.starts_with(candidate.as_str())
+                        {
+                            joined = candidate;
+                            keep += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    if joined == continuation {
+                        node_args = node_args[keep..].to_vec();
+                    }
+                }
+            }
+            let mut evidence = parse_dancer2_two_x_import_args(&node_args);
             evidence.import_suppressed = has_explicit_empty_import(source, span_start, span_end);
+            if let Some(requirement) = spelled {
+                evidence.version_slot_spellings = vec![requirement];
+            }
             sites.push(Dancer2TwoXActivationSite {
                 package: current_package.clone(),
                 file_id,
@@ -601,6 +668,51 @@ get '/x' => sub { 1 };
             found[0].shadowed_keywords.iter().any(|k| k == "get"),
             "an empty-body definition must shadow the import, got {:?}",
             found[0].shadowed_keywords
+        );
+    }
+
+    #[test]
+    #[test]
+    fn contiguous_three_part_version_is_consumed_whole() {
+        // The parser folds `2.0` into the module and leaves `.` and `1` as
+        // separate tokens; the spelled-requirement consumption must join
+        // them instead of letting them degrade into unmodeled options.
+        let found = sites(
+            "use Dancer2 2.0.1;
+",
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].evidence.version_slot_spellings,
+            vec!["2.0.1".to_string()],
+            "the contiguous version must be recorded whole"
+        );
+        assert!(
+            found[0].evidence.unmodeled_options.is_empty(),
+            "no part of a contiguous version may leak into unmodeled options: {:?}",
+            found[0].evidence.unmodeled_options
+        );
+    }
+
+    #[test]
+    fn whitespace_separated_component_is_a_genuine_import_argument() {
+        // `use Dancer2 2.0 .1;` spells only `2.0` contiguously: the `.1`
+        // is a genuine import argument (odd-arity per the pinned contract),
+        // not part of the version.
+        let found = sites(
+            "use Dancer2 2.0 .1;
+",
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].evidence.version_slot_spellings, vec!["2.0".to_string()]);
+        // The version did not swallow the trailing component: `.1` survives
+        // as an unmodeled import entry (key `.` with `1` consumed as its
+        // paired value per the %pairing model — recording pair VALUES in
+        // unmodeled_options is a v2 evidence-model item).
+        assert!(
+            found[0].evidence.unmodeled_options.contains(&".".to_string()),
+            "the whitespace-separated .1 must survive as an unmodeled import entry: {:?}",
+            found[0].evidence.unmodeled_options
         );
     }
 
