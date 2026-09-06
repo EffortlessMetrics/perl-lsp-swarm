@@ -1185,6 +1185,7 @@ fn relation_scoped_section_text(
 ///
 /// Units are sentences inside Markdown paragraphs. A whitespace-only line is
 /// a paragraph break, matching rendered Markdown rather than a literal `\n\n`.
+/// Sentence ends are `.`, `!`, or `?` followed by whitespace or end of text.
 /// A unit that mentions some other issue and does not mention the closed issue
 /// is a neighboring-issue disclaimer. Unnumbered prose still counts: atomic
 /// closes often describe "the remaining work" without repeating `#N`, even
@@ -1234,7 +1235,7 @@ fn split_sentences(text: &str) -> Vec<String> {
     let mut sentences = Vec::new();
     let mut start = 0;
     for (index, character) in text.char_indices() {
-        if character != '.' {
+        if !matches!(character, '.' | '!' | '?') {
             continue;
         }
         let after = index + character.len_utf8();
@@ -1761,6 +1762,18 @@ mod tests {
             explicitly_not_proven_required_work(&attributable_tracked),
             "an unnumbered closed-issue exclusion must survive a later tracker sentence: {attributable_tracked:?}"
         );
+
+        for terminator in ['!', '?'] {
+            let punctuated = format!(
+                "This PR does not prove the complete remaining work{terminator} That work is tracked by #11."
+            );
+            let attributable_punctuated =
+                exclusion_text_attributable_to_closed_issue(&punctuated, &key, current);
+            assert!(
+                explicitly_not_proven_required_work(&attributable_punctuated),
+                "sentence terminators other than '.' must still keep the exclusion: {attributable_punctuated:?}"
+            );
+        }
     }
 
     #[test]
