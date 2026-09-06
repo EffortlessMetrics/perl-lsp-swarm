@@ -151,20 +151,22 @@ fn backtick_devex_commands(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Join physical lines that end with a trailing backslash into one logical line.
+/// Join physical lines that end with a shell line-continuation into one logical line.
 ///
-/// A line is a continuation when, after trailing whitespace is stripped, it ends
-/// with `\\`. The backslash is dropped and the next line's leading whitespace is
-/// collapsed to a single space. This is the mechanical v1 line-joiner; it does
-/// not strip env prefixes or join Markdown-split lines that lack a backslash.
+/// A continuation is a POSIX backslash-newline escape: the final character of the
+/// physical line must be `\\` (immediately before the newline), and the trailing
+/// backslash run must have odd length so the last `\\` is not itself escaped.
+/// Trailing spaces after a backslash are not stripped for this test — they mean the
+/// newline is not escaped. Ordinary `trim_end` applies only when assembling the
+/// stored piece. This joiner does not strip env prefixes or join Markdown-split
+/// lines that lack a real continuation.
 fn join_trailing_backslash_continuations(text: &str) -> Vec<JoinedLine> {
     let mut lines = Vec::new();
     let mut buf: Option<String> = None;
     for raw in text.lines() {
-        let trimmed_end = raw.trim_end();
-        let (piece, continuation) = match trimmed_end.strip_suffix('\\') {
+        let (piece, continuation) = match shell_line_continuation(raw) {
             Some(rest) => (rest.trim_end(), true),
-            None => (trimmed_end, false),
+            None => (raw.trim_end(), false),
         };
         match buf.take() {
             Some(mut existing) => {
@@ -191,6 +193,20 @@ fn join_trailing_backslash_continuations(text: &str) -> Vec<JoinedLine> {
     lines
 }
 
+/// Returns the line without its escaping backslash when that backslash escapes the
+/// following newline. `None` means the physical line is complete.
+fn shell_line_continuation(line: &str) -> Option<&str> {
+    if !line.ends_with('\\') {
+        return None;
+    }
+    let trailing_backslashes = line.bytes().rev().take_while(|byte| *byte == b'\\').count();
+    if trailing_backslashes % 2 == 0 {
+        return None;
+    }
+    line.strip_suffix('\\')
+}
+
+#[derive(Debug)]
 struct JoinedLine {
     text: String,
     continued: bool,
@@ -277,11 +293,48 @@ mod tests {
         assert_eq!(joined[0].text, "just pr-fast --locked");
     }
 
+    fn assert_independent_false_join_control(text: &str, first_stored: &str) {
+        let joined = join_trailing_backslash_continuations(text);
+        assert_eq!(joined.len(), 2, "independent physical lines must not merge: {joined:?}");
+        assert!(
+            joined.iter().all(|line| !line.continued),
+            "no real POSIX continuation: {joined:?}"
+        );
+        assert_eq!(joined[0].text, first_stored);
+        assert_eq!(joined[1].text, "just stale-recipe");
+
+        let commands = inline_devex_commands(text);
+        assert!(
+            !commands.iter().any(|command| command.contains("stale-recipe")),
+            "a false join must not smuggle the second recipe into one continued command: {commands:?}"
+        );
+
+        let just_recipes = BTreeSet::from(["pr-fast".to_string()]);
+        let xtask_subcommands = BTreeSet::new();
+        assert!(
+            command_exists(first_stored, &just_recipes, &xtask_subcommands).is_ok(),
+            "valid first recipe stays independently visible to command_exists"
+        );
+        assert!(
+            command_exists("just stale-recipe", &just_recipes, &xtask_subcommands).is_err(),
+            "stale second recipe must remain independently visible to command_exists"
+        );
+    }
+
     #[test]
-    fn join_trailing_backslash_continuations_strips_whitespace_after_backslash() {
-        let joined = join_trailing_backslash_continuations("just pr-fast \\  \n\t--locked\n");
-        assert_eq!(joined[0].text, "just pr-fast --locked");
-        assert!(joined[0].continued);
+    fn whitespace_after_backslash_does_not_join_two_commands() {
+        assert_independent_false_join_control(
+            "just pr-fast \\  \njust stale-recipe\n",
+            "just pr-fast \\",
+        );
+    }
+
+    #[test]
+    fn even_trailing_backslashes_do_not_continue() {
+        assert_independent_false_join_control(
+            "just pr-fast \\\\\njust stale-recipe\n",
+            "just pr-fast \\\\",
+        );
     }
 
     #[test]
