@@ -387,6 +387,31 @@ impl ContentLengthMessageReader {
     }
 }
 
+fn is_header_terminator(line: &[u8]) -> bool {
+    line == b"\r\n" || line == b"\n"
+}
+
+fn trim_header_crlf(line: &[u8]) -> &[u8] {
+    let without_lf = match line.split_last() {
+        Some((b'\n', rest)) => rest,
+        _ => line,
+    };
+    match without_lf.split_last() {
+        Some((b'\r', rest)) => rest,
+        _ => without_lf,
+    }
+}
+
+fn drain_to_header_end(reader: &mut dyn BufRead) -> io::Result<()> {
+    loop {
+        let mut line = Vec::new();
+        let bytes_read = reader.read_until(b'\n', &mut line)?;
+        if bytes_read == 0 || is_header_terminator(&line) {
+            return Ok(());
+        }
+    }
+}
+
 /// Read one LSP message from a buffered reader as a typed one-frame outcome.
 ///
 /// This helper consumes at most one frame from `reader` so a following frame
@@ -398,17 +423,25 @@ pub fn read_message_outcome(
     let mut content_length = None;
 
     loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line)?;
+        let mut line = Vec::new();
+        let bytes_read = reader.read_until(b'\n', &mut line)?;
         if bytes_read == 0 {
             return Ok(None);
         }
 
-        if line == "\r\n" || line == "\n" {
+        if is_header_terminator(&line) {
             break;
         }
 
-        let header = line.trim_end_matches(['\r', '\n']);
+        let header = match std::str::from_utf8(trim_header_crlf(&line)) {
+            Ok(header) => header,
+            Err(_) => {
+                drain_to_header_end(reader)?;
+                return Ok(Some(Err(IncomingMessageError::Framing(
+                    FramingError::InvalidHeaderUtf8,
+                ))));
+            }
+        };
         if let Some((name, value)) = header.split_once(':')
             && name.trim().eq_ignore_ascii_case("Content-Length")
         {

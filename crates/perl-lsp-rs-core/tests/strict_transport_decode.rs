@@ -360,6 +360,29 @@ fn compatibility_read_next_skips_malformed_json_without_returning_it_as_success(
 }
 
 #[test]
+fn read_message_rejects_invalid_utf8_header_without_losing_next_frame() -> io::Result<()> {
+    let mut payload = vec![0xFF];
+    payload.extend_from_slice(b"\r\n\r\n");
+    payload.extend(framed_request(6, "after-header"));
+    let mut reader = BufReader::with_capacity(4096, Cursor::new(payload));
+
+    match read_message_outcome(&mut reader)? {
+        Some(Err(IncomingMessageError::Framing(FramingError::InvalidHeaderUtf8))) => {}
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected InvalidHeaderUtf8, got {other:?}"),
+            ));
+        }
+    }
+    let recovered = read_message(&mut reader)?.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::UnexpectedEof, "expected recovered request")
+    })?;
+    assert_eq!(recovered.method, "after-header");
+    Ok(())
+}
+
+#[test]
 fn read_message_rejects_invalid_utf8_without_losing_next_frame() -> io::Result<()> {
     let mut payload = framed(&invalid_utf8_json_body());
     payload.extend(framed_request(9, "second"));
