@@ -68,9 +68,22 @@ impl AssertionVisitor<'_> {
         }
     }
 
-    fn bind_lets_in_condition(&mut self, expr: &Expr) {
-        if let Some(env) = self.env.last_mut() {
-            bind_lets_in_condition(env, expr);
+    /// Walk an `if`/`while` condition left-to-right so each `let` is in scope
+    /// for later `&&` operands and for the then/body block, but not for `else`.
+    fn visit_condition_with_lets(&mut self, expr: &Expr) {
+        match peel(expr) {
+            Expr::Let(expr_let) => {
+                for attr in &expr_let.attrs {
+                    self.visit_attribute(attr);
+                }
+                self.visit_expr(&expr_let.expr);
+                self.bind_current(&expr_let.pat);
+            }
+            Expr::Binary(binary) if matches!(binary.op, BinOp::And(_)) => {
+                self.visit_condition_with_lets(&binary.left);
+                self.visit_condition_with_lets(&binary.right);
+            }
+            other => self.visit_expr(other),
         }
     }
 
@@ -146,9 +159,8 @@ impl<'ast> Visit<'ast> for AssertionVisitor<'_> {
         for attr in &node.attrs {
             self.visit_attribute(attr);
         }
-        self.visit_expr(&node.cond);
         self.push_scope();
-        self.bind_lets_in_condition(&node.cond);
+        self.visit_condition_with_lets(&node.cond);
         self.visit_block(&node.then_branch);
         self.pop_scope();
         if let Some((_, else_expr)) = &node.else_branch {
@@ -163,9 +175,8 @@ impl<'ast> Visit<'ast> for AssertionVisitor<'_> {
         if let Some(label) = &node.label {
             self.visit_label(label);
         }
-        self.visit_expr(&node.cond);
         self.push_scope();
-        self.bind_lets_in_condition(&node.cond);
+        self.visit_condition_with_lets(&node.cond);
         self.visit_block(&node.body);
         self.pop_scope();
     }
@@ -225,17 +236,6 @@ impl AssertionVisitor<'_> {
             rule: detection.rule,
             shape: detection.rule.shape(),
         });
-    }
-}
-
-fn bind_lets_in_condition(env: &mut TypeEnv, expr: &Expr) {
-    match peel(expr) {
-        Expr::Let(expr_let) => bind_binding_pat(env, &expr_let.pat),
-        Expr::Binary(binary) if matches!(binary.op, BinOp::And(_)) => {
-            bind_lets_in_condition(env, &binary.left);
-            bind_lets_in_condition(env, &binary.right);
-        }
-        _ => {}
     }
 }
 
@@ -468,6 +468,27 @@ mod tests {
             "{:?}",
             rules(source)
         );
+    }
+
+    #[test]
+    fn let_chain_later_operands_see_earlier_shadowing_bindings() {
+        let source = r#"
+            fn probe(value: Option<u8>, probe: Probe) {
+                if let value = probe && { assert!(value.is_some() || value.is_none()); true } {
+                    let _ = 0;
+                }
+                while let value = probe && { assert!(value.is_some() || value.is_none()); true } {
+                    break;
+                }
+                assert!(value.is_some() || value.is_none());
+            }
+            struct Probe { n: u8 }
+            impl Probe {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+        "#;
+        assert_eq!(rules(source), vec![RuleId::OptionSomeOrNone], "{:?}", rules(source));
     }
 
     #[test]
