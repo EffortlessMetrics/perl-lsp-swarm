@@ -22,6 +22,7 @@ use perl_parser::incremental::incremental_document::{
 use perl_parser::incremental::incremental_edit::{IncrementalEdit, IncrementalEditSet};
 use perl_parser_core::ast::{Node, NodeKind};
 use perl_parser_core::parser::Parser;
+use perl_tdd_support::must_err_with;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -285,9 +286,10 @@ fn invalid_edits_are_refused_without_version_or_cache_change() -> TestResult {
                 let cafe_source = "my $x = \"é\";";
                 let accent = cafe_source.find('é').ok_or("é")?;
                 let mut unicode_doc = IncrementalDocument::new(cafe_source.to_string())?;
-                let err = unicode_doc
-                    .apply_edit(edit(accent + 1, accent + 1, "x"))
-                    .expect_err("mid-codepoint must refuse");
+                let err = must_err_with(
+                    unicode_doc.apply_edit(edit(accent + 1, accent + 1, "x")),
+                    "mid-codepoint must refuse",
+                );
                 assert!(
                     matches!(
                         err,
@@ -310,7 +312,7 @@ fn invalid_edits_are_refused_without_version_or_cache_change() -> TestResult {
         if *label == "mid_codepoint" {
             continue;
         }
-        let err = doc.apply_edit(candidate.clone()).expect_err(label);
+        let err = must_err_with(doc.apply_edit(candidate.clone()), *label);
         match err {
             IncrementalDocumentError::InvalidEdit { reason, .. } => {
                 if *label == "backward" {
@@ -338,7 +340,7 @@ fn reversed_and_non_boundary_batch_edits_are_atomic() -> TestResult {
 
     let mut reversed = IncrementalEditSet::new();
     reversed.add(edit(4, 2, "x"));
-    let err = doc.apply_edits(&reversed).expect_err("reversed batch");
+    let err = must_err_with(doc.apply_edits(&reversed), "reversed batch");
     assert!(matches!(
         err,
         IncrementalDocumentError::InvalidEdit { reason: IncrementalEditRefusal::BackwardRange, .. }
@@ -352,7 +354,7 @@ fn reversed_and_non_boundary_batch_edits_are_atomic() -> TestResult {
     let mut mixed = IncrementalEditSet::new();
     mixed.add(edit(4, 6, "$value"));
     mixed.add(edit(accent + 1, accent + 1, "x"));
-    let err = unicode_doc.apply_edits(&mixed).expect_err("mixed unmappable batch");
+    let err = must_err_with(unicode_doc.apply_edits(&mixed), "mixed unmappable batch");
     assert!(matches!(
         err,
         IncrementalDocumentError::InvalidEdit {

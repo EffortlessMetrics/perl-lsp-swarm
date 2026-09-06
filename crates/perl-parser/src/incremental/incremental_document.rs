@@ -213,7 +213,7 @@ impl IncrementalDocument {
         let mut parser = Parser::new(&new_source);
         let new_root = parser.parse()?;
         let next_version =
-            self.version.checked_add(1).ok_or_else(|| IncrementalDocumentError::InvalidEdit {
+            self.version.checked_add(1).ok_or(IncrementalDocumentError::InvalidEdit {
                 start_byte: 0,
                 old_end_byte: 0,
                 source_len: new_source.len(),
