@@ -458,6 +458,13 @@ enum Commands {
         command: SyncDivergenceCommand,
     },
 
+    /// Plan the deterministic publication projection from a versioned manifest.
+    #[command(name = "publication-sync")]
+    PublicationSync {
+        #[command(subcommand)]
+        command: PublicationSyncCommand,
+    },
+
     /// Issue Research / Plan Review Desk tooling (report-only audit, etc.).
     #[command(name = "issue-plan")]
     IssuePlan {
@@ -4389,6 +4396,24 @@ enum PrLedgerCommand {
 }
 
 #[derive(Subcommand)]
+enum PublicationSyncCommand {
+    /// Validate a `publication_sync_manifest.v1` against its declared release
+    /// inputs and emit a deterministic `pass|blocked|not_proven` plan receipt.
+    /// Read-only: no branch, worktree, or tree is modified.
+    Plan {
+        /// Candidate publication projection manifest.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Repository root used to resolve the manifest's repository-relative input paths.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+        /// Output plan receipt JSON, written even when the verdict blocks promotion.
+        #[arg(long, default_value = "target/receipts/publication-sync-plan.json")]
+        receipt: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum SyncDivergenceCommand {
     /// Validate the target-only commit reconciliation ledger and write a receipt.
     Check {
@@ -5349,6 +5374,15 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::PrLedger { command } => match command {
             PrLedgerCommand::Generate { repos, out, fixture } => {
                 tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig { repos, out, fixture })
+            }
+        },
+        Commands::PublicationSync { command } => match command {
+            PublicationSyncCommand::Plan { manifest, repo_root, receipt } => {
+                tasks::publication_sync::plan(tasks::publication_sync::PlanConfig {
+                    manifest,
+                    repo_root,
+                    receipt,
+                })
             }
         },
         Commands::SyncDivergence { command } => match command {

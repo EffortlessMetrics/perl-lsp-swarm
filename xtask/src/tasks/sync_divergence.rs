@@ -59,10 +59,12 @@ pub struct ScaffoldConfig {
     pub working_directory: Option<PathBuf>,
 }
 
-/// The single verdict a completed validation may emit.
+/// The single verdict a completed validation may emit. Shared with
+/// `publication_sync` so the release-sync surfaces keep one verdict vocabulary
+/// instead of each redefining `pass`/`blocked`/`not_proven`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum Verdict {
+pub(crate) enum Verdict {
     Pass,
     Blocked,
     NotProven,
@@ -647,7 +649,10 @@ fn commit_changed_paths(commit: &str, directory: Option<&Path>) -> Result<Vec<St
     Ok(paths)
 }
 
-fn is_product_or_test_path(path: &str) -> bool {
+/// True when a repository path carries runtime, product, or test work. Shared
+/// with `publication_sync` so "this exclusion hides product work" has one
+/// definition across the release-sync surfaces.
+pub(crate) fn is_product_or_test_path(path: &str) -> bool {
     let normalized = path.replace('\\', "/");
     if normalized.split('/').any(|segment| PRODUCT_PATH_SEGMENTS.contains(&segment)) {
         return true;
