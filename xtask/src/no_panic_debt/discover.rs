@@ -145,6 +145,7 @@ fn scan_file(
         sites: Vec::new(),
         declarations: Vec::new(),
         external_modules: Vec::new(),
+        instruments: Vec::new(),
     };
     visitor.push_attrs(&parsed.attrs, if complete { "file" } else { "crate" });
     visitor.visit_file(&parsed);
@@ -153,7 +154,7 @@ fn scan_file(
         entrypoints: visitor.entrypoints,
         sites: visitor.sites,
         declarations: visitor.declarations,
-        instruments: Vec::new(),
+        instruments: visitor.instruments,
         external_modules: visitor.external_modules,
     })
 }
@@ -180,6 +181,7 @@ struct DebtVisitor<'a> {
     sites: Vec<RawSite>,
     declarations: Vec<RawDeclaration>,
     external_modules: Vec<PathBuf>,
+    instruments: Vec<Instrument>,
 }
 
 impl DebtVisitor<'_> {
@@ -381,7 +383,16 @@ impl DebtVisitor<'_> {
         let Some(ident) = mac.path.segments.last() else {
             return;
         };
-        if let Some(family) = macro_family(&ident.ident.to_string()) {
+        let name = ident.ident.to_string();
+        if test_generating_macro(&name) {
+            self.instruments.push(Instrument {
+                kind: "macro_test".to_string(),
+                subject: self.file.path.clone(),
+                status: InstrumentStatus::NotProven,
+                detail: format!("{name}! generates tests that were not expanded"),
+            });
+        }
+        if let Some(family) = macro_family(&name) {
             self.record_site(family, mac.path.span());
         }
     }
@@ -603,4 +614,8 @@ fn package_from_path(root: &Path, path: &Path) -> Option<String> {
         return components.next()?.as_os_str().to_str().map(str::to_string);
     }
     None
+}
+
+fn test_generating_macro(name: &str) -> bool {
+    matches!(name, "proptest")
 }

@@ -406,6 +406,16 @@ fn load_registry(path: &Path) -> Result<BTreeMap<RegistryKey, RegistryRecord>> {
             normalized_snippet: required("normalized_snippet")?,
             selector_identity: required("selector_identity")?,
         };
+        if records.contains_key(&key) {
+            return Err(eyre!(
+                "registry entry {} duplicates identity {}:{}:{}:{}",
+                index + 1,
+                key.path,
+                key.enclosing_test_or_function,
+                key.macro_family,
+                key.selector_identity
+            ));
+        }
         records.insert(
             key.clone(),
             RegistryRecord { key, accepted_reason: required("accepted_reason")?, state },

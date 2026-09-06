@@ -1139,3 +1139,113 @@ fn detached_tests_fixture_is_not_executable_population() {
     .expect("check");
     assert!(result.ok, "detached fixture failed integrity: {:?}", result.findings);
 }
+
+#[test]
+fn duplicate_registry_identities_are_not_proven() {
+    let temp = fixture_root();
+    let first = inventory_at(temp.path());
+    let site = first
+        .rows
+        .iter()
+        .find(|row| row.kind == "site" && row.site_family == "panic!")
+        .expect("panic site");
+    let identity = serde_json::json!({
+        "path": site.path,
+        "enclosing_test_or_function": site.entrypoint,
+        "macro_family": site.site_family,
+        "normalized_snippet": site.source_identity,
+        "selector_identity": site.selector_identity,
+        "accepted_reason": "first owner",
+        "state": "active"
+    });
+    let mut retired = identity.clone();
+    retired["accepted_reason"] = serde_json::json!("second owner");
+    retired["state"] = serde_json::json!("retired");
+    write_registry(
+        temp.path(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "sites": [identity, retired]
+        })
+        .to_string(),
+    );
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "panic_registry"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.detail.contains("duplicates identity")
+        }),
+        "duplicate registry identities were collapsed by insert order: {:?}",
+        inventory.instruments
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| {
+            row.path == site.path && row.status == DebtStatus::IntentionalExactException
+        }),
+        "file order chose an active join from a duplicate registry: {:?}",
+        inventory.rows
+    );
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(!result.ok, "duplicate registry identities passed check: {:?}", result.findings);
+}
+
+#[test]
+fn proptest_generated_tests_are_not_silent_omissions() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/tests/proptest_shape.rs"),
+        r#"
+proptest! {
+    #[test]
+    fn case_insensitive_matching_is_equivalent(name in "[a-zA-Z]{1,24}", query in "[a-zA-Z]{0,12}") {
+        let _ = Some(1).unwrap();
+        let _ = (name, query);
+    }
+}
+
+#[test]
+fn ordinary() { let _ = Some(2).unwrap(); }
+"#,
+    )
+    .expect("proptest shape");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "macro_test"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject.ends_with("tests/proptest_shape.rs")
+                && instrument.detail.contains("proptest!")
+        }),
+        "proptest! was a silent zero: {:?}",
+        inventory.instruments
+    );
+    assert!(
+        inventory.rows.iter().any(|row| {
+            row.path.ends_with("tests/proptest_shape.rs")
+                && row.entrypoint == "ordinary"
+                && row.site_family == "unwrap"
+        }),
+        "ordinary sibling test in the same file was lost: {:?}",
+        inventory.rows
+    );
+    assert!(!inventory.counts.observation_complete);
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(
+        result.ok,
+        "unexpanded proptest! should not fail observation integrity: {:?}",
+        result.findings
+    );
+}
