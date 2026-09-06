@@ -90,16 +90,18 @@ fn vertical_tab_after_terminator_does_not_close_region() -> Result<(), Box<dyn s
 }
 
 /// An unclosed quote after a successful padded close is independent recovery
-/// and must not be swallowed by the terminator clip.
+/// and must not be swallowed by the terminator clip. The line scanner anchors
+/// that span at the final character, not the whole quote body.
 #[test]
 fn unclosed_quote_after_padded_close_stays_recovery() -> Result<(), Box<dyn std::error::Error>> {
     let source = "my $t = <<EOF;\nbody\nEOF  \nmy $x = \"open\n";
     let index = SourceRegionIndex::build(source);
-    let quote = source.find("open").ok_or("missing unclosed quote body")?;
+    let last =
+        source.char_indices().next_back().map(|(offset, _)| offset).ok_or("empty fixture")?;
     assert_eq!(
-        index.kind_at_offset(quote),
+        index.kind_at_offset(last),
         SourceRegionKind::RecoveryAmbiguous,
-        "unclosed quote after a padded close must stay recovery, regions: {:?}",
+        "unclosed quote after a padded close must keep trailing recovery, regions: {:?}",
         index.regions()
     );
     Ok(())

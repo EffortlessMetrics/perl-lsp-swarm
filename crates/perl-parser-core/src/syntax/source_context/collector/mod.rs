@@ -46,28 +46,25 @@ fn suppress_padded_terminator_recovery(
     heredoc_regions: &[SourceRegion],
     source_len: usize,
 ) {
-    let mut kept = Vec::with_capacity(lexer_regions.len());
-    for mut region in lexer_regions.drain(..) {
-        if region.kind == SourceRegionKind::RecoveryAmbiguous && region.end == source_len {
-            for heredoc in heredoc_regions {
-                if heredoc.kind != SourceRegionKind::Heredoc || heredoc.end >= source_len {
-                    continue;
-                }
-                if region.start >= heredoc.start && region.start < heredoc.end {
-                    region.end = heredoc.end;
-                    break;
-                }
-                if region.start == heredoc.end {
-                    region.end = region.start;
-                    break;
-                }
+    for region in lexer_regions.iter_mut() {
+        if region.kind != SourceRegionKind::RecoveryAmbiguous || region.end != source_len {
+            continue;
+        }
+        for heredoc in heredoc_regions {
+            if heredoc.kind != SourceRegionKind::Heredoc || heredoc.end >= source_len {
+                continue;
+            }
+            if region.start >= heredoc.start && region.start < heredoc.end {
+                region.end = heredoc.end;
+                break;
+            }
+            if region.start == heredoc.end {
+                region.end = region.start;
+                break;
             }
         }
-        if region.start < region.end {
-            kept.push(region);
-        }
     }
-    *lexer_regions = kept;
+    lexer_regions.retain(|region| region.start < region.end);
 }
 
 fn collect_lexer_literal_regions(source: &str) -> Vec<SourceRegion> {
