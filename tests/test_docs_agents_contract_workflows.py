@@ -34,6 +34,8 @@ SELF_TEST = "tests/test_docs_agents_contract_workflows.py"
 GATE_NAME = "docs_agents_contract_workflows"
 CONTROL_PLANE_KIND = "control_plane_contract_test"
 WORKFLOW_PREFIX = ".github/workflows/"
+WORKFLOW_SUFFIXES = (".yml", ".yaml")
+WORKFLOW_GLOBS = ("*.yml", "*.yaml")
 
 # Claim-boundary pin: #14628 named these four. They live in the registry's
 # `named_class` as data; this frozenset only detects dropping one of them
@@ -162,6 +164,21 @@ def _parse_filter_list(block: list[str], key: str) -> tuple[bool, frozenset[str]
     return False, frozenset()
 
 
+def _filters_from_flow_mapping(text: str) -> EventFilters:
+    """Parse `pull_request: {paths: [...], paths-ignore: [...]}` on one line."""
+    ignore_match = _FLOW_IGNORE_KEY.search(text)
+    paths_match = _FLOW_PATHS_KEY.search(text)
+    return EventFilters(
+        present=True,
+        paths=frozenset(_flow_sequence(paths_match.group(1))) if paths_match else frozenset(),
+        paths_ignore=frozenset(_flow_sequence(ignore_match.group(1)))
+        if ignore_match
+        else frozenset(),
+        has_paths_key=paths_match is not None,
+        has_paths_ignore_key=ignore_match is not None,
+    )
+
+
 def parse_event_filters(workflow_text: str, event: str) -> EventFilters:
     """Parse `on.<event>` path filters without a YAML library."""
     on_block = top_level_block(workflow_text, "on")
@@ -171,6 +188,10 @@ def parse_event_filters(workflow_text: str, event: str) -> EventFilters:
         start = next(index for index, line in enumerate(lines) if line.startswith(marker))
     except StopIteration:
         return EventFilters(present=False)
+
+    remainder = lines[start][len(marker) :].strip()
+    if remainder.startswith("{"):
+        return _filters_from_flow_mapping(remainder)
 
     event_indent = _indent(lines[start])
     end = len(lines)
@@ -232,6 +253,9 @@ def run_commands(workflow_text: str) -> tuple[str, ...]:
     return tuple(commands)
 
 
+_FLOW_PATHS_KEY = re.compile(r"(?<![\w-])paths:\s*(\[[^\]]*\])")
+_FLOW_IGNORE_KEY = re.compile(r"paths-ignore:\s*(\[[^\]]*\])")
+_PYTHON_VALUE_FLAGS = frozenset({"-W", "-X", "--check-hash-based-pycs"})
 _SHELL_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\|)\s*")
 
 
@@ -251,6 +275,14 @@ def _python_script_operand(tokens: list[str]) -> str | None:
             break
         if token.startswith("-") and token not in {"-m", "-c"}:
             index += 1
+            name = token.split("=", 1)[0]
+            if (
+                name in _PYTHON_VALUE_FLAGS
+                and "=" not in token
+                and index < len(tokens)
+                and not tokens[index].startswith("-")
+            ):
+                index += 1
             continue
         break
     if index >= len(tokens):
@@ -329,7 +361,7 @@ def allowlist_covered_workflows(allowlist: dict[str, Any]) -> set[str]:
             if not isinstance(item, str):
                 continue
             path = posix(item)
-            if path.startswith(WORKFLOW_PREFIX) and path.endswith(".yml"):
+            if path.startswith(WORKFLOW_PREFIX) and path.endswith(WORKFLOW_SUFFIXES):
                 workflows.add(path)
     return workflows
 
@@ -396,8 +428,8 @@ def registry_shape_errors(registry: dict[str, Any]) -> list[str]:
     for name in names:
         if "/" in name or name != Path(name).name:
             errors.append(f"named_class entry must be a workflow basename: {name!r}")
-        if not name.endswith(".yml"):
-            errors.append(f"named_class entry must end in .yml: {name!r}")
+        if not name.endswith(WORKFLOW_SUFFIXES):
+            errors.append(f"named_class entry must end in .yml or .yaml: {name!r}")
         if name in seen_names:
             errors.append(f"named_class duplicates {name!r}")
         seen_names.add(name)
@@ -435,8 +467,8 @@ def _path_shape_errors(path: str) -> list[str]:
         errors.append(f"path must not escape with ..: {path}")
     if not path.startswith(WORKFLOW_PREFIX):
         errors.append(f"path must start with {WORKFLOW_PREFIX}: {path}")
-    if not path.endswith(".yml"):
-        errors.append(f"path must end with .yml: {path}")
+    if not path.endswith(WORKFLOW_SUFFIXES):
+        errors.append(f"path must end with .yml or .yaml: {path}")
     rest = path[len(WORKFLOW_PREFIX) :]
     if not rest or "/" in rest:
         errors.append(f"path must be a workflow basename under {WORKFLOW_PREFIX}: {path}")
@@ -556,9 +588,10 @@ def gate_block(policy_text: str, gate: str) -> str | None:
 
 def live_workflow_files() -> dict[str, str]:
     files: dict[str, str] = {}
-    for path in sorted(WORKFLOWS_DIR.glob("*.yml")):
-        relative = posix(str(path.relative_to(ROOT)))
-        files[relative] = path.read_text(encoding="utf-8")
+    for pattern in WORKFLOW_GLOBS:
+        for path in sorted(WORKFLOWS_DIR.glob(pattern)):
+            relative = posix(str(path.relative_to(ROOT)))
+            files[relative] = path.read_text(encoding="utf-8")
     return files
 
 
@@ -986,6 +1019,10 @@ jobs:
             unittest_targets(["python3 -u tests/test_script_docs_contract.py"]),
             {"tests/test_script_docs_contract.py"},
         )
+        self.assertEqual(
+            unittest_targets(["python3 -W error tests/test_script_docs_contract.py"]),
+            {"tests/test_script_docs_contract.py"},
+        )
 
     def test_echo_after_unrelated_python_is_not_a_unittest_target(self) -> None:
         self.assertEqual(
@@ -1036,6 +1073,48 @@ jobs:
                 {"tests/test_flow.py"},
             )
         )
+
+    def test_inline_mapping_self_path_counts(self) -> None:
+        workflow = """\
+on:
+  pull_request: {paths: ['.github/workflows/map.yml']}
+jobs:
+  check:
+    steps:
+      - run: python3 -m unittest tests/test_map.py
+"""
+        self.assertTrue(
+            is_contract_workflow(
+                ".github/workflows/map.yml",
+                workflow,
+                {"tests/test_map.py"},
+            )
+        )
+
+    def test_yaml_suffix_self_filtered_workflow_is_discovered(self) -> None:
+        workflow = """\
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/extra.yaml'
+jobs:
+  check:
+    steps:
+      - run: python3 -m unittest tests/test_extra.py
+"""
+        allowlist = {
+            "allow": [
+                {
+                    "kind": CONTROL_PLANE_KIND,
+                    "path": "tests/test_extra.py",
+                }
+            ]
+        }
+        discovered = discover_contract_workflows(
+            {".github/workflows/extra.yaml": workflow}, allowlist
+        )
+        self.assertEqual(discovered, {".github/workflows/extra.yaml"})
+        self.assertEqual(_path_shape_errors(".github/workflows/extra.yaml"), [])
 
     def test_unquoted_self_path_counts(self) -> None:
         workflow = """\
@@ -1101,6 +1180,26 @@ jobs:
 """
         errors = host_gate_errors(ci, policy)
         self.assertTrue(any("paths-ignore" in error for error in errors), errors)
+
+    def test_inline_mapping_path_filter_on_host_is_caught(self) -> None:
+        ci = """\
+on:
+  pull_request: {paths: ['.github/workflows/ci.yml']}
+jobs:
+  merge-gate-shards:
+    strategy:
+      matrix:
+        include:
+          - name: policy
+            gates: docs_agents_contract_workflows
+"""
+        policy = """\
+  - name: docs_agents_contract_workflows
+    required: true
+    command: python3 tests/test_docs_agents_contract_workflows.py
+"""
+        errors = host_gate_errors(ci, policy)
+        self.assertTrue(any("no path filter" in error for error in errors), errors)
 
     def test_path_filter_on_host_is_caught(self) -> None:
         ci = """\
