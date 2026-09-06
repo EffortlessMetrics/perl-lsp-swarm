@@ -116,15 +116,44 @@ fn receipt_is_published_even_when_the_verdict_blocks() -> Result<()> {
     Ok(())
 }
 
-/// Each push carries an irreplaceable before/after subject, so a superseded run
-/// must not be cancelled: the observation cannot be recovered from a later run.
+/// Each push carries an irreplaceable before/after subject, so no run may cancel
+/// or displace another. `cancel-in-progress: false` is necessary but not
+/// sufficient: a concurrency group holds one running plus one pending run, and a
+/// newly queued run displaces the pending one, so a group shared across pushes
+/// would silently drop an intermediate push's receipt during a merge burst.
+/// Keying the group by the exact event commit makes that structurally impossible.
 #[test]
-fn main_pushes_queue_instead_of_cancelling() -> Result<()> {
+fn no_push_receipt_can_be_displaced_by_a_later_push() -> Result<()> {
     let source = workflow_source()?;
 
     assert!(
         source.contains("cancel-in-progress: false"),
         "history observations must not be cancelled"
+    );
+    assert!(
+        source.contains("group: main-history-event-${{ github.sha }}"),
+        "the concurrency group must be unique per event commit so no push can displace another"
+    );
+    assert!(
+        !source.contains("group: main-history-event-${{ github.ref }}"),
+        "a ref-keyed group is shared by every push to main and can discard a pending receipt"
+    );
+    Ok(())
+}
+
+/// A `workflow_dispatch` run carries no push payload, so every manual run would
+/// classify as `invalid_event` and fail. The detector is push-bound by nature.
+#[test]
+fn workflow_is_push_triggered_only() -> Result<()> {
+    let source = workflow_source()?;
+
+    assert!(
+        !source.contains("workflow_dispatch:"),
+        "a dispatch run has no push payload and would always fail as invalid_event"
+    );
+    assert!(
+        source.contains("on:\n  push:\n    branches:\n      - main\n"),
+        "the detector must observe pushes to main"
     );
     Ok(())
 }

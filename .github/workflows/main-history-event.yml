@@ -26,17 +26,24 @@ name: Main History Event
 # tests but not through this trigger. Deletion control remains owned by the live
 # branch-protection observer above.
 
+# `push` is the only trigger. A `workflow_dispatch` run carries no push payload,
+# so `github.event.before` and the created/deleted/forced flags would all be
+# empty and every manual run would fail as `invalid_event`. There is no push
+# event to classify outside a push; investigate a specific pair locally with
+# `cargo run -p xtask --bin main-history-event` instead.
 on:
   push:
     branches:
       - main
-  workflow_dispatch: {}
 
 concurrency:
-  group: main-history-event-${{ github.ref }}
-  # Each push carries its own irreplaceable before/after subject: a superseded
-  # run cannot be reconstructed from a later one, so runs queue instead of
-  # cancelling.
+  # Keyed by the exact event commit, so two distinct pushes can never share a
+  # group. `cancel-in-progress: false` alone would not be enough: a group admits
+  # one running and one pending run, and a newly queued run displaces the
+  # pending one — during a merge burst that would silently discard the receipt
+  # for an intermediate push, which is precisely the evidence this lane exists
+  # to retain.
+  group: main-history-event-${{ github.sha }}
   cancel-in-progress: false
 
 permissions:
