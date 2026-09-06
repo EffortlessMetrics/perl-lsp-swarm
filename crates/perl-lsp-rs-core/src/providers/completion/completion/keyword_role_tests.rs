@@ -305,3 +305,33 @@ fn c_style_for_nested_do_block_semicolon_is_a_statement() {
         "nested do-block `;` must still offer statement-only `package`"
     );
 }
+
+/// Quoted `for (` is not a loop header; the following `;` is still a statement.
+#[test]
+fn quoted_for_text_does_not_steal_statement_position() {
+    let source = r#"my $x = "for ("; "#;
+    let completions = completions_at(source);
+    assert_eq!(
+        keyword_item(&completions, "sub").insert_text.as_deref(),
+        Some("sub ${1:name} {\n    $0\n}")
+    );
+    assert!(
+        has_keyword(&completions, "package"),
+        "quoted `for (` must not suppress statement-only `package`"
+    );
+}
+
+/// A comment containing `for (` on an earlier line does not own the next `;`.
+#[test]
+fn comment_for_text_does_not_steal_statement_position() {
+    let source = "# for (\nmy $x = 1;\n";
+    let completions = completions_at(source);
+    assert_eq!(
+        keyword_item(&completions, "sub").insert_text.as_deref(),
+        Some("sub ${1:name} {\n    $0\n}")
+    );
+    assert!(
+        has_keyword(&completions, "package"),
+        "comment `for (` must not suppress statement-only `package`"
+    );
+}
