@@ -6,10 +6,10 @@
 //! q{}/qq{} placeholder path plus error recovery against regressions (cf. the
 //! bounds-guarded slice handling flagged in #3917).
 //!
-//! Scope note: this legacy Pest parser recognizes the heredoc *operator* and
-//! preserves its marker/indent/quote flags, but does not slurp the body into
-//! the node (the content field is empty). The assertions below deliberately
-//! pin only what the parser actually produces today, not idealized semantics.
+//! Scope note: these tests pin the heredoc *operator* — marker, indent, and
+//! quote flags — and the q{}/qq{} placeholder path. They deliberately assert
+//! nothing about the body, which #8220 later made owned content; that contract
+//! is proved in `heredoc_body_contract.rs`.
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_parser_pest::PureRustPerlParser;

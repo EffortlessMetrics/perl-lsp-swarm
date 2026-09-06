@@ -200,8 +200,12 @@ fn cat2_basic_heredoc() {
 /// v1 (tree-sitter-c): accepts with no ERROR nodes, but silently loses body
 ///   content - only the first heredoc_content is captured, second is lost.
 ///   Verdict: Correct (no error nodes) but structurally incomplete.
-/// v2 (Pest): accepts but heredoc bodies are empty strings - SilentlyEmpty.
+/// v2 (Pest): since #8220 the openers own their bodies in queue order, so both
+///   bodies are attached and the body lines no longer fall through as code.
 /// v3: handles FIFO queue correctly - Correct, both bodies present.
+///
+/// This row is the comparison's record of that change: v1 remains the only
+/// subject that silently loses the second body.
 #[test]
 fn cat2_multiple_heredocs_on_one_line() {
     let src = "print <<A, <<B;\naaa\nA\nbbb\nB\n";
@@ -226,30 +230,31 @@ fn cat2_multiple_heredocs_on_one_line() {
         &r1.sexp[..r1.sexp.len().min(400)]
     );
 
-    // v2: Pest accepts but heredoc bodies are empty.
-    // The body lines (aaa, A, bbb, B) are re-parsed as separate function call
-    // expressions rather than attached to heredoc nodes.
-    // The sexp shows: (heredoc A  "") and (heredoc B  "") with empty body strings.
+    // v2: Pest accepts and, since #8220, each opener owns its body in queue
+    // order. The sexp shows (heredoc A  "aaa\n") and (heredoc B  "bbb\n"), and
+    // the body lines no longer appear as separate call expressions.
     assert_eq!(
         r2.verdict,
         Verdict::Correct,
         "v2 parse must succeed (it accepts the input); structural check below"
     );
-    // Structural assertion: both heredoc nodes exist but with empty bodies ("")
-    let v2_has_empty_heredoc_a = r2.sexp_contains("heredoc A  \"\"");
-    let v2_has_empty_heredoc_b = r2.sexp_contains("heredoc B  \"\"");
-    println!(
-        "    v2 multi-heredoc: empty_A={v2_has_empty_heredoc_a}, empty_B={v2_has_empty_heredoc_b}",
-    );
+    let v2_body_a = r2.sexp_contains(r#"heredoc A  "aaa\n""#);
+    let v2_body_b = r2.sexp_contains(r#"heredoc B  "bbb\n""#);
+    println!("    v2 multi-heredoc: body_A={v2_body_a}, body_B={v2_body_b}");
     println!("    v2 sexp: {}", &r2.sexp[..r2.sexp.len().min(400)]);
     assert!(
-        v2_has_empty_heredoc_a,
-        "v2 should have empty heredoc A body; sexp: {}",
+        v2_body_a,
+        "v2 must attach heredoc A's body in queue order; sexp: {}",
         &r2.sexp[..r2.sexp.len().min(400)]
     );
     assert!(
-        v2_has_empty_heredoc_b,
-        "v2 should have empty heredoc B body; sexp: {}",
+        v2_body_b,
+        "v2 must attach heredoc B's body in queue order; sexp: {}",
+        &r2.sexp[..r2.sexp.len().min(400)]
+    );
+    assert!(
+        !r2.sexp_contains("(identifier aaa)") && !r2.sexp_contains("(identifier bbb)"),
+        "v2 must not re-parse body lines as code; sexp: {}",
         &r2.sexp[..r2.sexp.len().min(400)]
     );
 

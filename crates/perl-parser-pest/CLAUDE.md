@@ -57,6 +57,38 @@ and source-range types are substrate until a current production path and discrim
 tests prove integration. Do not turn type presence or re-export into an integration
 claim, and do not claim complete source spans where the AST does not carry them.
 
+The heredoc contract (#8220) is the one integrated consumer of that vocabulary. A
+deterministic pre-pass in `heredoc.rs` runs before stage 1: an opener owns the physical
+lines below its logical line up to its terminator, those bytes become the node's
+content, and they leave the text handed to Pest so following code resumes at the line
+after the terminator. `parse_heredoc_outcome` reports that contract as a
+`ParseCompleteness`, and every case the pre-pass cannot own truthfully — a missing
+terminator, a body over the byte budget, more openers on one line than the depth budget,
+a Perl-illegal `<< MARKER` — carries a typed diagnostic instead of an empty content that
+reads as a clean parse.
+
+That completeness is heredoc-scoped. `Complete` means no opener lost or truncated a
+body; it is not a whole-source accounting claim, which remains #8093's row. The budgets
+mirror `perl-lexer`'s `MAX_HEREDOC_BYTES`/`MAX_HEREDOC_DEPTH`, and production heredoc
+lexing remains `perl-lexer`'s.
+
+The pre-pass removes body lines before the grammar sees them, so a false opener deletes
+real source. Two invariants keep that safe, and both have drift guards:
+
+- the scanner and the grammar must decide identically which `<<` is an opener.
+  `scanner_and_grammar_agree_on_openers` parses each row with the grammar directly and
+  compares, and `parse_heredoc_outcome` reports any residual disagreement instead of
+  returning a clean parse, because an opener the scanner misses creates no capture and
+  no per-capture defect could otherwise see it;
+- non-code regions own no openers — comments, strings, quote-like operators and bare
+  regex literals including runs left open across lines, POD, `format` bodies, and
+  everything after `__DATA__`/`__END__`.
+
+Expectations in `tests/heredoc_body_contract.rs` are derived from real `perl` behavior,
+not from this crate's output; keep it that way when extending them. When adding a
+construct the scanner must skip, add the negative control first — it is the half of the
+suite that catches an over-eager scanner.
+
 ## Fixture evidence
 
 Package-local fixture identity lives under `tests/fixtures/`; the reusable runner lives

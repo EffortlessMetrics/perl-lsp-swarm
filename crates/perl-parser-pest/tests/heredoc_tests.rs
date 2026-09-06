@@ -5,25 +5,19 @@
 //! lock in the parser's *current* observable behavior so future changes are
 //! intentional rather than accidental.
 //!
-//! Known limitation being characterized: the pure-rust parser recognizes the
-//! heredoc *opener* (`<<MARKER`, plus the `~` indented and `'` quoted flags) but
-//! never collects the body — `content` is always empty (see the note at
-//! `pure_rust_parser.rs` `Rule::heredoc`, "actual content is handled by the
-//! scanner"). The body lines fall through as separate statements.
-//!
 //! s-expression shape (from `to_sexp`): `(heredoc MARKER FLAGS "CONTENT")`,
 //! where FLAGS is `~` when indented, `'` when single-quoted, empty otherwise —
-//! so a bare marker renders as `(heredoc EOF  "")` (two spaces around the empty
-//! flags field).
+//! so a bare marker renders as `(heredoc EOF  "…")` (two spaces around the
+//! empty flags field).
 //!
-//! Deliberate separation of concerns so a future body-capture implementation is
-//! not a landmine: the marker-form tests below assert only the marker + flags
-//! *prefix* up to the opening content quote (`(heredoc EOF  "`), which stays
-//! true regardless of what the content becomes. The single empty-content
-//! limitation — that a non-empty body currently yields empty `content` — is
-//! pinned by exactly one test,
-//! `when_heredoc_has_body_then_content_is_empty_documents_limitation`. If body
-//! capture lands, that one test is the only marker test that needs updating.
+//! Deliberate separation of concerns: the marker-form tests below assert only
+//! the marker + flags *prefix* up to the opening content quote
+//! (`(heredoc EOF  "`), so they stay true regardless of what the content is.
+//! That separation paid off in #8220, which implemented body capture and needed
+//! to update exactly one test here. The heredoc **body** contract — ownership,
+//! terminator exactness, `<<~` stripping, multiple openers, missing
+//! terminators, budgets, and the shift/comment/string negative controls — is
+//! owned by `heredoc_body_contract.rs`, not by this marker suite.
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_parser_pest::{AstNode, PureRustPerlParser};
@@ -124,18 +118,17 @@ fn when_heredoc_is_bare_statement_then_parses() {
 // --- Body / content limitation --------------------------------------------
 
 #[test]
-fn when_heredoc_has_body_then_content_is_empty_documents_limitation() {
-    // Characterizes the known gap: the body (`hello world`) is NOT captured as
-    // the heredoc's content — it always renders as the empty string. If body
-    // capture is implemented, update this test in the same change.
+fn when_heredoc_has_body_then_content_is_the_body_text() {
+    // #8220 closed the gap this test used to characterize: the body is now
+    // owned by the opener and becomes the node's content. The exhaustive
+    // contract — terminator exactness, `<<~` stripping, multiple openers,
+    // missing terminators, negative controls — lives in
+    // `heredoc_body_contract.rs`; this row keeps the marker suite's own
+    // end-to-end check that content is no longer unconditionally empty.
     let sexp = parse_to_sexp("my $x = <<EOF;\nhello world\nEOF\n");
     assert!(
-        sexp.contains("(heredoc EOF  \"\")"),
-        "heredoc content is currently never captured (always empty); got: {sexp}"
-    );
-    assert!(
-        !sexp.contains("(heredoc EOF  \"hello"),
-        "heredoc body should not (yet) appear inside the heredoc node; got: {sexp}"
+        sexp.contains("(heredoc EOF  \"hello world"),
+        "heredoc content must carry the body text; got: {sexp}"
     );
 }
 
