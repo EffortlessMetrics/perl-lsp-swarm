@@ -248,7 +248,7 @@ fn vocabulary_problems<'a>(doc: &'a Value, violations: &mut Vec<Violation>) -> V
     for entry in objects(doc, "release_horizons") {
         let horizon = str_field(entry, "horizon");
         let rank = entry.get("rank").and_then(Value::as_i64).unwrap_or(-1);
-        let expected = HORIZON_ORDER.iter().position(|item| *item == horizon).map(|p| p as i64);
+        let expected = HORIZON_ORDER.iter().position(|&item| item == horizon).map(|p| p as i64);
         if expected != Some(rank) {
             violations.push(Violation::new(
                 "VOCABULARY_DRIFT",
@@ -308,7 +308,7 @@ fn vocabulary_problems<'a>(doc: &'a Value, violations: &mut Vec<Violation>) -> V
             let text = str_field(entry, field).to_ascii_lowercase();
             if ["merged", "closed", "open", "draft", "landed"]
                 .iter()
-                .any(|word| text.split(|c: char| !c.is_ascii_alphabetic()).any(|w| w == *word))
+                .any(|&word| text.split(|c: char| !c.is_ascii_alphabetic()).any(|w| w == word))
             {
                 violations.push(Violation::new(
                     "MUTABLE_STATE_EMBEDDED",
@@ -665,7 +665,7 @@ fn find_cycle<'a>(graph: &Graph<'a>) -> Option<Vec<&'a str>> {
     ) -> Option<Vec<&'a str>> {
         match colour.get(node) {
             Some(1) => {
-                let start = path.iter().position(|item| *item == node).unwrap_or(0);
+                let start = path.iter().position(|&item| item == node).unwrap_or(0);
                 return Some(path[start..].to_vec());
             }
             Some(_) => return None,
