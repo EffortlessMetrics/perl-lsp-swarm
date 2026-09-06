@@ -29,7 +29,8 @@
 //!   programs, as Cargo does not trim;
 //! - empty `$CARGO_HOME` falls through to platform home; whitespace-only
 //!   `$CARGO_HOME` is a relative directory name; relative `$CARGO_HOME` is
-//!   resolved from the process current directory, matching Cargo;
+//!   resolved against `workspace_root` so a caller whose process cwd differs
+//!   from the workspace still reads the same home Cargo would at that root;
 //! - non-UTF-8 wrapper/home variables are unresolvable, not silently unset.
 //!
 //! Absolute paths never enter the durable projection: in-workspace paths become
@@ -237,7 +238,7 @@ pub(crate) fn resolve_compiler_wrappers_in(
         // A relative root whose cwd cannot be established cannot walk parents.
         layers.fail(CARGO_CONFIG_WRAPPER_NOT_RESOLVED);
     }
-    match cargo_home_dir(env) {
+    match cargo_home_dir(env, &workspace_root) {
         CargoHome::Path(path) => {
             if let Err(limitation) = load_home_config(&path, &workspace_root, fs, &mut layers) {
                 layers.fail(limitation);
@@ -343,22 +344,22 @@ enum CargoHome {
     Unknown,
 }
 
-fn cargo_home_dir(env: &EnvSnapshot) -> CargoHome {
-    cargo_home_dir_on(env, cfg!(windows))
+fn cargo_home_dir(env: &EnvSnapshot, workspace_root: &Path) -> CargoHome {
+    cargo_home_dir_on(env, workspace_root, cfg!(windows))
 }
 
 /// Cargo's default home is platform-specific: `HOME` on Unix, `USERPROFILE`
 /// then `HOME` on Windows. Empty `$CARGO_HOME` is treated as unset; any other
-/// value (including whitespace) is the home directory, resolved from cwd when
-/// relative.
-fn cargo_home_dir_on(env: &EnvSnapshot, windows: bool) -> CargoHome {
+/// value (including whitespace) is the home directory. Relative `$CARGO_HOME`
+/// is joined to `workspace_root` so resolution does not depend on process cwd.
+fn cargo_home_dir_on(env: &EnvSnapshot, workspace_root: &Path, windows: bool) -> CargoHome {
     if env.is_invalid_utf8(CARGO_HOME_ENV) {
         return CargoHome::Unknown;
     }
     match env.get(CARGO_HOME_ENV) {
         Some("") => {}
         Some(value) => {
-            return CargoHome::Path(absolute_or_normalized(Path::new(value)));
+            return CargoHome::Path(join_against(workspace_root, Path::new(value)));
         }
         None => {}
     }
@@ -607,6 +608,14 @@ fn absolute_or_normalized(path: &Path) -> PathBuf {
     match std::env::current_dir() {
         Ok(cwd) => lexically_normalize(&cwd.join(path)),
         Err(_) => lexically_normalize(path),
+    }
+}
+
+fn join_against(base: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        lexically_normalize(path)
+    } else {
+        lexically_normalize(&base.join(path))
     }
 }
 
@@ -1274,10 +1283,11 @@ mod tests {
     fn unix_home_discovery_ignores_userprofile() {
         let mut env = EnvSnapshot::default();
         env.insert(USERPROFILE_ENV, "/windows/home");
-        assert!(matches!(cargo_home_dir_on(&env, false), CargoHome::Unknown));
+        let ws = Path::new("/ws");
+        assert!(matches!(cargo_home_dir_on(&env, ws, false), CargoHome::Unknown));
 
         env.insert(HOME_ENV, "/unix/home");
-        match cargo_home_dir_on(&env, false) {
+        match cargo_home_dir_on(&env, ws, false) {
             CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/unix/home/.cargo")),
             CargoHome::Unknown => panic!("HOME should win on Unix"),
         }
@@ -1285,17 +1295,18 @@ mod tests {
 
     #[test]
     fn windows_home_discovery_prefers_userprofile() {
+        let ws = Path::new("/ws");
         let mut both = EnvSnapshot::default();
         both.insert(HOME_ENV, "/unix/home");
         both.insert(USERPROFILE_ENV, "/windows/home");
-        match cargo_home_dir_on(&both, true) {
+        match cargo_home_dir_on(&both, ws, true) {
             CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/windows/home/.cargo")),
             CargoHome::Unknown => panic!("USERPROFILE should win on Windows"),
         }
 
         let mut home_only = EnvSnapshot::default();
         home_only.insert(HOME_ENV, "/unix/home");
-        match cargo_home_dir_on(&home_only, true) {
+        match cargo_home_dir_on(&home_only, ws, true) {
             CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/unix/home/.cargo")),
             CargoHome::Unknown => panic!("HOME is the Windows fallback"),
         }
@@ -1338,18 +1349,23 @@ mod tests {
     }
 
     #[test]
-    fn relative_cargo_home_is_resolved_from_process_cwd() {
-        let cwd = std::env::current_dir().expect("cwd");
-        let root = tempfile::tempdir_in(&cwd).expect("tempdir in cwd");
-        let rel_root = root.path().strip_prefix(&cwd).expect("under cwd");
-        let home = root.path().join("cargo-home");
+    fn relative_cargo_home_is_resolved_from_workspace_root() {
+        let mut env = EnvSnapshot::default();
+        env.insert(CARGO_HOME_ENV, "rel-home");
+        match cargo_home_dir_on(&env, Path::new("/ws"), false) {
+            CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/ws/rel-home")),
+            CargoHome::Unknown => panic!("relative CARGO_HOME should join workspace_root"),
+        }
+
+        let root = tempfile::tempdir().expect("tempdir");
         let ws = root.path().join("workspace");
         fs::create_dir_all(ws.join(".cargo")).unwrap();
-        write_config(&home.join("config.toml"), "[build]\nrustc-wrapper = \"from-rel-home\"\n");
-        let mut env = EnvSnapshot::default();
-        env.insert(CARGO_HOME_ENV, rel_root.join("cargo-home").to_string_lossy());
+        write_config(
+            &ws.join("rel-home/config.toml"),
+            "[build]\nrustc-wrapper = \"from-workspace-home\"\n",
+        );
         let resolved = resolve_compiler_wrappers_in(&ws, &env, Some(root.path()), &RealFs);
-        assert_eq!(resolved.rustc_wrapper(), Some("from-rel-home"));
+        assert_eq!(resolved.rustc_wrapper(), Some("from-workspace-home"));
         assert!(resolved.is_complete());
     }
 
