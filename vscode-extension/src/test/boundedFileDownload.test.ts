@@ -218,7 +218,27 @@ describe('downloadBoundedFile', () => {
     expect(fs.existsSync(dest)).toBe(false);
   });
 
-  test('does not reject until an injected partial-file cleanup has completed', async () => {
+  test('does not delete a pre-existing dest when cancellation is already requested', async () => {
+    const dest = destPath();
+    fs.writeFileSync(dest, 'keep-me');
+    const token = new TestCancellationToken();
+    token.cancel();
+    await expect(
+      downloadBoundedFile({
+        requestFactory: () => {
+          throw new Error('must not start a request after pre-cancellation');
+        },
+        dest,
+        timeoutMs: 1000,
+        maxBytes: 64,
+        cancellationToken: token,
+        operationName: 'Archive download',
+      }),
+    ).rejects.toThrow('cancelled');
+    expect(fs.readFileSync(dest, 'utf8')).toBe('keep-me');
+  });
+
+  test('native fallback still removes dest when the injected remover is a no-op', async () => {
     const dest = destPath();
     await expect(
       withServer(
