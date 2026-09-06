@@ -154,7 +154,12 @@ impl LspServer {
                 let replacement = {
                     let documents = self.documents.lock();
                     self.get_document(&documents, &normalized_uri).and_then(|doc| {
-                        (doc.text.as_str() != saved_text)
+                        // Identical-text is a no-op only while the buffer is
+                        // already synchronized. After a Full-sync violation the
+                        // retained predecessor still equals the saved snapshot,
+                        // but current answers stay closed until an admitted
+                        // full replacement recovers the document.
+                        (doc.full_sync_required() || doc.text.as_str() != saved_text)
                             .then(|| (saved_text.to_owned(), doc.version))
                     })
                 };

@@ -2045,6 +2045,106 @@ fn test_did_save_rejects_overlong_text_before_commit() -> Result<(), Box<dyn std
     Ok(())
 }
 
+/// A Full-sync violation keeps predecessor text as evidence. A later didSave
+/// that supplies that same text is still a complete synchronized snapshot and
+/// must recover providers rather than taking the identical-text no-op.
+#[test]
+fn test_did_save_identical_text_recovers_after_ranged_violation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///identical-save-recovery.pl";
+    let predecessor = "sub last_good { 1 }\n";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": predecessor
+        }
+    }))?;
+    {
+        let documents = server.documents.lock();
+        let doc = documents.get(uri).ok_or("didOpen must retain the document")?;
+        assert!(!doc.full_sync_required());
+        assert!(doc.current_parsed().is_some(), "didOpen must publish a current parse");
+    }
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Current(_)
+        ),
+        "open document must have a current user-answer snapshot"
+    );
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })))?;
+    {
+        let documents = server.documents.lock();
+        let doc = documents.get(uri).ok_or("desynchronized document must remain stored")?;
+        assert_eq!(doc.text, predecessor);
+        assert!(doc.full_sync_required(), "ranged didChange must enter full-sync-required");
+    }
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Unavailable
+        ),
+        "predecessor text must not remain a current user answer after a Full-sync violation"
+    );
+
+    server.handle_did_save(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "text": predecessor
+    })))?;
+
+    let recovered_generation = {
+        let documents = server.documents.lock();
+        let doc = documents.get(uri).ok_or("recovered document must remain stored")?;
+        assert_eq!(doc.text, predecessor);
+        assert!(
+            !doc.full_sync_required(),
+            "identical didSave includeText must recover after a Full-sync violation"
+        );
+        assert!(
+            doc.current_parsed().is_some(),
+            "identical didSave recovery must publish a current parse"
+        );
+        doc.current_generation()
+    };
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Current(_)
+        ),
+        "identical didSave recovery must restore current user-answer text"
+    );
+
+    server.handle_did_save(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "text": predecessor
+    })))?;
+    {
+        let documents = server.documents.lock();
+        let doc = documents.get(uri).ok_or("already-synchronized document must remain stored")?;
+        assert!(!doc.full_sync_required());
+        assert_eq!(
+            doc.current_generation(),
+            recovered_generation,
+            "identical didSave must remain a no-op once the document is already synchronized"
+        );
+    }
+    Ok(())
+}
+
 /// A changed same-version didSave replacement must cancel streams that captured
 /// the previous buffer, including streams using the preserved client version.
 #[test]
