@@ -42,13 +42,15 @@ fn presence_at(params: &Value, pointer: &str) -> ClientFact {
     if params.pointer(pointer).is_some() { ClientFact::Supported } else { ClientFact::Absent }
 }
 
-/// Replicate the server-selected negotiated position encoding rule.
-fn negotiated_encoding(params: &Value) -> Option<PositionEncoding> {
-    let encodings = params.pointer("/capabilities/general/positionEncodings")?.as_array()?;
-    encodings.iter().find_map(|entry| match entry.as_str() {
-        Some("utf-8") => Some(PositionEncoding::Utf8),
-        Some("utf-16") => Some(PositionEncoding::Utf16),
-        _ => None,
+/// Model input for the wire encoding, derived from the server's ACCEPTED
+/// text-sync session contract (#9378) — never re-parsed from the raw params.
+/// Re-parsing here would create a second, free-standing negotiation seam that
+/// can disagree with the stored session the response was built from.
+fn accepted_encoding_from(server: &LspServer) -> Option<PositionEncoding> {
+    server.accepted_text_sync_session().map(|session| {
+        match session.contract().position_encoding() {
+            super::session_contract::AcceptedPositionEncoding::Utf16 => PositionEncoding::Utf16,
+        }
     })
 }
 
@@ -119,7 +121,6 @@ fn inputs_from_params(params: &Value) -> SurfaceInputs {
             fact_at(params, "/capabilities/workspace/foldingRange/refreshSupport");
         refreshes
     };
-    client.negotiated_position_encoding = negotiated_encoding(params);
     inputs.runtime = RuntimeAvailability::default();
     // Keep command descriptors canonical for every subject.
     inputs.command_ids = get_supported_commands();
@@ -134,7 +135,8 @@ fn assert_initialize_matches_model(params: Value) -> Result<EffectiveLspSurface,
         .handle_initialize(Some(params.clone()))
         .map_err(|error| format!("initialize failed: {error}"))?
         .ok_or_else(|| "initialize returned no payload".to_string())?;
-    let inputs = inputs_from_params(&params);
+    let mut inputs = inputs_from_params(&params);
+    inputs.client.negotiated_position_encoding = accepted_encoding_from(&server);
     let surface = EffectiveLspSurface::build(&inputs)
         .map_err(|error| format!("model refused subject: {error}"))?;
 
@@ -331,8 +333,11 @@ fn malformed_unknown_future_and_sparse_facts_match_runtime_collapse() -> Result<
 }
 
 #[test]
-fn pull_diagnostic_client_with_refresh_supports_and_utf8_preference_matches() -> Result<(), String>
-{
+fn pull_diagnostic_client_with_refresh_supports_and_non_utf16_first_preference_matches()
+-> Result<(), String> {
+    // The v0.18 envelope (#8129 `full_document_utf16`, #9378) accepts this
+    // subject only because the offer still contains utf-16; selection is
+    // contract-owned UTF-16 regardless of offer order.
     assert_initialize_matches_model(json!({
         "clientInfo": { "name": "neovim" },
         "capabilities": {
@@ -343,9 +348,32 @@ fn pull_diagnostic_client_with_refresh_supports_and_utf8_preference_matches() ->
                 "diagnostic": { "refreshSupport": true }
             },
             "textDocument": { "diagnostic": {} },
-            "general": { "positionEncodings": ["utf-32", "utf-8"] }
+            "general": { "positionEncodings": ["utf-32", "utf-8", "utf-16"] }
         }
     }))?;
+    Ok(())
+}
+
+#[test]
+fn pull_diagnostic_client_with_no_common_offer_fails_initialize() -> Result<(), String> {
+    // LSP-FS16-004: a client whose offer excludes utf-16 is rejected before
+    // any state mutation, so there is no surface for the model to match.
+    let server = LspServer::new();
+    let error = server
+        .handle_initialize(Some(json!({
+            "clientInfo": { "name": "neovim" },
+            "capabilities": {
+                "textDocument": { "diagnostic": {} },
+                "general": { "positionEncodings": ["utf-32", "utf-8"] }
+            }
+        })))
+        .err()
+        .ok_or("no-common offer must fail initialize")?;
+    assert_eq!(error.code, -32602, "no-common offer must be typed InvalidParams");
+    assert!(
+        server.accepted_text_sync_session().is_none(),
+        "rejected initialize must not publish a session contract"
+    );
     Ok(())
 }
 
@@ -361,7 +389,9 @@ fn pull_gating_side_effect_agrees_with_transport_selection() -> Result<(), Strin
         server.client_supports_pull_diags.load(Ordering::Relaxed),
         "non-opencode declaring clients enable pull gating"
     );
-    let surface = EffectiveLspSurface::build(&inputs_from_params(&params))
+    let mut inputs = inputs_from_params(&params);
+    inputs.client.negotiated_position_encoding = accepted_encoding_from(&server);
+    let surface = EffectiveLspSurface::build(&inputs)
         .map_err(|error| format!("model refused subject: {error}"))?;
     assert_eq!(
         surface.diagnostic_transport,

@@ -172,7 +172,11 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        // Atomically check and set initialize_requested
+        // The first initialize request atomically owns the connection's
+        // one-shot attempt authority before any parameter classification.
+        // Accepted and rejected first attempts both consume this guard; every
+        // later initialize is InvalidRequest before its parameters can affect
+        // the terminal error class (#14301).
         if self
             .initialize_requested
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -184,6 +188,16 @@ impl LspServer {
                 data: None,
             });
         }
+
+        // Classification may still reject malformed first parameters with
+        // -32602. That state remains attempted-but-unaccepted and therefore
+        // cannot serve, complete initialization, or start lifecycle work:
+        // `initialization_accepted()` is the sole serving authority.
+        let session_contract = super::session_contract::TextSyncSessionContract::accept(
+            params.as_ref(),
+            super::session_contract::next_session_id(),
+        )
+        .map_err(|rejection| rejection.to_jsonrpc_error())?;
 
         // Parse client capabilities
         if let Some(params) = &params {
@@ -502,34 +516,12 @@ impl LspServer {
                         caps.inlay_hint_resolve_support = Some(props);
                     }
                 }
-
-                // Negotiate position encoding per LSP 3.17 spec
-                // Client's `general.positionEncodings` is a list of encodings it supports
-                // Server picks the first one from the list that it also supports
-                // Default to UTF-16 if the list is empty or missing
-                let negotiated_encoding = if let Some(encodings) = params
-                    .pointer("/capabilities/general/positionEncodings")
-                    .and_then(Value::as_array)
-                {
-                    // Pick the first encoding from client list that server supports
-                    let supported = ["utf-8", "utf-16"]; // Server supports UTF-8 and UTF-16
-                    encodings
-                        .iter()
-                        .find_map(|enc| {
-                            enc.as_str()
-                                .and_then(|s| if supported.contains(&s) { Some(s) } else { None })
-                        })
-                        .and_then(|enc_str| match enc_str {
-                            "utf-8" => Some(crate::textdoc::PosEnc::Utf8),
-                            "utf-16" => Some(crate::textdoc::PosEnc::Utf16),
-                            _ => None,
-                        })
-                        .unwrap_or(crate::textdoc::PosEnc::Utf16)
-                } else {
-                    // No encoding preference list provided, default to UTF-16
-                    crate::textdoc::PosEnc::Utf16
-                };
-                caps.position_encoding = negotiated_encoding;
+                // Position encoding is NOT stored on `client_capabilities`:
+                // the accepted text-sync session contract constructed before
+                // this block is the single authority for the wire encoding
+                // and sync kind (#9378). Keeping a separately negotiated
+                // value here would let later code infer one encoding while
+                // the response advertises another.
             } // caps lock released here
 
             // Check if client supports pull diagnostics.
@@ -710,9 +702,12 @@ impl LspServer {
 
         // TextDocumentSyncKind::Full (1): the server always reparses the full
         // document on every didChange notification.  Advertising Incremental (2)
-        // would be inaccurate â€” we do not maintain incremental AST state between
-        // edits; we rebuild the entire AST from the complete document text each time.
-        let sync_kind = 1;
+        // would be inaccurate — we do not maintain incremental AST state between
+        // edits; we rebuild the entire AST from the complete document text each
+        // time. The wire values below come from the accepted session contract
+        // constructed at the top of this handler (#9378); they are never
+        // authored independently here.
+        let sync_kind = session_contract.sync_kind().wire_value();
 
         // Build capabilities using catalog-driven approach
         let profile = self.feature_profile();
@@ -781,20 +776,17 @@ impl LspServer {
             }
         }
 
-        // Add fields not yet in lsp-types 0.97
+        // Advertised wire position encoding and sync kind: derived from the
+        // accepted text-sync session contract (#9378), never authored here.
         //
-        // Phase 1 (this PR) only negotiates and stores the client's preferred
-        // position encoding on `ClientCapabilities.position_encoding` for
-        // future use. `text_sync` and every feature provider (hover,
-        // definition, diagnostics, ...) still compute positions in UTF-16
-        // code units. Per the LSP 3.17 spec, client and server MUST agree on
-        // one encoding or offsets are misinterpreted, so the *advertised*
-        // `positionEncoding` MUST stay pinned to "utf-16" — the mandatory
-        // default — until phase 2 threads the negotiated encoding through the
-        // providers. Advertising anything else here would silently corrupt
-        // document sync and every position-bearing response for non-ASCII
-        // content on a client that prefers a different encoding.
-        capabilities["positionEncoding"] = Value::String("utf-16".to_string());
+        // Release envelope (#8129 branch `full_document_utf16`): the contract
+        // always holds FULL + UTF-16. A valid client offer that omits UTF-16
+        // is retained as a mandatory-fallback reason; it does not create a
+        // second wire-encoding state. Providers compute positions in UTF-16
+        // code units, so response, stored session state, and provider behavior
+        // all share one encoding.
+        capabilities["positionEncoding"] =
+            Value::String(session_contract.position_encoding().wire_name().to_string());
         if features.declaration {
             capabilities["declarationProvider"] = Value::Bool(true);
         }
@@ -812,7 +804,8 @@ impl LspServer {
                 );
             }
         }
-        // Override text document sync with typed struct (#4995)
+        // Override text document sync with typed struct (#4995); the change
+        // kind comes from the accepted session contract (#9378).
         capabilities["textDocumentSync"] =
             serde_json::to_value(TextDocumentSyncOptions::new(sync_kind))
                 .unwrap_or_else(|_| json!({"openClose": true, "change": sync_kind}));
@@ -834,17 +827,51 @@ impl LspServer {
             );
         }
 
-        Ok(Some(json!({
+        let result = json!({
             "capabilities": capabilities,
             "serverInfo": {
                 "name": "perl-lsp",
                 "version": env!("CARGO_PKG_VERSION")
             }
-        })))
+        });
         // Note: the initialize result wrapper is kept as json!() because it
         // is the final envelope wrapping the dynamically-built capabilities
         // object — a typed InitializeResult struct would need to own the
         // capabilities Value, adding indirection without type safety benefit.
+
+        // Response/contract divergence is a typed internal failure, never a
+        // silent drift (#9378): the published InitializeResult must be the
+        // one derived from the accepted session value.
+        super::session_contract::verify_response_matches_contract(&session_contract, &result)?;
+
+        // Atomically accept the initialized session: contract + response
+        // digest are stored together, exactly once, after verification.
+        let response_digest = digest_result(&result);
+        self.accept_text_sync_session(session_contract, response_digest)?;
+
+        // Bounded initialize evidence (offer, selection, sync kind, encoding,
+        // and both digests) becomes observable at acceptance — the doctor/
+        // receipt projection derives from the same stored session.
+        if let Some(session) = self.accepted_text_sync_session() {
+            tracing::info!(
+                evidence = serde_json::to_string(&session.evidence())
+                    .unwrap_or_else(|_| "serialization-unavailable".to_string()),
+                "text-sync session contract accepted (#9378)"
+            );
+        }
+
+        Ok(Some(result))
+    }
+}
+
+/// Bounded digest over the exact initialize result payload, recorded with the
+/// accepted session so evidence can prove response/state agreement.
+fn digest_result(result: &Value) -> String {
+    match serde_json::to_string(result) {
+        Ok(serialized) => super::session_contract::digest_bytes(serialized.as_bytes()),
+        // serde_json serialization of a JSON Value cannot fail; the fallback
+        // keeps the digest total without inventing a fake payload digest.
+        Err(_) => "unavailable".to_string(),
     }
 }
 
@@ -940,9 +967,11 @@ mod tests {
     )]
     use super::{apply_disabled_feature_id, is_jetbrains_client, is_opencode_client};
     use crate::LspServer;
+    use crate::protocol::JsonRpcError;
     use crate::protocol::capabilities::BuildFlags;
     use perl_workspace::folder::root_path_to_file_uri;
     use serde_json::{Value, json};
+    use std::sync::{Arc, Barrier};
     use std::sync::atomic::Ordering;
 
     #[test]
@@ -1080,7 +1109,7 @@ mod tests {
             assert!(
                 !still_all,
                 "feature ID '{id}' emitted by to_feature_ids() has no match arm in \
-                 apply_disabled_feature_id â€” add one to keep the two in sync"
+                 apply_disabled_feature_id — add one to keep the two in sync"
             );
         }
     }
@@ -1572,69 +1601,259 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn initialize_prefers_first_supported_position_encoding() {
+    // -----------------------------------------------------------------------
+    // Text-sync session contract (#9378, LSP-FS16-001..010)
+    // -----------------------------------------------------------------------
+
+    use crate::runtime::lifecycle::session_contract::{
+        AcceptedPositionEncoding, AcceptedSyncKind, Utf16SelectionReason,
+    };
+    /// Accept initialize with `positionEncodings` and return (response,
+    /// error-code-on-failure). Exactly one side is populated.
+    fn initialize_with_offer(offer: Value) -> (Option<Value>, Option<JsonRpcError>, LspServer) {
         let server = LspServer::new();
-        let params = json!({
-            "capabilities": {
-                "general": {
-                    "positionEncodings": ["utf-32", "utf-8", "utf-16"]
-                }
-            }
-        });
+        let params = json!({ "capabilities": { "general": { "positionEncodings": offer } } });
+        match server.handle_initialize(Some(params)) {
+            Ok(response) => (response, None, server),
+            Err(error) => (None, Some(error), server),
+        }
+    }
 
-        let _ = server.handle_initialize(Some(params));
+    #[test]
+    fn initialize_offer_containing_utf16_accepts_and_stores_contract() {
+        for offer in [
+            json!(["utf-16"]),
+            json!(["utf-8", "utf-16"]),
+            json!(["utf-32", "utf-16"]),
+            json!(["utf-16", "utf-16"]),
+            json!(["utf-7", "utf-16"]),
+            json!(["utf-32", "utf-8", "utf-16"]),
+        ] {
+            let (response, error, server) = initialize_with_offer(offer.clone());
+            assert!(error.is_none(), "offer {offer} must be accepted: {error:?}");
+            let response = response.unwrap();
 
-        assert!(
-            matches!(
-                server.client_capabilities.lock().position_encoding,
-                crate::textdoc::PosEnc::Utf8
-            ),
-            "position encoding negotiation should skip unsupported entries and pick the first supported encoding"
+            let session = server.accepted_text_sync_session().unwrap();
+            let contract = session.contract();
+            assert_eq!(contract.sync_kind(), AcceptedSyncKind::Full);
+            assert_eq!(contract.position_encoding(), AcceptedPositionEncoding::Utf16);
+            assert_eq!(
+                contract.selection_reason(),
+                Utf16SelectionReason::ClientOfferedUtf16,
+                "offer {offer} must record the client selection reason"
+            );
+
+            // Response, stored state, and evidence agree (LSP-FS16-006/010).
+            assert_eq!(
+                response.pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+                Some(contract.position_encoding().wire_name())
+            );
+            assert_eq!(
+                response.pointer("/capabilities/textDocumentSync/change").and_then(Value::as_i64),
+                Some(i64::from(contract.sync_kind().wire_value()))
+            );
+            let evidence = session.evidence();
+            assert_eq!(evidence.contract_digest, contract.digest());
+            let expected_response_digest = evidence.response_digest.clone();
+            assert!(!expected_response_digest.is_empty(), "response digest must be recorded");
+        }
+    }
+
+    #[test]
+    fn initialize_absent_null_and_empty_offers_default_to_utf16_with_distinct_reasons() {
+        // Absent (LSP-FS16-002).
+        let server = LspServer::new();
+        let response =
+            server.handle_initialize(Some(json!({ "capabilities": {} }))).unwrap().unwrap();
+        let session = server.accepted_text_sync_session().unwrap();
+        assert_eq!(session.contract().selection_reason(), Utf16SelectionReason::OfferAbsent);
+        assert_eq!(
+            response.pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+            Some("utf-16")
+        );
+
+        // JSON null is the absent spelling for an optional array.
+        let (response, error, server) = initialize_with_offer(Value::Null);
+        assert!(error.is_none(), "null offer must be accepted: {error:?}");
+        let session = server.accepted_text_sync_session().unwrap();
+        assert_eq!(session.contract().selection_reason(), Utf16SelectionReason::OfferAbsent);
+        assert_eq!(
+            response.unwrap().pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+            Some("utf-16")
+        );
+
+        // Present but empty — reviewed disposition: no constraint expressed.
+        let (response, error, server) = initialize_with_offer(json!([]));
+        assert!(error.is_none(), "empty offer must be accepted: {error:?}");
+        let session = server.accepted_text_sync_session().unwrap();
+        assert_eq!(session.contract().selection_reason(), Utf16SelectionReason::OfferEmpty);
+        assert_eq!(
+            response.unwrap().pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+            Some("utf-16")
         );
     }
 
     #[test]
-    fn initialize_accepts_utf16_when_it_is_first_supported_position_encoding() {
-        let server = LspServer::new();
-        let params = json!({
-            "capabilities": {
-                "general": {
-                    "positionEncodings": ["utf-16", "utf-8"]
-                }
-            }
-        });
-
-        let _ = server.handle_initialize(Some(params));
-
-        assert!(
-            matches!(
-                server.client_capabilities.lock().position_encoding,
-                crate::textdoc::PosEnc::Utf16
-            ),
-            "position encoding negotiation should preserve utf-16 when it is the first supported client preference"
-        );
+    fn initialize_valid_offer_omitting_utf16_uses_mandatory_fallback() {
+        for offer in [json!(["utf-32", "utf-7"]), json!(["utf-8"]), json!(["utf-32"])] {
+            let (response, error, server) = initialize_with_offer(offer.clone());
+            assert!(error.is_none(), "valid offer {offer} must be accepted: {error:?}");
+            let response = response.unwrap();
+            let session = server.accepted_text_sync_session().unwrap();
+            assert_eq!(
+                session.contract().selection_reason(),
+                Utf16SelectionReason::MandatoryUtf16Fallback,
+                "offer {offer} must retain the mandatory fallback reason"
+            );
+            assert_eq!(
+                response.pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+                Some("utf-16")
+            );
+            assert_eq!(
+                response.pointer("/capabilities/textDocumentSync/change").and_then(Value::as_i64),
+                Some(1)
+            );
+        }
     }
 
     #[test]
-    fn initialize_falls_back_to_utf16_when_position_encodings_have_no_supported_values() {
+    fn initialize_malformed_offers_fail_typed() {
+        for offer in [json!("utf-16"), json!(42), json!({}), json!(["utf-16", 42])] {
+            let (response, error, server) = initialize_with_offer(offer.clone());
+            assert!(response.is_none(), "malformed offer {offer} must fail");
+            let error = error.unwrap();
+            assert_eq!(error.code, -32602);
+            assert_eq!(
+                error
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.pointer("/rejection/reason"))
+                    .and_then(Value::as_str),
+                Some("malformed-offer"),
+                "malformed input must never collapse into absence: {offer}"
+            );
+            assert!(server.accepted_text_sync_session().is_none());
+            assert!(!server.initialization_accepted());
+            assert!(!server.is_initialized());
+        }
+    }
+
+    #[test]
+    fn malformed_first_initialize_consumes_one_shot_authority() {
         let server = LspServer::new();
-        let params = json!({
-            "capabilities": {
-                "general": {
-                    "positionEncodings": ["utf-32", "utf-7"]
-                }
-            }
+        let first = server.handle_initialize(Some(json!({
+            "capabilities": { "general": { "positionEncodings": ["utf-16", 42] } }
+        })));
+        assert_eq!(first.unwrap_err().code, -32602);
+        assert!(server.accepted_text_sync_session().is_none());
+        assert!(!server.initialization_accepted());
+
+        let second = server.handle_initialize(Some(json!({
+            "capabilities": { "general": { "positionEncodings": ["utf-16"] } }
+        })));
+        assert_eq!(second.unwrap_err().code, -32600);
+        assert!(server.accepted_text_sync_session().is_none());
+        assert!(!server.initialization_accepted());
+    }
+
+    #[test]
+    fn second_initialize_cannot_replace_accepted_contract() {
+        // LSP-FS16-008: repeated initialize cannot replace or partially alter
+        // the accepted contract, and duplicate error classification happens
+        // before the second request's parameter classification.
+        let (response, error, server) = initialize_with_offer(json!(["utf-16"]));
+        assert!(error.is_none(), "first initialize must succeed: {error:?}");
+        assert!(response.is_some());
+        let accepted = server.accepted_text_sync_session().unwrap();
+        let original_digest = accepted.contract().digest();
+
+        for second_params in [
+            json!({
+                "capabilities": { "general": { "positionEncodings": ["utf-8", "utf-16"] } }
+            }),
+            json!({
+                "capabilities": { "general": { "positionEncodings": ["utf-16", 42] } }
+            }),
+        ] {
+            let second = server.handle_initialize(Some(second_params));
+            assert!(second.is_err(), "second initialize must fail");
+            assert_eq!(second.unwrap_err().code, -32600);
+
+            let after = server.accepted_text_sync_session().unwrap();
+            assert_eq!(after.contract().digest(), original_digest);
+            assert_eq!(
+                after.contract().selection_reason(),
+                Utf16SelectionReason::ClientOfferedUtf16
+            );
+        }
+    }
+
+    #[test]
+    fn concurrent_initialize_attempts_have_exactly_one_owner() {
+        let server = Arc::new(LspServer::new());
+        let barrier = Arc::new(Barrier::new(3));
+
+        let valid_server = Arc::clone(&server);
+        let valid_barrier = Arc::clone(&barrier);
+        let valid = std::thread::spawn(move || {
+            valid_barrier.wait();
+            valid_server.handle_initialize(Some(json!({
+                "capabilities": { "general": { "positionEncodings": ["utf-8"] } }
+            })))
         });
 
-        let _ = server.handle_initialize(Some(params));
+        let malformed_server = Arc::clone(&server);
+        let malformed_barrier = Arc::clone(&barrier);
+        let malformed = std::thread::spawn(move || {
+            malformed_barrier.wait();
+            malformed_server.handle_initialize(Some(json!({
+                "capabilities": { "general": { "positionEncodings": ["utf-16", 42] } }
+            })))
+        });
 
-        assert!(
-            matches!(
-                server.client_capabilities.lock().position_encoding,
-                crate::textdoc::PosEnc::Utf16
-            ),
-            "unsupported position encoding lists must fall back to utf-16"
+        barrier.wait();
+        let valid = valid.join().unwrap();
+        let malformed = malformed.join().unwrap();
+
+        let invalid_request_count = [&valid, &malformed]
+            .into_iter()
+            .filter(|result| result.as_ref().err().is_some_and(|error| error.code == -32600))
+            .count();
+        assert_eq!(invalid_request_count, 1, "exactly one concurrent attempt must lose ownership");
+
+        match (valid, malformed) {
+            (Ok(_), Err(error)) => {
+                assert_eq!(error.code, -32600);
+                assert!(server.accepted_text_sync_session().is_some());
+            }
+            (Err(error), Err(malformed_error)) => {
+                assert_eq!(error.code, -32600);
+                assert_eq!(malformed_error.code, -32602);
+                assert!(server.accepted_text_sync_session().is_none());
+                assert!(!server.initialization_accepted());
+            }
+            other => panic!("unexpected concurrent initialize outcomes: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn client_name_cannot_change_selection() {
+        let (_, _, plain) = initialize_with_offer(json!(["utf-32", "utf-16"]));
+        let server_named = LspServer::new();
+        let response = server_named
+            .handle_initialize(Some(json!({
+                "clientInfo": { "name": "fancy-editor" },
+                "capabilities": { "general": { "positionEncodings": ["utf-32", "utf-16"] } }
+            })))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            response.pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+            Some("utf-16")
+        );
+        assert_eq!(
+            server_named.accepted_text_sync_session().unwrap().contract().selection_reason(),
+            plain.accepted_text_sync_session().unwrap().contract().selection_reason()
         );
     }
 

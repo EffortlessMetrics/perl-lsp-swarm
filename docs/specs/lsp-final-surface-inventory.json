@@ -2241,7 +2241,7 @@
     {
       "surface_id": "compat.protocol.positionEncodingUtf16Pin",
       "kind": "compatibility",
-      "protocol_field": "positionEncoding always advertised utf-16 despite general.positionEncodings negotiation",
+      "protocol_field": "positionEncoding always advertised utf-16; offers without utf-16 are rejected",
       "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "general.positionEncodings"
@@ -2249,13 +2249,13 @@
       "build_profile_config_tool_inputs": [],
       "disposition": "unadvertised",
       "runtime_route_owner": "n/a (negotiation-time behavior branch)",
-      "evidence_owner": "phase-comment block in handle_initialize; position authority #2298",
+      "evidence_owner": "accepted text-sync session contract in handle_initialize (#9378); position authority #2298",
       "competing_paths": [],
       "target_issue": "#9665",
       "compatibility": {
-        "subject": "every client negotiating a non-UTF-16 preferred encoding",
-        "reason": "providers still compute UTF-16 offsets; advertising anything else would corrupt positions, so the negotiated value is stored but not advertised",
-        "expiry": "#8032 train stage threading the negotiated encoding through position/text contracts"
+        "subject": "every client whose positionEncodings offer excludes utf-16",
+        "reason": "the v0.18 envelope (#8129 full_document_utf16) owns one immutable FULL + UTF-16 session contract: absent/empty offers default to utf-16, offers containing utf-16 select it, and a nonempty offer without utf-16 fails typed initialize before any state is published",
+        "expiry": "#9380/#9383 own the later full-replacement and range-refusal leaves; #8129 keeps the release claim ceiling"
       },
       "additional_owned_pointers": [],
       "rewrites_surface_pointer": null,
@@ -2407,12 +2407,12 @@
       "protocol_field": "positionEncoding",
       "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
-        "general.positionEncodings (negotiated, stored, NOT advertised)"
+        "general.positionEncodings (classified into the accepted session contract)"
       ],
       "build_profile_config_tool_inputs": [],
       "disposition": "static",
       "runtime_route_owner": "n/a (initialize response assembly)",
-      "evidence_owner": "position contract pinned utf-16 until negotiated encoding threads through providers; see compat.protocol.positionEncodingUtf16Pin",
+      "evidence_owner": "wire encoding and sync kind written from the immutable accepted text-sync session contract (#9378); see compat.protocol.positionEncodingUtf16Pin",
       "competing_paths": [],
       "target_issue": "#9665",
       "compatibility": null,
