@@ -1113,7 +1113,7 @@ pub struct SystemIncProbeSnapshot {
     pub outcome: SystemIncProbeOutcomeKind,
     /// Probe attempts completed in the current epoch.
     pub attempts_consumed: u32,
-    /// Hard cap on attempts per epoch ([`SYSTEM_INC_PROBE_MAX_ATTEMPTS`]).
+    /// Hard cap on attempts per epoch (`SYSTEM_INC_PROBE_MAX_ATTEMPTS`, currently 2).
     pub max_attempts: u32,
     /// Number of probed roots when the outcome is `Paths`; `Some(0)` for
     /// `SuccessfulEmpty`; `None` when no root list was produced.
