@@ -82,6 +82,7 @@ fn match_findings(
 ) -> Result<(), ProofError> {
     let mut unmatched: Vec<&CriticFinding> = findings.iter().collect();
     for expected in &case.expected_findings {
+        excerpt_at(source, expected.start_byte, expected.end_byte)?;
         let mut matched = None;
         for (index, finding) in unmatched.iter().enumerate() {
             if finding_matches(source, expected, finding)? {

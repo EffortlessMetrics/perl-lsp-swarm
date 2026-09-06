@@ -485,7 +485,6 @@ fn extra_catalog_rule_outside_pilot_fails_check() -> TestResult {
         rule_mut(&mut manifest, "native.testing.require_use_strict").expect("strict").clone();
     extra["rule_id"] = json!("native.testing.require_use_warnings");
     extra["canonical_id"] = json!("critic.testing.require_use_warnings");
-    extra["identity_aliases"] = json!([]);
     manifest["rules"].as_array_mut().expect("rules").push(extra);
     expect_violation(&manifest, "outside the closed PILOT_RULES set")
 }
