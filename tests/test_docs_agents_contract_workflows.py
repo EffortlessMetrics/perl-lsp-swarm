@@ -241,15 +241,25 @@ def run_commands(workflow_text: str) -> tuple[str, ...]:
 
         block: list[str] = []
         index += 1
+        pending = ""
         while index < len(lines):
             candidate = lines[index]
             stripped = candidate.strip()
             if stripped and _indent(candidate) <= indent:
                 break
             if stripped and not stripped.startswith("#"):
-                block.append(stripped.rstrip("\\").strip())
+                continued = stripped.endswith("\\")
+                piece = stripped.rstrip("\\").strip()
+                pending = f"{pending} {piece}".strip() if pending else piece
+                if not continued:
+                    block.append(pending)
+                    pending = ""
             index += 1
-        commands.append(" ".join(part for part in block if part))
+        if pending:
+            block.append(pending)
+        # Literal blocks keep line boundaries; folded blocks collapse to spaces.
+        joiner = "\n" if value in {"|", "|-"} else " "
+        commands.append(joiner.join(part for part in block if part))
     return tuple(commands)
 
 
@@ -260,7 +270,10 @@ _SHELL_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\|)\s*")
 
 
 def _command_segments(command: str) -> tuple[str, ...]:
-    return tuple(part for part in _SHELL_SPLIT.split(command) if part.strip())
+    parts: list[str] = []
+    for line in command.splitlines():
+        parts.extend(_SHELL_SPLIT.split(line))
+    return tuple(part for part in parts if part.strip())
 
 
 def _python_script_operand(tokens: list[str]) -> str | None:
@@ -1115,6 +1128,33 @@ jobs:
         )
         self.assertEqual(discovered, {".github/workflows/extra.yaml"})
         self.assertEqual(_path_shape_errors(".github/workflows/extra.yaml"), [])
+
+    def test_literal_block_with_setup_then_python_is_discovered(self) -> None:
+        workflow = """\
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/setup-docs-contract.yml'
+jobs:
+  check:
+    steps:
+      - name: Check
+        run: |
+          echo setup
+          python3 tests/test_script_docs_contract.py
+"""
+        allowlist = {
+            "allow": [
+                {
+                    "kind": CONTROL_PLANE_KIND,
+                    "path": "tests/test_script_docs_contract.py",
+                }
+            ]
+        }
+        discovered = discover_contract_workflows(
+            {".github/workflows/setup-docs-contract.yml": workflow}, allowlist
+        )
+        self.assertEqual(discovered, {".github/workflows/setup-docs-contract.yml"})
 
     def test_unquoted_self_path_counts(self) -> None:
         workflow = """\
