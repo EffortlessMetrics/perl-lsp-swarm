@@ -116,7 +116,7 @@ updates:
           - "patch"
     labels: []
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "chore"
       include: "scope"
 
   # npm dependencies for vscode-extension
@@ -171,5 +171,5 @@ updates:
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
     labels: []
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "chore"
       include: "scope"
