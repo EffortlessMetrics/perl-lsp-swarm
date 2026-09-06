@@ -100,7 +100,9 @@ fn collect_candidates(result: &Value) -> Vec<&Value> {
         .collect()
 }
 
-fn candidate_exists_values(result: &Value) -> TestResult {
+fn candidate_exists_values(
+    result: &Value,
+) -> Result<Vec<Option<bool>>, Box<dyn std::error::Error>> {
     let mut values = Vec::new();
     for candidate in collect_candidates(result) {
         match candidate.get("exists") {
