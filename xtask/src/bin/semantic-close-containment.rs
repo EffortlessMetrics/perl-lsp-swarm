@@ -1185,7 +1185,8 @@ fn relation_scoped_section_text(
 ///
 /// Units are sentences inside Markdown paragraphs. A whitespace-only line is
 /// a paragraph break, matching rendered Markdown rather than a literal `\n\n`.
-/// Sentence ends are `.`, `!`, or `?` followed by whitespace or end of text.
+/// Sentence ends are `.`, `!`, or `?` followed by whitespace or end of text,
+/// except inside Markdown inline code spans (matched backtick runs).
 /// A unit that mentions some other issue and does not mention the closed issue
 /// is a neighboring-issue disclaimer. Unnumbered prose still counts: atomic
 /// closes often describe "the remaining work" without repeating `#N`, even
@@ -1234,23 +1235,37 @@ fn markdown_paragraphs(text: &str) -> Vec<String> {
 fn split_sentences(text: &str) -> Vec<String> {
     let mut sentences = Vec::new();
     let mut start = 0;
-    for (index, character) in text.char_indices() {
-        if !matches!(character, '.' | '!' | '?') {
+    let mut index = 0;
+    while index < text.len() {
+        let Some(character) = text[index..].chars().next() else {
+            break;
+        };
+        if character == '`' {
+            let run = text[index..].chars().take_while(|next| *next == '`').count();
+            if let Some(span_end) = matching_inline_code_span_end(text, index, run) {
+                index = span_end;
+                continue;
+            }
+            index += run;
             continue;
         }
         let after = index + character.len_utf8();
-        let boundary =
-            text.get(after..).and_then(|tail| tail.chars().next()).is_none_or(char::is_whitespace);
-        if !boundary {
-            continue;
-        }
-        if let Some(sentence) = text.get(start..after) {
-            let sentence = sentence.trim();
-            if !sentence.is_empty() {
-                sentences.push(sentence.to_string());
+        if matches!(character, '.' | '!' | '?') {
+            let boundary = text
+                .get(after..)
+                .and_then(|tail| tail.chars().next())
+                .is_none_or(char::is_whitespace);
+            if boundary {
+                if let Some(sentence) = text.get(start..after) {
+                    let sentence = sentence.trim();
+                    if !sentence.is_empty() {
+                        sentences.push(sentence.to_string());
+                    }
+                }
+                start = after;
             }
         }
-        start = after;
+        index = after;
     }
     if let Some(tail) = text.get(start..) {
         let tail = tail.trim();
@@ -1259,6 +1274,25 @@ fn split_sentences(text: &str) -> Vec<String> {
         }
     }
     sentences
+}
+
+fn matching_inline_code_span_end(text: &str, opener_start: usize, run: usize) -> Option<usize> {
+    let mut index = opener_start.checked_add(run)?;
+    while index < text.len() {
+        let Some(character) = text[index..].chars().next() else {
+            break;
+        };
+        if character == '`' {
+            let close_run = text[index..].chars().take_while(|next| *next == '`').count();
+            if close_run == run {
+                return index.checked_add(run);
+            }
+            index += close_run;
+            continue;
+        }
+        index += character.len_utf8();
+    }
+    None
 }
 
 fn foreign_issue_disclaimer(text: &str, key: &IssueKey, current_repository: &str) -> bool {
@@ -1426,7 +1460,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 16] = [
+    const FIXTURES: [(&str, &str); 17] = [
         (
             "invalid-phase-terminal-5023-5001",
             include_str!(concat!(
@@ -1516,6 +1550,13 @@ mod tests {
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../.ci/semantic-close-containment/fixtures/valid-neighbor-disclaimer-unproven.json"
+            )),
+        ),
+        (
+            "valid-neighbor-disclaimer-inline-code",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-neighbor-disclaimer-inline-code.json"
             )),
         ),
         (
@@ -1774,6 +1815,27 @@ mod tests {
                 "sentence terminators other than '.' must still keep the exclusion: {attributable_punctuated:?}"
             );
         }
+
+        let inline_question =
+            "Complete behavior is not established for `$ready ? $new : $old`; see #11.";
+        let attributable_inline_question =
+            exclusion_text_attributable_to_closed_issue(inline_question, &key, current);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_inline_question),
+            "a `?` inside an inline code span must not split off the neighbor reference: {attributable_inline_question:?}"
+        );
+        assert!(
+            explicitly_not_proven_required_work(inline_question),
+            "unfiltered inline-code neighbor text must still show why attribution is load-bearing"
+        );
+
+        let inline_bang = "Complete behavior is not established for `die $msg! now`; see #11.";
+        let attributable_inline_bang =
+            exclusion_text_attributable_to_closed_issue(inline_bang, &key, current);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_inline_bang),
+            "a `!` inside an inline code span must not split off the neighbor reference: {attributable_inline_bang:?}"
+        );
     }
 
     #[test]
