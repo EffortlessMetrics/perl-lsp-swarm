@@ -204,6 +204,20 @@ class NegativeControlTests(unittest.TestCase):
             _rewrite(tmp, QUICK_REFERENCE, lambda text: text + snippet)
             self.assertIn("pipe-into-merge", _ids(_findings(tmp)))
 
+    def test_looped_gh_pr_list_into_merge_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp = Path(temp)
+            _clone_surfaces(tmp)
+            snippet = (
+                "\n```bash\n"
+                'for n in $(gh pr list --author "app/dependabot" '
+                '--search "status:success"); '
+                'do gh pr merge "$n" --auto --squash; done\n'
+                "```\n"
+            )
+            _rewrite(tmp, QUICK_REFERENCE, lambda text: text + snippet)
+            self.assertIn("pipe-into-merge", _ids(_findings(tmp)))
+
     def test_status_success_called_patch_updates_without_version_delta_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp = Path(temp)
@@ -344,6 +358,60 @@ class NegativeControlTests(unittest.TestCase):
                 + '\ncopy_doc "$ROOT/CONTRIBUTING.md" "$BOOK_SRC/developer/contributing.md"\n',
             )
             self.assertIn("populate-book-overwrite", _ids(_findings(tmp)))
+
+    def test_cargo_ignore_type_flip_is_not_names_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp = Path(temp)
+            _clone_surfaces(tmp)
+            _rewrite(
+                tmp,
+                CONFIG_PATH,
+                lambda text: text.replace(
+                    '- dependency-name: "tree-sitter"\n'
+                    '        update-types: ["version-update:semver-major"]',
+                    '- dependency-name: "tree-sitter"\n'
+                    '        update-types: ["version-update:semver-minor"]',
+                    1,
+                ),
+            )
+            self.assertIn("ignore-type-mismatch", _ids(_findings(tmp)))
+
+    def test_npm_schedule_drift_is_not_masked_by_cargo_monday(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp = Path(temp)
+            _clone_surfaces(tmp)
+            marker = (
+                "### npm Dependencies (VS Code Extension)\n\n"
+                "**Schedule**: Weekly on Monday at 09:00 UTC"
+            )
+            replacement = (
+                "### npm Dependencies (VS Code Extension)\n\n"
+                "**Schedule**: Weekly on Tuesday at 09:00 UTC"
+            )
+
+            def mutate(text: str) -> str:
+                if marker not in text:
+                    raise AssertionError("npm schedule marker missing from fixture")
+                return text.replace(marker, replacement, 1)
+
+            _rewrite(tmp, MANAGEMENT_GUIDE, mutate)
+            self.assertIn("schedule-guide-drift", _ids(_findings(tmp)))
+
+    def test_run_commands_do_not_satisfy_path_wiring(self) -> None:
+        workflow = (ROOT / POLICY_WORKFLOW).read_text(encoding="utf-8")
+        mutated = workflow.replace(
+            "      - 'scripts/ci/validate_dependabot_contract.py'\n",
+            "",
+            1,
+        ).replace(
+            "      - 'scripts/ci/test_validate_dependabot_contract.py'\n",
+            "",
+            1,
+        )
+        ids = _ids(inspect_workflow_wiring(mutated))
+        self.assertIn("workflow-path-unwired", ids)
+        self.assertNotIn("workflow-tests-unwired", ids)
+        self.assertNotIn("workflow-validator-unwired", ids)
 
     def test_comment_only_workflow_mention_is_not_wiring(self) -> None:
         workflow = (

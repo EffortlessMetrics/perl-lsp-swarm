@@ -62,6 +62,11 @@ PIPE_MERGE_RE = re.compile(
 )
 XARGS_MERGE_RE = re.compile(r"xargs\s+gh\s+pr\s+merge")
 SUBSHELL_MERGE_RE = re.compile(r"gh\s+pr\s+merge\s+\$\(\s*gh\s+pr\s+list")
+LOOPED_MERGE_RE = re.compile(
+    r"\bfor\s+[A-Za-z_][A-Za-z0-9_]*\s+in\b[\s\S]{0,400}?"
+    r"gh\s+pr\s+list[\s\S]{0,400}?gh\s+pr\s+merge"
+    r"|\bwhile\s+read\b[\s\S]{0,400}?gh\s+pr\s+merge"
+)
 MERGE_TARGET_RE = re.compile(r"gh\s+pr\s+merge\s+(\S+)")
 VERSION_DELTA_RE = re.compile(
     r"version (?:delta|table)|highest semver|inspect(?:ing)? the (?:exact )?version",
@@ -462,6 +467,7 @@ def _has_forbidden_merge_pipe(text: str) -> bool:
         PIPE_MERGE_RE.search(text)
         or XARGS_MERGE_RE.search(text)
         or SUBSHELL_MERGE_RE.search(text)
+        or LOOPED_MERGE_RE.search(text)
     )
 
 
@@ -472,19 +478,29 @@ def _row_groups(row: dict[str, object]) -> set[str]:
     return set(groups)
 
 
-def _row_ignores(row: dict[str, object]) -> set[str]:
+def _row_ignore_rules(row: dict[str, object]) -> list[tuple[str, tuple[str, ...]]]:
     ignore = row.get("ignore")
-    if ignore is None:
-        return set()
     if not isinstance(ignore, list):
-        return set()
-    names: set[str] = set()
+        return []
+    rules: list[tuple[str, tuple[str, ...]]] = []
     for item in ignore:
-        if isinstance(item, dict):
-            name = item.get("dependency-name")
-            if isinstance(name, str):
-                names.add(name)
-    return names
+        if not isinstance(item, dict):
+            continue
+        name = item.get("dependency-name")
+        if not isinstance(name, str):
+            continue
+        raw_types = item.get("update-types")
+        types = (
+            tuple(entry for entry in raw_types if isinstance(entry, str))
+            if isinstance(raw_types, list)
+            else ()
+        )
+        rules.append((name, types))
+    return rules
+
+
+def _row_ignores(row: dict[str, object]) -> set[str]:
+    return {name for name, _types in _row_ignore_rules(row)}
 
 
 def _inspect_config(doc: dict[str, object], path: str) -> list[Finding]:
@@ -655,6 +671,30 @@ def _inspect_config(doc: dict[str, object], path: str) -> list[Finding]:
     return findings
 
 
+MANAGEMENT_SCHEDULE_HEADINGS = (
+    ("cargo", "### Cargo Dependencies"),
+    ("github-actions", "### GitHub Actions"),
+    ("npm", "### npm Dependencies"),
+)
+
+
+def _inspect_management_schedules(management: str) -> list[Finding]:
+    """Require each ecosystem section to restate Monday/09:00, not a later sibling."""
+    findings: list[Finding] = []
+    posix = MANAGEMENT_GUIDE.as_posix()
+    for ecosystem, heading in MANAGEMENT_SCHEDULE_HEADINGS:
+        section = _section(management, heading)
+        if "Monday" not in section or "09:00" not in section:
+            findings.append(
+                Finding(
+                    "schedule-guide-drift",
+                    posix,
+                    f"{ecosystem} section must still claim Weekly on Monday at 09:00 UTC",
+                )
+            )
+    return findings
+
+
 def _guide_groups_and_ignores(text: str) -> dict[str, tuple[set[str], set[str]]]:
     sections = {
         "cargo": _section(text, "### Cargo Dependencies"),
@@ -717,6 +757,16 @@ def _inspect_guides(
                         f"must match config {sorted(actual_ignores)}",
                     )
                 )
+            for name, types in _row_ignore_rules(row):
+                if "version-update:semver-major" not in types:
+                    findings.append(
+                        Finding(
+                            "ignore-type-mismatch",
+                            CONFIG_PATH.as_posix(),
+                            f"cargo ignore {name!r} must keep version-update:semver-major; "
+                            f"got {list(types)!r}",
+                        )
+                    )
         else:
             extra_ignores = sorted(guide_ignores - actual_ignores)
             if extra_ignores:
@@ -761,16 +811,7 @@ def _inspect_guides(
             )
         )
 
-    for field, expected_value in EXPECTED_SCHEDULE.items():
-        token = "Monday" if field == "day" else expected_value
-        if token not in management and expected_value not in management:
-            findings.append(
-                Finding(
-                    "schedule-guide-drift",
-                    MANAGEMENT_GUIDE.as_posix(),
-                    f"canonical guide must still claim schedule {field}={expected_value!r}",
-                )
-            )
+    findings.extend(_inspect_management_schedules(management))
 
     for rel, text in guides.items():
         posix = rel.as_posix()
@@ -919,19 +960,82 @@ def _active_workflow_text(text: str) -> str:
     return "\n".join(kept)
 
 
+PATH_ITEM_RE = re.compile(
+    r"""^-\s+(?:'(?P<sq>[^']*)'|\"(?P<dq>[^\"]*)\"|(?P<bare>\S+))\s*$"""
+)
+
+
+def _pull_request_path_entries(text: str) -> set[str]:
+    """Return globs from `on.pull_request.paths`, not from later `run:` steps."""
+    entries: set[str] = set()
+    in_on = False
+    in_pr = False
+    in_paths = False
+    pr_indent: int | None = None
+    paths_indent: int | None = None
+
+    for raw in text.splitlines():
+        if not raw.strip():
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        stripped = raw.strip()
+
+        if indent == 0:
+            key = stripped.split(":", 1)[0]
+            if key == "on":
+                in_on = True
+                in_pr = False
+                in_paths = False
+                pr_indent = None
+                paths_indent = None
+                continue
+            if in_on:
+                break
+            continue
+
+        if not in_on:
+            continue
+
+        if in_paths and paths_indent is not None and indent <= paths_indent:
+            in_paths = False
+        if in_pr and pr_indent is not None and indent <= pr_indent:
+            in_pr = False
+            in_paths = False
+
+        if in_paths:
+            match = PATH_ITEM_RE.match(stripped)
+            if match:
+                value = match.group("sq") or match.group("dq") or match.group("bare")
+                entries.add(value)
+            continue
+
+        if not in_pr:
+            if stripped.startswith("pull_request:"):
+                in_pr = True
+                pr_indent = indent
+            continue
+
+        if stripped.startswith("paths:"):
+            in_paths = True
+            paths_indent = indent
+
+    return entries
+
+
 def inspect_workflow_wiring(text: str) -> list[Finding]:
     """Require Policy Validators to execute this contract on governed edits."""
     findings: list[Finding] = []
     path = POLICY_WORKFLOW.as_posix()
     active = _active_workflow_text(text)
+    path_entries = _pull_request_path_entries(active)
     for rel in REQUIRED_WORKFLOW_PATHS:
         needle = rel.as_posix()
-        if needle not in active:
+        if needle not in path_entries:
             findings.append(
                 Finding(
                     "workflow-path-unwired",
                     path,
-                    f"Policy Validators paths must include {needle}",
+                    f"Policy Validators pull_request.paths must include {needle}",
                 )
             )
     if REQUIRED_TEST_RUN not in active:
