@@ -66,6 +66,12 @@ jobs:
             --manifest .ci/dap/protocol-authority.json \
             --receipt target/receipts/dap-protocol-authority.json
 
+      - name: Run nullability-inventory falsifiers
+        run: python3 scripts/tests/test_dap_nullability_inventory.py
+
+      - name: Enforce the committed nullability inventory
+        run: python3 scripts/ci/dap_nullability_inventory.py --check
+
       - name: Publish authority summary
         shell: bash
         run: |
