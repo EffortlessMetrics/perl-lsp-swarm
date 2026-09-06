@@ -438,32 +438,60 @@ pub fn resolve_session_boundary(
                 // `workspaceRoot` of "sub" validates under every trusted root.
                 // The first candidate would win even when `sub` exists only
                 // under a later root, and `require_directory` would then refuse
-                // a launch that names a real directory. Prefer a candidate that
-                // is an existing directory, and keep the first validated one so
-                // the "not a directory" refusal is still reported when none is.
+                // a launch that names a real directory.
                 //
-                // Choosing on existence cannot widen authority: every candidate
-                // considered has already been validated as contained in a
-                // trusted root, so this only decides *which* trusted root.
-                let mut usable = None;
+                // Preferring an existing directory is necessary but not
+                // sufficient. A relative root can be a real directory under
+                // *several* trusted roots — `"."` is one under every root, and a
+                // shared `lib`/`t` is the everyday case — and then existence
+                // alone leaves the boundary decided by registration order, with
+                // no relationship to the program being launched. Roots `[A, B]`
+                // with `program = B/app.pl` and `workspaceRoot: "."` produced
+                // boundary `A`, and the program check then refused a launch that
+                // sits inside a trusted root.
+                //
+                // So collect every admitting candidate, and when more than one
+                // survives, pin the choice with the program the launch already
+                // resolved to an absolute path: the deepest candidate containing
+                // it, matching `owning_root`'s rule. This does not let a program
+                // pick a root outside the trust set — every candidate is the
+                // *requested* directory validated against a trusted root, so the
+                // program only breaks a tie among boundaries the client already
+                // named and the authority already admits.
+                //
+                // When no candidate contains the program the launch is refused
+                // downstream whichever we pick, so the first candidate is kept
+                // and that refusal names the boundary, rather than inventing a
+                // second error for a launch that is doomed either way.
+                let mut usable: Vec<PathBuf> = Vec::new();
                 let mut first_validated = None;
                 for root in roots {
                     let Ok(candidate) = validate_path(requested, root) else { continue };
                     if candidate.is_dir() {
-                        usable = Some(candidate);
-                        break;
+                        usable.push(candidate);
+                    } else {
+                        first_validated.get_or_insert(candidate);
                     }
-                    first_validated.get_or_insert(candidate);
                 }
-                let narrowed = usable.or(first_validated).ok_or_else(|| {
-                    WorkspaceAuthorityError::LaunchRootWidensAuthority {
+                let pinned_by_program = if usable.len() > 1 {
+                    usable
+                        .iter()
+                        .filter(|candidate| validate_path(program, candidate).is_ok())
+                        .max_by_key(|candidate| candidate.components().count())
+                        .cloned()
+                } else {
+                    None
+                };
+                let narrowed = pinned_by_program
+                    .or_else(|| usable.first().cloned())
+                    .or(first_validated)
+                    .ok_or_else(|| WorkspaceAuthorityError::LaunchRootWidensAuthority {
                         launch_root: requested.display().to_string(),
                         detail: format!(
                             "no configured workspace root contains it (configured roots: {})",
                             display_roots(roots)
                         ),
-                    }
-                })?;
+                    })?;
                 return Ok(SessionBoundary::Bounded(require_directory(requested, narrowed)?));
             }
 
@@ -905,6 +933,55 @@ mod tests {
             boundary.root(),
             Some(nested.as_path()),
             "a relative launch root must resolve under the trusted root that has it"
+        );
+    }
+
+    /// A relative launch root that several trusted roots admit follows the program.
+    ///
+    /// Review finding (P2, corroborated): preferring an existing directory is not
+    /// enough. `"."` is a real directory under *every* trusted root, and a shared
+    /// `lib`/`t` is the everyday case, so existence alone left the boundary
+    /// decided by registration order — roots `[A, B]` with a program under `B`
+    /// and `workspaceRoot: "."` produced boundary `A`, and the program check then
+    /// refused a launch sitting inside a trusted root.
+    ///
+    /// Both directions are asserted deliberately: a fix that always took the
+    /// *last* admitting root would satisfy the first half and fail the mirror.
+    #[test]
+    fn a_relative_launch_root_shared_by_roots_is_pinned_by_the_program() {
+        let temp = must(tempfile::tempdir());
+        let alpha = dir(temp.path(), "alpha");
+        let beta = dir(temp.path(), "beta");
+        let in_beta = file(&beta, "app.pl");
+        let in_alpha = file(&alpha, "app.pl");
+
+        let authority =
+            must(WorkspaceAuthority::from_startup(&[alpha.clone(), beta.clone()], false));
+
+        // "." is a directory under both roots; the program breaks the tie.
+        let boundary = must(resolve_session_boundary(&authority, &in_beta, Some(Path::new("."))));
+        assert_eq!(
+            boundary.root(),
+            Some(beta.as_path()),
+            "a launch root admitted by several trusted roots must follow the program"
+        );
+
+        let boundary = must(resolve_session_boundary(&authority, &in_alpha, Some(Path::new("."))));
+        assert_eq!(
+            boundary.root(),
+            Some(alpha.as_path()),
+            "the same launch root must select the other trusted root for a program under it"
+        );
+
+        // The everyday shape: a directory of the same name under both roots.
+        let shared_beta = dir(&beta, "lib");
+        let _shared_alpha = dir(&alpha, "lib");
+        let nested = file(&shared_beta, "Mod.pm");
+        let boundary = must(resolve_session_boundary(&authority, &nested, Some(Path::new("lib"))));
+        assert_eq!(
+            boundary.root(),
+            Some(shared_beta.as_path()),
+            "a shared relative directory must resolve under the root holding the program"
         );
     }
 
