@@ -1678,8 +1678,10 @@ fn test_did_save_text_preserves_client_version() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
-/// The per-line resource bound must be enforced after both forms of didChange
-/// produce their resulting buffer, without committing the rejected text.
+/// An admitted full replacement that exceeds the per-line bound must not be
+/// committed. `didChange` is a notification, so the rejection is a
+/// synchronization loss: predecessor text stays stored as evidence, current
+/// answers fail closed, and recovery requires a later acceptable replacement.
 #[test]
 fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -1724,17 +1726,20 @@ fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn
         }
     }))?;
     let normalized = server.normalize_uri_key(uri);
-    let (opened_generation, opened_readiness) = {
+    let opened_generation = {
         let document = server.documents.lock().get(uri).ok_or("open document")?.clone();
         assert!(!document.full_sync_required());
         assert!(document.current_parsed().is_some(), "didOpen must publish a current parse");
-        (document.current_generation(), server.test_active_document_readiness(&normalized))
+        document.current_generation()
     };
     let result = server.handle_did_change(Some(json!({
         "textDocument": {"uri": uri, "version": 2},
         "contentChanges": [full]
     })));
-    assert!(result.is_err(), "full didChange must reject an overlong line");
+    assert!(
+        result.is_ok(),
+        "overlong full didChange is a notification sync loss, not InvalidParams: {result:?}"
+    );
     let document = server
         .documents
         .lock()
@@ -1742,26 +1747,145 @@ fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn
         .ok_or("rejected didChange must retain the document")?
         .clone();
     assert_eq!(document.text, "short\n", "rejected full didChange must not commit");
-    assert_eq!(document.version, 1, "overlong replacement must not watermark the client version");
     assert_eq!(
-        document.current_generation(),
-        opened_generation,
-        "overlong replacement must not advance generation"
+        document.version, 2,
+        "overlong replacement must watermark the observed client version"
     );
     assert!(
-        !document.full_sync_required(),
-        "buffer-length rejection is not a Full-sync protocol violation"
+        document.current_generation() > opened_generation,
+        "overlong replacement must advance generation so predecessor facts are not current"
     );
     assert!(
-        document.current_parsed().is_some(),
-        "overlong replacement must keep the predecessor parse current"
+        document.full_sync_required(),
+        "unstorable admitted replacement must fail-close current answers"
     );
+    assert!(
+        document.current_parsed().is_none(),
+        "overlong replacement must not keep the predecessor parse current"
+    );
+    let (state, ready_gen, _) = server
+        .test_active_document_readiness(&normalized)
+        .ok_or("overlong replacement must keep a readiness entry")?;
     assert_eq!(
-        server.test_active_document_readiness(&normalized),
-        opened_readiness,
-        "overlong replacement must not install pending readiness"
+        state, "unavailable_terminal",
+        "predecessor parser-core readiness cannot remain current after an unstorable replacement"
+    );
+    assert_eq!(ready_gen, document.current_generation());
+
+    Ok(())
+}
+
+/// Production `textDocument/didChange` has no id, so even a former InvalidParams
+/// return would be suppressed. Prove the notification dispatch path fail-closes
+/// stale text, AST, diagnostics, symbols, and edit-producing answers.
+#[test]
+fn test_did_change_overlong_full_replacement_fails_closed_on_notification_path()
+-> Result<(), Box<dyn std::error::Error>> {
+    let uri = "file:///overlong-notification-desync.pl";
+    let predecessor = "sub old_name { 1 }\n";
+    let overlong = "x".repeat(100_001);
+    let recovered = "sub recovered_name { 2 }\n";
+
+    let server = LspServer::new();
+    server.test_mark_initialize_session_accepted();
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": predecessor
+        }
+    }))?;
+    assert!(
+        server.symbol_index.lock().search_prefix("old_").contains(&"old_name".to_string()),
+        "didOpen must publish document symbols"
+    );
+    let opened = server.test_last_committed_push_diagnostic(uri).ok_or("didOpen diagnostics")?;
+    assert_eq!(opened.0, 1, "didOpen push diagnostics commit at generation 1");
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Current(_)
+        ),
+        "open document must expose current user-answer text"
     );
 
+    let response = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: None,
+        method: "textDocument/didChange".to_string(),
+        params: Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": overlong }]
+        })),
+    });
+    assert!(
+        response.is_none(),
+        "didChange notification must not answer, including after an unstorable replacement"
+    );
+
+    let document = server.documents.lock().get(uri).ok_or("document retained")?.clone();
+    assert_eq!(
+        document.text, predecessor,
+        "overlong notification must not commit replacement text"
+    );
+    assert_eq!(document.version, 2);
+    assert!(document.full_sync_required());
+    assert!(document.current_parsed().is_none());
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Unavailable
+        ),
+        "predecessor text must not remain a current user answer"
+    );
+    assert!(
+        server.symbol_index.lock().search_prefix("old_").is_empty(),
+        "overlong notification must clear cached document symbols"
+    );
+    let cleared = server
+        .test_last_committed_push_diagnostic(uri)
+        .ok_or("overlong notification must commit a diagnostics clear")?;
+    assert_eq!(
+        cleared.0,
+        document.current_generation(),
+        "diagnostics clear must use the post-desync generation"
+    );
+    assert!(cleared.1 > opened.1, "clear must be a newer committed sequence than didOpen");
+
+    let hover = server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 0, "character": 4 }
+    })))?;
+    assert!(
+        hover.as_ref().is_none_or(Value::is_null),
+        "hover must not publish predecessor text after an unstorable replacement: {hover:?}"
+    );
+
+    let format_error = server
+        .handle_formatting(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })))
+        .err()
+        .ok_or("desynchronized formatting must fail closed")?;
+    assert_eq!(format_error.code, CONTENT_MODIFIED);
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 3 },
+        "contentChanges": [{ "text": recovered }]
+    })))?;
+    let recovered_doc = server.documents.lock().get(uri).ok_or("recovered document")?.clone();
+    assert_eq!(recovered_doc.text, recovered);
+    assert!(!recovered_doc.full_sync_required());
+    assert!(recovered_doc.current_parsed().is_some());
+    assert!(
+        matches!(
+            server.lookup_user_answer_text(uri),
+            crate::runtime::document_access::UserAnswerTextLookup::Current(_)
+        ),
+        "accepted full replacement must restore current user-answer text"
+    );
     Ok(())
 }
 

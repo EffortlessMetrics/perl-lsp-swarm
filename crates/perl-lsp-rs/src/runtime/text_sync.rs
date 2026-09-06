@@ -735,7 +735,12 @@ impl LspServer {
 
                 let admission =
                     super::v0_18_text_sync_envelope::admit_full_document_changes(changes);
-                let text = match admission {
+                // An admitted full replacement that cannot be stored is still a
+                // synchronization loss: didChange is a notification, so
+                // InvalidParams never reaches the client. Keep last-good text
+                // as evidence and fail-close current answers until a later
+                // acceptable full replacement, reopen, or restart.
+                let admitted_or_unavailable = match admission {
                     super::v0_18_text_sync_envelope::FullDocumentAdmission::Accepted {
                         replacements,
                     } => {
@@ -744,18 +749,23 @@ impl LspServer {
                         )
                         .unwrap_or("")
                         .to_string();
-                        // Buffer-length rejection is not a Full-sync protocol
-                        // violation: the replacement was well-shaped but
-                        // cannot be stored. Leave last-good text, generation,
-                        // desync flag, and readiness unchanged.
-                        if let Err(err) = crate::security::validate_buffer_line_lengths(&text) {
-                            return Err(invalid_params(&err.to_string()));
+                        match crate::security::validate_buffer_line_lengths(&text) {
+                            Ok(()) => Ok(text),
+                            Err(err) => {
+                                tracing::warn!(
+                                    "Admitted full replacement for {uri} exceeds per-line buffer bound ({err}); last-good text was not mutated"
+                                );
+                                Err("admitted full replacement exceeds per-line buffer bound")
+                            }
                         }
-                        text
                     }
                     super::v0_18_text_sync_envelope::FullDocumentAdmission::Violation {
                         reason,
-                    } => {
+                    } => Err(reason),
+                };
+                let text = match admitted_or_unavailable {
+                    Ok(text) => text,
+                    Err(reason) => {
                         if !document_was_open {
                             tracing::warn!(
                                 "Ignoring unsupported didChange for unopened document {}: {reason}",
@@ -764,7 +774,7 @@ impl LspServer {
                             return Ok(());
                         }
                         tracing::warn!(
-                            "Full-sync violation for {uri}: {reason}; last-good text was not mutated"
+                            "Full-sync unavailable for {uri}: {reason}; last-good text was not mutated"
                         );
                         if let Some(observed) = incoming_version {
                             doc_state.observe_change_version(observed);
