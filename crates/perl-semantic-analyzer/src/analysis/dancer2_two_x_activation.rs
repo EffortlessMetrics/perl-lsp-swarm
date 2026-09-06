@@ -111,9 +111,19 @@ fn collect_package_subs(
     package_subs: &mut Vec<(String, String)>,
 ) {
     match &node.kind {
-        NodeKind::Subroutine { name: Some(name), declarator, .. }
+        NodeKind::Subroutine { name: Some(name), declarator, body, .. }
             if occupies_package_glob(declarator.as_ref()) =>
         {
+            // A forward declaration (`sub get;`) predeclares the name without
+            // installing a glob entry, so it cannot shadow an import; only a
+            // definition — a real body block with braces — does. The parser
+            // synthesizes a zero-width body for the declaration form.
+            let body_span_width = body.location.end.saturating_sub(body.location.start);
+            let is_forward_declaration =
+                body.location.start == body.location.end || body_span_width < 2;
+            if is_forward_declaration {
+                return;
+            }
             if name.contains("::") {
                 // A qualified name belongs to its declared package, however
                 // the running package scope is spelled: `sub App::get` inside
@@ -554,6 +564,42 @@ mod tests {
         assert!(
             found[0].shadowed_keywords.iter().any(|k| k == "get"),
             "a qualified definition inside another package must still shadow App's import, got {:?}",
+            found[0].shadowed_keywords
+        );
+    }
+
+    #[test]
+    fn forward_declaration_after_import_does_not_shadow() {
+        // `sub get;` predeclares the name without installing a glob entry:
+        // Dancer2's un-overwrite rule keeps the keyword installed.
+        let found = sites(
+            "use Dancer2;
+sub get;
+get '/x' => sub { 1 };
+",
+        );
+        assert_eq!(found.len(), 1);
+        assert!(
+            !found[0].shadowed_keywords.iter().any(|k| k == "get"),
+            "a forward declaration must not shadow the import, got {:?}",
+            found[0].shadowed_keywords
+        );
+    }
+
+    #[test]
+    fn empty_body_definition_after_import_still_shadows() {
+        // `sub get { }` DOES install the glob (empty body is a real
+        // definition), so the import must be shadowed.
+        let found = sites(
+            "use Dancer2;
+sub get { }
+get '/x' => sub { 1 };
+",
+        );
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0].shadowed_keywords.iter().any(|k| k == "get"),
+            "an empty-body definition must shadow the import, got {:?}",
             found[0].shadowed_keywords
         );
     }

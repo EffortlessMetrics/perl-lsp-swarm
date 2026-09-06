@@ -1458,7 +1458,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn escaped_delimiter_does_not_truncate_a_q_string_argument() {
         // `q{...}` is ONE string argument: word-splitting never applies. The
         // escaped close stays literal text, so the exclusion is the whole
