@@ -2119,6 +2119,35 @@
       ]
     },
     {
+      "id": "htmx_server_header_workflows",
+      "scenario_file": "ux_scenario_70_htmx_server_header_workflows.rs",
+      "subsystem_owner": "frameworks",
+      "ci_tier": "pr",
+      "component": "completion",
+      "instrumentation": {
+        "run_receipt": true,
+        "first_useful_result": true,
+        "protocol_goldens": false
+      },
+      "user_journey": "author HX-* request and response headers through the real textDocument/completion path in Dancer2, Mojolicious, and synthetic PSGI/Plack fixtures",
+      "measures": [
+        "workflow_pass_rate",
+        "workflow_stability_rate"
+      ],
+      "expected_outcomes": [
+        "request-header detection sites complete HX-Request with request-direction detail and a textEdit that replaces only the typed prefix inside the quotes",
+        "response-header emission sites complete HX-Trigger, HX-Trigger-After-Settle, and HX-Trigger-After-Swap with the same serialization shape in all three stacks",
+        "case-insensitive hx-red inserts canonical HX-Redirect over the typed prefix",
+        "dynamic $event_name header values and ordinary templates/ strings produce no HX-* completion item",
+        "probe fixtures open without parse-error diagnostics while a broken control file still publishes a parser-family diagnostic",
+        "template attribute completion, editor/host smoke, hover, and header-value completion remain unsupported in this scenario"
+      ],
+      "confidence_signals": [
+        "first_five_minutes_harness",
+        "issue_burndown_regression_guard"
+      ]
+    },
+    {
       "id": "dancer2_provider_cutover",
       "scenario_file": "ux_scenario_69_dancer2_provider_cutover.rs",
       "subsystem_owner": "frameworks",
