@@ -1202,6 +1202,36 @@ impl<'a> Parser<'a> {
         name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
     }
 
+    /// True when this token starts a `qw` list that Perl flattens in list
+    /// context: a single `QuoteWords` token, or a split `qw` identifier waiting
+    /// for its delimiter.
+    fn token_starts_qw_list(kind: TokenKind, text: &str) -> bool {
+        kind == TokenKind::QuoteWords || (kind == TokenKind::Identifier && text == "qw")
+    }
+
+    fn peek_is_qw_list_start(&mut self) -> bool {
+        self.tokens
+            .peek()
+            .ok()
+            .is_some_and(|token| Self::token_starts_qw_list(token.kind(), token.text.as_ref()))
+    }
+
+    /// Parse the next `qw` list as bare-call arguments, flattening the words.
+    ///
+    /// Standalone `qw(a b)` remains an ArrayLiteral. List-operator calls treat the
+    /// same node as the flattened words, matching `func 'a', 'b'`.
+    fn parse_flattened_qw_list_argument(&mut self) -> ParseResult<Vec<Node>> {
+        let node = self.parse_assignment_or_declaration()?;
+        Ok(Self::flatten_qw_list_argument(node))
+    }
+
+    fn flatten_qw_list_argument(node: Node) -> Vec<Node> {
+        match node.into_parts() {
+            (NodeKind::ArrayLiteral { elements }, _) => elements,
+            (kind, location) => vec![Node::new(kind, location)],
+        }
+    }
+
     /// We are conservative: the identifier must be lowercase (uppercase bare
     /// identifiers are more likely to be constants or package names) and
     /// must NOT be a string comparison operator (`eq`, `ne`, `lt`, `gt`, etc.)
@@ -1244,6 +1274,12 @@ impl<'a> Parser<'a> {
             Ok(t) => t,
             Err(_) => return false,
         };
+
+        // `func qw(a b)` is one QuoteWords token; split `qw` plus a delimiter is
+        // the same list in list-operator position (#14808).
+        if Self::token_starts_qw_list(next.kind(), next.text.as_ref()) {
+            return true;
+        }
 
         match next.kind() {
             // Sigiled variables: `func $x`, `func @arr`, `func %hash`
