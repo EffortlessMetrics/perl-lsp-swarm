@@ -9,8 +9,8 @@
 //! [`crate::heredoc_anti_patterns::DetectionStatus`]; an empty diagnostic list
 //! is not a complete-clean scan.
 //!
-//! [`AntiPatternDetector::detect_all`] remains as a diagnostics-only
-//! compatibility projection.
+//! [`crate::heredoc_anti_patterns::AntiPatternDetector::detect_all`] remains as
+//! a diagnostics-only compatibility projection.
 
 mod detectors;
 mod model;
