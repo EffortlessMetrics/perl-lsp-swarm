@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12791 |
-| Rust-family files | 4018 |
-| Non-Rust files | 8773 |
-| Allowlisted | 6536 |
+| Total tracked files | 12808 |
+| Rust-family files | 4026 |
+| Non-Rust files | 8782 |
+| Allowlisted | 6545 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 512 |
-| documentation | 2861 |
+| config | 514 |
+| documentation | 2865 |
 | generated | 2 |
 | production | 357 |
-| test | 2117 |
-| tooling | 687 |
+| test | 2118 |
+| tooling | 689 |
 | unclassified | 2237 |
 
 ## Unclassified files
@@ -2363,6 +2363,7 @@
 | `.changes/unreleased/product-14162-Fixed-062000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14213-Added-carmel-root-state-r1.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14281-Fixed-014013.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14303-Fixed-033000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14362-Added-000001.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14376-Fixed-060000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14384-Added-063000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2965,6 +2966,7 @@
 | `.github/workflows/installer-bootstrap-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/installer-checksum-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/installer-powershell-checksum-contract.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/installer-termux-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/legacy-authority-banners.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/lsp-318-claim-guard.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/merge-gate-target.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3163,6 +3165,9 @@
 | `.spec/10690-missing-import-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10690-missing-import-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10690-missing-import-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10740-class-grammar-context/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10740-class-grammar-context/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10740-class-grammar-context/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10794-workspace-symbol-query-profile-substrate/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10794-workspace-symbol-query-profile-substrate/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10794-workspace-symbol-query-profile-substrate/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6463,6 +6468,7 @@
 | `policy/clippy-lints.d/60-reviewability.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/clippy-lints.d/70-iteration-suppression.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/clippy-lints.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/docs-agents-contract-workflows.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/framework-adapters.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/generated-allowlist.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/generated-status-contract.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -6750,6 +6756,7 @@
 | `scripts/ci/test_rustfmt_required_workflow.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_scope_cache_key.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_cargo_lock_conflict_policy.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_validate_dependabot_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_gate_enforcement_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_helix_fixture_drift.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6762,6 +6769,7 @@
 | `scripts/ci/test_verify_rustfmt_receipt.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_workflow_security_ratchet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_cargo_lock_conflict_policy.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/validate_dependabot_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_gate_enforcement_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_helix_fixture_drift.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8405,6 +8413,7 @@
 | `tests/perl-corpus/spans/utf16_crlf_positions.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `tests/test_active_authority_contract.py` | test | `non-rust-active-authority-contract-test` | release/ci |
 | `tests/test_agent_authority_status.py` | test | `non-rust-agent-authority-status-test` | release/ci |
+| `tests/test_docs_agents_contract_workflows.py` | test | `non-rust-docs-agents-contract-workflows-test` | release/ci |
 | `tests/test_legacy_authority_banners.py` | test | `non-rust-legacy-authority-banners-test` | release/ci |
 | `tests/test_writer_authority_transfer_contract.py` | test | `non-rust-writer-authority-transfer-contract-test` | release/ci |
 | `tree-sitter-perl/.gitignore` | config | `non-rust-gitignore-family` | release/ci |

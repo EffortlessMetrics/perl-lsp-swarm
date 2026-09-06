@@ -407,6 +407,22 @@ created = "2026-08-15"
 review_after = "2026-11-15"
 
 [[allow]]
+id = "non-rust-docs-agents-contract-workflows-test"
+path = "tests/test_docs_agents_contract_workflows.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Always-running existence gate for registered docs/agents contract workflows (#14628). Standard-library `unittest` and `tomllib` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 tests/test_docs_agents_contract_workflows.py",
+  "python3 -m unittest tests/test_docs_agents_contract_workflows.py",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
+
+[[allow]]
 id = "non-rust-legacy-authority-banners-test"
 path = "tests/test_legacy_authority_banners.py"
 kind = "control_plane_contract_test"

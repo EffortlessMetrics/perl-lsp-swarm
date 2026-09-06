@@ -929,7 +929,7 @@ impl LspServer {
             (false, true) => "partial_live_generated_labeled_pilot",
             (false, false) => "shadowed",
         };
-        let compiler_receipt = if no_live_behavior_change {
+        let source_backed_receipt = if no_live_behavior_change {
             Value::Null
         } else {
             let (source, provenance, confidence) =
@@ -965,13 +965,13 @@ impl LspServer {
             "live_provider_result": live_provider_result,
             "live_provider_count": live_provider_count,
             "shadow_state": shadow_state,
-            "compiler_receipt": compiler_receipt,
+            "source_backed_receipt": source_backed_receipt,
             "gated_expansion_receipt": gated_expansion_receipt,
             "no_live_behavior_change": no_live_behavior_change,
             "notes": [
                 format!(
                     "workspace-symbol runtime quality receipt: query={:?}; live_provider_count={}; \
-                     source_backed_compiler_symbols={}; \
+                     source_backed_candidates={}; \
                      labeled_generated_pilot_symbols={}; \
                      generated_dynamic_noise_candidates={}; \
                      fresh ready-state workspace index symbols and labeled source-backed generated/framework pilot symbols are live for non-empty queries; \

@@ -1,0 +1,39 @@
+# Docs/agents contract workflows that must remain present.
+#
+# These workflows enforce a documentation contract and are each path-filtered
+# on their own definition. Deleting one matches that filter, but no workflow
+# definition remains to schedule, so the in-workflow existence assertion never
+# runs. This registry is the data the always-running required gate
+# `docs_agents_contract_workflows` reads (#14628).
+#
+# Adding a fifth docs/agents contract workflow requires a [[workflows]] row
+# here — discovery fails closed on an unregistered member. Retiring one is a
+# deliberate registry edit in the same PR as the deletion.
+#
+# `named_class` is the closed #14628 set. A present file in that set must have
+# a [[workflows]] row; an absent named file is not a failure
+# (`worked-lane-corpus.yml` is still proposed by #13789 and is not on main).
+
+schema_version = 1
+owner = "perl-lsp maintainers"
+tracking_issue = 14628
+gate = "docs_agents_contract_workflows"
+
+named_class = [
+  "agent-authority-status.yml",
+  "active-authority-contract.yml",
+  "legacy-authority-banners.yml",
+  "worked-lane-corpus.yml",
+]
+
+[[workflows]]
+path = ".github/workflows/agent-authority-status.yml"
+contract = "docs/agents/AUTHORITY_STATUS.md and authority_status.toml"
+
+[[workflows]]
+path = ".github/workflows/active-authority-contract.yml"
+contract = "active maintainer and contributor authority entrypoints"
+
+[[workflows]]
+path = ".github/workflows/legacy-authority-banners.yml"
+contract = "legacy authority banner inertness"
