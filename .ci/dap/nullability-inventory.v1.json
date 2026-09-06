@@ -1327,7 +1327,7 @@
       "class": "optional-non-null-when-present",
       "definition": "ExceptionBreakpointsFilter",
       "field": "default",
-      "rust_owner": "ExceptionBreakpointsFilter::default",
+      "rust_owner": "ExceptionBreakpointFilter::default",
       "rust_type": "Option<bool>",
       "serde_skips_when_none": true
     },
@@ -1342,7 +1342,7 @@
       "class": "required-non-null",
       "definition": "ExceptionBreakpointsFilter",
       "field": "filter",
-      "rust_owner": "ExceptionBreakpointsFilter::filter",
+      "rust_owner": "ExceptionBreakpointFilter::filter",
       "rust_type": "String",
       "serde_skips_when_none": false
     },
@@ -1350,7 +1350,7 @@
       "class": "required-non-null",
       "definition": "ExceptionBreakpointsFilter",
       "field": "label",
-      "rust_owner": "ExceptionBreakpointsFilter::label",
+      "rust_owner": "ExceptionBreakpointFilter::label",
       "rust_type": "String",
       "serde_skips_when_none": false
     },
@@ -1410,7 +1410,7 @@
       "class": "optional-non-null-when-present",
       "definition": "ExceptionFilterOptions",
       "field": "condition",
-      "rust_owner": "ExceptionFilterOptions::condition",
+      "rust_owner": "ExceptionFilterOption::condition",
       "rust_type": "Option<String>",
       "serde_skips_when_none": true
     },
@@ -1418,7 +1418,7 @@
       "class": "required-non-null",
       "definition": "ExceptionFilterOptions",
       "field": "filterId",
-      "rust_owner": "ExceptionFilterOptions::filter_id",
+      "rust_owner": "ExceptionFilterOption::filter_id",
       "rust_type": "String",
       "serde_skips_when_none": false
     },
@@ -3551,7 +3551,7 @@
       "class": "required-non-null",
       "definition": "StackFrame",
       "field": "column",
-      "rust_owner": "StackFrame::column",
+      "rust_owner": "ProtocolStackFrame::column",
       "rust_type": "i64",
       "serde_skips_when_none": false
     },
@@ -3559,7 +3559,7 @@
       "class": "optional-non-null-when-present",
       "definition": "StackFrame",
       "field": "endColumn",
-      "rust_owner": "StackFrame::end_column",
+      "rust_owner": "ProtocolStackFrame::end_column",
       "rust_type": "Option<i64>",
       "serde_skips_when_none": true
     },
@@ -3567,7 +3567,7 @@
       "class": "optional-non-null-when-present",
       "definition": "StackFrame",
       "field": "endLine",
-      "rust_owner": "StackFrame::end_line",
+      "rust_owner": "ProtocolStackFrame::end_line",
       "rust_type": "Option<i64>",
       "serde_skips_when_none": true
     },
@@ -3575,7 +3575,7 @@
       "class": "required-non-null",
       "definition": "StackFrame",
       "field": "id",
-      "rust_owner": "StackFrame::id",
+      "rust_owner": "ProtocolStackFrame::id",
       "rust_type": "i64",
       "serde_skips_when_none": false
     },
@@ -3590,7 +3590,7 @@
       "class": "required-non-null",
       "definition": "StackFrame",
       "field": "line",
-      "rust_owner": "StackFrame::line",
+      "rust_owner": "ProtocolStackFrame::line",
       "rust_type": "i64",
       "serde_skips_when_none": false
     },
@@ -3605,7 +3605,7 @@
       "class": "required-non-null",
       "definition": "StackFrame",
       "field": "name",
-      "rust_owner": "StackFrame::name",
+      "rust_owner": "ProtocolStackFrame::name",
       "rust_type": "String",
       "serde_skips_when_none": false
     },
@@ -3620,7 +3620,7 @@
       "class": "optional-non-null-when-present",
       "definition": "StackFrame",
       "field": "source",
-      "rust_owner": "StackFrame::source",
+      "rust_owner": "ProtocolStackFrame::source",
       "rust_type": "Option<Source>",
       "serde_skips_when_none": true
     },
@@ -4165,7 +4165,7 @@
       "class": "optional-non-null-when-present",
       "definition": "Variable",
       "field": "evaluateName",
-      "rust_owner": "Variable::evaluate_name",
+      "rust_owner": "ProtocolVariable::evaluate_name",
       "rust_type": "Option<String>",
       "serde_skips_when_none": true
     },
@@ -4173,7 +4173,7 @@
       "class": "optional-non-null-when-present",
       "definition": "Variable",
       "field": "indexedVariables",
-      "rust_owner": "Variable::indexed_variables",
+      "rust_owner": "ProtocolVariable::indexed_variables",
       "rust_type": "Option<i64>",
       "serde_skips_when_none": true
     },
@@ -4188,7 +4188,7 @@
       "class": "required-non-null",
       "definition": "Variable",
       "field": "name",
-      "rust_owner": "Variable::name",
+      "rust_owner": "ProtocolVariable::name",
       "rust_type": "String",
       "serde_skips_when_none": false
     },
@@ -4196,7 +4196,7 @@
       "class": "optional-non-null-when-present",
       "definition": "Variable",
       "field": "namedVariables",
-      "rust_owner": "Variable::named_variables",
+      "rust_owner": "ProtocolVariable::named_variables",
       "rust_type": "Option<i64>",
       "serde_skips_when_none": true
     },
@@ -4211,7 +4211,7 @@
       "class": "optional-non-null-when-present",
       "definition": "Variable",
       "field": "type",
-      "rust_owner": "Variable::type_",
+      "rust_owner": "ProtocolVariable::type_",
       "rust_type": "Option<String>",
       "serde_skips_when_none": true
     },
@@ -4219,7 +4219,7 @@
       "class": "required-non-null",
       "definition": "Variable",
       "field": "value",
-      "rust_owner": "Variable::value",
+      "rust_owner": "ProtocolVariable::value",
       "rust_type": "String",
       "serde_skips_when_none": false
     },
@@ -4234,7 +4234,7 @@
       "class": "required-non-null",
       "definition": "Variable",
       "field": "variablesReference",
-      "rust_owner": "Variable::variables_reference",
+      "rust_owner": "ProtocolVariable::variables_reference",
       "rust_type": "i64",
       "serde_skips_when_none": false
     },
