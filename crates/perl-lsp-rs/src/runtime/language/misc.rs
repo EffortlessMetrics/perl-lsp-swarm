@@ -22,7 +22,12 @@ use crate::runtime::readiness::IndexReadinessPolicy;
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
 use crate::runtime::window::RequestProgressGuard;
 use crate::state::{code_lens_cap, code_lens_resolve_deadline, inlay_hints_cap};
+use perl_lsp_rs_core::protocol::resolve_envelope::{
+    ResolveCurrentnessKind, ResolveCurrentnessRef, ResolveEnvelopeCodec, ResolveEnvelopeHeaderV1,
+    ResolveEnvelopeToken, ResolveIdentityRef, ResolveReplayDisposition,
+};
 use perl_lsp_rs_core::providers::completion::collect_module_names_from_roots_with_cache;
+use perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1;
 use perl_lsp_rs_core::providers::inline_completion::{
     BackendError, EvaluatedInlineCompletionItem, InlineCompletionEnvironment,
     InlineCompletionProvider, InlineCompletionSnapshotIdentity, InlinePackageMethodFact,
@@ -36,6 +41,114 @@ use std::time::{Duration, Instant};
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
     serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
+
+/// `data` key carrying an inlay hint's authenticated resolve envelope (#14672).
+const INLAY_HINT_RESOLVE_ENVELOPE_KEY: &str = "resolveEnvelope";
+
+/// Per-response issuer for authenticated inlay-hint resolve envelopes (#14672).
+///
+/// One instance covers a single `textDocument/inlayHint` response, so every hint
+/// in that response shares an operation/result correlation and the same
+/// currentness references, while each hint gets its own issue sequence.
+struct InlayHintEnvelopeIssuer<'a> {
+    uri: &'a str,
+    incarnation: u64,
+    generation: u32,
+    content_hash: u64,
+    originating_operation: ResolveIdentityRef,
+    originating_result: ResolveIdentityRef,
+    effective_profile: ResolveIdentityRef,
+    currentness: Vec<ResolveCurrentnessRef>,
+}
+
+impl<'a> InlayHintEnvelopeIssuer<'a> {
+    /// Build the per-response issuing context, or `None` when any identity the
+    /// envelope requires cannot be constructed.
+    ///
+    /// The operation and result references are session-local correlation only.
+    /// #7106/#7219 own real operation/result identity; when they land, these two
+    /// references become the exact ones rather than a derived sequence.
+    fn new(
+        authenticator: &perl_lsp_rs_core::protocol::resolve_envelope::SessionResolveAuthenticator,
+        uri: &'a str,
+        incarnation: u64,
+        parsed: &crate::state::ParsedSnapshot,
+        effective_profile: &str,
+    ) -> Option<Self> {
+        let sequence = authenticator.next_issue_sequence().ok()?;
+        let generation = parsed.generation();
+        let content_hash = parsed.content_hash();
+
+        Some(Self {
+            uri,
+            incarnation,
+            generation,
+            content_hash,
+            originating_operation: ResolveIdentityRef::new(format!(
+                "operation:inlayhint:{sequence:016x}"
+            ))
+            .ok()?,
+            originating_result: ResolveIdentityRef::new(format!(
+                "result:inlayhint:{sequence:016x}"
+            ))
+            .ok()?,
+            effective_profile: ResolveIdentityRef::new(effective_profile).ok()?,
+            currentness: vec![
+                ResolveCurrentnessRef::new(
+                    ResolveCurrentnessKind::Document,
+                    ResolveIdentityRef::new(format!("document:generation:{generation}")).ok()?,
+                ),
+                ResolveCurrentnessRef::new(
+                    ResolveCurrentnessKind::Source,
+                    ResolveIdentityRef::new(format!("source:content:{content_hash:016x}")).ok()?,
+                ),
+            ],
+        })
+    }
+
+    /// Issue one envelope for a hint, or `None` when the hint records no
+    /// callable name and therefore has no resolvable label location.
+    fn issue_for(
+        &self,
+        hint: &Value,
+        authenticator: &perl_lsp_rs_core::protocol::resolve_envelope::SessionResolveAuthenticator,
+    ) -> Option<ResolveEnvelopeToken> {
+        let function_name = hint
+            .pointer("/data/functionName")
+            .and_then(Value::as_str)
+            .or_else(|| hint.pointer("/data/function").and_then(Value::as_str))?;
+        let position = hint.get("position")?;
+        let line = u32::try_from(position.get("line").and_then(Value::as_u64)?).ok()?;
+        let character = u32::try_from(position.get("character").and_then(Value::as_u64)?).ok()?;
+
+        let header = ResolveEnvelopeHeaderV1::for_subject::<InlayHintResolveSubjectV1>(
+            authenticator.session_identity().clone(),
+            self.originating_operation.clone(),
+            self.originating_result.clone(),
+            self.effective_profile.clone(),
+            self.currentness.clone(),
+            ResolveReplayDisposition::CurrentSubjectBound,
+            authenticator.next_issue_sequence().ok()?,
+        )
+        .ok()?;
+
+        ResolveEnvelopeCodec::default()
+            .issue(
+                header,
+                InlayHintResolveSubjectV1 {
+                    uri: self.uri.to_string(),
+                    incarnation: self.incarnation,
+                    generation: self.generation,
+                    content_hash: self.content_hash,
+                    line,
+                    character,
+                    function_name: function_name.to_string(),
+                },
+                authenticator,
+            )
+            .ok()
+    }
 }
 
 mod debug_launch;
@@ -587,24 +700,7 @@ impl LspServer {
                     ));
                 }
 
-                // Add URI to hint data for later resolution.
-                // Merge with any existing data (e.g. functionName/paramIndex from
-                // the hints provider) rather than overwriting it.
-                let enriched_hints: Vec<Value> = hints
-                    .iter()
-                    .map(|hint| {
-                        let mut h = hint.clone();
-                        if let Some(obj) = h.as_object_mut() {
-                            let data = obj.entry("data".to_string()).or_insert_with(|| json!({}));
-                            if let Some(data_obj) = data.as_object_mut() {
-                                data_obj.insert("uri".to_string(), json!(uri));
-                            }
-                        }
-                        h
-                    })
-                    .collect();
-
-                let mut result = enriched_hints;
+                let mut result = hints;
                 for hint in &mut result {
                     truncate_inlay_hint_label(hint, max_label_length);
                 }
@@ -614,10 +710,102 @@ impl LspServer {
                     tracing::debug!(from = result.len(), to = cap, "InlayHints: capping");
                     result.truncate(cap);
                 }
+
+                // Attach one authenticated #8342 subject per resolvable hint
+                // (#14672), after the cap so no envelope is minted for a hint
+                // that is about to be dropped. This replaces the previous
+                // `data.uri` enrichment: `inlayHint/resolve` recovers the
+                // document, the producing snapshot and the callable from the
+                // envelope, never from the client's copy of `data`. Hints keep
+                // their existing presentation data (docSummary / functionName /
+                // paramIndex) — that is display text, not identity.
+                let result = self.attach_inlay_hint_resolve_envelopes(
+                    uri,
+                    doc.incarnation,
+                    parsed.as_deref(),
+                    &result,
+                );
                 return Ok(Some(json!(result)));
             }
         }
         Ok(Some(json!([])))
+    }
+
+    /// Attach one authenticated #8342 resolve envelope to each resolvable hint
+    /// (#14672).
+    ///
+    /// A hint is resolvable only when the client advertised the `label.location`
+    /// resolve property, the producer recorded a callable name for the hint, and
+    /// the connection still owns a session authenticator. Every other hint is
+    /// returned unchanged: it stays a valid hint and keeps its presentation
+    /// data, it simply carries no lazily resolvable label location. Failing to
+    /// issue is therefore fail-closed for the location and harmless for the hint
+    /// itself.
+    ///
+    /// Gating on the client property matters for response size as well as
+    /// honesty. A token measures ~1.5 KB on the wire — the signed envelope is
+    /// roughly 750 bytes of JSON, which the substrate's hex encoding then
+    /// doubles — and a capped response holds up to [`inlay_hints_cap`] hints, so
+    /// a full response for a `label.location` client can carry on the order of
+    /// 750 KB of tokens. Minting them for a client that can never redeem one
+    /// would be pure waste, so only advertised support pays that cost.
+    /// `an_issued_envelope_stays_within_its_documented_wire_budget` pins the
+    /// per-token size so it cannot drift silently.
+    fn attach_inlay_hint_resolve_envelopes(
+        &self,
+        uri: &str,
+        incarnation: u64,
+        parsed: Option<&crate::state::ParsedSnapshot>,
+        hints: &[Value],
+    ) -> Vec<Value> {
+        let mut enriched = hints.to_vec();
+
+        let Some(parsed) = parsed else {
+            return enriched;
+        };
+
+        // Read client capabilities before taking the authenticator, so this
+        // path never holds the authenticator while acquiring another lock.
+        let (supports_label_location, profile) = {
+            let capabilities = self.client_capabilities.lock();
+            let supports = capabilities
+                .inlay_hint_resolve_support
+                .as_ref()
+                .is_some_and(|properties| properties.contains("label.location"));
+            let profile = match capabilities.position_encoding {
+                crate::textdoc::PosEnc::Utf16 => "profile:inlayhint:utf16",
+                crate::textdoc::PosEnc::Utf8 => "profile:inlayhint:utf8",
+            };
+            (supports, profile)
+        };
+        if !supports_label_location {
+            return enriched;
+        }
+
+        let guard = self.resolve_session_authenticator.lock();
+        let Some(authenticator) = guard.as_ref() else {
+            return enriched;
+        };
+        let Some(issuer) =
+            InlayHintEnvelopeIssuer::new(authenticator, uri, incarnation, parsed, profile)
+        else {
+            return enriched;
+        };
+
+        for hint in &mut enriched {
+            let Some(token) = issuer.issue_for(hint, authenticator) else {
+                continue;
+            };
+            if let Some(object) = hint.as_object_mut() {
+                let data = object.entry("data".to_string()).or_insert_with(|| json!({}));
+                if let Some(data_object) = data.as_object_mut() {
+                    data_object
+                        .insert(INLAY_HINT_RESOLVE_ENVELOPE_KEY.to_string(), json!(token.as_str()));
+                }
+            }
+        }
+
+        enriched
     }
 
     /// Handle inlayHint/resolve request
@@ -634,6 +822,26 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(mut hint) = params {
+            // `labelDetails` is client-round-tripped presentation data. Never
+            // trust it merely because it is present: a client can fabricate a
+            // complete-looking hint without a server-issued resolve envelope.
+            // Drop it before resolving so the only location we can add below
+            // comes from an authenticated, current subject.
+            if let Some(object) = hint.as_object_mut() {
+                object.remove("labelDetails");
+                // The same applies to a `location` the client attached to a
+                // label part: the only part location we emit is the one the
+                // authenticated subject selects below (#14679 shape, #14672
+                // authority).
+                if let Some(Value::Array(parts)) = object.get_mut("label") {
+                    for part in parts.iter_mut() {
+                        if let Some(part) = part.as_object_mut() {
+                            part.remove("location");
+                        }
+                    }
+                }
+            }
+
             // Extract hint properties for tooltip and label location generation
             let label =
                 crate::inlay_hints::inlay_hint_label_str(&hint).unwrap_or_default().to_string();
@@ -688,7 +896,8 @@ impl LspServer {
             }
 
             // Fill `InlayHintLabelPart.location` for parameter hints (kind=2), but only when
-            // the client declared "label.location" in resolveSupport.properties. The label's
+            // the client declared "label.location" in resolveSupport.properties and the hint
+            // carries an authenticated currentness-bound subject (#14672). The label's
             // representation is preserved: the provider already emits parameter labels as
             // parts, and resolve only populates the advertised nested property (#14679). A
             // string label is left untouched rather than rewritten into parts.
@@ -721,25 +930,87 @@ impl LspServer {
 
     /// Resolve the LSP Location for an inlay hint label, enabling click-to-definition.
     ///
-    /// Extracts the document URI and function name from the hint's `data` field,
-    /// looks up the open document, walks the AST to find the subroutine definition,
-    /// and converts its byte-offset location to an LSP `{ uri, range }` object.
+    /// The subject comes from the authenticated #8342 envelope this server issued
+    /// when it produced the hint, never from the client's copy of `data`
+    /// (#14672). Before that migration the document and the callable were read
+    /// straight out of the round-tripped item, so a fabricated hint — one never
+    /// preceded by any `textDocument/inlayHint` request — resolved to a real
+    /// source range, and a hint issued before an edit was silently reprojected
+    /// against different source.
     ///
-    /// Returns `None` when the document is not open, the function is not found,
-    /// or the hint data is missing required fields.
+    /// Returns `None`, leaving the label part without a `location`, when:
+    ///
+    /// - the item carries no envelope, or one this session cannot authenticate
+    ///   (foreign session, tampered tag, wrong family or version, malformed);
+    /// - the authenticated hint position does not match the item being resolved,
+    ///   so a valid envelope cannot be moved onto a different hint;
+    /// - the recorded document is no longer open, or the URI was closed and
+    ///   reopened since issuance (a new open instance, even on identical text);
+    /// - the document's parsed snapshot moved — generation or content hash
+    ///   differs from the one that produced the hint;
+    /// - the recorded callable has no declaration in that exact snapshot.
     fn resolve_hint_label_location(&self, hint: &Value) -> Option<Value> {
-        let data = hint.get("data")?;
-        let uri = data.get("uri").and_then(|u| u.as_str())?;
-        let function_name = data
-            .get("functionName")
-            .and_then(|f| f.as_str())
-            .or_else(|| data.get("function").and_then(|f| f.as_str()))?;
-        let short_name = function_name.rsplit("::").next().unwrap_or(function_name);
+        let token = ResolveEnvelopeToken::parse(
+            hint.pointer("/data/resolveEnvelope").and_then(Value::as_str)?,
+        )
+        .ok()?;
+
+        let subject = {
+            let guard = self.resolve_session_authenticator.lock();
+            let authenticator = guard.as_ref()?;
+            ResolveEnvelopeCodec::default()
+                .validate::<InlayHintResolveSubjectV1, _>(
+                    &token,
+                    authenticator.session_identity(),
+                    authenticator,
+                )
+                .ok()?
+                .into_parts()
+                .1
+        };
+
+        // The envelope authenticates one exact hint. Refuse a valid envelope
+        // that has been reattached to a different hint in the same document.
+        //
+        // Kind needs no separate comparison here: only parameter hints carry a
+        // `data.functionName`, so only `kind: 2` ever receives an envelope, and
+        // the caller already gates this path on the item's `kind == 2`. Every
+        // field the returned location derives from is authenticated, so an item
+        // whose presentation the client altered still resolves to exactly the
+        // location its authenticated position and callable select.
+        let position = hint.get("position")?;
+        if position.get("line").and_then(Value::as_u64) != Some(u64::from(subject.line))
+            || position.get("character").and_then(Value::as_u64)
+                != Some(u64::from(subject.character))
+        {
+            return None;
+        }
 
         let documents = self.documents_guard();
-        let doc = self.get_document(&documents, uri)?;
-        let parsed = doc.current_parsed();
-        let ast = parsed.as_ref().and_then(|p| p.ast())?;
+        let doc = self.get_document(&documents, &subject.uri)?;
+        let parsed = doc.current_parsed()?;
+
+        // `CurrentSubjectBound` replay: the item is valid only while the exact
+        // open instance and the exact snapshot that produced it are current.
+        //
+        // The incarnation check is load-bearing, not belt-and-braces: a
+        // `didClose` + `didOpen` cycle installs a fresh `DocumentState` whose
+        // generation restarts at `FIRST_ACCEPTED_DOCUMENT_GENERATION`, and
+        // unchanged text reproduces the same content hash, so the generation
+        // and hash pair repeats across a reopen. That is the same ABA hole
+        // `text_sync::document_generation_still_current` closes with
+        // `Arc::ptr_eq`; a wire subject cannot carry an `Arc`, so it carries
+        // the process-unique instance identity instead.
+        if doc.incarnation != subject.incarnation
+            || parsed.generation() != subject.generation
+            || parsed.content_hash() != subject.content_hash
+        {
+            return None;
+        }
+
+        let ast = parsed.ast()?;
+        let function_name = subject.function_name.as_str();
+        let short_name = function_name.rsplit("::").next().unwrap_or(function_name);
 
         let sub_node = Self::find_subroutine_node(ast, function_name).or_else(|| {
             (short_name != function_name)
@@ -750,7 +1021,7 @@ impl LspServer {
         let (end_line, end_char) = self.offset_to_pos16(doc, sub_node.location.end);
 
         Some(json!({
-            "uri": uri,
+            "uri": subject.uri,
             "range": {
                 "start": { "line": start_line, "character": start_char },
                 "end":   { "line": end_line,   "character": end_char   }
