@@ -37,10 +37,25 @@ fn inventory_output_lock() -> MutexGuard<'static, ()> {
 #[cfg(test)]
 mod lock_tests {
     use super::lock_or_recover;
-    use std::sync::Mutex;
+    use color_eyre::eyre::{Result, ensure};
+    use std::sync::{Mutex, TryLockError};
 
     #[test]
-    fn poisoned_inventory_lock_is_recovered() {
+    fn healthy_inventory_lock_retains_exclusion() -> Result<()> {
+        let lock = Mutex::new(());
+        let guard = lock_or_recover(&lock);
+        ensure!(
+            matches!(lock.try_lock(), Err(TryLockError::WouldBlock)),
+            "the returned guard must hold the supplied mutex"
+        );
+        ensure!(!lock.is_poisoned(), "normal acquisition must not poison the mutex");
+        drop(guard);
+        ensure!(lock.try_lock().is_ok(), "dropping the guard must release the mutex");
+        Ok(())
+    }
+
+    #[test]
+    fn poisoned_inventory_lock_is_recovered() -> Result<()> {
         let lock = Mutex::new(());
         let join_result = std::thread::scope(|scope| {
             scope
@@ -54,10 +69,27 @@ mod lock_tests {
                 .join()
         });
 
-        assert!(join_result.is_err(), "the fixture must terminate by unwinding");
-        assert!(lock.is_poisoned());
+        ensure!(join_result.is_err(), "the fixture must terminate by unwinding");
+        ensure!(lock.is_poisoned(), "the fixture must actually poison the mutex");
+        let guard = lock_or_recover(&lock);
+        ensure!(lock.is_poisoned(), "recovery preserves the poison marker for later diagnostics");
+        ensure!(
+            matches!(lock.try_lock(), Err(TryLockError::WouldBlock)),
+            "recovery must still exclude another inventory writer"
+        );
+        drop(guard);
+        ensure!(
+            matches!(lock.try_lock(), Err(TryLockError::Poisoned(_))),
+            "dropping the recovered guard must release the mutex without clearing poison"
+        );
+
         let _guard = lock_or_recover(&lock);
-        assert!(lock.is_poisoned(), "recovery preserves the poison marker for later diagnostics");
+        ensure!(
+            matches!(lock.try_lock(), Err(TryLockError::WouldBlock)),
+            "a later inventory writer must reacquire the same poisoned mutex"
+        );
+        ensure!(lock.is_poisoned(), "repeated recovery must not erase the original failure");
+        Ok(())
     }
 }
 
