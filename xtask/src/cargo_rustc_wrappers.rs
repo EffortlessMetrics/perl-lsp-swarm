@@ -30,7 +30,6 @@ use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 
 use perl_lsp_rs_core::hashing::sha256_hex;
-use serde::Serialize;
 
 /// Standing limitation name from #14687. Present only when a wrapper slot
 /// could not be established; retired when both slots resolve (including to
@@ -86,10 +85,6 @@ impl EnvSnapshot {
 
     fn get(&self, key: &str) -> Option<&str> {
         self.vars.get(key).map(String::as_str)
-    }
-
-    fn contains(&self, key: &str) -> bool {
-        self.vars.contains_key(key)
     }
 }
 
@@ -179,8 +174,8 @@ impl ResolvedCompilerWrappers {
 
 /// Resolve wrappers the way stable Cargo does at `workspace_root`.
 ///
-/// Walks to the filesystem root and reads the real `$CARGO_HOME`. Callers that
-/// need a hermetic fixture should use [`resolve_compiler_wrappers_in`].
+/// Walks to the filesystem root and reads the real `$CARGO_HOME`. Tests pass a
+/// search ceiling so a temp fixture cannot inherit a machine parent config.
 #[must_use]
 pub fn resolve_compiler_wrappers(
     workspace_root: &Path,
@@ -194,7 +189,7 @@ pub fn resolve_compiler_wrappers(
 /// `search_ceiling` is a test seam so a temp fixture does not inherit a
 /// machine `/tmp/.cargo/config.toml`. Production discovery passes `None`.
 #[must_use]
-pub fn resolve_compiler_wrappers_in(
+pub(crate) fn resolve_compiler_wrappers_in(
     workspace_root: &Path,
     env: &EnvSnapshot,
     search_ceiling: Option<&Path>,
@@ -237,7 +232,7 @@ pub fn resolve_compiler_wrappers_in(
 }
 
 /// Filesystem view used while probing Cargo config paths.
-pub trait ConfigFs {
+pub(crate) trait ConfigFs {
     /// Whether `path` is a regular file.
     fn is_file(&self, path: &Path) -> bool;
     /// Read `path` as UTF-8 text. Missing files should return `NotFound`.
@@ -246,7 +241,7 @@ pub trait ConfigFs {
 
 /// Real filesystem.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct RealFs;
+pub(crate) struct RealFs;
 
 impl ConfigFs for RealFs {
     fn is_file(&self, path: &Path) -> bool {
@@ -254,34 +249,6 @@ impl ConfigFs for RealFs {
     }
 
     fn read_to_string(&self, path: &Path) -> io::Result<String> {
-        std::fs::read_to_string(path)
-    }
-}
-
-/// Overlay that reports selected paths as existing-but-unreadable.
-#[derive(Debug, Clone, Default)]
-pub struct OverlayFs {
-    unreadable: BTreeSet<PathBuf>,
-}
-
-impl OverlayFs {
-    /// Mark `path` as present but unreadable.
-    pub fn unreadable(path: impl Into<PathBuf>) -> Self {
-        let mut fs = Self::default();
-        fs.unreadable.insert(path.into());
-        fs
-    }
-}
-
-impl ConfigFs for OverlayFs {
-    fn is_file(&self, path: &Path) -> bool {
-        self.unreadable.contains(path) || path.is_file()
-    }
-
-    fn read_to_string(&self, path: &Path) -> io::Result<String> {
-        if self.unreadable.contains(path) {
-            return Err(io::Error::new(ErrorKind::PermissionDenied, "config file is unreadable"));
-        }
         std::fs::read_to_string(path)
     }
 }
@@ -420,10 +387,10 @@ fn config_string(
     table: &str,
     key: &str,
 ) -> Result<Option<String>, &'static str> {
-    if let Some(nested) = value.get(table) {
-        if let Some(entry) = nested.get(key) {
-            return string_entry(entry);
-        }
+    if let Some(nested) = value.get(table)
+        && let Some(entry) = nested.get(key)
+    {
+        return string_entry(entry);
     }
     let dotted = format!("{table}.{key}");
     match value.get(&dotted) {
@@ -447,11 +414,11 @@ fn resolve_slot(
     config_complete: bool,
     workspace_root: &Path,
 ) -> WrapperSlot {
-    if env.contains(dedicated) {
-        return slot_from_env_value(env.get(dedicated).unwrap_or(""), workspace_root);
+    if let Some(value) = env.get(dedicated) {
+        return slot_from_env_value(value, workspace_root);
     }
-    if env.contains(cargo_mapped) {
-        return slot_from_env_value(env.get(cargo_mapped).unwrap_or(""), workspace_root);
+    if let Some(value) = env.get(cargo_mapped) {
+        return slot_from_env_value(value, workspace_root);
     }
     if !config_complete {
         return WrapperSlot::Unresolved;
@@ -507,23 +474,20 @@ fn finish(
         matches!(rustc_workspace_wrapper, WrapperSlot::Unresolved);
     if rustc_wrapper_unresolved || rustc_workspace_wrapper_unresolved {
         limitations.insert(CARGO_CONFIG_WRAPPER_NOT_RESOLVED.to_string());
+    } else {
+        // Environment fully answers both keys: a missing CARGO_HOME or an
+        // unreadable config file cannot change the effective wrappers.
+        limitations.remove(CARGO_CONFIG_WRAPPER_NOT_RESOLVED);
     }
     let rustc_wrapper_local = local_of(&rustc_wrapper);
     let rustc_workspace_wrapper_local = local_of(&rustc_workspace_wrapper);
     let rustc_wrapper = durable_of(&rustc_wrapper);
     let rustc_workspace_wrapper = durable_of(&rustc_workspace_wrapper);
-    let projection = DurableProjection {
-        rustc_wrapper: rustc_wrapper.as_deref(),
-        rustc_workspace_wrapper: rustc_workspace_wrapper.as_deref(),
-        rustc_wrapper_unresolved,
-        rustc_workspace_wrapper_unresolved,
-    };
-    let encoded = serde_json::to_vec(&projection).unwrap_or_else(|_| {
-        format!(
-            "rustc_wrapper={rustc_wrapper:?};rustc_workspace_wrapper={rustc_workspace_wrapper:?};uw={rustc_wrapper_unresolved};uww={rustc_workspace_wrapper_unresolved}"
-        )
-        .into_bytes()
-    });
+    let encoded = format!(
+        "rustc_wrapper={}\nrustc_workspace_wrapper={}\nrustc_wrapper_unresolved={rustc_wrapper_unresolved}\nrustc_workspace_wrapper_unresolved={rustc_workspace_wrapper_unresolved}\n",
+        encode_slot(rustc_wrapper.as_deref(), rustc_wrapper_unresolved),
+        encode_slot(rustc_workspace_wrapper.as_deref(), rustc_workspace_wrapper_unresolved),
+    );
     ResolvedCompilerWrappers {
         rustc_wrapper,
         rustc_workspace_wrapper,
@@ -532,7 +496,18 @@ fn finish(
         rustc_wrapper_unresolved,
         rustc_workspace_wrapper_unresolved,
         limitations: limitations.into_iter().collect(),
-        subject_digest: sha256_hex(&encoded),
+        subject_digest: sha256_hex(encoded.as_bytes()),
+    }
+}
+
+fn encode_slot(value: Option<&str>, unresolved: bool) -> String {
+    if unresolved {
+        "unresolved".to_string()
+    } else {
+        match value {
+            Some(text) => format!("present:{text}"),
+            None => "absent".to_string(),
+        }
     }
 }
 
@@ -550,18 +525,40 @@ fn local_of(slot: &WrapperSlot) -> Option<String> {
     }
 }
 
-#[derive(Serialize)]
-struct DurableProjection<'a> {
-    rustc_wrapper: Option<&'a str>,
-    rustc_workspace_wrapper: Option<&'a str>,
-    rustc_wrapper_unresolved: bool,
-    rustc_workspace_wrapper_unresolved: bool,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::fs;
+
+    #[derive(Default)]
+    struct OverlayFs {
+        unreadable: BTreeSet<PathBuf>,
+    }
+
+    impl OverlayFs {
+        fn unreadable(path: impl Into<PathBuf>) -> Self {
+            let mut fs = Self::default();
+            fs.unreadable.insert(path.into());
+            fs
+        }
+    }
+
+    impl ConfigFs for OverlayFs {
+        fn is_file(&self, path: &Path) -> bool {
+            self.unreadable.contains(path) || path.is_file()
+        }
+
+        fn read_to_string(&self, path: &Path) -> io::Result<String> {
+            if self.unreadable.contains(path) {
+                return Err(io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "config file is unreadable",
+                ));
+            }
+            std::fs::read_to_string(path)
+        }
+    }
 
     fn write_config(path: &Path, body: &str) {
         if let Some(parent) = path.parent() {
@@ -591,6 +588,15 @@ mod tests {
         fs::create_dir_all(&cargo_home).expect("cargo home");
         fs::create_dir_all(workspace.join(".cargo")).expect("workspace cargo dir");
         (root, cargo_home, workspace.clone(), workspace)
+    }
+
+    #[test]
+    fn dotted_build_key_at_the_root_table_is_read() {
+        let (root, home, ws, _) = fixture();
+        write_config(&ws.join(".cargo/config.toml"), "\"build.rustc-wrapper\" = \"dotted\"\n");
+        let resolved = resolve_tree(&ws, root.path(), &home);
+        assert_eq!(resolved.rustc_wrapper(), Some("dotted"));
+        assert!(resolved.is_complete());
     }
 
     #[test]
