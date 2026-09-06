@@ -199,20 +199,56 @@ fn composition_oracle_renders_github_scope_once() -> Result<()> {
     Ok(())
 }
 
+const REQUIRED_STEP: &str = "      - name: Dependabot Cargo commit-message contract (required merge surface)\n        run: cargo test -p xtask --test dependabot_cargo_commit_message --locked -- --nocapture";
+
+fn check_all_targets_job(workflow: &str) -> Result<&str> {
+    let start = workflow
+        .find("\n  check-all-targets:")
+        .ok_or_else(|| anyhow!("`.github/workflows/ci.yml` must keep job `check-all-targets`"))?;
+    let section = &workflow[start + 1..];
+    let end = section
+        .match_indices('\n')
+        .find(|(idx, _)| {
+            let line = &section[idx + 1..];
+            line.starts_with("  ") && !line.starts_with("   ") && !line.starts_with("  #")
+        })
+        .map(|(idx, _)| idx)
+        .unwrap_or(section.len());
+    Ok(&section[..end])
+}
+
+fn required_wiring_is_present(workflow: &str) -> bool {
+    let Ok(job) = check_all_targets_job(workflow) else {
+        return false;
+    };
+    job.contains(REQUIRED_STEP) && !job.contains("continue-on-error: true")
+}
+
 /// `.github/dependabot.yml` is not in ci-scope's `CI_CONFIG_PATHS`, so this
 /// suite has to stay on the required merge surface or it compiles and never
-/// executes — the #14585 / #14178 failure mode.
+/// executes — the #14585 / #14178 failure mode. A substring mention in a
+/// comment is not enough.
 #[test]
 fn required_merge_surface_executes_this_contract() -> Result<()> {
     let path = dependabot_yaml::project_root().join(".github/workflows/ci.yml");
     let workflow = std::fs::read_to_string(&path)
-        .map_err(|err| anyhow!("reading {}: {err}", path.display()))?;
-    let command = "cargo test -p xtask --test dependabot_cargo_commit_message --locked";
-    if !workflow.contains(command) {
+        .map_err(|err| anyhow!("reading {}: {err}", path.display()))?
+        .replace("\r\n", "\n");
+    if !required_wiring_is_present(&workflow) {
         bail!(
             "{DEPENDABOT_YML} edits do not reach the advisory routed lane, so this \
-             contract must stay on the required merge surface in \
-             `.github/workflows/ci.yml` as `{command}` (#13477)"
+             contract must stay as a required `check-all-targets` step in \
+             `.github/workflows/ci.yml` (#13477)"
+        );
+    }
+    let commented = workflow.replace(
+        REQUIRED_STEP,
+        "      # cargo test -p xtask --test dependabot_cargo_commit_message --locked -- --nocapture",
+    );
+    if required_wiring_is_present(&commented) {
+        bail!(
+            "a comment containing the cargo test command must not satisfy the \
+             wiring contract (#13477)"
         );
     }
     Ok(())
