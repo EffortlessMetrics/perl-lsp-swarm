@@ -1348,9 +1348,13 @@ mod cancel_after_emitted_reason {
         );
 
         let result = Box::new(handle).wait();
-        assert_eq!(
+        // Same-reason cancel is what rewrites Exited into NotStarted. A refused
+        // different reason must not do that work, so electing from the
+        // original script (pre-start cancellation beside Exited) is NotProven.
+        assert_eq!(result.disposition(), &TerminalDisposition::NotProven);
+        assert_ne!(
             result.disposition(),
-            &TerminalDisposition::CancelledBeforeStart(CancellationReason::Shutdown)
+            &TerminalDisposition::CancelledBeforeStart(CancellationReason::OperationSuperseded)
         );
         Ok(())
     }
