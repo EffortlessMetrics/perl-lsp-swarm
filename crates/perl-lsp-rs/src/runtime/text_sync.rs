@@ -650,7 +650,17 @@ impl LspServer {
                 }
             }
 
-            if let Some(changes) = params["contentChanges"].as_array() {
+            let missing_changes: [Value; 0] = [];
+            let changes = match params.get("contentChanges") {
+                Some(Value::Array(items)) => items.as_slice(),
+                _ => {
+                    tracing::warn!(
+                        "didChange contentChanges missing or not an array for {uri}; treating as Full-sync violation"
+                    );
+                    &missing_changes
+                }
+            };
+            {
                 // Phase-1 latency instrumentation (opt-in via PERL_LSP_TIMING).
                 // Instrumentation only — no behavior change to the mutation path.
                 let timing_on = crate::runtime::timing::is_enabled();
@@ -729,9 +739,19 @@ impl LspServer {
                     super::v0_18_text_sync_envelope::FullDocumentAdmission::Accepted {
                         replacements,
                     } => {
-                        super::v0_18_text_sync_envelope::final_full_replacement_text(&replacements)
-                            .unwrap_or("")
-                            .to_string()
+                        let text = super::v0_18_text_sync_envelope::final_full_replacement_text(
+                            &replacements,
+                        )
+                        .unwrap_or("")
+                        .to_string();
+                        // Buffer-length rejection is not a Full-sync protocol
+                        // violation: the replacement was well-shaped but
+                        // cannot be stored. Leave last-good text, generation,
+                        // desync flag, and readiness unchanged.
+                        if let Err(err) = crate::security::validate_buffer_line_lengths(&text) {
+                            return Err(invalid_params(&err.to_string()));
+                        }
+                        text
                     }
                     super::v0_18_text_sync_envelope::FullDocumentAdmission::Violation {
                         reason,
@@ -827,14 +847,6 @@ impl LspServer {
                 let incremental_edits_opt: Option<
                     perl_parser::incremental::incremental_edit::IncrementalEditSet,
                 > = None;
-
-                // The text-sync sink owns the parser-robustness bound for the
-                // resulting buffer. Check after admitting a full-document
-                // replacement, before any document state is committed. The
-                // didSave text-reconciliation path reuses this lifecycle.
-                if let Err(err) = crate::security::validate_buffer_line_lengths(&text) {
-                    return Err(invalid_params(&err.to_string()));
-                }
 
                 // Keep template documents that were intentionally skipped on didOpen
                 // in no-parse mode across subsequent didChange notifications.

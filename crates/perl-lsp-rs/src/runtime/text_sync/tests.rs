@@ -1723,6 +1723,13 @@ fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn
             "text": "short\n"
         }
     }))?;
+    let normalized = server.normalize_uri_key(uri);
+    let (opened_generation, opened_readiness) = {
+        let document = server.documents.lock().get(uri).ok_or("open document")?.clone();
+        assert!(!document.full_sync_required());
+        assert!(document.current_parsed().is_some(), "didOpen must publish a current parse");
+        (document.current_generation(), server.test_active_document_readiness(&normalized))
+    };
     let result = server.handle_did_change(Some(json!({
         "textDocument": {"uri": uri, "version": 2},
         "contentChanges": [full]
@@ -1735,7 +1742,121 @@ fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn
         .ok_or("rejected didChange must retain the document")?
         .clone();
     assert_eq!(document.text, "short\n", "rejected full didChange must not commit");
+    assert_eq!(document.version, 1, "overlong replacement must not watermark the client version");
+    assert_eq!(
+        document.current_generation(),
+        opened_generation,
+        "overlong replacement must not advance generation"
+    );
+    assert!(
+        !document.full_sync_required(),
+        "buffer-length rejection is not a Full-sync protocol violation"
+    );
+    assert!(
+        document.current_parsed().is_some(),
+        "overlong replacement must keep the predecessor parse current"
+    );
+    assert_eq!(
+        server.test_active_document_readiness(&normalized),
+        opened_readiness,
+        "overlong replacement must not install pending readiness"
+    );
 
+    Ok(())
+}
+
+/// Missing, null, or non-array `contentChanges` on an open document is the same
+/// Full-sync violation as an empty array: predecessor text stays current, and
+/// answers fail closed until a later accepted full replacement.
+#[test]
+fn test_did_change_malformed_outer_content_changes_fail_close_open_document()
+-> Result<(), Box<dyn std::error::Error>> {
+    let shapes = [
+        ("missing", None),
+        ("null", Some(json!(null))),
+        ("object", Some(json!({}))),
+        ("string", Some(json!("not-an-array"))),
+        ("number", Some(json!(1))),
+    ];
+    for (label, outer) in shapes {
+        let server = LspServer::new();
+        let uri = format!("file:///malformed-outer-{label}.pl");
+        let original = "sub predecessor_link { 1 }\n";
+        server.did_open(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": original
+            }
+        }))?;
+        let opened_generation = {
+            let document = server.documents.lock().get(&uri).ok_or("open document")?.clone();
+            assert!(document.current_parsed().is_some());
+            document.current_generation()
+        };
+
+        let mut params = json!({
+            "textDocument": { "uri": uri, "version": 2 }
+        });
+        if let Some(changes) = outer {
+            params["contentChanges"] = changes;
+        }
+        server.handle_did_change(Some(params))?;
+
+        let document = server.documents.lock().get(&uri).ok_or("document retained")?.clone();
+        assert_eq!(document.text, original, "{label}: predecessor text must remain current");
+        assert_eq!(document.version, 2, "{label}: observed version still watermarks");
+        assert!(
+            document.full_sync_required(),
+            "{label}: malformed outer contentChanges must fail-close"
+        );
+        assert!(
+            document.current_parsed().is_none(),
+            "{label}: predecessor parse must not remain a current answer"
+        );
+        assert!(
+            document.current_generation() > opened_generation,
+            "{label}: violation must advance generation"
+        );
+        let (state, ready_gen, _) = server
+            .test_active_document_readiness(&server.normalize_uri_key(&uri))
+            .ok_or("malformed outer must keep a readiness entry")?;
+        assert_eq!(
+            state, "unavailable_terminal",
+            "{label}: predecessor parser-core readiness cannot remain current"
+        );
+        assert_eq!(ready_gen, document.current_generation());
+    }
+    Ok(())
+}
+
+/// Unopened documents keep the ignore-and-wait-for-didOpen policy when the
+/// outer `contentChanges` field is missing or the wrong JSON type.
+#[test]
+fn test_did_change_malformed_outer_content_changes_ignored_for_unopened_document()
+-> Result<(), Box<dyn std::error::Error>> {
+    let shapes = [
+        json!({"textDocument": {"uri": "file:///unopened-missing.pl", "version": 1}}),
+        json!({
+            "textDocument": {"uri": "file:///unopened-null.pl", "version": 1},
+            "contentChanges": null
+        }),
+        json!({
+            "textDocument": {"uri": "file:///unopened-object.pl", "version": 1},
+            "contentChanges": {}
+        }),
+    ];
+    for params in shapes {
+        let server = LspServer::new();
+        let uri = params["textDocument"]["uri"].as_str().ok_or("uri")?;
+        server.handle_did_change(Some(params.clone()))?;
+        let docs = server.documents.lock();
+        assert!(
+            docs.get(uri).is_none(),
+            "malformed outer didChange for unopened docs must be ignored"
+        );
+    }
     Ok(())
 }
 
