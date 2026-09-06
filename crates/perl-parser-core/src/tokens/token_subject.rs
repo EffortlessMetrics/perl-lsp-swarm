@@ -282,8 +282,20 @@ pub enum TerminalState {
         at: usize,
     },
     /// Lexing stopped before the end of source.
+    ///
+    /// Never reachable for a production subject: [`ValidatedTokenStream::from_fresh_lex`]
+    /// derives [`Self::CompleteEof`] itself, and every seam that can declare
+    /// this variant is non-production-valid.
     Incomplete {
         /// Byte offset at which the stream stopped.
+        ///
+        /// Validated as a **lower** bound against the tokens carried — it may
+        /// not precede the last token's end — and as at most the source length.
+        /// Between those, it remains a producer declaration: because tokens are
+        /// not contiguous, a lexer may legitimately consume trivia, POD, or a
+        /// heredoc body after its last emitted token, so no tighter upper bound
+        /// can be enforced without rejecting valid streams. A consumer must not
+        /// read this as validated evidence that the span below it was covered.
         stopped_at: usize,
     },
 }
@@ -1287,8 +1299,22 @@ fn validate_terminal(
                     detail: "an incomplete stream carries a terminal EOF token".to_owned(),
                 });
             }
-            // Without this the stop offset is decorative: a stream could report
-            // stopping at byte 5 while carrying tokens that run to byte 40.
+            // A *lower* bound only, and deliberately so. Without it the offset
+            // would be decorative in the direction that contradicts itself: a
+            // stream could report stopping at byte 5 while carrying tokens that
+            // run to byte 40.
+            //
+            // The other direction cannot be bounded soundly. Tokens are not
+            // contiguous — trivia, POD, and heredoc bodies occupy the gaps and
+            // are not tokens — so a lexer may legitimately consume a large span
+            // after its last emitted token and stop there. Any upper bound would
+            // therefore reject valid streams, which is a worse failure than the
+            // looseness it removes. Above the last token end `stopped_at` stays
+            // a producer declaration with no token evidence behind it, bounded
+            // only by the source length checked above. That is tolerable
+            // precisely because `Incomplete` is unreachable for a production
+            // subject: `from_fresh_lex` derives `CompleteEof` itself and every
+            // seam that can declare `Incomplete` is non-production-valid.
             if let Some(last) = tokens.last().filter(|last| last.end() > stopped_at) {
                 return Err(TokenSubjectError::InvalidTerminalState {
                     detail: format!(

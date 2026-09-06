@@ -667,6 +667,41 @@ fn an_incomplete_stream_whose_tokens_outrun_its_stop_offset_is_rejected() -> R {
     Ok(())
 }
 
+/// The negative control on the rule above: the stop offset is bounded *below*
+/// by the tokens carried, and deliberately not above.
+///
+/// Tokens are not contiguous — trivia, POD, and heredoc bodies occupy the gaps
+/// and are not tokens — so a lexer may legitimately consume a large span after
+/// its last emitted token and stop there. A rule that also bounded `stopped_at`
+/// from above would reject those streams, which is the same false-rejection
+/// mistake an adjacency-based ordering rule would have made. This pins that the
+/// looseness is a decision rather than an oversight: above the last token end
+/// the offset is a producer declaration, contained by the fact that
+/// `Incomplete` is never production-valid.
+#[test]
+fn a_stop_offset_far_beyond_the_last_token_is_accepted_because_trivia_is_not_tokens() -> R {
+    let source = "my $x = 1;\n=pod\n\nA large POD block that no token covers.\n\n=cut\n";
+    let mut tokens = lex(source)?;
+    tokens.retain(|token| token.kind() != TokenKind::Eof);
+    tokens.truncate(3);
+    let last_end = tokens.last().ok_or("fixture must carry tokens")?.end();
+
+    // Stop at end of source while carrying tokens that stop far short of it.
+    let subject =
+        fixture_with(source, tokens, TerminalState::Incomplete { stopped_at: source.len() })?;
+
+    assert!(
+        source.len() > last_end + 20,
+        "fixture must leave a substantial uncovered span to be meaningful"
+    );
+    assert_eq!(subject.terminal().offset(), source.len());
+    assert!(
+        !subject.is_production_valid(),
+        "an incomplete stream is never production-valid; that is what contains the declaration"
+    );
+    Ok(())
+}
+
 /// The same partial stream the fixture above accepts must be refused under a
 /// provenance that claims completeness. `from_fresh_lex` cannot express it (it
 /// lexes to EOF itself), so the completeness-claiming side is posed as a replay
