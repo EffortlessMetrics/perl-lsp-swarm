@@ -11,29 +11,45 @@
 
 use std::{fs, path::PathBuf};
 
-/// Non-comment source lines, with trailing `//` comments removed.
-fn significant_lines(source: &str) -> Vec<&str> {
-    source
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with("//") {
-                return None;
+/// Drop `//` line comments (including `//!` / `///`) and `/* */` block comments.
+/// Nested block comments are not required for this seam.
+fn uncommented(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut chars = source.chars().peekable();
+    let mut in_block = false;
+    while let Some(c) = chars.next() {
+        if in_block {
+            if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_block = false;
             }
-            let code = match trimmed.find("//") {
-                Some(index) => trimmed[..index].trim_end(),
-                None => trimmed,
-            };
-            (!code.is_empty()).then_some(code)
-        })
-        .collect()
+            continue;
+        }
+        if c == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            for next in chars.by_ref() {
+                if next == '\n' {
+                    out.push('\n');
+                    break;
+                }
+            }
+            continue;
+        }
+        if c == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            in_block = true;
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// A whole-line crate-root inner `cfg(unix)` appears before any `os::unix` item.
 fn crate_root_unix_gate_precedes_unix_import(source: &str) -> bool {
-    let lines = significant_lines(source);
-    let gate = lines.iter().position(|line| *line == "#![cfg(unix)]");
-    let unix_import = lines.iter().position(|line| line.contains("os::unix"));
+    let code = uncommented(source);
+    let gate = code.lines().position(|line| line.trim() == "#![cfg(unix)]");
+    let unix_import = code.lines().position(|line| line.contains("os::unix"));
     match (gate, unix_import) {
         (Some(gate), Some(unix_import)) => gate < unix_import,
         _ => false,
@@ -78,6 +94,12 @@ fn trailing_line_comment_is_not_a_crate_gate() {
 #[test]
 fn block_comment_is_not_a_crate_gate() {
     let source = "/* #![cfg(unix)] */\nuse std::os::unix::fs::PermissionsExt;\n";
+    assert!(!crate_root_unix_gate_precedes_unix_import(source));
+}
+
+#[test]
+fn multiline_block_comment_interior_is_not_a_crate_gate() {
+    let source = "/*\n#![cfg(unix)]\n*/\nuse std::os::unix::fs::PermissionsExt;\n";
     assert!(!crate_root_unix_gate_precedes_unix_import(source));
 }
 
