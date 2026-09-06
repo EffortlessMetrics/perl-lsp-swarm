@@ -1062,6 +1062,51 @@ path = "checks/custom.rs"
 }
 
 #[test]
+fn named_test_target_without_path_is_still_a_test_crate() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_empty_registry(temp.path());
+    write_package(temp.path(), "demo", "pub fn ready() {}\n", &[]);
+    fs::write(
+        temp.path().join("crates/demo/Cargo.toml"),
+        r#"[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+autotests = false
+
+[[test]]
+name = "named"
+"#,
+    )
+    .expect("named target");
+    fs::write(
+        temp.path().join("crates/demo/tests/named.rs"),
+        "fn helper() { let _ = Some(1).unwrap(); }\n#[test]\nfn uses_helper() { helper(); }\n",
+    )
+    .expect("named.rs");
+    fs::write(
+        temp.path().join("crates/demo/tests/ignored.rs"),
+        "#[test]\nfn skipped() { let _ = Some(1).unwrap(); }\n",
+    )
+    .expect("ignored autodiscovery");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory
+            .rows
+            .iter()
+            .any(|row| { row.path.ends_with("tests/named.rs") && row.site_family == "unwrap" }),
+        "name-only [[test]] crate omitted: {:?}",
+        inventory.rows
+    );
+    assert!(
+        !inventory.population.files.iter().any(|file| file.path.ends_with("tests/ignored.rs")),
+        "autotests=false still absorbed tests/*.rs: {:?}",
+        inventory.population.files
+    );
+}
+
+#[test]
 fn detached_tests_fixture_is_not_executable_population() {
     let temp = fixture_root();
     fs::create_dir_all(temp.path().join("crates/demo/tests/fixtures")).expect("fixtures");

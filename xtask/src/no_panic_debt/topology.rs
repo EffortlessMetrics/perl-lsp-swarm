@@ -356,7 +356,40 @@ fn collect_named_targets(
     for table in table_array(manifest, spec.key) {
         if let Some(path) = table.get("path").and_then(toml::Value::as_str) {
             insert_file(files, root, package, &package_root.join(path), spec.kind);
+            continue;
         }
+        let Some(name) = table.get("name").and_then(toml::Value::as_str) else {
+            continue;
+        };
+        let mut matched = false;
+        for relative in default_target_paths(spec.key, name, package) {
+            let path = package_root.join(relative);
+            if path.is_file() {
+                insert_file(files, root, package, &path, spec.kind);
+                matched = true;
+                break;
+            }
+        }
+        if !matched && let Some(relative) = default_target_paths(spec.key, name, package).first() {
+            insert_file(files, root, package, &package_root.join(relative), spec.kind);
+        }
+    }
+}
+
+fn default_target_paths(kind: &str, name: &str, package: &str) -> Vec<String> {
+    match kind {
+        "bin" if name == package => {
+            vec![
+                "src/main.rs".to_string(),
+                format!("src/bin/{name}.rs"),
+                format!("src/bin/{name}/main.rs"),
+            ]
+        }
+        "bin" => vec![format!("src/bin/{name}.rs"), format!("src/bin/{name}/main.rs")],
+        "test" => vec![format!("tests/{name}.rs"), format!("tests/{name}/main.rs")],
+        "example" => vec![format!("examples/{name}.rs"), format!("examples/{name}/main.rs")],
+        "bench" => vec![format!("benches/{name}.rs"), format!("benches/{name}/main.rs")],
+        _ => Vec::new(),
     }
 }
 
