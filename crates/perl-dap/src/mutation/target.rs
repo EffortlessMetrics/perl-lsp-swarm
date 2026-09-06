@@ -561,12 +561,30 @@ impl MutationTarget {
     /// digest gives that discrimination without putting the frame or binding
     /// spelling, or hash key data, into the receipt.
     ///
-    /// The rule this must satisfy: the fingerprint discriminates **at least as
-    /// finely as [`MutationLocationProvenance`]'s own equality**. Every field
-    /// that makes two locations different has to reach the hash, or the
-    /// durable receipt would collapse cells the type itself keeps apart.
-    /// `location_fingerprint_covers_every_identity_field` enforces that
-    /// field-by-field, so a later field addition cannot silently omit itself.
+    /// # What this identifies, and what carries the rest
+    ///
+    /// This digest identifies the **storage cell**, and deliberately not the
+    /// observation of it. It covers frame, binding, kind, member, and the
+    /// proven referent, so two different cells never share one value — but it
+    /// excludes the session, suspension, and value-authority generations on
+    /// purpose. Folding those in would change the fingerprint on every
+    /// suspension, and a consumer could no longer tell that two edits touched
+    /// the same cell, which is the one question this value exists to answer.
+    ///
+    /// Those generations are not lost: [`MutationTargetReceipt`] carries each
+    /// of them as its own field. So the invariant that actually holds is about
+    /// the **receipt**, not this digest:
+    ///
+    /// ```text
+    /// the receipt discriminates at least as finely as
+    /// MutationLocationProvenance's equality
+    /// ```
+    ///
+    /// with the cell half proven by the fingerprint and the observation half by
+    /// the sibling fields. `receipt_discriminates_every_provenance_field`
+    /// pins that whole property, and the exhaustive destructure below makes a
+    /// newly added provenance field a compile error until someone decides
+    /// which half it belongs to.
     ///
     /// Every field is length-prefixed before hashing, so no two different
     /// field splits can produce the same input, and the input opens with a
@@ -577,23 +595,44 @@ impl MutationTarget {
             bytes.extend_from_slice(&(field.len() as u64).to_be_bytes());
             bytes.extend_from_slice(field);
         }
+        // Exhaustive destructure, no `..`: adding a field to
+        // MutationLocationProvenance stops this compiling until someone
+        // decides whether it identifies the cell (hash it here) or the
+        // observation (carry it as a receipt field). That is the compile-time
+        // half of the coverage guarantee; the test proves the runtime half.
+        let MutationLocationProvenance {
+            // Observation identity — carried as sibling receipt fields, and
+            // deliberately not hashed, so one cell keeps one fingerprint
+            // across suspensions.
+            session_generation: _,
+            suspension_generation: _,
+            value_authority_generation: _,
+            profile_version: _,
+            // Cell identity — hashed below.
+            frame_identity,
+            binding_identity,
+            kind,
+            member,
+            referent_identity,
+        } = &self.location;
+
         let mut bytes = Vec::new();
         push(&mut bytes, MUTATION_LOCATION_DIGEST_DOMAIN);
-        push(&mut bytes, self.location.frame_identity().as_bytes());
-        push(&mut bytes, self.location.binding_identity().as_bytes());
-        push(&mut bytes, format!("{:?}", self.location.kind()).as_bytes());
+        push(&mut bytes, frame_identity.as_bytes());
+        push(&mut bytes, binding_identity.as_bytes());
+        push(&mut bytes, format!("{kind:?}").as_bytes());
         // The proven container referent is part of location identity. Without
         // it, a binding later reaching a *different* array or hash would hash
         // identically at the same member selector, and the fingerprint would
         // discriminate more coarsely than the provenance it projects.
-        match self.location.referent_identity() {
+        match referent_identity {
             Some(referent) => {
                 push(&mut bytes, b"referent");
                 push(&mut bytes, referent.as_bytes());
             }
             None => push(&mut bytes, b"no-referent"),
         }
-        match self.location.member() {
+        match member {
             MutationMember::WholeScalar => push(&mut bytes, b"scalar"),
             MutationMember::ArrayIndex(index) => {
                 push(&mut bytes, b"index");

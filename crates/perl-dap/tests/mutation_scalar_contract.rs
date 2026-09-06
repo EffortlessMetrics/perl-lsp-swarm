@@ -1116,16 +1116,16 @@ fn a_character_key_and_a_byte_key_with_equal_bytes_stay_distinct() -> TestResult
 }
 
 #[test]
-fn location_fingerprint_covers_every_identity_field() -> TestResult {
-    // The rule, stated once instead of patched per field: the fingerprint must
-    // discriminate at least as finely as MutationLocationProvenance's own
-    // equality. Anything that makes two locations different has to reach the
-    // hash, or the durable receipt collapses cells the type keeps apart.
+fn receipt_discriminates_every_provenance_field() -> TestResult {
+    // The invariant, stated at the level where it is actually true: the
+    // RECEIPT discriminates at least as finely as MutationLocationProvenance's
+    // equality. Cell identity is proven by location_fingerprint; observation
+    // identity (the generations) by sibling receipt fields.
     //
-    // Each case below perturbs exactly one identity field of an otherwise
-    // identical container claim and requires both the target AND its
-    // fingerprint to change. A future field that forgets to reach the hash
-    // fails here rather than silently colliding in receipts.
+    // The fingerprint deliberately excludes the generations, so that one cell
+    // keeps one fingerprint across suspensions -- that is what lets a consumer
+    // say "these two edits touched the same cell". Asserting the property on
+    // the whole receipt is what keeps both halves honest.
     let base = || -> MutationTargetCandidate {
         let mut candidate = lexical_candidate("frame#1", "pad:@rows@0");
         candidate.kind = Some(MutationLocationKind::CurrentFrameArrayElement);
@@ -1138,50 +1138,75 @@ fn location_fingerprint_covers_every_identity_field() -> TestResult {
         candidate
     };
 
-    let mut perturbations: Vec<(&str, MutationTargetCandidate)> = Vec::new();
+    // (field, perturbed candidate, must the *fingerprint* move too?)
+    let mut cases: Vec<(&str, MutationTargetCandidate, bool)> = Vec::new();
 
-    let mut other_frame = base();
-    other_frame.frame_identity = "frame#2".to_string();
-    perturbations.push(("frame_identity", other_frame));
+    let mut frame = base();
+    frame.frame_identity = "frame#2".to_string();
+    cases.push(("frame_identity", frame, true));
 
-    let mut other_binding = base();
-    other_binding.binding_identity = "pad:@cols@1".to_string();
-    perturbations.push(("binding_identity", other_binding));
+    let mut binding = base();
+    binding.binding_identity = "pad:@cols@1".to_string();
+    cases.push(("binding_identity", binding, true));
 
-    let mut other_member = base();
-    other_member.member = Some(MutationMember::ArrayIndex(1));
-    perturbations.push(("member", other_member));
+    let mut member = base();
+    member.member = Some(MutationMember::ArrayIndex(1));
+    cases.push(("member", member, true));
 
-    // The case this test was written for: one binding reaching a *replacement*
-    // container. Same frame, same binding, same index -- another storage cell.
-    let mut other_referent = base();
-    other_referent.inspected_value = Some(InspectedValueIdentity {
+    // One binding reaching a replacement container: another storage cell.
+    let mut referent = base();
+    referent.inspected_value = Some(InspectedValueIdentity {
         value_node: "node".to_string(),
         referent: Some("ARRAY(0xbeef)".to_string()),
         value_authority_generation: 11,
     });
-    perturbations.push(("referent_identity", other_referent));
+    cases.push(("referent_identity", referent, true));
 
-    let baseline = bind(&base())?;
-    let baseline_fingerprint = baseline.receipt_projection().location_fingerprint;
+    // Observation identity: the receipt must separate these, the fingerprint
+    // must NOT -- it is the same cell observed under different authority.
+    let mut session = base();
+    session.session_generation = Some(8);
+    cases.push(("session_generation", session, false));
 
-    for (field, candidate) in perturbations {
-        let perturbed = bind(&candidate)?;
-        if perturbed == baseline {
-            return Err(format!("changing {field} did not change the target"));
-        }
-        if perturbed.receipt_projection().location_fingerprint == baseline_fingerprint {
+    let mut suspension = base();
+    suspension.suspension_generation = Some(4);
+    cases.push(("suspension_generation", suspension, false));
+
+    let mut authority = base();
+    authority.value_authority_generation = Some(12);
+    authority.inspected_value = Some(InspectedValueIdentity {
+        value_node: "node".to_string(),
+        referent: Some("ARRAY(0xdead)".to_string()),
+        value_authority_generation: 12,
+    });
+    cases.push(("value_authority_generation", authority, false));
+
+    let baseline = bind(&base())?.receipt_projection();
+
+    for (field, candidate, fingerprint_must_move) in cases {
+        let receipt = bind(&candidate)?.receipt_projection();
+
+        if receipt == baseline {
             return Err(format!(
-                "changing {field} left the location fingerprint unchanged; \
-                 the receipt discriminates more coarsely than the provenance"
+                "changing {field} left the receipt identical; it discriminates \
+                 more coarsely than the provenance"
+            ));
+        }
+
+        let fingerprint_moved = receipt.location_fingerprint != baseline.location_fingerprint;
+        if fingerprint_moved != fingerprint_must_move {
+            return Err(format!(
+                "changing {field}: fingerprint moved={fingerprint_moved}, expected \
+                 {fingerprint_must_move} — cell identity and observation identity \
+                 are being conflated"
             ));
         }
     }
 
-    // Stability in the other direction: an identical claim reproduces the
-    // fingerprint, so it identifies the location and not the call.
-    if bind(&base())?.receipt_projection().location_fingerprint != baseline_fingerprint {
-        return Err("one location produced two fingerprints".to_string());
+    // Stability: an identical claim reproduces the whole receipt, so the
+    // fingerprint identifies the location and not the call.
+    if bind(&base())?.receipt_projection() != baseline {
+        return Err("one location produced two receipts".to_string());
     }
     Ok(())
 }
