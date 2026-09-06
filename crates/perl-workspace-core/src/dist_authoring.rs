@@ -296,11 +296,13 @@ pub fn compare_authoring_with_meta(
         "name",
         authoring.name.clone(),
         metadata.name.clone(),
-        field_is_limited(authoring, DistDeclarationKind::Name, authoring.name.is_none()),
+        field_is_limited(authoring, DistDeclarationKind::Name, authoring.name.is_none())
+            || field_conflicted(authoring, "name"),
     );
     let version_limited = authoring.version.is_none()
         && (authoring.version_from.is_some()
-            || field_is_limited(authoring, DistDeclarationKind::Version, true));
+            || field_is_limited(authoring, DistDeclarationKind::Version, true)
+            || field_conflicted(authoring, "version"));
     push_field_comparison(
         &mut out,
         authoring,
@@ -308,7 +310,7 @@ pub fn compare_authoring_with_meta(
         "version",
         authoring.version.clone(),
         metadata.version.clone(),
-        version_limited,
+        version_limited || field_conflicted(authoring, "version"),
     );
     let authoring_license = normalized_licenses(&authoring.licenses);
     let metadata_license = normalized_licenses(&metadata.licenses);
@@ -319,7 +321,8 @@ pub fn compare_authoring_with_meta(
         "license",
         authoring_license,
         metadata_license,
-        field_is_limited(authoring, DistDeclarationKind::License, authoring.licenses.is_empty()),
+        field_is_limited(authoring, DistDeclarationKind::License, authoring.licenses.is_empty())
+            || field_conflicted(authoring, "license"),
     );
 
     let mut keys = std::collections::BTreeSet::new();
@@ -330,12 +333,13 @@ pub fn compare_authoring_with_meta(
         keys.insert((prereq.module.clone(), prereq.phase.clone(), prereq.relation.clone()));
     }
     for (module, phase, relation) in keys {
+        let prereq_field = format!("prereq:{phase}:{relation}:{module}");
         let limited = authoring.prereqs.iter().any(|item| {
             item.module == module
                 && item.phase == phase
                 && item.relation == relation
                 && item.dynamic
-        });
+        }) || field_conflicted(authoring, &prereq_field);
         let authoring_value = if limited {
             None
         } else {
@@ -360,13 +364,17 @@ pub fn compare_authoring_with_meta(
             &mut out,
             authoring,
             metadata,
-            &format!("prereq:{phase}:{relation}:{module}"),
+            &prereq_field,
             authoring_value,
             metadata_value,
             limited,
         );
     }
     out
+}
+
+fn field_conflicted(authoring: &DistAuthoringFacts, field: &str) -> bool {
+    authoring.conflicts.iter().any(|item| item.field == field)
 }
 
 fn field_is_limited(
@@ -1164,8 +1172,8 @@ fn fingerprint_facts(facts: &DistAuthoringFacts) -> Digest {
         plugins: &'a [String],
         resources: Vec<(&'a str, Option<&'a str>, Option<&'a str>, Option<&'a str>)>,
         provides: Vec<(&'a str, Option<&'a str>, Option<&'a str>)>,
-        prereqs: Vec<(&'a str, Option<&'a str>, &'a str, &'a str)>,
-        conflicts: usize,
+        prereqs: Vec<(&'a str, Option<&'a str>, &'a str, &'a str, bool)>,
+        conflicts: Vec<(&'a str, &'a [String])>,
         limitation_kinds: Vec<&'a str>,
     }
     let canonical = Canonical {
@@ -1206,10 +1214,15 @@ fn fingerprint_facts(facts: &DistAuthoringFacts) -> Digest {
                     item.version.as_deref(),
                     item.phase.as_str(),
                     item.relation.as_str(),
+                    item.dynamic,
                 )
             })
             .collect(),
-        conflicts: facts.conflicts.len(),
+        conflicts: facts
+            .conflicts
+            .iter()
+            .map(|item| (item.field.as_str(), item.values.as_slice()))
+            .collect(),
         limitation_kinds: facts.limitations.iter().map(|item| item.kind.as_str()).collect(),
     };
     match serde_json::to_string(&canonical) {

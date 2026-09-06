@@ -151,9 +151,11 @@ impl ProjectModel {
     /// Compare authoring facts with final metadata facts without merging them.
     ///
     /// Compares against every parsed [`crate::dist::DistMetadataSource`] except
-    /// `cpanfile`. That includes `META.json` today and will include `META.yml`
-    /// once #8458 / PR #14424 lands that source — this crate does not add
-    /// `MetaYml` itself. Authoring and metadata remain separate vectors.
+    /// `cpanfile`, pairing authoring and metadata files that share a parent
+    /// directory so nested distributions do not cross-compare. That includes
+    /// `META.json` today and will include `META.yml` once #8458 / PR #14424
+    /// lands that source — this crate does not add `MetaYml` itself. Authoring
+    /// and metadata remain separate vectors.
     #[must_use]
     pub fn compare_authoring_with_metadata(
         &self,
@@ -162,9 +164,18 @@ impl ProjectModel {
         use crate::dist_authoring::compare_authoring_with_meta;
         let mut out = Vec::new();
         for authoring in &self.dist_authoring {
+            let Some(authoring_dir) = distribution_dir(self, &authoring.file_id) else {
+                continue;
+            };
             for metadata in
                 self.dist_metadata.iter().filter(|item| item.source != DistMetadataSource::Cpanfile)
             {
+                let Some(metadata_dir) = distribution_dir(self, &metadata.file_id) else {
+                    continue;
+                };
+                if authoring_dir != metadata_dir {
+                    continue;
+                }
                 out.extend(compare_authoring_with_meta(authoring, metadata));
             }
         }
@@ -383,6 +394,14 @@ impl ProjectModel {
         }
         dependents.into_iter().collect()
     }
+}
+
+fn distribution_dir<'a>(model: &'a ProjectModel, file_id: &FileId) -> Option<&'a str> {
+    let path = model.files.iter().find(|file| &file.file_id == file_id)?.relative_path.as_str();
+    Some(match path.rsplit_once('/') {
+        Some((dir, _)) => dir,
+        None => "",
+    })
 }
 
 #[cfg(test)]

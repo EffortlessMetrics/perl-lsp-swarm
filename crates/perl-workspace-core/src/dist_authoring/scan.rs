@@ -73,6 +73,16 @@ pub(crate) fn find_ident(source: &str, name: &str, mut from: usize) -> Option<us
     let mut in_single = false;
     let mut in_double = false;
     while from < bytes.len() {
+        if !in_single && !in_double {
+            if at_pod_directive(source, from) {
+                skip_pod(source, &mut from);
+                continue;
+            }
+            if let Some(after) = skip_quotelike_at(source, from) {
+                from = after;
+                continue;
+            }
+        }
         let byte = bytes[from];
         if in_single {
             from += 1;
@@ -445,6 +455,9 @@ fn parse_quoted(source: &str, idx: &mut usize, quote: u8) -> Option<String> {
         let ch = source[*idx..].chars().next()?;
         *idx += ch.len_utf8();
         if escaped {
+            if quote == b'\'' && ch != '\\' && ch != '\'' {
+                value.push('\\');
+            }
             value.push(ch);
             escaped = false;
             continue;
@@ -457,6 +470,9 @@ fn parse_quoted(source: &str, idx: &mut usize, quote: u8) -> Option<String> {
             return Some(value);
         }
         value.push(ch);
+    }
+    if escaped {
+        value.push('\\');
     }
     Some(value)
 }
@@ -770,7 +786,7 @@ fn at_pod_directive(source: &str, idx: usize) -> bool {
         return false;
     }
     let at_line_start = idx == 0 || bytes.get(idx - 1) == Some(&b'\n');
-    at_line_start && bytes[idx..].starts_with(b"=pod")
+    at_line_start && bytes.get(idx + 1).is_some_and(|b| b.is_ascii_alphabetic())
 }
 
 fn skip_pod(source: &str, idx: &mut usize) {

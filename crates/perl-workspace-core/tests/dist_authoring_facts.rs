@@ -743,3 +743,120 @@ WriteMakefile(
     assert!(!compared.is_empty());
     assert!(compared.iter().all(|c| c.metadata_source == DistMetadataSource::MetaJson));
 }
+
+#[test]
+fn pod_and_quotelike_examples_do_not_replace_real_writemakefile() {
+    let src = r#"
+=head1 SYNOPSIS
+
+    WriteMakefile(NAME => 'Wrong::Doc', VERSION => '9.99');
+
+=cut
+
+my $example = q{ WriteMakefile(NAME => 'Wrong::Quote') };
+
+WriteMakefile(
+    NAME => 'Foo::Bar',
+    VERSION => '1.23',
+);
+"#;
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    assert_eq!(facts.name.as_deref(), Some("Foo-Bar"));
+    assert_eq!(facts.version.as_deref(), Some("1.23"));
+}
+
+#[test]
+fn nested_distributions_do_not_cross_compare() {
+    let root_mk = "WriteMakefile(NAME => 'Root::Dist', VERSION => '1.00');\n";
+    let nested_mk = "WriteMakefile(NAME => 'Nested::Dist', VERSION => '2.00');\n";
+    let root_meta = r#"{"name":"Root-Dist","version":"1.00"}"#;
+    let nested_meta = r#"{"name":"Nested-Dist","version":"2.00"}"#;
+    let model = build(
+        "nested-dists",
+        &[
+            ("Makefile.PL", root_mk),
+            ("META.json", root_meta),
+            ("ext/Nested/Makefile.PL", nested_mk),
+            ("ext/Nested/META.json", nested_meta),
+        ],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let compared = model.compare_authoring_with_metadata();
+    assert!(compared.iter().any(|c| {
+        c.field == "name"
+            && c.authoring_value.as_deref() == Some("Root-Dist")
+            && c.agreement == DistFactAgreement::Agree
+    }));
+    assert!(compared.iter().any(|c| {
+        c.field == "name"
+            && c.authoring_value.as_deref() == Some("Nested-Dist")
+            && c.agreement == DistFactAgreement::Agree
+    }));
+    assert!(!compared.iter().any(|c| {
+        c.field == "name"
+            && c.authoring_value.as_deref() == Some("Root-Dist")
+            && c.metadata_value.as_deref() == Some("Nested-Dist")
+    }));
+}
+
+#[test]
+fn conflicting_identity_compares_as_limited_not_metadata_only() {
+    let makefile = r#"
+WriteMakefile(
+    NAME => 'Foo::Bar',
+    DISTNAME => 'Other-Name',
+    VERSION => '1.0',
+    PREREQ_PM => { 'Moo' => '1.0', 'Moo' => '2.0' },
+);
+"#;
+    let meta =
+        r#"{"name":"Foo-Bar","version":"1.0","prereqs":{"runtime":{"requires":{"Moo":"2.0"}}}}"#;
+    let model = build(
+        "conflict-compare",
+        &[("Makefile.PL", makefile), ("META.json", meta)],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let compared = model.compare_authoring_with_metadata();
+    assert!(
+        compared.iter().any(|c| c.field == "name" && c.agreement == DistFactAgreement::Limited)
+    );
+    assert!(compared.iter().any(|c| {
+        c.field.contains("prereq:runtime:requires:Moo") && c.agreement == DistFactAgreement::Limited
+    }));
+}
+
+#[test]
+fn fact_fingerprint_includes_conflict_field_values() {
+    let a = r#"
+WriteMakefile(
+    NAME => 'Foo::Bar',
+    DISTNAME => 'Other-Name',
+    VERSION => '1.0',
+);
+"#;
+    let b = r#"
+WriteMakefile(
+    NAME => 'Foo::Bar',
+    DISTNAME => 'Third-Name',
+    VERSION => '1.0',
+);
+"#;
+    let first = parse_makefile_pl(fid("Makefile.PL", a), a);
+    let second = parse_makefile_pl(fid("Makefile.PL", b), b);
+    assert_eq!(first.conflicts.len(), second.conflicts.len());
+    assert_ne!(first.fact_fingerprint, second.fact_fingerprint);
+}
+
+#[test]
+fn single_quoted_paths_preserve_ordinary_backslashes() {
+    let src = "WriteMakefile(\n    NAME => 'Foo::Bar',\n    ABSTRACT => 'C:\\foo\\bar',\n    VERSION => '1.0',\n);\n";
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    assert_eq!(facts.summary.as_deref(), Some(r"C:\foo\bar"));
+}
+
+#[test]
+fn single_quoted_special_escapes_collapse() {
+    let src = "WriteMakefile(\n    NAME => 'Foo::Bar',\n    ABSTRACT => 'it\\'s \\\\ok',\n);\n";
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    assert_eq!(facts.summary.as_deref(), Some(r"it's \ok"));
+}
