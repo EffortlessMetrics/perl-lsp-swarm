@@ -1842,40 +1842,55 @@ mod tests {
             .build()
     }
 
-    fn published_normalized_halves(
+    fn published_path_halves(
         snapshot: &ProjectEnvironmentSnapshot,
-    ) -> Vec<(&'static str, &str)> {
+    ) -> Vec<(&'static str, &str, &str)> {
         let mut halves = Vec::new();
         if let Some(interpreter) = &snapshot.selected_interpreter {
-            halves.push(("selected_interpreter", interpreter.executable.normalized.as_str()));
+            halves.push((
+                "selected_interpreter",
+                interpreter.executable.normalized.as_str(),
+                interpreter.executable.public_id.as_str(),
+            ));
         }
         for entry in &snapshot.include_entries {
-            halves.push(("include_entry", entry.path.normalized.as_str()));
+            halves.push((
+                "include_entry",
+                entry.path.normalized.as_str(),
+                entry.path.public_id.as_str(),
+            ));
         }
         for root in &snapshot.project_roots {
-            halves.push(("project_root", root.path.normalized.as_str()));
+            halves.push((
+                "project_root",
+                root.path.normalized.as_str(),
+                root.path.public_id.as_str(),
+            ));
         }
         for tool in &snapshot.tool_candidates {
-            halves.push(("tool_candidate", tool.executable.normalized.as_str()));
+            halves.push((
+                "tool_candidate",
+                tool.executable.normalized.as_str(),
+                tool.executable.public_id.as_str(),
+            ));
         }
         halves
     }
 
+    fn published_normalized_halves(
+        snapshot: &ProjectEnvironmentSnapshot,
+    ) -> Vec<(&'static str, &str)> {
+        published_path_halves(snapshot)
+            .into_iter()
+            .map(|(owner, normalized, _)| (owner, normalized))
+            .collect()
+    }
+
     fn published_public_ids(snapshot: &ProjectEnvironmentSnapshot) -> Vec<(&'static str, &str)> {
-        let mut ids = Vec::new();
-        if let Some(interpreter) = &snapshot.selected_interpreter {
-            ids.push(("selected_interpreter", interpreter.executable.public_id.as_str()));
-        }
-        for entry in &snapshot.include_entries {
-            ids.push(("include_entry", entry.path.public_id.as_str()));
-        }
-        for root in &snapshot.project_roots {
-            ids.push(("project_root", root.path.public_id.as_str()));
-        }
-        for tool in &snapshot.tool_candidates {
-            ids.push(("tool_candidate", tool.executable.public_id.as_str()));
-        }
-        ids
+        published_path_halves(snapshot)
+            .into_iter()
+            .map(|(owner, _, public_id)| (owner, public_id))
+            .collect()
     }
 
     fn assert_redaction_map_moves_fingerprint(
@@ -1909,6 +1924,14 @@ mod tests {
     -> Result<(), EnvironmentBuildError> {
         let baseline_paths = published_paths_baseline();
         let baseline = snapshot_with_published_paths(&baseline_paths)?;
+        assert_eq!(
+            published_path_halves(&baseline)
+                .into_iter()
+                .map(|(owner, _, _)| owner)
+                .collect::<Vec<_>>(),
+            ["selected_interpreter", "include_entry", "project_root", "tool_candidate"],
+            "fixture must publish every path kind the receipt exposes"
+        );
 
         let again = snapshot_with_published_paths(&baseline_paths)?;
         assert_eq!(published_normalized_halves(&baseline), published_normalized_halves(&again));
