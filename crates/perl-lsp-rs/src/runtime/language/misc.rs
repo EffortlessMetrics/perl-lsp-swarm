@@ -12,8 +12,7 @@
 
 use super::super::{
     CodeLensProvider, INVALID_PARAMS, INVALID_REQUEST, JsonRpcError, LspServer, METHOD_NOT_FOUND,
-    Node, NodeKind, TestKind, TestRunner, Value, get_shebang_lens, json, position_to_offset,
-    resolve_code_lens,
+    TestKind, TestRunner, Value, get_shebang_lens, json, position_to_offset, resolve_code_lens,
 };
 use crate::protocol::{invalid_params, req_position, req_uri};
 #[cfg(feature = "workspace")]
@@ -39,6 +38,7 @@ fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
 }
 
 mod debug_launch;
+mod inlay_hint_declaration;
 mod inline_values;
 mod live_provider_trace;
 #[cfg(not(target_arch = "wasm32"))]
@@ -722,8 +722,10 @@ impl LspServer {
     /// Resolve the LSP Location for an inlay hint label, enabling click-to-definition.
     ///
     /// Extracts the document URI and function name from the hint's `data` field,
-    /// looks up the open document, walks the AST to find the subroutine definition,
-    /// and converts its byte-offset location to an LSP `{ uri, range }` object.
+    /// looks up the open document, and selects the Perl-effective subroutine
+    /// (last same-package definition at the call-site package, or the package
+    /// named by a qualified callable). Converts that node's byte-offset location
+    /// to an LSP `{ uri, range }` object.
     ///
     /// Returns `None` when the document is not open, the function is not found,
     /// or the hint data is missing required fields.
@@ -734,18 +736,25 @@ impl LspServer {
             .get("functionName")
             .and_then(|f| f.as_str())
             .or_else(|| data.get("function").and_then(|f| f.as_str()))?;
-        let short_name = function_name.rsplit("::").next().unwrap_or(function_name);
 
         let documents = self.documents_guard();
         let doc = self.get_document(&documents, uri)?;
         let parsed = doc.current_parsed();
         let ast = parsed.as_ref().and_then(|p| p.ast())?;
+        let call_site_offset = hint
+            .get("position")
+            .and_then(|pos| {
+                let line = u32::try_from(pos.get("line")?.as_u64()?).ok()?;
+                let character = u32::try_from(pos.get("character")?.as_u64()?).ok()?;
+                Some(self.pos16_to_offset(doc, line, character))
+            })
+            .unwrap_or(doc.text.len());
 
-        let sub_node = Self::find_subroutine_node(ast, function_name).or_else(|| {
-            (short_name != function_name)
-                .then(|| Self::find_subroutine_node(ast, short_name))
-                .flatten()
-        })?;
+        let sub_node = inlay_hint_declaration::effective_subroutine_declaration(
+            ast,
+            function_name,
+            call_site_offset,
+        )?;
         let (start_line, start_char) = self.offset_to_pos16(doc, sub_node.location.start);
         let (end_line, end_char) = self.offset_to_pos16(doc, sub_node.location.end);
 
@@ -756,22 +765,6 @@ impl LspServer {
                 "end":   { "line": end_line,   "character": end_char   }
             }
         }))
-    }
-
-    /// Walk the AST to find a top-level subroutine node with the given name.
-    fn find_subroutine_node<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
-        if matches!(&node.kind, NodeKind::Subroutine { name: Some(sub_name), .. } if sub_name == name)
-        {
-            return Some(node);
-        }
-
-        let mut found = None;
-        node.for_each_child(|child| {
-            if found.is_none() {
-                found = Self::find_subroutine_node(child, name);
-            }
-        });
-        found
     }
 
     /// Handle textDocument/selectionRange request
