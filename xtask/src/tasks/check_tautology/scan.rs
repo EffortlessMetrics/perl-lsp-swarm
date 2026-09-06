@@ -1,12 +1,12 @@
 //! Walk a parsed Rust file and collect tautological assertion macros.
 
 use super::detect::{Detection, RuleId, classify_assert_condition_in, classify_assert_eq};
-use super::expr::{TypeEnv, bind_binding_pat, bind_pat_type};
+use super::expr::{TypeEnv, bind_binding_pat, bind_pat_type, peel};
 use syn::parse::{ParseStream, Parser};
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::{
-    Expr, ExprClosure, ExprForLoop, ExprIf, ExprMacro, ExprWhile, File, ImplItemFn, ItemFn,
+    BinOp, Expr, ExprClosure, ExprForLoop, ExprIf, ExprMacro, ExprWhile, File, ImplItemFn, ItemFn,
     ItemMacro, Local, Macro, StmtMacro, TraitItemFn,
 };
 
@@ -65,6 +65,12 @@ impl AssertionVisitor<'_> {
     fn bind_current(&mut self, pat: &syn::Pat) {
         if let Some(env) = self.env.last_mut() {
             bind_binding_pat(env, pat);
+        }
+    }
+
+    fn bind_lets_in_condition(&mut self, expr: &Expr) {
+        if let Some(env) = self.env.last_mut() {
+            bind_lets_in_condition(env, expr);
         }
     }
 
@@ -140,19 +146,11 @@ impl<'ast> Visit<'ast> for AssertionVisitor<'_> {
         for attr in &node.attrs {
             self.visit_attribute(attr);
         }
-        match &*node.cond {
-            Expr::Let(expr_let) => {
-                self.visit_expr(&expr_let.expr);
-                self.push_scope();
-                self.bind_current(&expr_let.pat);
-                self.visit_block(&node.then_branch);
-                self.pop_scope();
-            }
-            other => {
-                self.visit_expr(other);
-                self.visit_block(&node.then_branch);
-            }
-        }
+        self.visit_expr(&node.cond);
+        self.push_scope();
+        self.bind_lets_in_condition(&node.cond);
+        self.visit_block(&node.then_branch);
+        self.pop_scope();
         if let Some((_, else_expr)) = &node.else_branch {
             self.visit_expr(else_expr);
         }
@@ -165,19 +163,11 @@ impl<'ast> Visit<'ast> for AssertionVisitor<'_> {
         if let Some(label) = &node.label {
             self.visit_label(label);
         }
-        match &*node.cond {
-            Expr::Let(expr_let) => {
-                self.visit_expr(&expr_let.expr);
-                self.push_scope();
-                self.bind_current(&expr_let.pat);
-                self.visit_block(&node.body);
-                self.pop_scope();
-            }
-            other => {
-                self.visit_expr(other);
-                self.visit_block(&node.body);
-            }
-        }
+        self.visit_expr(&node.cond);
+        self.push_scope();
+        self.bind_lets_in_condition(&node.cond);
+        self.visit_block(&node.body);
+        self.pop_scope();
     }
 
     fn visit_arm(&mut self, node: &'ast syn::Arm) {
@@ -235,6 +225,17 @@ impl AssertionVisitor<'_> {
             rule: detection.rule,
             shape: detection.rule.shape(),
         });
+    }
+}
+
+fn bind_lets_in_condition(env: &mut TypeEnv, expr: &Expr) {
+    match peel(expr) {
+        Expr::Let(expr_let) => bind_binding_pat(env, &expr_let.pat),
+        Expr::Binary(binary) if matches!(binary.op, BinOp::And(_)) => {
+            bind_lets_in_condition(env, &binary.left);
+            bind_lets_in_condition(env, &binary.right);
+        }
+        _ => {}
     }
 }
 
@@ -438,6 +439,35 @@ mod tests {
             }
         "#;
         assert_eq!(rules(source), vec![RuleId::OptionSomeOrNone], "{:?}", rules(source));
+    }
+
+    #[test]
+    fn let_chain_bindings_shadow_option_parameters() {
+        let source = r#"
+            fn probe(value: Option<u8>, probe: Probe) {
+                if let _ready = true && let value = probe {
+                    assert!(value.is_some() || value.is_none());
+                } else {
+                    assert!(value.is_some() || value.is_none());
+                }
+                while let _ready = true && let value = probe {
+                    assert!(value.is_some() || value.is_none());
+                    break;
+                }
+                assert!(value.is_some() || value.is_none());
+            }
+            struct Probe { n: u8 }
+            impl Probe {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+        "#;
+        assert_eq!(
+            rules(source),
+            vec![RuleId::OptionSomeOrNone, RuleId::OptionSomeOrNone],
+            "{:?}",
+            rules(source)
+        );
     }
 
     #[test]
