@@ -875,35 +875,18 @@ jobs:
           echo "baseline=$BASELINE" >> $GITHUB_OUTPUT
           echo "Using baseline: $BASELINE"
 
-      - name: Check perl-parser API compatibility
+      - name: Check API-ratcheted crates for compatibility
+        # The crate set is .ci/public-api-baselines/ratchet-crates.txt, the same
+        # list the PR rail and the `just semver-check*` recipes read (#14607).
+        env:
+          SEMVER_BASELINE: ${{ steps.baseline.outputs.baseline }}
         run: |
-          cargo semver-checks check-release -p perl-parser \
-            --baseline-rev ${{ steps.baseline.outputs.baseline }} \
-            || echo "::warning::Breaking changes detected in perl-parser"
-
-      - name: Check perl-lexer API compatibility
-        run: |
-          cargo semver-checks check-release -p perl-lexer \
-            --baseline-rev ${{ steps.baseline.outputs.baseline }} \
-            || echo "::warning::Breaking changes detected in perl-lexer"
-
-      - name: Check perl-parser-core API compatibility
-        run: |
-          cargo semver-checks check-release -p perl-parser-core \
-            --baseline-rev ${{ steps.baseline.outputs.baseline }} \
-            || echo "::warning::Breaking changes detected in perl-parser-core"
-
-      - name: Check perl-lsp-rs API compatibility
-        run: |
-          cargo semver-checks check-release -p perl-lsp-rs \
-            --baseline-rev ${{ steps.baseline.outputs.baseline }} \
-            || echo "::warning::Breaking changes detected in perl-lsp-rs"
-
-      - name: Check perllsp API compatibility
-        run: |
-          cargo semver-checks check-release -p perllsp \
-            --baseline-rev ${{ steps.baseline.outputs.baseline }} \
-            || echo "::warning::Breaking changes detected in perllsp"
+          mapfile -t crates < <(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .ci/public-api-baselines/ratchet-crates.txt | grep -v '^$')
+          for crate in "${crates[@]}"; do
+            cargo semver-checks check-release -p "${crate}" \
+              --baseline-rev "${SEMVER_BASELINE}" \
+              || echo "::warning::Breaking changes detected in ${crate}"
+          done
 
       - name: Generate breaking changes report
         if: always()

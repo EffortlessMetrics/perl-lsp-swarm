@@ -128,30 +128,38 @@ jobs:
           # perl-parser-core, perl-workspace, perl-ast, ...) derives its crates/<dir>/
           # prefix from the perl_X:: tokens in .ci/public-api-baselines/*.txt, so the
           # selector tracks the real re-export closure without maintaining a second
-          # hand-written list beside the baselines.
+          # hand-written list beside the baselines. The crates the rails check
+          # directly come from the same single list the recipes read
+          # (.ci/public-api-baselines/ratchet-crates.txt, #14607), so this
+          # selector cannot disagree with `just public-api-check`.
           STATIC_PREFIXES = (
-              # Facade surfaces checked directly by just public-api-check and the
-              # nightly semver rail (includes crates with no re-export trail).
-              "crates/perl-lsp-rs/",
-              "crates/perl-parser/",
-              "crates/perl-lexer/",
-              "crates/perl-parser-core/",
-              "crates/perl-uri/",
-              "crates/perl-dap/",
-              "crates/perllsp/",
               ".ci/public-api-baselines/",
           )
+          RATCHET_LIST = os.path.join(".ci", "public-api-baselines", "ratchet-crates.txt")
           TOKEN_RE = re.compile("(?<![A-Za-z0-9_])perl_[a-z0-9_]+(?=::)")
+
+
+          def ratchet_crates():
+              try:
+                  lines = open(RATCHET_LIST, encoding="utf-8").read().splitlines()
+              except OSError:
+                  return ()
+              crates = (line.split("#", 1)[0].strip() for line in lines)
+              return tuple(crate for crate in crates if crate)
 
 
           def derive_prefixes():
               found = set(STATIC_PREFIXES)
+              for crate in ratchet_crates():
+                  found.add("crates/" + crate + "/")
               baseline_dir = os.path.join(".ci", "public-api-baselines")
               try:
                   names = os.listdir(baseline_dir)
               except OSError:
                   return tuple(sorted(found))
               for name in names:
+                  if not name.endswith(".txt") or name == "ratchet-crates.txt":
+                      continue
                   path = os.path.join(baseline_dir, name)
                   try:
                       content = open(path, encoding="utf-8").read()
@@ -603,7 +611,7 @@ jobs:
         with:
           tool: just
 
-      - name: Check public API surface (perl-lsp-rs, perl-parser, perl-uri, perl-dap, perllsp)
+      - name: Check public API surface (.ci/public-api-baselines/ratchet-crates.txt)
         if: needs.draft-pr-check.outputs.api_scope == 'true'
         # Uses cargo public-api --simplified to omit blanket-impl noise; baselines in .ci/public-api-baselines/
         run: just public-api-check
@@ -680,12 +688,15 @@ jobs:
             echo "Using baseline: ${BASELINE}"
           fi
 
-      - name: Check published parser-stack crates against baseline
+      - name: Check API-ratcheted crates against baseline
         if: needs.draft-pr-check.outputs.api_scope == 'true' && steps.baseline.outputs.baseline != 'none'
         env:
           SEMVER_BASELINE: ${{ steps.baseline.outputs.baseline }}
+        # The crate set is .ci/public-api-baselines/ratchet-crates.txt, the same
+        # list `just semver-check-all` and `just public-api-check` read (#14607).
         run: |
-          for crate in perl-parser perl-lexer perl-parser-core perl-lsp-rs perllsp; do
+          mapfile -t crates < <(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .ci/public-api-baselines/ratchet-crates.txt | grep -v '^$')
+          for crate in "${crates[@]}"; do
             if cargo semver-checks check-release -p "${crate}" \
               --baseline-rev "${SEMVER_BASELINE}"; then
               echo "semver: ${crate} compatible"

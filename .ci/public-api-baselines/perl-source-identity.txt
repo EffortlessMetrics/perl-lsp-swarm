@@ -1,0 +1,152 @@
+pub mod perl_source_identity
+pub perl_source_identity::PhysicalSourceRole::Generated
+pub perl_source_identity::PhysicalSourceRole::Primary
+pub perl_source_identity::PhysicalSourceRole::RuntimeDerived
+pub perl_source_identity::PhysicalSourceRole::Staged
+pub perl_source_identity::PhysicalSourceRole::Unavailable
+pub perl_source_identity::PhysicalSourceRole::Unknown
+pub perl_source_identity::PhysicalSourceRole::Upstream
+pub fn perl_source_identity::PhysicalSourceRole::is_accessible(&self) -> bool
+pub fn perl_source_identity::PhysicalSourceRole::clone(&self) -> perl_source_identity::PhysicalSourceRole
+pub fn perl_source_identity::PhysicalSourceRole::cmp(&self, other: &perl_source_identity::PhysicalSourceRole) -> core::cmp::Ordering
+pub fn perl_source_identity::PhysicalSourceRole::eq(&self, other: &perl_source_identity::PhysicalSourceRole) -> bool
+pub fn perl_source_identity::PhysicalSourceRole::partial_cmp(&self, other: &perl_source_identity::PhysicalSourceRole) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_source_identity::PhysicalSourceRole::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::PhysicalSourceRole::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::PhysicalSourceRole::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_source_identity::PhysicalSourceRole::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_source_identity::PhysicalSourceRole::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_source_identity::SourceGeneration::Known(alloc::string::String)
+pub perl_source_identity::SourceGeneration::Unknown
+pub fn perl_source_identity::SourceGeneration::as_label(&self) -> core::option::Option<&str>
+pub fn perl_source_identity::SourceGeneration::is_known(&self) -> bool
+pub fn perl_source_identity::SourceGeneration::is_unknown(&self) -> bool
+pub fn perl_source_identity::SourceGeneration::known(value: impl core::convert::Into<alloc::string::String>) -> Self
+pub fn perl_source_identity::SourceGeneration::clone(&self) -> perl_source_identity::SourceGeneration
+pub fn perl_source_identity::SourceGeneration::cmp(&self, other: &perl_source_identity::SourceGeneration) -> core::cmp::Ordering
+pub fn perl_source_identity::SourceGeneration::eq(&self, other: &perl_source_identity::SourceGeneration) -> bool
+pub fn perl_source_identity::SourceGeneration::partial_cmp(&self, other: &perl_source_identity::SourceGeneration) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_source_identity::SourceGeneration::default() -> perl_source_identity::SourceGeneration
+pub fn perl_source_identity::SourceGeneration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::SourceGeneration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::SourceGeneration::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_source_identity::SourceGeneration::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_source_identity::SourceGeneration::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_source_identity::SourceOrigin::Generated
+pub perl_source_identity::SourceOrigin::RuntimeDerived
+pub perl_source_identity::SourceOrigin::Staged
+pub perl_source_identity::SourceOrigin::Unknown
+pub perl_source_identity::SourceOrigin::Upstream
+pub perl_source_identity::SourceOrigin::Virtual
+pub perl_source_identity::SourceOrigin::Workspace
+pub fn perl_source_identity::SourceOrigin::has_physical_path(&self) -> bool
+pub fn perl_source_identity::SourceOrigin::is_workspace(&self) -> bool
+pub fn perl_source_identity::SourceOrigin::clone(&self) -> perl_source_identity::SourceOrigin
+pub fn perl_source_identity::SourceOrigin::cmp(&self, other: &perl_source_identity::SourceOrigin) -> core::cmp::Ordering
+pub fn perl_source_identity::SourceOrigin::eq(&self, other: &perl_source_identity::SourceOrigin) -> bool
+pub fn perl_source_identity::SourceOrigin::partial_cmp(&self, other: &perl_source_identity::SourceOrigin) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_source_identity::SourceOrigin::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::SourceOrigin::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::SourceOrigin::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_source_identity::SourceOrigin::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_source_identity::SourceOrigin::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_source_identity::ContentDigest(_)
+pub fn perl_source_identity::ContentDigest::as_wire(&self) -> &str
+pub fn perl_source_identity::ContentDigest::from_wire(s: &str) -> core::option::Option<Self>
+pub fn perl_source_identity::ContentDigest::of_bytes(content: &[u8]) -> Self
+pub fn perl_source_identity::ContentDigest::clone(&self) -> perl_source_identity::ContentDigest
+pub fn perl_source_identity::ContentDigest::cmp(&self, other: &perl_source_identity::ContentDigest) -> core::cmp::Ordering
+pub fn perl_source_identity::ContentDigest::eq(&self, other: &perl_source_identity::ContentDigest) -> bool
+pub fn perl_source_identity::ContentDigest::partial_cmp(&self, other: &perl_source_identity::ContentDigest) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_source_identity::ContentDigest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::ContentDigest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::ContentDigest::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_source_identity::ContentDigest::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_source_identity::ContentDigest::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub struct perl_source_identity::ContentRevision
+pub perl_source_identity::ContentRevision::content_digest: perl_source_identity::ContentDigest
+pub perl_source_identity::ContentRevision::logical_source_id: perl_source_identity::LogicalSourceId
+pub fn perl_source_identity::ContentRevision::new(logical_source_id: perl_source_identity::LogicalSourceId, content_digest: perl_source_identity::ContentDigest) -> Self
+pub fn perl_source_identity::ContentRevision::same_content_as(&self, other: &Self) -> bool
+pub fn perl_source_identity::ContentRevision::same_logical_source_as(&self, other: &Self) -> bool
+pub fn perl_source_identity::ContentRevision::clone(&self) -> perl_source_identity::ContentRevision
+pub fn perl_source_identity::ContentRevision::cmp(&self, other: &perl_source_identity::ContentRevision) -> core::cmp::Ordering
+pub fn perl_source_identity::ContentRevision::eq(&self, other: &perl_source_identity::ContentRevision) -> bool
+pub fn perl_source_identity::ContentRevision::partial_cmp(&self, other: &perl_source_identity::ContentRevision) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_source_identity::ContentRevision::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::ContentRevision::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_source_identity::ContentRevision::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_source_identity::ContentRevision::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_source_identity::LogicalSourceId(_)
+pub fn perl_source_identity::LogicalSourceId::as_wire(&self) -> &str
+pub fn perl_source_identity::LogicalSourceId::from_wire(s: &str) -> core::option::Option<Self>
+pub fn perl_source_identity::LogicalSourceId::from_root_and_path(workspace_root_id: &perl_source_identity::WorkspaceRootId, root_relative_path: &str) -> Self
+pub fn perl_source_identity::LogicalSourceId::clone(&self) -> perl_source_identity::LogicalSourceId
+pub fn perl_source_identity::LogicalSourceId::cmp(&self, other: &perl_source_identity::LogicalSourceId) -> core::cmp::Ordering
+pub fn perl_source_identity::LogicalSourceId::eq(&self, other: &perl_source_identity::LogicalSourceId) -> bool
+pub fn perl_source_identity::LogicalSourceId::partial_cmp(&self, other: &perl_source_identity::LogicalSourceId) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_source_identity::LogicalSourceId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::LogicalSourceId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::LogicalSourceId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_source_identity::LogicalSourceId::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_source_identity::LogicalSourceId::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub struct perl_source_identity::ProjectId(_)
+pub fn perl_source_identity::ProjectId::as_wire(&self) -> &str
+pub fn perl_source_identity::ProjectId::from_wire(s: &str) -> core::option::Option<Self>
+pub fn perl_source_identity::ProjectId::from_canonical_name(canonical_name: &str) -> Self
+pub fn perl_source_identity::ProjectId::clone(&self) -> perl_source_identity::ProjectId
+pub fn perl_source_identity::ProjectId::cmp(&self, other: &perl_source_identity::ProjectId) -> core::cmp::Ordering
+pub fn perl_source_identity::ProjectId::eq(&self, other: &perl_source_identity::ProjectId) -> bool
+pub fn perl_source_identity::ProjectId::partial_cmp(&self, other: &perl_source_identity::ProjectId) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_source_identity::ProjectId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::ProjectId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::ProjectId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_source_identity::ProjectId::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_source_identity::ProjectId::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub struct perl_source_identity::SourceIdentityEnvelope
+pub perl_source_identity::SourceIdentityEnvelope::content_revision: core::option::Option<perl_source_identity::ContentRevision>
+pub perl_source_identity::SourceIdentityEnvelope::generation: perl_source_identity::SourceGeneration
+pub perl_source_identity::SourceIdentityEnvelope::logical_source_id: perl_source_identity::LogicalSourceId
+pub perl_source_identity::SourceIdentityEnvelope::physical_source_role: perl_source_identity::PhysicalSourceRole
+pub perl_source_identity::SourceIdentityEnvelope::project_id: perl_source_identity::ProjectId
+pub perl_source_identity::SourceIdentityEnvelope::schema_version: perl_source_identity::SourceIdentitySchemaVersion
+pub perl_source_identity::SourceIdentityEnvelope::source_origin: perl_source_identity::SourceOrigin
+pub perl_source_identity::SourceIdentityEnvelope::workspace_root_id: perl_source_identity::WorkspaceRootId
+pub fn perl_source_identity::SourceIdentityEnvelope::for_virtual_source(project_id: perl_source_identity::ProjectId, workspace_root_id: perl_source_identity::WorkspaceRootId, logical_source_id: perl_source_identity::LogicalSourceId, content_revision: core::option::Option<perl_source_identity::ContentRevision>, generation: perl_source_identity::SourceGeneration) -> Self
+pub fn perl_source_identity::SourceIdentityEnvelope::for_workspace_file(project_id: perl_source_identity::ProjectId, workspace_root_id: perl_source_identity::WorkspaceRootId, logical_source_id: perl_source_identity::LogicalSourceId, content_revision: core::option::Option<perl_source_identity::ContentRevision>, generation: perl_source_identity::SourceGeneration) -> Self
+pub fn perl_source_identity::SourceIdentityEnvelope::has_known_generation(&self) -> bool
+pub fn perl_source_identity::SourceIdentityEnvelope::is_schema_supported(&self) -> bool
+pub fn perl_source_identity::SourceIdentityEnvelope::clone(&self) -> perl_source_identity::SourceIdentityEnvelope
+pub fn perl_source_identity::SourceIdentityEnvelope::eq(&self, other: &perl_source_identity::SourceIdentityEnvelope) -> bool
+pub fn perl_source_identity::SourceIdentityEnvelope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::SourceIdentityEnvelope::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_source_identity::SourceIdentityEnvelope::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_source_identity::SourceIdentityEnvelope::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_source_identity::SourceIdentitySchemaVersion(pub u32)
+pub const perl_source_identity::SourceIdentitySchemaVersion::V1: Self
+pub fn perl_source_identity::SourceIdentitySchemaVersion::as_u32(self) -> u32
+pub fn perl_source_identity::SourceIdentitySchemaVersion::is_supported(&self) -> bool
+pub fn perl_source_identity::SourceIdentitySchemaVersion::clone(&self) -> perl_source_identity::SourceIdentitySchemaVersion
+pub fn perl_source_identity::SourceIdentitySchemaVersion::cmp(&self, other: &perl_source_identity::SourceIdentitySchemaVersion) -> core::cmp::Ordering
+pub fn perl_source_identity::SourceIdentitySchemaVersion::eq(&self, other: &perl_source_identity::SourceIdentitySchemaVersion) -> bool
+pub fn perl_source_identity::SourceIdentitySchemaVersion::partial_cmp(&self, other: &perl_source_identity::SourceIdentitySchemaVersion) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_source_identity::SourceIdentitySchemaVersion::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::SourceIdentitySchemaVersion::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::SourceIdentitySchemaVersion::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_source_identity::SourceIdentitySchemaVersion::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_source_identity::SourceIdentitySchemaVersion::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub struct perl_source_identity::WorkspaceRootId(_)
+pub fn perl_source_identity::WorkspaceRootId::as_wire(&self) -> &str
+pub fn perl_source_identity::WorkspaceRootId::from_wire(s: &str) -> core::option::Option<Self>
+pub fn perl_source_identity::WorkspaceRootId::from_project_and_root_key(project_id: &perl_source_identity::ProjectId, root_key: &str) -> Self
+pub fn perl_source_identity::WorkspaceRootId::clone(&self) -> perl_source_identity::WorkspaceRootId
+pub fn perl_source_identity::WorkspaceRootId::cmp(&self, other: &perl_source_identity::WorkspaceRootId) -> core::cmp::Ordering
+pub fn perl_source_identity::WorkspaceRootId::eq(&self, other: &perl_source_identity::WorkspaceRootId) -> bool
+pub fn perl_source_identity::WorkspaceRootId::partial_cmp(&self, other: &perl_source_identity::WorkspaceRootId) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_source_identity::WorkspaceRootId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::WorkspaceRootId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::WorkspaceRootId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_source_identity::WorkspaceRootId::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_source_identity::WorkspaceRootId::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub const perl_source_identity::CONTENT_DIGEST_SCHEMA_VERSION: u32
+pub const perl_source_identity::SCHEMA_VERSION_V1: u32
