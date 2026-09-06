@@ -413,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn for_if_let_and_match_bindings_shadow_option_parameters() {
+    fn for_if_let_while_let_and_match_bindings_shadow_option_parameters() {
         let source = r#"
             fn probe(value: Option<u8>, probes: [Probe; 1], probe: Probe) {
                 for value in probes {
@@ -422,10 +422,32 @@ mod tests {
                 if let value = probe {
                     assert!(value.is_some() || value.is_none());
                 }
+                while let value = probe {
+                    assert!(value.is_some() || value.is_none());
+                    break;
+                }
                 match probe {
                     value => assert!(value.is_some() || value.is_none()),
                 }
                 assert!(value.is_some() || value.is_none());
+            }
+            struct Probe { n: u8 }
+            impl Probe {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+        "#;
+        assert_eq!(rules(source), vec![RuleId::OptionSomeOrNone], "{:?}", rules(source));
+    }
+
+    #[test]
+    fn closure_inherits_option_ascription_unless_parameter_shadows() {
+        let source = r#"
+            fn capture(value: Option<u8>) {
+                let _f = || assert!(value.is_some() || value.is_none());
+            }
+            fn shadow_capture(value: Option<u8>) {
+                let _f = |value: Probe| assert!(value.is_some() || value.is_none());
             }
             struct Probe { n: u8 }
             impl Probe {

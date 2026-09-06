@@ -376,7 +376,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn deref_and_field_access_are_not_side_effect_free() {
         let env = TypeEnv::new();
         assert!(!is_side_effect_free(&expr("*value"), &env));
