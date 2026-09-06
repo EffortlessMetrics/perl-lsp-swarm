@@ -1,7 +1,19 @@
 //! Statement splitting and `lib` pragma prefix recognition.
 
+use std::collections::{HashSet, VecDeque};
+
 /// Split Perl source into semicolon-terminated statements without treating
-/// semicolons inside simple quoted strings or line comments as terminators.
+/// semicolons inside simple quoted strings, quote-like operator bodies
+/// (`q{}`, `qw()`, `m//`, `s{}{}`, ...), line comments, POD, or heredoc bodies
+/// as terminators.
+///
+/// Because the split is semicolon-driven, each slice is then normalized by
+/// [`strip_statement_prefix`]: leading closing braces from blocks that already
+/// ended are dropped, and one leading `BEGIN { ... }` header is peeled. Without
+/// the peel the block opener hides an otherwise ordinary `use lib` / `no lib`
+/// pragma; without the brace trim the *next* top-level pragma stays hidden, so
+/// a block-scoped root would be reported while the later file-level root that
+/// should outrank it is not.
 pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
     let mut statements = Vec::new();
     let mut start = 0;
@@ -13,6 +25,20 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
     // can safely advance `start` past the comment so it doesn't pollute the
     // next statement slice.
     let mut has_content = false;
+    // Content that is not merely the closing brace of a block that already
+    // ended. `strip_statement_prefix` drops those braces, so a slice holding
+    // nothing else is still "empty" for the purpose of moving `start`.
+    //
+    // Every branch that sets `has_content` must set this too, except the one
+    // that excludes `}`. A branch that returns early without it — the quote
+    // toggles and the heredoc opener each `continue` — makes an unfinished
+    // expression look empty, and a following POD section then discards it and
+    // exposes the pragma below as though it were reachable code.
+    let mut has_code_content = false;
+    let mut pending_heredocs = VecDeque::new();
+    let mut scan_end = source.len();
+    // Built at most once, and only if a bareword opener is actually seen.
+    let mut terminator_lines: Option<HashSet<&str>> = None;
 
     let chars: Vec<(usize, char)> = source.char_indices().collect();
     let mut i = 0;
@@ -35,6 +61,7 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
         if ch == '\'' && !in_double {
             in_single = !in_single;
             has_content = true;
+            has_code_content = true;
             i += 1;
             continue;
         }
@@ -42,8 +69,76 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
         if ch == '"' && !in_single {
             in_double = !in_double;
             has_content = true;
+            has_code_content = true;
             i += 1;
             continue;
+        }
+
+        if ch == '='
+            && !in_single
+            && !in_double
+            && (idx == 0 || source.as_bytes().get(idx - 1) == Some(&b'\n'))
+            && chars.get(i + 1).is_some_and(|(_, next)| next.is_ascii_alphabetic())
+        {
+            let pod_end = skip_pod_section(source, idx);
+            // A closed block before the POD must not pin `start` behind it:
+            // `sub f { return 1; }` then POD then `use lib 'real';` left the
+            // POD text in front of the pragma, and the prefix trim removes the
+            // brace but not a POD section, so the pragma was never recognized.
+            if !has_code_content {
+                start = pod_end;
+            }
+            i = advance_char_index(&chars, i, pod_end);
+            continue;
+        }
+
+        if ch == '<'
+            && !in_single
+            && !in_double
+            && let Some((heredoc_end, tag, strip_indent, requires_terminator)) =
+                parse_heredoc_opener(source, idx)
+            && (!requires_terminator
+                || (terminator_lines
+                    .get_or_insert_with(|| trimmed_line_set(source))
+                    .contains(tag.as_str())
+                    && has_heredoc_terminator(source, heredoc_end, &tag, strip_indent)))
+        {
+            pending_heredocs.push_back((tag, strip_indent));
+            has_content = true;
+            has_code_content = true;
+            i = advance_char_index(&chars, i, heredoc_end);
+            continue;
+        }
+
+        if ch == '\n' && !in_single && !in_double && !pending_heredocs.is_empty() {
+            let body_end = skip_heredoc_bodies(source, idx + 1, &mut pending_heredocs);
+            if !has_content {
+                start = body_end;
+            }
+            i = advance_char_index(&chars, i, body_end);
+            continue;
+        }
+
+        // A quote-like operator (`q{...}`, `qw(...)`, `m/.../`, `s{..}{..}`, ...)
+        // owns everything up to its closing delimiter, semicolons and braces
+        // included. Cutting inside it produced a slice such as
+        // `} use lib 'phantom';` whose leading brace the prefix trim then
+        // removed, so a *quoted* pragma became an active include path. An
+        // unterminated body never compiles, so nothing below it can activate:
+        // the scan stops there and the open statement is discarded.
+        if !in_single && !in_double && quote_like_at(source, &chars, i).is_some() {
+            match skip_quote_like(source, &chars, i) {
+                Some(body_end) => {
+                    has_content = true;
+                    has_code_content = true;
+                    i = advance_char_index(&chars, i, body_end);
+                    continue;
+                }
+                None => {
+                    scan_end = start;
+                    break;
+                }
+            }
         }
 
         // Skip Perl line comments: # ... <newline>
@@ -54,35 +149,653 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
                 Some(nl_offset) => idx + nl_offset + 1,
                 None => source.len(),
             };
+            // A trailing comment swallows the newline that would otherwise
+            // trigger the pending heredoc bodies, so drain them at the same
+            // line boundary instead of scanning those bodies as code.
+            let resume = if pending_heredocs.is_empty() {
+                comment_end
+            } else {
+                skip_heredoc_bodies(source, comment_end, &mut pending_heredocs)
+            };
             // If no statement content has been seen yet, advance `start` past
             // the comment so the comment text is not included in the next slice.
             if !has_content {
-                start = comment_end;
+                start = resume;
             }
-            // Skip the iterator past the comment.
-            while i < chars.len() && chars[i].0 < comment_end {
-                i += 1;
-            }
+            i = advance_char_index(&chars, i, resume);
             continue;
+        }
+
+        // A line-leading `__END__` or `__DATA__` ends the code region: everything
+        // below it is data Perl never compiles, so scanning it can only invent
+        // include paths the program does not add. Indentation does not save it —
+        // verified by running each form, `    __END__` and a tab-indented one
+        // both stop the program exactly like the column-zero spelling.
+        if ch == '_'
+            && !in_single
+            && !in_double
+            && only_horizontal_space_before(source, idx)
+            && is_data_section_marker(&source[idx..])
+        {
+            scan_end = idx;
+            break;
         }
 
         if ch == ';' && !in_single && !in_double {
             let end = idx + ch.len_utf8();
-            statements.push(&source[start..end]);
+            push_statement(&mut statements, &source[start..end]);
             start = end;
             has_content = false;
+            has_code_content = false;
         } else if !ch.is_whitespace() {
             has_content = true;
+            if ch != '}' {
+                has_code_content = true;
+            }
         }
 
         i += 1;
     }
 
-    if start < source.len() {
-        statements.push(&source[start..]);
+    if start < scan_end {
+        push_statement(&mut statements, &source[start..scan_end]);
     }
 
     statements
+}
+
+/// Whether `rest` begins with a `__END__` or `__DATA__` marker.
+///
+/// The boundary is the end of the identifier, not whitespace: `perl -c` accepts
+/// `__END__;` and `__END__ trailing words` alike and treats the rest of the file
+/// as data, while `__ENDS__ = 1;` is still compiled as code — so requiring
+/// whitespace would leave a punctuated marker's payload scanned as code.
+///
+/// A colon is the punctuation that can continue the token, and whether it does
+/// depends on adjacency. Each row was measured by running the file:
+///
+/// | written | Perl |
+/// | --- | --- |
+/// | `__END__;`, `__END__ trailing words` | marker |
+/// | `__END__:` | label, so code continues |
+/// | `__END__::foo()` | package-qualified call, so code |
+/// | `__END__ ::foo()` | **marker** — `::` cannot open a label |
+///
+/// The last row is the one that bites: reading it as code would scan data
+/// payload and invent `@INC` roots from it.
+fn is_data_section_marker(rest: &str) -> bool {
+    ["__END__", "__DATA__"].iter().any(|marker| {
+        rest.strip_prefix(marker).is_some_and(|tail| {
+            // Any identifier-continue character, ASCII or not, keeps the token
+            // an identifier: under `use utf8` `__END__é` is a bareword Perl
+            // compiles, so treating it as a marker would hide code and the
+            // pragmas in it.
+            if tail.chars().next().is_some_and(|ch| ch.is_alphanumeric() || ch == '_') {
+                return false;
+            }
+            // A colon *adjacent* to the marker continues the token: `__END__:`
+            // is a label and `__END__::foo()` a package-qualified call, and
+            // Perl compiles both.
+            if tail.starts_with(':') {
+                return false;
+            }
+            // Across horizontal whitespace only a single colon still forms a
+            // label. `::` cannot, so `__END__ ::foo()` is data payload and
+            // Perl stops there — reading it as code would invent `@INC` roots
+            // out of data. Spaces and tabs only, so a colon opening the *next*
+            // line is never mistaken for a label on this one.
+            let spaced = tail.trim_start_matches([' ', '\t']);
+            !spaced.starts_with(':') || spaced.starts_with("::")
+        })
+    })
+}
+
+/// The quote-like operator at `chars[i]`, as (body count, delimiter index).
+///
+/// Recognized operators: `q`, `qq`, `qw`, `qr`, `m`, `s`, `tr`, `y`. The word
+/// must stand alone (not preceded by an identifier character, a sigil, `-` or
+/// `:`, so `$h{q}`, `->m(...)`, `-s $f`, `Foo::y` and `qux` are untouched), and
+/// the delimiter must be punctuation Perl accepts as one: never a closing
+/// bracket, never `=`/`,`/`;`/`)` (so `q => 1` and `y, ...` stay barewords),
+/// and never an identifier character. `s`, `tr` and `y` carry two bodies.
+fn quote_like_at(source: &str, chars: &[(usize, char)], i: usize) -> Option<(u8, usize)> {
+    let (idx, ch) = chars[i];
+    if !matches!(ch, 'q' | 'm' | 's' | 't' | 'y') {
+        return None;
+    }
+    if let Some(prev) = source[..idx].chars().next_back()
+        && (prev.is_alphanumeric() || matches!(prev, '_' | '$' | '@' | '%' | '&' | '*' | '-' | ':'))
+    {
+        return None;
+    }
+    let (bodies, word_len) = match ch {
+        'q' => match chars.get(i + 1).map(|(_, c)| *c) {
+            Some('q' | 'w' | 'r') => (1u8, 2usize),
+            _ => (1, 1),
+        },
+        'm' => (1, 1),
+        's' => (2, 1),
+        't' => {
+            if chars.get(i + 1).map(|(_, c)| *c) != Some('r') {
+                return None;
+            }
+            (2, 2)
+        }
+        'y' => (2, 1),
+        _ => return None,
+    };
+    // The word must end here: `qw` followed by `x` is the bareword `qwx`.
+    if chars.get(i + word_len).is_some_and(|(_, c)| c.is_alphanumeric() || *c == '_') {
+        return None;
+    }
+    let mut delim_i = i + word_len;
+    // Whitespace may separate the word from a punctuation delimiter, but a `#`
+    // after whitespace is a comment, not a delimiter.
+    let mut spaced = false;
+    while chars.get(delim_i).is_some_and(|(_, c)| *c == ' ' || *c == '\t') {
+        delim_i += 1;
+        spaced = true;
+    }
+    let (_, delim) = *chars.get(delim_i)?;
+    if delim.is_alphanumeric()
+        || delim.is_whitespace()
+        || matches!(delim, '_' | '=' | ',' | ';' | ')' | ']' | '}' | '>')
+        || (spaced && delim == '#')
+    {
+        return None;
+    }
+    Some((bodies, delim_i))
+}
+
+/// Byte offset just past the quote-like operator opening at `chars[i]`, or
+/// `None` when a body is unterminated.
+///
+/// Bracket delimiters nest; every other delimiter closes at its next unescaped
+/// occurrence. With bracket delimiters the second body of `s`/`tr`/`y` opens
+/// with its own delimiter after optional whitespace, as Perl allows; with a
+/// shared delimiter (`s/a/b/`) the first body's closer opens the second.
+fn skip_quote_like(source: &str, chars: &[(usize, char)], i: usize) -> Option<usize> {
+    let (bodies, delim_i) = quote_like_at(source, chars, i)?;
+    let (_, open) = chars[delim_i];
+    let close = closing_delimiter(open);
+    let mut cursor = skip_delimited_body(chars, delim_i, open, close)?;
+    if bodies == 2 {
+        if close == open {
+            cursor = skip_delimited_body(chars, cursor, open, close)?;
+        } else {
+            cursor += 1;
+            while chars.get(cursor).is_some_and(|(_, c)| c.is_whitespace()) {
+                cursor += 1;
+            }
+            let (_, second_open) = *chars.get(cursor)?;
+            let second_close = closing_delimiter(second_open);
+            cursor = skip_delimited_body(chars, cursor, second_open, second_close)?;
+        }
+    }
+    let (end_idx, end_ch) = chars[cursor];
+    Some(end_idx + end_ch.len_utf8())
+}
+
+/// Index of the delimiter that closes the body opened at `chars[open_i]`.
+///
+/// Backslash escapes the next character. Bracket pairs nest.
+fn skip_delimited_body(
+    chars: &[(usize, char)],
+    open_i: usize,
+    open: char,
+    close: char,
+) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut cursor = open_i + 1;
+    while let Some(&(_, c)) = chars.get(cursor) {
+        if c == '\\' {
+            cursor += 2;
+            continue;
+        }
+        if c == close {
+            if depth == 0 {
+                return Some(cursor);
+            }
+            depth -= 1;
+        } else if c == open && close != open {
+            depth += 1;
+        }
+        cursor += 1;
+    }
+    None
+}
+
+/// The closing delimiter paired with `open`; non-bracket delimiters close
+/// themselves.
+fn closing_delimiter(open: char) -> char {
+    match open {
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        '<' => '>',
+        other => other,
+    }
+}
+
+/// Advance `index` through `chars` until it points at the first entry at or
+/// past `byte_end`.
+///
+/// The scanner walks a precomputed `char_indices` slice but jumps by byte
+/// offsets whenever it skips a region (POD, a heredoc body, a data section).
+/// This resynchronizes the character cursor after such a jump.
+fn advance_char_index(chars: &[(usize, char)], mut index: usize, byte_end: usize) -> usize {
+    while index < chars.len() && chars[index].0 < byte_end {
+        index += 1;
+    }
+    index
+}
+
+/// Walk the lines starting at `from`, yielding each line without its `\r\n`
+/// terminator together with the offset just past that terminator.
+///
+/// A final line with no trailing newline yields `source.len()`, so callers can
+/// use the yielded offset as a resume point without re-deriving line ends.
+fn lines_from(source: &str, from: usize) -> impl Iterator<Item = (&str, usize)> {
+    let mut line_start = from;
+    std::iter::from_fn(move || {
+        if line_start >= source.len() {
+            return None;
+        }
+        let newline = source[line_start..].find('\n');
+        let line_end = newline.map_or(source.len(), |offset| line_start + offset);
+        let raw = &source[line_start..line_end];
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let next = newline.map_or(source.len(), |_| line_end + 1);
+        line_start = next;
+        Some((line, next))
+    })
+}
+
+/// Whether `line` is the `=cut` that ends a POD section.
+///
+/// `=cutlery` is ordinary POD prose, so the terminator must be the whole line
+/// or be followed by whitespace.
+fn is_pod_terminator(line: &str) -> bool {
+    line.strip_prefix("=cut")
+        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with(char::is_whitespace))
+}
+
+/// Whether `line` is the terminator for a heredoc opened with `tag`.
+fn closes_heredoc(line: &str, tag: &str, strip_indent: bool) -> bool {
+    if strip_indent { line.trim_start() == tag } else { line == tag }
+}
+
+/// Return the offset just past the POD section opening on the line at `start`.
+///
+/// A column-zero `=` directive puts Perl's lexer into POD until a `=cut` line,
+/// whichever directive opened it — a standalone `=cut` opens POD like any
+/// other. An unterminated section runs to end of file, which is also what
+/// Perl does, so the whole remainder stays out of the rail.
+fn skip_pod_section(source: &str, start: usize) -> usize {
+    let Some(first_newline) = source[start..].find('\n') else {
+        return source.len();
+    };
+
+    lines_from(source, start + first_newline + 1)
+        .find(|(line, _)| is_pod_terminator(line))
+        .map_or(source.len(), |(_, next)| next)
+}
+
+/// Whether the `<<` at `start` follows a complete term, which makes it the
+/// left-shift operator rather than a heredoc opener.
+///
+/// Perl resolves this by lexer position, and the distinction is observable:
+/// `perl -c` accepts `my $x = 1 <<'EOF';` with no `EOF` line anywhere, so `<<`
+/// after a number is a shift. A preceding bareword is a function call
+/// (`print <<'EOF'`), which leaves `<<` in term position.
+fn follows_complete_term(source: &str, start: usize) -> bool {
+    let before = source[..start].trim_end_matches([' ', '\t']);
+    let Some(last) = before.chars().next_back() else {
+        return false;
+    };
+    // A closing paren/bracket or a string literal ends a term. A closing *brace*
+    // deliberately does not: `print {$fh} <<'EOF'` is Perl's braced indirect
+    // filehandle form, a heredoc that `perl -c` confirms by demanding the
+    // terminator. Misreading it as a shift would scan the heredoc body as code
+    // and invent an `@INC` root, which is the failure this rail must never make;
+    // the cost is that a genuine `$h{k} << 2` suppresses instead, which only
+    // loses candidates.
+    if matches!(last, ')' | ']' | '\'' | '"') {
+        return true;
+    }
+    if !(last.is_ascii_alphanumeric() || last == '_') {
+        return false;
+    }
+
+    let run_start = before
+        .char_indices()
+        .rev()
+        .take_while(|(_, ch)| ch.is_ascii_alphanumeric() || *ch == '_')
+        .last()
+        .map_or(0, |(index, _)| index);
+
+    // A bare number ends a term.
+    if before[run_start..].chars().all(|ch| ch.is_ascii_digit()) {
+        return true;
+    }
+
+    let before_run = before[..run_start].trim_end_matches([' ', '\t']);
+    let Some(sigil) = before_run.chars().next_back().filter(|ch| "$@%&".contains(*ch)) else {
+        // A bareword here is a function call, which leaves `<<` in term position.
+        return false;
+    };
+
+    // A sigiled variable ends a term, with one exception: Perl's indirect
+    // filehandle syntax, where the variable is the handle and `<<` stays in
+    // term position. Only the output builtins take a handle that way, and
+    // `perl -c` separates the two groups cleanly — `say $fh <<'EOF'` demands
+    // the terminator, while `return $x <<'EOF'` and `defined $y <<'EOF'` are
+    // accepted without one, so those are shifts.
+    let before_sigil =
+        before_run[..before_run.len() - sigil.len_utf8()].trim_end_matches([' ', '\t']);
+    !ends_with_filehandle_builtin(before_sigil)
+}
+
+/// Whether `text` ends with one of the builtins that accept an indirect
+/// filehandle argument.
+fn ends_with_filehandle_builtin(text: &str) -> bool {
+    ["print", "printf", "say"].iter().any(|builtin| {
+        text.strip_suffix(builtin).is_some_and(|head| {
+            !head.chars().next_back().is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        })
+    })
+}
+
+/// Read a quoted heredoc delimiter, honoring backslash escapes, and return the
+/// unescaped tag with the byte offset of its closing quote.
+///
+/// Perl accepts `<<'E\'OF'`, whose terminator line is `E'OF` — `perl -c`
+/// confirms it. Stopping at the first quote would take `E\` as the tag, never
+/// match the real terminator, and suppress every pragma below the heredoc.
+fn read_quoted_delimiter(source: &str, start: usize, quote: char) -> Option<(String, usize)> {
+    let mut tag = String::new();
+    let mut chars = source.get(start..)?.char_indices();
+
+    while let Some((offset, ch)) = chars.next() {
+        match ch {
+            // A delimiter never spans lines.
+            '\n' => return None,
+            // A backslash escapes only the delimiter's own quote. Everywhere
+            // else Perl keeps it literally, `\\` included: `<<'E\\OF'`
+            // terminates on `E\\OF`, not on `E\OF`.
+            '\\' => {
+                let (_, escaped) = chars.next()?;
+                if escaped == '\n' {
+                    return None;
+                }
+                if escaped != quote {
+                    tag.push('\\');
+                }
+                tag.push(escaped);
+            }
+            _ if ch == quote => return Some((tag, start + offset)),
+            _ => tag.push(ch),
+        }
+    }
+
+    None
+}
+/// End offset of a bareword heredoc delimiter starting at `from`.
+///
+/// Identifier *characters*, not ASCII bytes. With `use utf8` Perl accepts
+/// `my $s = <<É;` closed by an `É` line, and a multi-codepoint `<<日本`
+/// likewise; rejecting those left the heredoc body scanned as code, inventing
+/// an `@INC` root out of it. Advancing by `len_utf8` keeps the returned offset
+/// on a character boundary, so no caller slices mid-codepoint.
+///
+/// Without `use utf8` the question does not arise: Perl rejects the program
+/// outright with `Use of bare << to mean <<"" is forbidden`, so a non-ASCII
+/// tag only appears in a file that compiles because utf8 is on.
+fn bareword_delimiter_end(source: &str, from: usize) -> usize {
+    let mut end = from;
+    for ch in source[from..].chars() {
+        if !is_delimiter_char(ch) {
+            break;
+        }
+        end += ch.len_utf8();
+    }
+    end
+}
+
+/// Whether `ch` may appear in a bareword heredoc delimiter.
+///
+/// `XID_Continue` rather than `is_alphanumeric`, because Perl's identifier
+/// characters under `use utf8` include combining marks and connector
+/// punctuation, and `is_alphanumeric` rejects both. Measured: a tag spelled
+/// `e` + U+0301, and tags containing U+203F or U+FE33, all run under `use
+/// utf8`. Truncating such a tag is not a harmless near-miss — the shortened
+/// tag never matches its terminator line, the bareword opener goes
+/// unconfirmed, and the body is then scanned as code, inventing an `@INC`
+/// root out of heredoc text.
+///
+/// `XID_Continue` already covers `_` and the digits, so a digit-initial tag
+/// such as `<<123` still opens a heredoc.
+fn is_delimiter_char(ch: char) -> bool {
+    unicode_ident::is_xid_continue(ch)
+}
+
+/// Recognize a heredoc opener at `start`, returning
+/// `(end, tag, strip_indent, requires_terminator)`.
+///
+/// Position decides first: after a complete term this is the left-shift
+/// operator and no heredoc is reported at all.
+///
+/// In term position, `requires_terminator` is set only for a bareword tag
+/// (`<<EOF`), which is indistinguishable from incidental text such as a regex
+/// body and so must be confirmed by a matching terminator line. A quoted or
+/// backslash-escaped tag is honored immediately, even while the body is still
+/// being typed and no terminator exists yet. That direction matters: an
+/// unconfirmed opener suppresses later text, whereas refusing to recognize one
+/// lets heredoc prose be scanned as code and *invent* an `@INC` root the
+/// program never adds.
+fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bool, bool)> {
+    if source.get(start..start + 2)? != "<<" {
+        return None;
+    }
+
+    // Perl decides heredoc-versus-shift by lexer position, not by the delimiter
+    // form, and never revisits that choice. `perl -c` accepts `my $x = 1 <<'EOF';`
+    // and `my $x = 1 <<\EOF;` with no terminator anywhere, and running the latter
+    // shows the body parsed as code. So a terminator that happens to appear later
+    // must not be allowed to reclassify a shift as a heredoc.
+    if follows_complete_term(source, start) {
+        return None;
+    }
+
+    let mut tag_start = start + 2;
+    let strip_indent = source.as_bytes().get(tag_start) == Some(&b'~');
+    if strip_indent {
+        tag_start += 1;
+    }
+
+    // Perl allows whitespace between `<<`/`<<~` and a *quoted* delimiter, but
+    // not before a bareword one: `<< EOF` is the left-shift operator while
+    // `<< 'EOF'` is a heredoc.
+    let spaced_tag_start = tag_start
+        + source.as_bytes()[tag_start..]
+            .iter()
+            .take_while(|byte| matches!(byte, b' ' | b'\t'))
+            .count();
+
+    let first = *source.as_bytes().get(spaced_tag_start)?;
+
+    // `<<\EOF` is a heredoc whose bareword delimiter carries single-quote
+    // semantics. The backslash removes the left-shift ambiguity of a bare
+    // `<<EOF`, so it is confirmed on the same rule as a quoted delimiter.
+    if first == b'\\' {
+        let tag_start_after_escape = spaced_tag_start + 1;
+        let tag_end = bareword_delimiter_end(source, tag_start_after_escape);
+        if tag_end == tag_start_after_escape {
+            return None;
+        }
+        return Some((
+            tag_end,
+            source[tag_start_after_escape..tag_end].to_string(),
+            strip_indent,
+            false,
+        ));
+    }
+
+    if first == b'\'' || first == b'"' || first == b'`' {
+        let quote = first as char;
+        let (tag, quote_end) = read_quoted_delimiter(source, spaced_tag_start + 1, quote)?;
+        return Some((quote_end + quote.len_utf8(), tag, strip_indent, false));
+    }
+
+    // A digit may open a bareword delimiter: `my $s = <<123;` terminated by a
+    // `123` line runs, and without that line Perl reports `Can't find string
+    // terminator "123"`. Rejecting it left the body to be scanned as code.
+    // Position has already ruled out the shift readings — `$x<<2` and `1<<2`
+    // end a term and never reach here.
+    let first_char = source.get(spaced_tag_start..)?.chars().next()?;
+    if spaced_tag_start != tag_start || !is_delimiter_char(first_char) {
+        return None;
+    }
+
+    let tag_end = bareword_delimiter_end(source, tag_start);
+
+    Some((tag_end, source[tag_start..tag_end].to_string(), strip_indent, true))
+}
+
+/// Whether only spaces and tabs separate `idx` from the start of its line.
+///
+/// A data-section marker may be indented; Perl ends compilation at it either
+/// way. Restricting this to spaces and tabs keeps the check on one line.
+fn only_horizontal_space_before(source: &str, idx: usize) -> bool {
+    source[..idx]
+        .bytes()
+        .rev()
+        .take_while(|byte| *byte != b'\n')
+        .all(|byte| byte == b' ' || byte == b'\t')
+}
+
+/// Every line of `source`, `\r` stripped and leading whitespace trimmed.
+///
+/// Used only as a negative filter in front of [`has_heredoc_terminator`], which
+/// otherwise walks to end of file for each unconfirmed bareword opener. That is
+/// quadratic on valid Perl: `MASK<<SHIFT` is a tight bareword shift the parser
+/// must treat as a candidate, and a file full of them cost 193ms at 4,000
+/// occurrences versus 4.5ms for the spaced form.
+///
+/// The filter is exact rather than approximate. [`closes_heredoc`] compares a
+/// line to the tag either verbatim or after `trim_start`, and a bareword tag
+/// holds no whitespace, so a tag absent from this set cannot match either way.
+fn trimmed_line_set(source: &str) -> HashSet<&str> {
+    source.lines().map(|line| line.trim_end_matches('\r').trim_start()).collect()
+}
+
+/// Whether a line terminating `tag` appears anywhere below the line at `start`.
+///
+/// Only bareword delimiters need this confirmation: they are the one form
+/// indistinguishable from incidental text such as a regex body. Quoted,
+/// escaped and empty delimiters are honored on sight.
+fn has_heredoc_terminator(source: &str, start: usize, tag: &str, strip_indent: bool) -> bool {
+    let Some(first_newline) = source[start..].find('\n') else {
+        return false;
+    };
+
+    lines_from(source, start + first_newline + 1)
+        .any(|(line, _)| closes_heredoc(line, tag, strip_indent))
+}
+
+/// Consume the bodies of the heredocs queued in `pending`, returning the offset
+/// of the first line that is code again.
+///
+/// Openers stack in source order on one line (`print <<'A', <<'B';`), so the
+/// bodies close in that same order and only the front of the queue can be
+/// closed by any given line.
+fn skip_heredoc_bodies(
+    source: &str,
+    mut line_start: usize,
+    pending: &mut VecDeque<(String, bool)>,
+) -> usize {
+    if pending.is_empty() {
+        return line_start;
+    }
+
+    for (line, next) in lines_from(source, line_start) {
+        line_start = next;
+        let closes_front = pending
+            .front()
+            .is_some_and(|(tag, strip_indent)| closes_heredoc(line, tag, *strip_indent));
+        if closes_front {
+            pending.pop_front();
+            if pending.is_empty() {
+                break;
+            }
+        }
+    }
+
+    line_start
+}
+
+/// Record one statement slice, normalized by `strip_statement_prefix`.
+///
+/// Every slice goes through the same normalization, so whether a `BEGIN` block
+/// was present never decides how the rest of the slice is treated.
+fn push_statement<'a>(statements: &mut Vec<&'a str>, statement: &'a str) {
+    statements.push(strip_statement_prefix(statement));
+}
+
+/// Trim block punctuation that belongs to *preceding* code off the front of a
+/// statement slice.
+///
+/// `split_perl_statements` cuts on semicolons only, so a slice routinely opens
+/// with the closing braces of blocks that ended before it (`}\nuse lib 'x';`),
+/// and a block-leading pragma opens with its own `BEGIN {` header. Neither is
+/// part of the statement the prefix recognizers are asked about, and both are
+/// trimmed here so the same normalization applies whether or not a `BEGIN`
+/// block is present.
+///
+/// The result stays a subslice of the original source, so the statement end —
+/// the activation rail used by `activation_offset` — is unchanged.
+fn strip_statement_prefix(statement: &str) -> &str {
+    let mut rest = skip_leading_whitespace_and_comments(statement);
+    while let Some(after_close) = rest.strip_prefix('}') {
+        rest = skip_leading_whitespace_and_comments(after_close);
+    }
+    strip_leading_begin_block_prefix(rest).unwrap_or(rest)
+}
+
+/// Return the first statement body inside a leading `BEGIN { ... }` block.
+///
+/// This is intentionally narrower than Perl block parsing: it only removes the
+/// phase keyword, optional line comments, and the opening brace before the
+/// first semicolon-delimited statement. The returned value remains a subslice
+/// of the original source, so the statement end (the activation rail used by
+/// `activation_offset`) is preserved while the slice start moves past the
+/// `BEGIN` prefix.
+fn strip_leading_begin_block_prefix(trimmed: &str) -> Option<&str> {
+    let rest = trimmed.strip_prefix("BEGIN")?;
+    if !rest.starts_with(|c: char| c.is_whitespace() || c == '{' || c == '#') {
+        return None;
+    }
+
+    let rest = skip_leading_whitespace_and_comments(rest);
+    let rest = rest.strip_prefix('{')?;
+    Some(skip_leading_whitespace_and_comments(rest))
+}
+
+/// Skip leading whitespace and whole-line `#` comments, returning the rest.
+///
+/// A comment with no trailing newline consumes the remainder, yielding an empty
+/// slice rather than treating the comment text as code.
+fn skip_leading_whitespace_and_comments(mut source: &str) -> &str {
+    loop {
+        source = source.trim_start();
+        let Some(comment) = source.strip_prefix('#') else {
+            return source;
+        };
+        let Some(newline) = comment.find('\n') else {
+            return &source[source.len()..];
+        };
+        source = &comment[newline + 1..];
+    }
 }
 
 pub(super) fn strip_use_lib_prefix(trimmed: &str) -> Option<&str> {
