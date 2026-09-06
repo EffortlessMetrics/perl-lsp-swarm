@@ -8,6 +8,7 @@ use tempfile::TempDir;
 pub fn fixture_root() -> TempDir {
     let temp = tempfile::tempdir().expect("tempdir");
     write_policy(temp.path());
+    write_empty_registry(temp.path());
     write_package(
         temp.path(),
         "demo",
@@ -91,6 +92,10 @@ pub fn write_package(root: &Path, name: &str, lib: &str, tests: &[(&str, &str)])
     for (file, contents) in tests {
         fs::write(crate_root.join("tests").join(file), contents).expect("test file");
     }
+}
+
+pub fn write_empty_registry(root: &Path) {
+    write_registry(root, "{\n  \"schema_version\": 1,\n  \"sites\": []\n}\n");
 }
 
 pub fn write_registry(root: &Path, body: &str) {

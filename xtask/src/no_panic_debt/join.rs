@@ -32,6 +32,13 @@ pub(crate) fn join(
                 detail: err.to_string(),
             }),
         }
+    } else {
+        instruments.push(Instrument {
+            kind: "panic_registry".to_string(),
+            subject: normalize_path(&registry_path, request.root),
+            status: InstrumentStatus::NotProven,
+            detail: "panic registry file missing".to_string(),
+        });
     }
 
     if let Some(observation) = request.clippy_observation {

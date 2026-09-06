@@ -102,6 +102,12 @@ pub fn integrity_findings(root: &Path, inventory: &Inventory) -> Vec<String> {
             .push("lint vocabulary is not_proven; the denominator is not a clean zero".to_string());
     }
     if inventory.instruments.iter().any(|instrument| {
+        instrument.kind == "panic_registry" && instrument.status == InstrumentStatus::NotProven
+    }) {
+        findings
+            .push("panic registry is not_proven; exception identities were not loaded".to_string());
+    }
+    if inventory.instruments.iter().any(|instrument| {
         instrument.kind == "test_topology"
             && instrument.status == InstrumentStatus::NotProven
             && inventory.population.packages.is_empty()

@@ -4,7 +4,7 @@
 mod support;
 
 use std::fs;
-use support::{fixture_root, write_package, write_policy, write_registry};
+use support::{fixture_root, write_empty_registry, write_package, write_policy, write_registry};
 use xtask::no_panic_debt::{
     ClippyObservation, ClippyTargetObservation, DebtStatus, InstrumentStatus, InventoryRequest,
     OwnerState, build_inventory, canonical_json, check_inventory, semantic_delta,
@@ -250,6 +250,63 @@ fn closed_owner_does_not_remain_current_without_transition() {
 }
 
 #[test]
+fn same_line_same_family_sites_keep_distinct_occurrences() {
+    let temp = fixture_root();
+    fs::write(
+        temp.path().join("crates/demo/tests/same_line.rs"),
+        "#[test]\nfn two() { let _ = (Some(1).unwrap(), Some(2).unwrap()); }\n",
+    )
+    .expect("same line");
+    let inventory = inventory_at(temp.path());
+    let sites: Vec<_> = inventory
+        .rows
+        .iter()
+        .filter(|row| {
+            row.kind == "site"
+                && row.site_family == "unwrap"
+                && row.path.ends_with("tests/same_line.rs")
+        })
+        .collect();
+    assert_eq!(sites.len(), 2, "same-line unwrap sites collapsed: {:?}", inventory.rows);
+    let selectors: std::collections::BTreeSet<_> =
+        sites.iter().map(|row| row.selector_identity.as_str()).collect();
+    assert_eq!(selectors.len(), 2, "occurrence selectors collided: {selectors:?}");
+    assert!(
+        sites.iter().any(|row| row.selector_identity.ends_with("occurrence:1"))
+            && sites.iter().any(|row| row.selector_identity.ends_with("occurrence:2")),
+        "expected occurrence 1 and 2, got {selectors:?}"
+    );
+}
+
+#[test]
+fn missing_registry_is_not_proven_and_fails_check() {
+    let temp = fixture_root();
+    fs::remove_file(temp.path().join("ci/panic_test_identities.json")).expect("remove registry");
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "panic_registry" && instrument.status == InstrumentStatus::NotProven
+        }),
+        "missing registry was treated as an empty join: {:?}",
+        inventory.instruments
+    );
+    assert!(inventory.counts.instrument_not_proven > 0);
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(!result.ok, "missing registry check passed: {:?}", result.findings);
+    assert!(
+        result.findings.iter().any(|finding| finding.contains("panic registry is not_proven")),
+        "{:?}",
+        result.findings
+    );
+}
+
+#[test]
 fn aborted_clippy_target_is_not_proven_and_not_zero() {
     let temp = fixture_root();
     let observation = ClippyObservation {
@@ -308,6 +365,7 @@ fn output_is_stable_across_host_path_and_file_write_order() {
     let first = fixture_root();
     let second = tempfile::tempdir().expect("second");
     write_policy(second.path());
+    write_empty_registry(second.path());
     write_package(
         second.path(),
         "demo",

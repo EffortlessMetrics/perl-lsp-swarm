@@ -79,10 +79,20 @@ pub(crate) fn scan(
     entrypoints.sort_by(|left, right| (&left.path, &left.name).cmp(&(&right.path, &right.name)));
     entrypoints.dedup_by(|left, right| left.path == right.path && left.name == right.name);
     sites.sort_by(|left, right| {
-        (&left.path, left.line, &left.family).cmp(&(&right.path, right.line, &right.family))
+        (&left.path, left.line, left.column, &left.family, &left.snippet).cmp(&(
+            &right.path,
+            right.line,
+            right.column,
+            &right.family,
+            &right.snippet,
+        ))
     });
     sites.dedup_by(|left, right| {
-        left.path == right.path && left.line == right.line && left.family == right.family
+        left.path == right.path
+            && left.line == right.line
+            && left.column == right.column
+            && left.family == right.family
+            && left.snippet == right.snippet
     });
     declarations.sort_by(|left, right| {
         (&left.path, left.line, &left.lint).cmp(&(&right.path, right.line, &right.lint))
@@ -256,6 +266,7 @@ impl DebtVisitor<'_> {
             family: family.to_string(),
             snippet,
             line: span.start().line,
+            column: span.start().column,
             feature: self.current_feature.clone(),
             platform: self.current_platform.clone(),
             covering_declaration: covering.map(|item| item.identity.clone()),

@@ -253,6 +253,7 @@ pub(crate) struct RawSite {
     pub family: String,
     pub snippet: String,
     pub line: usize,
+    pub column: usize,
     pub feature: Option<String>,
     pub platform: Option<String>,
     pub covering_declaration: Option<String>,
