@@ -45,13 +45,12 @@ pub struct VerifyConfig {
     pub packet: PathBuf,
     pub staging: PathBuf,
     pub receipt: Option<PathBuf>,
-    pub artifact_set_id: Option<String>,
+    pub artifact_set_id: String,
     pub producer_run_id: Option<String>,
     pub now: Option<DateTime<Utc>>,
     pub rebuild_attempt: bool,
-    /// Optional topology document. When supplied, its bytes must match the
-    /// frozen `release_topology_digest`.
-    pub topology: Option<PathBuf>,
+    /// Topology document whose bytes must match the frozen digest.
+    pub topology: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -303,6 +302,7 @@ pub fn check() -> Result<()> {
     push_failure(&mut failures, "happy_path", happy_path_check(&topology));
     push_failure(&mut failures, "missing_archive", missing_archive_check(&topology));
     push_failure(&mut failures, "extra_vsix", extra_vsix_check(&topology));
+    push_failure(&mut failures, "extra_archive", extra_archive_check(&topology));
     push_failure(&mut failures, "digest_mismatch", digest_mismatch_check(&topology));
     push_failure(&mut failures, "cross_run", cross_run_check(&topology));
     push_failure(&mut failures, "topology_digest", topology_digest_check(&topology));
@@ -407,22 +407,20 @@ fn verify_packet(config: &VerifyConfig) -> Result<VerificationReceipt> {
         )
         .into());
     }
-    if let Some(topology_path) = &config.topology {
-        let topology = load_topology(topology_path)?;
-        if topology.digest != packet.release_topology_digest {
-            return Err(HandoffError::new(
-                ReasonCode::TopologyDigestMismatch,
-                "supplied topology bytes do not match the frozen release_topology_digest; version identity is not sufficient",
-            )
-            .into());
-        }
-        if topology.frozen_product_sha != packet.release_repo_sha {
-            return Err(HandoffError::new(
-                ReasonCode::TopologyDigestMismatch,
-                "supplied topology frozen_product_sha does not match the frozen release-repo SHA",
-            )
-            .into());
-        }
+    let topology = load_topology(&config.topology)?;
+    if topology.digest != packet.release_topology_digest {
+        return Err(HandoffError::new(
+            ReasonCode::TopologyDigestMismatch,
+            "supplied topology bytes do not match the frozen release_topology_digest; version identity is not sufficient",
+        )
+        .into());
+    }
+    if topology.frozen_product_sha != packet.release_repo_sha {
+        return Err(HandoffError::new(
+            ReasonCode::TopologyDigestMismatch,
+            "supplied topology frozen_product_sha does not match the frozen release-repo SHA",
+        )
+        .into());
     }
     if packet.publish_authorized {
         return Err(HandoffError::new(
@@ -438,14 +436,12 @@ fn verify_packet(config: &VerifyConfig) -> Result<VerificationReceipt> {
         )
         .into());
     }
-    if let Some(expected) = &config.artifact_set_id
-        && expected != &packet.transport.artifact_set_id
-    {
+    if config.artifact_set_id != packet.transport.artifact_set_id {
         return Err(HandoffError::new(
             ReasonCode::CrossRunSubstitution,
             format!(
-                "artifact_set_id {expected} does not match frozen set {}",
-                packet.transport.artifact_set_id
+                "artifact_set_id {} does not match frozen set {}",
+                config.artifact_set_id, packet.transport.artifact_set_id
             ),
         )
         .into());
@@ -1005,11 +1001,11 @@ fn verify_cfg(dirs: &ScenarioDirs) -> VerifyConfig {
         packet: dirs.packet.clone(),
         staging: dirs.staging.clone(),
         receipt: None,
-        artifact_set_id: Some("set-rc1".to_string()),
+        artifact_set_id: "set-rc1".to_string(),
         producer_run_id: Some("run-1".to_string()),
         now: None,
         rebuild_attempt: false,
-        topology: Some(dirs.topology.clone()),
+        topology: dirs.topology.clone(),
     }
 }
 
@@ -1045,6 +1041,18 @@ fn extra_vsix_check(topology: &Path) -> Result<()> {
     )
 }
 
+fn extra_archive_check(topology: &Path) -> Result<()> {
+    let dirs = scenario_dirs(topology)?;
+    fs::write(
+        dirs.staging.join("perllsp-0.18.0-aarch64-unknown-linux-gnu.tar.gz"),
+        b"extra-archive\n",
+    )?;
+    expect_reason(
+        freeze_packet(&freeze_cfg(&dirs, "run-1", "set-rc1")),
+        ReasonCode::ExtraPublishableArtifact,
+    )
+}
+
 fn digest_mismatch_check(topology: &Path) -> Result<()> {
     let dirs = scenario_dirs(topology)?;
     let packet = freeze_packet(&freeze_cfg(&dirs, "run-1", "set-rc1"))?;
@@ -1058,7 +1066,7 @@ fn cross_run_check(topology: &Path) -> Result<()> {
     let packet = freeze_packet(&freeze_cfg(&dirs, "run-1", "set-rc1"))?;
     serde_json::to_writer_pretty(File::create(&dirs.packet)?, &packet)?;
     let mut cfg = verify_cfg(&dirs);
-    cfg.artifact_set_id = Some("set-other-run".to_string());
+    cfg.artifact_set_id = "set-other-run".to_string();
     expect_verify_reason(verify_packet(&cfg), ReasonCode::CrossRunSubstitution)
 }
 
@@ -1191,6 +1199,11 @@ mod tests {
     #[test]
     fn extra_vsix_fails() -> Result<()> {
         extra_vsix_check(&topology()?)
+    }
+
+    #[test]
+    fn extra_archive_fails() -> Result<()> {
+        extra_archive_check(&topology()?)
     }
 
     #[test]

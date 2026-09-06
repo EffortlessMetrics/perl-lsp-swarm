@@ -3846,7 +3846,7 @@ enum ReleaseCommand {
         receipt: Option<PathBuf>,
         /// Expected transport artifact-set identity.
         #[arg(long)]
-        artifact_set_id: Option<String>,
+        artifact_set_id: String,
         /// Expected producer run identity.
         #[arg(long)]
         producer_run_id: Option<String>,
@@ -3856,9 +3856,9 @@ enum ReleaseCommand {
         /// Fail closed if a publisher attempts to rebuild instead of retrieving.
         #[arg(long)]
         rebuild_attempt: bool,
-        /// Optional topology document whose bytes must match the frozen digest.
+        /// Topology document whose bytes must match the frozen digest.
         #[arg(long)]
-        topology: Option<PathBuf>,
+        topology: PathBuf,
     },
     /// Validate schema, freeze/verify happy path, and every #9092 negative control.
     CheckCandidateArtifacts,
