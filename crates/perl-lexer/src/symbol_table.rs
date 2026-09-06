@@ -251,11 +251,49 @@ fn is_format_terminator(line: &str) -> bool {
     line.trim_end_matches([' ', '\t']) == "."
 }
 
+/// Return `true` if a statement can begin immediately after `prefix`.
+///
+/// A statement begins at the start of a line and after `;`, `{` or `}`. It also
+/// begins after a Perl statement label, which `format` accepts:
+/// `LABEL: format STDOUT =` is valid and does declare a format.
+///
+/// The label case must not admit the `::` package separator: `$Report::format`
+/// also ends in a colon but is an ordinary name, not a labelled statement. Only
+/// one colon is stripped, so a `::` prefix still ends in a colon, which is not
+/// an identifier character and therefore yields no label word below. The
+/// `nested package scalar` and `package scalar assignment` controls pin that.
+fn starts_a_statement(prefix: &str) -> bool {
+    if prefix.is_empty() || prefix.ends_with([';', '{', '}']) {
+        return true;
+    }
+
+    let Some(head) = prefix.strip_suffix(':') else {
+        return false;
+    };
+
+    let Some(label_start) = head
+        .char_indices()
+        .rev()
+        .take_while(|(_, ch)| is_perl_identifier_continue(*ch))
+        .last()
+        .map(|(index, _)| index)
+    else {
+        return false;
+    };
+
+    let (before_label, label) = head.split_at(label_start);
+    if !label.starts_with(is_perl_identifier_start) {
+        return false;
+    }
+
+    let before_label = before_label.trim_end_matches([' ', '\t']);
+    before_label.is_empty() || before_label.ends_with([';', '{', '}'])
+}
+
 /// Return `true` if the `format` keyword at `offset` sits where a statement can
 /// begin and is not part of a longer name, a method call, or a hash subscript.
 fn is_format_keyword_boundary(line: &str, offset: usize) -> bool {
-    let before = line[..offset].trim_end_matches([' ', '\t']);
-    if !before.is_empty() && !before.ends_with([';', '{', '}']) {
+    if !starts_a_statement(line[..offset].trim_end_matches([' ', '\t'])) {
         return false;
     }
 
@@ -1309,6 +1347,10 @@ mod tests {
             ("after a statement", "my $x = 1; format STDOUT =\nsub fake { }\n.\nsub real { }\n"),
             ("trailing comment", "format STDOUT = # pic\nsub fake { }\n.\nsub real { }\n"),
             ("padded equals", "format STDOUT =\t \nsub fake { }\n.\nsub real { }\n"),
+            // `LABEL: format STDOUT =` is valid Perl and does declare a format;
+            // verified by running it under perl 5.38.2.
+            ("statement label", "LABEL: format STDOUT =\nsub fake { }\n.\nsub real { }\n"),
+            ("label in a block", "{ FMT: format STDOUT =\nsub fake { }\n.\n}\nsub real { }\n"),
         ];
 
         for (context, source) in cases {
@@ -1363,6 +1405,17 @@ mod tests {
             // Only the fat-comma guard rejects this: the key starts its line, so
             // the keyword genuinely sits where a statement could begin.
             ("fat comma at line start", "my %h = (\n    format =>\n    1,\n);\nsub real { }\n"),
+            // Only the label rule's single-colon check rejects these. Accepting
+            // a statement label must not accept the `::` package separator or a
+            // ternary's `:`, both of which also leave a colon before `format`.
+            ("nested package scalar", "$Deep::Report::format =\n    1;\nsub real { }\n"),
+            // A label word only introduces a statement when it starts one. This
+            // is a mid-edit buffer — an unfinished space-free ternary — which an
+            // LSP lexes routinely, and which is the one realistic shape that
+            // puts `IDENT:` in front of `format` away from a statement start.
+            ("label word mid-expression", "my $x = $a ?$b: format =\nsub real { }\n"),
+            // A Perl label is an identifier, so it cannot begin with a digit.
+            ("numeric label word", "123: format =\nsub real { }\n"),
             // Rejected before either guard, but kept as ordinary regressions.
             ("fat comma inline", "my %h = (format => 1);\nsub real { }\n"),
             ("method call", "my $o; $o->format();\nsub real { }\n"),
