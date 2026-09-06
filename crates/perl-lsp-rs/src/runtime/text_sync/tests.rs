@@ -378,6 +378,56 @@ fn test_did_change_ranged_edit_does_not_mutate_open_document()
 }
 
 #[test]
+fn test_ranged_violation_clears_published_diagnostics_and_symbols()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///desync-clear.pl";
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "sub old_name { 1 }\n"
+        }
+    }))?;
+    assert!(
+        server.symbol_index.lock().search_prefix("old_").contains(&"old_name".to_string()),
+        "didOpen must publish document symbols"
+    );
+    let opened = server.test_last_committed_push_diagnostic(uri).ok_or("didOpen diagnostics")?;
+    assert_eq!(opened.0, 1, "didOpen push diagnostics commit at generation 1");
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 4 },
+                "end": { "line": 0, "character": 12 }
+            },
+            "text": "renamed"
+        }]
+    })))?;
+
+    assert!(
+        server.symbol_index.lock().search_prefix("old_").is_empty(),
+        "Full-sync violation must clear cached document symbols"
+    );
+    let cleared = server
+        .test_last_committed_push_diagnostic(uri)
+        .ok_or("violation must commit a diagnostics clear")?;
+    let desync_gen = {
+        let docs = server.documents.lock();
+        docs.get(uri).ok_or("desync document")?.current_generation()
+    };
+    assert_eq!(
+        cleared.0, desync_gen,
+        "diagnostics clear must use the post-desync generation, not the pre-bump identity"
+    );
+    assert!(cleared.1 > opened.1, "clear must be a newer committed sequence than didOpen");
+    Ok(())
+}
+
+#[test]
 fn test_full_document_did_change_recovers_after_ranged_violation()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();

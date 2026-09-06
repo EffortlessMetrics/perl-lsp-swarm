@@ -16,6 +16,8 @@ pub(crate) const DECISION: &str = "full_document_utf16";
 pub(crate) const WIRE_ENCODING: &str = "utf-16";
 /// LSP `TextDocumentSyncKind::Full`.
 pub(crate) const TEXT_SYNC_KIND_FULL: i32 = 1;
+/// Wire/doctor name for [`TEXT_SYNC_KIND_FULL`].
+pub(crate) const TEXT_SYNC_KIND_NAME: &str = "full";
 
 /// Why UTF-16 was selected for an accepted initialize.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

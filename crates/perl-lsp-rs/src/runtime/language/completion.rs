@@ -1689,18 +1689,22 @@ impl LspServer {
                     }
 
                     base_completions
+                } else if doc.full_sync_required() {
+                    Vec::new()
                 } else {
                     // Fallback: provide basic keyword completions when AST is unavailable
                     self.lexical_complete(&doc.text, offset, Some(uri))
                 };
 
-                self.add_declared_dependency_completions(
-                    &mut completions,
-                    &doc.text,
-                    uri,
-                    offset,
-                    None,
-                );
+                if !doc.full_sync_required() {
+                    self.add_declared_dependency_completions(
+                        &mut completions,
+                        &doc.text,
+                        uri,
+                        offset,
+                        None,
+                    );
+                }
 
                 // Add workspace-wide completions using routing policy
                 #[cfg(feature = "workspace")]
@@ -2038,6 +2042,8 @@ impl LspServer {
                         Some(uri),
                         &cancel_fn,
                     )
+                } else if doc.full_sync_required() {
+                    Vec::new()
                 } else {
                     self.lexical_complete(&doc.text, offset, Some(uri))
                 };
@@ -2052,13 +2058,15 @@ impl LspServer {
                 }
 
                 let should_continue = || !token.is_cancelled_relaxed();
-                self.add_declared_dependency_completions(
-                    &mut completions,
-                    &doc.text,
-                    uri,
-                    offset,
-                    Some(&should_continue),
-                );
+                if !doc.full_sync_required() {
+                    self.add_declared_dependency_completions(
+                        &mut completions,
+                        &doc.text,
+                        uri,
+                        offset,
+                        Some(&should_continue),
+                    );
+                }
 
                 #[cfg(feature = "workspace")]
                 self.add_runtime_workspace_completions(
@@ -3647,6 +3655,11 @@ mod tests {
             desync_receipt.get("workspace_index_state").and_then(Value::as_str),
             Some("none"),
             "desynchronized document must disable workspace-index completion: {desync:?}"
+        );
+        assert_eq!(
+            desync_receipt.get("item_count").and_then(Value::as_u64),
+            Some(0),
+            "lexical and declared-dependency fallbacks must not answer from last-good text: {desync:?}"
         );
 
         server.test_apply_did_change(uri, v2, 3)?;

@@ -137,7 +137,7 @@ fn build_doctor_report_struct(dir: &str) -> Result<DoctorReport, String> {
         system_inc,
         text_sync_envelope: TextSyncEnvelopeReport {
             decision: crate::runtime::v0_18_text_sync_envelope::DECISION,
-            text_sync_kind: "full",
+            text_sync_kind: crate::runtime::v0_18_text_sync_envelope::TEXT_SYNC_KIND_NAME,
             position_encoding: crate::runtime::v0_18_text_sync_envelope::WIRE_ENCODING,
         },
     })
@@ -1604,7 +1604,7 @@ mod tests {
             system_inc: SystemIncReport { status: "disabled", paths: Vec::new() },
             text_sync_envelope: TextSyncEnvelopeReport {
                 decision: crate::runtime::v0_18_text_sync_envelope::DECISION,
-                text_sync_kind: "full",
+                text_sync_kind: crate::runtime::v0_18_text_sync_envelope::TEXT_SYNC_KIND_NAME,
                 position_encoding: crate::runtime::v0_18_text_sync_envelope::WIRE_ENCODING,
             },
         });

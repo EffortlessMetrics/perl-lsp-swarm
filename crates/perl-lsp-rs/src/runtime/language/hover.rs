@@ -199,7 +199,13 @@ impl LspServer {
                         None
                     };
 
-                    (offset, doc.current_parsed(), doc.text_arc.to_string(), hover_range)
+                    (
+                        offset,
+                        doc.current_parsed(),
+                        doc.text_arc.to_string(),
+                        hover_range,
+                        doc.full_sync_required(),
+                    )
                 })
             };
             // documents guard dropped here
@@ -213,7 +219,8 @@ impl LspServer {
 
             let t_analyze_start = std::time::Instant::now();
             let (extracted, live_compiler_context, hover_range) = match locked {
-                Some((offset, parsed, text, range)) => {
+                Some((_, _, _, range, true)) => (HoverExtracted::None, None, range),
+                Some((offset, parsed, text, range, false)) => {
                     // Generation-bound source-region evidence (#5003). Beyond the
                     // dispatcher trace, it now routes the generic fallback paths:
                     // semantic/index lookups and the token/builtin fallback only

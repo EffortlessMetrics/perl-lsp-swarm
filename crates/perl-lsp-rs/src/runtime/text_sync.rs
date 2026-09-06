@@ -746,6 +746,7 @@ impl LspServer {
                         tracing::warn!(
                             "Full-sync violation for {uri}: {reason}; last-good text was not mutated"
                         );
+                        doc_state.mark_full_sync_required();
                         let symbols_identity = SymbolsIdentity::for_document(
                             &normalized_uri,
                             &doc_state.generation,
@@ -760,7 +761,6 @@ impl LspServer {
                         .with_folder_config_generation(
                             self.project_config_generation_for_uri(&normalized_uri),
                         );
-                        doc_state.mark_full_sync_required();
                         documents.insert(normalized_uri.clone(), doc_state);
                         drop(documents);
                         let _outcome = self.commit_push_diagnostics(

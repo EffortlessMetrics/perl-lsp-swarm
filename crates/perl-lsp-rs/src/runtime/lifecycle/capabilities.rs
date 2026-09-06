@@ -212,10 +212,16 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        // Classify encoding before consuming the initialize one-shot. A rejected
-        // offer must not make `initialized` or auto-initialize-for-compat treat
-        // the server as initialized, and a corrected initialize must still be
-        // able to run. Concurrent duplicates remain serialized by the CAS below.
+        // Duplicate initialize is always InvalidRequest, even when the payload
+        // would also fail encoding classification. First-attempt classification
+        // still runs before the one-shot CAS so a rejected offer can retry.
+        if self.initialize_requested.load(Ordering::Acquire) {
+            return Err(JsonRpcError {
+                code: -32600, // InvalidRequest per LSP spec 3.17
+                message: "initialize may only be sent once".to_string(),
+                data: None,
+            });
+        }
         if let Some(params) = &params {
             super::super::v0_18_text_sync_envelope::classify_position_encoding_offer(params)?;
         }
@@ -1656,6 +1662,29 @@ mod tests {
         };
         assert_eq!(err.code, -32602);
         assert!(err.message.contains("UTF-16"), "{}", err.message);
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_initialize_after_success_stays_invalid_request_even_with_bad_encodings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        server.handle_initialize(Some(json!({ "capabilities": {} })))?;
+        let err = match server.handle_initialize(Some(json!({
+            "capabilities": {
+                "general": {
+                    "positionEncodings": ["utf-8"]
+                }
+            }
+        }))) {
+            Err(err) => err,
+            Ok(_) => return Err("duplicate initialize must fail".into()),
+        };
+        assert_eq!(
+            err.code, -32600,
+            "already-consumed initialize must stay InvalidRequest, not encoding InvalidParams"
+        );
+        assert_eq!(err.message, "initialize may only be sent once");
         Ok(())
     }
 

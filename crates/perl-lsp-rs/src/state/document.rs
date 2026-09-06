@@ -638,7 +638,6 @@ impl DocumentState {
     }
 
     /// Whether later ranged changes and current-answer facts are unavailable.
-    #[cfg(any(test, feature = "workspace"))]
     #[must_use]
     pub(crate) fn full_sync_required(&self) -> bool {
         self.full_sync_required
