@@ -300,6 +300,10 @@ changed by repair, claim/authority/risk changes, or actual conflict/combined-tre
 repair. Unrelated `main` movement and formatting/editorial/generated-only changes do
 not force broad replay.
 
+Generated projections are never repaired by hand: regenerate them from their authority
+and validate the result. Temporary workflows that execute or push on a branch's behalf
+are not an acceptable repair route; the edit is made locally by the candidate writer.
+
 ## Hard stops
 
 Stop only for concrete hazards: same-candidate writer collision, destructive loss,
