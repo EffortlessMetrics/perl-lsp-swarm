@@ -22,11 +22,31 @@ use serde::Serialize;
 use super::scalar_value::{MutationValue, MutationValueProfile};
 use super::target::WritabilityDisposition;
 
+/// Explicit claim that a dispatched mutation may already have been applied.
+///
+/// A plain `bool` here would be forgeable: a caller could build an
+/// indeterminate outcome asserting `false` while every accessor on it reported
+/// `true`, producing a record that contradicts itself. This type has exactly
+/// one value, so the claim is explicit in the data and cannot be negated. The
+/// only way to obtain one is
+/// [`MutationOutcome::indeterminate_after_dispatch`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PossibleApplication(());
+
 /// A value observed by reading the target back after a mutation.
+///
+/// # What this type does not prove
+///
+/// Constructing one does not verify that the engine really reported this
+/// value, that it came from the operation's target, or that it was observed
+/// under a current authority. Those checks belong to the read-back
+/// interpreter (#10926), which is outside this contract; the fields carry the
+/// evidence that interpreter must validate before it may build
+/// [`MutationOutcome::SuccessWithObservedReadBack`].
 ///
 /// Constructed from what the engine reported on re-inspection, never from the
 /// operation's requested value.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ObservedReadBack {
     /// The value observed in the target after the write.
     pub observed_value: MutationValue,
@@ -41,7 +61,7 @@ pub struct ObservedReadBack {
 /// Variants are grouped by decision point; see
 /// [`MutationOutcome::is_before_dispatch`] and
 /// [`MutationOutcome::possible_application`].
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MutationOutcome {
     // ---- decided before dispatch: nothing was written ----
     /// The backend/mode/profile cell does not implement scalar mutation.
@@ -85,12 +105,12 @@ pub enum MutationOutcome {
     EngineRejectedWithoutMutation,
     /// The command was dispatched and the result is unknown.
     ///
-    /// `possible_application` is structurally `true`: this variant exists only
-    /// to represent "a write may have landed", and it must invalidate the old
-    /// value authority.
+    /// The field states possible application explicitly, and
+    /// [`PossibleApplication`] has no `false` value, so this variant cannot be
+    /// built claiming the debuggee was left untouched.
     IndeterminateAfterDispatch {
-        /// Always `true`. Retained as a field so receipts state it explicitly.
-        possible_application: bool,
+        /// Explicit, unforgeable "a write may have landed" claim.
+        possible_application: PossibleApplication,
     },
     /// The write may have landed but no read-back was returned.
     ReadBackMissingAfterPossibleMutation,
@@ -107,10 +127,10 @@ pub enum MutationOutcome {
 impl MutationOutcome {
     /// Construct the indeterminate-after-dispatch outcome.
     ///
-    /// Provided so callers cannot accidentally build it with
-    /// `possible_application: false`, which would be a false claim.
+    /// The only way to obtain a [`PossibleApplication`], so an indeterminate
+    /// outcome can never be built claiming the debuggee was left untouched.
     pub fn indeterminate_after_dispatch() -> Self {
-        Self::IndeterminateAfterDispatch { possible_application: true }
+        Self::IndeterminateAfterDispatch { possible_application: PossibleApplication(()) }
     }
 
     /// Whether this outcome was decided before the command reached the engine.

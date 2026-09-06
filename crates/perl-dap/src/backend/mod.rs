@@ -550,7 +550,6 @@ mod tests {
             MutationOrigin::SetVariable,
             target,
             MutationValue::Undef,
-            1,
             MutationDeadline::default(),
             ResponseValueFormat::default(),
         );

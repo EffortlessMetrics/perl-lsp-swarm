@@ -29,11 +29,23 @@ use super::structured_value::ExactDecimal;
 /// Schema version of the scalar mutation value profile (`MutationValueText.v1`).
 pub const MUTATION_SCALAR_VALUE_SCHEMA_VERSION: u32 = 1;
 
-/// Exact bounded integer kept as canonical decimal text.
+/// Exact integer kept as canonical decimal text.
 ///
 /// Canonical form is `0`, or an optional `-` followed by a non-zero leading
 /// digit and any further digits. Construction is checked, so a non-canonical
 /// spelling cannot enter the exact model outside the value parser.
+///
+/// # Size is the parser's bound, not this type's
+///
+/// This type admits canonical text of any length and deliberately enforces no
+/// digit budget. `MutationValueText.v1`'s limits — 256 significant digits,
+/// 65_536 input bytes, 32_768 decoded string bytes — are *profile* policy
+/// owned by the value parser (#10745), exactly as the structured profile's
+/// budgets live in [`StructuredMutationLimits`](super::StructuredMutationLimits)
+/// rather than in its value types. Duplicating them here would create a second,
+/// unversioned copy of a limit that a reviewed profile bump is supposed to move
+/// in one place. [`significant_digits`](Self::significant_digits) exists so the
+/// parser charges its budget against this type's own reading of the text.
 ///
 /// # Negative zero
 ///
@@ -43,7 +55,7 @@ pub const MUTATION_SCALAR_VALUE_SCHEMA_VERSION: u32 = 1;
 /// domain keeps exactly one representation of that value. Signed zero survives
 /// only in the decimal cohort, where `-0.0` is a distinct spelling Perl can
 /// observe.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExactInteger {
     /// Canonical form: `0`, or `-?[1-9][0-9]*`.
     canonical: String,
@@ -147,7 +159,7 @@ impl MutationValueProfile {
 /// This is typed data below the parser boundary. It retains no raw client
 /// text, no spelling, and no Perl source; string content is inert regardless
 /// of what it resembles.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MutationValue {
     /// Perl `undef`.
     Undef,

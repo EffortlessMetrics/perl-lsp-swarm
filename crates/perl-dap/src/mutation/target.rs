@@ -25,8 +25,20 @@
 //!
 //! The candidate has **no field** for a DAP `frameId`, `variablesReference`,
 //! display name, `evaluateName`, source range, or pointer text. That is the
-//! structural half of the recurrence control: those identities cannot be
-//! supplied here even by mistake.
+//! structural half of the recurrence control: there is no slot those
+//! identities fit into, so they cannot become a target's identity by being
+//! passed in.
+//!
+//! # What that does not prevent
+//!
+//! `frame_identity` and `binding_identity` are opaque `String`s, so a caller
+//! could still *put* a display spelling or a stringified `frameId` inside one.
+//! Nothing in this contract can detect that, because it never sees the DAP
+//! request. Keeping those identities exact is the acquisition path's
+//! obligation (#11310), which produces them from observed runtime storage
+//! facts rather than from request fields. When that path lands, the honest
+//! tightening is to make them newtypes only acquisition can mint; until it
+//! exists, there is nothing to constrain them against.
 
 use serde::Serialize;
 
@@ -70,7 +82,7 @@ impl MutationLocationKind {
 /// concern and never reaches this type, so an empty key, a key containing a
 /// quote, a backslash, a control character, or a digit-looking key stays
 /// exactly the bytes the runtime observed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MutationMember {
     /// The whole scalar binding.
     WholeScalar,
@@ -107,7 +119,7 @@ impl MutationMember {
 /// Produced by the inspection/value-graph path (#9048, #9050). It may
 /// accompany a location, and it is what proves "these two locations currently
 /// hold the same referent", but on its own it addresses nothing writable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectedValueIdentity {
     /// Value-graph node identity of the observation.
     pub value_node: String,
@@ -122,10 +134,11 @@ pub struct InspectedValueIdentity {
 /// Sealed: the only producer is [`MutationTargetCandidate::bind`], so every
 /// provenance value is generation-bound and kind/member-coherent by
 /// construction.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MutationLocationProvenance {
     session_generation: u64,
     suspension_generation: u64,
+    value_authority_generation: u64,
     frame_identity: String,
     binding_identity: String,
     kind: MutationLocationKind,
@@ -143,6 +156,16 @@ impl MutationLocationProvenance {
     /// Suspension generation the location was acquired under.
     pub fn suspension_generation(&self) -> u64 {
         self.suspension_generation
+    }
+
+    /// Value-authority generation the location was acquired under.
+    ///
+    /// Part of target identity, not a separate caller-supplied expectation:
+    /// [`MutationOperation`](crate::mutation::MutationOperation) reads it from
+    /// here, so an operation cannot claim a value authority the target was
+    /// never bound under.
+    pub fn value_authority_generation(&self) -> u64 {
+        self.value_authority_generation
     }
 
     /// Exact observed frame identity. Never a DAP `frameId`.
@@ -234,6 +257,9 @@ pub enum MutationTargetBindingError {
     /// No suspension generation was supplied.
     #[error("mutation target candidate has no suspension generation")]
     MissingSuspensionGeneration,
+    /// No value-authority generation was supplied.
+    #[error("mutation target candidate has no value authority generation")]
+    MissingValueAuthorityGeneration,
     /// No exact frame identity was supplied.
     #[error("mutation target candidate has no exact frame identity")]
     MissingFrameIdentity,
@@ -306,6 +332,9 @@ impl MutationTargetCandidate {
         let suspension_generation = self
             .suspension_generation
             .ok_or(MutationTargetBindingError::MissingSuspensionGeneration)?;
+        let value_authority_generation = self
+            .value_authority_generation
+            .ok_or(MutationTargetBindingError::MissingValueAuthorityGeneration)?;
         if self.frame_identity.is_empty() {
             return Err(MutationTargetBindingError::MissingFrameIdentity);
         }
@@ -324,13 +353,9 @@ impl MutationTargetCandidate {
         if member.is_container_member() && referent_identity.is_none() {
             return Err(MutationTargetBindingError::MissingReferentForContainerMember);
         }
-        let observation_is_stale =
-            match (self.inspected_value.as_ref(), self.value_authority_generation) {
-                (Some(observation), Some(expected)) => {
-                    observation.value_authority_generation != expected
-                }
-                _ => false,
-            };
+        let observation_is_stale = self.inspected_value.as_ref().is_some_and(|observation| {
+            observation.value_authority_generation != value_authority_generation
+        });
         if observation_is_stale {
             return Err(MutationTargetBindingError::StaleValueObservation);
         }
@@ -342,6 +367,7 @@ impl MutationTargetCandidate {
             location: MutationLocationProvenance {
                 session_generation,
                 suspension_generation,
+                value_authority_generation,
                 frame_identity: self.frame_identity.clone(),
                 binding_identity: self.binding_identity.clone(),
                 kind,
@@ -359,7 +385,7 @@ impl MutationTargetCandidate {
 /// An admitted writable mutation subject.
 ///
 /// Sealed; produced only by [`MutationTargetCandidate::bind`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MutationTarget {
     location: MutationLocationProvenance,
     cohort: MutationTargetCohort,

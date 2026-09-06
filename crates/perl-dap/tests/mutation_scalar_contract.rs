@@ -66,7 +66,6 @@ fn operation(
         origin,
         target,
         value,
-        11,
         MutationDeadline::default(),
         ResponseValueFormat::default(),
     )
@@ -260,6 +259,42 @@ fn a_value_observed_under_another_authority_is_refused() -> TestResult {
 }
 
 #[test]
+fn a_target_cannot_bind_without_a_value_authority() -> TestResult {
+    // Value authority is target identity, not a caller-supplied expectation:
+    // without it, an operation could later claim any generation it liked.
+    let mut candidate = lexical_candidate("frame#1", "pad:$x@0");
+    candidate.value_authority_generation = None;
+
+    let error = binding_error(&candidate)?;
+    if error != MutationTargetBindingError::MissingValueAuthorityGeneration {
+        return Err(format!("expected a missing-value-authority refusal, got {error:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn an_operation_cannot_invent_a_value_authority() -> TestResult {
+    // Every expected generation is read off the target, so there is no
+    // argument through which a caller could substitute another authority.
+    let mut candidate = lexical_candidate("frame#1", "pad:$x@0");
+    candidate.value_authority_generation = Some(99);
+    let target = bind(&candidate)?;
+
+    if target.location().value_authority_generation() != 99 {
+        return Err("the target lost its value authority".to_string());
+    }
+
+    let op = operation(MutationOrigin::SetVariable, target, integer("1")?);
+    if op.expected_value_authority_generation() != 99 {
+        return Err(format!(
+            "operation claimed value authority {}, not the target's 99",
+            op.expected_value_authority_generation()
+        ));
+    }
+    Ok(())
+}
+
+#[test]
 fn generations_are_carried_onto_the_bound_target() -> TestResult {
     let target = bind(&lexical_candidate("frame#1", "pad:$x@0"))?;
     if target.location().session_generation() != 7 || target.location().suspension_generation() != 3
@@ -434,7 +469,6 @@ fn response_format_cannot_change_the_assigned_value() -> TestResult {
         MutationOrigin::SetVariable,
         target.clone(),
         value.clone(),
-        11,
         MutationDeadline::default(),
         ResponseValueFormat { hex: false },
     );
@@ -443,7 +477,6 @@ fn response_format_cannot_change_the_assigned_value() -> TestResult {
         MutationOrigin::SetVariable,
         target,
         value,
-        11,
         MutationDeadline::default(),
         ResponseValueFormat { hex: true },
     );
@@ -611,15 +644,18 @@ fn success_requires_an_observed_read_back() -> TestResult {
 
 #[test]
 fn indeterminate_after_dispatch_always_states_possible_application() -> TestResult {
-    match MutationOutcome::indeterminate_after_dispatch() {
-        MutationOutcome::IndeterminateAfterDispatch { possible_application } => {
-            if !possible_application {
-                return Err("possible_application must be true".to_string());
-            }
-            Ok(())
-        }
-        other => Err(format!("unexpected outcome {other:?}")),
+    let outcome = MutationOutcome::indeterminate_after_dispatch();
+    match outcome {
+        // `PossibleApplication` has no `false` value, so this variant cannot be
+        // built asserting the debuggee was left untouched. Matching it at all
+        // is the proof that the claim is carried explicitly in the data.
+        MutationOutcome::IndeterminateAfterDispatch { possible_application: _ } => {}
+        ref other => return Err(format!("unexpected outcome {other:?}")),
     }
+    if !outcome.possible_application() || !outcome.invalidates_value_authority() {
+        return Err("an indeterminate dispatch must claim possible application".to_string());
+    }
+    Ok(())
 }
 
 #[test]
@@ -729,6 +765,32 @@ fn receipt_projection_is_deterministic() -> TestResult {
     let rendered = serde_json::to_string(&other.receipt_projection()).map_err(|e| e.to_string())?;
     if rendered == first {
         return Err("receipts did not discriminate value size".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn the_receipt_is_the_serializable_projection() -> TestResult {
+    // Redaction is structural: the payload-bearing types deliberately do not
+    // implement `Serialize`, so `serde_json::to_string(&operation)` is a
+    // compile error rather than a leak. That absence cannot be asserted at
+    // runtime — the compiler enforces it, and the checked-in public-API
+    // baseline (`.ci/public-api-baselines/perl-dap.txt`) is what makes a
+    // re-derived `Serialize` on one of them a visible, reviewable diff.
+    //
+    // What this test pins is the other half: the receipt projections *are*
+    // serializable, so redaction never costs a caller its evidence.
+    fn assert_serialize<T: serde::Serialize>() {}
+    assert_serialize::<perl_dap::mutation::MutationValueReceipt>();
+    assert_serialize::<perl_dap::mutation::MutationTargetReceipt>();
+    assert_serialize::<perl_dap::mutation::MutationOperationReceipt>();
+    assert_serialize::<perl_dap::mutation::MutationOutcomeReceipt>();
+
+    let target = bind(&lexical_candidate("frame#1", "pad:$x@0"))?;
+    let op = operation(MutationOrigin::SetVariable, target, integer("5")?);
+    let rendered = serde_json::to_string(&op.receipt_projection()).map_err(|e| e.to_string())?;
+    if !rendered.contains("operation_id") {
+        return Err("the receipt lost its identity under serialization".to_string());
     }
     Ok(())
 }

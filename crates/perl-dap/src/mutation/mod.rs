@@ -22,6 +22,21 @@
 //! ("reuse exact-number/string types from the scalar model rather than cloning
 //! them"), and it is what keeps `f64` out of both profiles.
 //!
+//! # Redaction is structural
+//!
+//! Debuggee data — an assigned value, a hash key, an observed read-back — is
+//! private. Rather than rely on every future caller remembering to redact,
+//! none of the payload-bearing types implement [`serde::Serialize`]: not
+//! [`MutationValue`], [`MutationMember`], [`MutationLocationProvenance`],
+//! [`MutationTarget`], [`MutationOperation`], [`ObservedReadBack`], or
+//! [`MutationOutcome`]. The `*Receipt` projections do, and they carry cohort,
+//! identity, class, and size only. So the way to serialize any of this is
+//! `receipt_projection()`, and reaching for the raw type instead is a
+//! compile error rather than a silent leak.
+//!
+//! `Debug` is still derived, because it is load-bearing for tests and
+//! assertions; keep debuggee payload out of logs by logging receipts.
+//!
 //! # Identity
 //!
 //! [`MutationLocationProvenance`], [`InspectedValueIdentity`], and
@@ -38,7 +53,7 @@ pub use operation::{
     MutationDeadline, MutationOperation, MutationOperationReceipt, MutationOrigin,
     ResponseValueFormat,
 };
-pub use outcome::{MutationOutcome, MutationOutcomeReceipt, ObservedReadBack};
+pub use outcome::{MutationOutcome, MutationOutcomeReceipt, ObservedReadBack, PossibleApplication};
 pub use scalar_value::{
     ExactInteger, MUTATION_SCALAR_VALUE_SCHEMA_VERSION, MutationValue, MutationValueKind,
     MutationValueProfile, MutationValueReceipt,

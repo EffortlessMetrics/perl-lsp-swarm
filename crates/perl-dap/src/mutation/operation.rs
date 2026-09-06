@@ -46,7 +46,7 @@ pub struct MutationDeadline {
 /// Sealed: [`MutationOperation::new`] is the only constructor, and it takes an
 /// already-bound [`MutationTarget`] and an already-admitted [`MutationValue`],
 /// so an operation cannot exist for an unbound target or unparsed text.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MutationOperation {
     operation_id: u64,
     origin: MutationOrigin,
@@ -64,20 +64,21 @@ pub struct MutationOperation {
 impl MutationOperation {
     /// Build an operation from a bound target and an admitted scalar value.
     ///
-    /// The expected session and suspension generations are taken from the
-    /// target's own location provenance rather than accepted as separate
-    /// arguments, so an operation cannot claim authority the target never had.
+    /// Every expected generation — session, suspension, and value authority —
+    /// is read from the target's own location provenance rather than accepted
+    /// as a separate argument, so an operation cannot claim authority the
+    /// target was never bound under.
     pub fn new(
         operation_id: u64,
         origin: MutationOrigin,
         target: MutationTarget,
         value: MutationValue,
-        expected_value_authority_generation: u64,
         deadline: MutationDeadline,
         response_format: ResponseValueFormat,
     ) -> Self {
         let expected_session_generation = target.location().session_generation();
         let expected_suspension_generation = target.location().suspension_generation();
+        let expected_value_authority_generation = target.location().value_authority_generation();
         let backend_mode = target.backend_mode().to_string();
         let value_profile = value.profile();
         Self {
