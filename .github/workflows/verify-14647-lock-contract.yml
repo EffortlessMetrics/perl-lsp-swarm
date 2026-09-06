@@ -20,7 +20,7 @@ jobs:
       CARGO_BUILD_JOBS: '2'
       CARGO_INCREMENTAL: '0'
       CARGO_TERM_COLOR: never
-      PROOF_DIR: ${{ runner.temp }}/lock-contract-proof
+      PROOF_DIR: /tmp/lock-contract-proof
     steps:
       - name: Checkout exact candidate without retained credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,7 +61,6 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
-          import hashlib
           import json
           import os
           from pathlib import Path
@@ -148,6 +147,6 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pr14647-lock-contract-6d6676dd
-          path: ${{ runner.temp }}/lock-contract-proof
+          path: /tmp/lock-contract-proof
           if-no-files-found: error
           retention-days: 7
