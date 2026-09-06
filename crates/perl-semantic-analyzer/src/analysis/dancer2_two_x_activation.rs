@@ -136,6 +136,43 @@ fn collect_package_subs(
                 package_subs.push((package.to_string(), name.clone()));
             }
         }
+        NodeKind::Use { module, args, .. } if !is_exact_dancer2_two_x_import(module) => {
+            // Functions imported from other modules occupy this package's
+            // globs before Dancer2 runs: its un-overwrite rule preserves
+            // them, so the same-named DSL keyword is never installed
+            // (#14408 review). Only plain words count; tags and `!`
+            // exclusions are this module's own import vocabulary.
+            for arg in args {
+                let words = perl_semantic_facts::framework_adapters::dancer2_two_x::qw_words(arg)
+                    .unwrap_or_else(|| {
+                        arg.split_whitespace()
+                            .map(|word| word.trim_matches('\'').trim_matches('"').to_string())
+                            .collect()
+                    });
+                for text in words {
+                    if text.is_empty()
+                        || text.starts_with('!')
+                        || text.starts_with(':')
+                        || text.contains('(')
+                    {
+                        continue;
+                    }
+                    if let Some(package) = current_package.as_deref() {
+                        package_subs.push((package.to_string(), text));
+                    }
+                }
+            }
+        }
+        NodeKind::Typeglob { name } => {
+            // `*get = ...` installs the glob directly: the leaf name occupies
+            // this package's glob and must shadow a same-named import.
+            let leaf = name.rsplit("::").next().unwrap_or(name);
+            if !leaf.is_empty() {
+                if let Some(package) = current_package.as_deref() {
+                    package_subs.push((package.to_string(), leaf.to_string()));
+                }
+            }
+        }
         NodeKind::Package { name, block: Some(block), .. } => {
             // `package NAME { ... }` installs its declared package for the
             // block and restores the enclosing one afterwards.
@@ -635,6 +672,39 @@ mod tests {
     }
 
     #[test]
+    fn imported_functions_from_other_modules_shadow_the_import() {
+        // Functions imported from another module occupy this package's
+        // globs before Dancer2 runs; its un-overwrite rule preserves them.
+        let found = sites(
+            "use Helpers qw(get post);
+use Dancer2;
+get '/x' => sub { 1 };
+",
+        );
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0].shadowed_keywords.iter().any(|k| k == "get"),
+            "an earlier imported get must shadow the import, got {:?}",
+            found[0].shadowed_keywords
+        );
+    }
+
+    #[test]
+    fn typeglob_assignment_shadows_the_import() {
+        let found = sites(
+            r"*get = \&other;
+use Dancer2;
+",
+        );
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0].shadowed_keywords.iter().any(|k| k == "get"),
+            "a typeglob assignment must shadow the import, got {:?}",
+            found[0].shadowed_keywords
+        );
+    }
+
+    #[test]
     fn forward_declaration_after_import_does_not_shadow() {
         // `sub get;` predeclares the name without installing a glob entry:
         // Dancer2's un-overwrite rule keeps the keyword installed.
@@ -713,7 +783,6 @@ get '/x' => sub { 1 };
             found[0].evidence.unmodeled_options
         );
     }
-
 
     fn leading_double_colon_addresses_main_root() {
         // `sub ::get` is main::get: the leading `::` addresses main's root,

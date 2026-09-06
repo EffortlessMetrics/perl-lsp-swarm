@@ -730,6 +730,13 @@ impl ImportToken {
     }
 }
 
+/// The words of a `qw//`-style token, or `None` when the token is not a
+/// qw construct. Exposed for the analyzer's import-shadow analysis.
+pub fn qw_words(token: &str) -> Option<Vec<String>> {
+    let (inner, _open, _rest) = split_delimited_quote_like(token, "qw")?;
+    Some(inner.split_whitespace().map(ToString::to_string).collect())
+}
+
 fn normalize_import_tokens(arg: &str) -> Vec<ImportToken> {
     let token = arg.trim();
     if token.is_empty() || matches!(token, "," | "=>" | "(" | ")" | ";") {
