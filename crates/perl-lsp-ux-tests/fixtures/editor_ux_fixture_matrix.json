@@ -2146,6 +2146,36 @@
         "first_five_minutes_harness",
         "issue_burndown_regression_guard"
       ]
+    },
+    {
+      "id": "htmx_server_header_workflows",
+      "scenario_file": "ux_scenario_70_htmx_server_header_workflows.rs",
+      "subsystem_owner": "frameworks",
+      "ci_tier": "pr",
+      "component": "completion",
+      "instrumentation": {
+        "run_receipt": true,
+        "first_useful_result": true,
+        "protocol_goldens": false
+      },
+      "user_journey": "author htmx request/response header names inside Perl string literals in Dancer2, Mojolicious, and PSGI/Plack server code over the committed skeleton fixtures, through real textDocument/completion requests",
+      "measures": [
+        "workflow_pass_rate",
+        "workflow_stability_rate",
+        "p95_time_to_first_useful_result_ms"
+      ],
+      "expected_outcomes": [
+        "each server-style fixture opens as admitted Perl with no parse-error and no htmx diagnostic",
+        "a request-header detection site completes the canonical HX-Request with its request-direction detail and catalog documentation in all three stacks",
+        "a response-header emission site completes the full HX-Trigger family with per-item direction details in all three stacks",
+        "case-insensitive typing inserts the canonical HX-Redirect spelling",
+        "every htmx item serializes a textEdit that replaces exactly the typed prefix inside the quotes",
+        "a dynamic header value and an ordinary path string receive no htmx item; template attribute completion is not claimed (waits on the template ingress contract)"
+      ],
+      "confidence_signals": [
+        "first_five_minutes_harness",
+        "issue_burndown_regression_guard"
+      ]
     }
   ]
 }
