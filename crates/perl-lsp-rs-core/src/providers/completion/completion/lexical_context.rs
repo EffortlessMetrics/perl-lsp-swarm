@@ -4,10 +4,12 @@ use std::cmp::Ordering;
 /// Bounded local POD boundary for completion (#13241, HTTP-client scope).
 ///
 /// Canonical broad boundary: any column-zero alphabetic `=command` directive
-/// enters POD, and only an exact column-zero `=cut` (followed by whitespace or
-/// end of line) returns the source to Perl code. `=end` and the blank line
-/// ending a `=for` paragraph close an inner POD construct only; they never
-/// resume executable code, and unknown alphabetic commands stay opaque POD.
+/// enters POD, and only an exact column-zero `=cut` returns the source to Perl
+/// code. Like perl, `=cut` exits POD when followed by any non-word byte (or
+/// end of line), so `=cut;` resumes code while `=cutlery` stays POD. `=end`
+/// and the blank line ending a `=for` paragraph close an inner POD construct
+/// only; they never resume executable code, and unknown alphabetic commands
+/// stay opaque POD.
 ///
 /// #13244 owns migrating completion onto the generation-bound canonical
 /// `SourceRegionIndex` and deleting this local bridge.
@@ -88,7 +90,12 @@ pub(super) fn is_in_string(source: &str, position: usize) -> bool {
             return literal_state.in_single_quote
                 || literal_state.in_double_quote
                 || literal_state.in_backtick
-                || literal_state.literal.as_ref().is_some_and(ActiveLiteral::is_string_like);
+                || literal_state.literal.as_ref().is_some_and(|literal| {
+                    // The replacement section of `s///`/`tr///` is string-like:
+                    // it stays completion-eligible but must not read as
+                    // executable constructor evidence.
+                    literal.is_string_like() || !literal.in_pattern_section()
+                });
         }
 
         let started_in_literal = literal_state.is_active();
@@ -132,10 +139,77 @@ pub(super) fn is_in_regex(source: &str, position: usize) -> bool {
     }
 
     let mut literal_state = LiteralScanState::default();
-    literal_state.scan_segment(source.as_bytes(), 0, position);
+    scan_prefix_line_by_line(&mut literal_state, source, position);
     literal_state.literal.as_ref().is_some_and(|literal| {
         literal.kind == QuoteLikeLiteralKind::Regex && literal.in_pattern_section()
     })
+}
+
+/// Advance `state` over the source prefix `[0, position)` one line at a time.
+///
+/// [`LiteralScanState::scan_segment`] suspends at the first unquoted `#`, so
+/// feeding it an entire multi-line prefix would permanently stop literal
+/// tracking at the first line comment. Comment state ends with its newline,
+/// so per-line segments resume literal detection on the following line.
+///
+/// The walk shares the heredoc/POD boundaries of the other lexical scanners:
+/// heredoc bodies (and their closing lines) and POD lines never enter or
+/// advance literal state, so regex-like text inside a non-code region cannot
+/// leak literal state into later executable code.
+fn scan_prefix_line_by_line(state: &mut LiteralScanState, source: &str, position: usize) {
+    let prefix_end = position.min(source.len());
+    let bytes = source.as_bytes();
+    let mut pod_state = PodState::default();
+    let mut active_delimiters: std::collections::VecDeque<HeredocDelimiter> =
+        std::collections::VecDeque::new();
+    let mut line_start = 0usize;
+
+    while line_start < prefix_end {
+        let line_end = bytes[line_start..prefix_end]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(prefix_end, |offset| line_start + offset + 1);
+        let line = source.get(line_start..line_end).map(strip_line_ending).unwrap_or_default();
+
+        if let Some(delimiter) = active_delimiters.front() {
+            if delimiter.matches_close(line) {
+                active_delimiters.pop_front();
+            }
+            line_start = line_end;
+            continue;
+        }
+
+        if !matches!(pod_state, PodState::Code) {
+            advance_pod_state(&mut pod_state, line);
+            line_start = line_end;
+            continue;
+        }
+
+        let started_in_literal = state.is_active();
+        if !started_in_literal && advance_pod_state(&mut pod_state, line) {
+            line_start = line_end;
+            continue;
+        }
+
+        let resumed_code_index = state.scan_segment(bytes, line_start, line_end.min(prefix_end));
+        if line_end <= prefix_end {
+            if started_in_literal {
+                if let Some(resumed_code_index) = resumed_code_index {
+                    active_delimiters.extend(extract_heredoc_delimiters_from_source_line(
+                        source,
+                        line,
+                        line_end,
+                        resumed_code_index - line_start,
+                    ));
+                }
+            } else {
+                active_delimiters
+                    .extend(extract_heredoc_delimiters_from_source_line(source, line, line_end, 0));
+            }
+        }
+
+        line_start = line_end;
+    }
 }
 
 /// True when `position` sits strictly inside an open regex pattern body.
@@ -149,7 +223,7 @@ fn is_inside_entered_regex_body(source: &str, position: usize) -> bool {
     }
 
     let mut literal_state = LiteralScanState::default();
-    literal_state.scan_segment(source.as_bytes(), 0, position);
+    scan_prefix_line_by_line(&mut literal_state, source, position);
     let Some(literal) = literal_state.literal.as_ref() else {
         return false;
     };
@@ -277,10 +351,6 @@ pub(super) fn is_in_comment(source: &str, position: usize) -> bool {
 /// ends when a line contains only the delimiter (and optional trailing whitespace/newline).
 pub(super) fn is_in_heredoc(source: &str, position: usize) -> bool {
     is_in_heredoc_with_boundary(source, position, false)
-}
-
-fn is_in_heredoc_or_closing_line(source: &str, position: usize) -> bool {
-    is_in_heredoc_with_boundary(source, position, true)
 }
 
 fn is_in_heredoc_with_boundary(source: &str, position: usize, include_closing_line: bool) -> bool {
@@ -1109,7 +1179,7 @@ fn slash_starts_bare_regex_literal(bytes: &[u8], index: usize) -> bool {
     )
 }
 
-fn ascii_word_start(text: &str) -> usize {
+pub(super) fn ascii_word_start(text: &str) -> usize {
     text.as_bytes()
         .iter()
         .rposition(|byte| !is_identifier_byte(*byte))
@@ -1316,48 +1386,34 @@ fn strip_horizontal_space(text: &str) -> (&str, bool) {
 ///
 /// Lines that fall inside a heredoc are skipped so that heredoc bodies containing
 /// `=pod`-like content cannot corrupt the POD state machine.
+///
+/// The scan is one incremental forward pass sharing the heredoc/literal state
+/// machine with [`is_in_string`]: the pod decision for each line only needs the
+/// heredoc and literal state at that line's start, so recomputing either state
+/// from the source start per line (an O(lines × prefix) rescan) is avoided on
+/// the per-keystroke completion path.
 pub(super) fn is_in_pod(source: &str, position: usize) -> bool {
     if position == 0 {
         return false;
     }
 
-    let Some(prefix) = source.get(..position.min(source.len())) else {
-        return false;
-    };
-    let mut state = PodState::default();
-    let mut line_start = 0;
-    for raw_line in prefix.split_inclusive('\n') {
-        let line = strip_line_ending(raw_line);
-        let ignored = is_in_heredoc_or_closing_line(source, line_start)
-            || is_in_multiline_literal(source, line_start);
-
-        if !ignored {
-            advance_pod_state(&mut state, line);
-        }
-
-        line_start += raw_line.len();
-    }
-
-    !matches!(state, PodState::Code)
-}
-
-fn is_in_multiline_literal(source: &str, position: usize) -> bool {
+    let prefix_end = position.min(source.len());
     let bytes = source.as_bytes();
-    let position = position.min(bytes.len());
+    let mut state = PodState::default();
+    let mut literal_state = LiteralScanState::default();
     let mut active_delimiters: std::collections::VecDeque<HeredocDelimiter> =
         std::collections::VecDeque::new();
-    let mut pod_state = PodState::default();
-    let mut state = LiteralScanState::default();
     let mut line_start = 0usize;
 
-    while line_start < position {
-        let line_end = bytes[line_start..position]
+    while line_start < prefix_end {
+        let line_end = bytes[line_start..prefix_end]
             .iter()
             .position(|candidate| *candidate == b'\n')
-            .map_or(position, |newline_offset| line_start + newline_offset + 1);
+            .map_or(prefix_end, |newline_offset| line_start + newline_offset + 1);
         let line = source.get(line_start..line_end).map(strip_line_ending).unwrap_or_default();
 
         if let Some(delimiter) = active_delimiters.front() {
+            // Heredoc body and its closing line never advance POD state.
             if delimiter.matches_close(line) {
                 active_delimiters.pop_front();
             }
@@ -1365,37 +1421,50 @@ fn is_in_multiline_literal(source: &str, position: usize) -> bool {
             continue;
         }
 
-        let started_in_literal = state.is_active();
-        if !started_in_literal && advance_pod_state(&mut pod_state, line) {
+        if !matches!(state, PodState::Code) {
+            advance_pod_state(&mut state, line);
             line_start = line_end;
             continue;
         }
 
-        let segment_end = line_end.min(position);
-        let resumed_code_index = state.scan_segment(bytes, line_start, segment_end);
+        let started_in_literal = literal_state.is_active();
+        if !started_in_literal && advance_pod_state(&mut state, line) {
+            line_start = line_end;
+            continue;
+        }
 
-        if !started_in_literal && line_end <= position {
-            active_delimiters
-                .extend(extract_heredoc_delimiters_from_source_line(source, line, line_end, 0));
-        } else if let Some(resumed_code_index) = resumed_code_index
-            && line_end <= position
-        {
-            active_delimiters.extend(extract_heredoc_delimiters_from_source_line(
-                source,
-                line,
-                line_end,
-                resumed_code_index - line_start,
-            ));
+        let resumed_code_index =
+            literal_state.scan_segment(bytes, line_start, line_end.min(prefix_end));
+        if line_end <= prefix_end {
+            if started_in_literal {
+                if let Some(resumed_code_index) = resumed_code_index {
+                    active_delimiters.extend(extract_heredoc_delimiters_from_source_line(
+                        source,
+                        line,
+                        line_end,
+                        resumed_code_index - line_start,
+                    ));
+                }
+            } else {
+                active_delimiters
+                    .extend(extract_heredoc_delimiters_from_source_line(source, line, line_end, 0));
+            }
         }
 
         line_start = line_end;
     }
 
-    state.is_active()
+    !matches!(state, PodState::Code)
 }
 
 fn is_pod_end_marker(line: &str) -> bool {
-    pod_directive(line) == Some("=cut")
+    // perl exits POD at a column-zero `=cut` followed by any non-word byte
+    // (including none): `=cut;` and `=cut-lt` resume code, while `=cutlery`,
+    // `=cut1`, and `=cut_lt` remain POD commands/paragraph text.
+    let Some(after_cut) = line.strip_prefix("=cut") else {
+        return false;
+    };
+    after_cut.bytes().next().is_none_or(|byte| !byte.is_ascii_alphanumeric() && byte != b'_')
 }
 
 fn pod_directive(line: &str) -> Option<&str> {
@@ -1976,5 +2045,98 @@ my $after = "op"#;
     #[test]
     fn quoted_heredoc_label_preserves_non_quote_escape() {
         assert_eq!(parse_quoted_heredoc_label(r#""EO\nF""#, '"'), Some(r"EO\nF".to_string()));
+    }
+
+    #[test]
+    fn pod_exits_on_cut_followed_by_any_non_word_byte() {
+        // perl exits POD at column-zero `=cut` plus any non-word byte.
+        let semicolon = "=pod\ndocs\n=cut;\nmy $code = 1;";
+        assert!(!is_in_pod(semicolon, semicolon.len()));
+
+        let hyphenated = "=pod\ndocs\n=cut-lt\nmy $code = 1;";
+        assert!(!is_in_pod(hyphenated, hyphenated.len()));
+
+        let plain = "=pod\ndocs\n=cut\nmy $code = 1;";
+        assert!(!is_in_pod(plain, plain.len()));
+
+        let spaced = "=pod\ndocs\n=cut \nmy $code = 1;";
+        assert!(!is_in_pod(spaced, spaced.len()));
+    }
+
+    #[test]
+    fn pod_word_continuations_after_cut_stay_pod() {
+        for line in ["=cutlery", "=cut1", "=cut_lt"] {
+            let source = format!("=pod\ndocs\n{line}\nmy $code = 1;");
+            assert!(is_in_pod(&source, source.len()), "{line} must stay POD");
+        }
+    }
+
+    #[test]
+    fn is_in_pod_ignores_pod_lines_inside_multiline_literal() {
+        let source = "my $text = \"\n=pod\n=cut\n\";\nmy $code = 1;";
+        assert!(!is_in_pod(source, source.len()));
+
+        let pod_after_literal = "my $text = \"\n=pod\n\";\n=pod\ndocs\nmy $code = 1;";
+        assert!(is_in_pod(pod_after_literal, pod_after_literal.len()));
+    }
+
+    #[test]
+    fn is_in_pod_ignores_cut_inside_unclosed_heredoc() {
+        let source = "<<'EOF'\n=cut\nEOF\nmy $code = 1;";
+        assert!(!is_in_pod(source, source.len()));
+        assert!(!is_in_heredoc(source, source.find("my $code").unwrap()));
+    }
+
+    #[test]
+    fn is_in_regex_resumes_after_line_comment() {
+        let source = "my $http; # prior comment\nmy $pattern = qr{$http = HTTP::Tiny->new()};\n";
+        let regex_body = source.find("HTTP::Tiny").unwrap();
+        assert!(
+            is_in_regex(source, regex_body),
+            "a regex opened after a line comment must still be detected as a regex position"
+        );
+
+        let before_pattern = source.find("my $pattern").unwrap();
+        assert!(!is_in_regex(source, before_pattern));
+    }
+
+    #[test]
+    fn substitution_replacement_section_is_string_like() {
+        let source = "my $x = s;foo;replacement;;
+";
+        let replacement = source.find("replacement").unwrap();
+        assert!(is_in_string(source, replacement));
+        assert!(!is_in_regex(source, replacement));
+
+        let pattern = source.find("foo").unwrap();
+        assert!(is_in_regex(source, pattern));
+        assert!(!is_in_string(source, pattern));
+    }
+
+    #[test]
+    fn transliteration_replacement_section_is_string_like() {
+        // `tr///` and `y///` share the two-section regex-kind literal path
+        // with `s///`, so the replacement side pins the same classification.
+        for operator in ["tr", "y"] {
+            let source = format!("my $x = {operator};abc;replacement;;\n");
+            let replacement = source.find("replacement").unwrap();
+            assert!(is_in_string(&source, replacement), "{operator} replacement is string-like");
+            assert!(!is_in_regex(&source, replacement), "{operator} replacement is not regex");
+        }
+    }
+
+    #[test]
+    fn is_in_regex_ignores_regex_like_text_in_non_code_regions_after_comment() {
+        let heredoc = "# docs\nmy $text = <<'END';\nqr{ unmatched\nEND\nmy $code = 1;\n";
+        assert!(
+            !is_in_regex(heredoc, heredoc.find("my $code").unwrap()),
+            "regex-like text inside a heredoc body must not leave literal state active"
+        );
+
+        let pod = "# docs\n=pod\nqr{ unmatched\n=cut\nmy $code = 1;\n";
+        assert!(
+            !is_in_regex(pod, pod.find("my $code").unwrap()),
+            "regex-like text inside a POD body must not leave literal state active"
+        );
     }
 }
