@@ -1,10 +1,6 @@
 /**
  * Unit tests for HealthWidgetDataSource — the production wiring that feeds
- * file/error counts into `HealthWidget` from client-side telemetry (#4620).
- *
- * These tests assert the full event → widget → status-bar-text chain, not just
- * accessor values, so they cover the externally observable effect the issue
- * requires.
+ * first-party error and bounded file counts into `HealthWidget`.
  */
 
 import { HealthWidget, ClientState } from '../healthWidget';
@@ -13,9 +9,11 @@ import type { LanguagesTelemetry, WorkspaceTelemetry } from '../healthWidgetData
 import type { ThemeColor } from 'vscode';
 import type { Diagnostic, Disposable, StatusBarItem, Uri } from 'vscode';
 
-// ---------------------------------------------------------------------------
-// Stubs
-// ---------------------------------------------------------------------------
+interface TestFileSystemWatcher extends Disposable {
+  onDidCreate(listener: (uri: Uri) => void): Disposable;
+  onDidChange(listener: (uri: Uri) => void): Disposable;
+  onDidDelete(listener: (uri: Uri) => void): Disposable;
+}
 
 function makeStatusBarItem(): StatusBarItem {
   return {
@@ -33,11 +31,10 @@ function uri(fsPath: string): Uri {
   return { fsPath, toString: () => `file://${fsPath}` } as unknown as Uri;
 }
 
-function diag(severity: number): Diagnostic {
-  return { severity } as unknown as Diagnostic;
+function diag(severity: number, source = 'perl-lsp'): Diagnostic {
+  return { severity, source } as unknown as Diagnostic;
 }
 
-/** Captures the diagnostics-change listener so tests can fire it. */
 interface TestLanguages extends LanguagesTelemetry {
   fire(uris: Uri[]): void;
   setDiagnostics(next: Array<[Uri, Diagnostic[]]>): void;
@@ -59,7 +56,7 @@ function makeLanguages(initial: Array<[Uri, Diagnostic[]]>): TestLanguages {
       return current;
     },
     fire(uris: Uri[]): void {
-      if (listener) listener({ uris });
+      listener?.({ uris });
     },
     setDiagnostics(next: Array<[Uri, Diagnostic[]]>): void {
       current = next;
@@ -68,39 +65,78 @@ function makeLanguages(initial: Array<[Uri, Diagnostic[]]>): TestLanguages {
 }
 
 interface TestWorkspace extends WorkspaceTelemetry {
-  calls: string[];
+  calls: Array<{ include: string; maxResults: number | undefined }>;
+  fireCreate(files?: readonly Uri[]): void;
+  fireExternalCreate(file?: Uri): void;
+  setFileCounts(next: number[]): void;
 }
 
-function makeWorkspace(fileCounts: number[]): TestWorkspace {
-  const calls: string[] = [];
+function makeWorkspace(initialFileCounts: number[]): TestWorkspace {
+  const calls: Array<{ include: string; maxResults: number | undefined }> = [];
+  let fileCounts = [...initialFileCounts];
+  let createListener: ((event: { files: readonly Uri[] }) => void) | undefined;
+  let externalCreateListener: ((uri: Uri) => void) | undefined;
   return {
-    findFiles(include: string): Thenable<Uri[]> {
-      calls.push(include);
+    findFiles(include: string, _exclude?: string | null, maxResults?: number): Thenable<Uri[]> {
+      calls.push({ include, maxResults });
       const count = fileCounts.shift() ?? 0;
       const uris: Uri[] = [];
-      for (let i = 0; i < count; i++) {
-        uris.push(uri(`/ws/file${i}${include.slice(-3)}`));
+      for (let index = 0; index < count; index += 1) {
+        uris.push(uri(`/ws/${encodeURIComponent(include)}/file-${index}`));
       }
       return Promise.resolve(uris);
     },
+    onDidCreateFiles(listener): Disposable {
+      createListener = listener;
+      return {
+        dispose: () => {
+          createListener = undefined;
+        },
+      };
+    },
+    createFileSystemWatcher(): TestFileSystemWatcher {
+      return {
+        onDidCreate(listener): Disposable {
+          externalCreateListener = listener;
+          return {
+            dispose: () => {
+              externalCreateListener = undefined;
+            },
+          };
+        },
+        onDidChange(): Disposable {
+          return { dispose: () => {} };
+        },
+        onDidDelete(): Disposable {
+          return { dispose: () => {} };
+        },
+        dispose(): void {},
+      };
+    },
     calls,
+    fireCreate(files = [uri('/ws/new.pm')]): void {
+      createListener?.({ files });
+    },
+    fireExternalCreate(file = uri('/ws/external.pm')): void {
+      externalCreateListener?.(file);
+    },
+    setFileCounts(next: number[]): void {
+      fileCounts = [...next];
+    },
   };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-describe('HealthWidgetDataSource — error count wiring', () => {
-  test('initial refresh pushes the Perl error count into the status bar', () => {
+describe('HealthWidgetDataSource — first-party error count', () => {
+  test('initial refresh pushes only perl-lsp errors into the status bar', () => {
     const item = makeStatusBarItem();
     const widget = new HealthWidget(item);
     widget.onStateChange(ClientState.Running);
 
     const languages = makeLanguages([
-      [uri('/ws/lib.pm'), [diag(0), diag(1), diag(0)]], // 2 errors
-      [uri('/ws/t/test.t'), [diag(0)]], // 1 error
-      [uri('/ws/readme.md'), [diag(0)]], // ignored — not Perl
+      [uri('/ws/lib.pm'), [diag(0), diag(1), diag(0)]],
+      [uri('/ws/t/test.t'), [diag(0)]],
+      [uri('/ws/readme.md'), [diag(0)]],
+      [uri('/ws/other.pm'), [diag(0, 'other-linter'), diag(0, 'perlcritic')]],
     ]);
     const workspace = makeWorkspace([0, 0, 0, 0, 0]);
 
@@ -112,118 +148,277 @@ describe('HealthWidgetDataSource — error count wiring', () => {
     source.dispose();
   });
 
-  test('onDidChangeDiagnostics event updates the status bar text', () => {
+  test('another extension cannot increment the perl-lsp error count', () => {
+    const item = makeStatusBarItem();
+    const widget = new HealthWidget(item);
+    widget.onStateChange(ClientState.Running);
+    const languages = makeLanguages([
+      [uri('/ws/a.pl'), [diag(0, 'perl-lsp'), diag(0, 'other-extension')]],
+    ]);
+    const source = new HealthWidgetDataSource(
+      widget,
+      languages,
+      makeWorkspace([0, 0, 0, 0, 0]),
+    );
+
+    source.start();
+
+    expect(widget.errorCount).toBe(1);
+    expect(item.text).toContain('1 error');
+    source.dispose();
+  });
+
+  test('onDidChangeDiagnostics updates the current first-party count', () => {
     const item = makeStatusBarItem();
     const widget = new HealthWidget(item);
     widget.setFileCount(100);
     widget.onStateChange(ClientState.Running);
-    expect(item.text).toBe('$(check) perl-lsp: 100 files');
 
     const languages = makeLanguages([[uri('/ws/a.pl'), [diag(0), diag(0)]]]);
-    const workspace = makeWorkspace([0, 0, 0, 0, 0]);
-
-    const source = new HealthWidgetDataSource(widget, languages, workspace);
+    const source = new HealthWidgetDataSource(
+      widget,
+      languages,
+      makeWorkspace([0, 0, 0, 0, 0]),
+    );
     source.start();
     expect(item.text).toBe('$(check) perl-lsp: 100 files | 2 errors');
 
-    // A new diagnostic event arrives with a different count.
-    languages.setDiagnostics([[uri('/ws/a.pl'), [diag(0)]]]);
+    languages.setDiagnostics([
+      [uri('/ws/a.pl'), [diag(0), diag(0, 'other-extension')]],
+    ]);
     languages.fire([uri('/ws/a.pl')]);
+
     expect(widget.errorCount).toBe(1);
     expect(item.text).toBe('$(check) perl-lsp: 100 files | 1 error');
-
     source.dispose();
   });
 
-  test('zero errors omit the error segment from the status bar', () => {
+  test('zero first-party errors omit the error segment', () => {
     const item = makeStatusBarItem();
     const widget = new HealthWidget(item);
     widget.setFileCount(42);
     widget.onStateChange(ClientState.Running);
 
-    const languages = makeLanguages([[uri('/ws/a.pl'), [diag(1), diag(2)]]]); // warnings only
-    const workspace = makeWorkspace([0, 0, 0, 0, 0]);
-
-    const source = new HealthWidgetDataSource(widget, languages, workspace);
+    const languages = makeLanguages([
+      [uri('/ws/a.pl'), [diag(1), diag(0, 'other-extension')]],
+    ]);
+    const source = new HealthWidgetDataSource(
+      widget,
+      languages,
+      makeWorkspace([0, 0, 0, 0, 0]),
+    );
     source.start();
+
     expect(widget.errorCount).toBe(0);
     expect(item.text).toBe('$(check) perl-lsp: 42 files');
     source.dispose();
   });
 });
 
-describe('HealthWidgetDataSource — file count wiring', () => {
-  test('initial refresh sums Perl files across all globs into the status bar', async () => {
+describe('HealthWidgetDataSource — bounded file count', () => {
+  test('initial refresh de-duplicates Perl file identities across globs', async () => {
     const item = makeStatusBarItem();
     const widget = new HealthWidget(item);
     widget.onStateChange(ClientState.Running);
-
-    const languages = makeLanguages([]);
-    // 5 globs scanned: *.pl=10, *.pm=8, *.t=4, *.pod=2, *.psgi=1  → 25
-    const workspace = makeWorkspace([10, 8, 4, 2, 1]);
-
-    const source = new HealthWidgetDataSource(widget, languages, workspace);
-    source.start();
-    await source.refreshFileCount(); // ensure the async scan settles
-
-    expect(widget.fileCount).toBe(25);
-    expect(item.text).toContain('25 files');
-    expect(workspace.calls).toHaveLength(5);
-    source.dispose();
-  });
-
-  test('refreshFileCount runs only once per data-source lifetime', async () => {
-    const item = makeStatusBarItem();
-    const widget = new HealthWidget(item);
-    widget.onStateChange(ClientState.Running);
-
-    const languages = makeLanguages([]);
-    const workspace = makeWorkspace([3, 2, 1, 0, 0]);
-
-    const source = new HealthWidgetDataSource(widget, languages, workspace);
-    source.start();
-    await source.refreshFileCount();
-    await source.refreshFileCount(); // no-op — already refreshed
-
-    expect(workspace.calls).toHaveLength(5);
-    expect(widget.fileCount).toBe(6);
-    source.dispose();
-  });
-
-  test('a failed findFiles scan leaves the count unset rather than throwing', async () => {
-    const item = makeStatusBarItem();
-    const widget = new HealthWidget(item);
-    widget.onStateChange(ClientState.Running);
-
-    const languages = makeLanguages([]);
+    const duplicate = uri('/ws/shared.pm');
+    let call = 0;
     const workspace: WorkspaceTelemetry = {
-      findFiles: () => Promise.reject(new Error('boom')),
+      findFiles: async () => {
+        call += 1;
+        return call <= 2 ? [duplicate] : [];
+      },
     };
 
-    const source = new HealthWidgetDataSource(widget, languages, workspace);
+    const source = new HealthWidgetDataSource(widget, makeLanguages([]), workspace);
     source.start();
     await source.refreshFileCount();
 
+    expect(widget.fileCount).toBe(1);
+    expect(widget.fileCountLowerBound).toBe(false);
+    expect(item.text).toContain('1 file');
+    source.dispose();
+  });
+
+  test('renders a capped scan as a lower bound', async () => {
+    const item = makeStatusBarItem();
+    const widget = new HealthWidget(item);
+    widget.onStateChange(ClientState.Running);
+    const workspace = makeWorkspace([3, 0, 0, 0, 0]);
+
+    const source = new HealthWidgetDataSource(widget, makeLanguages([]), workspace, 2);
+    source.start();
+    await source.refreshFileCount();
+
+    expect(workspace.calls[0]?.maxResults).toBe(3);
+    expect(widget.fileCount).toBe(2);
+    expect(widget.fileCountLowerBound).toBe(true);
+    expect(item.text).toContain('2+ files');
+    source.dispose();
+  });
+
+  test('file creation invalidates the old count and publishes one replacement', async () => {
+    const item = makeStatusBarItem();
+    const widget = new HealthWidget(item);
+    widget.onStateChange(ClientState.Running);
+    const workspace = makeWorkspace([1, 0, 0, 0, 0]);
+    const source = new HealthWidgetDataSource(widget, makeLanguages([]), workspace);
+
+    source.start();
+    await source.refreshFileCount();
+    expect(widget.fileCount).toBe(1);
+
+    workspace.setFileCounts([2, 0, 0, 0, 0]);
+    workspace.fireCreate();
     expect(widget.fileCount).toBeUndefined();
-    expect(item.text).toBe('$(check) perl-lsp'); // no counts segment
+    await source.refreshFileCount();
+
+    expect(widget.fileCount).toBe(2);
+    expect(workspace.calls).toHaveLength(10);
+    source.dispose();
+  });
+
+  test('an external filesystem create invalidates the cached count', async () => {
+    const item = makeStatusBarItem();
+    const widget = new HealthWidget(item);
+    widget.onStateChange(ClientState.Running);
+    const workspace = makeWorkspace([1, 0, 0, 0, 0]);
+    const source = new HealthWidgetDataSource(widget, makeLanguages([]), workspace);
+
+    source.start();
+    await source.refreshFileCount();
+    expect(widget.fileCount).toBe(1);
+
+    workspace.setFileCounts([2, 0, 0, 0, 0]);
+    workspace.fireExternalCreate();
+    await source.refreshFileCount();
+
+    expect(widget.fileCount).toBe(2);
+    expect(workspace.calls).toHaveLength(10);
+    source.dispose();
+  });
+
+  test('repeated external events keep at most one scan active and queue one replacement', async () => {
+    const item = makeStatusBarItem();
+    const widget = new HealthWidget(item);
+    widget.onStateChange(ClientState.Running);
+    const pending: Array<(uris: Uri[]) => void> = [];
+    let active = 0;
+    let maxActive = 0;
+    let calls = 0;
+    const workspace: TestWorkspace = {
+      calls: [],
+      findFiles: () => {
+        calls += 1;
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        return new Promise<Uri[]>((resolve) => {
+          pending.push((uris) => {
+            active -= 1;
+            resolve(uris);
+          });
+        });
+      },
+      createFileSystemWatcher(): TestFileSystemWatcher {
+        return {
+          onDidCreate(listener): Disposable {
+            (
+              workspace as TestWorkspace & { fireExternalCreate: (file?: Uri) => void }
+            ).fireExternalCreate = (file = uri('/ws/external.pm')) => listener(file);
+            return { dispose: () => {} };
+          },
+          onDidChange: () => ({ dispose: () => {} }),
+          onDidDelete: () => ({ dispose: () => {} }),
+          dispose: () => {},
+        };
+      },
+      fireCreate: () => {},
+      fireExternalCreate: () => {},
+      setFileCounts: () => {},
+    };
+    const source = new HealthWidgetDataSource(widget, makeLanguages([]), workspace);
+
+    source.start();
+    expect(calls).toBe(1);
+    for (let index = 0; index < 20; index += 1) {
+      workspace.fireExternalCreate();
+    }
+    expect(calls).toBe(1);
+    expect(maxActive).toBe(1);
+
+    pending.shift()?.([]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toBe(2);
+    expect(maxActive).toBe(1);
+
+    for (let index = 0; index < 5; index += 1) {
+      pending.shift()?.([]);
+      await Promise.resolve();
+    }
+    await source.refreshFileCount();
+    expect(maxActive).toBe(1);
+    source.dispose();
+  });
+
+  test('a failed replacement scan clears the prior exact-looking count', async () => {
+    const item = makeStatusBarItem();
+    const widget = new HealthWidget(item);
+    widget.onStateChange(ClientState.Running);
+    let fail = false;
+    let calls = 0;
+    let createListener: (() => void) | undefined;
+    const workspace: WorkspaceTelemetry = {
+      findFiles: async () => {
+        calls += 1;
+        if (fail) {
+          throw new Error('boom');
+        }
+        return [];
+      },
+      onDidCreateFiles: (listener) => {
+        createListener = () => listener({ files: [uri('/ws/new.pm')] });
+        return { dispose: () => (createListener = undefined) };
+      },
+    };
+    const source = new HealthWidgetDataSource(widget, makeLanguages([]), workspace);
+
+    source.start();
+    await source.refreshFileCount();
+    expect(widget.fileCount).toBe(0);
+
+    fail = true;
+    createListener?.();
+    // The event handler starts the replacement scan without exposing its
+    // promise. Let that scheduled rejection and its cleanup continuation run
+    // before asserting the unavailable result.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(calls).toBe(6);
+    expect(widget.fileCount).toBeUndefined();
+    expect(item.text).toBe('$(check) perl-lsp');
     source.dispose();
   });
 });
 
 describe('HealthWidgetDataSource — dispose', () => {
-  test('dispose is idempotent and clears listeners', () => {
+  test('dispose is idempotent and rejects later diagnostic/file events', async () => {
     const item = makeStatusBarItem();
     const widget = new HealthWidget(item);
     const languages = makeLanguages([]);
     const workspace = makeWorkspace([0, 0, 0, 0, 0]);
-
     const source = new HealthWidgetDataSource(widget, languages, workspace);
+
     source.start();
+    await source.refreshFileCount();
     source.dispose();
-    source.dispose(); // second dispose must not throw
-    // Firing after dispose should not update the widget.
+    source.dispose();
+
     languages.setDiagnostics([[uri('/x.pl'), [diag(0)]]]);
     languages.fire([uri('/x.pl')]);
+    workspace.setFileCounts([3, 0, 0, 0, 0]);
+    workspace.fireCreate();
+
     expect(widget.errorCount).toBe(0);
+    expect(widget.fileCount).toBe(0);
   });
 });
