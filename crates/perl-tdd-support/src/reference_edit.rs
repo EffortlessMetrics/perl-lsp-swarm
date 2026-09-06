@@ -140,11 +140,13 @@ impl ReferenceEdit {
         self.expected_new_end_byte
     }
 
-    /// Predecessor span this edit addresses.
-    #[must_use]
-    pub fn old_span(&self) -> ByteSpan {
-        ByteSpan::new(self.start_byte, self.old_end_byte)
-    }
+    // Deliberately no `old_span()` accessor. The constructors admit a reversed
+    // range so `apply` can reject it as `ReversedRange`, but `ByteSpan::new`
+    // debug-asserts `start <= end`, so handing an unvalidated edit to it would
+    // panic while merely inspecting malformed input. `start_byte` and
+    // `old_end_byte` describe the range without that hazard, and a validated
+    // span is available from `ReferenceEditResult::changed_old` once the
+    // transaction is accepted.
 }
 
 /// An ordered set of edits applied as one atomic old-generation transaction.
@@ -193,8 +195,14 @@ impl ReferenceEditTransaction {
 /// One piece of the total old-to-new byte mapping.
 ///
 /// The segments of a [`ReferenceEditResult`] partition the predecessor and the
-/// successor completely and in ascending order, so a consumer can translate any
-/// offset in either direction without re-deriving the edits.
+/// successor completely and in ascending order, and each carries both spans, so
+/// a consumer can derive a translation in either direction without re-deriving
+/// the edits.
+///
+/// Only the old-to-new direction has a provided helper
+/// ([`ReferenceEditResult::map_old_to_new`]); that is the direction #7344
+/// requires. A new-to-old translation is a scan of these same segments, and is
+/// left to the consumer that needs it rather than added speculatively.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReferenceByteMapSegment {
     /// Bytes carried through unchanged, possibly at a shifted offset.
@@ -661,12 +669,38 @@ impl ReferenceEditResult {
         &self.changed_new
     }
 
+    /// Length of the predecessor this transaction was addressed against.
+    ///
+    /// Recovered from the mapping, which tiles the predecessor completely, so
+    /// the last segment ends at the predecessor's length. An empty mapping
+    /// occurs only for an empty predecessor with no edits, where zero is
+    /// correct.
+    #[must_use]
+    pub fn predecessor_len(&self) -> usize {
+        self.mapping.last().map_or(0, |segment| segment.old().end)
+    }
+
     /// Translates a predecessor byte offset into the successor.
     ///
-    /// Returns `None` for an offset inside a replaced span, where no
-    /// offset-preserving image exists, and for an offset past the predecessor.
+    /// Offsets are positions, not just indices: `0..=predecessor_len` is the
+    /// addressable range, matching the edit coordinates this model accepts
+    /// (an insertion at `predecessor_len` appends at EOF). The predecessor's
+    /// end-of-source position therefore maps to the successor's, which is what
+    /// lets a half-open range ending at EOF be translated whole.
+    ///
+    /// Returns `None` for an offset strictly inside a replaced span, where no
+    /// offset-preserving image exists, and for an offset beyond the predecessor.
+    ///
+    /// One convention is worth naming: when the transaction ends by inserting
+    /// at EOF, the predecessor's end position is ambiguous — it could map
+    /// before or after the inserted text. This returns the successor's end,
+    /// placing it after, which is what an editor caret at end-of-document does
+    /// when text is appended.
     #[must_use]
     pub fn map_old_to_new(&self, old_byte: usize) -> Option<usize> {
+        if old_byte == self.predecessor_len() {
+            return Some(self.successor.source.len());
+        }
         self.mapping.iter().find_map(|segment| match *segment {
             ReferenceByteMapSegment::Unchanged { old, new } if old.contains(old_byte) => {
                 Some(new.start + (old_byte - old.start))

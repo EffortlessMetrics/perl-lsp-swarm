@@ -93,6 +93,8 @@ fn insertion_produces_exact_bytes_and_mapping() {
     assert_eq!(result.changed_old().len(), 1);
     assert_eq!(result.changed_old()[0].to_range(), 9..9);
     assert_eq!(result.changed_new()[0].to_range(), 9..10);
+    // Predecessor EOF maps to successor EOF; here the last segment is Unchanged.
+    assert_eq!(result.map_old_to_new(11), Some(12));
 }
 
 #[test]
@@ -316,6 +318,57 @@ fn unchanged_offsets_translate_and_replaced_offsets_do_not() {
     // Offsets inside a replaced range have no offset-preserving image.
     assert_eq!(result.map_old_to_new(1), None);
     assert_eq!(result.map_old_to_new(9), None);
+    // Predecessor EOF maps to successor EOF even though the last segment is
+    // Replaced and ends exactly at EOF.
+    assert_eq!(result.map_old_to_new(11), Some(10));
+}
+
+#[test]
+fn predecessor_eof_maps_to_successor_eof() {
+    // Offsets are positions, not indices: 0..=len is addressable, matching the
+    // edit coordinates the model accepts. A half-open range ending at EOF is
+    // only translatable whole if the end position maps.
+
+    // Growing, last segment Unchanged.
+    let grown = apply("abc", vec![ReferenceEdit::insert(0, "XY")]);
+    assert_eq!(grown.source(), "XYabc");
+    assert_eq!(grown.predecessor_len(), 3);
+    assert_eq!(grown.map_old_to_new(3), Some(5));
+
+    // Shrinking, last segment Unchanged.
+    let shrunk = apply("abcdef", vec![ReferenceEdit::delete(0, 3)]);
+    assert_eq!(shrunk.source(), "def");
+    assert_eq!(shrunk.map_old_to_new(6), Some(3));
+
+    // Empty predecessor, empty transaction: the mapping is empty and EOF is 0.
+    let untouched = apply("", Vec::new());
+    assert_eq!(untouched.predecessor_len(), 0);
+    assert_eq!(untouched.map_old_to_new(0), Some(0));
+
+    // Empty predecessor with an insertion: EOF 0 maps to the successor's end.
+    let filled = apply("", vec![ReferenceEdit::insert(0, "abc")]);
+    assert_eq!(filled.predecessor_len(), 0);
+    assert_eq!(filled.map_old_to_new(0), Some(3));
+
+    // Beyond EOF is still unmappable, so the boundary is pinned on both sides.
+    assert_eq!(grown.map_old_to_new(4), None);
+    assert_eq!(untouched.map_old_to_new(1), None);
+}
+
+#[test]
+fn an_eof_insertion_maps_the_end_position_after_the_inserted_text() {
+    // The one genuinely ambiguous case: appending at EOF means the predecessor's
+    // end position could map before or after the new text. The documented
+    // convention is after, matching an editor caret at end-of-document.
+    let result = apply("ab", vec![ReferenceEdit::insert(2, "cd")]);
+
+    assert_eq!(result.source(), "abcd");
+    assert_eq!(result.map_old_to_new(2), Some(4));
+    // Not 2, which would place the position before the appended text.
+    assert_ne!(result.map_old_to_new(2), Some(2));
+    // Interior offsets are unaffected by the convention.
+    assert_eq!(result.map_old_to_new(0), Some(0));
+    assert_eq!(result.map_old_to_new(1), Some(1));
 }
 
 // ---------------------------------------------------------------------------
@@ -364,6 +417,24 @@ fn reversed_range_is_rejected_before_bounds() {
     // Reversed *and* out of bounds: the shape violation is reported, so the
     // caller is told what is actually wrong with the range it wrote.
     let error = reject("abc", vec![ReferenceEdit::delete(9, 4)]);
+    assert_eq!(error.reason(), "reversed_range");
+}
+
+#[test]
+fn a_reversed_edit_can_be_inspected_without_panicking() {
+    // The constructors admit a reversed range on purpose, so that `apply` can
+    // reject it with a typed reason rather than the caller having to pre-check.
+    // Inspecting such an edit must therefore stay panic-free: an accessor that
+    // built a ByteSpan would trip its `start <= end` debug assertion here.
+    let reversed = ReferenceEdit::replace(9, 4, "x");
+
+    assert_eq!(reversed.start_byte(), 9);
+    assert_eq!(reversed.old_end_byte(), 4);
+    assert_eq!(reversed.replacement(), "x");
+    assert_eq!(reversed.expected_new_end_byte(), None);
+
+    // And it is still rejected when applied.
+    let error = must_err(state("abc").apply(&ReferenceEditTransaction::new(vec![reversed])));
     assert_eq!(error.reason(), "reversed_range");
 }
 

@@ -77,12 +77,54 @@ fn the_crate_cannot_reach_the_incremental_applicator() {
     // incremental edit applicator. This crate must not depend on it, so the
     // applicator is unreachable from the model by construction rather than by
     // convention. `perl-parser-core` is a different crate and is permitted.
+    //
+    // Cargo admits several spellings for the same edge, so matching only
+    // `perl-parser =` would let `perl-parser.workspace = true` or a renamed
+    // `alias = { package = "perl-parser" }` through. All three are rejected.
     for line in MANIFEST.lines() {
         let trimmed = line.trim_start();
+        let declares_perl_parser = trimmed.starts_with("perl-parser =")
+            || trimmed.starts_with("perl-parser.")
+            || trimmed.contains("package = \"perl-parser\"");
         assert!(
-            !trimmed.starts_with("perl-parser ="),
-            "perl-tdd-support declares a dependency on perl-parser. That puts the production \
-             incremental edit applicator within reach of the reference model (#7344).",
+            !declares_perl_parser,
+            "perl-tdd-support declares a dependency on perl-parser (`{trimmed}`). That puts the \
+             production incremental edit applicator within reach of the reference model (#7344).",
+        );
+    }
+}
+
+#[test]
+fn the_manifest_gate_rejects_every_dependency_spelling() {
+    // The gate above passes vacuously if its matching is wrong, so pin the
+    // spellings it must reject and the ones it must not.
+    let rejected = [
+        "perl-parser = { workspace = true }",
+        "perl-parser.workspace = true",
+        "alias = { package = \"perl-parser\", workspace = true }",
+    ];
+    let permitted = [
+        "perl-parser-core = { workspace = true }",
+        "perl-parser-core.workspace = true",
+        "perl-position-tracking = { workspace = true }",
+    ];
+
+    for line in rejected {
+        let trimmed = line.trim_start();
+        assert!(
+            trimmed.starts_with("perl-parser =")
+                || trimmed.starts_with("perl-parser.")
+                || trimmed.contains("package = \"perl-parser\""),
+            "the manifest gate would not reject `{line}`",
+        );
+    }
+    for line in permitted {
+        let trimmed = line.trim_start();
+        assert!(
+            !(trimmed.starts_with("perl-parser =")
+                || trimmed.starts_with("perl-parser.")
+                || trimmed.contains("package = \"perl-parser\"")),
+            "the manifest gate would wrongly reject `{line}`",
         );
     }
 }
