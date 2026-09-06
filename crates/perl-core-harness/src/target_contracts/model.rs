@@ -10,6 +10,23 @@ pub const TARGET_MATRIX_INDEX_SCHEMA_VERSION: &str = "perl_core_harness.target_m
 pub const TARGET_MATRIX_PART_SCHEMA_VERSION: &str = "perl_core_harness.target_matrix_part.v1";
 pub const TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION: &str = "perl_core_harness.target_topology_drift.v1";
 
+/// Capability predicate a target declares when it needs a controlling terminal.
+///
+/// Upstream reaches a terminal two different ways — `t/TEST` selects `runtests
+/// tty`, while `minitest` redirects stdin from the configured terminal device —
+/// but both require the same host capability, so both declare this predicate.
+pub const CONTROLLING_TERMINAL_CAPABILITY: &str = "controlling_terminal";
+
+/// The `t/TEST` no-TTY mechanism: suppresses the terminal-dependent tests.
+///
+/// Distinct from [`HARNESS_NO_TTY_ENV`]; see [`TargetTerminalPolicy`].
+pub const RUNTESTS_NO_TTY_ENV: &str = "PERL_SKIP_TTY_TEST";
+
+/// The `t/harness` no-TTY mechanism: suppresses interactive harness output.
+///
+/// Distinct from [`RUNTESTS_NO_TTY_ENV`]; see [`TargetTerminalPolicy`].
+pub const HARNESS_NO_TTY_ENV: &str = "HARNESS_NOTTY";
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TargetKind {
@@ -73,13 +90,25 @@ pub enum TargetPerlRuntime {
     Inherited,
 }
 
+/// How a target resolves the controlling terminal it runs under.
+///
+/// The policy is not free-form annotation: [`TargetSelectionContract::validate`]
+/// requires it to agree with the row's declared capability predicates and
+/// no-TTY mechanism environment. `PERL_SKIP_TTY_TEST` and `HARNESS_NOTTY`
+/// suppress different behavior in different runners, so a row may declare at
+/// most one of them and never both.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TargetTerminalPolicy {
+    /// The target has no terminal-dependent behavior to resolve.
     NotApplicable,
+    /// The runner auto-detects a terminal (`runtests choose`).
     Choose,
+    /// The target forces a terminal and cannot run without one.
     Tty,
+    /// The target forces the no-terminal path through an explicit mechanism.
     NoTty,
+    /// The target keeps whatever policy its base target resolved.
     Inherited,
 }
 

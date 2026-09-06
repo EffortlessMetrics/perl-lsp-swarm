@@ -1,6 +1,7 @@
 //! Target-contract shape validation.
 
 use crate::model::{
+    CONTROLLING_TERMINAL_CAPABILITY, HARNESS_NO_TTY_ENV, RUNTESTS_NO_TTY_ENV,
     TARGET_SELECTION_SCHEMA_VERSION, TargetAuthorityKind, TargetKind, TargetSelectionContract,
     TargetSelector, TargetTerminalPolicy,
 };
@@ -70,6 +71,8 @@ impl TargetSelectionContract {
             validate_nonempty(&exclusion.claim_impact, "exclusion claim impact")?;
         }
 
+        self.validate_terminal_policy()?;
+
         match self.target_kind {
             TargetKind::PhysicalSeries => self.validate_physical(),
             TargetKind::SelectorVariant => self.validate_selector_variant(),
@@ -78,6 +81,89 @@ impl TargetSelectionContract {
             TargetKind::GeneratedComposite => self.validate_composite(),
             TargetKind::InstrumentationOnly => self.validate_instrumentation(),
         }
+    }
+
+    /// Require the declared terminal policy, capability, and mechanism to agree.
+    ///
+    /// A row states its terminal behavior three times: the policy, the
+    /// capability predicate that decides whether a host may run it, and the
+    /// environment variable that actually suppresses the terminal path. Nothing
+    /// previously compared them, so a row could claim `tty` while declaring no
+    /// terminal requirement — which admits it on a terminal-less CI host and
+    /// reports the terminal variant as an ordinary pass. This keeps the three
+    /// statements one fact.
+    fn validate_terminal_policy(&self) -> Result<(), String> {
+        let declares_runtests_no_tty = self.environment.contains_key(RUNTESTS_NO_TTY_ENV);
+        let declares_harness_no_tty = self.environment.contains_key(HARNESS_NO_TTY_ENV);
+        let requires_terminal = self
+            .capability_predicates
+            .iter()
+            .any(|predicate| predicate == CONTROLLING_TERMINAL_CAPABILITY);
+
+        // `PERL_SKIP_TTY_TEST` is the `t/TEST` runtests mechanism and
+        // `HARNESS_NOTTY` is the `t/harness` mechanism. They suppress different
+        // behavior, so a row that declares both is asserting they are
+        // interchangeable.
+        if declares_runtests_no_tty && declares_harness_no_tty {
+            return Err(format!(
+                "target {} declares both {RUNTESTS_NO_TTY_ENV} and {HARNESS_NO_TTY_ENV}, which are distinct no-TTY mechanisms",
+                self.target_id
+            ));
+        }
+        let declares_no_tty_mechanism = declares_runtests_no_tty || declares_harness_no_tty;
+
+        match self.terminal_policy {
+            TargetTerminalPolicy::Tty => {
+                if !requires_terminal {
+                    return Err(format!(
+                        "forced-TTY target {} must declare the {CONTROLLING_TERMINAL_CAPABILITY} capability predicate",
+                        self.target_id
+                    ));
+                }
+                if declares_no_tty_mechanism {
+                    return Err(format!(
+                        "forced-TTY target {} cannot declare a no-TTY mechanism",
+                        self.target_id
+                    ));
+                }
+            }
+            TargetTerminalPolicy::NoTty => {
+                // Without a mechanism the row only asserts the no-terminal path
+                // rather than selecting it.
+                if !declares_no_tty_mechanism {
+                    return Err(format!(
+                        "no-TTY target {} must declare exactly one of {RUNTESTS_NO_TTY_ENV} or {HARNESS_NO_TTY_ENV}",
+                        self.target_id
+                    ));
+                }
+                if requires_terminal {
+                    return Err(format!(
+                        "no-TTY target {} cannot require a controlling terminal",
+                        self.target_id
+                    ));
+                }
+            }
+            TargetTerminalPolicy::Choose
+            | TargetTerminalPolicy::Inherited
+            | TargetTerminalPolicy::NotApplicable => {
+                // A row carrying a mechanism has already resolved the terminal;
+                // leaving it under `choose`/`inherited` would let a forced
+                // no-TTY run report as the auto-detecting target.
+                if declares_no_tty_mechanism {
+                    return Err(format!(
+                        "target {} declares a no-TTY mechanism without the no_tty terminal policy",
+                        self.target_id
+                    ));
+                }
+                if requires_terminal {
+                    return Err(format!(
+                        "target {} requires a controlling terminal without the tty terminal policy",
+                        self.target_id
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn validate_physical(&self) -> Result<(), String> {
