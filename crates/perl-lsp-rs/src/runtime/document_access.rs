@@ -455,18 +455,8 @@ mod tests {
         server.test_apply_did_open(caller_uri, caller_text, 1)?;
         server.test_apply_did_open(target_uri, target_v1, 1)?;
 
-        let coordinator = server
-            .index_coordinator
-            .as_ref()
-            .ok_or("test server must have an index coordinator")?;
-        coordinator
-            .index()
-            .index_file_with_generation(url::Url::parse(caller_uri)?, caller_text.to_string(), 1)
-            .map_err(std::io::Error::other)?;
-        coordinator
-            .index()
-            .index_file_with_generation(url::Url::parse(target_uri)?, target_v1.to_string(), 1)
-            .map_err(std::io::Error::other)?;
+        server.test_index_live_file(caller_uri, caller_text, 1).map_err(std::io::Error::other)?;
+        server.test_index_live_file(target_uri, target_v1, 1).map_err(std::io::Error::other)?;
         assert!(
             !server.workspace_index_stale_for_any_open_document(),
             "indexed didOpen documents start current"
@@ -501,13 +491,8 @@ mod tests {
             let docs = server.documents.lock();
             docs.get(target_uri).ok_or("recovered target")?.current_generation()
         };
-        coordinator
-            .index()
-            .index_file_with_generation(
-                url::Url::parse(target_uri)?,
-                target_v2.to_string(),
-                recovered_gen,
-            )
+        server
+            .test_index_live_file(target_uri, target_v2, recovered_gen)
             .map_err(std::io::Error::other)?;
 
         assert!(

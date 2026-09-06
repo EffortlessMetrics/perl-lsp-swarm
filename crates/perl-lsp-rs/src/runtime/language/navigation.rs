@@ -3084,17 +3084,8 @@ mod tests {
             let docs = server.documents.lock();
             docs.get(target_uri).ok_or("recovered definition target")?.current_generation()
         };
-        let coordinator = server
-            .index_coordinator
-            .as_ref()
-            .ok_or("test server must have an index coordinator")?;
-        coordinator
-            .index()
-            .index_file_with_generation(
-                url::Url::parse(target_uri)?,
-                target_v2.to_string(),
-                recovered_gen,
-            )
+        server
+            .test_index_live_file(target_uri, target_v2, recovered_gen)
             .map_err(std::io::Error::other)?;
         server.test_simulate_indexing_complete();
         assert!(!server.workspace_index_stale_for_any_open_document());

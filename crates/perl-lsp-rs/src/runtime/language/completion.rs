@@ -3638,7 +3638,7 @@ mod tests {
         })))?;
 
         server.handle_completion(Some(json!({
-            "textDocument": { "uri": uri, "version": 1 },
+            "textDocument": { "uri": uri, "version": 2 },
             "position": { "line": 2, "character": 20 }
         })))?;
         let desync = explain_provider_decision(&server, "completion")?;
@@ -3667,14 +3667,7 @@ mod tests {
             let docs = server.documents.lock();
             docs.get(uri).ok_or("recovered completion document")?.current_generation()
         };
-        let coordinator = server
-            .index_coordinator
-            .as_ref()
-            .ok_or("test server must have an index coordinator")?;
-        coordinator
-            .index()
-            .index_file_with_generation(url::Url::parse(uri)?, v2.to_string(), recovered_gen)
-            .map_err(std::io::Error::other)?;
+        server.test_index_live_file(uri, v2, recovered_gen).map_err(std::io::Error::other)?;
         server.test_simulate_indexing_complete();
 
         server.handle_completion(Some(json!({
