@@ -66,6 +66,12 @@ jobs:
             --manifest .ci/dap/protocol-authority.json \
             --receipt target/receipts/dap-protocol-authority.json
 
+      - name: Verify the receipt is bound to this candidate
+        run: |
+          python3 scripts/ci/dap_protocol_authority.py verify-receipt \
+            --root . \
+            --receipt target/receipts/dap-protocol-authority.json
+
       - name: Publish authority summary
         shell: bash
         run: |
