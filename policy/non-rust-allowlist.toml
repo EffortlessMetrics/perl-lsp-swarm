@@ -3826,6 +3826,36 @@ created = "2026-08-26"
 review_after = "2026-11-26"
 
 [[allow]]
+id = "non-rust-release-readiness-legacy-indicator-migrations"
+path = "crates/perl-release-readiness/legacy_indicator_migrations.toml"
+kind = "config"
+language = "toml"
+surface = "tooling"
+classification = "config"
+owner = "distribution/kwalitee"
+reason = "Frozen one-to-one destination ledger for every historical perl_kwalitee.v1 indicator; decoded by perl-release-readiness, not by a second runtime language."
+covered_by = [
+  "cargo test -p perl-release-readiness --all-targets --locked",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
+
+[[allow]]
+id = "non-rust-release-readiness-legacy-receipt-v1"
+path = "crates/perl-release-readiness/fixtures/legacy_receipt_v1.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "distribution/kwalitee"
+reason = "Pinned perl_kwalitee.v1 compatibility-reader fixture for the moved mixed evaluator; JSON is the historical receipt, not runtime tooling."
+covered_by = [
+  "cargo test -p perl-release-readiness --all-targets --locked",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
+
+[[allow]]
 id = "non-rust-product-health-status-fixtures"
 glob = "fixtures/product_health_status/**/*.json"
 kind = "test_fixture"

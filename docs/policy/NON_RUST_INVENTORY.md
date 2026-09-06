@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12743 |
-| Rust-family files | 3987 |
+| Total tracked files | 12745 |
+| Rust-family files | 3989 |
 | Non-Rust files | 8756 |
-| Allowlisted | 6517 |
-| Unclassified | 2239 |
+| Allowlisted | 6519 |
+| Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 502 |
+| config | 503 |
 | documentation | 2858 |
 | generated | 2 |
 | production | 357 |
-| test | 2111 |
+| test | 2112 |
 | tooling | 687 |
-| unclassified | 2239 |
+| unclassified | 2237 |
 
 ## Unclassified files
 
@@ -111,8 +111,6 @@
 | `crates/perl-lsp-ux-tests/fixtures/golden_editor_workload.json` | `json` |
 | `crates/perl-parser-core/libcheck_unwrap.rlib` | `rlib` |
 | `crates/perl-parser/tests/test_with_override.sh` | `sh` |
-| `crates/perl-release-readiness/fixtures/legacy_receipt_v1.json` | `json` |
-| `crates/perl-release-readiness/legacy_indicator_migrations.toml` | `toml` |
 | `crates/perl-workspace/tests/fixtures/semantic_scorecard/manifest.json` | `json` |
 | `distribution/build-packages.sh` | `sh` |
 | `distribution/chocolatey/perl-lsp.nuspec` | `nuspec` |
@@ -4275,6 +4273,8 @@
 | `crates/perl-release-readiness/fixtures/distribution/Acme-CatalogFreeze/README` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
 | `crates/perl-release-readiness/fixtures/distribution/Acme-CatalogFreeze/lib/Acme/CatalogFreeze.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `crates/perl-release-readiness/fixtures/distribution/Acme-CatalogFreeze/t/00-load.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `crates/perl-release-readiness/fixtures/legacy_receipt_v1.json` | test | `non-rust-release-readiness-legacy-receipt-v1` | distribution/kwalitee |
+| `crates/perl-release-readiness/legacy_indicator_migrations.toml` | config | `non-rust-release-readiness-legacy-indicator-migrations` | distribution/kwalitee |
 | `crates/perl-ripr-facts/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `crates/perl-ripr-facts/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-ripr-facts/tests/golden/ripr_facts_v1_no_diff.json` | test | `non-rust-ripr-facts-packet-goldens` | ripr/facts-producer |
