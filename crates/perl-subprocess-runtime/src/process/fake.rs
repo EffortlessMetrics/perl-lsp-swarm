@@ -35,6 +35,54 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     }
 }
 
+/// Why a [`ScriptedRun`] was refused at script time.
+///
+/// These are fixture errors, not domain outcomes. A real backend cannot reach
+/// a stream that announces a control-plane cause its `ControlState` then
+/// denies; the fake refuses that input when the test author writes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptedRunContradiction {
+    /// `events` contain [`TerminationPhase::DeadlineReached`] but
+    /// [`ControlState::deadline_reached`] is `false`.
+    DeadlineReachedWithoutControl,
+    /// `events` contain [`TerminationPhase::CancellationRequested`] with a
+    /// reason that is not [`ControlState::cancellation_requested`].
+    CancellationRequestedMismatch {
+        /// The reason the event announced.
+        event: CancellationReason,
+        /// The reason recorded in control state, if any.
+        control: Option<CancellationReason>,
+    },
+    /// `events` contain [`ProcessEventKind::LimitReached`] but
+    /// [`ControlState::output_limit_exceeded`] is `false`.
+    LimitReachedWithoutControl,
+}
+
+impl std::fmt::Display for ScriptedRunContradiction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DeadlineReachedWithoutControl => {
+                f.write_str("scripted DeadlineReached without control.deadline_reached")
+            }
+            Self::CancellationRequestedMismatch { event, control } => match control {
+                None => write!(
+                    f,
+                    "scripted CancellationRequested({event:?}) without control.cancellation_requested"
+                ),
+                Some(reason) => write!(
+                    f,
+                    "scripted CancellationRequested({event:?}) but control.cancellation_requested is {reason:?}"
+                ),
+            },
+            Self::LimitReachedWithoutControl => {
+                f.write_str("scripted LimitReached without control.output_limit_exceeded")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ScriptedRunContradiction {}
+
 /// A scripted run the fake will replay.
 #[derive(Debug, Clone)]
 pub struct ScriptedRun {
@@ -43,6 +91,11 @@ pub struct ScriptedRun {
     /// A terminal event here is malformed: the handle emits the terminal event
     /// itself, elected from `control` and `settlement`, so a scripted one could
     /// announce an outcome that disagrees with the result `wait` returns.
+    ///
+    /// A `DeadlineReached`, `CancellationRequested`, or `LimitReached` event
+    /// that disagrees with `control` is refused by [`FakeSupervisor::script`],
+    /// not replayed. A control flag without a matching event is legal: a
+    /// backend need not emit a phase for every control fact.
     pub events: Vec<ProcessEventKind>,
     /// What the child is observed to do.
     pub settlement: ObservedSettlement,
@@ -107,6 +160,64 @@ impl ScriptedRun {
         self.tree = tree;
         self
     }
+
+    /// The first scripted event that contradicts [`Self::control`], if any.
+    ///
+    /// [`TerminalDisposition::elect`] is driven by `control`, not by this
+    /// list. An event that announces a deadline, cancellation, or output
+    /// limit the control state then denies is a malformed fixture: replaying
+    /// it would hand the consumer a stream the result contradicts.
+    ///
+    /// The converse is not a contradiction. A backend may record a control
+    /// fact without emitting the corresponding phase.
+    pub fn control_contradiction(&self) -> Option<ScriptedRunContradiction> {
+        self.events.iter().find_map(|kind| event_control_contradiction(kind, &self.control))
+    }
+}
+
+/// Pair one scripted event against the control state that will elect the result.
+///
+/// Exhaustive on [`ProcessEventKind`] so a new lifecycle event has to be
+/// classified rather than defaulting to admissible.
+fn event_control_contradiction(
+    kind: &ProcessEventKind,
+    control: &ControlState,
+) -> Option<ScriptedRunContradiction> {
+    match kind {
+        ProcessEventKind::TerminationPhase(TerminationPhase::DeadlineReached) => {
+            if control.deadline_reached {
+                None
+            } else {
+                Some(ScriptedRunContradiction::DeadlineReachedWithoutControl)
+            }
+        }
+        ProcessEventKind::TerminationPhase(TerminationPhase::CancellationRequested(reason)) => {
+            if control.cancellation_requested == Some(*reason) {
+                None
+            } else {
+                Some(ScriptedRunContradiction::CancellationRequestedMismatch {
+                    event: *reason,
+                    control: control.cancellation_requested,
+                })
+            }
+        }
+        ProcessEventKind::LimitReached(_) => {
+            if control.output_limit_exceeded {
+                None
+            } else {
+                Some(ScriptedRunContradiction::LimitReachedWithoutControl)
+            }
+        }
+        ProcessEventKind::Started
+        | ProcessEventKind::StdoutBytes(_)
+        | ProcessEventKind::StderrBytes(_)
+        | ProcessEventKind::TerminationPhase(
+            TerminationPhase::GracefulSignalSent
+            | TerminationPhase::ForcedSignalSent
+            | TerminationPhase::GroupReaped,
+        )
+        | ProcessEventKind::Terminal(_) => None,
+    }
 }
 
 /// Whether a disposition can truthfully describe a refused start.
@@ -157,13 +268,23 @@ impl FakeSupervisor {
     }
 
     /// Queue an outcome for the next start attempt.
-    pub fn script(&self, outcome: ScriptedOutcome) {
+    ///
+    /// A [`ScriptedOutcome::Run`] whose events contradict its control is
+    /// refused here, so a malformed fixture fails at the point it was written
+    /// rather than emitting a stream the elected result then denies.
+    pub fn script(&self, outcome: ScriptedOutcome) -> Result<(), ScriptedRunContradiction> {
+        if let ScriptedOutcome::Run(run) = &outcome {
+            if let Some(contradiction) = run.control_contradiction() {
+                return Err(contradiction);
+            }
+        }
         lock(&self.outcomes).push_back(outcome);
+        Ok(())
     }
 
     /// Queue a run for the next start attempt.
-    pub fn script_run(&self, run: ScriptedRun) {
-        self.script(ScriptedOutcome::Run(Box::new(run)));
+    pub fn script_run(&self, run: ScriptedRun) -> Result<(), ScriptedRunContradiction> {
+        self.script(ScriptedOutcome::Run(Box::new(run)))
     }
 
     /// The plans this supervisor was asked to start, in order.
@@ -582,3 +703,292 @@ impl Drop for FakeHandle {
 /// evidence for executed evidence.
 pub const FAKE_RESULT_LIMITATIONS: &[Limitation] =
     &[Limitation::FakeEvidenceOnly, Limitation::NoIsolationClaimed];
+
+#[cfg(test)]
+mod script_control_coherence {
+    use super::*;
+    use crate::process::event::{LimitEvidence, StreamChunkEvidence};
+    use crate::process::plan::CaptureBound;
+
+    fn observation_limit(channel: StreamChannel, run_continues: bool) -> LimitEvidence {
+        LimitEvidence { channel, bound: CaptureBound::Observation, limit_bytes: 1, run_continues }
+    }
+
+    fn with_event(kind: ProcessEventKind) -> ScriptedRun {
+        let mut run = ScriptedRun::exiting(0);
+        run.events.push(kind);
+        run
+    }
+
+    fn queued_len(supervisor: &FakeSupervisor) -> usize {
+        lock(&supervisor.outcomes).len()
+    }
+
+    #[test]
+    fn deadline_event_without_control_is_refused_at_script_time() {
+        // The wrong implementation this kills: accepting the fixture and
+        // emitting DeadlineReached, then settling as CompletedExit.
+        let supervisor = FakeSupervisor::new();
+        let run = with_event(ProcessEventKind::TerminationPhase(TerminationPhase::DeadlineReached));
+        assert_eq!(
+            supervisor.script_run(run),
+            Err(ScriptedRunContradiction::DeadlineReachedWithoutControl)
+        );
+        assert_eq!(queued_len(&supervisor), 0);
+    }
+
+    #[test]
+    fn deadline_event_with_control_is_scriptable() {
+        let run = with_event(ProcessEventKind::TerminationPhase(TerminationPhase::DeadlineReached))
+            .with_control(ControlState { deadline_reached: true, ..ControlState::default() });
+        assert_eq!(
+            FakeSupervisor::new().script_run(run),
+            Ok(()),
+            "matching deadline control was refused"
+        );
+    }
+
+    #[test]
+    fn deadline_control_without_event_is_scriptable() {
+        // The converse is legal: a backend need not emit a phase for every
+        // control fact.
+        let run = ScriptedRun::exiting(0)
+            .with_control(ControlState { deadline_reached: true, ..ControlState::default() });
+        assert_eq!(
+            FakeSupervisor::new().script_run(run),
+            Ok(()),
+            "deadline control without event was refused"
+        );
+    }
+
+    #[test]
+    fn cancellation_event_without_control_is_refused_at_script_time() {
+        let supervisor = FakeSupervisor::new();
+        let run = with_event(ProcessEventKind::TerminationPhase(
+            TerminationPhase::CancellationRequested(CancellationReason::Shutdown),
+        ));
+        assert_eq!(
+            supervisor.script_run(run),
+            Err(ScriptedRunContradiction::CancellationRequestedMismatch {
+                event: CancellationReason::Shutdown,
+                control: None,
+            })
+        );
+        assert_eq!(queued_len(&supervisor), 0);
+    }
+
+    #[test]
+    fn cancellation_event_with_matching_reason_is_scriptable() {
+        let run = with_event(ProcessEventKind::TerminationPhase(
+            TerminationPhase::CancellationRequested(CancellationReason::UserRequested),
+        ))
+        .with_control(ControlState {
+            cancellation_requested: Some(CancellationReason::UserRequested),
+            ..ControlState::default()
+        });
+        assert_eq!(
+            FakeSupervisor::new().script_run(run),
+            Ok(()),
+            "matching cancellation control was refused"
+        );
+    }
+
+    #[test]
+    fn cancellation_event_with_mismatched_reason_is_refused() {
+        // The wrong implementation this kills: treating any Some as enough,
+        // so UserRequested in the stream elects as Shutdown in the result.
+        let run = with_event(ProcessEventKind::TerminationPhase(
+            TerminationPhase::CancellationRequested(CancellationReason::UserRequested),
+        ))
+        .with_control(ControlState {
+            cancellation_requested: Some(CancellationReason::Shutdown),
+            ..ControlState::default()
+        });
+        assert_eq!(
+            FakeSupervisor::new().script_run(run),
+            Err(ScriptedRunContradiction::CancellationRequestedMismatch {
+                event: CancellationReason::UserRequested,
+                control: Some(CancellationReason::Shutdown),
+            })
+        );
+    }
+
+    #[test]
+    fn cancellation_control_without_event_is_scriptable() {
+        let run = ScriptedRun::exiting(0).with_control(ControlState {
+            cancellation_requested: Some(CancellationReason::OperationSuperseded),
+            ..ControlState::default()
+        });
+        assert_eq!(
+            FakeSupervisor::new().script_run(run),
+            Ok(()),
+            "cancellation control without event was refused"
+        );
+    }
+
+    #[test]
+    fn limit_event_without_control_is_refused_at_script_time() {
+        let supervisor = FakeSupervisor::new();
+        let run = with_event(ProcessEventKind::LimitReached(observation_limit(
+            StreamChannel::Stdout,
+            false,
+        )));
+        assert_eq!(
+            supervisor.script_run(run),
+            Err(ScriptedRunContradiction::LimitReachedWithoutControl)
+        );
+        assert_eq!(queued_len(&supervisor), 0);
+    }
+
+    #[test]
+    fn limit_event_with_control_is_scriptable() {
+        let run = with_event(ProcessEventKind::LimitReached(observation_limit(
+            StreamChannel::Stdout,
+            false,
+        )))
+        .with_control(ControlState { output_limit_exceeded: true, ..ControlState::default() });
+        assert_eq!(
+            FakeSupervisor::new().script_run(run),
+            Ok(()),
+            "matching limit control was refused"
+        );
+    }
+
+    #[test]
+    fn limit_control_without_event_is_scriptable() {
+        let run = ScriptedRun::exiting(0)
+            .with_control(ControlState { output_limit_exceeded: true, ..ControlState::default() });
+        assert_eq!(
+            FakeSupervisor::new().script_run(run),
+            Ok(()),
+            "limit control without event was refused"
+        );
+    }
+
+    #[test]
+    fn continuing_limit_event_still_requires_the_flag() {
+        // The wrong implementation this kills: treating run_continues as
+        // permission to omit output_limit_exceeded, so the stream announces a
+        // bound the elected result never names.
+        let run = with_event(ProcessEventKind::LimitReached(observation_limit(
+            StreamChannel::Stderr,
+            true,
+        )));
+        assert_eq!(
+            FakeSupervisor::new().script_run(run),
+            Err(ScriptedRunContradiction::LimitReachedWithoutControl)
+        );
+    }
+
+    #[test]
+    fn a_middle_event_is_still_checked() {
+        // The wrong implementation this kills: inspecting only the first or
+        // last event, so a contradiction buried in the list is replayed.
+        let mut run = ScriptedRun::exiting(0);
+        run.events = vec![
+            ProcessEventKind::Started,
+            ProcessEventKind::TerminationPhase(TerminationPhase::DeadlineReached),
+            ProcessEventKind::StdoutBytes(StreamChunkEvidence {
+                byte_count: 1,
+                offset: 0,
+                retained: true,
+            }),
+        ];
+        assert_eq!(
+            FakeSupervisor::new().script_run(run),
+            Err(ScriptedRunContradiction::DeadlineReachedWithoutControl)
+        );
+    }
+
+    #[test]
+    fn the_first_contradiction_in_script_order_wins() {
+        let mut run = ScriptedRun::exiting(0);
+        run.events = vec![
+            ProcessEventKind::Started,
+            ProcessEventKind::TerminationPhase(TerminationPhase::DeadlineReached),
+            ProcessEventKind::LimitReached(observation_limit(StreamChannel::Stdout, false)),
+        ];
+        assert_eq!(
+            FakeSupervisor::new().script_run(run),
+            Err(ScriptedRunContradiction::DeadlineReachedWithoutControl)
+        );
+    }
+
+    #[test]
+    fn other_control_activity_does_not_excuse_a_deadline_event() {
+        // The wrong implementation this kills: treating any control-plane
+        // activity as enough, so a deadline event settles as a cancellation.
+        let run = with_event(ProcessEventKind::TerminationPhase(TerminationPhase::DeadlineReached))
+            .with_control(ControlState {
+                cancellation_requested: Some(CancellationReason::Shutdown),
+                ..ControlState::default()
+            });
+        assert_eq!(
+            FakeSupervisor::new().script_run(run),
+            Err(ScriptedRunContradiction::DeadlineReachedWithoutControl)
+        );
+    }
+
+    #[test]
+    fn a_refused_start_is_not_subject_to_run_pairing() {
+        assert_eq!(
+            FakeSupervisor::new()
+                .script(ScriptedOutcome::RefuseStart(TerminalDisposition::NotProven)),
+            Ok(()),
+            "a start refusal was subjected to run pairing"
+        );
+    }
+
+    #[test]
+    fn a_terminal_in_the_event_list_is_still_a_replay_malformation() {
+        // Script-time pairing is not a second copy of the terminal-in-events
+        // rule. That stays a replay refusal so this check cannot swallow it.
+        let mut run = ScriptedRun::exiting(0);
+        run.events = vec![
+            ProcessEventKind::Started,
+            ProcessEventKind::Terminal(TerminalDisposition::CompletedExit { code: 0 }),
+        ];
+        assert_eq!(
+            FakeSupervisor::new().script_run(run),
+            Ok(()),
+            "a terminal-in-events fixture was refused at script time"
+        );
+    }
+
+    #[test]
+    fn a_rejected_script_does_not_queue_behind_a_later_valid_one() {
+        let supervisor = FakeSupervisor::new();
+        let bad = with_event(ProcessEventKind::TerminationPhase(TerminationPhase::DeadlineReached));
+        assert!(supervisor.script_run(bad).is_err());
+        assert_eq!(
+            supervisor.script_run(ScriptedRun::exiting(0)),
+            Ok(()),
+            "a valid run after a rejected fixture was refused"
+        );
+        assert_eq!(queued_len(&supervisor), 1);
+    }
+
+    #[test]
+    fn two_cancellation_reasons_in_one_script_must_both_match() {
+        let mut run = ScriptedRun::exiting(0).with_control(ControlState {
+            cancellation_requested: Some(CancellationReason::Shutdown),
+            ..ControlState::default()
+        });
+        run.events = vec![
+            ProcessEventKind::Started,
+            ProcessEventKind::TerminationPhase(TerminationPhase::CancellationRequested(
+                CancellationReason::Shutdown,
+            )),
+            ProcessEventKind::TerminationPhase(TerminationPhase::CancellationRequested(
+                CancellationReason::UserRequested,
+            )),
+        ];
+        assert_eq!(
+            FakeSupervisor::new().script_run(run),
+            Err(ScriptedRunContradiction::CancellationRequestedMismatch {
+                event: CancellationReason::UserRequested,
+                control: Some(CancellationReason::Shutdown),
+            })
+        );
+    }
+}
