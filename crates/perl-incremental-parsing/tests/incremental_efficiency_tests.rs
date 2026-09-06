@@ -109,9 +109,14 @@ fn small_char_edit_reuses_most_ast_nodes() -> Result<(), Box<dyn std::error::Err
         _ => return Err("expected Program node at root".into()),
     }
 
-    // Metrics should show significant reuse
+    // Experimental IncrementalDocument fail-closes to a full fresh parse.
+    // Clone/cache matches are not retained identity (#13378 / #7072 / #7081).
     let metrics = doc.metrics();
-    assert!(metrics.nodes_reused > 0, "small edit should reuse some AST nodes, got 0 reused");
+    assert_eq!(
+        metrics.nodes_reused, 0,
+        "full fallback must not count clones as nodes_reused, got {}",
+        metrics.nodes_reused
+    );
 
     Ok(())
 }
@@ -383,7 +388,7 @@ fn benchmark_small_edit_vs_full_parse() -> Result<(), Box<dyn std::error::Error>
 }
 
 // =========================================================================
-// 5. Regression: adjust_node_position with negative delta
+// 5. Regression: length-changing deletion near the start of the file
 // =========================================================================
 
 #[test]

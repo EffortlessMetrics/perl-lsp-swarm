@@ -392,6 +392,22 @@ created = "2026-08-15"
 review_after = "2026-11-15"
 
 [[allow]]
+id = "non-rust-docs-agents-contract-workflows-test"
+path = "tests/test_docs_agents_contract_workflows.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Always-running existence gate for registered docs/agents contract workflows (#14628). Standard-library `unittest` and `tomllib` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 tests/test_docs_agents_contract_workflows.py",
+  "python3 -m unittest tests/test_docs_agents_contract_workflows.py",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
+
+[[allow]]
 id = "non-rust-legacy-authority-banners-test"
 path = "tests/test_legacy_authority_banners.py"
 kind = "control_plane_contract_test"
@@ -1305,6 +1321,39 @@ covered_by = [
 ]
 created = "2026-08-08"
 review_after = "2026-11-08"
+
+[[allow]]
+id = "non-rust-release-candidate-artifacts-schema"
+path = "schemas/release_candidate_artifacts.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Closed Draft 2020-12 schema for the no-publish release_candidate_artifacts.v1 freeze/handoff packet (#9092); exact bytes are bound to topology digest and verified without rebuild or public-channel mutation."
+covered_by = [
+  "cargo xtask release check-candidate-artifacts",
+  "cargo test -p xtask --locked --bin xtask release_candidate_artifacts",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
+
+[[allow]]
+id = "non-rust-release-candidate-artifacts-fixtures"
+glob = "fixtures/release_candidate_artifacts/**/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "release/ci"
+reason = "Topology membership fixture for the #9092 freeze/verify handoff: a projection over canonical archive/VSIX subjects used by the closed negative-control suite."
+covered_by = [
+  "cargo xtask release check-candidate-artifacts",
+  "cargo test -p xtask --locked --bin xtask release_candidate_artifacts",
+]
+broad_glob_reason = "The `**` spans the owned fixture directory for the handoff contract (topology plus any later invalid packet vectors). Breadth is bounded by that directory."
+created = "2026-09-06"
+review_after = "2026-12-06"
 
 [[allow]]
 id = "non-rust-blocker-closeout-schema"
@@ -3781,22 +3830,22 @@ review_after = "2027-02-20"
 
 [[allow]]
 id = "non-rust-distribution-kwalitee-catalog-v1"
-path = "crates/perl-kwalitee/distribution_kwalitee_catalog.v1.toml"
+path = "crates/perl-release-readiness/distribution_kwalitee_catalog.v1.toml"
 kind = "config"
 language = "toml"
 surface = "tooling"
 classification = "config"
 owner = "distribution/kwalitee"
-reason = "Frozen machine-readable CPANTS-compatible catalog v1 (#7170); decoded and validated by perl-kwalitee tests, not by a second runtime language."
+reason = "Frozen machine-readable CPANTS-compatible catalog v1 (#7170); decoded and validated by perl-release-readiness tests, not by a second runtime language."
 covered_by = [
-  "cargo test -p perl-kwalitee --all-targets --locked",
+  "cargo test -p perl-release-readiness --all-targets --locked",
 ]
 created = "2026-08-26"
 review_after = "2026-11-26"
 
 [[allow]]
 id = "non-rust-distribution-kwalitee-fixture-contract-v1"
-path = "crates/perl-kwalitee/distribution_kwalitee_fixtures.v1.toml"
+path = "crates/perl-release-readiness/distribution_kwalitee_fixtures.v1.toml"
 kind = "config"
 language = "toml"
 surface = "tooling"
@@ -3804,14 +3853,14 @@ classification = "config"
 owner = "distribution/kwalitee"
 reason = "Frozen fixture-identity contract for catalog v1 (#7170); expected facts are independently authored and catalog-bound."
 covered_by = [
-  "cargo test -p perl-kwalitee --all-targets --locked",
+  "cargo test -p perl-release-readiness --all-targets --locked",
 ]
 created = "2026-08-26"
 review_after = "2026-11-26"
 
 [[allow]]
 id = "non-rust-distribution-kwalitee-fixture-trees"
-glob = "crates/perl-kwalitee/fixtures/distribution/**"
+glob = "crates/perl-release-readiness/fixtures/distribution/**"
 kind = "language_fixture"
 language = "mixed"
 surface = "fixtures"
@@ -3819,11 +3868,41 @@ classification = "test"
 owner = "distribution/kwalitee"
 reason = "Committed catalog-bound distribution fixture trees for Kwalitee contract tests. Perl/metadata files are the subject under test, not runtime tooling."
 covered_by = [
-  "cargo test -p perl-kwalitee --all-targets --locked",
+  "cargo test -p perl-release-readiness --all-targets --locked",
 ]
 broad_glob_reason = "Each catalog metric may grow a reserved tree under a stable fixture id; the Rust fixture contract enumerates the allowed relative paths."
 created = "2026-08-26"
 review_after = "2026-11-26"
+
+[[allow]]
+id = "non-rust-release-readiness-legacy-indicator-migrations"
+path = "crates/perl-release-readiness/legacy_indicator_migrations.toml"
+kind = "config"
+language = "toml"
+surface = "tooling"
+classification = "config"
+owner = "distribution/kwalitee"
+reason = "Frozen one-to-one destination ledger for every historical perl_kwalitee.v1 indicator; decoded by perl-release-readiness, not by a second runtime language."
+covered_by = [
+  "cargo test -p perl-release-readiness --all-targets --locked",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
+
+[[allow]]
+id = "non-rust-release-readiness-legacy-receipt-v1"
+path = "crates/perl-release-readiness/fixtures/legacy_receipt_v1.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "distribution/kwalitee"
+reason = "Pinned perl_kwalitee.v1 compatibility-reader fixture for the moved mixed evaluator; JSON is the historical receipt, not runtime tooling."
+covered_by = [
+  "cargo test -p perl-release-readiness --all-targets --locked",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
 
 [[allow]]
 id = "non-rust-product-health-status-fixtures"

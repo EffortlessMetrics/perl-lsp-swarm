@@ -8,7 +8,8 @@
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use cli::srp::{SrpCommand, SrpMicrocratesArgs, UnwiredScanArgs};
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{Result, bail, eyre};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 mod allocation_tracker;
@@ -55,15 +56,16 @@ use tasks::{
     product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
     provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
     publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, receipts, release, release_artifact_check, release_evidence,
-    release_notes, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
-    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
-    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
-    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
-    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
-    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
-    workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
+    queue_health, queue_snapshot, receipts, release, release_artifact_check,
+    release_candidate_artifacts, release_evidence, release_notes, release_turnkey, repo_hygiene,
+    repository_topology, ripr_evidence, rust_small_proof, seam_diff, semantic_inline_next_edit,
+    semantic_inline_receipts, semantic_scorecard, semantic_shadow_compare, semantic_token_classes,
+    session_receipt, shadow_parity, srp_microcrates, supported_editor_inline_smoke,
+    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
+    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
+    ux_scorecard, validate_workspace_exclusions, workflow_authority_inventory,
+    workflow_policy_lint, workflow_trigger_lint, workspace_symbol_classes, worktree_allocator,
+    worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
 use tasks::{bindings, compare_parsers, highlight};
@@ -1108,6 +1110,16 @@ enum Commands {
 
     /// Audit CI workflows for PR-safety and spend-risk controls.
     CiAuditWorkflows,
+
+    /// Classify credential derivation kinds in `.github/workflows/*.yml` (#14867).
+    ///
+    /// Advisory inventory of the credential column. Does not change workflow
+    /// behavior and is not a merge gate.
+    WorkflowAuthorityInventory {
+        /// Write JSON to this path instead of stdout.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+    },
 
     /// Lint GitHub workflow security policy invariants.
     WorkflowPolicyLint {
@@ -3788,6 +3800,79 @@ enum ReleaseCommand {
         #[arg(long)]
         allow_partial: bool,
     },
+    /// Freeze one content-addressed no-publish candidate artifact packet
+    /// (`release_candidate_artifacts.v1`, #9092). Hashes already-packaged
+    /// files; does not rebuild or publish.
+    FreezeCandidateArtifacts {
+        /// Directory of packaged candidate files (archives, VSIX, checksums, SBOM).
+        #[arg(long)]
+        staging: PathBuf,
+        /// Topology document declaring archive/VSIX membership.
+        #[arg(long)]
+        topology: PathBuf,
+        /// Output path for the frozen packet JSON.
+        #[arg(long)]
+        output: PathBuf,
+        /// Candidate identity (for example `rc1`).
+        #[arg(long)]
+        candidate_id: String,
+        /// Producer workflow identity.
+        #[arg(long)]
+        producer_workflow: String,
+        /// Producer run identity.
+        #[arg(long)]
+        producer_run_id: String,
+        /// Producer attempt number (1-based).
+        #[arg(long, default_value_t = 1)]
+        producer_attempt: u32,
+        /// Transport artifact-set identity. Distinct from packet_digest.
+        #[arg(long)]
+        artifact_set_id: String,
+        /// Cargo.lock file hashed into packet inputs.
+        #[arg(long)]
+        cargo_lock: PathBuf,
+        /// npm lockfile hashed into packet inputs.
+        #[arg(long)]
+        npm_lock: PathBuf,
+        /// Toolchain identities as `name=version`. Repeatable.
+        #[arg(long = "toolchain", required = true)]
+        toolchains: Vec<String>,
+        /// Transport kind: `staging_directory` or `github_actions_artifact`.
+        #[arg(long, default_value = "staging_directory")]
+        transport_kind: String,
+        /// Optional RFC3339 transport expiry. Expiry forces regeneration.
+        #[arg(long)]
+        available_until: Option<String>,
+    },
+    /// Retrieve and verify a frozen candidate artifact packet without rebuilding.
+    VerifyCandidateArtifacts {
+        /// Frozen `release_candidate_artifacts.v1` packet.
+        #[arg(long)]
+        packet: PathBuf,
+        /// Retrieved frozen file set. Missing/expired transport fails closed.
+        #[arg(long)]
+        staging: PathBuf,
+        /// Optional verification receipt output.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+        /// Expected transport artifact-set identity.
+        #[arg(long)]
+        artifact_set_id: String,
+        /// Expected producer run identity.
+        #[arg(long)]
+        producer_run_id: Option<String>,
+        /// Optional RFC3339 clock override for expiry tests.
+        #[arg(long, hide = true)]
+        now: Option<String>,
+        /// Fail closed if a publisher attempts to rebuild instead of retrieving.
+        #[arg(long)]
+        rebuild_attempt: bool,
+        /// Topology document whose bytes must match the frozen digest.
+        #[arg(long)]
+        topology: PathBuf,
+    },
+    /// Validate schema, freeze/verify happy path, and every #9092 negative control.
+    CheckCandidateArtifacts,
 }
 
 #[derive(Subcommand)]
@@ -5494,6 +5579,55 @@ fn run_cli(cli: Cli) -> Result<()> {
                     allow_partial,
                 })
             }
+            ReleaseCommand::FreezeCandidateArtifacts {
+                staging,
+                topology,
+                output,
+                candidate_id,
+                producer_workflow,
+                producer_run_id,
+                producer_attempt,
+                artifact_set_id,
+                cargo_lock,
+                npm_lock,
+                toolchains,
+                transport_kind,
+                available_until,
+            } => release_candidate_artifacts::freeze(release_candidate_artifacts::FreezeConfig {
+                staging,
+                topology,
+                output,
+                candidate_id,
+                producer_workflow,
+                producer_run_id,
+                producer_attempt,
+                artifact_set_id,
+                cargo_lock,
+                npm_lock,
+                toolchains: parse_toolchain_map(&toolchains)?,
+                transport_kind: transport_kind.parse()?,
+                available_until,
+            }),
+            ReleaseCommand::VerifyCandidateArtifacts {
+                packet,
+                staging,
+                receipt,
+                artifact_set_id,
+                producer_run_id,
+                now,
+                rebuild_attempt,
+                topology,
+            } => release_candidate_artifacts::verify(release_candidate_artifacts::VerifyConfig {
+                packet,
+                staging,
+                receipt,
+                artifact_set_id,
+                producer_run_id,
+                now: parse_optional_rfc3339(now)?,
+                rebuild_attempt,
+                topology,
+            }),
+            ReleaseCommand::CheckCandidateArtifacts => release_candidate_artifacts::check(),
         },
         Commands::ReleaseNotes { tag, output, root } => release_notes::run(tag, output, root),
         Commands::ReleaseTurnkey {
@@ -5538,6 +5672,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::TestEdgeCases { bench, coverage, test } => edge_cases::run(bench, coverage, test),
         Commands::CiAuditWorkflows => ci_audit_workflows::run(),
+        Commands::WorkflowAuthorityInventory { receipt } => {
+            workflow_authority_inventory::run(receipt)
+        }
         Commands::WorkflowPolicyLint { receipt, fixture, check_lane_whitelist } => {
             workflow_policy_lint::run(workflow_policy_lint::WorkflowPolicyLintConfig {
                 receipt,
@@ -6765,6 +6902,36 @@ fn print_top_level_commands() {
 
     for command_name in command_names {
         println!("{command_name}");
+    }
+}
+
+fn parse_toolchain_map(values: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut toolchains = BTreeMap::new();
+    for value in values {
+        let Some((name, version)) = value.split_once('=') else {
+            bail!("toolchain must be name=version, got {value:?}");
+        };
+        if name.is_empty() || version.is_empty() {
+            bail!("toolchain must be name=version, got {value:?}");
+        }
+        if toolchains.insert(name.to_string(), version.to_string()).is_some() {
+            bail!("duplicate toolchain {name}");
+        }
+    }
+    if toolchains.is_empty() {
+        bail!("at least one --toolchain name=version is required");
+    }
+    Ok(toolchains)
+}
+
+fn parse_optional_rfc3339(value: Option<String>) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    match value {
+        None => Ok(None),
+        Some(text) => {
+            let parsed = chrono::DateTime::parse_from_rfc3339(&text)
+                .map_err(|error| eyre!("--now must be RFC3339: {error}"))?;
+            Ok(Some(parsed.with_timezone(&chrono::Utc)))
+        }
     }
 }
 

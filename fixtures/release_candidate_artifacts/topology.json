@@ -1,0 +1,24 @@
+{
+  "release": "0.18.0",
+  "frozen_product_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "binary_targets": [
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "archive_name": "perllsp-0.18.0-x86_64-unknown-linux-gnu.tar.gz"
+    },
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "archive_name": "perllsp-0.18.0-x86_64-pc-windows-msvc.zip"
+    }
+  ],
+  "vsix": {
+    "asset_name": "perl-lsp-rs-0.18.0.vsix"
+  },
+  "published_crates": [
+    {
+      "name": "perl-parser",
+      "version": "0.18.0",
+      "package_path": "crates/perl-parser"
+    }
+  ]
+}
