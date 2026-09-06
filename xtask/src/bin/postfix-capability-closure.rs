@@ -844,6 +844,9 @@ fn doc_completion_claims(name: &str, source: &str, view: &CapabilityView) -> Res
         if let Some(overclaim) = table_overclaim(line, view)? {
             claims.push(format!("{name}:{} {overclaim}", index + 1));
         }
+        if let Some(overclaim) = capability_status_table_overclaim(line) {
+            claims.push(format!("{name}:{} {overclaim}", index + 1));
+        }
         if positive_completion_phrase(line) {
             claims.push(format!(
                 "{name}:{} claims postfix/statement-modifier completion: {}",
@@ -853,6 +856,27 @@ fn doc_completion_claims(name: &str, source: &str, view: &CapabilityView) -> Res
         }
     }
     Ok(claims)
+}
+
+fn capability_status_table_overclaim(line: &str) -> Option<String> {
+    if !line.contains('|') || !line_mentions_postfix(line) {
+        return None;
+    }
+    let cells: Vec<&str> = line.split('|').map(str::trim).filter(|part| !part.is_empty()).collect();
+    if cells.len() < 2 {
+        return None;
+    }
+    let capability = cells[0].trim_matches('`');
+    let state = cells[1].trim_matches('`');
+    if capability.eq_ignore_ascii_case("Capability") || capability.starts_with("---") {
+        return None;
+    }
+    if state == "live" {
+        return Some(format!(
+            "capability table marks {capability} live without derived full-capability proof"
+        ));
+    }
+    None
 }
 
 fn line_mentions_postfix(line: &str) -> bool {
@@ -1265,6 +1289,30 @@ mod tests {
         assert!(message.contains("semantic"), "narrowest reason missing: {message}");
         assert!(message.contains("missing"), "{message}");
         assert!(message.contains("fully supported"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn capability_table_live_row_fails_with_narrowest_reason() -> Result<()> {
+        let (ledger, mut matrix) = committed()?;
+        apply_full_looking_hir(postfix_req(&mut matrix)?);
+        let view = derive_postfix_capability(&ledger, &matrix)?;
+        let docs = [(
+            "docs/project/COMPILER_CAPABILITY_STATUS.md",
+            "| Capability | State | Owner issue | Evidence | Next proof |\n\
+             | --- | --- | --- | --- | --- |\n\
+             | Postfix statement modifiers | `live` | #4886 | hir | none |\n\
+             | Provider cutover | `partial live` | #8197 | evidence | gated |\n",
+        )];
+        let error = evaluate_closure_gate(&view, &ledger, &matrix, &docs)
+            .expect_err("live postfix capability row must fail");
+        let message = error.to_string();
+        assert!(message.contains("semantic"), "narrowest reason missing: {message}");
+        assert!(message.contains("live"), "{message}");
+        assert!(
+            !message.contains("Provider cutover"),
+            "partial live on an unrelated row must not be a postfix completion claim: {message}"
+        );
         Ok(())
     }
 
