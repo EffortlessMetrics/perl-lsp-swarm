@@ -13,6 +13,6 @@ body: >-
   that bounded limitation is documented on `LocalSymbolTable::scan_subs`.
 time: 2026-09-06T00:00:00Z
 custom:
-  PR: "0000"
+  PR: "14920"
   Slug: format-body-prepass-exclusion-14916
   Breaking: "no"
