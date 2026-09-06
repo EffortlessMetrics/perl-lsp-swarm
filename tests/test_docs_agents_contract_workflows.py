@@ -232,36 +232,75 @@ def run_commands(workflow_text: str) -> tuple[str, ...]:
     return tuple(commands)
 
 
-def _invokes_python_tests(command: str) -> bool:
-    """True when a workflow `run:` invokes stdlib unittest or a `tests/*.py` script.
+_SHELL_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\|)\s*")
 
-    The hosted shard runner rejects `python3 -m unittest` (`-m` is an unsupported
-    nested interpreter command), so this gate's own production command is
-    `python3 tests/test_docs_agents_contract_workflows.py`. A fifth contract
-    workflow that copies that form must still be discovered.
-    """
-    if "python3 -m unittest" in command or "python -m unittest" in command:
-        return True
-    return re.search(r"\bpython3?\s+tests/", command) is not None
+
+def _command_segments(command: str) -> tuple[str, ...]:
+    return tuple(part for part in _SHELL_SPLIT.split(command) if part.strip())
+
+
+def _python_script_operand(tokens: list[str]) -> str | None:
+    """Return `tests/*.py` after interpreter flags (`python3 -u tests/foo.py`)."""
+    if not tokens or tokens[0] not in {"python3", "python"}:
+        return None
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token.startswith("-") and token not in {"-m", "-c"}:
+            index += 1
+            continue
+        break
+    if index >= len(tokens):
+        return None
+    operand = tokens[index].rstrip(",")
+    if operand.startswith("tests/") and operand.endswith(".py"):
+        return posix(operand)
+    return None
+
+
+def _unittest_module_targets(segment: str) -> set[str]:
+    targets: set[str] = set()
+    for token in UNITTEST_TOKEN.findall(segment):
+        token = token.rstrip(",")
+        if token.endswith(".py"):
+            targets.add(posix(token))
+            continue
+        module = token.split(".", 1)[1] if token.startswith("tests.") else token
+        file_stem = module.split(".", 1)[0]
+        if file_stem.startswith("test_") or file_stem.startswith("test-"):
+            targets.add(f"tests/{file_stem}.py")
+        elif token.startswith("tests/"):
+            targets.add(posix(token))
+    return targets
+
+
+def _segment_test_paths(segment: str) -> set[str]:
+    tokens = segment.split()
+    if not tokens or tokens[0] not in {"python3", "python"}:
+        return set()
+    if "-m unittest" in " ".join(tokens):
+        return _unittest_module_targets(segment)
+    operand = _python_script_operand(tokens)
+    return {operand} if operand else set()
 
 
 def unittest_targets(commands: Iterable[str]) -> set[str]:
-    """Map python unittest/script invocations onto `tests/*.py` paths."""
+    """Map python unittest/script invocations onto `tests/*.py` paths.
+
+    The hosted shard runner rejects `python3 -m unittest` (`-m` is an unsupported
+    nested interpreter command), so this gate's own production command is
+    `python3 tests/test_docs_agents_contract_workflows.py`. A fifth that copies
+    that form, including interpreter flags such as `-u`, must still be
+    discovered. Test paths that appear only in a later non-python command
+    (`echo tests/foo.py`) are not operands.
+    """
     targets: set[str] = set()
     for command in commands:
-        if not _invokes_python_tests(command):
-            continue
-        for token in UNITTEST_TOKEN.findall(command):
-            token = token.rstrip(",")
-            if token.endswith(".py"):
-                targets.add(posix(token))
-                continue
-            module = token.split(".", 1)[1] if token.startswith("tests.") else token
-            file_stem = module.split(".", 1)[0]
-            if file_stem.startswith("test_") or file_stem.startswith("test-"):
-                targets.add(f"tests/{file_stem}.py")
-            elif token.startswith("tests/"):
-                targets.add(posix(token))
+        for segment in _command_segments(command):
+            targets.update(_segment_test_paths(segment))
     return targets
 
 
@@ -918,6 +957,44 @@ jobs:
                 ["python3 tests/test_docs_agents_contract_workflows.py"]
             ),
             {"tests/test_docs_agents_contract_workflows.py"},
+        )
+
+    def test_interpreter_flag_before_script_is_discovered(self) -> None:
+        workflow = """\
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/flag-docs-contract.yml'
+jobs:
+  check:
+    steps:
+      - run: python3 -u tests/test_script_docs_contract.py
+"""
+        allowlist = {
+            "allow": [
+                {
+                    "kind": CONTROL_PLANE_KIND,
+                    "path": "tests/test_script_docs_contract.py",
+                }
+            ]
+        }
+        discovered = discover_contract_workflows(
+            {".github/workflows/flag-docs-contract.yml": workflow}, allowlist
+        )
+        self.assertEqual(discovered, {".github/workflows/flag-docs-contract.yml"})
+        self.assertEqual(
+            unittest_targets(["python3 -u tests/test_script_docs_contract.py"]),
+            {"tests/test_script_docs_contract.py"},
+        )
+
+    def test_echo_after_unrelated_python_is_not_a_unittest_target(self) -> None:
+        self.assertEqual(
+            unittest_targets(
+                [
+                    "python3 tests/unrelated.py && echo tests/test_script_docs_contract.py"
+                ]
+            ),
+            {"tests/unrelated.py"},
         )
 
     def test_non_python_mention_of_tests_is_not_a_unittest_target(self) -> None:
