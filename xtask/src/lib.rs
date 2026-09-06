@@ -31,6 +31,7 @@ pub mod native_helix_actions;
 pub mod native_neovim_actions;
 pub mod parser_accuracy_legacy_population;
 pub mod publication_drift;
+pub mod release_trust_invariants;
 pub mod rust_hygiene;
 pub mod vim_host_diagnostics_run;
 pub mod vim_host_freshness_run;
