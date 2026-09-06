@@ -18,9 +18,9 @@
 //!   generic `CARGO_BUILD_*` mappings, including when the dedicated var is
 //!   empty;
 //! - no automatic `.cargo/config.local.toml` (not a Cargo-native file);
-//! - unstable `include` is not followed on stable Cargo; its presence keeps
-//!   `cargo_config_wrapper_not_resolved` rather than silently applying or
-//!   silently ignoring included wrappers;
+//! - Cargo 1.95 follows top-level `include`; this resolver does not. Presence
+//!   keeps `cargo_config_wrapper_not_resolved` rather than applying or ignoring
+//!   included wrappers, so an include-only wrapper cannot hash as "no wrapper";
 //! - relative wrapper values with a directory component are resolved from the
 //!   parent of the directory that holds the config file (project `.cargo/` or
 //!   `$CARGO_HOME`), matching stable Cargo; environment values use the
@@ -29,7 +29,9 @@
 //!   programs, as Cargo does not trim;
 //! - empty `$CARGO_HOME` falls through to platform home; whitespace-only
 //!   `$CARGO_HOME` is a relative directory name; relative `$CARGO_HOME` is
-//!   resolved from the process current directory, matching Cargo;
+//!   resolved from the process current directory, matching Cargo; a relative
+//!   home or workspace whose cwd cannot be established is unresolvable, not
+//!   a silent empty home;
 //! - non-UTF-8 wrapper/home variables are unresolvable, not silently unset.
 //!
 //! Absolute paths never enter the durable projection: in-workspace paths become
@@ -230,14 +232,18 @@ pub(crate) fn resolve_compiler_wrappers_in(
     search_ceiling: Option<&Path>,
     fs: &dyn ConfigFs,
 ) -> ResolvedCompilerWrappers {
-    let workspace_root = absolute_or_normalized(workspace_root);
-    let search_ceiling = search_ceiling.map(absolute_or_normalized);
+    let cwd = fs.current_dir().ok();
+    let cwd = cwd.as_deref();
     let mut layers = ConfigLayers::default();
-    if !workspace_root.is_absolute() {
-        // A relative root whose cwd cannot be established cannot walk parents.
-        layers.fail(CARGO_CONFIG_WRAPPER_NOT_RESOLVED);
-    }
-    match cargo_home_dir(env) {
+    let workspace_root = match absolutize(workspace_root, cwd) {
+        Some(path) => path,
+        None => {
+            layers.fail(CARGO_CONFIG_WRAPPER_NOT_RESOLVED);
+            lexically_normalize(workspace_root)
+        }
+    };
+    let search_ceiling = search_ceiling.and_then(|path| absolutize(path, cwd));
+    match cargo_home_dir(env, cwd) {
         CargoHome::Path(path) => {
             if let Err(limitation) = load_home_config(&path, &workspace_root, fs, &mut layers) {
                 layers.fail(limitation);
@@ -278,6 +284,9 @@ pub(crate) trait ConfigFs {
     fn is_file(&self, path: &Path) -> bool;
     /// Read `path` as UTF-8 text. Missing files should return `NotFound`.
     fn read_to_string(&self, path: &Path) -> io::Result<String>;
+    /// Process current directory used to absolutize relative `$CARGO_HOME` and
+    /// relative `workspace_root`. An error is unresolvable, not a relative fallback.
+    fn current_dir(&self) -> io::Result<PathBuf>;
 }
 
 /// Real filesystem.
@@ -291,6 +300,10 @@ impl ConfigFs for RealFs {
 
     fn read_to_string(&self, path: &Path) -> io::Result<String> {
         std::fs::read_to_string(path)
+    }
+
+    fn current_dir(&self) -> io::Result<PathBuf> {
+        std::env::current_dir()
     }
 }
 
@@ -343,22 +356,25 @@ enum CargoHome {
     Unknown,
 }
 
-fn cargo_home_dir(env: &EnvSnapshot) -> CargoHome {
-    cargo_home_dir_on(env, cfg!(windows))
+fn cargo_home_dir(env: &EnvSnapshot, cwd: Option<&Path>) -> CargoHome {
+    cargo_home_dir_on(env, cwd, cfg!(windows))
 }
 
 /// Cargo's default home is platform-specific: `HOME` on Unix, `USERPROFILE`
 /// then `HOME` on Windows. Empty `$CARGO_HOME` is treated as unset; any other
 /// value (including whitespace) is the home directory, resolved from cwd when
-/// relative.
-fn cargo_home_dir_on(env: &EnvSnapshot, windows: bool) -> CargoHome {
+/// relative. A relative home whose cwd cannot be established is unknown.
+fn cargo_home_dir_on(env: &EnvSnapshot, cwd: Option<&Path>, windows: bool) -> CargoHome {
     if env.is_invalid_utf8(CARGO_HOME_ENV) {
         return CargoHome::Unknown;
     }
     match env.get(CARGO_HOME_ENV) {
         Some("") => {}
         Some(value) => {
-            return CargoHome::Path(absolute_or_normalized(Path::new(value)));
+            return match absolutize(Path::new(value), cwd) {
+                Some(path) => CargoHome::Path(path),
+                None => CargoHome::Unknown,
+            };
         }
         None => {}
     }
@@ -370,9 +386,10 @@ fn cargo_home_dir_on(env: &EnvSnapshot, windows: bool) -> CargoHome {
         match env.get(key) {
             Some("") | None => {}
             Some(value) => {
-                return CargoHome::Path(absolute_or_normalized(
-                    &PathBuf::from(value).join(".cargo"),
-                ));
+                return match absolutize(&PathBuf::from(value).join(".cargo"), cwd) {
+                    Some(path) => CargoHome::Path(path),
+                    None => CargoHome::Unknown,
+                };
             }
         }
     }
@@ -605,13 +622,11 @@ fn lexically_normalize(path: &Path) -> PathBuf {
     normalized
 }
 
-fn absolute_or_normalized(path: &Path) -> PathBuf {
+fn absolutize(path: &Path, cwd: Option<&Path>) -> Option<PathBuf> {
     if path.is_absolute() {
-        return lexically_normalize(path);
-    }
-    match std::env::current_dir() {
-        Ok(cwd) => lexically_normalize(&cwd.join(path)),
-        Err(_) => lexically_normalize(path),
+        Some(lexically_normalize(path))
+    } else {
+        cwd.map(|cwd| lexically_normalize(&cwd.join(path)))
     }
 }
 
@@ -718,6 +733,7 @@ mod tests {
     #[derive(Default)]
     struct OverlayFs {
         unreadable: BTreeSet<PathBuf>,
+        cwd_unavailable: bool,
     }
 
     impl OverlayFs {
@@ -725,6 +741,10 @@ mod tests {
             let mut fs = Self::default();
             fs.unreadable.insert(path.into());
             fs
+        }
+
+        fn without_current_dir() -> Self {
+            Self { unreadable: BTreeSet::new(), cwd_unavailable: true }
         }
     }
 
@@ -741,6 +761,14 @@ mod tests {
                 ));
             }
             std::fs::read_to_string(path)
+        }
+
+        fn current_dir(&self) -> io::Result<PathBuf> {
+            if self.cwd_unavailable {
+                Err(io::Error::new(ErrorKind::NotFound, "current directory is unavailable"))
+            } else {
+                std::env::current_dir()
+            }
         }
     }
 
@@ -1279,10 +1307,10 @@ mod tests {
     fn unix_home_discovery_ignores_userprofile() {
         let mut env = EnvSnapshot::default();
         env.insert(USERPROFILE_ENV, "/windows/home");
-        assert!(matches!(cargo_home_dir_on(&env, false), CargoHome::Unknown));
+        assert!(matches!(cargo_home_dir_on(&env, None, false), CargoHome::Unknown));
 
         env.insert(HOME_ENV, "/unix/home");
-        match cargo_home_dir_on(&env, false) {
+        match cargo_home_dir_on(&env, None, false) {
             CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/unix/home/.cargo")),
             CargoHome::Unknown => panic!("HOME should win on Unix"),
         }
@@ -1293,14 +1321,14 @@ mod tests {
         let mut both = EnvSnapshot::default();
         both.insert(HOME_ENV, "/unix/home");
         both.insert(USERPROFILE_ENV, "/windows/home");
-        match cargo_home_dir_on(&both, true) {
+        match cargo_home_dir_on(&both, None, true) {
             CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/windows/home/.cargo")),
             CargoHome::Unknown => panic!("USERPROFILE should win on Windows"),
         }
 
         let mut home_only = EnvSnapshot::default();
         home_only.insert(HOME_ENV, "/unix/home");
-        match cargo_home_dir_on(&home_only, true) {
+        match cargo_home_dir_on(&home_only, None, true) {
             CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/unix/home/.cargo")),
             CargoHome::Unknown => panic!("HOME is the Windows fallback"),
         }
@@ -1356,6 +1384,50 @@ mod tests {
         let resolved = resolve_compiler_wrappers_in(&ws, &env, Some(root.path()), &RealFs);
         assert_eq!(resolved.rustc_wrapper(), Some("from-rel-home"));
         assert!(resolved.is_complete());
+    }
+
+    #[test]
+    fn relative_cargo_home_without_cwd_is_unknown_not_a_relative_fallback() {
+        let mut env = EnvSnapshot::default();
+        env.insert(CARGO_HOME_ENV, "rel-home");
+        assert!(matches!(cargo_home_dir_on(&env, None, false), CargoHome::Unknown));
+        match cargo_home_dir_on(&env, Some(Path::new("/ws")), false) {
+            CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/ws/rel-home")),
+            CargoHome::Unknown => panic!("cwd should resolve relative CARGO_HOME"),
+        }
+
+        let (root, _home, ws, _) = fixture();
+        write_config(&ws.join(".cargo/config.toml"), "[build]\nrustc-wrapper = \"from-ws\"\n");
+        let resolved = resolve_compiler_wrappers_in(
+            &ws,
+            &env,
+            Some(root.path()),
+            &OverlayFs::without_current_dir(),
+        );
+        assert!(resolved.rustc_wrapper().is_none());
+        assert!(!resolved.is_complete());
+        assert!(
+            resolved.limitations().iter().any(|item| item == CARGO_CONFIG_WRAPPER_NOT_RESOLVED)
+        );
+        let known = resolve_tree(&ws, root.path(), &ws.join("unused-home"));
+        assert_eq!(known.rustc_wrapper(), Some("from-ws"));
+        assert_ne!(resolved.subject_digest(), known.subject_digest());
+    }
+
+    #[test]
+    fn relative_workspace_root_without_cwd_is_unresolved() {
+        let mut env = EnvSnapshot::default();
+        env.insert(CARGO_HOME_ENV, "/abs-cargo-home");
+        let resolved = resolve_compiler_wrappers_in(
+            Path::new("rel-ws"),
+            &env,
+            None,
+            &OverlayFs::without_current_dir(),
+        );
+        assert!(!resolved.is_complete());
+        assert!(
+            resolved.limitations().iter().any(|item| item == CARGO_CONFIG_WRAPPER_NOT_RESOLVED)
+        );
     }
 
     #[test]
