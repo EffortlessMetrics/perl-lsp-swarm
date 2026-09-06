@@ -129,6 +129,16 @@ fn xtask_subcommands() -> BTreeSet<String> {
 }
 
 fn inline_devex_commands(text: &str) -> Vec<String> {
+    let mut commands = backtick_devex_commands(text);
+    for command in continued_devex_commands(text) {
+        if !commands.iter().any(|existing| existing == &command) {
+            commands.push(command);
+        }
+    }
+    commands
+}
+
+fn backtick_devex_commands(text: &str) -> Vec<String> {
     text.split('`')
         .enumerate()
         .filter_map(|(index, segment)| {
@@ -136,13 +146,71 @@ fn inline_devex_commands(text: &str) -> Vec<String> {
                 return None;
             }
             let command = segment.trim();
-            if command.starts_with("just ") || command.starts_with("cargo xtask ") {
-                Some(command.to_string())
-            } else {
-                None
-            }
+            if is_governed_devex_command(command) { Some(command.to_string()) } else { None }
         })
         .collect()
+}
+
+/// Join physical lines that end with a trailing backslash into one logical line.
+///
+/// A line is a continuation when, after trailing whitespace is stripped, it ends
+/// with `\\`. The backslash is dropped and the next line's leading whitespace is
+/// collapsed to a single space. This is the mechanical v1 line-joiner; it does
+/// not strip env prefixes or join Markdown-split lines that lack a backslash.
+fn join_trailing_backslash_continuations(text: &str) -> Vec<JoinedLine> {
+    let mut lines = Vec::new();
+    let mut buf: Option<String> = None;
+    for raw in text.lines() {
+        let trimmed_end = raw.trim_end();
+        let (piece, continuation) = match trimmed_end.strip_suffix('\\') {
+            Some(rest) => (rest.trim_end(), true),
+            None => (trimmed_end, false),
+        };
+        match buf.take() {
+            Some(mut existing) => {
+                existing.push(' ');
+                existing.push_str(piece.trim_start());
+                if continuation {
+                    buf = Some(existing);
+                } else {
+                    lines.push(JoinedLine { text: existing, continued: true });
+                }
+            }
+            None => {
+                if continuation {
+                    buf = Some(piece.to_string());
+                } else {
+                    lines.push(JoinedLine { text: piece.to_string(), continued: false });
+                }
+            }
+        }
+    }
+    if let Some(pending) = buf {
+        lines.push(JoinedLine { text: pending, continued: true });
+    }
+    lines
+}
+
+struct JoinedLine {
+    text: String,
+    continued: bool,
+}
+
+fn continued_devex_commands(text: &str) -> Vec<String> {
+    join_trailing_backslash_continuations(text)
+        .into_iter()
+        .filter_map(|line| {
+            if !line.continued {
+                return None;
+            }
+            let command = line.text.trim();
+            is_governed_devex_command(command).then_some(command.to_string())
+        })
+        .collect()
+}
+
+fn is_governed_devex_command(command: &str) -> bool {
+    command.starts_with("just ") || command.starts_with("cargo xtask ")
 }
 
 fn command_exists(
@@ -178,6 +246,15 @@ fn normalize_doc_token(token: &str) -> String {
 mod tests {
     use super::*;
 
+    fn naive_line_devex_commands(text: &str) -> Vec<String> {
+        text.lines()
+            .filter_map(|line| {
+                let command = line.trim();
+                is_governed_devex_command(command).then_some(command.to_string())
+            })
+            .collect()
+    }
+
     #[test]
     fn major_minor_extracts_msrv_badge_version() {
         assert_eq!(major_minor("1.93.1"), "1.93");
@@ -190,6 +267,68 @@ mod tests {
             "| Need | Command |\n|---|---|\n| Fast | `just pr-fast` |\n| Fmt | `cargo xtask fmt` |\n| Rust | `cargo test -p xtask` |\n",
         );
         assert_eq!(commands, vec!["just pr-fast", "cargo xtask fmt"]);
+    }
+
+    #[test]
+    fn join_trailing_backslash_continuations_joins_command_and_args() {
+        let joined = join_trailing_backslash_continuations("just pr-fast \\\n    --locked\n");
+        assert_eq!(joined.len(), 1, "continued physical lines must become one logical line");
+        assert!(joined[0].continued, "a trailing-backslash join must be marked continued");
+        assert_eq!(joined[0].text, "just pr-fast --locked");
+    }
+
+    #[test]
+    fn join_trailing_backslash_continuations_keeps_uncontinued_lines() {
+        let joined = join_trailing_backslash_continuations("just pr-fast\n    --locked\n");
+        assert_eq!(
+            joined.iter().map(|line| (line.text.as_str(), line.continued)).collect::<Vec<_>>(),
+            vec![("just pr-fast", false), ("    --locked", false)]
+        );
+    }
+
+    #[test]
+    fn continued_backslash_commands_enter_the_governed_denominator() {
+        let text = "```bash\njust pr-fast \\\n    --locked\ncargo xtask fmt \\\n    --check\n```\n";
+        let commands = inline_devex_commands(text);
+        assert!(
+            commands.iter().any(|command| command == "just pr-fast --locked"),
+            "joined just command must be extracted; got {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| command == "cargo xtask fmt --check"),
+            "joined cargo xtask command must be extracted; got {commands:?}"
+        );
+    }
+
+    #[test]
+    fn naive_line_scan_misses_backslash_continuations() {
+        let text = "just pr-fast \\\n    --locked\n";
+        let naive = naive_line_devex_commands(text);
+        assert!(
+            !naive.iter().any(|command| command.contains("--locked")),
+            "a line-by-line scan without a joiner must not see continuation args; got {naive:?}"
+        );
+        assert_ne!(
+            naive,
+            vec!["just pr-fast --locked".to_string()],
+            "the identity joiner is the wrong implementation this slice exists to reject"
+        );
+        assert_eq!(inline_devex_commands(text), vec!["just pr-fast --locked"]);
+    }
+
+    #[test]
+    fn env_prefixed_and_markdown_split_commands_stay_unextracted() {
+        let env_prefixed = inline_devex_commands("FOO=1 just test \\\n    --locked\n");
+        assert!(
+            !env_prefixed.iter().any(|command| command.contains("just test")),
+            "env-prefixed invocations remain residual on #14868; got {env_prefixed:?}"
+        );
+
+        let markdown_split = inline_devex_commands("just pr-fast\n    --locked\n");
+        assert!(
+            !markdown_split.iter().any(|command| command.contains("--locked")),
+            "Markdown-split commands without a backslash remain residual on #14868; got {markdown_split:?}"
+        );
     }
 
     #[test]
