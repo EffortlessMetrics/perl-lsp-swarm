@@ -7,6 +7,8 @@
     reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
 )]
 
+#[cfg(feature = "incremental")]
+use super::srp_helpers::build_incremental_edit_set;
 use super::*;
 use serde_json::json;
 use std::io::{self, Write};

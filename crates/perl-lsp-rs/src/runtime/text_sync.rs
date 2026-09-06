@@ -771,6 +771,9 @@ impl LspServer {
                     }
                 };
 
+                // An admitted full replacement is the declared recovery path.
+                doc_state.clear_full_sync_required();
+
                 // Increment generation counter for this change
                 let next_gen = doc_state.generation.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
                 let target_version = version;

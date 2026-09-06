@@ -627,9 +627,15 @@ impl DocumentState {
     }
 
     /// Whether later ranged changes and current-answer facts are unavailable.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn full_sync_required(&self) -> bool {
         self.full_sync_required
+    }
+
+    /// Clear the Full-sync violation after an accepted complete replacement.
+    pub(crate) fn clear_full_sync_required(&mut self) {
+        self.full_sync_required = false;
     }
 
     /// Update document content and invalidate caches
@@ -902,6 +908,12 @@ mod tests {
             !doc.publish_parsed_if_current(doc_gen, Arc::new(snapshot_for("my $x = 1;", doc_gen))),
             "a later parse of last-good text must not republish as current while unavailable"
         );
+        doc.clear_full_sync_required();
+        assert!(
+            doc.publish_parsed_if_current(doc_gen, Arc::new(snapshot_for("my $x = 1;", doc_gen))),
+            "an accepted full replacement must allow current publication again"
+        );
+        assert!(doc.current_parsed().is_some());
     }
 
     #[test]

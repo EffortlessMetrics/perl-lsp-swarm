@@ -107,6 +107,11 @@ pub(crate) fn final_full_replacement_text(replacements: &[String]) -> Option<&st
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::expect_used,
+        clippy::panic,
+        reason = "unit tests of encode/admit classification"
+    )]
     use super::*;
     use serde_json::json;
 

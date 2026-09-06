@@ -1585,7 +1585,8 @@ mod tests {
     }
 
     #[test]
-    fn initialize_selects_utf16_when_client_also_offers_utf8() {
+    fn initialize_selects_utf16_when_client_also_offers_utf8()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let params = json!({
             "capabilities": {
@@ -1595,8 +1596,8 @@ mod tests {
             }
         });
 
-        let result = server.handle_initialize(Some(params)).expect("initialize");
-        let caps = result.as_ref().and_then(|v| v.get("capabilities")).expect("capabilities");
+        let result = server.handle_initialize(Some(params))?;
+        let caps = result.as_ref().and_then(|v| v.get("capabilities")).ok_or("capabilities")?;
         assert_eq!(caps.get("positionEncoding"), Some(&json!("utf-16")));
         assert_eq!(caps.pointer("/textDocumentSync/change"), Some(&json!(1)));
         assert!(
@@ -1606,10 +1607,12 @@ mod tests {
             ),
             "stored encoding must match advertised utf-16"
         );
+        Ok(())
     }
 
     #[test]
-    fn initialize_accepts_utf16_when_it_is_first_supported_position_encoding() {
+    fn initialize_accepts_utf16_when_it_is_first_supported_position_encoding()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let params = json!({
             "capabilities": {
@@ -1619,7 +1622,7 @@ mod tests {
             }
         });
 
-        let _ = server.handle_initialize(Some(params)).expect("initialize");
+        let _ = server.handle_initialize(Some(params))?;
 
         assert!(
             matches!(
@@ -1628,10 +1631,12 @@ mod tests {
             ),
             "position encoding must stay utf-16 when the client lists it first"
         );
+        Ok(())
     }
 
     #[test]
-    fn initialize_rejects_position_encodings_with_no_utf16() {
+    fn initialize_rejects_position_encodings_with_no_utf16()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let params = json!({
             "capabilities": {
@@ -1643,10 +1648,11 @@ mod tests {
 
         let err = match server.handle_initialize(Some(params)) {
             Err(err) => err,
-            Ok(_) => panic!("lists without utf-16 must fail initialize"),
+            Ok(_) => return Err("lists without utf-16 must fail initialize".into()),
         };
         assert_eq!(err.code, -32602);
         assert!(err.message.contains("UTF-16"), "{}", err.message);
+        Ok(())
     }
 
     #[test]
