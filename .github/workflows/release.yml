@@ -4,16 +4,33 @@ name: Release
 # Cost: ~$0.50 per release (across all platforms)
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
         description: 'Release tag (e.g., v<0.x.y>)'
         required: true
         type: string
+      expected_sha:
+        description: 'Exact validated 40-hex release subject from orchestration'
+        required: true
+        type: string
       prerelease:
         description: 'Mark this as a prerelease'
+        required: false
+        type: boolean
+        default: false
+      skip_crates:
+        description: 'Do not dispatch crates.io publication'
+        required: false
+        type: boolean
+        default: false
+      skip_extension:
+        description: 'Do not dispatch editor-registry publication'
+        required: false
+        type: boolean
+        default: false
+      skip_docker:
+        description: 'Do not dispatch container publication'
         required: false
         type: boolean
         default: false
@@ -45,11 +62,25 @@ jobs:
         id: meta
         env:
           TAG_INPUT: ${{ github.event.inputs.tag }}
+          EXPECTED_SHA: ${{ github.event.inputs.expected_sha }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           PRERELEASE_INPUT: ${{ github.event.inputs.prerelease }}
         run: |
           set -euo pipefail
+          if ! [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            printf '::error::Expected release source SHA is malformed\n'
+            exit 1
+          fi
+          if [ "$GITHUB_SHA" != "$EXPECTED_SHA" ]; then
+            printf '::error::Child workflow resolved another source SHA: expected %s, got %s\n' "$EXPECTED_SHA" "$GITHUB_SHA"
+            exit 1
+          fi
+          if [ "$REF_TYPE" != "branch" ] || [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            printf '::error::Release candidate must start at the exact default-branch ref, got %s/%s\n' "$REF_TYPE" "$REF_NAME"
+            exit 1
+          fi
           TAG="$TAG_INPUT"
           if [ -z "$TAG" ] && [ "$REF_TYPE" = "tag" ]; then
             TAG="$REF_NAME"
@@ -131,6 +162,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Reject an occupied release tag
+        shell: bash
+        env:
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          refs="$(git ls-remote --tags origin "refs/tags/$TAG")"
+          if [ -n "$refs" ]; then
+            printf '::error::Release tag already exists: %s\n' "$TAG"
+            exit 1
+          fi
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
@@ -260,6 +303,23 @@ jobs:
           printf 'ASSET=%s%s\n' "$PKG_NAME" "$EXT" >> "$GITHUB_ENV"
           printf 'PKG_NAME=%s\n' "$PKG_NAME" >> "$GITHUB_ENV"
 
+      - name: Bind post-strip package members to validated build evidence
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release_package_evidence.py \
+            --receipt target/release-identity/release-build-receipt.json \
+            --package-dir "$PKG_NAME" \
+            --archive "$ASSET" \
+            --source-sha "$SOURCE_SHA" \
+            --version "$VERSION" \
+            --target "$TARGET" \
+            --output target/release-identity/release-package-evidence.json
+
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -275,17 +335,21 @@ jobs:
             target/release-identity/release-topology.json
             target/release-identity/release-build-identity.json
             target/release-identity/release-build-receipt.json
+            target/release-identity/release-package-evidence.json
           if-no-files-found: error
           retention-days: 90
 
-  release:
-    name: Create Release
+  candidate:
+    name: Build terminal release candidate
     needs: [build, release-metadata]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
-      actions: write
-      contents: write
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
 
     steps:
       - name: Checkout
@@ -304,18 +368,33 @@ jobs:
           pattern: perllsp-*
           path: artifacts
 
+      - name: Download exact build identity evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-build-identity-*
+          path: candidate/evidence
+
       - name: Display structure of downloaded files
         run: ls -R artifacts
 
       - name: Generate consolidated SHA256SUMS
         run: |
           set -euo pipefail
-          cd artifacts
-          find . -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0 | \
+          mkdir -p candidate/dist
+          declare -A ARCHIVE_NAMES=()
+          while IFS= read -r -d '' archive; do
+            name=$(basename "$archive")
+            if [ -n "${ARCHIVE_NAMES[$name]:-}" ]; then
+              printf '::error::Duplicate archive filename: %s\n' "$name"
+              exit 1
+            fi
+            ARCHIVE_NAMES[$name]=1
+            cp "$archive" candidate/dist/
+          done < <(find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0)
+          cd candidate/dist
+          find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0 | \
             sort -z | \
-            xargs -0 sha256sum | \
-            sed 's|  \./[^/]*/|  |' > ../SHA256SUMS
-          cd ..
+            xargs -0 sha256sum | sed 's|  \./|  |' > SHA256SUMS
           cat SHA256SUMS
 
       - name: Verify release archives ship the DAP binary
@@ -326,11 +405,8 @@ jobs:
           # Flatten the per-artifact download tree into a single dist/ dir that
           # holds every archive plus the consolidated SHA256SUMS, then enforce
           # the downstream DAP contract (perl-dap present in every archive).
-          mkdir -p dist
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} dist/ \;
-          cp SHA256SUMS dist/
           cargo xtask release artifact-check \
-            --dist dist \
+            --dist candidate/dist \
             --version "$VERSION"
 
       - name: Verify curated release notes exist
@@ -361,58 +437,293 @@ jobs:
           cat release_notes.md
           echo "--- /release_notes.md ---"
 
-      # Preflight before anything irreversible. Installing cargo-sbom is the
-      # part that can fail on a transient registry error, and the SBOM step now
-      # fails hard rather than warning. Running the install before the Release
-      # is created means such a failure aborts the job while nothing has been
-      # published yet, instead of leaving a public Release with no SBOM asset
-      # and a red job that cannot be cleanly re-run.
-      #
-      # Intentionally ungated, unlike the Release steps below which are gated on
-      # `workflow_dispatch`. The previous combined "Generate SBOM" step already
-      # ran this install unconditionally on every trigger, so leaving it ungated
-      # keeps `release: published` behaviour identical and changes only the
-      # ordering on `workflow_dispatch`. Gating it here would break SBOM
-      # generation on the `release: published` path.
       - name: Install cargo-sbom (preflight)
         run: |
           set -euo pipefail
           cargo install cargo-sbom --version 0.9.1 --locked
 
-      - name: Create GitHub Release
-        if: github.event_name == 'workflow_dispatch'
+      - name: Generate and validate nonempty SPDX SBOM
+        run: |
+          set -euo pipefail
+          cargo sbom --output-format spdx_json_2_3 > candidate/dist/sbom-spdx.json
+          test -s candidate/dist/sbom-spdx.json
+
+      - name: Build terminal artifact manifest
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cp release_notes.md candidate/release_notes.md
+          python3 scripts/release_terminal_manifest.py \
+            --candidate candidate \
+            --source-sha "$SOURCE_SHA" \
+            --tag "$TAG"
+          python3 scripts/release_terminal_manifest.py \
+            --candidate candidate \
+            --source-sha "$SOURCE_SHA" \
+            --tag "$TAG" \
+            --check
+
+      - name: Attest exact terminal candidate subjects
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-checksums: candidate/attestation-subjects.sha256
+
+      - name: Upload terminal candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-terminal-candidate
+          path: candidate
+          if-no-files-found: error
+          retention-days: 7
+
+  # A single, read-only fan-in is the eligibility boundary for every public
+  # mutation below.  Keeping this separate from the GitHub Release job makes
+  # the ordering visible to GitHub's job graph (and to the structural tests),
+  # rather than relying on a shell step having completed successfully.
+  publisher-eligibility:
+    name: Establish publisher eligibility
+    needs: [candidate, release-metadata]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      manifest_sha256: ${{ steps.bind.outputs.manifest_sha256 }}
+      candidate_run_id: ${{ steps.bind.outputs.candidate_run_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download terminal candidate authority
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-terminal-candidate
+          path: candidate
+
+      - name: Bind and seal terminal candidate authority
+        id: bind
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+          CANDIDATE_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release_terminal_manifest.py \
+            --candidate candidate \
+            --source-sha "$SOURCE_SHA" \
+            --tag "$TAG" \
+            --check
+          test -s candidate/dist/release-terminal-manifest.json
+          test -s candidate/attestation-subjects.sha256
+          manifest_sha256="$(sha256sum candidate/dist/release-terminal-manifest.json | awk '{print $1}')"
+          test "$(jq -r '.source_sha' candidate/dist/release-terminal-manifest.json)" = "$SOURCE_SHA"
+          printf 'manifest_sha256=%s\n' "$manifest_sha256" >> "$GITHUB_OUTPUT"
+          printf 'candidate_run_id=%s\n' "$CANDIDATE_RUN_ID" >> "$GITHUB_OUTPUT"
+          printf 'Publisher eligibility sealed for %s at run %s (manifest sha256:%s).\n' \
+            "$SOURCE_SHA" "$CANDIDATE_RUN_ID" "$manifest_sha256"
+
+  publish-release:
+    name: Publish terminal GitHub Release candidate
+    needs: [candidate, publisher-eligibility, release-metadata]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    env:
+      STRUCTURAL_PROOF_BOUNDARY: 'Hosted zero-public-mutation remains NOT_PROVEN until #8576 runtime rehearsal'
+
+    # Local tests prove only dependency-graph reachability. Hosted zero-public-
+    # mutation remains NOT_PROVEN until the safe runtime rehearsal owned by #8576.
+
+    steps:
+      - name: Checkout exact release subject validator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.inputs.expected_sha }}
+          persist-credentials: false
+
+      - name: Download terminal candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-terminal-candidate
+          path: candidate
+
+      - name: Bind terminal manifest to this publication subject
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release_terminal_manifest.py \
+            --candidate candidate \
+            --source-sha "$SOURCE_SHA" \
+            --tag "$TAG" \
+            --check
+
+      - name: Atomically create exact release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/release-tag-authority
+          # Capture through a status-checked substitution: a process
+          # substitution would hide a paginated-request failure and let the
+          # gate validate an incomplete ruleset list.
+          ruleset_ids_json="$(gh api --paginate \
+            "/repos/${GITHUB_REPOSITORY}/rulesets" \
+            --jq '.[] | select(.name == "release-tags" and .target == "tag") | .id')"
+          mapfile -t ruleset_ids <<< "$ruleset_ids_json"
+          if [ "${#ruleset_ids[@]}" -ne 1 ]; then
+            printf '::error::Expected exactly one active release-tags ruleset, found %s\n' "${#ruleset_ids[@]}"
+            exit 1
+          fi
+          gh api "/repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_ids[0]}" \
+            > target/release-tag-authority/ruleset.json
+          python3 scripts/release_tag_authority.py \
+            --ruleset target/release-tag-authority/ruleset.json \
+            --tag "$TAG" \
+            --source-sha "$SOURCE_SHA" \
+            --repository "$GITHUB_REPOSITORY"
+          if ! gh api -X POST "/repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${TAG}" \
+              -f sha="$SOURCE_SHA" \
+              > target/release-tag-authority/created-ref.json \
+              2> target/release-tag-authority/post-error.log; then
+            # Only a 422 already-exists conflict may fall back to validating
+            # the pre-existing ref (safe-to-retry). Any other POST failure —
+            # 5xx, auth, validation — must fail the step so it is not masked
+            # as "tag already exists".
+            if ! grep -q "HTTP 422" target/release-tag-authority/post-error.log; then
+              cat target/release-tag-authority/post-error.log >&2
+              printf '::error::Tag creation failed for a non-conflict reason: %s\n' "$TAG"
+              exit 1
+            fi
+            gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" \
+              > target/release-tag-authority/created-ref.json
+          fi
+          python3 scripts/release_tag_authority.py \
+            --ruleset target/release-tag-authority/ruleset.json \
+            --ref target/release-tag-authority/created-ref.json \
+            --tag "$TAG" \
+            --source-sha "$SOURCE_SHA" \
+            --repository "$GITHUB_REPOSITORY"
+
+      - name: Revalidate immutable tag currentness before public release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Capture through a status-checked substitution: a process
+          # substitution would hide a paginated-request failure and let the
+          # gate validate an incomplete ruleset list.
+          ruleset_ids_json="$(gh api --paginate \
+            "/repos/${GITHUB_REPOSITORY}/rulesets" \
+            --jq '.[] | select(.name == "release-tags" and .target == "tag") | .id')"
+          mapfile -t ruleset_ids <<< "$ruleset_ids_json"
+          if [ "${#ruleset_ids[@]}" -ne 1 ]; then
+            printf '::error::Expected exactly one active release-tags ruleset, found %s\n' "${#ruleset_ids[@]}"
+            exit 1
+          fi
+          gh api "/repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_ids[0]}" \
+            > target/release-tag-authority/ruleset-current.json
+          gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" \
+            > target/release-tag-authority/ref-current.json
+          python3 scripts/release_tag_authority.py \
+            --ruleset target/release-tag-authority/ruleset-current.json \
+            --ref target/release-tag-authority/ref-current.json \
+            --tag "$TAG" \
+            --source-sha "$SOURCE_SHA" \
+            --repository "$GITHUB_REPOSITORY"
+
+      - name: Create GitHub Release from terminal candidate
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          files: |
-            artifacts/*/*
-            SHA256SUMS
-          body_path: release_notes.md
+          files: candidate/dist/*
+          body_path: candidate/release_notes.md
           draft: false
           prerelease: ${{ needs.release-metadata.outputs.prerelease == 'true' }}
           tag_name: ${{ needs.release-metadata.outputs.tag }}
-          generate_release_notes: true
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: false
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate SBOM
+      - name: Verify exact release tag currentness
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+          SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          cargo sbom --output-format spdx_json_2_3 > sbom-spdx.json
-          test -s sbom-spdx.json
+          OBSERVED_SHA=$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha')
+          if [ "$OBSERVED_SHA" != "$SOURCE_SHA" ]; then
+            printf '::error::Release tag currentness changed: expected %s, got %s\n' "$SOURCE_SHA" "$OBSERVED_SHA"
+            exit 1
+          fi
 
-      - name: Upload SBOM as release asset
-        if: github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          files: sbom-spdx.json
-          tag_name: ${{ needs.release-metadata.outputs.tag }}
+  dispatch-publishers:
+    name: Dispatch admitted downstream publishers
+    needs: [publish-release, publisher-eligibility, release-metadata]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+
+    steps:
+      - name: Dispatch primary publishers
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+          EXPECTED_SHA: ${{ github.sha }}
+          CANDIDATE_RUN_ID: ${{ needs.publisher-eligibility.outputs.candidate_run_id }}
+          MANIFEST_SHA256: ${{ needs.publisher-eligibility.outputs.manifest_sha256 }}
+          SKIP_CRATES: ${{ github.event.inputs.skip_crates }}
+          SKIP_EXTENSION: ${{ github.event.inputs.skip_extension }}
+          SKIP_DOCKER: ${{ github.event.inputs.skip_docker }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$CANDIDATE_RUN_ID" | grep -Eq '^[0-9]+$'
+          printf '%s' "$MANIFEST_SHA256" | grep -Eq '^[0-9a-f]{64}$'
+          if [ "$SKIP_CRATES" != "true" ]; then
+            gh api -X POST \
+              /repos/$REPOSITORY/actions/workflows/publish-crates.yml/dispatches \
+              -f ref="$TAG" -f inputs[version]="$VERSION" -F inputs[dry_run]="false" \
+              -f inputs[expected_sha]="$EXPECTED_SHA" -f inputs[candidate_run_id]="$CANDIDATE_RUN_ID" \
+              -f inputs[manifest_sha256]="$MANIFEST_SHA256"
+          fi
+          if [ "$SKIP_EXTENSION" != "true" ]; then
+            gh api -X POST \
+              /repos/$REPOSITORY/actions/workflows/publish-extension.yml/dispatches \
+              -f ref="$TAG" -f inputs[version]="$VERSION" -f inputs[expected_sha]="$EXPECTED_SHA" \
+              -f inputs[candidate_run_id]="$CANDIDATE_RUN_ID" -f inputs[manifest_sha256]="$MANIFEST_SHA256"
+          fi
+          if [ "$SKIP_DOCKER" != "true" ]; then
+            gh api -X POST \
+              /repos/$REPOSITORY/actions/workflows/docker-publish.yml/dispatches \
+              -f ref="$TAG" -f inputs[version]="$VERSION" -F inputs[push]="true" \
+              -f inputs[expected_sha]="$EXPECTED_SHA" -f inputs[candidate_run_id]="$CANDIDATE_RUN_ID" \
+              -f inputs[manifest_sha256]="$MANIFEST_SHA256"
+          fi
 
       - name: Dispatch downstream package refresh workflows
-        if: github.event_name == 'workflow_dispatch' && needs.release-metadata.outputs.prerelease != 'true'
+        if: needs.release-metadata.outputs.prerelease != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
@@ -432,7 +743,7 @@ jobs:
           done
 
       - name: Record prerelease package refresh disposition
-        if: github.event_name == 'workflow_dispatch' && needs.release-metadata.outputs.prerelease == 'true'
+        if: needs.release-metadata.outputs.prerelease == 'true'
         env:
           RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
         run: |

@@ -10,6 +10,18 @@ on:
         description: "Version to publish (e.g., 0.x.y)"
         required: true
         type: string
+      expected_sha:
+        description: "Exact candidate source SHA approved by release eligibility"
+        required: true
+        type: string
+      candidate_run_id:
+        description: "Candidate workflow run that produced the terminal manifest"
+        required: true
+        type: string
+      manifest_sha256:
+        description: "SHA256 of the terminal candidate manifest"
+        required: true
+        type: string
 
 concurrency:
   group: publish-extension-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
@@ -31,10 +43,38 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
+      actions: read
       contents: none
     outputs:
       approved_sha: ${{ steps.anchor.outputs.approved_sha }}
     steps:
+      - name: Verify release eligibility handoff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.event.inputs.expected_sha }}
+          MANIFEST_SHA256: ${{ github.event.inputs.manifest_sha256 }}
+          CANDIDATE_RUN_ID: ${{ github.event.inputs.candidate_run_id }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$MANIFEST_SHA256" | grep -Eq '^[0-9a-f]{64}$'
+          printf '%s' "$CANDIDATE_RUN_ID" | grep -Eq '^[0-9]+$'
+          run_json="$(gh run view "$CANDIDATE_RUN_ID" --repo "$GITHUB_REPOSITORY" --json workflowName,headSha,status,conclusion,event)"
+          jq -e --arg expected "$EXPECTED_SHA" '.workflowName == "Release" and .headSha == $expected and .status == "completed" and .conclusion == "success" and .event == "workflow_dispatch"' <<< "$run_json" >/dev/null
+          gh run download "$CANDIDATE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" --name release-terminal-candidate --dir release-candidate
+          test -s release-candidate/dist/release-terminal-manifest.json
+          actual_manifest_sha256="$(sha256sum release-candidate/dist/release-terminal-manifest.json | awk '{print $1}')"
+          test "$actual_manifest_sha256" = "$MANIFEST_SHA256"
+          test "$(jq -r '.source_sha' release-candidate/dist/release-terminal-manifest.json)" = "$EXPECTED_SHA"
+          # Bind the sealed manifest's release tag to the dispatched version:
+          # prepare-vsix publishes the caller's version, so a manifest sealed
+          # for another tag must not be admitted even when its source_sha
+          # matches. The digest binding above already pins schema and status.
+          test "$(jq -r '.tag' release-candidate/dist/release-terminal-manifest.json)" = "v$VERSION"
+          echo "Accepted release eligibility handoff for $EXPECTED_SHA from run $CANDIDATE_RUN_ID."
       - name: Resolve trusted anchors server-side
         id: anchor
         env:
