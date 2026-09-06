@@ -30,6 +30,7 @@ use crate::utils::{load_publish_allowlist, project_root, run_cargo_metadata};
 use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
 
@@ -155,10 +156,16 @@ fn load_api_ratchet_inputs(root: &Path, meta: &NoDepsMetadata) -> Result<ApiRatc
         .wrap_err_with(|| format!("reading {}", baseline_dir.display()))?
     {
         let entry = entry?;
-        let file_name = entry.file_name().to_string_lossy().into_owned();
-        let Some(crate_name) = file_name.strip_suffix(".txt") else {
+        let path = entry.path();
+        if path.extension() != Some(OsStr::new("txt")) {
             continue;
-        };
+        }
+        // A baseline whose stem is not UTF-8 cannot name a crate; fail closed
+        // rather than skipping it, so an orphan cannot hide behind its name.
+        let crate_name = path
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .ok_or_else(|| eyre!("non-UTF-8 baseline file name: {}", path.display()))?;
         if crate_name == "ratchet-crates" {
             continue;
         }
