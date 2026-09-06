@@ -7,21 +7,14 @@
 //! (ordinary and prefix slices, arrow element access) are pinned as controls so
 //! they can never satisfy a dedicated postfix expectation.
 //!
-//! Span contracts are recorded per row. Slice forms span their full text. The
-//! arrow star-form Unary nodes span their full operator-plus-operand text.
+//! Every matrix row spans its full operator-plus-operand text. Star-form
+//! Unaries use the same full-text contract as the slice rows (#13891).
 
 use perl_parser::{Node, NodeKind, Parser};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-/// How the public AST spans a matrix row.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SpanContract {
-    /// The node spans the operator and its operand.
-    Full,
-}
 
 #[derive(Clone, Copy)]
 enum ExpectedShape<'a> {
@@ -33,56 +26,31 @@ enum ExpectedShape<'a> {
 #[derive(Clone, Copy)]
 struct MatrixCase<'a> {
     text: &'a str,
-    span: SpanContract,
     shape: ExpectedShape<'a>,
 }
 
 const MATRIX: &[MatrixCase<'static>] = &[
-    MatrixCase {
-        text: "$sref->$*",
-        span: SpanContract::Full,
-        shape: ExpectedShape::Unary { op: "->$*", receiver: "$sref" },
-    },
+    MatrixCase { text: "$sref->$*", shape: ExpectedShape::Unary { op: "->$*", receiver: "$sref" } },
     MatrixCase {
         text: "$aref->$#*",
-        span: SpanContract::Full,
         shape: ExpectedShape::Unary { op: "->$#*", receiver: "$aref" },
     },
-    MatrixCase {
-        text: "$aref->@*",
-        span: SpanContract::Full,
-        shape: ExpectedShape::Unary { op: "->@*", receiver: "$aref" },
-    },
+    MatrixCase { text: "$aref->@*", shape: ExpectedShape::Unary { op: "->@*", receiver: "$aref" } },
     MatrixCase {
         text: "$aref->@[0, 2]",
-        span: SpanContract::Full,
         shape: ExpectedShape::Binary { op: "->@[]", receiver: "$aref", selector: "0, 2" },
     },
     MatrixCase {
         text: "$href->@{'alpha', 'beta'}",
-        span: SpanContract::Full,
         shape: ExpectedShape::HashSlice { receiver: "$href", selector: "'alpha', 'beta'" },
     },
-    MatrixCase {
-        text: "$href->%*",
-        span: SpanContract::Full,
-        shape: ExpectedShape::Unary { op: "->%*", receiver: "$href" },
-    },
+    MatrixCase { text: "$href->%*", shape: ExpectedShape::Unary { op: "->%*", receiver: "$href" } },
     MatrixCase {
         text: "$href->%{qw(alpha beta)}",
-        span: SpanContract::Full,
         shape: ExpectedShape::Binary { op: "->%{}", receiver: "$href", selector: "qw(alpha beta)" },
     },
-    MatrixCase {
-        text: "$cref->&*",
-        span: SpanContract::Full,
-        shape: ExpectedShape::Unary { op: "->&*", receiver: "$cref" },
-    },
-    MatrixCase {
-        text: "$gref->**",
-        span: SpanContract::Full,
-        shape: ExpectedShape::Unary { op: "->**", receiver: "$gref" },
-    },
+    MatrixCase { text: "$cref->&*", shape: ExpectedShape::Unary { op: "->&*", receiver: "$cref" } },
+    MatrixCase { text: "$gref->**", shape: ExpectedShape::Unary { op: "->**", receiver: "$gref" } },
 ];
 
 /// A repeated marker: the same postfix text must bind twice, never once.
@@ -108,9 +76,8 @@ fn project_fixture_is_discovered_and_emits_the_exact_postfix_matrix() -> TestRes
 
     let ast = parse_clean(&source)?;
     for case in MATRIX {
-        let node = exact_matrix_node(&ast, &source, case)?;
+        let node = exact_node(&ast, &source, case.text)?;
         assert_shape(node, &source, case.shape)?;
-        pin_span_contract(node, &source, case)?;
         let expected_children = match case.shape {
             ExpectedShape::Unary { receiver, .. } => vec![receiver],
             ExpectedShape::Binary { receiver, selector, .. }
@@ -139,11 +106,9 @@ fn matrix_geometry_is_byte_exact_under_crlf_source() -> TestResult {
     let ast = parse_clean(&source)?;
 
     for case in MATRIX {
-        let node = exact_matrix_node(&ast, &source, case)?;
-        if case.span == SpanContract::Full {
-            assert_eq!(node_source(node, &source), Some(case.text));
-        }
-        pin_span_contract(node, &source, case)?;
+        let node = exact_node(&ast, &source, case.text)?;
+        assert_eq!(node_source(node, &source), Some(case.text));
+        assert_shape(node, &source, case.shape)?;
     }
 
     let repeated = collect_all_spanning(&ast, &source, REPEATED_MARKER);
@@ -164,40 +129,6 @@ fn parse_clean(source: &str) -> Result<Node, String> {
         ));
     }
     Ok(output.ast)
-}
-
-/// Bind exactly one public AST node for a matrix row.
-///
-/// Slice rows bind by their full source text. Star rows bind by operator
-/// variant plus the exact receiver span, so each star-form Unary node remains
-/// structurally bound even when its span includes the operator.
-fn exact_matrix_node<'a>(
-    ast: &'a Node,
-    source: &str,
-    case: &MatrixCase<'_>,
-) -> Result<&'a Node, String> {
-    let found = match case.shape {
-        ExpectedShape::Unary { op, receiver } => {
-            let mut found = Vec::new();
-            collect_star_unary(ast, source, op, receiver, &mut found);
-            found
-        }
-        ExpectedShape::Binary { .. } | ExpectedShape::HashSlice { .. } => {
-            collect_all_spanning(ast, source, case.text)
-        }
-    };
-    if found.len() != 1 {
-        return Err(format!(
-            "row {:?} expected exactly one binding, found {}\n{}",
-            case.text,
-            found.len(),
-            ast.to_sexp()
-        ));
-    }
-    found
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("the unique node for {:?} was not retained", case.text))
 }
 
 fn collect_all_spanning<'a>(node: &'a Node, source: &str, text: &str) -> Vec<&'a Node> {
@@ -231,17 +162,6 @@ fn collect_star_unary<'a>(
     for child in node.children() {
         collect_star_unary(child, source, op, receiver, found);
     }
-}
-
-fn pin_span_contract(node: &Node, source: &str, case: &MatrixCase<'_>) -> Result<(), String> {
-    match (case.span, &node.kind) {
-        (SpanContract::Full, _) => {
-            if node_source(node, source) != Some(case.text) {
-                return Err(format!("row {:?} lost its full-text span", case.text));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn assert_shape(node: &Node, source: &str, expected: ExpectedShape<'_>) -> Result<(), String> {
