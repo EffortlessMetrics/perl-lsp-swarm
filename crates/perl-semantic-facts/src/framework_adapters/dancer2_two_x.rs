@@ -467,36 +467,38 @@ pub fn parse_dancer2_two_x_import_args(args: &[String]) -> Dancer2TwoXImportEvid
     // Pass 1 mirrors the pinned import loop: filter no-op tags and
     // `:nopragmas`, expand `!keyword` into `(!keyword, 1)` pairs, and collect
     // the final argument list.
-    let mut final_args: Vec<String> = Vec::new();
+    let mut final_args: Vec<ImportToken> = Vec::new();
     let mut positional_index = 0usize;
     for arg in args {
         for word in normalize_import_tokens(arg) {
             positional_index += 1;
-            if DANCER2_TWO_X_NOOP_IMPORT_TAGS.contains(&word.as_str()) {
-                evidence.no_op_tags.push(word);
+            if DANCER2_TWO_X_NOOP_IMPORT_TAGS.contains(&word.text.as_str()) {
+                evidence.no_op_tags.push(word.text);
                 continue;
             }
-            if word == DANCER2_TWO_X_NOPRAGMAS_TAG {
+            if word.text == DANCER2_TWO_X_NOPRAGMAS_TAG {
                 evidence.nopragmas = true;
                 continue;
             }
             // Perl consumes the `use MODULE VERSION` slot before `import`
             // runs; the parser reports a v-string spelling there as an
-            // ordinary argument (#14277). Only the first positional token can
-            // occupy that slot.
-            if positional_index == 1
-                && word.len() > 1
-                && word.starts_with('v')
-                && word[1..].chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
+            // ordinary argument (#14277). Only an UNQUOTED first positional
+            // token can occupy that slot — a quoted `'v2.01'` is a literal
+            // string import argument, not a version (#14408 review).
+            if word.quoting == TokenQuoting::Unquoted
+                && positional_index == 1
+                && word.text.len() > 1
+                && word.text.starts_with('v')
+                && word.text[1..].chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
             {
-                evidence.version_slot_spellings.push(word);
+                evidence.version_slot_spellings.push(word.text);
                 continue;
             }
-            if word.starts_with('!') {
+            if word.text.starts_with('!') {
                 // Upstream pairs every `!`-prefixed argument with a literal 1,
                 // even a bare `!`.
                 final_args.push(word);
-                final_args.push("1".to_string());
+                final_args.push(ImportToken::unquoted("1"));
                 continue;
             }
             final_args.push(word);
@@ -515,12 +517,12 @@ pub fn parse_dancer2_two_x_import_args(args: &[String]) -> Dancer2TwoXImportEvid
     while index < final_args.len() {
         let key = &final_args[index];
         let value = final_args.get(index + 1);
-        match (key.as_str(), value) {
+        match (key.text.as_str(), value) {
             ("appname", Some(value)) => {
-                evidence.appname = Some(option_value(value).map_name());
+                evidence.appname = Some(option_value(&value.text, value.quoting).map_name());
             }
             ("dsl", Some(value)) => {
-                evidence.dsl = Some(option_value(value).map_dsl());
+                evidence.dsl = Some(option_value(&value.text, value.quoting).map_dsl());
             }
             (key, _) if key.starts_with('!') => {
                 push_exclusion(&mut evidence, key[1..].to_string());
@@ -565,12 +567,22 @@ impl OptionValue {
     }
 }
 
-fn option_value(token: &str) -> OptionValue {
-    let dynamic = token.starts_with('$')
-        || token.starts_with('@')
-        || token.starts_with('%')
-        || token.starts_with('\\')
-        || token.contains('(');
+fn option_value(token: &str, quoting: TokenQuoting) -> OptionValue {
+    // `qw` words and single-quoted strings never interpolate: their sigils
+    // are literal text (#14408 review).
+    if matches!(quoting, TokenQuoting::Qw | TokenQuoting::Single) {
+        return OptionValue::Literal(token.to_string());
+    }
+    let dynamic = if matches!(quoting, TokenQuoting::Double) {
+        // Double quotes interpolate sigils anywhere in the text.
+        token.contains('$') || token.contains('@') || token.contains('%') || token.contains('\\')
+    } else {
+        token.starts_with('$')
+            || token.starts_with('@')
+            || token.starts_with('%')
+            || token.starts_with('\\')
+            || token.contains('(')
+    };
     if dynamic {
         return OptionValue::Dynamic;
     }
@@ -578,26 +590,97 @@ fn option_value(token: &str) -> OptionValue {
     OptionValue::Literal(token.to_string())
 }
 
-/// Expand one raw parser argument token into the import-loop word(s) it
-/// contributes, dropping list separators the real `import` never receives.
-fn normalize_import_tokens(arg: &str) -> Vec<String> {
+/// Closing delimiter for a Perl quote-like opening delimiter: the four
+/// nested pairs, plus any other punctuation used symmetrically (`/`, `|`,
+/// `!`, `#`, `,`...).
+fn closing_delimiter(open: char) -> Option<char> {
+    match open {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        '<' => Some('>'),
+        c if !c.is_alphanumeric() && !c.is_whitespace() => Some(c),
+        _ => None,
+    }
+}
+
+/// Extract the body of a delimited quote-like construct (`qw//`, `q{}`,
+/// `qq()`...). Returns the inner text, the opening delimiter, and whatever
+/// follows the closing delimiter. Nested identical opens increase depth; a
+/// symmetric delimiter is its own close.
+fn split_delimited_quote_like<'a>(token: &'a str, kind: &str) -> Option<(String, char, &'a str)> {
+    let rest = token.strip_prefix(kind)?;
+    let mut characters = rest.chars();
+    let open = characters.next()?;
+    let close = closing_delimiter(open)?;
+    let symmetric = open == close;
+    let after_open = rest.strip_prefix(open)?;
+    let mut depth = 0usize;
+    for (index, character) in after_open.char_indices() {
+        if character == open && !symmetric {
+            depth += 1;
+            continue;
+        }
+        if character == close {
+            if depth == 0 {
+                let inner = &after_open[..index];
+                let rest = &after_open[index + close.len_utf8()..];
+                return Some((inner.to_string(), open, rest));
+            }
+            depth -= 1;
+        }
+    }
+    None
+}
+
+/// How a token reached the import list, which decides interpolation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TokenQuoting {
+    /// Bare source token: sigils interpolate, and only an unquoted token can
+    /// occupy the `use MODULE VERSION` slot.
+    Unquoted,
+    /// `'...'` and `q...`: Perl single quotes never interpolate.
+    Single,
+    /// `"..."` and `qq...`: Perl double quotes interpolate sigils.
+    Double,
+    /// A `qw//` word: never interpolates and can never be a version slot.
+    Qw,
+}
+
+#[derive(Clone, Debug)]
+struct ImportToken {
+    text: String,
+    quoting: TokenQuoting,
+}
+
+impl ImportToken {
+    fn unquoted(text: impl Into<String>) -> Self {
+        Self { text: text.into(), quoting: TokenQuoting::Unquoted }
+    }
+}
+
+fn normalize_import_tokens(arg: &str) -> Vec<ImportToken> {
     let token = arg.trim();
     if token.is_empty() || matches!(token, "," | "=>" | "(" | ")" | ";") {
         return Vec::new();
     }
     // `qw(...)` arrives as one parser token; upstream receives its words as
-    // individual import arguments.
-    if let Some(stripped) = token.strip_prefix("qw").map(str::trim) {
-        let inner = stripped
-            .strip_prefix('(')
-            .and_then(|value| value.strip_suffix(')'))
-            .or_else(|| stripped.strip_prefix('{').and_then(|value| value.strip_suffix('}')));
-        if let Some(words) = inner {
-            return words.split_whitespace().map(ToString::to_string).collect();
-        }
-        if stripped.is_empty() {
-            // Bare `qw` marker: following tokens are the word list.
-            return Vec::new();
+    // individual import arguments. Every legal delimiter pair (and any
+    // symmetric punctuation) is honored — qw words never interpolate and can
+    // never occupy the VERSION slot.
+    if let Some((inner, _open, _rest)) = split_delimited_quote_like(token, "qw") {
+        return inner
+            .split_whitespace()
+            .map(|word| ImportToken { text: word.to_string(), quoting: TokenQuoting::Qw })
+            .collect();
+    }
+    // Quote-like `q{}`/`qq()` forms: `q` never interpolates, `qq` does. A
+    // trailing `=> value` in the same parser token re-normalizes.
+    for (kind, quoting) in [("q", TokenQuoting::Single), ("qq", TokenQuoting::Double)] {
+        if let Some((inner, _open, rest)) = split_delimited_quote_like(token, kind) {
+            let mut tokens = vec![ImportToken { text: inner, quoting }];
+            tokens.extend(normalize_import_tokens(rest));
+            return tokens;
         }
     }
     // Unwrap one level of quoting: `'!get'` reaches `import` as the string
@@ -605,10 +688,16 @@ fn normalize_import_tokens(arg: &str) -> Vec<String> {
     let unquoted = token
         .strip_prefix('\'')
         .and_then(|value| value.strip_suffix('\''))
-        .or_else(|| token.strip_prefix('"').and_then(|value| value.strip_suffix('"')));
+        .map(|inner| (inner, TokenQuoting::Single))
+        .or_else(|| {
+            token
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+                .map(|inner| (inner, TokenQuoting::Double))
+        });
     match unquoted {
-        Some(inner) => vec![inner.to_string()],
-        None => vec![token.to_string()],
+        Some((inner, quoting)) => vec![ImportToken { text: inner.to_string(), quoting }],
+        None => vec![ImportToken::unquoted(token.to_string())],
     }
 }
 
@@ -1295,5 +1384,105 @@ mod tests {
         assert_eq!(identity, AppNameSelection::Default);
         let identity = dancer2_two_x_application_identity(None, None);
         assert!(matches!(identity, AppNameSelection::Dynamic { .. }));
+    }
+
+    // --- #14408 review round: quoting, delimiters, and version slots -------
+
+    #[test]
+    fn qw_honors_every_legal_delimiter() {
+        for spelling in [
+            "qw(get post put delete)",
+            "qw{get post put delete}",
+            "qw[get post put delete]",
+            "qw<get post put delete>",
+            "qw/get post put delete/",
+            "qw|get post put delete|",
+            "qw!get post put delete!",
+            "qw#get post put delete#",
+        ] {
+            let evidence = parse_dancer2_two_x_import_args(&[spelling.to_string()]);
+            // Bare words pair as unmodeled options; the delimiter proof is
+            // that the exact words came out in order for every delimiter.
+            assert_eq!(
+                evidence.unmodeled_options,
+                vec!["get".to_string(), "put".to_string()],
+                "{spelling}: delimiter must yield the exact words"
+            );
+            assert_eq!(evidence.odd_argument_count, false, "{spelling}: word count");
+        }
+        // The slash delimiter yields the exact words in order (strongest
+        // check: same words, exotic delimiter).
+        let evidence = parse_dancer2_two_x_import_args(&["qw/get post put delete/".to_string()]);
+        assert_eq!(evidence.unmodeled_options, vec!["get".to_string(), "put".to_string()]);
+        assert!(!evidence.odd_argument_count);
+    }
+
+    #[test]
+    fn qw_words_never_occupy_the_version_slot() {
+        // A qw word shaped like a v-string is an import argument, not a
+        // version: the qw quoting marks it as a literal word.
+        let evidence = parse_dancer2_two_x_import_args(&["qw(v2.01 get)".to_string()]);
+        assert!(
+            evidence.version_slot_spellings.is_empty(),
+            "a qw word must not be taken for the VERSION slot: {:?}",
+            evidence.version_slot_spellings
+        );
+    }
+
+    #[test]
+    fn quoted_v_string_is_a_literal_import_argument() {
+        // `'v2.01'` is quoted: it reaches import as a string argument, not a
+        // version slot. A lone argument makes the arity odd — the pinned
+        // upstream contract dies at compile time there.
+        let evidence = parse_dancer2_two_x_import_args(&["'v2.01'".to_string()]);
+        assert!(
+            evidence.version_slot_spellings.is_empty(),
+            "a quoted v-string must not be taken for the VERSION slot: {:?}",
+            evidence.version_slot_spellings
+        );
+        assert!(evidence.odd_argument_count, "one lone argument is odd");
+    }
+
+    #[test]
+    fn unquoted_v_string_still_occupies_the_version_slot() {
+        let evidence = parse_dancer2_two_x_import_args(&["v2.01".to_string(), "get".to_string()]);
+        assert_eq!(evidence.version_slot_spellings, vec!["v2.01".to_string()]);
+    }
+
+    #[test]
+    fn quote_like_exclusions_reach_the_exclusion_list() {
+        // `q{!get}` reaches import as the string `!get` — an exclusion, not an
+        // unmodeled option.
+        let evidence = parse_dancer2_two_x_import_args(&["q{!get}".to_string()]);
+        assert!(
+            evidence.excluded_keywords.contains(&"get".to_string()),
+            "q{{!get}} must exclude get: {:?}",
+            evidence
+        );
+        let evidence = parse_dancer2_two_x_import_args(&["qq(!post)".to_string()]);
+        assert!(
+            evidence.excluded_keywords.contains(&"post".to_string()),
+            "qq(!post) must exclude post: {:?}",
+            evidence
+        );
+    }
+
+    #[test]
+    fn double_quoted_option_values_are_dynamic_single_quoted_are_literal() {
+        let evidence = parse_dancer2_two_x_import_args(
+            &["appname".to_string(), "\"prefix-$app\"".to_string()].to_vec(),
+        );
+        assert!(
+            matches!(evidence.appname, Some(AppNameSelection::Dynamic { .. })),
+            "a double-quoted interpolated value must be dynamic: {:?}",
+            evidence.appname
+        );
+        let evidence =
+            parse_dancer2_two_x_import_args(&["appname".to_string(), "'$app'".to_string()]);
+        assert_eq!(
+            evidence.appname,
+            Some(AppNameSelection::Literal("$app".to_string())),
+            "single quotes never interpolate: the sigil is literal text"
+        );
     }
 }
