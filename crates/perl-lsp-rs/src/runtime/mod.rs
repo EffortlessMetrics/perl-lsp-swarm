@@ -1636,9 +1636,11 @@ impl LspServer {
     }
 
     /// The installed off-lock parse worker, if any. `None` means the
-    /// synchronous fallback path is active.
+    /// synchronous fallback path is active. A pool whose threads have all
+    /// exited is treated the same as no installed worker, so edits cannot be
+    /// accepted into a queue that nobody can drain.
     pub(crate) fn parse_worker(&self) -> Option<Arc<parse_worker::ParseWorker>> {
-        self.parse_worker_handle.lock().clone()
+        self.parse_worker_handle.lock().clone().filter(|worker| worker.is_operational())
     }
 
     /// Install the file watcher debouncer (called from Scheduler::new after Arc wrapping).
@@ -1858,6 +1860,104 @@ mod tests {
             "doc outside all folders must not match any folder",
         );
         assert!(server.config_for_doc(&doc_uri).is_none());
+    }
+
+    #[test]
+    fn parse_worker_selection_falls_back_after_pool_shutdown() {
+        let server = Arc::new(LspServer::new());
+        server.install_default_parse_worker();
+        let worker = server.parse_worker().expect("default parse worker must install");
+
+        worker.test_request_shutdown();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while worker.is_operational() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "parse worker threads did not stop after shutdown"
+            );
+            std::thread::yield_now();
+        }
+
+        assert!(
+            server.parse_worker().is_none(),
+            "a stopped parse worker must select the synchronous fallback"
+        );
+
+        let uri = "file:///shutdown-fallback.pl";
+        server
+            .test_apply_did_open(uri, "my $x = 1;\n", 1)
+            .expect("didOpen must establish the fallback document");
+        server
+            .test_apply_did_change(uri, "my $x = 2;\n", 2)
+            .expect("didChange must parse synchronously after shutdown");
+        let documents = server.documents.lock();
+        let document = documents.get(uri).expect("fallback document must be retained");
+        // didOpen accepts its first snapshot at FIRST_ACCEPTED_DOCUMENT_GENERATION;
+        // the didChange above advances exactly one generation past it. Asserting
+        // the first generation instead would pass when the fallback published
+        // nothing at all, which is the opposite of this test's claim.
+        let changed_generation = crate::state::FIRST_ACCEPTED_DOCUMENT_GENERATION.get() + 1;
+        assert_eq!(
+            document.current_parsed().map(|snapshot| snapshot.generation()),
+            Some(changed_generation),
+            "the synchronous fallback must publish the changed generation"
+        );
+    }
+
+    /// An edit admitted by the real parse worker must carry pending readiness
+    /// for its own generation before the job can publish; otherwise the
+    /// worker's `mark_active_document_parser_accepted` finds no matching entry
+    /// and the client never receives the edit's ready notification (#11675).
+    /// Fails when the per-generation install in `handle_did_change_with_cancellation`
+    /// is removed: the readiness table then holds no entry for the changed
+    /// generation.
+    #[test]
+    fn admitted_async_edit_carries_readiness_for_its_generation() {
+        let server = Arc::new(LspServer::new());
+        server.install_default_parse_worker();
+        assert!(server.parse_worker().is_some(), "default parse worker must install");
+
+        let uri = "file:///async-readiness.pl";
+        server
+            .test_apply_did_open(uri, "my $x = 1;\n", 1)
+            .expect("didOpen must establish the document");
+        assert!(
+            server.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(5)),
+            "didOpen parse must settle"
+        );
+        server
+            .test_apply_did_change(uri, "my $x = 2;\n", 2)
+            .expect("didChange must be admitted by the running worker");
+        assert!(
+            server.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(5)),
+            "didChange parse must settle"
+        );
+
+        let changed_generation = crate::state::FIRST_ACCEPTED_DOCUMENT_GENERATION.get() + 1;
+        let normalized = server.normalize_uri_key(uri);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let observed = loop {
+            let observed = server.test_active_document_readiness(&normalized);
+            match observed {
+                Some((state, generation, _))
+                    if generation == changed_generation && state != "pending_parser" =>
+                {
+                    break Some((state, generation));
+                }
+                _ if std::time::Instant::now() >= deadline => {
+                    break observed.map(|(state, generation, _)| (state, generation));
+                }
+                _ => std::thread::yield_now(),
+            }
+        };
+        let (state, generation) =
+            observed.expect("the admitted edit must own a readiness entry for its generation");
+        assert_eq!(generation, changed_generation, "readiness must track the admitted generation");
+        assert_ne!(
+            state, "pending_parser",
+            "the worker's accepted parse must advance readiness past pending"
+        );
+        assert_ne!(state, "unavailable_terminal", "a clean parse must not be terminal");
     }
 
     #[test]

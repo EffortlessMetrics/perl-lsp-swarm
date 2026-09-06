@@ -1572,6 +1572,23 @@ gates:
       - docs
       - generated
 
+  - name: docs_agents_contract_workflows
+    tier: merge_gate
+    description: "Assert each registered docs/agents contract workflow still exists (deletion cannot silently stop enforcement)"
+    required: true
+    # Invoked as a script, not `python3 -m unittest …`: the shard runner
+    # rejects `-m` as an unsupported nested interpreter command.
+    command: python3 tests/test_docs_agents_contract_workflows.py
+    timeout_seconds: 30
+    retry_count: 0
+    budgets:
+      max_duration_ms: 10000
+    quarantine: false
+    tags:
+      - policy
+      - ci
+      - docs
+
   - name: must_context_check
     tier: merge_gate
     # ADVISORY on landing (#14291). The blocking-failure filter in
@@ -1658,6 +1675,22 @@ gates:
       - policy
       - contract
       - generated
+
+  - name: release_trust_invariants
+    tier: merge_gate
+    description: "Validate policy/release-trust-invariants.v1.json and its generated status projection"
+    required: true
+    command: cargo xtask release-trust-invariants check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+      - release
 
   - name: compiler_proof_policy
     tier: merge_gate

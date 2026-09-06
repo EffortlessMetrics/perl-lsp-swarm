@@ -161,6 +161,7 @@ pub mod release_artifact_check;
 pub mod release_candidate_artifacts;
 pub mod release_evidence;
 pub mod release_notes;
+pub mod release_trust_invariants;
 pub mod release_turnkey;
 pub mod repo_hygiene;
 pub mod repository_topology;

@@ -392,6 +392,22 @@ created = "2026-08-15"
 review_after = "2026-11-15"
 
 [[allow]]
+id = "non-rust-docs-agents-contract-workflows-test"
+path = "tests/test_docs_agents_contract_workflows.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Always-running existence gate for registered docs/agents contract workflows (#14628). Standard-library `unittest` and `tomllib` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 tests/test_docs_agents_contract_workflows.py",
+  "python3 -m unittest tests/test_docs_agents_contract_workflows.py",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
+
+[[allow]]
 id = "non-rust-legacy-authority-banners-test"
 path = "tests/test_legacy_authority_banners.py"
 kind = "control_plane_contract_test"
@@ -1305,6 +1321,22 @@ covered_by = [
 ]
 created = "2026-08-08"
 review_after = "2026-11-08"
+
+[[allow]]
+id = "non-rust-release-trust-invariants-schema"
+path = "schemas/release_trust_invariants.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "JSON Schema for the release_trust_invariants.v1 registry (#9392). The xtask checker enforces closed vocabularies and owner/producer/denominator currentness without consuming live candidate receipts."
+covered_by = [
+  "cargo xtask release-trust-invariants check",
+  "cargo test -p xtask --locked --test release_trust_invariants",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
 
 [[allow]]
 id = "non-rust-release-candidate-artifacts-schema"
