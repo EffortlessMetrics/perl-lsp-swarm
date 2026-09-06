@@ -627,6 +627,7 @@ impl DebugAdapter {
                 thread_id: 1,
                 last_resume_mode: ResumeMode::Continue,
                 stopped_generation: 0,
+                pending_auto_continued_stop: false,
             });
         }
     }
@@ -659,6 +660,7 @@ impl DebugAdapter {
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
             stopped_generation: 0,
+            pending_auto_continued_stop: false,
         });
         Ok(())
     }
@@ -764,6 +766,7 @@ impl DebugAdapter {
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
             stopped_generation: 0,
+            pending_auto_continued_stop: false,
         });
     }
 

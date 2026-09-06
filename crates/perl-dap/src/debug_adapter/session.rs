@@ -22,6 +22,11 @@ pub(super) struct DebugSession {
     /// Monotonic stopped-suspension authority used to prevent old frame ids
     /// from becoming valid again when the debugger reuses a numeric frame id.
     pub(super) stopped_generation: u64,
+    /// The next prompt belongs to a physical stop whose context line was
+    /// already auto-continued (or to the implicit entry stop skipped by
+    /// `configurationDone`). Consume exactly one such prompt without emitting
+    /// a duplicate stopped event; the following prompt may own a new stop.
+    pub(super) pending_auto_continued_stop: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
