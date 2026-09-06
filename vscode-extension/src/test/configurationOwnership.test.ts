@@ -91,7 +91,6 @@ describe('contributed setting ownership table (#14447)', () => {
     const defective = SETTING_OWNERSHIP.filter((row) => row.defect).map((row) => row.key);
 
     expect(defective).toEqual([
-      'perl-lsp.autoPopulateNewFiles',
       'perl-lsp.critic.enabled',
       'perl-lsp.critic.exclude',
       'perl-lsp.critic.include',
@@ -105,6 +104,19 @@ describe('contributed setting ownership table (#14447)', () => {
       'perl-lsp.perlcritic.severity',
       'perl-lsp.perltidyConfig',
     ]);
+  });
+
+  test('autoPopulateNewFiles is recorded folder-owned with no outstanding defect (#14547)', () => {
+    // The row moved off the defect list because `populateCreatedFiles` resolves
+    // the gate per created URI. Recording it back as `client-session`, or
+    // re-adding a defect, would mean the runtime read was hoisted again.
+    expect(settingOwnership('perl-lsp.autoPopulateNewFiles')).toEqual({
+      key: 'perl-lsp.autoPopulateNewFiles',
+      manifestScope: 'resource',
+      semanticScope: 'workspace-folder',
+      owner: 'extension',
+      transport: 'local-only',
+    });
   });
 
   test('a row claiming a server transport names a server consumer or a defect', () => {
