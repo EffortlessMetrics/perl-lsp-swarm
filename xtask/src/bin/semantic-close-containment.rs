@@ -707,10 +707,14 @@ fn evaluate_relation(
         }
     }
 
-    let explicitly_unproven_text = relation_scoped_section_text(
-        sections,
-        &[SectionKind::ClaimBoundary, SectionKind::NonGoals],
-        relation_count,
+    let explicitly_unproven_text = exclusion_text_attributable_to_closed_issue(
+        &relation_scoped_section_text(
+            sections,
+            &[SectionKind::ClaimBoundary, SectionKind::NonGoals],
+            relation_count,
+            &relation.key,
+            &pull.repository,
+        ),
         &relation.key,
         &pull.repository,
     );
@@ -1096,23 +1100,23 @@ fn proof_level_is_explicitly_excluded(
     TERMS.iter().any(|term| issue_requirements.contains(term) && exclusions.contains(term))
 }
 
+const REQUIRED_WORK_SCOPE_MARKERS: [&str; 10] = [
+    "full",
+    "complete",
+    "remaining",
+    "every",
+    "all",
+    "installed",
+    "public",
+    "packaged",
+    "acceptance",
+    "presentation",
+];
+
 fn explicitly_not_proven_required_work(text: &str) -> bool {
     let text = text.to_ascii_lowercase();
     contains_explicit_exclusion(&text)
-        && [
-            "full",
-            "complete",
-            "remaining",
-            "every",
-            "all ",
-            "installed",
-            "public",
-            "packaged",
-            "acceptance",
-            "presentation",
-        ]
-        .iter()
-        .any(|marker| text.contains(marker))
+        && REQUIRED_WORK_SCOPE_MARKERS.iter().any(|marker| contains_word(&text, marker))
 }
 
 fn contains_explicit_exclusion(text: &str) -> bool {
@@ -1174,6 +1178,162 @@ fn relation_scoped_section_text(
         .filter(|line| references_issue(line, key, current_repository))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Keep claim-boundary / non-goal units whose exclusions can be attributed to the
+/// issue named in the closing relation.
+///
+/// Units are sentences inside Markdown paragraphs. A whitespace-only line is
+/// a paragraph break, matching rendered Markdown rather than a literal `\n\n`.
+/// Sentence ends are `.`, `!`, or `?` followed by whitespace or end of text,
+/// except inside Markdown inline code spans (matched backtick runs). A
+/// backtick escaped by an odd-length backslash run is literal prose and does
+/// not open or close a span.
+/// A unit that mentions some other issue and does not mention the closed issue
+/// is a neighboring-issue disclaimer. Unnumbered prose still counts: atomic
+/// closes often describe "the remaining work" without repeating `#N`, even
+/// when a later sentence names the issue that tracks that leftover.
+fn exclusion_text_attributable_to_closed_issue(
+    text: &str,
+    key: &IssueKey,
+    current_repository: &str,
+) -> String {
+    attribution_units(text)
+        .into_iter()
+        .filter(|unit| !foreign_issue_disclaimer(unit, key, current_repository))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn attribution_units(text: &str) -> Vec<String> {
+    markdown_paragraphs(text)
+        .into_iter()
+        .flat_map(|paragraph| split_sentences(&paragraph))
+        .filter(|unit| !unit.is_empty())
+        .collect()
+}
+
+fn markdown_paragraphs(text: &str) -> Vec<String> {
+    let mut paragraphs = Vec::new();
+    let mut current = String::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(line);
+    }
+    if !current.is_empty() {
+        paragraphs.push(current);
+    }
+    paragraphs
+}
+
+fn split_sentences(text: &str) -> Vec<String> {
+    let mut sentences = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    while index < text.len() {
+        let Some(character) = text[index..].chars().next() else {
+            break;
+        };
+        if character == '`' {
+            if backtick_is_escaped(text, index) {
+                index += 1;
+                continue;
+            }
+            let run = text[index..].chars().take_while(|next| *next == '`').count();
+            if let Some(span_end) = matching_inline_code_span_end(text, index, run) {
+                index = span_end;
+                continue;
+            }
+            index += run;
+            continue;
+        }
+        let after = index + character.len_utf8();
+        if matches!(character, '.' | '!' | '?') {
+            let boundary = text
+                .get(after..)
+                .and_then(|tail| tail.chars().next())
+                .is_none_or(char::is_whitespace);
+            if boundary {
+                if let Some(sentence) = text.get(start..after) {
+                    let sentence = sentence.trim();
+                    if !sentence.is_empty() {
+                        sentences.push(sentence.to_string());
+                    }
+                }
+                start = after;
+            }
+        }
+        index = after;
+    }
+    if let Some(tail) = text.get(start..) {
+        let tail = tail.trim();
+        if !tail.is_empty() {
+            sentences.push(tail.to_string());
+        }
+    }
+    sentences
+}
+
+fn matching_inline_code_span_end(text: &str, opener_start: usize, run: usize) -> Option<usize> {
+    let mut index = opener_start.checked_add(run)?;
+    while index < text.len() {
+        let Some(character) = text[index..].chars().next() else {
+            break;
+        };
+        if character == '`' {
+            let close_run = text[index..].chars().take_while(|next| *next == '`').count();
+            if close_run == run {
+                return index.checked_add(run);
+            }
+            index += close_run;
+            continue;
+        }
+        index += character.len_utf8();
+    }
+    None
+}
+
+fn backtick_is_escaped(text: &str, index: usize) -> bool {
+    let Some(prefix) = text.get(..index) else {
+        return false;
+    };
+    let backslashes = prefix.chars().rev().take_while(|character| *character == '\\').count();
+    backslashes % 2 == 1
+}
+
+fn foreign_issue_disclaimer(text: &str, key: &IssueKey, current_repository: &str) -> bool {
+    mentions_an_issue_subject(text) && !references_issue(text, key, current_repository)
+}
+
+fn mentions_an_issue_subject(text: &str) -> bool {
+    hash_issue_number_present(text) || github_issue_url_present(text)
+}
+
+fn hash_issue_number_present(text: &str) -> bool {
+    text.match_indices('#').any(|(index, _)| {
+        text.get(index + 1..)
+            .and_then(|tail| tail.chars().next())
+            .is_some_and(|character| character.is_ascii_digit())
+    })
+}
+
+fn github_issue_url_present(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let Some(index) = lower.find("/issues/") else {
+        return false;
+    };
+    lower
+        .get(index + "/issues/".len()..)
+        .and_then(|tail| tail.chars().next())
+        .is_some_and(|character| character.is_ascii_digit())
 }
 
 fn references_number(text: &str, number: u64) -> bool {
@@ -1314,7 +1474,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 12] = [
+    const FIXTURES: [(&str, &str); 18] = [
         (
             "invalid-phase-terminal-5023-5001",
             include_str!(concat!(
@@ -1358,6 +1518,27 @@ mod tests {
             )),
         ),
         (
+            "invalid-explicit-unproven-named-closed-issue",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-named-closed-issue.json"
+            )),
+        ),
+        (
+            "invalid-explicit-unproven-tracked-by-neighbor",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-tracked-by-neighbor.json"
+            )),
+        ),
+        (
+            "invalid-explicit-unproven-escaped-backtick",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-escaped-backtick.json"
+            )),
+        ),
+        (
             "invalid-remaining-same-issue",
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -1383,6 +1564,27 @@ mod tests {
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../.ci/semantic-close-containment/fixtures/valid-atomic.json"
+            )),
+        ),
+        (
+            "valid-neighbor-disclaimer-unproven",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-neighbor-disclaimer-unproven.json"
+            )),
+        ),
+        (
+            "valid-neighbor-disclaimer-inline-code",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-neighbor-disclaimer-inline-code.json"
+            )),
+        ),
+        (
+            "valid-representation-scope-substring",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-representation-scope-substring.json"
             )),
         ),
         (
@@ -1551,6 +1753,130 @@ mod tests {
         assert_eq!(report.rows[0].code, ResultCode::FailExplicitUnprovenRequiredWork);
         assert_eq!(report.rows[1].code, ResultCode::PassNoHighConfidenceContradiction);
         Ok(())
+    }
+
+    #[test]
+    fn contains_word_rejects_presentation_inside_representation() {
+        assert!(contains_word("presentation", "presentation"));
+        assert!(contains_word("a presentation layer", "presentation"));
+        assert!(!contains_word("representation", "presentation"));
+        assert!(!contains_word("the hir representation of this slice", "presentation"));
+        assert!(!contains_word("fallback", "all"));
+        assert!(!contains_word("called", "all"));
+        assert!(contains_word("in all four families", "all"));
+        assert!(!contains_word("completeness", "complete"));
+        assert!(!contains_word("everything", "every"));
+        assert!(!contains_word("publicly", "public"));
+        assert!(!contains_word("uninstalled", "installed"));
+    }
+
+    #[test]
+    fn explicitly_not_proven_required_work_uses_whole_word_scope_markers() {
+        assert!(explicitly_not_proven_required_work(
+            "this does not prove remaining work in all four families"
+        ));
+        assert!(explicitly_not_proven_required_work(
+            "the complete remaining call-site cohort is not established"
+        ));
+        assert!(!explicitly_not_proven_required_work(
+            "the required hir representation, fallback path, called helper, completeness remainder, everything publicly uninstalled here is not established"
+        ));
+        assert!(!explicitly_not_proven_required_work("this pr proves the claim in full"));
+    }
+
+    #[test]
+    fn neighbor_issue_disclaimer_is_not_attributable_unproven_required_work() {
+        let key = IssueKey { repository: "effortlessmetrics/perl-lsp-swarm".into(), number: 10 };
+        let current = "effortlessmetrics/perl-lsp-swarm";
+        let text = "This PR proves #10's claim in full.\n\nWork owned by #11 is not established.";
+        let attributable = exclusion_text_attributable_to_closed_issue(text, &key, current);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable),
+            "filtered text must drop the neighboring-issue exclusion: {attributable:?}"
+        );
+        assert!(
+            explicitly_not_proven_required_work(text),
+            "unfiltered text must still show why attribution is load-bearing"
+        );
+
+        let named_closed = "This PR does not prove #10's remaining required work.\n\nWork owned by #11 is separately not established.";
+        let attributable_named =
+            exclusion_text_attributable_to_closed_issue(named_closed, &key, current);
+        assert!(
+            explicitly_not_proven_required_work(&attributable_named),
+            "naming the closed issue must keep the exclusion: {attributable_named:?}"
+        );
+
+        let spaced =
+            "This PR proves #10's claim in full.\n \t\nWork owned by #11 is not established.";
+        let attributable_spaced =
+            exclusion_text_attributable_to_closed_issue(spaced, &key, current);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_spaced),
+            "whitespace-only blank lines must still drop the neighboring disclaimer: {attributable_spaced:?}"
+        );
+
+        let tracked =
+            "This PR does not prove the complete remaining work. That work is tracked by #11.";
+        let attributable_tracked =
+            exclusion_text_attributable_to_closed_issue(tracked, &key, current);
+        assert!(
+            explicitly_not_proven_required_work(&attributable_tracked),
+            "an unnumbered closed-issue exclusion must survive a later tracker sentence: {attributable_tracked:?}"
+        );
+
+        for terminator in ['!', '?'] {
+            let punctuated = format!(
+                "This PR does not prove the complete remaining work{terminator} That work is tracked by #11."
+            );
+            let attributable_punctuated =
+                exclusion_text_attributable_to_closed_issue(&punctuated, &key, current);
+            assert!(
+                explicitly_not_proven_required_work(&attributable_punctuated),
+                "sentence terminators other than '.' must still keep the exclusion: {attributable_punctuated:?}"
+            );
+        }
+
+        let inline_question =
+            "Complete behavior is not established for `$ready ? $new : $old`; see #11.";
+        let attributable_inline_question =
+            exclusion_text_attributable_to_closed_issue(inline_question, &key, current);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_inline_question),
+            "a `?` inside an inline code span must not split off the neighbor reference: {attributable_inline_question:?}"
+        );
+        assert!(
+            explicitly_not_proven_required_work(inline_question),
+            "unfiltered inline-code neighbor text must still show why attribution is load-bearing"
+        );
+
+        let inline_bang = "Complete behavior is not established for `die $msg! now`; see #11.";
+        let attributable_inline_bang =
+            exclusion_text_attributable_to_closed_issue(inline_bang, &key, current);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_inline_bang),
+            "a `!` inside an inline code span must not split off the neighbor reference: {attributable_inline_bang:?}"
+        );
+        assert!(
+            explicitly_not_proven_required_work(inline_bang),
+            "unfiltered inline-bang neighbor text must still show why attribution is load-bearing"
+        );
+
+        let inline_dot = "Complete behavior is not established for `$x. meth $y`; see #11.";
+        let attributable_inline_dot =
+            exclusion_text_attributable_to_closed_issue(inline_dot, &key, current);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_inline_dot),
+            "a `.` inside an inline code span must not split off the neighbor reference: {attributable_inline_dot:?}"
+        );
+
+        let escaped = "This PR does not prove the complete remaining work for \\`foo? bar\\`. That work is tracked by #11.";
+        let attributable_escaped =
+            exclusion_text_attributable_to_closed_issue(escaped, &key, current);
+        assert!(
+            explicitly_not_proven_required_work(&attributable_escaped),
+            "escaped backticks must not hide an unnumbered closed-issue exclusion: {attributable_escaped:?}"
+        );
     }
 
     #[test]

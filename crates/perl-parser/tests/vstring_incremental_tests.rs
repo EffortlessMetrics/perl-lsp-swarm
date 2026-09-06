@@ -1,10 +1,10 @@
 //! ripr+ gap 2: IncrementalDocument must produce NodeKind::VString (not
 //! NodeKind::String) when editing a document that contains a v-string literal.
 //!
-//! These tests exercise the NodeKind::VString arms added in `incremental_document.rs`:
-//!   - `is_single_token_edit` (line ~345): covered by `vstring_edit_inside_literal`
-//!   - `hash_node` (line ~926): covered by both tests (cache_node runs on every node)
-//!   - `get_symbol_priority` (line ~1042): covered by both tests (cache_node runs on every node)
+//! These tests exercise VString preservation through the experimental
+//! `IncrementalDocument` fail-closed full-parse path:
+//!   - `hash_node` (via `cache_node` on every node)
+//!   - `get_symbol_priority` (via `cache_node` on every node)
 //!
 //! All tests FAIL if the PR's fix to `primary.rs`
 //! (TokenKind::VString → NodeKind::VString) were reverted: the sexp would
@@ -49,8 +49,7 @@ fn vstring_initial_parse_produces_vstring_node() {
 /// Apply an edit AFTER the VString and verify the VString is preserved.
 ///
 /// This exercises the `hash_node` and `get_symbol_priority` VString arms via
-/// `cache_subtrees` (called after `apply_edit`), and drives `find_reusable_subtrees`
-/// to correctly identify the VString as OUTSIDE the edit range.
+/// `cache_subtrees` (called after the fail-closed fresh parse).
 ///
 /// The test FAILS if `primary.rs`'s VString arm is reverted because after the
 /// incremental reparse the node would be `(string "v1.2.3")`.
@@ -99,13 +98,8 @@ fn vstring_node_survives_incremental_edit_outside_literal() {
 
 /// Apply an edit with start_byte INSIDE the VString literal.
 ///
-/// This specifically exercises the `is_single_token_edit` VString arm
-/// (incremental_document.rs ~line 345).  `find_node_at_position(9)` walks the
-/// AST and returns the VString node at bytes 8..14.  The match then hits the
-/// `NodeKind::VString { .. }` arm, returning `true`.
-///
-/// The fast-path update rewrites the VString node in place. The result is a
-/// v-string containing the inserted character.
+/// The experimental document fail-closes to a full fresh parse of the edited
+/// source. The result must still be `NodeKind::VString` for `v01.2.3`.
 ///
 /// Non-vacuous guarantee: the sexp must contain `(vstring (value v01.2.3))` — the
 /// v-string expanded by the insertion.  Reverting the primary.rs VString arm
@@ -122,9 +116,6 @@ fn vstring_edit_inside_literal_exercises_is_single_token_edit_arm() {
     // Insert '0' at byte 9 (inside the VString, immediately after the leading
     // 'v' and *before* the '1' that occupies byte 9).
     // New source: "my $v = v01.2.3;"
-    // edit.start_byte = 9, which is inside VString (8..14), so
-    // is_single_token_edit calls find_node_at_position(9) → finds VString →
-    // VString arm at incremental_document.rs:345 is executed → returns true.
     let edit = IncrementalEdit::new(9, 9, "0".to_string());
     must(doc.apply_edit(edit));
 

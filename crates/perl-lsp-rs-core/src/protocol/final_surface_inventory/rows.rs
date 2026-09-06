@@ -700,6 +700,7 @@ fn mutation_rows() -> Vec<SurfaceRow> {
                 "codeActionProvider.documentation[].kind",
                 "codeActionProvider.documentation[].command.title",
                 "codeActionProvider.documentation[].command.command",
+                "codeActionProvider.documentation[].command.tooltip",
                 "codeActionProvider.documentation[].command.arguments[]",
                 "codeActionProvider.documentation[].command.arguments[].provider",
                 "codeActionProvider.documentation[].command.arguments[].receipt_id",

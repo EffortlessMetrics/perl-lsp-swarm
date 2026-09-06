@@ -29,11 +29,24 @@ and [`crates/perl-lsp-rs/src/runtime/v0_18_text_sync_envelope.rs`](../../crates/
 
 ## The `perl-incremental-parsing` Crate
 
-The `perl-incremental-parsing` crate exists and contains substantial incremental
-parsing infrastructure. It is a feature-gated optional dependency of
-`perl-parser` and is **not** the v0.18 text-sync envelope. Dormant incremental
-fields, Rope mutation helpers, and parser-incrementality epics (#1690/#7409/#7417)
-remain open long-term work.
+The `perl-incremental-parsing` crate exists and contains substantial incremental parsing infrastructure:
+
+- **`IncrementalState`** — Rope-backed document state with lexer checkpoints and token cache reuse
+- **`IncrementalDocument`** — experimental #7292 generation; retained edits fail closed to a full fresh parse and rebuild the current-generation cache (#13378). Not a production incremental engine.
+- **`IncrementalParserV2`** — Parser with AST subtree reuse metrics; not the v0.18 text-sync envelope
+- **`DocumentParser`** — Enum wrapper (`Full` | `Incremental`) gated on `PERL_LSP_INCREMENTAL` env var
+
+This crate is a feature-gated optional dependency of `perl-parser` (behind the `incremental` feature flag). It is **not** the v0.18 text-sync envelope and is **not wired into the `perl-lsp` server** — `perl-lsp` does not depend on this crate and does not invoke it on `didChange` events. Dormant incremental fields, Rope mutation helpers, and parser-incrementality epics (#1690/#7409/#7417) remain open long-term work.
+
+## Performance Characteristics (Current)
+
+The full-reparse approach is fast enough for typical Perl files in practice:
+
+- The v3 recursive-descent parser is written in Rust and generally handles small-to-medium files in under a millisecond on modern hardware
+- The live server does not retain or reuse an AST-only cache: `didOpen`, `didChange`, and the asynchronous parse-worker route run the full parser for every current document parse, including repeated identical text. This preserves the complete parser outcome, including recovery diagnostics; a complete parse-artifact store is future work.
+- Files larger than the configured size limit (`PERL_LSP_MAX_FILE_SIZE_KB`, default 512 KB) are skipped entirely with no AST
+
+No 65µs or 99.7% node-reuse benchmarks apply to the current LSP path — those numbers were measured against the `perl-incremental-parsing` crate's internal test suite, which is not connected to the server.
 
 ## Rope Integration
 
