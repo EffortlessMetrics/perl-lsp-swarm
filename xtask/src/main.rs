@@ -1101,6 +1101,28 @@ enum Commands {
         command: AgentFlowCommand,
     },
 
+    /// Export and validate content-addressed candidate handoffs (#13379).
+    ///
+    /// Turns one exact local Git candidate into an immutable envelope that a
+    /// later authenticated context can reconstruct without the producing
+    /// workspace. The repository is only ever read: `create` writes the
+    /// envelope directory it is given and nothing else, while `check` and
+    /// `explain` write nothing at all. Every operation is credential-free and
+    /// offline: this command publishes no branch, opens no pull request,
+    /// claims no hosted check, and grants no integration authority.
+    ///
+    /// `check` exit codes: 0 = valid handoff, 2 = the candidate claim is
+    /// wrong, 3 = reconstructable but repository identity is not proven,
+    /// 4 = the instrument failed. `create` exits 0 whenever it wrote and
+    /// validated an envelope; a remote-less workspace is the case this format
+    /// exists for, so unproven ownership is reported in the output and the
+    /// manifest rather than as a failed export.
+    #[command(name = "agent-candidate-handoff")]
+    AgentCandidateHandoff {
+        #[command(subcommand)]
+        command: AgentCandidateHandoffCommand,
+    },
+
     /// Plan bounded serial pre-push proof from the shared change set.
     ///
     /// PLANNING ONLY: emits a deterministic proof plan, including the change-set
@@ -4834,6 +4856,76 @@ enum AgentFlowCommand {
     },
 }
 
+/// Output projection for `agent-candidate-handoff`.
+///
+/// A closed set rather than a free string: an unrecognised `--format` silently
+/// produced human output, so a caller asking for machine output could parse a
+/// human report without ever being told.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum HandoffOutputFormat {
+    Human,
+    Json,
+}
+
+#[derive(Subcommand)]
+enum AgentCandidateHandoffCommand {
+    /// Export one exact local candidate into an immutable envelope.
+    ///
+    /// Reads only committed objects, so dirty, ignored, and untracked files
+    /// cannot enter the envelope: an untracked file becomes transportable only
+    /// once it is committed into the exact tree.
+    ///
+    /// The destination is written by staging and renaming, which fixes two
+    /// boundaries worth stating rather than leaving to be assumed. A non-empty
+    /// destination is never overwritten; an existing envelope, or any other
+    /// directory holding files, is refused. And the export is not `fsync`ed, so
+    /// a crash immediately after a successful `create` can leave the
+    /// destination absent — but never present and wrong: a destination that
+    /// survives a crash is either a complete envelope or a staging directory
+    /// `check` refuses, because the receipt only reads `validated` after the
+    /// self-check passed. The repair for the absent case is to run `create`
+    /// again, which is byte-identical for an unchanged candidate.
+    Create {
+        /// Repository to read. Never mutated.
+        #[arg(long, default_value = ".")]
+        repository: PathBuf,
+        /// Revision naming the candidate commit.
+        #[arg(long, default_value = "HEAD")]
+        candidate: String,
+        /// Destination directory. Must not already exist.
+        #[arg(long)]
+        out: PathBuf,
+        /// Explicit `owner/name` when no remote can be observed. Never guessed.
+        #[arg(long)]
+        repository_identity: Option<String>,
+        /// Proof artifact to carry, content-addressed and bound to the
+        /// candidate. Repeatable. Local proof is never hosted-check proof.
+        #[arg(long = "proof")]
+        proofs: Vec<PathBuf>,
+        /// Output format: `human` (default) or `json`.
+        #[arg(long, value_enum, default_value = "human")]
+        format: HandoffOutputFormat,
+    },
+    /// Validate an envelope independently of the workspace that produced it.
+    Check {
+        /// Envelope directory to validate.
+        #[arg(long)]
+        handoff: PathBuf,
+        /// Output format: `human` (default) or `json`.
+        #[arg(long, value_enum, default_value = "human")]
+        format: HandoffOutputFormat,
+    },
+    /// Describe what an envelope claims, and what it deliberately does not.
+    Explain {
+        /// Envelope directory to describe.
+        #[arg(long)]
+        handoff: PathBuf,
+        /// Output format: `human` (default) or `json`.
+        #[arg(long, value_enum, default_value = "human")]
+        format: HandoffOutputFormat,
+    },
+}
+
 #[derive(Subcommand)]
 enum AgentCommand {
     /// Lease lifecycle commands.
@@ -5570,6 +5662,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 agent_flow::run_scenarios(agent_flow::ScenarioConfig { format })
             }
         },
+        Commands::AgentCandidateHandoff { command } => run_agent_candidate_handoff(command),
         Commands::PrePushPlan { base, head, format } => pre_push_plan::run(base, head, format),
         Commands::ParseRust { source, sexp, ast, bench } => {
             parse_rust::run(source, sexp, ast, bench)
@@ -7013,6 +7106,88 @@ fn convert_gate_receipts_format(format: GateReceiptsFormat) -> gate_receipts::Ou
     }
 }
 
+/// Dispatch `agent-candidate-handoff` and propagate its typed exit code.
+///
+/// The outcome vocabulary is the product here: a caller must be able to tell
+/// an invalid candidate claim (2) from an unproven repository identity (3)
+/// from an instrument that could not run (4), so every path exits through
+/// [`HandoffOutcome::exit_code`] rather than collapsing into success or a
+/// generic error.
+fn run_agent_candidate_handoff(command: AgentCandidateHandoffCommand) -> Result<()> {
+    use xtask::agent_candidate_handoff::{
+        CreateRequest, HandoffOutcome, check_handoff, create_handoff, describe, explain, render,
+    };
+    // `create` validates its own output before returning, so a successful
+    // export needs no second pass here.
+
+    let emit = |outcome: HandoffOutcome, text: String| -> Result<()> {
+        println!("{text}");
+        let code = outcome.exit_code();
+        if code == 0 {
+            return Ok(());
+        }
+        std::process::exit(i32::from(code));
+    };
+
+    match command {
+        AgentCandidateHandoffCommand::Create {
+            repository,
+            candidate,
+            out,
+            repository_identity,
+            proofs,
+            format,
+        } => {
+            let as_json = format == HandoffOutputFormat::Json;
+            let request = CreateRequest {
+                repository,
+                candidate,
+                out,
+                declared_repository_identity: repository_identity,
+                proofs,
+            };
+            match create_handoff(&request) {
+                Ok(manifest) => {
+                    let document = describe(&manifest);
+                    let human = render::render_explain_human(&document);
+                    let text = render::render(&document, &human, as_json).map_err(|e| eyre!(e))?;
+                    // Creation succeeded, so `create` exits 0 even when
+                    // ownership is unproven: a remote-less workspace is the
+                    // case this format exists for, and failing it here would
+                    // teach callers to ignore the exit code. The unproven
+                    // identity stays visible in the output and the manifest,
+                    // and `check` is the command that classifies an envelope.
+                    emit(HandoffOutcome::ValidHandoff, text)
+                }
+                Err((outcome, detail)) => {
+                    eprintln!("agent-candidate-handoff: {} — {detail}", outcome.as_str());
+                    std::process::exit(i32::from(outcome.exit_code()));
+                }
+            }
+        }
+        AgentCandidateHandoffCommand::Check { handoff, format } => {
+            let report = check_handoff(&handoff);
+            let human = render::render_check_human(&report);
+            let text = render::render(&report, &human, format == HandoffOutputFormat::Json)
+                .map_err(|e| eyre!(e))?;
+            emit(report.outcome, text)
+        }
+        AgentCandidateHandoffCommand::Explain { handoff, format } => match explain(&handoff) {
+            Ok(document) => {
+                let human = render::render_explain_human(&document);
+                let text = render::render(&document, &human, format == HandoffOutputFormat::Json)
+                    .map_err(|e| eyre!(e))?;
+                println!("{text}");
+                Ok(())
+            }
+            Err((outcome, detail)) => {
+                eprintln!("agent-candidate-handoff: {} — {detail}", outcome.as_str());
+                std::process::exit(i32::from(outcome.exit_code()));
+            }
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7024,6 +7199,122 @@ mod tests {
             Commands::Devex { command } => Ok(command),
             _ => Err(std::io::Error::other("expected devex command").into()),
         }
+    }
+
+    fn parse_handoff_command(args: &[&str]) -> TestResult<AgentCandidateHandoffCommand> {
+        match Cli::try_parse_from(args)?.command {
+            Commands::AgentCandidateHandoff { command } => Ok(command),
+            _ => Err(std::io::Error::other("expected agent-candidate-handoff command").into()),
+        }
+    }
+
+    #[test]
+    fn agent_candidate_handoff_create_defaults_to_head_of_the_current_repository() -> TestResult {
+        let command = parse_handoff_command(&[
+            "xtask",
+            "agent-candidate-handoff",
+            "create",
+            "--out",
+            "target/handoff",
+        ])?;
+        match command {
+            AgentCandidateHandoffCommand::Create {
+                repository,
+                candidate,
+                out,
+                repository_identity,
+                proofs,
+                ..
+            } => {
+                assert_eq!(repository, PathBuf::from("."));
+                assert_eq!(candidate, "HEAD");
+                assert_eq!(out, PathBuf::from("target/handoff"));
+                assert_eq!(
+                    repository_identity, None,
+                    "identity must be observed or declared, never defaulted"
+                );
+                assert!(proofs.is_empty());
+            }
+            _ => return Err(std::io::Error::other("expected create").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn agent_candidate_handoff_create_accepts_repeated_proof_artifacts() -> TestResult {
+        let command = parse_handoff_command(&[
+            "xtask",
+            "agent-candidate-handoff",
+            "create",
+            "--out",
+            "target/handoff",
+            "--proof",
+            "first.json",
+            "--proof",
+            "second.json",
+        ])?;
+        match command {
+            AgentCandidateHandoffCommand::Create { proofs, .. } => {
+                assert_eq!(proofs, vec![PathBuf::from("first.json"), PathBuf::from("second.json")]);
+            }
+            _ => return Err(std::io::Error::other("expected create").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn agent_candidate_handoff_check_and_explain_require_an_envelope() -> TestResult {
+        assert!(
+            Cli::try_parse_from(["xtask", "agent-candidate-handoff", "check"]).is_err(),
+            "check must not default to an implicit envelope"
+        );
+        assert!(
+            Cli::try_parse_from(["xtask", "agent-candidate-handoff", "explain"]).is_err(),
+            "explain must not default to an implicit envelope"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn agent_candidate_handoff_rejects_an_unsupported_format() -> TestResult {
+        assert!(
+            Cli::try_parse_from([
+                "xtask",
+                "agent-candidate-handoff",
+                "check",
+                "--handoff",
+                "target/handoff",
+                "--format",
+                "yaml",
+            ])
+            .is_err(),
+            "an unrecognised format must be refused, not silently rendered as human output"
+        );
+        let command = parse_handoff_command(&[
+            "xtask",
+            "agent-candidate-handoff",
+            "check",
+            "--handoff",
+            "target/handoff",
+            "--format",
+            "json",
+        ])?;
+        match command {
+            AgentCandidateHandoffCommand::Check { format, .. } => {
+                assert_eq!(format, HandoffOutputFormat::Json);
+            }
+            _ => return Err(std::io::Error::other("expected check").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn agent_candidate_handoff_create_requires_an_explicit_destination() -> TestResult {
+        assert!(
+            Cli::try_parse_from(["xtask", "agent-candidate-handoff", "create"]).is_err(),
+            "an envelope destination is explicit so an export cannot land somewhere implied"
+        );
+        Ok(())
     }
 
     #[test]
