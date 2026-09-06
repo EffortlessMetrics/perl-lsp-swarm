@@ -306,13 +306,16 @@ impl DebugAdapter {
                             // current-frame inspection must always use the innermost pad.
                             let cmd = Self::build_locals_b_eval_cmd();
                             let commands = vec![cmd];
-                            match self.send_framed_debugger_commands(stdin, &commands) {
-                                Ok((begin, end)) => {
-                                    framed_scope_lines = self.capture_framed_debugger_output(
-                                        &begin,
-                                        &end,
-                                        DEBUGGER_QUERY_WAIT_MS * 8,
-                                    );
+                            match self.send_framed_debugger_query(
+                                stdin,
+                                &commands,
+                                DEBUGGER_QUERY_WAIT_MS * 8,
+                            ) {
+                                Ok((operation, begin, end)) => {
+                                    framed_scope_lines = self
+                                        .capture_framed_debugger_output_for_operation(
+                                            &operation, &begin, &end,
+                                        );
                                 }
                                 Err(error) => {
                                     tracing::warn!(%error, "Failed to send framed locals command, falling back");
@@ -679,8 +682,9 @@ impl DebugAdapter {
             if let Some(stdin) = session.process.stdin.as_mut() {
                 // Frame assignment + read-back so output parsing is deterministic.
                 let commands = vec![format!("p {name} = {value}"), format!("p {name}")];
-                match self.send_framed_debugger_commands(stdin, &commands) {
-                    Ok(markers) => Some(markers),
+                match self.send_framed_debugger_query(stdin, &commands, DEBUGGER_QUERY_WAIT_MS * 8)
+                {
+                    Ok((operation, begin, end)) => Some((operation, begin, end)),
                     Err(error) => {
                         return DapMessage::Response {
                             seq,
@@ -731,8 +735,8 @@ impl DebugAdapter {
         // branch would then discard such a line outright (#7275).
         let parsed = output_frame_markers
             .as_ref()
-            .and_then(|(begin, end)| {
-                self.capture_framed_debugger_output(begin, end, DEBUGGER_QUERY_WAIT_MS * 8)
+            .and_then(|(operation, begin, end)| {
+                self.capture_framed_debugger_output_for_operation(operation, begin, end)
             })
             .and_then(|lines| {
                 Self::parse_evaluate_result_from_lines(
