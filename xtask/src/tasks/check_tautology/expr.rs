@@ -127,6 +127,8 @@ mod tests {
         assert!(!is_known_reflexive_eq_operand(&expr("item.flag")));
         assert!(!is_known_reflexive_eq_operand(&expr("RecoverySite::ArgList")));
         assert!(!is_known_reflexive_eq_operand(&expr("TransportMode::Socket { port: 100 }")));
+        assert!(!is_known_reflexive_eq_operand(&expr("-f32::NAN")));
+        assert!(!is_known_reflexive_eq_operand(&expr("[path; 3]")));
     }
 
     #[test]
@@ -142,5 +144,7 @@ mod tests {
         assert!(is_known_reflexive_eq_operand(&expr("(1, true)")));
         assert!(is_known_reflexive_eq_operand(&expr("1.0")));
         assert!(is_known_reflexive_eq_operand(&expr("1 as i32")));
+        assert!(is_known_reflexive_eq_operand(&expr("[1, 2]")));
+        assert!(is_known_reflexive_eq_operand(&expr("[0; 3]")));
     }
 }

@@ -200,9 +200,13 @@ mod tests {
                 assert!(counter().is_some() || counter().is_none());
                 assert_eq!(f32::NAN, f32::NAN);
                 assert_eq!(1, 1);
+                assert_eq!(1.0, 1.0);
             }
             fn counter() -> Option<u8> { None }
         "#;
-        assert_eq!(rules(source), vec![RuleId::OptionSomeOrNone, RuleId::AssertEqIdentical]);
+        assert_eq!(
+            rules(source),
+            vec![RuleId::OptionSomeOrNone, RuleId::AssertEqIdentical, RuleId::AssertEqIdentical]
+        );
     }
 }

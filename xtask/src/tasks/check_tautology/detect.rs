@@ -216,6 +216,9 @@ mod tests {
         assert_eq!(eq_rule("&1", "&1"), Some(RuleId::AssertEqIdentical));
         assert_eq!(eq_rule("(1, true)", "(1, true)"), Some(RuleId::AssertEqIdentical));
         assert_eq!(eq_rule("1 as i32", "1 as i32"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("[1, 2]", "[1, 2]"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("[0; 3]", "[0; 3]"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("1.0", "1.0"), Some(RuleId::AssertEqIdentical));
     }
 
     #[test]
@@ -298,6 +301,9 @@ mod tests {
         assert_eq!(eq_rule("item.flag", "item.flag"), None);
         assert_eq!(eq_rule("RecoverySite::ArgList", "RecoverySite::ArgList"), None);
         assert_eq!(eq_rule("&mut 1", "&mut 1"), None);
+        assert_eq!(eq_rule("-f32::NAN", "-f32::NAN"), None);
+        assert_eq!(eq_rule("[path, path]", "[path, path]"), None);
+        assert_eq!(eq_rule("[path; 3]", "[path; 3]"), None);
         assert_eq!(
             eq_rule("TransportMode::Socket { port: 100 }", "TransportMode::Socket { port: 100 }"),
             None
