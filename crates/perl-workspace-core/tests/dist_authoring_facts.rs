@@ -1007,3 +1007,63 @@ Module::Build->new(%custom)->create_build_script;
     assert!(facts.name.is_none());
     assert!(facts.limitations.iter().any(|l| l.kind == "missing_module_build_new"));
 }
+
+#[test]
+fn unreferenced_args_hash_is_not_authoring_without_constructor() {
+    let src = r#"
+my %args = (
+    module_name => 'Wrong::Args',
+    dist_version => '9.99',
+);
+"#;
+    let facts = parse_build_pl(fid("Build.PL", src), src);
+    assert!(facts.name.is_none());
+    assert!(facts.limitations.iter().any(|l| l.kind == "missing_module_build_new"));
+}
+
+#[test]
+fn commented_and_quoted_constructors_do_not_replace_real_module_build() {
+    let src = r#"
+# Module::Build->new(module_name => 'Wrong::Comment', dist_version => '9.99');
+print "Module::Build->new(module_name => 'Wrong::String')\n";
+my $example = q{ Module::Build->new(module_name => 'Wrong::Quote') };
+Module::Build->new(
+    module_name => 'Foo::Bar',
+    dist_version => '1.23',
+);
+"#;
+    let facts = parse_build_pl(fid("Build.PL", src), src);
+    assert_eq!(facts.name.as_deref(), Some("Foo-Bar"));
+    assert_eq!(facts.version.as_deref(), Some("1.23"));
+    assert!(!facts.name.as_deref().unwrap().contains("Wrong"));
+}
+
+#[test]
+fn nested_dynamic_resource_and_provides_fields_are_not_static() {
+    let src = r#"
+WriteMakefile(
+    NAME => 'Foo::Bar',
+    META_MERGE => {
+        resources => {
+            repository => {
+                url => $repo_url,
+                type => 'git',
+            },
+        },
+        provides => {
+            'Foo::Bar' => { file => $path, version => '1.23' },
+        },
+    },
+);
+"#;
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    let repo = facts.resources.iter().find(|r| r.kind == "repository").unwrap();
+    assert!(repo.url.is_none());
+    assert_eq!(repo.type_name.as_deref(), Some("git"));
+    assert!(facts.declarations.iter().any(|d| d.key == "repository" && d.dynamic));
+    let provided = facts.provides.iter().find(|p| p.module == "Foo::Bar").unwrap();
+    assert!(provided.file.is_none());
+    assert_eq!(provided.version.as_deref(), Some("1.23"));
+    assert!(facts.declarations.iter().any(|d| d.key == "Foo::Bar" && d.dynamic));
+    assert!(facts.limitations.iter().any(|l| l.kind == "dynamic_value"));
+}

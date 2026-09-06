@@ -872,11 +872,18 @@ impl<'a> DistCollector<'a> {
                 let mut url = None;
                 let mut web = None;
                 let mut type_name = None;
+                let mut dynamic = false;
                 for field in fields {
                     match field.key.as_str() {
-                        "url" => url = field.value.as_str().map(ToOwned::to_owned),
-                        "web" => web = field.value.as_str().map(ToOwned::to_owned),
-                        "type" => type_name = field.value.as_str().map(ToOwned::to_owned),
+                        "url" => {
+                            url = self.nested_static_string(field, &mut dynamic);
+                        }
+                        "web" => {
+                            web = self.nested_static_string(field, &mut dynamic);
+                        }
+                        "type" => {
+                            type_name = self.nested_static_string(field, &mut dynamic);
+                        }
                         _ => {}
                     }
                 }
@@ -893,7 +900,7 @@ impl<'a> DistCollector<'a> {
                     url,
                     pair.key_start,
                     pair.value_end,
-                    false,
+                    dynamic,
                 );
             }
             _ => self.dynamic_pair(DistDeclarationKind::Resource, pair),
@@ -950,11 +957,16 @@ impl<'a> DistCollector<'a> {
         for entry in hash {
             let mut file = None;
             let mut version = None;
+            let mut dynamic = false;
             if let Some(fields) = entry.value.as_hash() {
                 for field in fields {
                     match field.key.as_str() {
-                        "file" => file = field.value.as_str().map(ToOwned::to_owned),
-                        "version" => version = field.value.as_str().map(ToOwned::to_owned),
+                        "file" => {
+                            file = self.nested_static_string(field, &mut dynamic);
+                        }
+                        "version" => {
+                            version = self.nested_static_string(field, &mut dynamic);
+                        }
                         _ => {}
                     }
                 }
@@ -976,7 +988,7 @@ impl<'a> DistCollector<'a> {
                 entry.value.as_str().map(ToOwned::to_owned),
                 entry.key_start,
                 entry.value_end,
-                false,
+                dynamic,
             );
         }
     }
@@ -1014,6 +1026,20 @@ impl<'a> DistCollector<'a> {
             end,
             false,
         );
+    }
+
+    fn nested_static_string(&mut self, field: &ScanPair, dynamic: &mut bool) -> Option<String> {
+        if field.value.is_dynamic() {
+            *dynamic = true;
+            self.limitation(
+                "dynamic_value",
+                format!("`{}` is not a static literal", field.key),
+                Some(field.value_start),
+                Some(field.value_end),
+            );
+            return None;
+        }
+        field.value.as_str().map(ToOwned::to_owned)
     }
 
     fn dynamic_pair(&mut self, kind: DistDeclarationKind, pair: &ScanPair) {

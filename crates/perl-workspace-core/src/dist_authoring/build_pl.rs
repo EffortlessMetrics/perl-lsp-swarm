@@ -55,30 +55,29 @@ pub fn parse_build_pl(file_id: FileId, content: &str) -> DistAuthoringFacts {
 
 fn build_pairs(content: &str) -> Option<Vec<ScanPair>> {
     let mut from = 0;
-    let mut saw_constructor = false;
     let mut saw_args_passthrough = false;
-    while let Some(rel) = content.get(from..).and_then(|rest| rest.find("->new")) {
-        let idx = from + rel;
-        if ident_before_arrow(content, idx).is_some_and(is_module_build_constructor) {
-            saw_constructor = true;
-            let method_start = idx + 2;
-            if let Some(open) = call_open_paren(content, method_start, "new".len()) {
-                if let Some((pairs, _)) = parse_paren_hash(content, open)
-                    && !pairs.is_empty()
-                {
-                    return Some(pairs);
-                }
-                if paren_is_percent_var(content, open, "args") {
-                    saw_args_passthrough = true;
-                }
+    while let Some(ident) = find_ident(content, "new", from) {
+        let arrow_idx = ident.saturating_sub(2);
+        if ident >= 2
+            && content.get(arrow_idx..ident) == Some("->")
+            && ident_before_arrow(content, arrow_idx).is_some_and(is_module_build_constructor)
+            && let Some(open) = call_open_paren(content, ident, "new".len())
+        {
+            if let Some((pairs, _)) = parse_paren_hash(content, open)
+                && !pairs.is_empty()
+            {
+                return Some(pairs);
+            }
+            if paren_is_percent_var(content, open, "args") {
+                saw_args_passthrough = true;
             }
         }
-        from = idx.saturating_add("->new".len());
-        if from <= idx {
+        from = ident.saturating_add("new".len());
+        if from <= ident {
             break;
         }
     }
-    if saw_args_passthrough || !saw_constructor {
+    if saw_args_passthrough {
         return assigned_hash(content, "args");
     }
     None
