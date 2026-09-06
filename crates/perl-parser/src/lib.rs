@@ -236,7 +236,7 @@ pub use incremental::incremental_advanced_reuse;
 /// Checkpoint-based incremental parsing with rollback support.
 pub use incremental::incremental_checkpoint;
 #[cfg(feature = "incremental")]
-/// Document-level incremental parsing state management.
+/// Experimental IncrementalDocument generation: fail-closed full fresh parse.
 pub use incremental::incremental_document;
 #[cfg(feature = "incremental")]
 /// Edit representation and application for incremental updates.

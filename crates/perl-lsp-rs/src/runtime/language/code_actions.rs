@@ -18,6 +18,7 @@ use super::misc::{
     DIAGNOSTIC_EXPLANATION_SCHEMA_VERSION, diagnostic_explanation_payload_from_diagnostics,
 };
 use crate::cancellation::RequestCleanupGuard;
+use crate::protocol::command::Command;
 use crate::protocol::{REQUEST_CANCELLED, req_range, req_uri};
 use std::sync::LazyLock;
 
@@ -1016,15 +1017,16 @@ impl LspServer {
                 code_actions.push(json!({
                     "title": format!("Generate test for '{}'", sub_info.name),
                     "kind": "source",
-                    "command": {
-                        "title": "Generate test",
-                        "command": "perl.generateTest",
-                        "arguments": [json!({
+                    "command": Command::presented(
+                        "Generate test",
+                        "perl.generateTest",
+                        "Insert a Test::More skeleton for this subroutine",
+                        Some(vec![json!({
                             "uri": uri,
                             "name": sub_info.name,
                             "test": test_code
-                        })]
-                    }
+                        })]),
+                    ),
                 }));
             }
 
@@ -1108,11 +1110,12 @@ impl LspServer {
             code_actions.push(json!({
                 "title": "Add debug print",
                 "kind": "refactor.rewrite",
-                "command": {
-                    "title": "Add debug print",
-                    "command": "perl.addDebugPrint",
-                    "arguments": [json!({ "uri": uri })]
-                }
+                "command": Command::presented(
+                    "Add debug print",
+                    "perl.addDebugPrint",
+                    "Insert a STDERR debug print in this document",
+                    Some(vec![json!({ "uri": uri })]),
+                ),
             }));
 
             // Check for global variables that could use 'my' declarations
@@ -1120,11 +1123,12 @@ impl LspServer {
                 code_actions.push(json!({
                     "title": "Convert globals to 'my' declarations",
                     "kind": "refactor.rewrite",
-                    "command": {
-                        "title": "Convert to my declarations",
-                        "command": "perl.convertToMyDeclarations",
-                        "arguments": [json!({ "uri": uri })]
-                    }
+                    "command": Command::presented(
+                        "Convert to my declarations",
+                        "perl.convertToMyDeclarations",
+                        "Rewrite file-scope globals as lexical my declarations",
+                        Some(vec![json!({ "uri": uri })]),
+                    ),
                 }));
             }
 
@@ -1346,10 +1350,11 @@ impl LspServer {
             "title": "Explain this diagnostic",
             "kind": "quickfix",
             "diagnostics": [diagnostic_value],
-            "command": {
-                "title": "Explain this diagnostic",
-                "command": "perl-lsp.explainDiagnostic",
-                "arguments": [{
+            "command": Command::presented(
+                "Explain this diagnostic",
+                "perl-lsp.explainDiagnostic",
+                "Show why this diagnostic was produced and its claim boundary",
+                Some(vec![json!({
                     "provider": "diagnostics",
                     "request_receipt": receipt,
                     "request_position": {
@@ -1357,8 +1362,8 @@ impl LspServer {
                         "line": line,
                         "character": character,
                     },
-                }]
-            }
+                })]),
+            ),
         })
     }
 
@@ -1596,6 +1601,19 @@ mod tests {
                 Some("perl-lsp.explainDiagnostic")
             );
             assert_eq!(
+                action.pointer("/command/title").and_then(Value::as_str),
+                Some("Explain this diagnostic")
+            );
+            assert_eq!(
+                action.pointer("/command/tooltip").and_then(Value::as_str),
+                Some("Show why this diagnostic was produced and its claim boundary")
+            );
+            assert_ne!(
+                action.pointer("/command/tooltip").and_then(Value::as_str),
+                action.pointer("/command/title").and_then(Value::as_str),
+                "tooltip must not replace the command title: {action}"
+            );
+            assert_eq!(
                 action.pointer("/command/arguments/0/provider").and_then(Value::as_str),
                 Some("diagnostics")
             );
@@ -1627,6 +1645,109 @@ mod tests {
         assert!(codes.contains(&"PL701"), "missing PL701 explain receipt: {actions:#?}");
         assert!(codes.contains(&"PL109"), "missing PL109 explain receipt: {actions:#?}");
 
+        Ok(())
+    }
+
+    fn command_object<'a>(
+        actions: &'a [Value],
+        command_id: &str,
+    ) -> Result<&'a Value, Box<dyn std::error::Error>> {
+        actions
+            .iter()
+            .find_map(|action| {
+                let command = action.get("command")?;
+                (command.get("command").and_then(Value::as_str) == Some(command_id))
+                    .then_some(command)
+            })
+            .ok_or_else(|| format!("missing command {command_id} in {actions:#?}").into())
+    }
+
+    fn assert_presented_command(command: &Value, title: &str, command_id: &str, tooltip: &str) {
+        assert_eq!(command.get("title").and_then(Value::as_str), Some(title));
+        assert_eq!(command.get("command").and_then(Value::as_str), Some(command_id));
+        assert_eq!(command.get("tooltip").and_then(Value::as_str), Some(tooltip));
+        assert_ne!(
+            tooltip, title,
+            "tooltip must add information beyond the command title: {command}"
+        );
+    }
+
+    #[test]
+    fn generate_test_command_carries_lsp_318_tooltip_without_replacing_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///generate-test.pl";
+        open_test_document(&server, uri, "sub calculate {\n    return 1;\n}\n");
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 2, "character": 1 }
+            },
+            "context": { "diagnostics": [] }
+        })))?;
+        let actions = response
+            .ok_or("missing code action response")?
+            .as_array()
+            .cloned()
+            .ok_or("code action response must be an array")?;
+        let command = command_object(&actions, "perl.generateTest")?;
+        assert_presented_command(
+            command,
+            "Generate test",
+            "perl.generateTest",
+            "Insert a Test::More skeleton for this subroutine",
+        );
+        assert_eq!(command.pointer("/arguments/0/name").and_then(Value::as_str), Some("calculate"));
+        assert!(
+            command
+                .pointer("/arguments/0/test")
+                .and_then(Value::as_str)
+                .is_some_and(|test| !test.is_empty()),
+            "generate-test arguments must keep the generated skeleton: {command}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pending_parse_commands_carry_lsp_318_tooltips_without_replacing_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///pending-parse-commands.pl";
+        open_with_pending_parse(&server, uri)?;
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "context": { "diagnostics": [] }
+        })))?;
+        let actions = response
+            .ok_or("missing code action response")?
+            .as_array()
+            .cloned()
+            .ok_or("code action response must be an array")?;
+
+        let debug = command_object(&actions, "perl.addDebugPrint")?;
+        assert_presented_command(
+            debug,
+            "Add debug print",
+            "perl.addDebugPrint",
+            "Insert a STDERR debug print in this document",
+        );
+        assert_eq!(debug.pointer("/arguments/0/uri").and_then(Value::as_str), Some(uri));
+
+        let convert = command_object(&actions, "perl.convertToMyDeclarations")?;
+        assert_presented_command(
+            convert,
+            "Convert to my declarations",
+            "perl.convertToMyDeclarations",
+            "Rewrite file-scope globals as lexical my declarations",
+        );
+        assert_eq!(convert.pointer("/arguments/0/uri").and_then(Value::as_str), Some(uri));
         Ok(())
     }
 

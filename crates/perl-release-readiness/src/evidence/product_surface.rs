@@ -6,7 +6,7 @@
 //! an additional, stricter list of raw external-tool names is also banned.
 //!
 //! The authoritative CI gate remains the xtask command; this mirror keeps the
-//! crate self-contained so `perl_kwalitee::evaluate` produces a real
+//! crate self-contained so `perl_release_readiness::evaluate` produces a real
 //! product-surface verdict from `repo_root` alone. The two lists are kept in
 //! sync deliberately (see the sync test in the xtask suite and here).
 

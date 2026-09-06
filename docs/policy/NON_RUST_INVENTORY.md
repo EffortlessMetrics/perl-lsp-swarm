@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12751 |
-| Rust-family files | 3991 |
-| Non-Rust files | 8760 |
-| Allowlisted | 6521 |
-| Unclassified | 2239 |
+| Total tracked files | 12791 |
+| Rust-family files | 4018 |
+| Non-Rust files | 8773 |
+| Allowlisted | 6536 |
+| Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 502 |
-| documentation | 2858 |
+| config | 512 |
+| documentation | 2861 |
 | generated | 2 |
 | production | 357 |
-| test | 2115 |
+| test | 2117 |
 | tooling | 687 |
-| unclassified | 2239 |
+| unclassified | 2237 |
 
 ## Unclassified files
 
@@ -80,8 +80,6 @@
 | `crates/perl-dap/tests/fixtures/reference_clients/vscode_mock_debug_smoke.json` | `json` |
 | `crates/perl-dap/tests/fixtures/security/eval_security_tests.json` | `json` |
 | `crates/perl-dap/tests/fixtures/security/path_traversal_attempts.json` | `json` |
-| `crates/perl-kwalitee/fixtures/legacy_receipt_v1.json` | `json` |
-| `crates/perl-kwalitee/legacy_indicator_migrations.toml` | `toml` |
 | `crates/perl-lexer/tests/fixtures/ripr_seam_proof_peek_char_unit.inc` | `inc` |
 | `crates/perl-lexer/tests/fixtures/simd_feature_includes/excluded/selector.inc` | `inc` |
 | `crates/perl-lexer/tests/fixtures/simd_feature_includes/payload.inc` | `inc` |
@@ -2371,6 +2369,9 @@
 | `.changes/unreleased/product-14389-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14566-Fixed-143000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14588-Changed-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14883-Fixed-235000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14890-Fixed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14909-Fixed-022000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2814,17 +2815,25 @@
 | `.ci/security/may-2026-findings/medium-2.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/security/release-settings-closeout.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/invalid-controller-no-packet.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-escaped-backtick.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-named-closed-issue.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-tracked-by-neighbor.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/invalid-explicit-unproven.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/invalid-partial-slice-6239-5016.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/invalid-phase-terminal-5023-5001.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/invalid-predecessor-successor-5968-5231.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/invalid-proof-level-6282-5901.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/invalid-proof-level-required-release.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/invalid-remaining-same-issue.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/multiple-relations-one-invalid.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/no-terminal-relation.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/valid-atomic.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/valid-controller-packet.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/valid-neighbor-disclaimer-inline-code.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/valid-neighbor-disclaimer-unproven.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/valid-phase-leaf-2624.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/valid-proof-level-unchanged-release.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/valid-representation-scope-substring.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/ux-flakes.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/workflow-security-baseline.json` | config | `non-rust-ci-config` | release/ci |
 | `.claude/README.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -3893,18 +3902,6 @@
 | `crates/perl-incremental-parsing/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-incremental-parsing/behavior_disposition.json` | tooling | `non-rust-behavior-disposition-ledger` | parser/incremental |
 | `crates/perl-incremental-parsing/benches/README.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `crates/perl-kwalitee/README.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `crates/perl-kwalitee/distribution_kwalitee_catalog.v1.toml` | config | `non-rust-distribution-kwalitee-catalog-v1` | distribution/kwalitee |
-| `crates/perl-kwalitee/distribution_kwalitee_fixtures.v1.toml` | config | `non-rust-distribution-kwalitee-fixture-contract-v1` | distribution/kwalitee |
-| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/Changes` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
-| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/LICENSE` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
-| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/MANIFEST` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
-| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/META.json` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
-| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/META.yml` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
-| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/Makefile.PL` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
-| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/README` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
-| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/lib/Acme/CatalogFreeze.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
-| `crates/perl-kwalitee/fixtures/distribution/Acme-CatalogFreeze/t/00-load.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
 | `crates/perl-lexer/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-lexer/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-lexer/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
@@ -4275,6 +4272,20 @@
 | `crates/perl-regex/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-regex/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-regex/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-release-readiness/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-release-readiness/distribution_kwalitee_catalog.v1.toml` | config | `non-rust-distribution-kwalitee-catalog-v1` | distribution/kwalitee |
+| `crates/perl-release-readiness/distribution_kwalitee_fixtures.v1.toml` | config | `non-rust-distribution-kwalitee-fixture-contract-v1` | distribution/kwalitee |
+| `crates/perl-release-readiness/fixtures/distribution/Acme-CatalogFreeze/Changes` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-release-readiness/fixtures/distribution/Acme-CatalogFreeze/LICENSE` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-release-readiness/fixtures/distribution/Acme-CatalogFreeze/MANIFEST` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-release-readiness/fixtures/distribution/Acme-CatalogFreeze/META.json` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-release-readiness/fixtures/distribution/Acme-CatalogFreeze/META.yml` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-release-readiness/fixtures/distribution/Acme-CatalogFreeze/Makefile.PL` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-release-readiness/fixtures/distribution/Acme-CatalogFreeze/README` | test | `non-rust-distribution-kwalitee-fixture-trees` | distribution/kwalitee |
+| `crates/perl-release-readiness/fixtures/distribution/Acme-CatalogFreeze/lib/Acme/CatalogFreeze.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `crates/perl-release-readiness/fixtures/distribution/Acme-CatalogFreeze/t/00-load.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `crates/perl-release-readiness/fixtures/legacy_receipt_v1.json` | test | `non-rust-release-readiness-legacy-receipt-v1` | distribution/kwalitee |
+| `crates/perl-release-readiness/legacy_indicator_migrations.toml` | config | `non-rust-release-readiness-legacy-indicator-migrations` | distribution/kwalitee |
 | `crates/perl-ripr-facts/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `crates/perl-ripr-facts/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-ripr-facts/tests/golden/ripr_facts_v1_no_diff.json` | test | `non-rust-ripr-facts-packet-goldens` | ripr/facts-producer |
@@ -6327,6 +6338,7 @@
 | `fixtures/product_health_status/sources/sec-b.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
 | `fixtures/product_health_status/sources/sec-ind.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
 | `fixtures/product_health_status/sources/unproven.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/release_candidate_artifacts/topology.json` | test | `non-rust-release-candidate-artifacts-fixtures` | release/ci |
 | `fixtures/train_edge_contract/external_stages.v1.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/expected_errors.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/external_stage_satisfied_internally.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
@@ -6509,6 +6521,7 @@
 | `schemas/perl_core_harness_upstream_effective_invocation_trace.v1.schema.json` | config | `non-rust-core-harness-upstream-effective-invocation-trace-schema` | compiler |
 | `schemas/perl_core_harness_upstream_runner_discovery.v1.schema.json` | config | `non-rust-core-harness-upstream-runner-discovery-schema` | compiler |
 | `schemas/publication_runtime_identity.v1.schema.json` | config | `non-rust-publication-runtime-identity-schema` | release/ci |
+| `schemas/release_candidate_artifacts.v1.schema.json` | config | `non-rust-release-candidate-artifacts-schema` | release/ci |
 | `schemas/release_topology.v1.schema.json` | config | `non-rust-release-topology-schema` | release/ci |
 | `schemas/stage_closure_projection.v1.schema.json` | config | `non-rust-stage-closure-projection-schema` | tooling/agent-review |
 | `schemas/standalone_candidate.v1.schema.json` | config | `non-rust-standalone-candidate-schema` | release/ci |

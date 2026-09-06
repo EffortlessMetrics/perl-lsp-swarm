@@ -88,7 +88,7 @@ members = [
     "crates/tree-sitter-perl-c",
     "crates/tree-sitter-perl-rs",
     "crates/perl-ci-hygiene",
-    "crates/perl-kwalitee",
+    "crates/perl-release-readiness",
     "crates/perl-workspace-core",
     "crates/perl-tree-sitter-compat",
     "xtask",
@@ -270,9 +270,9 @@ perl-uri = { path = "crates/perl-uri", version = "0.17.0" }
 # Wave D absorbed: perl-path-security → perl-parser-core::path_security
 perl-lsp-rs-core = { path = "crates/perl-lsp-rs-core", version = "0.17.0" }
 perl-ci-hygiene = { path = "crates/perl-ci-hygiene", version = "0.17.0" }
-# Distribution-quality (Kwalitee) evaluator. Private (publish = false) while the
-# receipt schema stabilizes; consumed by xtask's perl-kwalitee command.
-perl-kwalitee = { path = "crates/perl-kwalitee", version = "0.17.0" }
+# Legacy mixed release-readiness evaluator. Private (publish = false); consumed
+# by xtask's perl-kwalitee command. Receipt kind remains `perl_kwalitee`.
+perl-release-readiness = { path = "crates/perl-release-readiness", version = "0.17.0" }
 # perl-workspace-core: LSP-free project-facts substrate (PLSP-ADR-0006). Deliberately
 # NOT dependent on perl-workspace/lsp-types (contract in tests/dependency_contract.rs).
 perl-workspace-core = { path = "crates/perl-workspace-core", version = "0.17.0" }
