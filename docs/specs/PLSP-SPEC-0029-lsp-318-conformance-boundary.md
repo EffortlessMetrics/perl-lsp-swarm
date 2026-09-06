@@ -48,6 +48,7 @@ Current lock points:
 - CodeLens command lazy-resolution is gated by
   `textDocument.codeLens.resolveSupport.properties`
 - CodeLens commands include plain LSP 3.18 `Command.tooltip` text
+- reachable non-CodeLens command producers include the same `Command.tooltip` field
 - explicit window debug messages serialize LSP 3.18 `MessageType.Debug` as
   type `5`
 - pull diagnostics can emit `Diagnostic.message` as `MarkupContent` only when
@@ -90,7 +91,8 @@ perl-lsp supports selected LSP 3.18 surfaces with capability-honest contracts.
 | Signature-help nullable active parameter | `textDocument/signatureHelp` response | `SignatureHelp.activeParameter` and `SignatureInformation.activeParameter` schema validation accepts unsigned integer or `null`; current runtime receipts preserve numeric active-parameter tracking when known. | `lsp_schema_validation`, `lsp_signature_help_tests`, `check-lsp-318-claims` |
 | SnippetTextEdit workspace edits | `workspace.workspaceEdit.documentChanges`, `workspace.workspaceEdit.snippetEditSupport` | Pragma quick-fix code actions emit `SnippetTextEdit` in `WorkspaceEdit.documentChanges` only when both capabilities are present; unsupported clients and aggregate fix-all actions keep plain `TextEdit` fallback. | `lsp_318_negative_claims`, `features.toml`, `check-lsp-318-claims` |
 | CodeLens resolve support properties | `textDocument.codeLens.resolveSupport.properties`, `codeLensProvider.resolveProvider`, `codeLens/resolve` | Clients receive unresolved command/reference lenses only when `command` appears in resolve-support properties; clients without that property receive eager command lenses while `codeLens/resolve` remains routed. | `lsp_codelens_tests`, `lsp_code_lens_tests`, `lsp_bdd_workflows`, `check-lsp-318-claims` |
-| CodeLens command tooltips | `Command.tooltip` on CodeLens command objects | CodeLens commands returned by `textDocument/codeLens` and `codeLens/resolve` carry deterministic plain-text tooltips; non-CodeLens command tooltips remain unclaimed. | `lsp_codelens_tests`, `lsp_318_negative_claims`, `check-lsp-318-claims` |
+| CodeLens command tooltips | `Command.tooltip` on CodeLens command objects | CodeLens commands returned by `textDocument/codeLens` and `codeLens/resolve` carry deterministic plain-text tooltips. | `lsp_codelens_tests`, `check-lsp-318-claims` |
+| Command tooltips | `Command.tooltip` on reachable command objects | Every reachable LSP Command producer uses the canonical 3.18 Command type and a required plain-text tooltip; title, identifier, and arguments stay unchanged. Completion, inline-completion, and document-link surfaces do not produce Command objects. | `lsp_command_tooltip_tests`, `lsp_318_negative_claims`, `check-lsp-318-claims` |
 | Completion list default data | `textDocument.completion.completionList.itemDefaults`, `textDocument/completion` | Clients that include `data` in supported completion-list defaults receive shared `CompletionList.itemDefaults.data`; unsupported clients retain the current response shape. | `lsp_completion_tests`, `lsp_318_negative_claims`, `check-lsp-318-claims` |
 | Completion list apply kind | `textDocument.completion.completionList.applyKindSupport`, `textDocument/completion` | Clients that support apply kind and `itemDefaults.data` receive `CompletionList.applyKind.data = 2` (`ApplyKind.Merge`); unsupported clients, or clients without supported defaults, receive no `applyKind`. | `lsp_completion_tests`, `lsp_318_negative_claims`, `check-lsp-318-claims` |
 | CodeAction documentation | `textDocument.codeAction.documentationSupport`, `codeActionProvider.documentation` | Clients that support code-action documentation receive `CodeActionOptions.documentation` for `quickfix`, `refactor`, and `source.fixAll`; unsupported clients receive no documentation advertisement and individual code-action responses remain unchanged. | `lsp_318_negative_claims`, `check-lsp-318-claims` |
@@ -100,6 +102,28 @@ perl-lsp supports selected LSP 3.18 surfaces with capability-honest contracts.
 | Diagnostic markup messages | `textDocument.diagnostic.markupMessageSupport`, `textDocument/diagnostic`, `workspace/diagnostic` | Pull diagnostics may emit `Diagnostic.message` as `MarkupContent` only when support is true; unsupported clients and publish diagnostics remain string-only. | `lsp_diagnostic_enrichment_test`, `lsp_318_negative_claims`, `lsp_schema_validation`, `check-lsp-318-claims` |
 | Lean/e2e watcher behavior | `workspace/didChangeWatchedFiles` dynamic registration | Runtime tuning can suppress file watchers without suppressing inline-completion dynamic registration. | `lsp_registration_tests`, lean UX receipts |
 | RelativePattern watcher registrations | `workspace.didChangeWatchedFiles.relativePatternSupport`, `workspace/didChangeWatchedFiles` dynamic registration | Clients that support relative watcher glob patterns receive `baseUri`/`pattern` objects rooted at workspace folders; unsupported clients and invalid workspace roots keep string glob fallback. | `lsp_registration_tests`, `lsp_318_negative_claims`, `check-lsp-318-claims` |
+
+## Command tooltip inventory
+
+Checked production inventory for outbound LSP `Command` objects. The canonical
+type is `perl_lsp_rs_core::protocol::command::Command`. New producers must use
+`Command::presented` so tooltip policy cannot be omitted.
+
+| Path | Canonical type | Disposition |
+| --- | --- | --- |
+| CodeLens `textDocument/codeLens` and `codeLens/resolve` | `protocol::command::Command` (re-exported from the CodeLens provider) | populate; existing receipts unchanged |
+| Code action `perl.generateTest` | `Command::presented` | populate useful plain-text tooltip |
+| Code action `perl.addDebugPrint` (no-AST / pending-parse path) | `Command::presented` | populate useful plain-text tooltip |
+| Code action `perl.convertToMyDeclarations` (no-AST / pending-parse path) | `Command::presented` | populate useful plain-text tooltip |
+| Code action `perl-lsp.explainDiagnostic` | `Command::presented` | populate useful plain-text tooltip |
+| Completion items | none | surface cannot produce Command |
+| Inline completion items | `lsp_types::Command` field exists but every producer leaves it `None` | surface does not currently produce Command |
+| Document links | none | surface cannot produce Command |
+| `window/showMessageRequest` actions | `{ "title" }` only | surface cannot produce Command |
+| Execute-command results, custom explain/trust/agent payloads | string `command` identifier, not an LSP Command object | surface cannot produce Command |
+
+A `perl.runFixer` command object appears only as a unit-test fixture for
+`source.fixAll` aggregation and is not a production producer.
 
 ## Matrix Closeout State
 
@@ -127,7 +151,6 @@ capability parsing, wire tests, docs, and negative gates:
 - non-spec `WorkspaceEdit.metadata` response fields
 - generated-action `CodeAction.tags` emission
 - `CodeActionTag.LLMGenerated` on deterministic actions
-- `Command.tooltip` outside CodeLens command objects
 - `RelativePattern` document selectors
 - ungated `workspace/foldingRange/refresh` without
   `workspace.foldingRange.refreshSupport`
@@ -172,7 +195,7 @@ The `lsp_318_negative_claims` test suite is the current guardrail for optional
 - sends `workspace/foldingRange/refresh` without client refresh support
 - emits `MessageType.Debug` from normal runtime paths that have not
   intentionally opted into debug-level messages
-- emits `Command.tooltip` outside CodeLens command objects
+- emits an LSP `Command` object without a non-empty `tooltip`
 - emits markdown `command:` links or `$()` theme-icon syntax while the project
   has no separate editor-specific capability contract for those affordances
 
