@@ -24,7 +24,7 @@ fn diagnostics_from_report(source: &str, report: &DetectionReport) -> Vec<Diagno
         .iter()
         .cloned()
         .map(|d| {
-            let offset = extract_offset(&d.pattern);
+            let offset = d.pattern.offset();
             let end_offset = (offset + 1).min(source.len());
 
             let severity = match d.severity {
@@ -79,10 +79,6 @@ fn incomplete_scan_diagnostic(source: &str, report: &DetectionReport) -> Diagnos
         critic_observation: None,
         suggestion: None,
     }
-}
-
-fn extract_offset(pattern: &AntiPattern) -> usize {
-    pattern.offset()
 }
 
 fn antipattern_code(pattern: &AntiPattern) -> &'static str {

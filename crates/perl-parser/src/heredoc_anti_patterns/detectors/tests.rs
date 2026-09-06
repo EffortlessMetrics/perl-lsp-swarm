@@ -1,4 +1,4 @@
-use super::{AntiPatternDetector, PatternDetector};
+use super::AntiPatternDetector;
 use crate::heredoc_anti_patterns::model::{
     AntiPattern, DetectionStatus, DetectorFailureReason, DetectorId, DetectorState,
     HeredocDelimiter,
@@ -347,6 +347,17 @@ fn test_find_matching_brace_returns_none_for_unclosed_block() {
     let closing = super::find_matching_brace(code, opening);
 
     assert!(closing.is_none());
+}
+
+#[test]
+fn production_catalog_compiles_and_empty_source_is_complete_clean() {
+    let detector = AntiPatternDetector::new();
+    let report = detector.detect_all_report("");
+
+    assert_eq!(report.status, DetectionStatus::Complete);
+    assert!(report.detectors.iter().all(|obs| matches!(obs.state, DetectorState::Complete)));
+    assert_eq!(report.detectors.len(), ALL_DETECTOR_IDS.len());
+    assert!(report.is_complete_clean());
 }
 
 fn forced_reason() -> DetectorFailureReason {
