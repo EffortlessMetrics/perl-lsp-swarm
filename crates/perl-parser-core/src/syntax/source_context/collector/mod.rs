@@ -15,8 +15,11 @@ use super::region::SourceRegion;
 pub(crate) fn collect_regions(source: &str) -> Vec<SourceRegion> {
     let mut regions = Vec::new();
     regions.extend(literal_scan::scan_line_comments_and_open_literals(source));
-    regions.extend(literal_scan::scan_heredoc_regions(source));
-    regions.extend(collect_lexer_literal_regions(source));
+    let heredoc_regions = literal_scan::scan_heredoc_regions(source);
+    regions.extend(heredoc_regions.iter().copied());
+    let mut lexer_regions = collect_lexer_literal_regions(source);
+    suppress_padded_terminator_recovery(&mut lexer_regions, &heredoc_regions, source.len());
+    regions.extend(lexer_regions);
     if let Some(marker_start) = find_data_marker_byte_lexed(source)
         && let Some(region) =
             SourceRegion::new(marker_start, source.len(), SourceRegionKind::DataSection)
@@ -24,6 +27,47 @@ pub(crate) fn collect_regions(source: &str) -> Vec<SourceRegion> {
         regions.push(region);
     }
     coalesce_regions(regions, source.len())
+}
+
+/// Honor a scanner-closed heredoc when composing lexer recovery.
+///
+/// `scan_heredoc_regions` already treats trailing spaces/tabs after the label
+/// as closing the body. `PerlLexer` does not: Perl 5.38.2 rejects that line
+/// (`Can't find string terminator`), and the lexer emits `UnknownRest` through
+/// EOF. Mapping that token to [`SourceRegionKind::RecoveryAmbiguous`] then
+/// fills the gap after the closed body, so following statements stop being
+/// `Code` (#14864).
+///
+/// Clip or drop only EOF-reaching recovery that starts inside a *closed*
+/// heredoc body or exactly at its terminator line. Later independent recovery
+/// (an unclosed quote after the padded close) keeps its own span.
+fn suppress_padded_terminator_recovery(
+    lexer_regions: &mut Vec<SourceRegion>,
+    heredoc_regions: &[SourceRegion],
+    source_len: usize,
+) {
+    let mut kept = Vec::with_capacity(lexer_regions.len());
+    for mut region in lexer_regions.drain(..) {
+        if region.kind == SourceRegionKind::RecoveryAmbiguous && region.end == source_len {
+            for heredoc in heredoc_regions {
+                if heredoc.kind != SourceRegionKind::Heredoc || heredoc.end >= source_len {
+                    continue;
+                }
+                if region.start >= heredoc.start && region.start < heredoc.end {
+                    region.end = heredoc.end;
+                    break;
+                }
+                if region.start == heredoc.end {
+                    region.end = region.start;
+                    break;
+                }
+            }
+        }
+        if region.start < region.end {
+            kept.push(region);
+        }
+    }
+    *lexer_regions = kept;
 }
 
 fn collect_lexer_literal_regions(source: &str) -> Vec<SourceRegion> {
@@ -269,5 +313,35 @@ mod tests {
     fn plain_code_produces_no_literal_region() {
         let regions = collect_lexer_literal_regions("my $x = 1 + 2;\n");
         assert!(regions.is_empty(), "plain code must produce no literal region, got: {regions:?}");
+    }
+
+    /// Names the composition seam: the scanner closes on a padded terminator,
+    /// the lexer still emits EOF-reaching `UnknownRest`, and `collect_regions`
+    /// must not leave that suffix classified as recovery.
+    #[test]
+    fn padded_terminator_does_not_leave_recovery_over_following_code() {
+        let source = "my $t = <<EOF;\nbody\nEOF  \nmy $after = 1;\n";
+        let regions = collect_regions(source);
+        assert!(
+            regions.iter().all(|region| region.kind != SourceRegionKind::RecoveryAmbiguous),
+            "a whitespace-padded terminator must not leave recovery, got: {regions:?}"
+        );
+        let after = source.find("my $after").expect("fixture must contain trailing code");
+        assert!(
+            regions.iter().all(|region| !region.contains_offset(after)),
+            "trailing code must be uncovered (Code), got: {regions:?}"
+        );
+    }
+
+    /// Retention: a truly unclosed quote after a padded close must still be
+    /// recovery. The clip is not a blanket drop of every EOF-reaching span.
+    #[test]
+    fn unclosed_quote_after_padded_terminator_stays_recovery() {
+        let source = "my $t = <<EOF;\nbody\nEOF  \nmy $x = \"open\n";
+        let regions = collect_regions(source);
+        assert!(
+            regions.iter().any(|region| region.kind == SourceRegionKind::RecoveryAmbiguous),
+            "an unclosed quote after the padded close must stay recovery, got: {regions:?}"
+        );
     }
 }
