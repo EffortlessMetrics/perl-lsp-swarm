@@ -930,6 +930,61 @@ mod script_control_coherence {
     }
 
     #[test]
+    fn other_control_activity_does_not_excuse_a_cancellation_event() {
+        let run = with_event(ProcessEventKind::TerminationPhase(
+            TerminationPhase::CancellationRequested(CancellationReason::Shutdown),
+        ))
+        .with_control(ControlState { deadline_reached: true, ..ControlState::default() });
+        assert_eq!(
+            FakeSupervisor::new().script_run(run),
+            Err(ScriptedRunContradiction::CancellationRequestedMismatch {
+                event: CancellationReason::Shutdown,
+                control: None,
+            })
+        );
+    }
+
+    #[test]
+    fn other_control_activity_does_not_excuse_a_limit_event() {
+        let run = with_event(ProcessEventKind::LimitReached(observation_limit(
+            StreamChannel::Stdout,
+            false,
+        )))
+        .with_control(ControlState { deadline_reached: true, ..ControlState::default() });
+        assert_eq!(
+            FakeSupervisor::new().script_run(run),
+            Err(ScriptedRunContradiction::LimitReachedWithoutControl)
+        );
+    }
+
+    #[test]
+    fn operation_superseded_cancellation_event_requires_the_same_reason() {
+        let matching = with_event(ProcessEventKind::TerminationPhase(
+            TerminationPhase::CancellationRequested(CancellationReason::OperationSuperseded),
+        ))
+        .with_control(ControlState {
+            cancellation_requested: Some(CancellationReason::OperationSuperseded),
+            ..ControlState::default()
+        });
+        assert_eq!(FakeSupervisor::new().script_run(matching), Ok(()));
+
+        let mismatched = with_event(ProcessEventKind::TerminationPhase(
+            TerminationPhase::CancellationRequested(CancellationReason::OperationSuperseded),
+        ))
+        .with_control(ControlState {
+            cancellation_requested: Some(CancellationReason::UserRequested),
+            ..ControlState::default()
+        });
+        assert_eq!(
+            FakeSupervisor::new().script_run(mismatched),
+            Err(ScriptedRunContradiction::CancellationRequestedMismatch {
+                event: CancellationReason::OperationSuperseded,
+                control: Some(CancellationReason::UserRequested),
+            })
+        );
+    }
+
+    #[test]
     fn a_refused_start_is_not_subject_to_run_pairing() {
         assert_eq!(
             FakeSupervisor::new()
