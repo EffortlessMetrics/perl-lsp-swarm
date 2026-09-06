@@ -11,7 +11,7 @@
 
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
-use anyhow::{anyhow, bail, ensure, Result};
+use anyhow::{Result, anyhow, bail, ensure};
 
 use serde_yaml_ng::Value;
 
@@ -316,31 +316,11 @@ fn validate_family(job_name: &str, job: &Value, family: &CacheFamily) -> Result<
             "job `{job_name}` must not add cache-targets under this writer-authority claim"
         ),
     }
-    let save_if = cache_with.get(Value::String("save-if".into())).and_then(Value::as_str);
-    if family.candidate_reachable {
-        match save_if {
-            None => bail!("job `{job_name}` is candidate-reachable and missing trusted save-if"),
-            Some("true") | Some("${{ true }}") => {
-                bail!("job `{job_name}` save-if must not be unconditionally true")
-            }
-            Some(value) if value.contains("pull_request") || value.contains("head_ref") => {
-                bail!(
-                    "job `{job_name}` save-if must not be authorized by a candidate event, label, or head-branch string"
-                )
-            }
-            Some(value) if value == TRUSTED_SAVE_IF => {}
-            Some(value) => {
-                bail!(
-                    "job `{job_name}` save-if must be the canonical default-branch expression, found {value}"
-                )
-            }
-        }
-    } else {
-        ensure!(
-            save_if.is_none(),
-            "statically PR-excluded cache `{job_name}` must not grow a textual save-if"
-        );
-    }
+    validate_save_if(
+        job_name,
+        family.candidate_reachable,
+        cache_with.get(Value::String("save-if".into())),
+    )?;
 
     let first_work = steps.iter().position(|step| {
         mapping_get(step, "run").and_then(Value::as_str).is_some_and(warms_rust_work)
@@ -352,6 +332,45 @@ fn validate_family(job_name: &str, job: &Value, family: &CacheFamily) -> Result<
         );
     }
     Ok(())
+}
+
+fn validate_save_if(
+    job_name: &str,
+    candidate_reachable: bool,
+    save_if: Option<&Value>,
+) -> Result<()> {
+    if !candidate_reachable {
+        ensure!(
+            save_if.is_none(),
+            "statically PR-excluded cache `{job_name}` must not grow a textual save-if"
+        );
+        return Ok(());
+    }
+    // YAML 1.1 folds unquoted `true` into a boolean, which is also Swatinem's
+    // default write-enabled posture. Inspect the raw node, not only strings.
+    match save_if {
+        None => bail!("job `{job_name}` is candidate-reachable and missing trusted save-if"),
+        Some(Value::Bool(true)) => {
+            bail!("job `{job_name}` save-if must not be unconditionally true")
+        }
+        Some(Value::Bool(false)) => {
+            bail!("job `{job_name}` save-if must retain trusted default-branch save authority")
+        }
+        Some(Value::String(value)) if value == "true" || value == "${{ true }}" => {
+            bail!("job `{job_name}` save-if must not be unconditionally true")
+        }
+        Some(Value::String(value))
+            if value.contains("pull_request") || value.contains("head_ref") =>
+        {
+            bail!(
+                "job `{job_name}` save-if must not be authorized by a candidate event, label, or head-branch string"
+            )
+        }
+        Some(Value::String(value)) if value == TRUSTED_SAVE_IF => Ok(()),
+        Some(other) => bail!(
+            "job `{job_name}` save-if must be the canonical default-branch expression, found {other:?}"
+        ),
+    }
 }
 
 fn validate_nightly_workflow(source: &str) -> Result<()> {
@@ -473,6 +492,12 @@ fn mutated_nightly_writer_postures_are_rejected() -> Result<()> {
     )?;
     reject_mutation(
         &source,
+        "          key: ${{ runner.os }}-mutation-${{ hashFiles('Cargo.lock') }}\n          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}\n",
+        "          key: ${{ runner.os }}-mutation-${{ hashFiles('Cargo.lock') }}\n          save-if: false\n",
+        "retain trusted default-branch save authority",
+    )?;
+    reject_mutation(
+        &source,
         "          key: ${{ runner.os }}-kwalitee-${{ hashFiles('Cargo.lock') }}\n          cache-on-failure: true\n          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}\n",
         "          key: ${{ runner.os }}-kwalitee-${{ hashFiles('Cargo.lock') }}\n          cache-on-failure: true\n          save-if: ${{ contains(github.event.pull_request.labels.*.name, 'ci:kwalitee') }}\n",
         "candidate event, label, or head-branch",
@@ -492,13 +517,25 @@ fn mutated_nightly_writer_postures_are_rejected() -> Result<()> {
     reject_mutation(
         &source,
         "          shared-key: nightly-lsp-memory-${{ hashFiles('Cargo.lock') }}\n",
-        "          key: nightly-lsp-memory-${{ hashFiles('Cargo.lock') }}\n",
+        "          shared-key: nightly-lsp-memory-v2-${{ hashFiles('Cargo.lock') }}\n",
         "shared-key identity changed",
+    )?;
+    reject_mutation(
+        &source,
+        "          shared-key: nightly-lsp-memory-${{ hashFiles('Cargo.lock') }}\n",
+        "          key: nightly-lsp-memory-${{ hashFiles('Cargo.lock') }}\n",
+        "cache key identity changed",
     )?;
     reject_mutation(
         &source,
         "          key: ${{ runner.os }}-coverage-${{ hashFiles('Cargo.lock') }}\n          cache-targets: false\n          cache-on-failure: true\n",
         "          key: ${{ runner.os }}-coverage-${{ hashFiles('Cargo.lock') }}\n          cache-targets: false\n          cache-on-failure: true\n          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}\n",
+        "must not grow a textual save-if",
+    )?;
+    reject_mutation(
+        &source,
+        "          key: ${{ runner.os }}-coverage-${{ hashFiles('Cargo.lock') }}\n          cache-targets: false\n          cache-on-failure: true\n",
+        "          key: ${{ runner.os }}-coverage-${{ hashFiles('Cargo.lock') }}\n          cache-targets: false\n          cache-on-failure: true\n          save-if: true\n",
         "must not grow a textual save-if",
     )?;
     reject_mutation(
