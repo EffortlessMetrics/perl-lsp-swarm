@@ -1,10 +1,14 @@
 //! Conservative structural tautology detection for assertion expressions.
 //!
-//! False negatives are acceptable. False positives are not. Patterns that
-//! require type inference or purity analysis of arbitrary calls are skipped,
-//! except for the explicitly governed Option/Result method pairs whose
-//! receivers match after paren-normalization.
+//! False negatives are acceptable. False positives are not. Option/Result
+//! method pairs fire only when the receiver is a constructor or an explicitly
+//! ascribed Option/Result. Identical `assert_eq!` operands are governed only
+//! when PartialEq reflexivity is known from syntax.
 
+use super::expr::{
+    QueryKind, TypeEnv, expr_eq, is_known_reflexive_eq_operand, is_side_effect_free, peel,
+    proven_query_kind,
+};
 use syn::spanned::Spanned;
 use syn::{BinOp, Expr, UnOp};
 
@@ -60,18 +64,22 @@ pub struct Detection {
 }
 
 pub fn classify_assert_condition(expr: &Expr) -> Option<Detection> {
-    classify_or(peel(expr)).map(|rule| Detection { rule, line: line_of(expr) })
+    classify_assert_condition_in(expr, &TypeEnv::new())
+}
+
+pub fn classify_assert_condition_in(expr: &Expr, env: &TypeEnv) -> Option<Detection> {
+    classify_or(peel(expr), env).map(|rule| Detection { rule, line: line_of(expr) })
 }
 
 pub fn classify_assert_eq(left: &Expr, right: &Expr) -> Option<Detection> {
-    if identical_side_effect_free(left, right) {
+    if identical_known_reflexive_eq(left, right) {
         Some(Detection { rule: RuleId::AssertEqIdentical, line: line_of(peel(left)) })
     } else {
         None
     }
 }
 
-fn classify_or(expr: &Expr) -> Option<RuleId> {
+fn classify_or(expr: &Expr, env: &TypeEnv) -> Option<RuleId> {
     let Expr::Binary(binary) = expr else {
         return None;
     };
@@ -82,11 +90,11 @@ fn classify_or(expr: &Expr) -> Option<RuleId> {
     let left = peel(&binary.left);
     let right = peel(&binary.right);
 
-    if let Some(rule) = option_or_result_pair(left, right) {
+    if let Some(rule) = option_or_result_pair(left, right, env) {
         return Some(rule);
     }
 
-    if !is_side_effect_free(left) || !is_side_effect_free(right) {
+    if !is_side_effect_free(left, env) || !is_side_effect_free(right, env) {
         return None;
     }
 
@@ -99,35 +107,28 @@ fn classify_or(expr: &Expr) -> Option<RuleId> {
     None
 }
 
-fn identical_side_effect_free(left: &Expr, right: &Expr) -> bool {
+fn identical_known_reflexive_eq(left: &Expr, right: &Expr) -> bool {
     let left = peel(left);
     let right = peel(right);
-    expr_eq(left, right) && is_side_effect_free(left)
+    expr_eq(left, right) && is_known_reflexive_eq_operand(left)
 }
 
-fn option_or_result_pair(left: &Expr, right: &Expr) -> Option<RuleId> {
+fn option_or_result_pair(left: &Expr, right: &Expr, env: &TypeEnv) -> Option<RuleId> {
     let (left_recv, left_method) = method_name(left)?;
     let (right_recv, right_method) = method_name(right)?;
     if !expr_eq(left_recv, right_recv) {
         return None;
     }
-    // Identical method-call receivers (`iter.next()`) can yield different
-    // values. Identical function-call receivers remain governed because
-    // #14061 falsifier 5 is the `sanitize_completion_path_input(...)`
-    // option-pair. Impure-call residuals are accepted; a purity plugin is
-    // a non-goal.
-    if !receiver_stable_enough(left_recv) {
-        return None;
-    }
-    match (left_method.as_str(), right_method.as_str()) {
-        ("is_some", "is_none") | ("is_none", "is_some") => Some(RuleId::OptionSomeOrNone),
-        ("is_ok", "is_err") | ("is_err", "is_ok") => Some(RuleId::ResultOkOrErr),
+    let kind = proven_query_kind(left_recv, env)?;
+    match (kind, left_method.as_str(), right_method.as_str()) {
+        (QueryKind::Option, "is_some", "is_none") | (QueryKind::Option, "is_none", "is_some") => {
+            Some(RuleId::OptionSomeOrNone)
+        }
+        (QueryKind::Result, "is_ok", "is_err") | (QueryKind::Result, "is_err", "is_ok") => {
+            Some(RuleId::ResultOkOrErr)
+        }
         _ => None,
     }
-}
-
-fn receiver_stable_enough(recv: &Expr) -> bool {
-    is_side_effect_free(recv) || matches!(peel(recv), Expr::Call(_))
 }
 
 fn is_negation_pair(left: &Expr, right: &Expr) -> bool {
@@ -152,51 +153,6 @@ fn method_name(expr: &Expr) -> Option<(&Expr, String)> {
     Some((peel(&call.receiver), call.method.to_string()))
 }
 
-fn is_side_effect_free(expr: &Expr) -> bool {
-    match peel(expr) {
-        Expr::Path(_) | Expr::Lit(_) | Expr::Const(_) => true,
-        Expr::Reference(reference) => is_side_effect_free(&reference.expr),
-        Expr::Unary(unary) if matches!(unary.op, UnOp::Not(_) | UnOp::Deref(_) | UnOp::Neg(_)) => {
-            is_side_effect_free(&unary.expr)
-        }
-        Expr::Field(field) => is_side_effect_free(&field.base),
-        Expr::Tuple(tuple) => tuple.elems.iter().all(is_side_effect_free),
-        Expr::Array(array) => array.elems.iter().all(is_side_effect_free),
-        Expr::Struct(strct)
-            if strct.qself.is_none()
-                && strct.dot2_token.is_none()
-                && strct.rest.is_none()
-                && strct.fields.iter().all(|field| is_side_effect_free(&field.expr)) =>
-        {
-            true
-        }
-        Expr::Cast(cast) => is_side_effect_free(&cast.expr),
-        Expr::MethodCall(call)
-            if call.args.is_empty()
-                && call.turbofish.is_none()
-                && (call.method == "is_some"
-                    || call.method == "is_none"
-                    || call.method == "is_ok"
-                    || call.method == "is_err") =>
-        {
-            is_side_effect_free(&call.receiver)
-        }
-        _ => false,
-    }
-}
-
-pub(crate) fn peel(expr: &Expr) -> &Expr {
-    match expr {
-        Expr::Paren(paren) => peel(&paren.expr),
-        Expr::Group(group) => peel(&group.expr),
-        other => other,
-    }
-}
-
-fn expr_eq(left: &Expr, right: &Expr) -> bool {
-    peel(left) == peel(right)
-}
-
 fn line_of(expr: &Expr) -> u32 {
     u32::try_from(expr.span().start().line).unwrap_or(0)
 }
@@ -205,12 +161,24 @@ fn line_of(expr: &Expr) -> u32 {
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-    use super::{RuleId, classify_assert_condition, classify_assert_eq};
+    use super::super::expr::{QueryKind, TypeEnv};
+    use super::{
+        RuleId, classify_assert_condition, classify_assert_condition_in, classify_assert_eq,
+    };
     use syn::parse_str;
 
     fn rule_of(src: &str) -> Option<RuleId> {
         let expr = parse_str(src).unwrap_or_else(|error| panic!("parse `{src}`: {error}"));
         classify_assert_condition(&expr).map(|detection| detection.rule)
+    }
+
+    fn typed_rule(src: &str, bindings: &[(&str, QueryKind)]) -> Option<RuleId> {
+        let expr = parse_str(src).unwrap_or_else(|error| panic!("parse `{src}`: {error}"));
+        let mut env = TypeEnv::new();
+        for (ident, kind) in bindings {
+            env.bind((*ident).to_string(), *kind);
+        }
+        classify_assert_condition_in(&expr, &env).map(|detection| detection.rule)
     }
 
     fn eq_rule(left: &str, right: &str) -> Option<RuleId> {
@@ -222,39 +190,52 @@ mod tests {
 
     #[test]
     fn flags_option_some_or_none() {
-        assert_eq!(rule_of("value.is_some() || value.is_none()"), Some(RuleId::OptionSomeOrNone));
-        assert_eq!(rule_of("value.is_none() || value.is_some()"), Some(RuleId::OptionSomeOrNone));
         assert_eq!(
-            rule_of("(value.is_some()) || (value.is_none())"),
+            typed_rule("value.is_some() || value.is_none()", &[("value", QueryKind::Option)]),
             Some(RuleId::OptionSomeOrNone)
         );
-    }
-
-    #[test]
-    fn flags_multiline_call_receivers_as_option_pair() {
         assert_eq!(
-            rule_of(
-                r#"sanitize_completion_path_input("..%2f..%2fetc%2fpasswd").is_some()
-                    || sanitize_completion_path_input("..%2f..%2fetc%2fpasswd").is_none()"#
-            ),
+            typed_rule("value.is_none() || value.is_some()", &[("value", QueryKind::Option)]),
             Some(RuleId::OptionSomeOrNone)
         );
+        assert_eq!(
+            typed_rule("(value.is_some()) || (value.is_none())", &[("value", QueryKind::Option)]),
+            Some(RuleId::OptionSomeOrNone)
+        );
+        assert_eq!(
+            rule_of("Some(1).is_some() || Some(1).is_none()"),
+            Some(RuleId::OptionSomeOrNone)
+        );
+        assert_eq!(rule_of("None.is_some() || None.is_none()"), Some(RuleId::OptionSomeOrNone));
     }
 
     #[test]
     fn flags_result_ok_or_err() {
-        assert_eq!(rule_of("result.is_ok() || result.is_err()"), Some(RuleId::ResultOkOrErr));
         assert_eq!(
-            rule_of("parse_result.is_err() || parse_result.is_ok()"),
+            typed_rule("result.is_ok() || result.is_err()", &[("result", QueryKind::Result)]),
             Some(RuleId::ResultOkOrErr)
         );
+        assert_eq!(
+            typed_rule(
+                "parse_result.is_err() || parse_result.is_ok()",
+                &[("parse_result", QueryKind::Result)]
+            ),
+            Some(RuleId::ResultOkOrErr)
+        );
+        assert_eq!(rule_of("Ok(()).is_ok() || Ok(()).is_err()"), Some(RuleId::ResultOkOrErr));
     }
 
     #[test]
     fn flags_predicate_or_negation_and_reverse() {
         assert_eq!(rule_of("ready || !ready"), Some(RuleId::PredicateOrNegation));
         assert_eq!(rule_of("!ready || ready"), Some(RuleId::PredicateOrNegation));
-        assert_eq!(rule_of("flag.is_some() || !flag.is_some()"), Some(RuleId::PredicateOrNegation));
+        assert_eq!(
+            typed_rule("flag.is_some() || !flag.is_some()", &[("flag", QueryKind::Option)]),
+            Some(RuleId::PredicateOrNegation)
+        );
+        assert_eq!(rule_of("flag.is_some() || !flag.is_some()"), None);
+        assert_eq!(rule_of("*value || !*value"), None);
+        assert_eq!(rule_of("item.flag || !item.flag"), None);
     }
 
     #[test]
@@ -264,20 +245,20 @@ mod tests {
     }
 
     #[test]
-    fn flags_assert_eq_identical_side_effect_free_values() {
-        assert_eq!(eq_rule("value", "value"), Some(RuleId::AssertEqIdentical));
-        assert_eq!(
-            eq_rule("RecoverySite::ArgList", "RecoverySite::ArgList"),
-            Some(RuleId::AssertEqIdentical)
-        );
+    fn still_flags_known_reflexive_identical_literals_after_reflexivity_narrowing() {
         assert_eq!(eq_rule("1", "1"), Some(RuleId::AssertEqIdentical));
-        assert_eq!(eq_rule("(value)", "value"), Some(RuleId::AssertEqIdentical));
-        assert_eq!(eq_rule("item.flag", "item.flag"), Some(RuleId::AssertEqIdentical));
-        assert_eq!(eq_rule("&value", "&value"), Some(RuleId::AssertEqIdentical));
-        assert_eq!(
-            eq_rule("TransportMode::Socket { port: 100 }", "TransportMode::Socket { port: 100 }"),
-            Some(RuleId::AssertEqIdentical)
-        );
+        assert_eq!(eq_rule("true", "true"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("\"ok\"", "\"ok\""), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("'a'", "'a'"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("-1", "-1"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("(1)", "1"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("1u8", "1u8"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("&1", "&1"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("(1, true)", "(1, true)"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("1 as i32", "1 as i32"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("[1, 2]", "[1, 2]"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("[0; 3]", "[0; 3]"), Some(RuleId::AssertEqIdentical));
+        assert_eq!(eq_rule("1.0", "1.0"), Some(RuleId::AssertEqIdentical));
     }
 
     #[test]
@@ -324,6 +305,62 @@ mod tests {
                 "TransportMode::Socket { port: 100 }",
                 "TransportMode::Socket { port: 100 }.clone()"
             ),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_flag_stateful_or_nondeterministic_function_call_receivers() {
+        // Two evaluations of the same call are not one Option/Result value.
+        assert_eq!(rule_of("counter().is_some() || counter().is_none()"), None);
+        assert_eq!(rule_of("random().is_ok() || random().is_err()"), None);
+        assert_eq!(
+            rule_of(
+                r#"sanitize_completion_path_input("..%2f..%2fetc%2fpasswd").is_some()
+                    || sanitize_completion_path_input("..%2f..%2fetc%2fpasswd").is_none()"#
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn still_flags_side_effect_free_option_and_result_paths_after_purity_narrowing() {
+        assert_eq!(
+            typed_rule("value.is_some() || value.is_none()", &[("value", QueryKind::Option)]),
+            Some(RuleId::OptionSomeOrNone)
+        );
+        assert_eq!(
+            typed_rule("result.is_ok() || result.is_err()", &[("result", QueryKind::Result)]),
+            Some(RuleId::ResultOkOrErr)
+        );
+        assert_eq!(
+            typed_rule("(value.is_some()) || (value.is_none())", &[("value", QueryKind::Option)]),
+            Some(RuleId::OptionSomeOrNone)
+        );
+        assert_eq!(rule_of("value.is_some() || value.is_none()"), None);
+        assert_eq!(rule_of("item.flag.is_ok() || item.flag.is_err()"), None);
+    }
+
+    #[test]
+    fn does_not_flag_custom_query_methods() {
+        assert_eq!(rule_of("probe.is_some() || probe.is_none()"), None);
+        assert_eq!(rule_of("probe.is_ok() || probe.is_err()"), None);
+        assert_eq!(rule_of("probe.is_some() || !probe.is_some()"), None);
+    }
+
+    #[test]
+    fn does_not_flag_non_reflexive_or_type_unknown_assert_eq() {
+        assert_eq!(eq_rule("f32::NAN", "f32::NAN"), None);
+        assert_eq!(eq_rule("f64::NAN", "f64::NAN"), None);
+        assert_eq!(eq_rule("value", "value"), None);
+        assert_eq!(eq_rule("item.flag", "item.flag"), None);
+        assert_eq!(eq_rule("RecoverySite::ArgList", "RecoverySite::ArgList"), None);
+        assert_eq!(eq_rule("&mut 1", "&mut 1"), None);
+        assert_eq!(eq_rule("-f32::NAN", "-f32::NAN"), None);
+        assert_eq!(eq_rule("[path, path]", "[path, path]"), None);
+        assert_eq!(eq_rule("[path; 3]", "[path; 3]"), None);
+        assert_eq!(
+            eq_rule("TransportMode::Socket { port: 100 }", "TransportMode::Socket { port: 100 }"),
             None
         );
     }

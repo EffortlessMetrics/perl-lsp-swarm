@@ -1,10 +1,14 @@
 //! Walk a parsed Rust file and collect tautological assertion macros.
 
-use super::detect::{Detection, RuleId, classify_assert_condition, classify_assert_eq};
+use super::detect::{Detection, RuleId, classify_assert_condition_in, classify_assert_eq};
+use super::expr::{TypeEnv, bind_binding_pat, bind_pat_type, peel};
 use syn::parse::{ParseStream, Parser};
 use syn::spanned::Spanned;
 use syn::visit::Visit;
-use syn::{Expr, ExprMacro, File, ItemMacro, Macro, StmtMacro};
+use syn::{
+    BinOp, Expr, ExprClosure, ExprForLoop, ExprIf, ExprMacro, ExprWhile, File, ImplItemFn, ItemFn,
+    ItemMacro, Local, Macro, StmtMacro, TraitItemFn,
+};
 
 const ASSERT_MACROS: &[&str] = &["assert", "debug_assert"];
 const ASSERT_EQ_MACROS: &[&str] = &["assert_eq", "debug_assert_eq"];
@@ -29,7 +33,7 @@ pub fn scan_file(path: &str, source: &str) -> Result<Vec<Finding>, String> {
 }
 
 pub fn scan_ast(path: &str, file: &File) -> Vec<Finding> {
-    let mut visitor = AssertionVisitor { path, findings: Vec::new() };
+    let mut visitor = AssertionVisitor { path, findings: Vec::new(), env: Vec::new() };
     visitor.visit_file(file);
     visitor.findings.sort();
     visitor.findings
@@ -38,9 +42,152 @@ pub fn scan_ast(path: &str, file: &File) -> Vec<Finding> {
 struct AssertionVisitor<'a> {
     path: &'a str,
     findings: Vec<Finding>,
+    env: Vec<TypeEnv>,
+}
+
+impl AssertionVisitor<'_> {
+    fn current_env(&self) -> TypeEnv {
+        self.env.last().cloned().unwrap_or_default()
+    }
+
+    fn push_scope(&mut self) {
+        if let Some(env) = self.env.last_mut() {
+            env.push_scope();
+        }
+    }
+
+    fn pop_scope(&mut self) {
+        if let Some(env) = self.env.last_mut() {
+            env.pop_scope();
+        }
+    }
+
+    fn bind_current(&mut self, pat: &syn::Pat) {
+        if let Some(env) = self.env.last_mut() {
+            bind_binding_pat(env, pat);
+        }
+    }
+
+    /// Walk an `if`/`while` condition left-to-right so each `let` is in scope
+    /// for later `&&` operands and for the then/body block, but not for `else`.
+    fn visit_condition_with_lets(&mut self, expr: &Expr) {
+        match peel(expr) {
+            Expr::Let(expr_let) => {
+                for attr in &expr_let.attrs {
+                    self.visit_attribute(attr);
+                }
+                self.visit_expr(&expr_let.expr);
+                self.bind_current(&expr_let.pat);
+            }
+            Expr::Binary(binary) if matches!(binary.op, BinOp::And(_)) => {
+                self.visit_condition_with_lets(&binary.left);
+                self.visit_condition_with_lets(&binary.right);
+            }
+            other => self.visit_expr(other),
+        }
+    }
+
+    fn push_fn_env(&mut self, inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>) {
+        let mut env = TypeEnv::new();
+        for input in inputs {
+            if let syn::FnArg::Typed(typed) = input {
+                bind_pat_type(&mut env, &typed.pat, &typed.ty);
+            }
+        }
+        self.env.push(env);
+    }
 }
 
 impl<'ast> Visit<'ast> for AssertionVisitor<'_> {
+    fn visit_item_fn(&mut self, node: &'ast ItemFn) {
+        self.push_fn_env(&node.sig.inputs);
+        syn::visit::visit_item_fn(self, node);
+        self.env.pop();
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast ImplItemFn) {
+        self.push_fn_env(&node.sig.inputs);
+        syn::visit::visit_impl_item_fn(self, node);
+        self.env.pop();
+    }
+
+    fn visit_trait_item_fn(&mut self, node: &'ast TraitItemFn) {
+        if let Some(block) = &node.default {
+            self.push_fn_env(&node.sig.inputs);
+            syn::visit::visit_block(self, block);
+            self.env.pop();
+        }
+    }
+
+    fn visit_expr_closure(&mut self, node: &'ast ExprClosure) {
+        let mut env = self.current_env();
+        env.push_scope();
+        for input in &node.inputs {
+            bind_binding_pat(&mut env, input);
+        }
+        self.env.push(env);
+        syn::visit::visit_expr_closure(self, node);
+        self.env.pop();
+    }
+
+    fn visit_block(&mut self, node: &'ast syn::Block) {
+        self.push_scope();
+        syn::visit::visit_block(self, node);
+        self.pop_scope();
+    }
+
+    fn visit_local(&mut self, node: &'ast Local) {
+        syn::visit::visit_local(self, node);
+        self.bind_current(&node.pat);
+    }
+
+    fn visit_expr_for_loop(&mut self, node: &'ast ExprForLoop) {
+        for attr in &node.attrs {
+            self.visit_attribute(attr);
+        }
+        if let Some(label) = &node.label {
+            self.visit_label(label);
+        }
+        self.visit_expr(&node.expr);
+        self.push_scope();
+        self.bind_current(&node.pat);
+        self.visit_block(&node.body);
+        self.pop_scope();
+    }
+
+    fn visit_expr_if(&mut self, node: &'ast ExprIf) {
+        for attr in &node.attrs {
+            self.visit_attribute(attr);
+        }
+        self.push_scope();
+        self.visit_condition_with_lets(&node.cond);
+        self.visit_block(&node.then_branch);
+        self.pop_scope();
+        if let Some((_, else_expr)) = &node.else_branch {
+            self.visit_expr(else_expr);
+        }
+    }
+
+    fn visit_expr_while(&mut self, node: &'ast ExprWhile) {
+        for attr in &node.attrs {
+            self.visit_attribute(attr);
+        }
+        if let Some(label) = &node.label {
+            self.visit_label(label);
+        }
+        self.push_scope();
+        self.visit_condition_with_lets(&node.cond);
+        self.visit_block(&node.body);
+        self.pop_scope();
+    }
+
+    fn visit_arm(&mut self, node: &'ast syn::Arm) {
+        self.push_scope();
+        self.bind_current(&node.pat);
+        syn::visit::visit_arm(self, node);
+        self.pop_scope();
+    }
+
     fn visit_expr_macro(&mut self, node: &'ast ExprMacro) {
         self.inspect_macro(&node.mac);
         syn::visit::visit_expr_macro(self, node);
@@ -64,7 +211,7 @@ impl AssertionVisitor<'_> {
         };
         if ASSERT_MACROS.iter().any(|candidate| name == *candidate) {
             if let Some(expr) = parse_assert_condition(mac.tokens.clone()) {
-                self.push(classify_assert_condition(&expr), mac);
+                self.push(classify_assert_condition_in(&expr, &self.current_env()), mac);
             }
             return;
         }
@@ -136,7 +283,7 @@ mod tests {
                 assert!(value.is_some() || value.is_none());
                 debug_assert!(result.is_ok() || result.is_err());
                 assert!(ready || !ready, "still a tautology");
-                assert_eq!(ready, ready);
+                assert_eq!(1, 1);
                 let _ = value.is_some() || value.is_none();
                 if result.is_ok() || result.is_err() {
                     let _ = ready;
@@ -190,5 +337,188 @@ mod tests {
     fn unparsable_source_is_an_instrument_error() {
         let error = scan_file("broken.rs", "fn oops( {").expect_err("must fail");
         assert!(!error.is_empty());
+    }
+
+    #[test]
+    fn scan_skips_stateful_receivers_and_non_reflexive_eq_but_keeps_path_tautologies() {
+        let source = r#"
+            fn probe(value: Option<u8>, mut probe: Probe) {
+                assert!(value.is_some() || value.is_none());
+                assert!(counter().is_some() || counter().is_none());
+                assert!(probe.is_some() || probe.is_none());
+                assert_eq!(f32::NAN, f32::NAN);
+                assert_eq!(1, 1);
+                assert_eq!(1.0, 1.0);
+            }
+            struct Probe { n: u8 }
+            impl Probe {
+                fn is_some(&mut self) -> bool { self.n += 1; false }
+                fn is_none(&self) -> bool { false }
+            }
+            fn counter() -> Option<u8> { None }
+        "#;
+        assert_eq!(
+            rules(source),
+            vec![RuleId::OptionSomeOrNone, RuleId::AssertEqIdentical, RuleId::AssertEqIdentical]
+        );
+    }
+
+    #[test]
+    fn option_parameter_shadowed_by_untyped_or_custom_binding_is_skipped() {
+        let source = r#"
+            fn probe(value: Option<u8>, mut probe: Probe) {
+                assert!(value.is_some() || value.is_none());
+                let value = probe;
+                assert!(value.is_some() || value.is_none());
+                let value: Probe = Probe { n: 0 };
+                assert!(value.is_some() || value.is_none());
+            }
+            fn restore(value: Option<u8>) {
+                {
+                    let value = Probe { n: 0 };
+                    assert!(value.is_some() || value.is_none());
+                }
+                assert!(value.is_some() || value.is_none());
+            }
+            struct Probe { n: u8 }
+            impl Probe {
+                fn is_some(&mut self) -> bool { self.n += 1; false }
+                fn is_none(&self) -> bool { false }
+            }
+        "#;
+        assert_eq!(
+            rules(source),
+            vec![RuleId::OptionSomeOrNone, RuleId::OptionSomeOrNone],
+            "{:?}",
+            rules(source)
+        );
+    }
+
+    #[test]
+    fn block_local_option_does_not_classify_outer_custom_binding() {
+        let source = r#"
+            fn probe(value: Probe) {
+                {
+                    let value: Option<u8> = None;
+                    assert!(value.is_some() || value.is_none());
+                }
+                assert!(value.is_some() || value.is_none());
+            }
+            struct Probe { n: u8 }
+            impl Probe {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+        "#;
+        assert_eq!(rules(source), vec![RuleId::OptionSomeOrNone], "{:?}", rules(source));
+    }
+
+    #[test]
+    fn for_if_let_while_let_and_match_bindings_shadow_option_parameters() {
+        let source = r#"
+            fn probe(value: Option<u8>, probes: [Probe; 1], probe: Probe) {
+                for value in probes {
+                    assert!(value.is_some() || value.is_none());
+                }
+                if let value = probe {
+                    assert!(value.is_some() || value.is_none());
+                }
+                while let value = probe {
+                    assert!(value.is_some() || value.is_none());
+                    break;
+                }
+                match probe {
+                    value => assert!(value.is_some() || value.is_none()),
+                }
+                assert!(value.is_some() || value.is_none());
+            }
+            struct Probe { n: u8 }
+            impl Probe {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+        "#;
+        assert_eq!(rules(source), vec![RuleId::OptionSomeOrNone], "{:?}", rules(source));
+    }
+
+    #[test]
+    fn let_chain_bindings_shadow_option_parameters() {
+        let source = r#"
+            fn probe(value: Option<u8>, probe: Probe) {
+                if let _ready = true && let value = probe {
+                    assert!(value.is_some() || value.is_none());
+                } else {
+                    assert!(value.is_some() || value.is_none());
+                }
+                while let _ready = true && let value = probe {
+                    assert!(value.is_some() || value.is_none());
+                    break;
+                }
+                assert!(value.is_some() || value.is_none());
+            }
+            struct Probe { n: u8 }
+            impl Probe {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+        "#;
+        assert_eq!(
+            rules(source),
+            vec![RuleId::OptionSomeOrNone, RuleId::OptionSomeOrNone],
+            "{:?}",
+            rules(source)
+        );
+    }
+
+    #[test]
+    fn let_chain_later_operands_see_earlier_shadowing_bindings() {
+        let source = r#"
+            fn probe(value: Option<u8>, probe: Probe) {
+                if let value = probe && { assert!(value.is_some() || value.is_none()); true } {
+                    let _ = 0;
+                }
+                while let value = probe && { assert!(value.is_some() || value.is_none()); true } {
+                    break;
+                }
+                assert!(value.is_some() || value.is_none());
+            }
+            struct Probe { n: u8 }
+            impl Probe {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+        "#;
+        assert_eq!(rules(source), vec![RuleId::OptionSomeOrNone], "{:?}", rules(source));
+    }
+
+    #[test]
+    fn closure_inherits_option_ascription_unless_parameter_shadows() {
+        let source = r#"
+            fn capture(value: Option<u8>) {
+                let _f = || assert!(value.is_some() || value.is_none());
+            }
+            fn shadow_capture(value: Option<u8>) {
+                let _f = |value: Probe| assert!(value.is_some() || value.is_none());
+            }
+            struct Probe { n: u8 }
+            impl Probe {
+                fn is_some(&self) -> bool { false }
+                fn is_none(&self) -> bool { false }
+            }
+        "#;
+        assert_eq!(rules(source), vec![RuleId::OptionSomeOrNone], "{:?}", rules(source));
+    }
+
+    #[test]
+    fn deref_and_field_predicates_are_not_tautologies() {
+        let source = r#"
+            fn probe(value: Toggle, item: Toggle, ready: bool) {
+                assert!(*value || !*value);
+                assert!(item.flag || !item.flag);
+                assert!(ready || !ready);
+            }
+            struct Toggle { flag: bool }
+        "#;
+        assert_eq!(rules(source), vec![RuleId::PredicateOrNegation], "{:?}", rules(source));
     }
 }
