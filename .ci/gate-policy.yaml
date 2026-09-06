@@ -857,7 +857,7 @@ gates:
     #     perl-lsp-perltidy, perl-subprocess-runtime, perl-test-facts,
     #     perl-parser-bench, perl-core-test-runner, perl-parser-pest,
     #     perl-parser-comparison, tree-sitter-perl-c, perl-incremental-parsing,
-    #     tree-sitter-perl-rs, perl-kwalitee, perl-workspace-core,
+    #     tree-sitter-perl-rs, perl-release-readiness, perl-workspace-core,
     #     perl-tree-sitter-compat
     #   2026-08-21 batch (9 mechanical findings fixed, see PR for #11736):
     #     perl-module (items_after_test_module + collapsible_if),
@@ -914,7 +914,7 @@ gates:
       -p tree-sitter-perl-c
       -p perl-incremental-parsing
       -p tree-sitter-perl-rs
-      -p perl-kwalitee
+      -p perl-release-readiness
       -p perl-workspace-core
       -p perl-tree-sitter-compat
       -p perl-module
@@ -1559,7 +1559,7 @@ gates:
 
   - name: non_rust_inventory_check
     tier: merge_gate
-    description: "Scan and classify tracked non-Rust files and require the normalized committed snapshot to match"
+    description: "Classify the current tracked tree, emit retained inventory evidence, and reject newly added unclassified paths"
     required: true
     command: cargo xtask non-rust inventory --check
     timeout_seconds: 300

@@ -4,6 +4,7 @@
 //! shared across binaries and provider layers. Key submodules:
 //!
 //! - [`binary_identity`] — Canonical server, DAP, and VSIX identity transport
+//! - [`command`] — Canonical LSP 3.18 `Command` construction, including `tooltip`
 //! - `jsonrpc` — Core JSON-RPC 2.0 request, response, and error message types
 //! - `errors` — Standard and LSP-specific JSON-RPC error codes and builders
 //! - [`methods`] — LSP 3.18 method name constants for request/notification routing
@@ -20,6 +21,8 @@ pub mod binary_identity;
 /// error taxonomy (#13997).
 pub mod cancellation_error_class;
 pub mod capabilities;
+/// Canonical LSP 3.18 `Command` type and presented-command construction.
+pub mod command;
 pub mod document_version;
 /// Typed deterministic final-surface authority: `EffectiveLspSurface`,
 /// registration plan and effective identities (#9665, #8032 train S02).

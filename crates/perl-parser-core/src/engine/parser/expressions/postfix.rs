@@ -969,6 +969,7 @@ impl<'a> Parser<'a> {
                             } else {
                                 // Parse arguments without parentheses
                                 let mut args = Vec::new();
+                                let mut flattened_qw_end = None;
 
                                 // Special handling for sort/map/grep/first/any/all/etc.
                                 // with block first argument
@@ -1204,6 +1205,13 @@ impl<'a> Parser<'a> {
                                         // assignment first would consume `$fh %hash` as a
                                         // modulo expression and lose the indirect-call boundary.
                                         args.push(self.parse_primary()?);
+                                    } else if self.peek_is_qw_list_start() {
+                                        // `has qw(a b)` is `has('a', 'b')` in list context.
+                                        // Keep parenthesized `has(qw(a b))` on parse_args().
+                                        let (words, qw_location) =
+                                            self.parse_flattened_qw_list_argument()?;
+                                        flattened_qw_end = Some(qw_location.end);
+                                        args.extend(words);
                                     } else {
                                         args.push(self.parse_assignment_or_declaration()?);
                                     }
@@ -1349,11 +1357,9 @@ impl<'a> Parser<'a> {
 
                                 let end = args
                                     .last()
-                                    .ok_or_else(|| {
-                                        ParseError::syntax("Empty arguments list", start)
-                                    })?
-                                    .location
-                                    .end;
+                                    .map(|arg| arg.location.end)
+                                    .or(flattened_qw_end)
+                                    .unwrap_or_else(|| self.previous_position());
 
                                 expr = if scalar_filehandle {
                                     let mut message_args = args;

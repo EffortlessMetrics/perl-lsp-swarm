@@ -14,6 +14,12 @@
       "character": 3,
       "needle": "$greeting",
       "rationale": "hover must mention the variable name"
+    },
+    {
+      "kind": "hover_range_covers",
+      "line": 4,
+      "character": 3,
+      "rationale": "hover range must cover the requested scalar token, not a neighbouring symbol"
     }
   ]
 }

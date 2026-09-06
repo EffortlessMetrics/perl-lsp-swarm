@@ -4,6 +4,13 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub mod hover_observation;
+pub use hover_observation::{
+    HOVER_RENDERED_TEXT_BOUND, HoverAssertionFailure, HoverAssertionRigor, HoverContent,
+    HoverContentForm, HoverContentSection, HoverInstrumentFailure, HoverMarkupKind,
+    HoverObservation, HoverPosition, HoverRange, match_hover_assertion, observe_hover_response,
+};
+
 /// Assertion type for gold corpus diagnostics expectations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "assertion", deny_unknown_fields)]
@@ -132,10 +139,14 @@ pub enum HoverAssertionKind {
     HoverContains { needle: String },
     /// Response content must NOT contain `needle`
     HoverAbsent { needle: String },
+    /// Observed `Hover.range` must cover the request position (LSP half-open).
+    HoverRangeCovers,
+    /// Observed `Hover.range` must equal the declared LSP range.
+    HoverRangeEquals { start_line: u32, start_character: u32, end_line: u32, end_character: u32 },
 }
 
 /// A single hover assertion at a given (line, character) position
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct HoverAssertion {
     #[serde(flatten)]
     pub kind: HoverAssertionKind,
@@ -143,6 +154,206 @@ pub struct HoverAssertion {
     pub character: u32,
     #[serde(default)]
     pub rationale: String,
+}
+
+impl<'de> Deserialize<'de> for HoverAssertion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(HoverAssertionVisitor)
+    }
+}
+
+struct HoverAssertionVisitor;
+
+impl<'de> Visitor<'de> for HoverAssertionVisitor {
+    type Value = HoverAssertion;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a hover assertion object")
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        const FIELDS: &[&str] = &[
+            "kind",
+            "line",
+            "character",
+            "rationale",
+            "needle",
+            "start_line",
+            "start_character",
+            "end_line",
+            "end_character",
+        ];
+        let mut kind: Option<String> = None;
+        let mut line: Option<u32> = None;
+        let mut character: Option<u32> = None;
+        let mut rationale: Option<String> = None;
+        let mut needle: Option<String> = None;
+        let mut start_line: Option<u32> = None;
+        let mut start_character: Option<u32> = None;
+        let mut end_line: Option<u32> = None;
+        let mut end_character: Option<u32> = None;
+
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "kind" => {
+                    if kind.is_some() {
+                        return Err(de::Error::duplicate_field("kind"));
+                    }
+                    kind = Some(map.next_value()?);
+                }
+                "line" => {
+                    if line.is_some() {
+                        return Err(de::Error::duplicate_field("line"));
+                    }
+                    line = Some(map.next_value()?);
+                }
+                "character" => {
+                    if character.is_some() {
+                        return Err(de::Error::duplicate_field("character"));
+                    }
+                    character = Some(map.next_value()?);
+                }
+                "rationale" => {
+                    if rationale.is_some() {
+                        return Err(de::Error::duplicate_field("rationale"));
+                    }
+                    rationale = Some(map.next_value()?);
+                }
+                "needle" => {
+                    if needle.is_some() {
+                        return Err(de::Error::duplicate_field("needle"));
+                    }
+                    needle = Some(map.next_value()?);
+                }
+                "start_line" => {
+                    if start_line.is_some() {
+                        return Err(de::Error::duplicate_field("start_line"));
+                    }
+                    start_line = Some(map.next_value()?);
+                }
+                "start_character" => {
+                    if start_character.is_some() {
+                        return Err(de::Error::duplicate_field("start_character"));
+                    }
+                    start_character = Some(map.next_value()?);
+                }
+                "end_line" => {
+                    if end_line.is_some() {
+                        return Err(de::Error::duplicate_field("end_line"));
+                    }
+                    end_line = Some(map.next_value()?);
+                }
+                "end_character" => {
+                    if end_character.is_some() {
+                        return Err(de::Error::duplicate_field("end_character"));
+                    }
+                    end_character = Some(map.next_value()?);
+                }
+                _ => return Err(de::Error::unknown_field(&field, FIELDS)),
+            }
+        }
+
+        let kind_name = kind.ok_or_else(|| de::Error::missing_field("kind"))?;
+        let has_range_fields = start_line.is_some()
+            || start_character.is_some()
+            || end_line.is_some()
+            || end_character.is_some();
+        let kind = match kind_name.as_str() {
+            "hover_non_null" => {
+                reject_hover_payload_fields(needle.is_some(), has_range_fields, "hover_non_null")?;
+                HoverAssertionKind::HoverNonNull
+            }
+            "hover_null" => {
+                reject_hover_payload_fields(needle.is_some(), has_range_fields, "hover_null")?;
+                HoverAssertionKind::HoverNull
+            }
+            "hover_contains" => {
+                if has_range_fields {
+                    return Err(de::Error::custom(
+                        "range fields are only supported for hover_range_equals assertions",
+                    ));
+                }
+                let needle = needle.ok_or_else(|| de::Error::missing_field("needle"))?;
+                HoverAssertionKind::HoverContains { needle }
+            }
+            "hover_absent" => {
+                if has_range_fields {
+                    return Err(de::Error::custom(
+                        "range fields are only supported for hover_range_equals assertions",
+                    ));
+                }
+                let needle = needle.ok_or_else(|| de::Error::missing_field("needle"))?;
+                HoverAssertionKind::HoverAbsent { needle }
+            }
+            "hover_range_covers" => {
+                reject_hover_payload_fields(
+                    needle.is_some(),
+                    has_range_fields,
+                    "hover_range_covers",
+                )?;
+                HoverAssertionKind::HoverRangeCovers
+            }
+            "hover_range_equals" => {
+                if needle.is_some() {
+                    return Err(de::Error::custom(
+                        "needle is only supported for hover_contains and hover_absent assertions",
+                    ));
+                }
+                HoverAssertionKind::HoverRangeEquals {
+                    start_line: start_line.ok_or_else(|| de::Error::missing_field("start_line"))?,
+                    start_character: start_character
+                        .ok_or_else(|| de::Error::missing_field("start_character"))?,
+                    end_line: end_line.ok_or_else(|| de::Error::missing_field("end_line"))?,
+                    end_character: end_character
+                        .ok_or_else(|| de::Error::missing_field("end_character"))?,
+                }
+            }
+            _ => {
+                return Err(de::Error::unknown_variant(
+                    &kind_name,
+                    &[
+                        "hover_non_null",
+                        "hover_null",
+                        "hover_contains",
+                        "hover_absent",
+                        "hover_range_covers",
+                        "hover_range_equals",
+                    ],
+                ));
+            }
+        };
+
+        Ok(HoverAssertion {
+            kind,
+            line: line.ok_or_else(|| de::Error::missing_field("line"))?,
+            character: character.ok_or_else(|| de::Error::missing_field("character"))?,
+            rationale: rationale.unwrap_or_default(),
+        })
+    }
+}
+
+fn reject_hover_payload_fields<E: de::Error>(
+    has_needle: bool,
+    has_range_fields: bool,
+    kind: &str,
+) -> Result<(), E> {
+    if has_needle {
+        return Err(de::Error::custom(format!(
+            "needle is only supported for hover_contains and hover_absent assertions, not {kind}"
+        )));
+    }
+    if has_range_fields {
+        return Err(de::Error::custom(
+            "range fields are only supported for hover_range_equals assertions",
+        ));
+    }
+    Ok(())
 }
 
 /// On-disk representation of `expected_hover.json`
@@ -961,6 +1172,47 @@ rationale = "format compatibility"
             || assertion.new_name != "sum_values"
         {
             return Err("TOML map deserialization did not preserve the rename assertion".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hover_schema_rejects_unknown_keys_and_parses_range_kinds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let unknown = r#"{"kind":"hover_null","line":1,"character":0,"typo":true}"#;
+        if serde_json::from_str::<HoverAssertion>(unknown).is_ok() {
+            return Err("unknown hover assertion key must fail closed".into());
+        }
+
+        let needle_on_null = r#"{"kind":"hover_null","line":1,"character":0,"needle":"x"}"#;
+        if serde_json::from_str::<HoverAssertion>(needle_on_null).is_ok() {
+            return Err("needle on hover_null must fail closed".into());
+        }
+
+        let covers: HoverAssertion =
+            serde_json::from_str(r#"{"kind":"hover_range_covers","line":4,"character":3}"#)?;
+        if !matches!(covers.kind, HoverAssertionKind::HoverRangeCovers) {
+            return Err("hover_range_covers did not deserialize".into());
+        }
+
+        let equals: HoverAssertion = serde_json::from_str(
+            r#"{"kind":"hover_range_equals","line":4,"character":3,"start_line":4,"start_character":3,"end_line":4,"end_character":12}"#,
+        )?;
+        if !matches!(
+            equals.kind,
+            HoverAssertionKind::HoverRangeEquals {
+                start_line: 4,
+                start_character: 3,
+                end_line: 4,
+                end_character: 12
+            }
+        ) {
+            return Err("hover_range_equals did not retain declared range".into());
+        }
+
+        let envelope_unknown = r#"{"version":1,"fixture":"x","assertions":[],"extra":1}"#;
+        if serde_json::from_str::<HoverGoldExpected>(envelope_unknown).is_ok() {
+            return Err("unknown hover envelope key must fail closed".into());
         }
         Ok(())
     }

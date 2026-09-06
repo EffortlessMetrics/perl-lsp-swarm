@@ -599,7 +599,7 @@ jobs:
 
       - name: Install just
         if: needs.draft-pr-check.outputs.api_scope == 'true'
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
         with:
           tool: just
 
@@ -750,7 +750,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
         with:
           tool: just
 
@@ -1039,7 +1039,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
         with:
           tool: just
 
@@ -1090,6 +1090,8 @@ jobs:
           # overwrite the failure status.
           rm -rf target/receipts/shards target/receipts/shard-summaries \
             target/receipts/logs target/receipts/artifacts \
+            target/policy/non-rust-inventory.md \
+            target/policy/non-rust-inventory.json \
             || { echo "::error::cannot clear cache-restored target/receipts surfaces (#12085); refusing to run the shard over possibly stale logs/artifacts"; exit 1; }
           mkdir -p target/receipts/shards target/receipts/shard-summaries
           timeout --signal=TERM --kill-after=30s 1200s \
@@ -1150,6 +1152,17 @@ jobs:
             target/receipts/shard-summaries/*.json
             target/receipts/logs/*.log
             target/receipts/artifacts/*
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload non-Rust inventory evidence
+        if: always() && matrix.name == 'policy'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: non-rust-inventory-${{ github.sha }}
+          path: |
+            target/policy/non-rust-inventory.md
+            target/policy/non-rust-inventory.json
           if-no-files-found: warn
           retention-days: 7
 
@@ -1339,7 +1352,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
         with:
           tool: just
 
@@ -1535,9 +1548,13 @@ jobs:
       # whether what would actually land still compiles. Other jobs in this
       # workflow deliberately keep exact-head checkout for head-pinned receipts;
       # this one is a merge-surface gate and must not.
+      # Full history: the non-Rust file policy contract below runs the real
+      # `non-rust inventory --check`, whose newly-added-path ratchet needs
+      # `origin/main` (or `HEAD^`) to resolve and fails closed in CI otherwise.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -1545,7 +1562,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
         with:
           tool: just
 
@@ -1564,7 +1581,7 @@ jobs:
       # both integration targets here because compile-all-targets alone cannot
       # execute their assertions, and the routed pr-fast lane is advisory.
       - name: Legacy parity library authority (required merge surface)
-        run: cargo test -p perl-kwalitee --test legacy_parity --locked -- --nocapture
+        run: cargo test -p perl-release-readiness --test legacy_parity --locked -- --nocapture
 
       - name: Legacy parity CLI authority (required merge surface)
         run: cargo test -p xtask --test perl_kwalitee_parity --locked -- --nocapture
@@ -1629,6 +1646,15 @@ jobs:
       - name: Dependabot dependency-name contract (required merge surface)
         run: cargo test -p xtask --test dependabot_cargo_dependency_names --locked -- --nocapture
 
+      # #13477: same required-surface reasoning as the dependency-name
+      # contract above. This suite asserts that the Cargo row keeps
+      # `prefix: "chore"` plus `include: "scope"` and rejects
+      # `prefix: "chore(deps)"` plus that include. `.github/dependabot.yml`
+      # is not in ci-scope's CI_CONFIG_PATHS, so a config-only revert of
+      # #13482 would never reach the advisory routed lane.
+      - name: Dependabot Cargo commit-message contract (required merge surface)
+        run: cargo test -p xtask --test dependabot_cargo_commit_message --locked -- --nocapture
+
       # #13484: nothing executed the `xtask` *bin* unit tests. The merge gate
       # runs `cargo test --workspace --lib` (a bin is not a lib target) and no
       # workflow names `--bin xtask`, so `tasks::changelog::tests` — the proof
@@ -1650,6 +1676,18 @@ jobs:
       # drop from this surface.
       - name: Changelog fragment gate contract (required merge surface)
         run: cargo test -p xtask --bin xtask --locked -- --nocapture changelog changie
+
+      # #14180: same required-surface reasoning as the Cargo dependency-name
+      # contract above. This suite asserts that the GitHub Actions `/` and npm
+      # `/vscode-extension` rows keep `prefix: "chore"` plus `include: "scope"`
+      # and reject `prefix: "chore(deps)"` plus that include. Cargo is out of
+      # this claim (#13482 / #14898). `.github/dependabot.yml` is not in
+      # ci-scope's CI_CONFIG_PATHS, so a config-only revert would never reach
+      # the advisory routed lane. Inserted after the changelog fragment gate
+      # so it does not occupy the insertion site #14898 uses after the Cargo
+      # name contract.
+      - name: Dependabot GitHub Actions and npm commit-message contract (required merge surface)
+        run: cargo test -p xtask --test dependabot_gha_npm_commit_message --locked -- --nocapture
 
   lsp-memory-smoke:
     name: LSP Memory Smoke
