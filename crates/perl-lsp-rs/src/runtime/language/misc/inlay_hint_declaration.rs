@@ -3,8 +3,10 @@
 //! `inlayHint/resolve` must land on the declaration a call actually runs, not the
 //! first AST node whose name matches. Perl installs compile-time `sub` entries
 //! into the package symbol table in source order, so a later same-package
-//! definition replaces an earlier one. Package boundaries are part of that
-//! identity: `package A; sub run` and `package B; sub run` are distinct.
+//! definition replaces an earlier one. A later forward declaration (`sub foo;` /
+//! `sub foo($);`) does not replace an already-installed body. Package boundaries
+//! are part of that identity: `package A; sub run` and `package B; sub run` are
+//! distinct.
 //!
 //! This is the bounded #14675 interim. It does not attach canonical call/signature
 //! entity identity (#8299) and does not authenticate the resolve envelope (#14672).
@@ -14,9 +16,12 @@ use perl_parser_core::ast::{Node, NodeKind};
 
 /// Select the Perl-effective named subroutine for `callable_name` at `call_site_offset`.
 ///
-/// Last same-package definition in `ast` wins. A qualified callable
-/// (`Foo::bar`, `::bar`) selects that package; an unqualified name uses the
-/// package in force at the call site. Lexical `my`/`state` subs are skipped.
+/// Last same-package body-bearing definition in `ast` wins. A trailing forward
+/// declaration does not replace an already selected body. If the snapshot has
+/// only a forward declaration, that forward is still returned so navigation has
+/// a target. A qualified callable (`Foo::bar`, `::bar`) selects that package;
+/// an unqualified name uses the package in force at the call site. Lexical
+/// `my`/`state` subs are skipped.
 #[must_use]
 pub(super) fn effective_subroutine_declaration<'a>(
     ast: &'a Node,
@@ -80,6 +85,34 @@ fn unwrap_expression_statement(node: &Node) -> &Node {
     }
 }
 
+/// The parser encodes `sub foo;` / `sub foo($);` as a `Subroutine` whose body is
+/// a zero-width empty `Block` at the semicolon. A genuine `sub foo {}` also has
+/// an empty statement list, but the braces give the block a non-zero span.
+fn is_forward_declaration_body(body: &Node) -> bool {
+    match &body.kind {
+        NodeKind::Block { statements } => {
+            statements.is_empty() && body.location.start == body.location.end
+        }
+        _ => false,
+    }
+}
+
+fn subroutine_is_forward(node: &Node) -> bool {
+    match &node.kind {
+        NodeKind::Subroutine { body, .. } => is_forward_declaration_body(body),
+        _ => false,
+    }
+}
+
+fn consider_matching_subroutine<'a>(node: &'a Node, body: &Node, last: &mut Option<&'a Node>) {
+    if is_forward_declaration_body(body)
+        && last.is_some_and(|selected| !subroutine_is_forward(selected))
+    {
+        return;
+    }
+    *last = Some(node);
+}
+
 fn visit_statements<'a>(
     statements: &'a [Node],
     mut package: &'a str,
@@ -121,7 +154,7 @@ fn visit_node<'a>(
             if is_package_scoped(declarator.as_deref())
                 && subroutine_matches(sub_name, package, target)
             {
-                *last = Some(node);
+                consider_matching_subroutine(node, body, last);
             }
             visit_node(body, package, target, last);
         }
@@ -398,6 +431,93 @@ greet("Alice", "Hello");
             selected_text(source, selected).contains("only"),
             "the sole declaration must still resolve: {}",
             selected_text(source, selected)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn trailing_forward_declaration_does_not_replace_body() -> TestResult {
+        let source = r#"sub greet($name, $greeting) { return "body"; }
+sub greet;
+sub greet($);
+greet("Alice", "Hello");
+"#;
+        let ast = parse(source)?;
+        let selected = effective_subroutine_declaration(
+            &ast,
+            "greet",
+            call_offset(source, r#"greet("Alice""#)?,
+        )
+        .ok_or("expected the body-bearing greet")?;
+        let text = selected_text(source, selected);
+        assert!(
+            text.contains("return \"body\""),
+            "trailing `sub greet;` / `sub greet($);` must not steal the earlier body: {text}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn forward_then_definition_selects_the_body() -> TestResult {
+        let source = r#"sub greet;
+sub greet($);
+sub greet($name, $greeting) { return "defined"; }
+greet("Alice", "Hello");
+"#;
+        let ast = parse(source)?;
+        let selected = effective_subroutine_declaration(
+            &ast,
+            "greet",
+            call_offset(source, r#"greet("Alice""#)?,
+        )
+        .ok_or("expected the later definition")?;
+        let text = selected_text(source, selected);
+        assert!(
+            text.contains("return \"defined\""),
+            "a later body must replace an earlier forward declaration: {text}"
+        );
+        let first = first_name_match(&ast, "greet").ok_or("first-match oracle")?;
+        assert_ne!(
+            selected.location.start, first.location.start,
+            "this fixture must discriminate definition-after-forward from first-name-match"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sole_forward_declaration_is_still_selected() -> TestResult {
+        let source = "sub greet;\ngreet();\n";
+        let ast = parse(source)?;
+        let selected =
+            effective_subroutine_declaration(&ast, "greet", call_offset(source, "greet()")?)
+                .ok_or("expected the forward declaration")?;
+        let text = selected_text(source, selected);
+        assert!(
+            text.contains("sub greet;"),
+            "a forward-only snapshot must still be navigable: {text}"
+        );
+        assert!(
+            !text.contains('{'),
+            "sole forward must not be confused with an empty-brace body: {text}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_brace_body_is_not_treated_as_forward() -> TestResult {
+        let source = "sub greet {}\nsub greet;\ngreet();\n";
+        let ast = parse(source)?;
+        let selected =
+            effective_subroutine_declaration(&ast, "greet", call_offset(source, "greet()")?)
+                .ok_or("expected the empty-brace body")?;
+        let text = selected_text(source, selected);
+        assert!(
+            text.contains('{'),
+            "genuine `sub greet {{}}` must win over a trailing forward: {text}"
+        );
+        assert!(
+            !text.trim_end().ends_with(';'),
+            "trailing `sub greet;` must not replace an empty-brace definition: {text}"
         );
         Ok(())
     }

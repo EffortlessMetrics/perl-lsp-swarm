@@ -266,6 +266,45 @@ run(1, 2);
     Ok(())
 }
 
+/// A trailing `sub greet;` after a body must not steal click-to-definition.
+/// Perl keeps the earlier implementation; the parser still emits a later
+/// zero-width empty Block for the forward declaration.
+#[test]
+fn resolve_trailing_forward_keeps_the_body() -> TestResult {
+    let text = r#"sub greet($name, $greeting) { return "body"; }
+sub greet;
+greet("Alice", "Hello");
+"#;
+    let line = resolve_call_site_line(text, "file:///trailing_forward.pl", "greet")?;
+    let body = line_of_nth_sub(text, "greet", 0)?;
+    let forward = line_of_nth_sub(text, "greet", 1)?;
+    assert_ne!(body, forward, "fixture must contain a body then a forward");
+    assert_eq!(
+        line, body,
+        "resolve must keep the body (line {body}), not the trailing forward (line {forward}); got {line}"
+    );
+    Ok(())
+}
+
+/// Forward then definition: last-name-match would keep the later body anyway,
+/// but first-name-match would land on `sub greet($name, $greeting);`.
+#[test]
+fn resolve_forward_then_definition_selects_the_body() -> TestResult {
+    let text = r#"sub greet($name, $greeting);
+sub greet($name, $greeting) { return "defined"; }
+greet("Alice", "Hello");
+"#;
+    let line = resolve_call_site_line(text, "file:///forward_then_def.pl", "greet")?;
+    let forward = line_of_nth_sub(text, "greet", 0)?;
+    let body = line_of_nth_sub(text, "greet", 1)?;
+    assert_ne!(forward, body, "fixture must contain a forward then a body");
+    assert_eq!(
+        line, body,
+        "resolve must select the later body (line {body}), not the earlier forward (line {forward}); got {line}"
+    );
+    Ok(())
+}
+
 /// A single definition remains selectable. Retention control so last-wins
 /// cannot collapse into "never resolve".
 #[test]
