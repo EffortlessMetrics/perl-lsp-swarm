@@ -449,11 +449,8 @@ fn parse_double_quoted(source: &str, idx: &mut usize) -> Option<Quoted> {
         }
         value.push(ch);
     }
-    if interpolating {
-        Some(Quoted::Dynamic { snippet: snippet(source, inner_start, *idx) })
-    } else {
-        Some(Quoted::Scalar(value))
-    }
+    *idx = inner_start.saturating_sub(1);
+    None
 }
 
 fn parse_quoted(source: &str, idx: &mut usize, quote: u8) -> Option<String> {
@@ -461,6 +458,7 @@ fn parse_quoted(source: &str, idx: &mut usize, quote: u8) -> Option<String> {
     if bytes.get(*idx) != Some(&quote) {
         return None;
     }
+    let start = *idx;
     let mut value = String::new();
     *idx += 1;
     let mut escaped = false;
@@ -484,10 +482,8 @@ fn parse_quoted(source: &str, idx: &mut usize, quote: u8) -> Option<String> {
         }
         value.push(ch);
     }
-    if escaped {
-        value.push('\\');
-    }
-    Some(value)
+    *idx = start;
+    None
 }
 
 fn parse_quotelike(source: &str, idx: &mut usize) -> Option<Quoted> {
@@ -539,11 +535,8 @@ fn parse_quotelike(source: &str, idx: &mut usize) -> Option<Quoted> {
         value.push(ch);
         *idx += ch.len_utf8();
     }
-    if kind == "qw" {
-        Some(Quoted::Words(value.split_whitespace().map(ToOwned::to_owned).collect()))
-    } else {
-        Some(finish_quotelike(kind, value))
-    }
+    *idx = start;
+    None
 }
 
 fn finish_quotelike(kind: &str, value: String) -> Quoted {

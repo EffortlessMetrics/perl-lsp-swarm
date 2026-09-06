@@ -641,6 +641,32 @@ WriteMakefile(
 }
 
 #[test]
+fn open_source_license_is_not_rewritten_as_perl_5() {
+    let src = "WriteMakefile(\n    NAME => 'Foo::Bar',\n    LICENSE => 'open_source',\n);\n";
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    assert_eq!(facts.licenses, vec!["open_source"]);
+}
+
+#[test]
+fn dist_ini_name_equals_name_ranges_cover_the_value() {
+    let src = "name = name\nversion = 1.00\n";
+    let facts = parse_dist_ini(fid("dist.ini", src), src);
+    let decl = facts.declarations.iter().find(|d| d.key == "name").unwrap();
+    let start = decl.range.start_byte as usize;
+    let end = decl.range.end_byte as usize;
+    assert_eq!(src.get(start..end).unwrap().trim(), "name = name");
+}
+
+#[test]
+fn unterminated_quotes_are_dynamic_not_static() {
+    let src = "WriteMakefile(\n    NAME => 'Foo::Bar',\n    VERSION => '1.23\n);\n";
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    assert_eq!(facts.name.as_deref(), Some("Foo-Bar"));
+    assert!(facts.version.is_none());
+    assert!(facts.limitations.iter().any(|l| l.kind == "dynamic_value"));
+}
+
+#[test]
 fn fact_fingerprint_includes_resource_web_type_and_provides_file() {
     let with_web = r#"
 WriteMakefile(

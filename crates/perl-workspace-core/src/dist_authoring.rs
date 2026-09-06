@@ -428,7 +428,7 @@ fn normalized_licenses(licenses: &[String]) -> Option<String> {
 
 fn normalize_license(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().replace('-', "_").as_str() {
-        "perl" | "perl_5" | "open_source" => "perl_5".to_string(),
+        "perl" | "perl_5" => "perl_5".to_string(),
         other => other.to_string(),
     }
 }

@@ -47,7 +47,8 @@ pub fn parse_dist_ini(file_id: FileId, content: &str) -> DistAuthoringFacts {
     let mut line_start = 0usize;
     for line in content.split_inclusive('\n') {
         let line_end = line_start + line.len();
-        let trimmed = strip_ini_comment(line).trim();
+        let stripped = strip_ini_comment(line);
+        let trimmed = stripped.trim();
         if trimmed.is_empty() {
             line_start = line_end;
             continue;
@@ -61,7 +62,9 @@ pub fn parse_dist_ini(file_id: FileId, content: &str) -> DistAuthoringFacts {
             line_start = line_end;
             continue;
         }
-        let Some((key, value)) = split_ini_key_value(trimmed) else {
+        let Some((key, value, key_off, value_off, value_end_off)) =
+            split_ini_key_value_offsets(stripped)
+        else {
             collector.limitation(
                 "malformed_ini",
                 format!("skipped unreadable dist.ini line `{trimmed}`"),
@@ -71,17 +74,14 @@ pub fn parse_dist_ini(file_id: FileId, content: &str) -> DistAuthoringFacts {
             line_start = line_end;
             continue;
         };
-        let value_start = line_start + line.find(value).unwrap_or(0);
-        let value_end = value_start + value.len();
-        let key_start = line_start + line.find(key).unwrap_or(0);
         apply_ini_entry(
             &mut collector,
             &mut section,
             key,
             value,
-            key_start,
-            value_start,
-            value_end,
+            line_start + key_off,
+            line_start + value_off,
+            line_start + value_end_off,
         );
         line_start = line_end;
     }
@@ -369,13 +369,18 @@ fn strip_ini_comment(line: &str) -> &str {
     line
 }
 
-fn split_ini_key_value(line: &str) -> Option<(&str, &str)> {
-    let (key, value) = line.split_once('=')?;
-    let key = key.trim();
+fn split_ini_key_value_offsets(line: &str) -> Option<(&str, &str, usize, usize, usize)> {
+    let eq = line.find('=')?;
+    let key_part = line.get(..eq)?;
+    let val_part = line.get(eq + 1..)?;
+    let key_rel = key_part.len() - key_part.trim_start().len();
+    let key = key_part.trim();
     if key.is_empty() {
         return None;
     }
-    Some((key, value.trim()))
+    let val_rel = val_part.len() - val_part.trim_start().len();
+    let raw_val = val_part.trim();
+    Some((key, raw_val, key_rel, eq + 1 + val_rel, eq + 1 + val_rel + raw_val.len()))
 }
 
 fn unquote(value: &str) -> String {
