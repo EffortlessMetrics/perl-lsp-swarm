@@ -4734,6 +4734,193 @@ review_after = "2026-08-13"
         Ok(())
     }
 
+    fn canonical_allow_document(entries: &str) -> String {
+        format!("schema_version = 1\npolicy = \"non-rust-allowlist\"\n{entries}")
+    }
+
+    fn valid_allow_entry(id: &str, path: &str, reason: &str) -> String {
+        format!(
+            r#"
+[[allow]]
+id = "{id}"
+path = "{path}"
+kind = "doc"
+language = "markdown"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "{reason}"
+covered_by = ["manual review"]
+created = "2026-01-01"
+review_after = "2026-06-01"
+"#
+        )
+    }
+
+    fn validate_shared_allow_schema_surfaces(document: &str) -> Result<(String, Vec<String>)> {
+        let exact = validate_exact_policy_bytes(document.as_bytes())
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_default();
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("allow.toml");
+        fs::write(&path, document)?;
+        let mut ordinary = Vec::new();
+        let _ = validate_policy_table(&path, "allow", true, &mut ordinary);
+        Ok((exact, ordinary))
+    }
+
+    fn assert_shared_allow_schema_rejects(document: &str, needles: &[&str]) -> Result<()> {
+        let (exact, ordinary) = validate_shared_allow_schema_surfaces(document)?;
+        ensure!(!exact.is_empty(), "exact-tree accepted malformed allowlist: {document}");
+        ensure!(!ordinary.is_empty(), "ordinary policy accepted malformed allowlist: {document}");
+        for needle in needles {
+            ensure!(
+                exact.contains(needle),
+                "exact-tree missed {needle:?} in {exact:?}"
+            );
+            ensure!(
+                ordinary.iter().any(|error| error.contains(*needle)),
+                "ordinary policy missed {needle:?} in {ordinary:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn valid_allowlist_passes_exact_tree_and_ordinary_schema_surfaces() -> Result<()> {
+        let document = canonical_allow_document(&format!(
+            "{}{}",
+            valid_allow_entry("entry-a", "docs/a.md", "Documents alpha."),
+            valid_allow_entry("entry-b", "docs/b.md", "Documents beta.")
+        ));
+        validate_exact_policy_bytes(document.as_bytes())?;
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("allow.toml");
+        fs::write(&path, &document)?;
+        let mut errors = Vec::new();
+        assert_eq!(validate_policy_table(&path, "allow", true, &mut errors), 2);
+        ensure!(errors.is_empty(), "unexpected ordinary errors: {errors:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_allow_fields_fail_exact_tree_and_ordinary_schema_surfaces() -> Result<()> {
+        let valid = canonical_allow_document(&valid_allow_entry(
+            "ok",
+            "docs/ok.md",
+            "Valid control row.",
+        ));
+
+        assert_shared_allow_schema_rejects(
+            &valid.replace("review_after = \"2026-06-01\"\n", "review_after = \"2026-06-01\"\nunknown = \"field\"\n"),
+            &["unknown field"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "glob = \"docs/**\"\npath = \"docs/ok.md\""),
+            &["cannot set both"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"\n", ""),
+            &["must set either `glob` or `path`"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "path = \"./docs/ok.md\""),
+            &["without leading `./`"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "path = \"docs\\\\ok.md\""),
+            &["Windows backslashes"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "path = \" docs/ok.md \""),
+            &["surrounding whitespace"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("classification = \"documentation\"", "classification = \"surprise\""),
+            &["classification `surprise`"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("covered_by = [\"manual review\"]", "covered_by = \"manual review\""),
+            &["`covered_by` must be a list of strings"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("covered_by = [\"manual review\"]\n", ""),
+            &["missing required field `covered_by`"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid
+                .replace("classification = \"documentation\"", "classification = \"production\"")
+                .replace("covered_by = [\"manual review\"]", "covered_by = []"),
+            &["requires at least one `covered_by` entry"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("created = \"2026-01-01\"", "created = \"not-a-date\""),
+            &["`created` is not a real date"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("review_after = \"2026-06-01\"", "review_after = \"2026-01-01\""),
+            &["`review_after` must be after `created`"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace(
+                "review_after = \"2026-06-01\"\n",
+                "review_after = \"2026-06-01\"\nexpires = \"2026-01-01\"\n",
+            ),
+            &["`expires` must be after `created`"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("owner = \"docs\"\n", ""),
+            &["missing required field `owner`"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace(
+                "review_after = \"2026-06-01\"\n",
+                "review_after = \"2026-06-01\"\nretired = \"no\"\n",
+            ),
+            &["`retired` must be a boolean"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "glob = \"[\""),
+            &["invalid glob"],
+        )?;
+        assert_shared_allow_schema_rejects(
+            &valid.replace("path = \"docs/ok.md\"", "glob = \"docs/**\""),
+            &["broad_glob_reason"],
+        )?;
+
+        let duplicate_matcher = canonical_allow_document(&format!(
+            "{}{}",
+            valid_allow_entry("first", "README.md", "First readme."),
+            valid_allow_entry("second", "README.md", "Second readme.")
+        ));
+        assert_shared_allow_schema_rejects(&duplicate_matcher, &["duplicate matcher `README.md`"])?;
+
+        let duplicate_id = canonical_allow_document(&format!(
+            "{}{}",
+            valid_allow_entry("same-id", "docs/a.md", "First id."),
+            valid_allow_entry("same-id", "docs/b.md", "Second id.")
+        ));
+        assert_shared_allow_schema_rejects(&duplicate_id, &["duplicate id"])?;
+        Ok(())
+    }
+
+    #[test]
+    fn documentation_empty_covered_by_is_not_a_schema_error_on_either_surface() -> Result<()> {
+        let document = canonical_allow_document(
+            &valid_allow_entry("docs-empty", "docs/ok.md", "Docs may omit coverage items.")
+                .replace("covered_by = [\"manual review\"]", "covered_by = []"),
+        );
+        validate_exact_policy_bytes(document.as_bytes())?;
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("allow.toml");
+        fs::write(&path, &document)?;
+        let mut errors = Vec::new();
+        assert_eq!(validate_policy_table(&path, "allow", true, &mut errors), 1);
+        ensure!(errors.is_empty(), "unexpected ordinary errors: {errors:?}");
+        Ok(())
+    }
+
     #[test]
     fn check_allowlist_entries_reports_blocking_and_strict_violations() {
         let mut expired = make_entry("expired", None, Some("README.md"), "documentation");
