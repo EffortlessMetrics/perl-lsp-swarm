@@ -122,26 +122,13 @@ pub(crate) fn parse_ratchet_list(content: &str) -> Vec<String> {
 }
 
 /// True when a `Cargo.toml` text opts in with an explicit `publish = true`
-/// inside its `[package]` table.
-pub(crate) fn manifest_declares_publish_true(manifest: &str) -> bool {
-    let mut in_package = false;
-    for raw in manifest.lines() {
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if line.starts_with('[') {
-            in_package = line == "[package]";
-            continue;
-        }
-        if !in_package {
-            continue;
-        }
-        if let Some((key, value)) = line.split_once('=')
-            && key.trim() == "publish"
-            && value.trim() == "true"
-        {
-            return true;
-        }
-    }
-    false
+/// in its `[package]` table. Parsed as TOML, so every spelling Cargo accepts
+/// (`[ package ]`, quoted keys, dotted `package.publish`) is seen; a manifest
+/// that does not parse is an error rather than a silent `false`.
+pub(crate) fn manifest_declares_publish_true(manifest: &str) -> Result<bool> {
+    let value: toml::Value = toml::from_str(manifest).map_err(|e| eyre!("invalid TOML: {e}"))?;
+    Ok(value.get("package").and_then(|package| package.get("publish"))
+        == Some(&toml::Value::Boolean(true)))
 }
 
 fn load_api_ratchet_inputs(root: &Path, meta: &NoDepsMetadata) -> Result<ApiRatchetInputs> {
@@ -178,7 +165,9 @@ fn load_api_ratchet_inputs(root: &Path, meta: &NoDepsMetadata) -> Result<ApiRatc
     for pkg in meta.packages.iter().filter(|p| ws_ids.contains(p.id.as_str())) {
         let manifest = fs::read_to_string(&pkg.manifest_path)
             .wrap_err_with(|| format!("reading {}", pkg.manifest_path))?;
-        if manifest_declares_publish_true(&manifest) {
+        if manifest_declares_publish_true(&manifest)
+            .wrap_err_with(|| format!("parsing {}", pkg.manifest_path))?
+        {
             explicit_publish.insert(pkg.name.clone());
         }
     }
@@ -352,19 +341,42 @@ mod tests {
         assert_eq!(parse_ratchet_list(content), strings(&["perl-uri", "perl-dap"]));
     }
 
+    fn publish_true(manifest: &str) -> bool {
+        match manifest_declares_publish_true(manifest) {
+            Ok(value) => value,
+            Err(err) => panic!("manifest should parse: {err}"),
+        }
+    }
+
     #[test]
-    fn explicit_publish_true_is_detected_only_inside_the_package_table() {
-        assert!(manifest_declares_publish_true(
+    fn explicit_publish_true_is_detected_in_every_toml_spelling() {
+        assert!(publish_true(
             "[package]\nname = \"x\"\npublish = true # opt in\n\n[dependencies]\n"
         ));
-        assert!(!manifest_declares_publish_true("[package]\nname = \"x\"\npublish = false\n"));
-        assert!(!manifest_declares_publish_true("[package]\nname = \"x\"\n"));
+        assert!(publish_true("[ package ]\nname = \"x\"\npublish=true\n"));
+        assert!(publish_true("[package]\nname = \"x\"\n\"publish\" = true\n"));
+        assert!(publish_true("package.name = \"x\"\npackage.publish = true\n"));
+    }
+
+    #[test]
+    fn explicit_publish_true_is_not_inferred_from_other_shapes() {
+        assert!(!publish_true("[package]\nname = \"x\"\npublish = false\n"));
+        assert!(!publish_true("[package]\nname = \"x\"\n"));
+        // A registry list is not the boolean opt-in.
+        assert!(!publish_true("[package]\nname = \"x\"\npublish = [\"crates-io\"]\n"));
         // A `publish = true` outside `[package]` (e.g. metadata) is not an opt-in.
-        assert!(!manifest_declares_publish_true(
+        assert!(!publish_true(
             "[package]\nname = \"x\"\n\n[package.metadata.docs]\npublish = true\n"
         ));
         // Commented-out opt-ins do not count.
-        assert!(!manifest_declares_publish_true("[package]\nname = \"x\"\n# publish = true\n"));
+        assert!(!publish_true("[package]\nname = \"x\"\n# publish = true\n"));
+    }
+
+    #[test]
+    fn unparseable_manifest_is_an_error_not_a_silent_false() {
+        assert!(
+            manifest_declares_publish_true("[package\nname = \"x\"\npublish = true\n").is_err()
+        );
     }
 
     #[test]

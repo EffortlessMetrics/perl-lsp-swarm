@@ -868,24 +868,41 @@ jobs:
       - name: Install cargo-semver-checks
         run: cargo install cargo-semver-checks --version 0.47.0 --locked
 
+      - name: Fetch release tags from canonical repo
+        # Release tags live on EffortlessMetrics/perl-lsp; swarm origin has none
+        # (same wiring as the PR rail in ci.yml). Without this the baseline
+        # below is empty and every check errors instead of comparing.
+        run: |
+          git fetch --force --tags https://github.com/EffortlessMetrics/perl-lsp.git '+refs/tags/v*:refs/tags/v*'
+
       - name: Determine baseline tag
         id: baseline
         run: |
-          BASELINE=$(git tag | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
-          echo "baseline=$BASELINE" >> $GITHUB_OUTPUT
-          echo "Using baseline: $BASELINE"
+          BASELINE=$(git tag | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1) || true
+          if [ -z "${BASELINE:-}" ]; then
+            echo "::warning::No v*.*.* release tags on this checkout; skipping semver comparison"
+            echo "baseline=none" >> "$GITHUB_OUTPUT"
+          else
+            echo "baseline=${BASELINE}" >> "$GITHUB_OUTPUT"
+            echo "Using baseline: ${BASELINE}"
+          fi
 
       - name: Check API-ratcheted crates for compatibility
         # The crate set is .ci/public-api-baselines/ratchet-crates.txt, the same
         # list the PR rail and the `just semver-check*` recipes read (#14607).
+        # A missing baseline is handled above so it cannot be reported here as
+        # a compatibility finding.
+        if: steps.baseline.outputs.baseline != 'none'
         env:
           SEMVER_BASELINE: ${{ steps.baseline.outputs.baseline }}
         run: |
           mapfile -t crates < <(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .ci/public-api-baselines/ratchet-crates.txt | grep -v '^$')
           for crate in "${crates[@]}"; do
-            cargo semver-checks check-release -p "${crate}" \
-              --baseline-rev "${SEMVER_BASELINE}" \
-              || echo "::warning::Breaking changes detected in ${crate}"
+            if cargo semver-checks check-release -p "${crate}" --baseline-rev "${SEMVER_BASELINE}"; then
+              echo "semver: ${crate} compatible with ${SEMVER_BASELINE}"
+            else
+              echo "::warning::cargo-semver-checks failed for ${crate} against ${SEMVER_BASELINE} (breaking change or tool error; see the log above)"
+            fi
           done
 
       - name: Generate breaking changes report
