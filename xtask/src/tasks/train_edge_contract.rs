@@ -1137,10 +1137,15 @@ fn load_adaptations(root: &Path) -> Result<ManifestAdaptations> {
                 "adaptation row for {kind} must declare a stage exactly when the kind is external_checkpoint"
             );
         }
-        rows.insert(
-            (schema.to_string(), class.to_string()),
-            (kind.to_string(), stage.map(str::to_string)),
-        );
+        if rows
+            .insert(
+                (schema.to_string(), class.to_string()),
+                (kind.to_string(), stage.map(str::to_string)),
+            )
+            .is_some()
+        {
+            bail!("adaptation row for {schema}/{class} is declared more than once");
+        }
     }
     for manifest in root_map.get("manifests").and_then(Value::as_array).unwrap_or(&Vec::new()) {
         let Some(manifest) = as_str_map(manifest) else {
@@ -1151,6 +1156,9 @@ fn load_adaptations(root: &Path) -> Result<ManifestAdaptations> {
         else {
             bail!("manifest entry missing bundle/programme_schema");
         };
+        if manifests.iter().any(|(existing, _)| existing == bundle) {
+            bail!("manifest bundle {bundle} is registered more than once");
+        }
         manifests.push((bundle.to_string(), schema.to_string()));
     }
     if manifests.is_empty() {
@@ -1736,6 +1744,40 @@ mod tests {
             Value::String("programme-local editor role".to_string()),
         );
         assert!(validate_document(&localized).is_empty());
+        Ok(())
+    }
+
+    // A duplicated adaptation row or manifest registration must fail closed
+    // instead of silently overwriting or re-running.
+    #[test]
+    fn duplicate_adaptation_rows_and_manifests_are_rejected() -> TestResult {
+        let scratch = std::env::temp_dir().join(format!(
+            "train-edge-contract-dup-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let dir = scratch.join(".spec/10858-train-edge-contract");
+        fs::create_dir_all(&dir)?;
+        let path = dir.join("adaptations.json");
+        let base = |rows: &str, manifests: &str| {
+            format!(
+                r#"{{"schema":"train_edge_contract.adaptations.v1","adaptations":[{rows}],"manifests":[{manifests}]}}"#
+            )
+        };
+        let row = r#"{"programme_schema":"x.v1","class":"hard","kind":"requires_implementation"}"#;
+        let manifest = r#"{"bundle":".spec/x","programme_schema":"x.v1"}"#;
+
+        fs::write(&path, base(&format!("{row},{row}"), manifest))?;
+        let duplicate_row = load_adaptations(&scratch);
+        fs::write(&path, base(row, &format!("{manifest},{manifest}")))?;
+        let duplicate_manifest = load_adaptations(&scratch);
+        fs::write(&path, base(row, manifest))?;
+        let clean = load_adaptations(&scratch);
+        let _ = fs::remove_dir_all(&scratch);
+
+        assert!(duplicate_row.is_err(), "duplicate adaptation row must be rejected");
+        assert!(duplicate_manifest.is_err(), "duplicate manifest registration must be rejected");
+        assert!(clean.is_ok(), "a unique registry still loads");
         Ok(())
     }
 

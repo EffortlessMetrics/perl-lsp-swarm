@@ -2003,6 +2003,19 @@ created = "2026-08-16"
 review_after = "2026-11-16"
 
 [[allow]]
+id = "non-rust-perl-corpus-train-schema"
+path = "schemas/perl_corpus_train.v1.schema.json"
+kind = "release_metadata"
+language = "json"
+surface = "tooling"
+classification = "documentation"
+owner = "perl-corpus-train"
+reason = "Closed JSON Schema for the stable perl-corpus authority train manifest (#10980); applied by cargo xtask perl-corpus-train check."
+covered_by = ["cargo xtask perl-corpus-train check"]
+created = "2026-09-06"
+review_after = "2026-12-06"
+
+[[allow]]
 id = "non-rust-native-neovim-train-schema"
 path = "schemas/native_neovim_train.v1.schema.json"
 kind = "release_metadata"
