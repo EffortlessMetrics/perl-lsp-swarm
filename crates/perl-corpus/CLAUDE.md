@@ -38,6 +38,22 @@ Select the smallest proof that discriminates the changed contract, then run the
 applicable repository-level route from the root contract. A generated example without
 its seed is exploratory output, not reproducible evidence.
 
+## Programme train
+
+The stable authority train for this crate's programme (#8826 / #6696) is checked data at
+`.spec/10980-perl-corpus-stable-dag/train.manifest.json` (`perl_corpus_train.v1`). It
+owns which result depends on which, which authority moves, which writers conflict, and
+which legacy path exits; it never owns current implementation state or readiness.
+
+```bash
+cargo xtask perl-corpus-train check
+cargo xtask perl-corpus-train graph --check
+cargo xtask perl-corpus-train explain-static <node>
+```
+
+Before starting a leaf in this crate, read its node packet; a leaf never depends on an
+umbrella, and a shared exclusive conflict key without a dependency path is a rejection.
+
 ## Root authority
 
 `CorpusRoot` and `CorpusPaths` serve different contracts.

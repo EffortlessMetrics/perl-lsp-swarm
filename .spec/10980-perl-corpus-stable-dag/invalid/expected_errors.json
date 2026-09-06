@@ -1,0 +1,22 @@
+{
+  "controller_selectable.json": "NON_LEAF_SELECTABLE",
+  "duplicate_exclusive_authority_parallel.json": "CONFLICT_KEY_PARALLEL_COLLISION",
+  "duplicate_active_authority.json": "DUPLICATE_ACTIVE_AUTHORITY",
+  "commit_coordinate_as_stable_state.json": "MUTABLE_STATE_EMBEDDED",
+  "pull_request_as_active_node.json": "CANDIDATE_AS_ACTIVE_NODE",
+  "publication_as_foundation_dependency.json": "PUBLICATION_PROMOTED_INTO_FOUNDATION",
+  "authorization_on_coding_node.json": "AUTHORIZATION_ON_CODING_NODE",
+  "missing_legacy_exit.json": "MISSING_LEGACY_EXIT",
+  "superseded_reactivated.json": "SUPERSEDED_REACTIVATED",
+  "hard_cycle.json": "HARD_DEPENDENCY_CYCLE",
+  "dependency_on_controller.json": "DEPENDENCY_ON_CONTROLLER",
+  "external_action_without_authorization.json": "AUTHORIZATION_MISSING",
+  "unknown_edge_target.json": "UNKNOWN_EDGE_TARGET",
+  "consumed_by_mismatch.json": "CONSUMED_BY_MISMATCH",
+  "incomplete_one_pr_contract.json": "INCOMPLETE_ONE_PR_CONTRACT",
+  "title_fingerprint_mismatch.json": "TITLE_FINGERPRINT_MISMATCH",
+  "unknown_conflict_key.json": "CONFLICT_KEY_UNKNOWN",
+  "dependency_class_collapsed.json": "DEPENDENCY_CLASS_COLLAPSED",
+  "horizon_rank_drift.json": "VOCABULARY_DRIFT",
+  "unknown_key_schema.json": "SCHEMA_VIOLATION"
+}

@@ -52,7 +52,7 @@ use tasks::{
     native_format, native_neovim_train, native_product_surface, native_tooling,
     oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
     parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
-    perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
+    perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
     product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
     provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
     publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
@@ -184,6 +184,16 @@ enum Commands {
     /// control, and every discriminating invalid fixture.
     #[command(name = "check-native-neovim-train")]
     CheckNativeNeovimTrain,
+
+    /// Stable perl-corpus authority train (perl_corpus_train.v1, #10980):
+    /// validate the checked manifest, render deterministic reviewer
+    /// projections, or explain one static node packet. Offline and
+    /// read-only; derives no frontier and observes no GitHub state.
+    #[command(name = "perl-corpus-train")]
+    PerlCorpusTrain {
+        #[command(subcommand)]
+        command: PerlCorpusTrainCommand,
+    },
 
     /// Validate the dependency-neutral product-health rail/adapter registry contract.
     #[command(name = "check-product-health-rail-contract")]
@@ -4660,6 +4670,29 @@ enum DevexCommand {
 }
 
 #[derive(Subcommand)]
+enum PerlCorpusTrainCommand {
+    /// Validate the closed schema, every named graph law, the shuffled
+    /// determinism control, every discriminating invalid fixture, and the
+    /// freshness of the generated projections.
+    Check,
+
+    /// Regenerate the deterministic Markdown/JSON/DOT/Mermaid projections
+    /// under the bundle's `projections/` directory, or verify them.
+    Graph {
+        /// Fail if the committed projections differ from a fresh render.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Render one bounded static node packet. Makes no readiness claim.
+    #[command(name = "explain-static")]
+    ExplainStatic {
+        /// Node identifier, e.g. `pc_opened_asset_7693`.
+        node: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum ModuleTrainCommand {
     /// Project every stable node into its typed exact current-tree state.
     ///
@@ -4977,6 +5010,13 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CheckNativeNeovimTrain => native_neovim_train::run(),
+        Commands::PerlCorpusTrain { command } => match command {
+            PerlCorpusTrainCommand::Check => perl_corpus_train::run_check(),
+            PerlCorpusTrainCommand::Graph { check } => perl_corpus_train::run_graph(check),
+            PerlCorpusTrainCommand::ExplainStatic { node } => {
+                perl_corpus_train::run_explain_static(&node)
+            }
+        },
         Commands::CheckProductHealthRailContract => product_health_rail_contract::run(),
         Commands::ProductHealth { command } => product_health_status::run(command),
         Commands::CheckAgentImplementationPacket { update_golden } => {

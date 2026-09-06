@@ -1,0 +1,588 @@
+{
+  "schema": "perl_corpus_train.v1",
+  "schema_version": 1,
+  "programme": {
+    "architecture_epic_issue": 6696,
+    "execution_controller_issue": 8826,
+    "stable_dag_issue": 10980,
+    "home_programme": "perl-corpus",
+    "method_authority": "#3983",
+    "planning_governance": "#5205",
+    "shared_mechanics_gate": "#10554"
+  },
+  "stable_versus_mutable": {
+    "stable_owns": [
+      "what result each node establishes",
+      "which exact result depends on which result",
+      "which semantic authority moves",
+      "which writers conflict or may proceed in parallel",
+      "which legacy path exits when",
+      "which external action requires authorization"
+    ],
+    "never_owns": [
+      "current main SHA or implementation state",
+      "issue labels or open/closed state",
+      "current PR head/base/check/review state",
+      "which writer is active now",
+      "what a coding agent may start today"
+    ],
+    "mutable_owners": [
+      "#10992",
+      "#11001",
+      "#11017"
+    ]
+  },
+  "role_vocabulary": [
+    {
+      "role": "controller",
+      "selectable": false,
+      "owns": "programme, umbrella, or closure authority; never assignable to ordinary implementation and never a direct dependency of a leaf"
+    },
+    {
+      "role": "implementation",
+      "selectable": true,
+      "owns": "one assignable one-PR repository proposition that adds or replaces an authority with an exact exit"
+    },
+    {
+      "role": "proof",
+      "selectable": true,
+      "owns": "adds exact evidence, receipts, or inventory over an existing authority; cannot repair what it observes"
+    },
+    {
+      "role": "cutover",
+      "selectable": true,
+      "owns": "moves one live authority and retires or bounds the exact old route in the same change"
+    },
+    {
+      "role": "decision",
+      "selectable": false,
+      "owns": "a settled or open architecture decision recorded as a node; never coding work"
+    },
+    {
+      "role": "external_action",
+      "selectable": false,
+      "owns": "repository creation, history import, tag/release, registry mutation, or other action requiring explicit authorization"
+    },
+    {
+      "role": "historical",
+      "selectable": false,
+      "owns": "landed, superseded, transferred, or duplicate subject kept as architecture input; never selectable"
+    }
+  ],
+  "dependency_classes": [
+    {
+      "class": "hard",
+      "meaning": "the node cannot establish its proposition until the predecessor result is current on main"
+    },
+    {
+      "class": "evidence",
+      "meaning": "implementation may land while the later host, platform, or content evidence row remains NOT_PROVEN; evidence never manufactures implementation readiness"
+    },
+    {
+      "class": "authorization",
+      "meaning": "an explicit external authority must grant the action; internal readiness, labels, green checks, or tool availability never satisfy it"
+    }
+  ],
+  "release_horizons": [
+    {
+      "horizon": "foundation_safety",
+      "rank": 0,
+      "meaning": "root, path, opened-byte, and control-plane safety that every later result consumes"
+    },
+    {
+      "horizon": "topology_registration",
+      "rank": 1,
+      "meaning": "typed registration of every asset, producer, and structural relationship population"
+    },
+    {
+      "horizon": "expectation_gold_generator",
+      "rank": 2,
+      "meaning": "generic expectations, gold envelopes/extensions, generator profiles, HIR stability"
+    },
+    {
+      "horizon": "workspace_command",
+      "rank": 3,
+      "meaning": "one CorpusWorkspace, vocabularies, backfill, and command contract"
+    },
+    {
+      "horizon": "audit_evidence",
+      "rank": 4,
+      "meaning": "typed audit plan, receipts, supervision, evidence, and current-input report"
+    },
+    {
+      "horizon": "consumer_ci_closeout",
+      "rank": 5,
+      "meaning": "consumer inventory/migration/recurrence, docs reconciliation, required CI routes"
+    },
+    {
+      "horizon": "package_externalization",
+      "rank": 6,
+      "meaning": "package isolation, extraction manifest, external repository proof, consumer cutover, embedded removal"
+    },
+    {
+      "horizon": "publication_manual",
+      "rank": 7,
+      "meaning": "repository creation/history import, tag/release, registry publication under explicit authorization"
+    },
+    {
+      "horizon": "optional_breadth",
+      "rank": 8,
+      "meaning": "parser-accuracy strata, highlight execution, and community journeys that never block earlier horizons"
+    }
+  ],
+  "conflict_keys": [
+    {
+      "key": "perl_corpus.asset_path",
+      "authority": "a"
+    },
+    {
+      "key": "perl_corpus.opened_asset",
+      "authority": "b"
+    },
+    {
+      "key": "perl_corpus.package_identity",
+      "authority": "c"
+    },
+    {
+      "key": "perl_corpus.external_repository",
+      "authority": "d"
+    }
+  ],
+  "external_authorities": [
+    {
+      "id": "#EXPLICIT-AUTHORIZATION",
+      "subject": "explicit authorization"
+    },
+    {
+      "id": "#6261",
+      "subject": "ci reachability"
+    }
+  ],
+  "candidate_lineages": [
+    {
+      "ref": "PR #1",
+      "subject": "fixture candidate",
+      "reuse_policy": "history input only"
+    }
+  ],
+  "limitations": [
+    "this manifest encodes stable topology only; it does not prove that any node is implemented, ready, or landed on the current tree (#10992 owns that)",
+    "controllers and umbrellas carry no dependency edges by design; a leaf never depends on a controller, and a controller's closure is derived from its leaves' propositions",
+    "dependencies on umbrella issues in leaf headers (#6980, #6985, #6989, #6716, #7009) are routed to the leaf that owns the result and recorded in the edge provenance",
+    "cross-programme prerequisites (#6261, #7745, #8056, #8081) are declared external authorities; their current-tree state is not establishable from this data",
+    "candidate lineages record reuse policy only; live candidate state belongs to #11001",
+    "generic mechanics duplicated pending the #10554 gate: title fingerprint law, banned-key walk, hard-cycle search; the canonical digest and canonical form are consumed from the module_train and native_neovim_train modules"
+  ],
+  "revision_governance": {
+    "owner_issue": "#10980",
+    "invalidates": "a classified semantic revision of node set, roles, dependency classes, conflict keys, horizons, authority transitions, or exits must regenerate the projections through cargo xtask perl-corpus-train graph and re-run check; stale projections fail closed",
+    "never": "issue closure, merged pull requests, labels, green checks, or agent activity never amend a stable node fact; the manifest never rewrites itself to pass",
+    "metadata_only": "wording that changes no node identity, role, edge, class, key, horizon, authority, or exit is metadata-only and invalidates no derived state beyond regenerating projections"
+  },
+  "nodes": [
+    {
+      "node_id": "pc_ctrl",
+      "issue_ref": "#100",
+      "title": "controller fixture",
+      "title_fingerprint": "292F3F846DF629BB",
+      "role": "controller",
+      "selectable": false,
+      "lane": "fixture",
+      "phase": "P",
+      "release_horizon": "foundation_safety",
+      "one_pr_proposition": "fixture proposition establishing exactly one authority result for pc_ctrl",
+      "semantic_authority_refs": [
+        "#8826"
+      ],
+      "dependencies": [],
+      "consumed_by": [],
+      "supersedes": [],
+      "superseded_by": null,
+      "duplicate_of": null,
+      "transferred_to": null,
+      "known_candidate_lineage_refs": [],
+      "candidate_reuse_policy": "reuse an existing coherent candidate before creating one",
+      "exclusive_conflict_keys": [],
+      "likely_owned_surfaces": [],
+      "forbidden_surfaces": [],
+      "positive_proof_obligations": [],
+      "first_falsifier": "",
+      "negative_controls": [],
+      "repository_verification": [],
+      "owned_generated_artifacts": [],
+      "spec": {
+        "requirement": "optional",
+        "owner": "#8826"
+      },
+      "claim_ceiling": "fixture claim ceiling bounded to one authority result",
+      "stop_conditions": [
+        "fixture stop condition"
+      ],
+      "authority_before": "before pc_ctrl",
+      "authority_after": "after pc_ctrl establishes its authority",
+      "legacy_exit": {
+        "owner": null,
+        "condition": null
+      }
+    },
+    {
+      "node_id": "pc_found",
+      "issue_ref": "#101",
+      "title": "foundation fixture",
+      "title_fingerprint": "5DB26073D0F56D2C",
+      "role": "implementation",
+      "selectable": true,
+      "lane": "fixture",
+      "phase": "A0",
+      "release_horizon": "foundation_safety",
+      "one_pr_proposition": "fixture proposition establishing exactly one authority result for pc_found",
+      "semantic_authority_refs": [
+        "#8826"
+      ],
+      "dependencies": [],
+      "consumed_by": [
+        "pc_topo"
+      ],
+      "supersedes": [],
+      "superseded_by": null,
+      "duplicate_of": null,
+      "transferred_to": null,
+      "known_candidate_lineage_refs": [],
+      "candidate_reuse_policy": "resume from main@ba8e2fbb00959d33848de647cfb76fc477f3c569 exactly",
+      "exclusive_conflict_keys": [
+        "perl_corpus.asset_path"
+      ],
+      "likely_owned_surfaces": [
+        "crates/perl-corpus/src/fixture.rs"
+      ],
+      "forbidden_surfaces": [
+        "no second authority"
+      ],
+      "positive_proof_obligations": [
+        "fixture proof obligation"
+      ],
+      "first_falsifier": "a fixture falsifier long enough to count as worded",
+      "negative_controls": [
+        "fixture negative control"
+      ],
+      "repository_verification": [
+        "cargo test -p perl-corpus --locked"
+      ],
+      "owned_generated_artifacts": [],
+      "spec": {
+        "requirement": "optional",
+        "owner": "#8826"
+      },
+      "claim_ceiling": "fixture claim ceiling bounded to one authority result",
+      "stop_conditions": [
+        "fixture stop condition"
+      ],
+      "authority_before": "before pc_found",
+      "authority_after": "after pc_found establishes its authority",
+      "legacy_exit": {
+        "owner": "#8826",
+        "condition": "old path removed"
+      }
+    },
+    {
+      "node_id": "pc_topo",
+      "issue_ref": "#102",
+      "title": "topology fixture",
+      "title_fingerprint": "9BA0113E312CF37E",
+      "role": "implementation",
+      "selectable": true,
+      "lane": "fixture",
+      "phase": "A0",
+      "release_horizon": "topology_registration",
+      "one_pr_proposition": "fixture proposition establishing exactly one authority result for pc_topo",
+      "semantic_authority_refs": [
+        "#8826"
+      ],
+      "dependencies": [
+        {
+          "target": "pc_found",
+          "class": "hard",
+          "provenance": "fixture"
+        }
+      ],
+      "consumed_by": [
+        "pc_pkg",
+        "pc_proof"
+      ],
+      "supersedes": [],
+      "superseded_by": null,
+      "duplicate_of": null,
+      "transferred_to": null,
+      "known_candidate_lineage_refs": [],
+      "candidate_reuse_policy": "reuse an existing coherent candidate before creating one",
+      "exclusive_conflict_keys": [
+        "perl_corpus.opened_asset"
+      ],
+      "likely_owned_surfaces": [
+        "crates/perl-corpus/src/fixture.rs"
+      ],
+      "forbidden_surfaces": [
+        "no second authority"
+      ],
+      "positive_proof_obligations": [
+        "fixture proof obligation"
+      ],
+      "first_falsifier": "a fixture falsifier long enough to count as worded",
+      "negative_controls": [
+        "fixture negative control"
+      ],
+      "repository_verification": [
+        "cargo test -p perl-corpus --locked"
+      ],
+      "owned_generated_artifacts": [],
+      "spec": {
+        "requirement": "optional",
+        "owner": "#8826"
+      },
+      "claim_ceiling": "fixture claim ceiling bounded to one authority result",
+      "stop_conditions": [
+        "fixture stop condition"
+      ],
+      "authority_before": "before pc_topo",
+      "authority_after": "after pc_topo establishes its authority",
+      "legacy_exit": {
+        "owner": "#8826",
+        "condition": "old path removed"
+      }
+    },
+    {
+      "node_id": "pc_pkg",
+      "issue_ref": "#103",
+      "title": "package fixture",
+      "title_fingerprint": "B2BDEF3FA7137715",
+      "role": "implementation",
+      "selectable": true,
+      "lane": "fixture",
+      "phase": "A0",
+      "release_horizon": "package_externalization",
+      "one_pr_proposition": "fixture proposition establishing exactly one authority result for pc_pkg",
+      "semantic_authority_refs": [
+        "#8826"
+      ],
+      "dependencies": [
+        {
+          "target": "pc_topo",
+          "class": "hard",
+          "provenance": "fixture"
+        }
+      ],
+      "consumed_by": [
+        "pc_pub"
+      ],
+      "supersedes": [],
+      "superseded_by": null,
+      "duplicate_of": null,
+      "transferred_to": null,
+      "known_candidate_lineage_refs": [],
+      "candidate_reuse_policy": "reuse an existing coherent candidate before creating one",
+      "exclusive_conflict_keys": [
+        "perl_corpus.package_identity"
+      ],
+      "likely_owned_surfaces": [
+        "crates/perl-corpus/src/fixture.rs"
+      ],
+      "forbidden_surfaces": [
+        "no second authority"
+      ],
+      "positive_proof_obligations": [
+        "fixture proof obligation"
+      ],
+      "first_falsifier": "a fixture falsifier long enough to count as worded",
+      "negative_controls": [
+        "fixture negative control"
+      ],
+      "repository_verification": [
+        "cargo test -p perl-corpus --locked"
+      ],
+      "owned_generated_artifacts": [],
+      "spec": {
+        "requirement": "optional",
+        "owner": "#8826"
+      },
+      "claim_ceiling": "fixture claim ceiling bounded to one authority result",
+      "stop_conditions": [
+        "fixture stop condition"
+      ],
+      "authority_before": "before pc_pkg",
+      "authority_after": "after pc_pkg establishes its authority",
+      "legacy_exit": {
+        "owner": "#8826",
+        "condition": "old path removed"
+      }
+    },
+    {
+      "node_id": "pc_pub",
+      "issue_ref": "#104",
+      "title": "publication fixture",
+      "title_fingerprint": "FB7ABD1B52D19D09",
+      "role": "external_action",
+      "selectable": false,
+      "lane": "fixture",
+      "phase": "B1",
+      "release_horizon": "publication_manual",
+      "one_pr_proposition": "fixture proposition establishing exactly one authority result for pc_pub",
+      "semantic_authority_refs": [
+        "#8826"
+      ],
+      "dependencies": [
+        {
+          "target": "pc_pkg",
+          "class": "hard",
+          "provenance": "fixture"
+        },
+        {
+          "target": "#EXPLICIT-AUTHORIZATION",
+          "class": "authorization",
+          "provenance": "fixture"
+        }
+      ],
+      "consumed_by": [],
+      "supersedes": [],
+      "superseded_by": null,
+      "duplicate_of": null,
+      "transferred_to": null,
+      "known_candidate_lineage_refs": [],
+      "candidate_reuse_policy": "reuse an existing coherent candidate before creating one",
+      "exclusive_conflict_keys": [],
+      "likely_owned_surfaces": [],
+      "forbidden_surfaces": [],
+      "positive_proof_obligations": [],
+      "first_falsifier": "",
+      "negative_controls": [],
+      "repository_verification": [],
+      "owned_generated_artifacts": [],
+      "spec": {
+        "requirement": "optional",
+        "owner": "#8826"
+      },
+      "claim_ceiling": "fixture claim ceiling bounded to one authority result",
+      "stop_conditions": [
+        "fixture stop condition"
+      ],
+      "authority_before": "before pc_pub",
+      "authority_after": "after pc_pub establishes its authority",
+      "legacy_exit": {
+        "owner": null,
+        "condition": null
+      }
+    },
+    {
+      "node_id": "pc_hist",
+      "issue_ref": "PR #1",
+      "title": "historical fixture",
+      "title_fingerprint": "B393C56C05E75432",
+      "role": "historical",
+      "selectable": false,
+      "lane": "fixture",
+      "phase": "H",
+      "release_horizon": "foundation_safety",
+      "one_pr_proposition": "fixture proposition establishing exactly one authority result for pc_hist",
+      "semantic_authority_refs": [
+        "#8826"
+      ],
+      "dependencies": [],
+      "consumed_by": [],
+      "supersedes": [],
+      "superseded_by": "pc_found",
+      "duplicate_of": null,
+      "transferred_to": null,
+      "known_candidate_lineage_refs": [],
+      "candidate_reuse_policy": "reuse an existing coherent candidate before creating one",
+      "exclusive_conflict_keys": [],
+      "likely_owned_surfaces": [],
+      "forbidden_surfaces": [],
+      "positive_proof_obligations": [],
+      "first_falsifier": "",
+      "negative_controls": [],
+      "repository_verification": [],
+      "owned_generated_artifacts": [],
+      "spec": {
+        "requirement": "optional",
+        "owner": "#8826"
+      },
+      "claim_ceiling": "fixture claim ceiling bounded to one authority result",
+      "stop_conditions": [
+        "fixture stop condition"
+      ],
+      "authority_before": "before pc_hist",
+      "authority_after": "after pc_hist establishes its authority",
+      "legacy_exit": {
+        "owner": null,
+        "condition": null
+      }
+    },
+    {
+      "node_id": "pc_proof",
+      "issue_ref": "#105",
+      "title": "proof fixture",
+      "title_fingerprint": "805AAC66AE0276B7",
+      "role": "proof",
+      "selectable": true,
+      "lane": "fixture",
+      "phase": "A1",
+      "release_horizon": "optional_breadth",
+      "one_pr_proposition": "fixture proposition establishing exactly one authority result for pc_proof",
+      "semantic_authority_refs": [
+        "#8826"
+      ],
+      "dependencies": [
+        {
+          "target": "pc_topo",
+          "class": "evidence",
+          "provenance": "fixture"
+        },
+        {
+          "target": "#6261",
+          "class": "hard",
+          "provenance": "fixture"
+        }
+      ],
+      "consumed_by": [],
+      "supersedes": [],
+      "superseded_by": null,
+      "duplicate_of": null,
+      "transferred_to": null,
+      "known_candidate_lineage_refs": [],
+      "candidate_reuse_policy": "reuse an existing coherent candidate before creating one",
+      "exclusive_conflict_keys": [
+        "perl_corpus.external_repository"
+      ],
+      "likely_owned_surfaces": [
+        "crates/perl-corpus/src/fixture.rs"
+      ],
+      "forbidden_surfaces": [
+        "no second authority"
+      ],
+      "positive_proof_obligations": [
+        "fixture proof obligation"
+      ],
+      "first_falsifier": "a fixture falsifier long enough to count as worded",
+      "negative_controls": [
+        "fixture negative control"
+      ],
+      "repository_verification": [
+        "cargo test -p perl-corpus --locked"
+      ],
+      "owned_generated_artifacts": [],
+      "spec": {
+        "requirement": "optional",
+        "owner": "#8826"
+      },
+      "claim_ceiling": "fixture claim ceiling bounded to one authority result",
+      "stop_conditions": [
+        "fixture stop condition"
+      ],
+      "authority_before": "before pc_proof",
+      "authority_after": "after pc_proof establishes its authority",
+      "legacy_exit": {
+        "owner": null,
+        "condition": null
+      }
+    }
+  ]
+}
