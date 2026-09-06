@@ -1,7 +1,8 @@
 //! Historical `perl_kwalitee.v1` compatibility and migration authority.
 //!
-//! The current crate name predates the separation between CPAN distribution
-//! Kwalitee and repository/product release readiness. This module freezes that
+//! This crate (`perl-release-readiness`) is the code home of the mixed
+//! evaluator that predated the separation between CPAN distribution Kwalitee
+//! and repository/product release readiness. This module freezes that
 //! historical meaning, validates a one-to-one migration ledger for every
 //! legacy indicator, and provides the only supported reader for old receipts.
 //!
@@ -466,7 +467,7 @@ pub fn render_legacy_migration_markdown() -> Result<String, LegacyCompatibilityE
     let records = legacy_indicator_records()?;
     let mut out = String::from(
         "# Legacy `perl_kwalitee.v1` migration\n\n\
-         > Generated from `crates/perl-kwalitee/legacy_indicator_migrations.toml` and the frozen\n\
+         > Generated from `crates/perl-release-readiness/legacy_indicator_migrations.toml` and the frozen\n\
          > legacy catalog. Do not edit this table independently.\n\n\
          ## Contract\n\n\
          - Legacy receipt kind: `perl_kwalitee`\n\

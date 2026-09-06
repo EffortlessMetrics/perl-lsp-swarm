@@ -11,7 +11,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use assert_cmd::Command;
-use perl_kwalitee::KwaliteeReceipt;
+use perl_release_readiness::KwaliteeReceipt;
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -359,7 +359,9 @@ fn required_parity_wiring_is_present(workflow: &str) -> bool {
         .unwrap_or(section.len());
     let job = &section[..end];
     job.contains("name: Legacy parity library authority (required merge surface)")
-        && job.contains("cargo test -p perl-kwalitee --test legacy_parity --locked -- --nocapture")
+        && job.contains(
+            "cargo test -p perl-release-readiness --test legacy_parity --locked -- --nocapture",
+        )
         && job.contains("name: Legacy parity CLI authority (required merge surface)")
         && job.contains("cargo test -p xtask --test perl_kwalitee_parity --locked -- --nocapture")
         && !job.contains("continue-on-error: true")
@@ -422,7 +424,8 @@ fn required_parity_wiring_rejects_missing_or_advisory_controls() {
         "both parity suites must run in the required Compile All Targets job"
     );
 
-    let missing_library = workflow.replace("cargo test -p perl-kwalitee --test legacy_parity", "");
+    let missing_library =
+        workflow.replace("cargo test -p perl-release-readiness --test legacy_parity", "");
     assert!(
         !required_parity_wiring_is_present(&missing_library),
         "missing library parity command must fail the wiring contract"

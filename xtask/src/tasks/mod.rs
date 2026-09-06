@@ -192,6 +192,7 @@ pub mod update_status;
 pub mod ux_regression_receipt;
 pub mod ux_scorecard;
 pub mod validate_workspace_exclusions;
+pub mod workflow_authority_inventory;
 pub mod workflow_policy_lint;
 pub mod workflow_trigger_lint;
 pub mod workflows;

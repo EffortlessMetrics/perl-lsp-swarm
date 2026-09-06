@@ -1070,7 +1070,7 @@ jobs:
           key: ${{ runner.os }}-kwalitee-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
 
-      # The `perl-kwalitee` crate is pure — it never spawns a subprocess and
+      # The `perl-release-readiness` crate is pure — it never spawns a subprocess and
       # reads its evidence only from pre-generated JSON receipts. Without these
       # upstream receipts every nightly receipt-backed indicator resolves as
       # `unverified`. Generate them first (all native Rust, no perltidy/
