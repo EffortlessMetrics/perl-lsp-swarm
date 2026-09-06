@@ -77,7 +77,27 @@ pub(crate) fn discover(root: &Path, vocabulary: &Vocabulary) -> Result<Topology>
     }
     packages.sort_by(|left, right| left.name.cmp(&right.name));
     files.sort_by(|left, right| left.path.cmp(&right.path));
+    note_unreachable_packages(root, &package_roots, &mut instruments);
     Ok(Topology { packages, files, instruments })
+}
+
+fn note_unreachable_packages(root: &Path, members: &[PathBuf], instruments: &mut Vec<Instrument>) {
+    for relative in ["tests", "tests/fuzz", "fuzz"] {
+        let dir = root.join(relative);
+        let cargo = dir.join("Cargo.toml");
+        if !cargo.is_file() {
+            continue;
+        }
+        if members.iter().any(|member| member == &dir) {
+            continue;
+        }
+        instruments.push(Instrument {
+            kind: "test_topology".to_string(),
+            subject: normalize_path(&cargo, root),
+            status: InstrumentStatus::NotProven,
+            detail: "package exists outside workspace members".to_string(),
+        });
+    }
 }
 
 fn package_roots(root: &Path, manifest: &toml::Value) -> Result<Vec<PathBuf>> {

@@ -502,6 +502,61 @@ fn production_unwrap_is_not_test_debt() {
 }
 
 #[test]
+fn non_member_nested_workspace_is_not_proven_not_a_population_hole() {
+    let temp = tempfile::tempdir().expect("temp");
+    write_policy(temp.path());
+    write_package(
+        temp.path(),
+        "demo",
+        "pub fn ready() {}\n",
+        &[("known.rs", "#[test]\nfn known() {}\n")],
+    );
+    let fuzz = temp.path().join("tests/fuzz");
+    fs::create_dir_all(&fuzz).expect("fuzz");
+    fs::write(
+        fuzz.join("Cargo.toml"),
+        r#"[package]
+name = "fuzz-parser-robustness"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+"#,
+    )
+    .expect("fuzz manifest");
+    fs::write(fuzz.join("quick_lsp_test.rs"), "fn main() { let _ = Some(1).unwrap(); }\n")
+        .expect("fuzz bin");
+
+    let inventory = inventory_at(temp.path());
+    assert!(
+        inventory.instruments.iter().any(|instrument| {
+            instrument.kind == "test_topology"
+                && instrument.status == InstrumentStatus::NotProven
+                && instrument.subject.ends_with("tests/fuzz/Cargo.toml")
+        }),
+        "unreachable nested workspace was a silent zero: {:?}",
+        inventory.instruments
+    );
+    assert!(
+        !inventory.rows.iter().any(|row| row.path.ends_with("quick_lsp_test.rs")),
+        "non-member fuzz bin was absorbed as workspace test debt: {:?}",
+        inventory.rows
+    );
+    let result = check_inventory(xtask::no_panic_debt::CheckRequest {
+        root: temp.path(),
+        current: &inventory,
+        artifact: None,
+        baseline: None,
+    })
+    .expect("check");
+    assert!(
+        result.ok,
+        "non-member tests/fuzz was treated as a missing population hole: {:?}",
+        result.findings
+    );
+}
+
+#[test]
 fn registry_is_not_the_discovery_denominator() {
     let temp = fixture_root();
     write_registry(temp.path(), r#"{"schema_version":1,"sites":[]}"#);

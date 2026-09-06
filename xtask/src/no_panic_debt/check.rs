@@ -129,7 +129,7 @@ pub fn integrity_findings(root: &Path, inventory: &Inventory) -> Vec<String> {
         }
     }
 
-    let on_disk_tests = collect_test_files(root);
+    let on_disk_tests = collect_test_files(root, inventory);
     let known: std::collections::BTreeSet<_> =
         inventory.population.files.iter().map(|file| file.path.as_str()).collect();
     for path in on_disk_tests {
@@ -157,10 +157,17 @@ fn load_inventory(path: &Path) -> Result<Inventory> {
     serde_json::from_str(&raw).map_err(|err| eyre!("parsing {}: {err}", path.display()))
 }
 
-fn collect_test_files(root: &Path) -> Vec<String> {
+fn collect_test_files(root: &Path, inventory: &Inventory) -> Vec<String> {
+    let mut roots = std::collections::BTreeSet::new();
+    roots.insert(root.join("crates"));
+    roots.insert(root.join("xtask"));
+    for package in &inventory.population.packages {
+        if let Some(parent) = Path::new(&package.manifest).parent() {
+            roots.insert(root.join(parent));
+        }
+    }
     let mut files = Vec::new();
-    for dir in ["crates", "xtask", "src", "tests"] {
-        let base = root.join(dir);
+    for base in roots {
         if !base.exists() {
             continue;
         }
@@ -189,5 +196,6 @@ fn collect_test_files(root: &Path) -> Vec<String> {
         }
     }
     files.sort();
+    files.dedup();
     files
 }
