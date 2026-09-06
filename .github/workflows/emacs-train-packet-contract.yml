@@ -11,6 +11,10 @@ on:
       - '.spec/11716-emacs-support-architecture/**'
       - 'xtask/src/tasks/emacs_train_packet.rs'
       - 'xtask/src/tasks/emacs_train_packet/**'
+      # The lane invokes the CLI route, so a change that removes or misroutes
+      # the command must trigger it too.
+      - 'xtask/src/main.rs'
+      - 'xtask/src/tasks/mod.rs'
       - 'xtask/src/tasks/emacs_train_context/**'
       - 'xtask/src/tasks/emacs_train_specs.rs'
       - 'xtask/src/tasks/agent_implementation_packet.rs'

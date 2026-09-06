@@ -290,7 +290,11 @@ fn default_fixture(root: &Path) -> Result<AdapterInputs> {
 fn observed_vacant() -> LiveObservation {
     LiveObservation {
         candidate_state: "observed".to_string(),
-        digest: "sha256:0000000000000000".to_string(),
+        // A digest `parse_live_observation` accepts: the all-zero placeholder
+        // is refused there, so a fixture using it would admit packets against
+        // an observation the CLI can never supply.
+        digest: "sha256:5f3a1c0e9b7d24486ac1f0e2d93b8570cc41a6e28d5f9017b3e4c6a8d0f21b95"
+            .to_string(),
         candidate_identity: Some(
             "no candidate: no open PR or dirty checkout owns this claim".to_string(),
         ),
@@ -908,6 +912,9 @@ fn eligibility_refusals_are_distinct_from_instrument_failures() -> Result<()> {
         "CONTEXT_MAPPING_GAP",
         "HARD_DEPENDENCY_NOT_CURRENT",
         "NO_WRITE_SURFACE",
+        // `run_packets_check` bails as an instrument failure without this one,
+        // so dropping it from the matcher must fail this suite.
+        "NO_LIVE_OBSERVATION",
     ] {
         assert!(is_eligibility_refusal(code), "{code} must be a typed eligibility refusal");
     }
@@ -1136,5 +1143,78 @@ fn candidate_order_does_not_change_the_reconcile_packet() -> Result<()> {
         "candidate order must not change the frontier digest"
     );
     assert_eq!(forward_bytes, reversed_bytes, "candidate order must not change packet bytes");
+    Ok(())
+}
+
+#[test]
+fn a_reported_collision_refuses_a_coding_packet() -> Result<()> {
+    // One candidate, one writer. An observation that *reports* a collision is
+    // unambiguous -- someone else is on this claim -- so admitting a coding
+    // packet would authorize a second writer. This is distinct from the
+    // missing-collision case, which stays admissible because an observed
+    // vacancy legitimately carries no collision state.
+    let root = fixture_tree("reported-collision")?;
+    let inputs = default_fixture(&root)?;
+    let contested = LiveObservation {
+        candidate_state: "observed".to_string(),
+        digest: "sha256:5f3a1c0e9b7d24486ac1f0e2d93b8570cc41a6e28d5f9017b3e4c6a8d0f21b95"
+            .to_string(),
+        candidate_identity: Some("PR #8800 (tooling/sub-claim)".to_string()),
+        collision_state: Some("a second writer holds an open PR on this claim".to_string()),
+    };
+    let refusal =
+        compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&contested))
+            .expect_err("a reported collision must refuse a coding packet");
+    assert_eq!(refusal.code, "NO_LIVE_OBSERVATION");
+    assert!(
+        refusal.detail.contains("reports a collision"),
+        "the refusal must name the collision, got: {}",
+        refusal.detail
+    );
+
+    // Negative control: the same observation with no collision reported still
+    // admits, so the guard cannot pass by refusing every observation.
+    let uncontested = LiveObservation { collision_state: None, ..contested };
+    compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&uncontested))
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    Ok(())
+}
+
+#[test]
+fn distinct_nodes_never_share_a_proposition_id() -> Result<()> {
+    // Real witness: SUBJ_E and SUBJ_L share their first 48 normalized outcome
+    // characters, so a slug-only id conflated their work for every
+    // proposition-keyed consumer.
+    let root = fixture_tree("proposition-identity")?;
+    let shared = "Materialize the exact released and pinned source artifacts for the train.";
+    let mut first = make_node("SUBJ_E", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT");
+    first["one_pr_outcome"] = json!(shared);
+    let mut second = make_node("SUBJ_L", 9002, "implementation", "ISSUE_PLAN_SUFFICIENT");
+    second["one_pr_outcome"] = json!(shared);
+    let inputs = load_fixture_inputs(
+        &root,
+        &[first, second],
+        &[mapped_node_entry("SUBJ_E", true), mapped_node_entry("SUBJ_L", true)],
+        &[
+            disposition_record("SUBJ_E", 9001, "ISSUE_PLAN_SUFFICIENT"),
+            disposition_record("SUBJ_L", 9002, "ISSUE_PLAN_SUFFICIENT"),
+        ],
+    )?;
+
+    let id_of = |node: &str| -> Result<String> {
+        let doc = compose_builder_packet(
+            &root,
+            &inputs,
+            node,
+            "coding_agent_bounded",
+            Some(&observed_vacant()),
+        )
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+        Ok(doc["work"]["proposition_id"].as_str().unwrap_or_default().to_string())
+    };
+
+    let left = id_of("SUBJ_E")?;
+    let right = id_of("SUBJ_L")?;
+    assert_ne!(left, right, "nodes sharing an outcome prefix must not share a proposition id");
     Ok(())
 }

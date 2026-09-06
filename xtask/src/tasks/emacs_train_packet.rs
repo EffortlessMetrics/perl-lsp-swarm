@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
-use color_eyre::eyre::{Context, Result, bail, ensure};
+use color_eyre::eyre::{Context, Result, bail, ensure, eyre};
 use serde_json::{Value, json};
 
 use crate::tasks::agent_implementation_packet::{
@@ -525,6 +525,25 @@ fn compose_packet_document(
         // vacancy and make coding packets unissuable. Tracked against
         // #10872/#10930 with the rest of the vocabulary gap.
         let detail = match (observed, live) {
+            // A *reported* collision is unambiguous: someone else is on this
+            // claim. Admitting a writer anyway is the one-candidate/one-writer
+            // violation, and unlike the missing-collision case below there is
+            // no vacancy reading to preserve -- an observed vacancy carries no
+            // collision state at all.
+            (Some(observed), _)
+                if observed
+                    .collision_state
+                    .as_deref()
+                    .map(|collision| !collision.trim().is_empty())
+                    .unwrap_or(false) =>
+            {
+                Some(format!(
+                    "the observed candidate {} reports a collision ({}); ownership must be \
+                     reconciled before a coding packet admits a second writer",
+                    observed.candidate_identity.as_deref().unwrap_or("(unnamed)"),
+                    observed.collision_state.as_deref().unwrap_or_default().trim()
+                ))
+            }
             (Some(_), _) => None,
             (None, None) => Some(
                 "no live candidate observation was supplied (--live-observation); a coding \
@@ -646,6 +665,12 @@ fn compose_packet_document(
 
     // Zero-drift law: the document must satisfy the shared closed contract,
     // validated and rendered only through #10872's own fail-closed layer.
+    //
+    // Clean *before* validating. Validating `doc` and then returning
+    // `remove_null_live_observation(doc)` would validate a different document
+    // from the one callers receive, which is precisely the drift this law
+    // exists to forbid.
+    let doc = remove_null_live_observation(doc);
     render_builder_packet(&doc, PacketProjection::Machine)
         .map_err(|error| {
             Refusal::new(
@@ -655,7 +680,7 @@ fn compose_packet_document(
                 format!("the composed packet violates the shared #10872 contract: {error:#}"),
             )
         })
-        .map(|_| remove_null_live_observation(doc))
+        .map(|_| doc)
 }
 
 /// Profiles the E01 role + E02 disposition permit for one node. Controller,
@@ -700,7 +725,12 @@ fn proposition_id(node: &TrainNode) -> String {
             .collect();
     let compact = slug.split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-");
     let compact = if compact.is_empty() { node.node_id.to_lowercase() } else { compact };
-    format!("P_{}", truncate_chars(&compact, 48))
+    // The outcome slug alone is not unique: SUBJ_E and SUBJ_L share their first
+    // 48 normalized characters ("materialize the exact released and pinned
+    // source ..."), so a slug-only id conflates two nodes' work for every
+    // proposition-keyed consumer. The node id is unique by construction, so it
+    // is the disambiguator.
+    format!("P_{}_{}", truncate_chars(&compact, 48), node.node_id)
 }
 
 fn truncate_chars(value: &str, max: usize) -> String {
@@ -1885,16 +1915,31 @@ fn run_packets_check(root: &Path, live: Option<&LiveObservation>) -> Result<()> 
         for profile in ["coding_agent_bounded", "coding_agent_strong"] {
             match compose_builder_packet(root, &inputs, &node.node_id, profile, live) {
                 Ok(doc) => {
-                    // Determinism: two independent renders must be
-                    // byte-identical, and the shared contract must accept the
-                    // document unchanged (zero drift).
+                    // Determinism: the same inputs must *compose* to
+                    // byte-identical packets, and the shared contract must
+                    // accept the document unchanged (zero drift).
+                    //
+                    // Rendering the same `doc` twice could only prove the
+                    // projection is a pure function, which no input can
+                    // falsify. Recompose from the same inputs so the check
+                    // covers composition and input loading -- the property the
+                    // module and the CI lane actually claim.
                     let first = render_builder_packet(&doc, PacketProjection::Machine)
                         .with_context(|| {
-                            format!("rendering the packet of node {} twice (first)", node.node_id)
+                            format!("rendering the packet of node {} (first)", node.node_id)
                         })?;
-                    let second = render_builder_packet(&doc, PacketProjection::Machine)
+                    let recomposed =
+                        compose_builder_packet(root, &inputs, &node.node_id, profile, live)
+                            .map_err(|refusal| {
+                                eyre!(
+                                    "recomposing node {} refused after it composed once: {}",
+                                    node.node_id,
+                                    refusal.line()
+                                )
+                            })?;
+                    let second = render_builder_packet(&recomposed, PacketProjection::Machine)
                         .with_context(|| {
-                            format!("rendering the packet of node {} twice (second)", node.node_id)
+                            format!("rendering the packet of node {} (recomposed)", node.node_id)
                         })?;
                     ensure!(
                         first == second,
