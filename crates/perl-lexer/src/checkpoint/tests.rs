@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Checkpointable, LexerMode, PerlLexer, TokenType};
+use crate::{Checkpointable, LexerConfig, LexerMode, PerlLexer, TokenType};
 
 fn live_checkpoints(source: &str) -> Vec<LexerCheckpoint> {
     let mut lexer = PerlLexer::new(source);
@@ -225,5 +225,38 @@ fn overlapping_edit_does_not_reset_mode_to_term_origin() {
     assert!(
         checkpoint.in_prototype(),
         "invalidation must not fabricate a default ExpectTerm origin"
+    );
+}
+
+#[test]
+fn qw_recovery_enabled_is_part_of_policy_identity() {
+    let config = LexerConfig::default();
+    let recovered = LexerPolicyIdentity::from_construction(&config, true, false);
+    let no_recovery = LexerPolicyIdentity::from_construction(&config, false, false);
+    assert_ne!(
+        recovered, no_recovery,
+        "qw_recovery_enabled must participate in construction-time policy identity"
+    );
+}
+
+#[test]
+fn qw_recovery_policy_mismatch_is_wrong_configuration() {
+    let source = "qw/a b/;";
+    let recovered = PerlLexer::new(source).checkpoint();
+    let no_recovery = PerlLexer::without_qw_recovery(source, LexerConfig::default());
+    assert_eq!(
+        no_recovery.validate_restore(&recovered),
+        Err(CheckpointRestoreError::WrongConfiguration)
+    );
+    assert!(
+        PerlLexer::new(source).can_restore(&recovered),
+        "same-policy restore of a recovered-qw checkpoint must still succeed"
+    );
+    let captured_without =
+        PerlLexer::without_qw_recovery(source, LexerConfig::default()).checkpoint();
+    assert!(
+        PerlLexer::without_qw_recovery(source, LexerConfig::default())
+            .can_restore(&captured_without),
+        "same-policy restore of a no-qw-recovery checkpoint must still succeed"
     );
 }
