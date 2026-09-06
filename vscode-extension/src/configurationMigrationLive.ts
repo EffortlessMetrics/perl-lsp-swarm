@@ -49,6 +49,20 @@ export type ConfigurationTarget = 'user' | 'workspace' | 'workspace-folder';
  * This table is the security-load-bearing part of the module: `perl-lsp.mcp.servers` is
  * `machine` + `process_execution`, so a copy planted in repository-controlled workspace
  * configuration must not resolve to its registry row.
+ *
+ * Two limits are worth stating rather than implying.
+ *
+ * It authorizes by declared scope, not by `security_trust_class`. Today no interpretation
+ * can produce a canonical value at all — every row is `removed_inert`, and
+ * `unwiredCanonicalValues` reports any that ever does — so nothing repository-controlled
+ * can become authority regardless. A registry row that pairs `process_execution` with a
+ * repo-settable scope would need that stronger rule before an effective-configuration
+ * consumer (#6736) lands; #14968 owns it.
+ *
+ * And `user` is a *target*, not a provenance: VS Code merges machine/remote settings into
+ * the same `globalValue`, and a dev container's `customizations.vscode.settings` is
+ * written there. `inspect()` exposes no way to separate the two, so an occurrence at the
+ * `user` target is not proof that a human typed it.
  */
 const AUTHORIZED_TARGETS: Readonly<Record<MigrationScope, readonly ConfigurationTarget[]>> = {
   machine: ['user'],
@@ -74,18 +88,26 @@ export function authorizedTargetsForScope(scope: MigrationScope): readonly Confi
 /** One folder-scoped occurrence of a legacy value. */
 export interface LegacyFolderValue {
   /**
-   * Stable identity for the owning workspace folder.
+   * Identity for the owning workspace folder, within one published state.
    *
    * Callers must pass an opaque identity — never a filesystem path — because this value
    * reaches the published migration state, which is redacted by contract.
+   *
+   * It distinguishes folders inside a single read; it is not stable across changes to the
+   * folder set. The host supplies the folder's position, so removing an earlier folder
+   * renumbers the rest. A consumer correlating entries across refreshes must re-read the
+   * whole state rather than track a folder by this value.
    */
   readonly folderId: string;
   readonly value: unknown;
 }
 
 /**
- * Where one legacy key was found. An absent property means "not set at that target",
- * which is not the same as "set to undefined"; the host adapter distinguishes them.
+ * Where one legacy key was found. An absent property means "not set at that target".
+ *
+ * `undefined` is not representable as a stored value here — the host adapter tests
+ * `!== undefined` against `inspect()`, and VS Code removes a key rather than storing
+ * `undefined` for it. A stored `null` is a value like any other and is carried through.
  */
 export interface LegacyConfigurationSites {
   readonly user?: { readonly value: unknown };
@@ -125,6 +147,14 @@ interface SiteOccurrence {
   readonly value: unknown;
 }
 
+/**
+ * Flatten the sites carrying one key into one occurrence per target.
+ *
+ * Order is fixed (`user`, `workspace`, then folders in the caller's order) so a profile
+ * always produces the same state for the same configuration — the published state is
+ * fingerprinted to decide whether a notice repeats, and an unstable order would advance
+ * that fingerprint on every read.
+ */
 function siteOccurrences(sites: LegacyConfigurationSites): readonly SiteOccurrence[] {
   const occurrences: SiteOccurrence[] = [];
   if (sites.user !== undefined) {
@@ -153,10 +183,21 @@ function siteOccurrences(sites: LegacyConfigurationSites): readonly SiteOccurren
  * invented here.
  *
  * When *several* scopes authorize the same target the registry offers more than one
- * reading, and this module refuses to pick: it again reports the target's own scope, so
- * the outcome is either the row that names that exact scope or `scope_not_permitted`.
- * That is deliberately conservative — a registry whose authorizing scopes are all
- * indirect fails closed rather than resolving to whichever row happens to sort first.
+ * reading, and this module refuses to pick: it again reports the target's own scope. The
+ * result is order-independent, which is the property that matters — it never resolves to
+ * whichever row happens to sort first.
+ *
+ * It is not, however, uniformly conservative, and the two outcomes differ sharply:
+ *
+ * - none of the authorizing scopes is the target's own → no row matches →
+ *   `scope_not_permitted`. That refusal is honest about ambiguity but reads as the
+ *   repository-planted-value signal, which is not what happened.
+ * - one of them *is* the target's own → that row applies, and any other authorizing era
+ *   for the same key is shadowed. A stricter era (`removed_inert`, say) can therefore be
+ *   passed over at the one target where the key can legally sit.
+ *
+ * Neither is reachable from the shipped registry, which has a single row. #14968 owns
+ * giving multi-era keys a real reading before one exists.
  */
 function scopeForOccurrence(
   registry: ConfigurationMigrationRegistry,
@@ -165,7 +206,11 @@ function scopeForOccurrence(
 ): MigrationScope {
   const authorizedScopes = new Set<MigrationScope>();
   for (const row of findMigrationRows(registry, legacyKey)) {
-    if (AUTHORIZED_TARGETS[row.old_scope].includes(target)) {
+    // A JSON-loaded registry can carry a scope this table does not know. Treating it as
+    // authorizing nothing sends the occurrence down the target's own scope, where the
+    // registry's own validation reports it — rather than throwing on the lookup, which
+    // happens before `interpretLegacyConfiguration` gets to validate at all.
+    if ((AUTHORIZED_TARGETS[row.old_scope] ?? []).includes(target)) {
       authorizedScopes.add(row.old_scope);
     }
   }
@@ -206,15 +251,18 @@ export function readLegacyConfiguration(
         legacy_value_present: true,
         legacy_value: site.value,
         // A legacy key's *current* replacement is read by the authority that owns it
-        // (#6736), not here. This reader publishes no canonical value, so it cannot
-        // resolve an old-versus-new conflict and does not claim to.
+        // (#6736), not here. Hard-coding absence is exact for every shipped row, all of
+        // which are `removed_inert` and name no replacement key.
+        //
+        // For a row that does name one it would be a wrong verdict, not just a narrower
+        // one: a user who already migrated would be reported `compatible_legacy` — "the
+        // old value is in effect" — where the interpreter would say
+        // `compatible_current_wins`. Such a row cannot ship before #6736 gives this seam
+        // a current value to pass; #14968 tracks that.
         current_value_present: false,
         current_value: undefined,
         extension_version: extensionVersion,
       });
-      if (runtime.status === 'not_applicable') {
-        continue;
-      }
       occurrences.push({
         legacyKey: row.old_key,
         target: site.target,
@@ -227,6 +275,24 @@ export function readLegacyConfiguration(
   return occurrences;
 }
 
+/**
+ * Redact one occurrence.
+ *
+ * The single place the raw interpretation is narrowed to publishable fields. Every
+ * outward surface — published state and notice text alike — goes through here, so
+ * redaction is a property of the type each surface receives rather than of the care
+ * taken inside it.
+ */
+export function legacyMigrationStateEntry(
+  occurrence: LegacyMigrationOccurrence,
+): LegacyMigrationStateEntry {
+  return {
+    ...safeMigrationRuntimeSnapshot(occurrence.runtime),
+    target: occurrence.target,
+    folderId: occurrence.folderId,
+  };
+}
+
 /** Redact interpreted occurrences into the state published to support surfaces. */
 export function legacyMigrationState(
   registry: ConfigurationMigrationRegistry,
@@ -237,11 +303,7 @@ export function legacyMigrationState(
     registrySchemaVersion: registry.schema_version,
     registryTargetRelease: registry.target_release,
     extensionVersion,
-    entries: occurrences.map((occurrence) => ({
-      ...safeMigrationRuntimeSnapshot(occurrence.runtime),
-      target: occurrence.target,
-      folderId: occurrence.folderId,
-    })),
+    entries: occurrences.map(legacyMigrationStateEntry),
   };
 }
 
@@ -254,27 +316,27 @@ const TARGET_DESCRIPTION: Readonly<Record<ConfigurationTarget, string>> = {
 /**
  * One actionable line for the output channel.
  *
- * Names the setting, where it was found, and what replaces it — never the stored value,
- * which for `perl-lsp.mcp.servers` is a list of commands and environment.
+ * Takes the redacted entry, not the occurrence: the stored value — for
+ * `perl-lsp.mcp.servers`, a list of commands and environment — is then not in scope to
+ * be interpolated by accident, rather than merely left out by discipline.
  */
-export function describeLegacyMigrationOccurrence(occurrence: LegacyMigrationOccurrence): string {
-  const { runtime } = occurrence;
+export function describeLegacyMigrationEntry(entry: LegacyMigrationStateEntry): string {
   const where =
-    occurrence.folderId === null
-      ? TARGET_DESCRIPTION[occurrence.target]
-      : `${TARGET_DESCRIPTION[occurrence.target]} (${occurrence.folderId})`;
-  const reason = runtime.reason_code === null ? '' : ` [${runtime.reason_code}]`;
+    entry.folderId === null
+      ? TARGET_DESCRIPTION[entry.target]
+      : `${TARGET_DESCRIPTION[entry.target]} (${entry.folderId})`;
+  const reason = entry.reason_code === null ? '' : ` [${entry.reason_code}]`;
   // No migration id means no row was selected — the key is unregistered, or it sits at a
   // target its scope does not authorize. Naming a replacement there would assert a
   // migration the registry never made.
-  if (runtime.migration_id === null) {
-    return `\`${occurrence.legacyKey}\` in ${where} is ${runtime.status}.${reason}`;
+  if (entry.migration_id === null) {
+    return `\`${entry.legacy_key}\` in ${where} is ${entry.status}.${reason}`;
   }
   const replacement =
-    runtime.canonical_key_or_authority === null
+    entry.canonical_key_or_authority === null
       ? 'it has no replacement setting'
-      : `use \`${runtime.canonical_key_or_authority}\` instead`;
-  return `\`${occurrence.legacyKey}\` in ${where} is ${runtime.status}: ${replacement}.${reason}`;
+      : `use \`${entry.canonical_key_or_authority}\` instead`;
+  return `\`${entry.legacy_key}\` in ${where} is ${entry.status}: ${replacement}.${reason}`;
 }
 
 /**

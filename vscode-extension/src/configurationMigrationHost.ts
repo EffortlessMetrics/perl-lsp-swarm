@@ -22,8 +22,9 @@ import type {
   LegacyMigrationState,
 } from './configurationMigrationLive';
 import {
-  describeLegacyMigrationOccurrence,
+  describeLegacyMigrationEntry,
   legacyMigrationState,
+  legacyMigrationStateEntry,
   readLegacyConfiguration,
   unwiredCanonicalValues,
 } from './configurationMigrationLive';
@@ -82,22 +83,34 @@ function inspectLegacyKey(key: string): LegacyConfigurationSites {
 /**
  * The extension's live migration surface: current state plus the notices already shown.
  *
- * Notices dedupe on `(migration identity, configuration generation)`, and the generation
- * advances only when the redacted state actually changes. So an unrelated configuration
- * change — or a second read at activation — repeats nothing, while a profile that gains
- * or loses a legacy setting is reported again.
+ * The published redacted state *is* the configuration generation: a refresh producing an
+ * identical state says nothing, so an unrelated configuration change — or a second read at
+ * activation — repeats nothing. When the state does change, what was already said is
+ * forgotten, so a profile that gains or loses a legacy setting is reported again. Within
+ * one state, notices dedupe on `(migration identity, site)`.
  */
 export class LegacyMigrationSurface {
   private readonly dedupe = new MigrationNoticeDedupe();
-  private generation = 0;
   private lastStateFingerprint: string | null = null;
   private state: LegacyMigrationState;
 
+  /**
+   * @param notices where migration lines are written — the extension's output channel in
+   *   production, a collector in tests.
+   * @param extensionVersion the exact running version, passed in rather than read from
+   *   package state so expiry stays decidable from an explicit subject (#12886). A value
+   *   the version parser rejects makes expiry-bearing rows `invalid` rather than
+   *   silently unexpired.
+   * @param registry defaulted to the shipped registry; overridable so the authorization
+   *   and notice behavior can be proven against rows that do not exist yet.
+   */
   public constructor(
     private readonly notices: MigrationNoticeSink,
     private readonly extensionVersion: string,
     private readonly registry: ConfigurationMigrationRegistry = V018_CONFIGURATION_MIGRATIONS,
   ) {
+    // Published before the first read so a consumer that asks early gets an empty,
+    // well-formed state rather than `undefined`.
     this.state = legacyMigrationState(this.registry, this.extensionVersion, []);
   }
 
@@ -116,16 +129,28 @@ export class LegacyMigrationSurface {
     this.state = legacyMigrationState(this.registry, this.extensionVersion, occurrences);
 
     const fingerprint = JSON.stringify(this.state.entries);
-    if (fingerprint !== this.lastStateFingerprint) {
-      this.lastStateFingerprint = fingerprint;
-      this.generation += 1;
+    if (fingerprint === this.lastStateFingerprint) {
+      // Nothing the user could act on changed, so nothing is said again.
+      return this.state;
     }
+    this.lastStateFingerprint = fingerprint;
+    // Forgetting what was already said is what lets a notice reappear once the profile
+    // genuinely changes, and it bounds the set to one state's occurrences rather than
+    // letting it grow for the window's lifetime.
+    this.dedupe.clear();
 
     this.reportUnwiredCanonicalValues(occurrences);
     for (const occurrence of occurrences) {
-      if (this.dedupe.shouldShow(occurrence.runtime, `${this.generation}`)) {
+      // `MigrationNoticeDedupe` keys on the migration identity, which is null for every
+      // occurrence no row matched — so all of a key's refusals would share one subject and
+      // only the first would ever be announced. Two repository-controlled copies of the
+      // same setting are two things the user has to remove, so the site separates them.
+      const site = `${occurrence.target} ${occurrence.folderId ?? ''}`;
+      if (this.dedupe.shouldShow(occurrence.runtime, site)) {
         this.notices.warn(
-          `[configuration-migration] ${describeLegacyMigrationOccurrence(occurrence)}`,
+          `[configuration-migration] ${describeLegacyMigrationEntry(
+            legacyMigrationStateEntry(occurrence),
+          )}`,
         );
       }
     }
@@ -137,6 +162,10 @@ export class LegacyMigrationSurface {
    * publishing one is #6736/#7838 work this seam does not own. Reaching this branch means
    * a registry row changed disposition without that wiring, so it is reported as a defect
    * rather than dropped.
+   *
+   * Reached only when the published state changed. `MigrationNoticeDedupe` guards the
+   * warnings but not this line, so an ungated call would repeat the same defect on every
+   * unrelated configuration change.
    */
   private reportUnwiredCanonicalValues(occurrences: readonly LegacyMigrationOccurrence[]): void {
     for (const occurrence of unwiredCanonicalValues(occurrences)) {

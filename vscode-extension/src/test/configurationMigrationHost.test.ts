@@ -4,6 +4,7 @@ import {
   LegacyMigrationSurface,
   refreshLegacyMigrationOnConfigurationChange,
 } from '../configurationMigrationHost';
+import type { ConfigurationMigrationRegistry } from '../configurationMigrationRegistry';
 import { V018_CONFIGURATION_MIGRATIONS } from '../configurationMigrationRegistry';
 
 jest.mock('vscode');
@@ -57,7 +58,12 @@ function stubConfiguration(rootInspection: Inspection, folderInspections: Inspec
   );
 }
 
-function surface(): { surface: LegacyMigrationSurface; warnings: string[]; errors: string[] } {
+/** A surface whose notice sink records lines, so notices can be counted and inspected. */
+function surface(registry?: ConfigurationMigrationRegistry): {
+  surface: LegacyMigrationSurface;
+  warnings: string[];
+  errors: string[];
+} {
   const warnings: string[] = [];
   const errors: string[] = [];
   return {
@@ -67,9 +73,45 @@ function surface(): { surface: LegacyMigrationSurface; warnings: string[]; error
         error: (message) => errors.push(message),
       },
       '0.18.0',
+      registry ?? V018_CONFIGURATION_MIGRATIONS,
     ),
     warnings,
     errors,
+  };
+}
+
+/**
+ * A registry whose single row reads a legacy value straight through as canonical.
+ *
+ * No shipped row does this, so the unwired-canonical seam has no other way to be
+ * exercised against the host.
+ */
+function compatibleRegistry(): ConfigurationMigrationRegistry {
+  return {
+    schema_version: 'vscode_configuration_migration.v2',
+    source_public_release: '0.17.0',
+    target_release: '0.18.0',
+    rows: [
+      {
+        migration_id: 'legacy_rename',
+        old_key: MCP_KEY,
+        old_value_shape: 'array',
+        introduced_version: '0.17.0',
+        last_supported_version: '0.17.x',
+        new_key_or_authority: 'perl-lsp.newSetting',
+        old_scope: 'user',
+        new_scope: 'user',
+        migration_disposition: 'renamed_compatible',
+        automatic_read_compatibility: true,
+        explicit_write_allowed: false,
+        old_plus_new_conflict_policy: 'current_wins',
+        security_trust_class: 'ordinary',
+        warning_reason_code: 'legacy_setting_renamed',
+        compatibility_window: { kind: 'no_expiry' },
+        expiry_owner_issue: null,
+        installed_proof_requirement: '#9001',
+      },
+    ],
   };
 }
 
@@ -147,7 +189,7 @@ describe('legacy migration host adapter', () => {
     expect(warnings).toHaveLength(1);
   });
 
-  test('a changed profile advances the generation so the new state is reported', () => {
+  test('a changed profile is reported as the new state', () => {
     stubConfiguration({ globalValue: STALE_MCP_VALUE });
     const { surface: reader, warnings } = surface();
     reader.refresh();
@@ -158,6 +200,71 @@ describe('legacy migration host adapter', () => {
     expect(state.entries).toHaveLength(1);
     expect(state.entries[0]?.target).toBe('workspace');
     expect(warnings).toHaveLength(2);
+  });
+
+  // The test above moves the value between targets, which also changes the dedupe subject
+  // — so it would pass even if nothing released prior notices. Removing and restoring the
+  // same value holds subject and site fixed, leaving the state change as the only thing
+  // that can release the second notice.
+  test('a state change, not a differing subject, is what releases a repeat notice', () => {
+    stubConfiguration({ globalValue: STALE_MCP_VALUE });
+    const { surface: reader, warnings } = surface();
+
+    reader.refresh();
+    expect(warnings).toHaveLength(1);
+
+    stubConfiguration({});
+    expect(reader.refresh().entries).toEqual([]);
+    expect(warnings).toHaveLength(1);
+
+    stubConfiguration({ globalValue: STALE_MCP_VALUE });
+    reader.refresh();
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toBe(warnings[0]);
+  });
+
+  // Both copies are things the user has to remove. Keying the notice on migration
+  // identity alone collapses them: every refused occurrence carries a null identity, so
+  // one key's refusals all share a subject and only the first is ever announced.
+  test('every refused copy of one key is announced, not just the first', () => {
+    stubConfiguration({ workspaceValue: STALE_MCP_VALUE }, [
+      { workspaceFolderValue: STALE_MCP_VALUE },
+      { workspaceFolderValue: STALE_MCP_VALUE },
+    ]);
+    const { surface: reader, warnings } = surface();
+
+    const state = reader.refresh();
+
+    expect(state.entries).toHaveLength(3);
+    expect(
+      state.entries.every((entry) => entry.reason_code === 'legacy_key_scope_not_permitted'),
+    ).toBe(true);
+    expect(warnings).toHaveLength(3);
+    expect(warnings.filter((line) => line.includes('workspace folder settings'))).toHaveLength(2);
+    expect(new Set(warnings).size).toBe(3);
+  });
+
+  test('a canonical value with no wired consumer is reported as a defect', () => {
+    stubConfiguration({ globalValue: STALE_MCP_VALUE });
+    const { surface: reader, errors } = surface(compatibleRegistry());
+
+    reader.refresh();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('#6736/#7838');
+    expect(errors[0]).not.toContain('s3cr3t');
+  });
+
+  test('an unchanged profile does not repeat the unwired-canonical defect', () => {
+    stubConfiguration({ globalValue: STALE_MCP_VALUE });
+    const { surface: reader, errors } = surface(compatibleRegistry());
+
+    reader.refresh();
+    reader.refresh();
+    reader.refresh();
+
+    expect(errors).toHaveLength(1);
   });
 
   test('snapshot returns the last published state without re-reading configuration', () => {

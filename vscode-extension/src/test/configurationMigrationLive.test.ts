@@ -8,8 +8,9 @@ import {
   type LegacyConfigurationSites,
   type LegacyMigrationOccurrence,
   authorizedTargetsForScope,
-  describeLegacyMigrationOccurrence,
+  describeLegacyMigrationEntry,
   legacyMigrationState,
+  legacyMigrationStateEntry,
   readLegacyConfiguration,
   unwiredCanonicalValues,
 } from '../configurationMigrationLive';
@@ -25,14 +26,22 @@ const STALE_MCP_VALUE = [
   { label: 'local', command: '/opt/secret-tools/run-agent', env: { TOKEN: 'hunter2' } },
 ];
 
+/** A site reader that answers only for the MCP key, so other registry rows stay absent. */
 function sitesFor(sites: LegacyConfigurationSites): (key: string) => LegacyConfigurationSites {
   return (key) => (key === MCP_KEY ? sites : {});
 }
 
+/** Read the shipped registry against the given sites at a fixed extension version. */
 function read(sites: LegacyConfigurationSites): readonly LegacyMigrationOccurrence[] {
   return readLegacyConfiguration(V018_CONFIGURATION_MIGRATIONS, EXTENSION_VERSION, sitesFor(sites));
 }
 
+/**
+ * The single occurrence these sites must produce.
+ *
+ * Asserts the count rather than indexing blindly: a test that silently read occurrence
+ * zero of several would pass while the reader reported extra occurrences.
+ */
 function onlyOccurrence(sites: LegacyConfigurationSites): LegacyMigrationOccurrence {
   const occurrences = read(sites);
   expect(occurrences).toHaveLength(1);
@@ -43,6 +52,12 @@ function onlyOccurrence(sites: LegacyConfigurationSites): LegacyMigrationOccurre
   return occurrence;
 }
 
+/**
+ * A one-row registry built from a valid `renamed_compatible` base.
+ *
+ * The shipped registry has a single `removed_inert` row, so dispositions, scopes, and
+ * compatibility windows that no current row exercises need a synthetic subject.
+ */
 function registryWithRow(overrides: Partial<ConfigurationMigrationRow>): {
   registry: ConfigurationMigrationRegistry;
   key: string;
@@ -117,7 +132,7 @@ describe('live legacy configuration reader', () => {
 
     // No row was selected, so the notice must not assert a replacement the registry
     // never named for this occurrence.
-    const message = describeLegacyMigrationOccurrence(occurrence);
+    const message = describeLegacyMigrationEntry(legacyMigrationStateEntry(occurrence));
     expect(message).toContain('legacy_key_scope_not_permitted');
     expect(message).not.toContain('replacement');
     expect(message).not.toContain('instead');
@@ -138,6 +153,27 @@ describe('live legacy configuration reader', () => {
       'workspace',
       'workspace-folder',
     ]);
+  });
+
+  // The table assertion above restates the constant; on its own it accepts a reader that
+  // consults the declared scope at `user` and falls back to the target's own scope
+  // everywhere else. These prove the permissive half behaviorally: a `resource` row is
+  // *accepted* at the two repository-controlled targets a `machine` row is refused at.
+  test.each([
+    ['workspace', { workspace: { value: true } }],
+    ['workspace-folder', { workspaceFolders: [{ folderId: 'folder:0', value: true }] }],
+  ] as const)('a resource-scoped row is honoured at the %s target', (target, sites) => {
+    const { registry, key } = registryWithRow({ old_scope: 'resource' });
+
+    const occurrences = readLegacyConfiguration(registry, EXTENSION_VERSION, (probed) =>
+      probed === key ? sites : {},
+    );
+
+    expect(occurrences).toHaveLength(1);
+    expect(occurrences[0]?.target).toBe(target);
+    expect(occurrences[0]?.runtime.status).toBe('compatible_legacy');
+    expect(occurrences[0]?.runtime.reason_code).not.toBe('legacy_key_scope_not_permitted');
+    expect(occurrences[0]?.runtime.source_scope).toBe('resource');
   });
 
   test('one key present at two targets is two independently judged occurrences', () => {
@@ -250,8 +286,8 @@ describe('live legacy configuration reader', () => {
   });
 
   test('the notice names the setting and its disposition but not its value', () => {
-    const message = describeLegacyMigrationOccurrence(
-      onlyOccurrence({ user: { value: STALE_MCP_VALUE } }),
+    const message = describeLegacyMigrationEntry(
+      legacyMigrationStateEntry(onlyOccurrence({ user: { value: STALE_MCP_VALUE } })),
     );
 
     expect(message).toContain(MCP_KEY);
@@ -268,7 +304,7 @@ describe('live legacy configuration reader', () => {
       probed === key ? { workspaceFolders: [{ folderId: 'folder:3', value: true }] } : {},
     );
 
-    const message = describeLegacyMigrationOccurrence(occurrences[0]!);
+    const message = describeLegacyMigrationEntry(legacyMigrationStateEntry(occurrences[0]!));
     expect(message).toContain('workspace folder settings (folder:3)');
     expect(message).toContain('perl-lsp.newSetting');
   });

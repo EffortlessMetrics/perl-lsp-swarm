@@ -133,4 +133,60 @@ describe('workspace configuration event routing', () => {
 
     expect(onError).toHaveBeenCalledWith(expect.any(Error));
   });
+
+  // The whole reason the hook exists (#14966): a removed setting drives no subsystem, so
+  // `classifyConfigurationChange` puts it in no class and none of the three classified
+  // handlers ever fires for it. Without an unclassified observer the legacy-setting reader
+  // would never be re-read.
+  test('delivers a change that classifies as nothing to the unclassified observer', () => {
+    let listener: ((event: vscode.ConfigurationChangeEvent) => void) | undefined;
+    (vscode.workspace.onDidChangeConfiguration as jest.Mock).mockImplementation((callback) => {
+      listener = callback;
+      return { dispose: jest.fn() };
+    });
+
+    const handlers: WorkspaceEventHandlers = {
+      onAnyConfigurationChanged: jest.fn(),
+      onLiveConfigurationChanged: jest.fn(),
+      onReconstructConfigurationChanged: jest.fn(),
+      onRestartRequired: jest.fn(),
+    };
+    registerWorkspaceConfigurationEvents(handlers);
+
+    listener?.({
+      affectsConfiguration: (setting: string) => setting === 'perl-lsp.mcp.servers',
+    } as vscode.ConfigurationChangeEvent);
+
+    expect(handlers.onAnyConfigurationChanged).toHaveBeenCalledTimes(1);
+    expect(handlers.onLiveConfigurationChanged).not.toHaveBeenCalled();
+    expect(handlers.onReconstructConfigurationChanged).not.toHaveBeenCalled();
+    expect(handlers.onRestartRequired).not.toHaveBeenCalled();
+  });
+
+  test('a throwing unclassified observer cannot stop the classified handlers', () => {
+    let listener: ((event: vscode.ConfigurationChangeEvent) => void) | undefined;
+    (vscode.workspace.onDidChangeConfiguration as jest.Mock).mockImplementation((callback) => {
+      listener = callback;
+      return { dispose: jest.fn() };
+    });
+
+    const onError = jest.fn();
+    const handlers: WorkspaceEventHandlers = {
+      onAnyConfigurationChanged: () => {
+        throw new Error('observer failed');
+      },
+      onLiveConfigurationChanged: jest.fn(),
+      onReconstructConfigurationChanged: jest.fn(),
+      onRestartRequired: jest.fn(),
+      onError,
+    };
+    registerWorkspaceConfigurationEvents(handlers);
+
+    listener?.({
+      affectsConfiguration: (setting: string) => setting === 'perl-lsp.includePaths',
+    } as vscode.ConfigurationChangeEvent);
+
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+    expect(handlers.onLiveConfigurationChanged).toHaveBeenCalledTimes(1);
+  });
 });
