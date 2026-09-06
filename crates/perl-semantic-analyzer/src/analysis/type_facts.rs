@@ -218,6 +218,17 @@ pub enum TypeEvidence {
     },
 }
 
+impl TypeEvidence {
+    /// Returns `true` when this evidence is [`TypeEvidence::Heuristic`] with `expected`.
+    ///
+    /// Receiver-fact tests should pass the exported reason constants from
+    /// [`crate::analysis::receiver_facts`] rather than duplicating the literal
+    /// strings that production records.
+    pub fn is_heuristic_reason(&self, expected: &str) -> bool {
+        matches!(self, Self::Heuristic { reason } if reason == expected)
+    }
+}
+
 /// Dynamic boundary that prevented precise static inference.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
