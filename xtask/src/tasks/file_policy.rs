@@ -379,27 +379,27 @@ fn find_matching_prepared_entry<'a>(
 // git ls-files
 // ---------------------------------------------------------------------------
 
-/// Run `git ls-files` from `root` and return a sorted list of repo-relative
-/// paths (forward slashes, no leading `./`).
-pub fn list_tracked_files(root: &Path) -> Result<Vec<String>> {
-    let output = Command::new("git")
-        .args(["ls-files", "-z"])
-        .current_dir(root)
-        .output()
-        .with_context(|| "running `git ls-files -z`")?;
-    if !output.status.success() {
-        return Err(eyre!("`git ls-files -z` failed: {}", String::from_utf8_lossy(&output.stderr)));
-    }
-    let mut files: Vec<String> = output
-        .stdout
+/// Decode NUL-terminated git path output into repo-relative forward-slash paths.
+fn decode_git_nul_paths(bytes: &[u8]) -> Result<Vec<String>> {
+    bytes
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
         .map(|path| {
             let path = String::from_utf8(path.to_vec())
-                .with_context(|| "`git ls-files -z` produced a non-UTF-8 path")?;
-            Ok(path.trim_start_matches("./").replace('\\', "/"))
+                .with_context(|| "git produced a non-UTF-8 path")?;
+            Ok(path.replace('\\', "/"))
         })
-        .collect::<Result<_>>()?;
+        .collect()
+}
+
+/// Run `git ls-files` from `root` and return a sorted list of repo-relative
+/// paths (forward slashes, no leading `./`).
+pub fn list_tracked_files(root: &Path) -> Result<Vec<String>> {
+    let stdout = git_object(root, &["ls-files", "-z"])?;
+    let mut files: Vec<String> = decode_git_nul_paths(&stdout)?
+        .into_iter()
+        .map(|path| path.trim_start_matches("./").to_string())
+        .collect();
     files.sort_unstable();
     files.dedup();
     Ok(files)
@@ -426,11 +426,8 @@ fn git_object(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
 
 fn tree_paths(root: &Path, sha: &str) -> Result<Vec<String>> {
     let raw = git_object(root, &["ls-tree", "-r", "-z", "--name-only", sha])?;
-    let mut paths = raw
-        .split(|b| *b == 0)
-        .filter(|p| !p.is_empty())
-        .map(|p| String::from_utf8(p.to_vec()).context("tree contains a non-UTF-8 path"))
-        .collect::<Result<Vec<_>>>()?;
+    let mut paths = decode_git_nul_paths(&raw)
+        .with_context(|| format!("tree {sha} contains a non-UTF-8 path"))?;
     paths.sort();
     if paths.windows(2).any(|pair| pair[0] == pair[1]) {
         bail!("tree {sha} contains duplicate paths");
@@ -1403,74 +1400,94 @@ fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -
                  add entries to policy/non-rust-allowlist.toml before merging"
             );
         }
-    } else if std::env::var_os("CI").is_some() {
-        // Without a baseline the new-path ratchet cannot run. Locally that is a
-        // warning; in CI it would silently pass every unclassified addition, so
-        // the required gate fails closed instead (#14688).
-        bail!(
-            "cannot resolve a merge baseline in CI; the newly added unclassified-path \
-             ratchet did not run (fetch with full history so origin/main resolves)"
-        );
     } else {
-        eprintln!(
-            "warning: cannot resolve a merge baseline; current-tree evidence was emitted, \
-             but inherited and newly added unclassified debt could not be distinguished"
-        );
+        unresolved_inventory_baseline_result(std::env::var_os("CI").is_some())?;
     }
 
     println!("Non-Rust inventory policy check passed for the current tracked tree");
     Ok(())
 }
 
-fn resolve_inventory_baseline(root: &Path) -> Option<String> {
+fn inventory_baseline_candidates(
+    ci_scope_base: Option<String>,
+    github_base_ref: Option<String>,
+) -> Vec<String> {
     let mut candidates = Vec::new();
-    if let Ok(scope_base) = std::env::var("CI_SCOPE_BASE") {
+    if let Some(scope_base) = ci_scope_base {
         candidates.push(scope_base);
     }
-    if let Ok(base_ref) = std::env::var("GITHUB_BASE_REF") {
+    if let Some(base_ref) = github_base_ref {
         candidates.push(format!("origin/{base_ref}"));
         candidates.push(base_ref);
     }
     candidates.extend(["origin/main".to_string(), "HEAD^".to_string()]);
+    candidates
+}
 
-    candidates.into_iter().find(|candidate| {
-        Command::new("git")
-            .args(["rev-parse", "--verify", candidate])
-            .current_dir(root)
-            .output()
-            .is_ok_and(|output| output.status.success())
-    })
+fn git_ref_exists(root: &Path, candidate: &str) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--verify", candidate])
+        .current_dir(root)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn resolve_inventory_baseline(root: &Path) -> Option<String> {
+    inventory_baseline_candidates(
+        std::env::var("CI_SCOPE_BASE").ok(),
+        std::env::var("GITHUB_BASE_REF").ok(),
+    )
+    .into_iter()
+    .find(|candidate| git_ref_exists(root, candidate))
+}
+
+fn unresolved_inventory_baseline_result(ci: bool) -> Result<()> {
+    // Without a baseline the new-path ratchet cannot run. Locally that is a
+    // warning; in CI it would silently pass every unclassified addition, so
+    // the required gate fails closed instead (#14688).
+    if ci {
+        bail!(
+            "cannot resolve a merge baseline in CI; the newly added unclassified-path \
+             ratchet did not run (fetch with full history so origin/main resolves)"
+        );
+    }
+    eprintln!(
+        "warning: cannot resolve a merge baseline; current-tree evidence was emitted, \
+         but inherited and newly added unclassified debt could not be distinguished"
+    );
+    Ok(())
+}
+
+fn merge_base_commit(root: &Path, baseline: &str) -> Result<String> {
+    let raw = git_object(root, &["merge-base", baseline, "HEAD"])?;
+    let sha = String::from_utf8(raw)
+        .with_context(|| format!("git merge-base {baseline} HEAD produced non-UTF-8 output"))?
+        .trim()
+        .to_string();
+    if sha.is_empty() {
+        bail!("git merge-base {baseline} HEAD returned an empty SHA");
+    }
+    Ok(sha)
 }
 
 fn added_paths_since(root: &Path, baseline: &str) -> Result<Vec<String>> {
-    let range = format!("{baseline}..HEAD");
+    // The named baseline may be a live tip (`origin/main`, `GITHUB_BASE_REF`).
+    // Diffing that tip against HEAD reports paths the PR still has that main
+    // later renamed or deleted as "added." The PR's own introductions are
+    // `merge-base(baseline, HEAD)..HEAD` (#14915).
+    let merge_base = merge_base_commit(root, baseline)?;
+    let range = format!("{merge_base}..HEAD");
     // `--no-renames` keeps a renamed or copied file visible as an addition at
     // its destination path; with rename detection a classified file moved to
     // an unclassified path would never reach the ratchet.
-    let output = Command::new("git")
-        .args(["diff", "--name-only", "--no-renames", "--diff-filter=A", "-z", baseline, "HEAD"])
-        .current_dir(root)
-        .output()
-        .with_context(|| {
-            format!("running `git diff --name-only --no-renames --diff-filter=A -z {range}`")
-        })?;
-    if !output.status.success() {
-        return Err(eyre!(
-            "`git diff --name-only --no-renames --diff-filter=A -z {range}` failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty())
-        .map(|path| {
-            let path = String::from_utf8(path.to_vec())
-                .with_context(|| "git diff produced a non-UTF-8 path")?;
-            Ok(path.replace('\\', "/"))
-        })
-        .collect()
+    let stdout = git_object(
+        root,
+        &["diff", "--name-only", "--no-renames", "--diff-filter=A", "-z", &merge_base, "HEAD"],
+    )
+    .with_context(|| {
+        format!("running `git diff --name-only --no-renames --diff-filter=A -z {range}`")
+    })?;
+    decode_git_nul_paths(&stdout)
 }
 
 /// Escape a literal value for embedding in one Markdown table cell so the
@@ -3461,6 +3478,16 @@ review_after = "2026-06-01"
         Err(eyre!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&output.stderr)))
     }
 
+    fn configure_git_identity(root: &Path) -> Result<()> {
+        run_git(root, &["config", "user.email", "test@example.com"])?;
+        run_git(root, &["config", "user.name", "test"])?;
+        Ok(())
+    }
+
+    fn commit_quiet(root: &Path, message: &str) -> Result<()> {
+        run_git(root, &["commit", "-qm", message])
+    }
+
     fn init_tracked_fixture(root: &Path, files: &[(&str, &str)]) -> Result<Vec<String>> {
         run_git(root, &["init", "-q"])?;
         for (path, contents) in files {
@@ -3468,6 +3495,28 @@ review_after = "2026-06-01"
             run_git(root, &["add", path])?;
         }
         list_tracked_files(root)
+    }
+
+    /// Feature branch forked before `main` renamed an unclassified non-Rust file.
+    ///
+    /// Live tip `main` no longer contains `scripts/legacy.py`; the feature branch
+    /// still does. Diffing the live tip against HEAD therefore reports that path
+    /// as added even though the PR never introduced it.
+    fn branched_before_base_renames_unclassified(root: &Path) -> Result<()> {
+        run_git(root, &["init", "-q"])?;
+        run_git(root, &["branch", "-M", "main"])?;
+        configure_git_identity(root)?;
+        write_fixture(root, "README.md", "# Fixture\n")?;
+        write_fixture(root, "scripts/legacy.py", "print('legacy')\n")?;
+        write_readme_allowlist(root, "policy/non-rust-allowlist.toml")?;
+        run_git(root, &["add", "."])?;
+        commit_quiet(root, "root")?;
+        run_git(root, &["checkout", "-q", "-b", "feature"])?;
+        run_git(root, &["checkout", "-q", "main"])?;
+        run_git(root, &["mv", "scripts/legacy.py", "scripts/migrated.py"])?;
+        commit_quiet(root, "rename unclassified path on main")?;
+        run_git(root, &["checkout", "-q", "feature"])?;
+        Ok(())
     }
 
     fn readme_allowlist_toml() -> Result<String> {
@@ -4410,6 +4459,153 @@ review_after = "2026-11-13"
         ensure!(
             error.to_string().contains("scripts/README.md"),
             "failure must name the renamed destination path: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn inventory_baseline_candidates_keep_ci_scope_base_first() {
+        assert_eq!(
+            inventory_baseline_candidates(Some("scope-sha".to_string()), Some("main".to_string())),
+            vec![
+                "scope-sha".to_string(),
+                "origin/main".to_string(),
+                "main".to_string(),
+                "origin/main".to_string(),
+                "HEAD^".to_string(),
+            ]
+        );
+        assert_eq!(
+            inventory_baseline_candidates(None, None),
+            vec!["origin/main".to_string(), "HEAD^".to_string()]
+        );
+    }
+
+    #[test]
+    fn unresolved_inventory_baseline_fails_closed_in_ci() -> Result<()> {
+        let error = unresolved_inventory_baseline_result(true)
+            .err()
+            .ok_or_else(|| eyre!("CI must fail closed without a baseline"))?;
+        ensure!(
+            error.to_string().contains("cannot resolve a merge baseline in CI"),
+            "fail-closed error must name the missing baseline: {error}"
+        );
+        unresolved_inventory_baseline_result(false)?;
+        Ok(())
+    }
+
+    /// Live-tip `main` renamed an unclassified path after the branch point.
+    /// The ratchet must ignore that reverse-diff and still catch a genuine
+    /// unclassified addition on the branch.
+    #[test]
+    fn non_rust_inventory_check_uses_merge_base_not_live_tip_for_added_paths() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        branched_before_base_renames_unclassified(temp.path())?;
+
+        let added = added_paths_since(temp.path(), "main")?;
+        ensure!(
+            !added.iter().any(|path| path == "scripts/legacy.py"),
+            "merge-base diff must not treat a base-renamed unclassified path as added: {added:?}"
+        );
+        non_rust_inventory_check_with_baseline(temp.path(), Some("main"))?;
+
+        write_fixture(temp.path(), "scripts/new.py", "print('new')\n")?;
+        run_git(temp.path(), &["add", "scripts/new.py"])?;
+        commit_quiet(temp.path(), "genuine unclassified addition")?;
+
+        let added = added_paths_since(temp.path(), "main")?;
+        ensure!(
+            added.iter().any(|path| path == "scripts/new.py"),
+            "merge-base diff must still see a genuine addition: {added:?}"
+        );
+        ensure!(
+            !added.iter().any(|path| path == "scripts/legacy.py"),
+            "genuine-addition failure must not be mixed with the base rename: {added:?}"
+        );
+
+        let error = non_rust_inventory_check_with_baseline(temp.path(), Some("main"))
+            .err()
+            .ok_or_else(|| eyre!("new unclassified file must fail"))?;
+        let message = error.to_string();
+        ensure!(
+            message.contains("scripts/new.py"),
+            "failure must name the newly unclassified path: {error}"
+        );
+        ensure!(
+            !message.contains("scripts/legacy.py"),
+            "failure must not blame the base-renamed path: {error}"
+        );
+        Ok(())
+    }
+
+    /// `--no-renames` is still required inside the PR's own diff after the
+    /// baseline is the merge base: a classified file moved to an unclassified
+    /// path on the branch must fail even when `main` also renamed unrelated
+    /// unclassified debt after the branch point.
+    #[test]
+    fn non_rust_inventory_check_rejects_pr_rename_against_moved_base() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        branched_before_base_renames_unclassified(temp.path())?;
+        run_git(temp.path(), &["mv", "README.md", "scripts/README.md"])?;
+        commit_quiet(temp.path(), "rename classified file into unclassified path")?;
+
+        let added = added_paths_since(temp.path(), "main")?;
+        ensure!(
+            added.iter().any(|path| path == "scripts/README.md"),
+            "--no-renames must still report the PR destination as added: {added:?}"
+        );
+        ensure!(
+            !added.iter().any(|path| path == "scripts/legacy.py"),
+            "PR-local rename must not revive the base-renamed path: {added:?}"
+        );
+
+        let error = non_rust_inventory_check_with_baseline(temp.path(), Some("main"))
+            .err()
+            .ok_or_else(|| eyre!("PR rename into an unclassified path must fail"))?;
+        let message = error.to_string();
+        ensure!(
+            message.contains("scripts/README.md"),
+            "failure must name the renamed destination path: {error}"
+        );
+        ensure!(
+            !message.contains("scripts/legacy.py"),
+            "failure must not blame the base-renamed path: {error}"
+        );
+        Ok(())
+    }
+
+    /// `CI_SCOPE_BASE` may already be a stacked parent. The ratchet must use
+    /// that supplied baseline's merge base, not silently retarget live `main`.
+    #[test]
+    fn non_rust_inventory_check_honors_supplied_baseline_not_live_main() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        run_git(root, &["init", "-q"])?;
+        run_git(root, &["branch", "-M", "main"])?;
+        configure_git_identity(root)?;
+        write_fixture(root, "README.md", "# Fixture\n")?;
+        write_readme_allowlist(root, "policy/non-rust-allowlist.toml")?;
+        run_git(root, &["add", "."])?;
+        commit_quiet(root, "root")?;
+        run_git(root, &["checkout", "-q", "-b", "parent"])?;
+        write_fixture(root, "scripts/parent.py", "print('parent')\n")?;
+        run_git(root, &["add", "scripts/parent.py"])?;
+        commit_quiet(root, "stacked parent debt")?;
+        run_git(root, &["checkout", "-q", "-b", "feature"])?;
+        run_git(root, &["checkout", "-q", "main"])?;
+        write_fixture(root, "src/lib.rs", "// rust\n")?;
+        run_git(root, &["add", "src/lib.rs"])?;
+        commit_quiet(root, "unrelated main movement")?;
+        run_git(root, &["checkout", "-q", "feature"])?;
+
+        non_rust_inventory_check_with_baseline(root, Some("parent"))?;
+
+        let error = non_rust_inventory_check_with_baseline(root, Some("main"))
+            .err()
+            .ok_or_else(|| eyre!("live main must still see stacked parent debt as added"))?;
+        ensure!(
+            error.to_string().contains("scripts/parent.py"),
+            "live-main baseline must name the stacked addition: {error}"
         );
         Ok(())
     }
