@@ -67,11 +67,163 @@ fn envelope_joined_in_executable_position(source: &str) -> bool {
     })
 }
 
-fn nominal_labels_without_lineage(source: &str) -> Vec<&'static str> {
-    if envelope_joined_in_executable_position(source) {
-        return Vec::new();
-    }
+fn labels_in(source: &str) -> Vec<&'static str> {
     NOMINAL_PRODUCER_LABELS.iter().copied().filter(|label| source.contains(label)).collect()
+}
+
+/// Split a source file into function bodies plus leftover module text.
+/// Lineage in one function must not unlock nominal labels in another.
+fn source_units(source: &str) -> Vec<String> {
+    let bytes = source.as_bytes();
+    let mut units = Vec::new();
+    let mut occupied = vec![false; bytes.len()];
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some(fn_start) = find_fn_keyword(source, i) {
+            if let Some((_, body_end)) = function_body_span(source, fn_start) {
+                units.push(source[fn_start..body_end].to_string());
+                occupied[fn_start..body_end].fill(true);
+                i = body_end;
+                continue;
+            }
+            i = fn_start + 2;
+            continue;
+        }
+        break;
+    }
+    let rest: String = source
+        .char_indices()
+        .filter_map(|(idx, ch)| {
+            let span = ch.len_utf8();
+            if occupied[idx..idx + span].iter().any(|flag| *flag) { None } else { Some(ch) }
+        })
+        .collect();
+    if rest.chars().any(|ch| !ch.is_whitespace()) {
+        units.push(rest);
+    }
+    if units.is_empty() {
+        units.push(source.to_string());
+    }
+    units
+}
+
+fn find_fn_keyword(source: &str, from: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut i = from;
+    while i + 2 <= bytes.len() {
+        if bytes[i] == b'f' && bytes[i + 1] == b'n' && fn_keyword_at(source, i) {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn fn_keyword_at(source: &str, idx: usize) -> bool {
+    let bytes = source.as_bytes();
+    let before_ok = idx == 0 || {
+        let prev = bytes[idx - 1];
+        !(prev.is_ascii_alphanumeric() || prev == b'_')
+    };
+    let after = idx + 2;
+    let after_ok = after >= bytes.len() || {
+        let next = bytes[after];
+        !(next.is_ascii_alphanumeric() || next == b'_')
+    };
+    before_ok && after_ok
+}
+
+fn function_body_span(source: &str, fn_start: usize) -> Option<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let mut i = fn_start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b';' => return None,
+            b'{' => {
+                let end = matching_brace_end(source, i)?;
+                return Some((fn_start, end));
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn matching_brace_end(source: &str, open: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut depth = 0usize;
+    let mut i = open;
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut escaped = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_char {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'\'' {
+                in_char = false;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'"' => {
+                in_string = true;
+                i += 1;
+            }
+            b'\'' => {
+                in_char = true;
+                i += 1;
+            }
+            b'{' => {
+                depth = depth.saturating_add(1);
+                i += 1;
+            }
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn nominal_labels_without_lineage(source: &str) -> Vec<&'static str> {
+    let mut violations = Vec::new();
+    for unit in source_units(source) {
+        if envelope_joined_in_executable_position(&unit) {
+            continue;
+        }
+        for label in labels_in(&unit) {
+            if !violations.contains(&label) {
+                violations.push(label);
+            }
+        }
+    }
+    violations
 }
 
 #[test]
@@ -213,5 +365,19 @@ fn guard_does_not_flag_the_intentional_not_compiler_fact_comment() {
     assert!(
         violations.is_empty(),
         "the #3046 tracking comment that refuses `compiler_fact` must not itself trip the guard: {violations:?}"
+    );
+}
+
+#[test]
+fn guard_stays_red_when_lineage_joins_an_unrelated_function() {
+    let unrelated_join = "fn unused(c: FilePirLexicalContribution) {}\n\
+         fn proof() {\n\
+         let _receipt = json!({\"compiler_receipt\": null});\n\
+         }\n";
+    let violations = nominal_labels_without_lineage(unrelated_join);
+    assert_eq!(
+        violations,
+        vec!["\"compiler_receipt\""],
+        "lineage in an unrelated function must not unlock nominal producer labels elsewhere"
     );
 }
