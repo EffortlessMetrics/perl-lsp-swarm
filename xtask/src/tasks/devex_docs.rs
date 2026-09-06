@@ -317,7 +317,18 @@ fn is_indented_flag_continuation(text: &str) -> bool {
     if normalize_extracted_command(trimmed).is_some() {
         return false;
     }
-    trimmed.starts_with('-')
+    is_shell_flag_token(trimmed)
+}
+
+fn is_shell_flag_token(trimmed: &str) -> bool {
+    if let Some(rest) = trimmed.strip_prefix("--") {
+        return !rest.is_empty() && !rest.starts_with(char::is_whitespace);
+    }
+    let mut chars = trimmed.chars();
+    if chars.next() != Some('-') {
+        return false;
+    }
+    matches!(chars.next(), Some(candidate) if candidate.is_ascii_alphanumeric())
 }
 
 fn normalize_extracted_command(raw: &str) -> Option<String> {
@@ -695,6 +706,19 @@ mod tests {
             prose,
             vec!["just pr-fast"],
             "indented prose that is not a flag must not join onto the command: {prose:?}"
+        );
+
+        let dashed_note = inline_devex_commands("just pr-fast\n    - then commit the result\n");
+        assert_eq!(
+            dashed_note,
+            vec!["just pr-fast"],
+            "an indented dashed note is not a shell flag: {dashed_note:?}"
+        );
+
+        assert_eq!(
+            inline_devex_commands("just pr-fast\n    -n\n"),
+            vec!["just pr-fast -n"],
+            "an indented short flag must still join"
         );
     }
 
