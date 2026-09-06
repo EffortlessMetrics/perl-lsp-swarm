@@ -841,6 +841,58 @@ impl LspServer {
         )
     }
 
+    /// Whether the token candidate at `offset` is an unescaped `$`/`@` variable
+    /// interpolated inside a double-quoted string literal (#14860).
+    ///
+    /// The region index records both `"…"` and `'…'` spans as
+    /// [`SourceRegionKind::StringLiteral`] without interpolation awareness, so
+    /// the opener byte decides: `'…'` never interpolates. Backticks and other
+    /// quote-likes are separate region kinds and stay outside this island. `%`
+    /// never interpolates, and an odd run of preceding backslashes escapes the
+    /// sigil. Missing evidence fails closed.
+    fn token_is_interpolated_string_variable(
+        region_index: Option<&SourceRegionIndex>,
+        text: &str,
+        offset: usize,
+    ) -> bool {
+        let Some(index) = region_index else {
+            return false;
+        };
+        // Punctuation variables (`$!`, `$^W`, `@+`) have no word-token bounds,
+        // so the candidate span comes from the same extractor that names them;
+        // sigiled identifiers fall back to word bounds.
+        let (start, end) = Self::special_variable_byte_bounds_of(text, offset)
+            .unwrap_or_else(|| Self::token_byte_bounds_of(text, offset));
+        if start >= end || !matches!(text.as_bytes().get(start), Some(b'$' | b'@')) {
+            return false;
+        }
+        let Some(region) = index.regions().iter().find(|region| {
+            region.kind == SourceRegionKind::StringLiteral && region.contains_range(start, end)
+        }) else {
+            return false;
+        };
+        let bytes = text.as_bytes();
+        let interpolating = matches!(bytes.get(region.start), Some(b'"'));
+        if !interpolating || start <= region.start {
+            return false;
+        }
+        let escaping_backslashes =
+            bytes[region.start..start].iter().rev().take_while(|b| **b == b'\\').count();
+        escaping_backslashes % 2 == 0
+    }
+
+    /// Byte span of the punctuation or caret special variable that
+    /// [`Self::extract_special_variable`] names at `offset`, anchored at the
+    /// sigil it found (cursor on the sigil or on the punctuation).
+    fn special_variable_byte_bounds_of(text: &str, offset: usize) -> Option<(usize, usize)> {
+        let name = Self::extract_special_variable(text, offset)?;
+        let start = [Some(offset), offset.checked_sub(1), offset.checked_sub(2)]
+            .into_iter()
+            .flatten()
+            .find(|pos| text.get(*pos..).is_some_and(|rest| rest.starts_with(name.as_str())))?;
+        Some((start, start + name.len()))
+    }
+
     /// Extract hover information from the token fallback path.
     fn extract_token_hover(
         uri: &str,
@@ -863,7 +915,25 @@ impl LspServer {
         // Generic symbol/token/builtin fallback: proven code only. Comments,
         // POD, literals, quote-likes, regex bodies, heredocs, `__DATA__`, and
         // recovery-ambiguous input fail closed to `None` (#4967).
+        //
+        // One island survives inside a string: an unescaped sigil variable in
+        // a double-quoted literal is a live variable reference, so its
+        // variable card stays answerable. Builtin, keyword,
+        // and bare-token cards remain suppressed there (#14860).
         if !Self::token_fallback_is_proven_code(region_index, text, offset) {
+            if Self::token_is_interpolated_string_variable(region_index, text, offset) {
+                if let Some(special_var) = Self::extract_special_variable(text, offset)
+                    && let Some(hover) = Self::get_special_variable_hover(&special_var)
+                {
+                    return HoverExtracted::Complete(hover);
+                }
+                let token = Self::get_token_at_position_static(text, offset);
+                if token.starts_with(['$', '@'])
+                    && let Some(hover) = Self::get_special_variable_hover(&token)
+                {
+                    return HoverExtracted::Complete(hover);
+                }
+            }
             return HoverExtracted::None;
         }
 

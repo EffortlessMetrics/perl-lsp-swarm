@@ -1,4 +1,6 @@
 use super::LspServer;
+use super::hover_extracted::HoverExtracted;
+use perl_parser_core::syntax::source_context::SourceRegionIndex;
 use perl_tdd_support::must_some;
 use serde_json::json;
 
@@ -1132,4 +1134,54 @@ fn hover_trace_source_region_kind_is_not_shared_across_concurrent_requests() {
     for handle in handles {
         assert!(handle.join().is_ok(), "hover trace worker panicked");
     }
+}
+
+/// `$!` interpolated inside a double-quoted string is a live variable
+/// reference and keeps its variable card; the same text single-quoted or
+/// escaped does not interpolate, and a bareword in the string stays
+/// suppressed (#14860, regression from #14160's proven-code gate).
+#[test]
+fn interpolated_string_variable_island_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
+    // (source, needle, cursor byte offset within the needle, expected)
+    let cases: [(&str, &str, usize, bool); 11] = [
+        ("open my $fh, '<', 'x' or die \"Cannot open: $!\";\n", "$!", 0, true),
+        // Cursor on the punctuation, not the sigil.
+        ("open my $fh, '<', 'x' or die \"Cannot open: $!\";\n", "$!", 1, true),
+        ("print \"pid $$\\n\";\n", "$$", 0, true),
+        ("warn \"warnings are $^W\";\n", "$^W", 1, true),
+        ("warn \"warnings are $^W\";\n", "$^W", 2, true),
+        ("print \"last match ended at @+\";\n", "@+", 1, true),
+        // `\\$!` is an escaped backslash followed by a live `$!`.
+        ("my $msg = \"escaped slash \\\\$! text\";\n", "$!", 0, true),
+        ("my $msg = 'literal $! text';\n", "$!", 1, false),
+        // `\$!` is an escaped sigil: no interpolation.
+        ("my $msg = \"escaped \\$! text\";\n", "$!", 1, false),
+        ("my $msg = \"hash %! never interpolates\";\n", "%!", 1, false),
+        ("my $msg = \"call sprintf here\";\n", "sprintf", 0, false),
+    ];
+    for (text, needle, delta, expected) in cases {
+        let offset = must_some(text.find(needle)) + delta;
+        let index = SourceRegionIndex::build(text);
+        assert_eq!(
+            LspServer::token_is_interpolated_string_variable(Some(&index), text, offset),
+            expected,
+            "{text:?} at {needle:?}+{delta}"
+        );
+    }
+
+    let text = "open my $fh, '<', 'x' or die \"Cannot open: $!\";\n";
+    let index = SourceRegionIndex::build(text);
+    for delta in [0usize, 1] {
+        let offset = must_some(text.find("$!")) + delta;
+        let hover = LspServer::extract_token_hover("file:///t.pl", text, offset, Some(&index));
+        let HoverExtracted::Complete(card) = hover else {
+            return Err(format!(
+                "expected a complete `$!` card inside the interpolating string at +{delta}"
+            )
+            .into());
+        };
+        let value = must_some(card["contents"]["value"].as_str());
+        assert!(value.contains("errno"), "expected the `$!` card at +{delta}, got: {value}");
+    }
+    Ok(())
 }
