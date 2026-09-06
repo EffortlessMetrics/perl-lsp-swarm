@@ -303,10 +303,22 @@ WriteMakefile(
 
 #[test]
 fn makefile_pl_qw_license_list_keeps_every_token() {
-    let src = "WriteMakefile(\n    NAME => 'Foo::Bar',\n    LICENSE => qw(perl artistic_2),\n);\n";
+    let src =
+        "WriteMakefile(\n    NAME => 'Foo::Bar',\n    LICENSE => [qw(perl artistic_2)],\n);\n";
     let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
     assert!(facts.licenses.iter().any(|l| l == "perl_5"));
     assert!(facts.licenses.iter().any(|l| l == "artistic_2"));
+}
+
+#[test]
+fn makefile_pl_unbracketed_qw_is_not_a_license_list() {
+    let src = "WriteMakefile(\n    NAME => 'Foo::Bar',\n    LICENSE => qw(perl artistic_2),\n);\n";
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    assert!(
+        !facts.licenses.iter().any(|l| l == "artistic_2"),
+        "unbracketed qw tokens flatten into WriteMakefile args, they are not extra LICENSE values"
+    );
+    assert!(facts.limitations.iter().any(|l| l.kind == "dynamic_value"));
 }
 
 #[test]
@@ -339,6 +351,35 @@ Mystery::Mod = 1
     assert!(facts.prereqs.iter().any(|p| p.module == "Broken::Mod" && p.relation == "conflicts"));
     assert!(facts.limitations.iter().any(|l| l.kind == "unknown_prereq_section"));
     assert!(!facts.prereqs.iter().any(|p| p.module == "Mystery::Mod"));
+}
+
+#[test]
+fn dist_ini_named_prereqs_instance_honors_phase_controls() {
+    let src = r#"
+[Prereqs / CustomName]
+-phase = test
+-relationship = requires
+Test::More = 0.88
+"#;
+    let facts = parse_dist_ini(fid("dist.ini", src), src);
+    let prereq = facts.prereqs.iter().find(|p| p.module == "Test::More").unwrap();
+    assert_eq!(prereq.phase, "test");
+    assert_eq!(prereq.relation, "requires");
+    assert!(!facts.limitations.iter().any(|l| l.kind == "unknown_prereq_section"));
+}
+
+#[test]
+fn dist_ini_named_prereqs_buffers_modules_until_controls() {
+    let src = r#"
+[Prereqs / CustomName]
+Test::More = 0.88
+-phase = develop
+-relationship = suggests
+"#;
+    let facts = parse_dist_ini(fid("dist.ini", src), src);
+    let prereq = facts.prereqs.iter().find(|p| p.module == "Test::More").unwrap();
+    assert_eq!(prereq.phase, "develop");
+    assert_eq!(prereq.relation, "suggests");
 }
 
 #[test]

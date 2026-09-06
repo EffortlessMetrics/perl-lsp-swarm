@@ -140,6 +140,10 @@ pub(crate) fn parse_paren_hash_recovering(source: &str, open_idx: usize) -> (Vec
 }
 
 pub(crate) fn parse_value(source: &str, idx: &mut usize) -> ScanValue {
+    parse_value_in(source, idx, false)
+}
+
+fn parse_value_in(source: &str, idx: &mut usize, in_list: bool) -> ScanValue {
     skip_ws_comments(source, idx);
     let start = *idx;
     let bytes = source.as_bytes();
@@ -156,9 +160,10 @@ pub(crate) fn parse_value(source: &str, idx: &mut usize) -> ScanValue {
             Quoted::Words(words) if words.len() <= 1 => {
                 ScanValue::String(words.into_iter().next().unwrap_or_default())
             }
-            Quoted::Words(words) => {
+            Quoted::Words(words) if in_list => {
                 ScanValue::List(words.into_iter().map(ScanValue::String).collect())
             }
+            Quoted::Words(words) => ScanValue::Dynamic { snippet: words.join(" ") },
             Quoted::Dynamic { snippet } => ScanValue::Dynamic { snippet },
         };
     }
@@ -355,7 +360,12 @@ fn parse_list_value(source: &str, idx: &mut usize) -> ScanValue {
             *idx += 1;
             continue;
         }
-        items.push(parse_value(source, idx));
+        skip_ws_comments(source, idx);
+        let flatten_qw = at_qw(source, *idx);
+        match parse_value_in(source, idx, flatten_qw) {
+            ScanValue::List(inner) if flatten_qw => items.extend(inner),
+            other => items.push(other),
+        }
         skip_ws_comments(source, idx);
         if source.as_bytes().get(*idx) == Some(&b',') {
             *idx += 1;
@@ -729,6 +739,18 @@ fn skip_balanced_value(source: &str, idx: &mut usize) {
             }
         }
     }
+}
+
+fn at_qw(source: &str, idx: usize) -> bool {
+    let bytes = source.as_bytes();
+    if !bytes.get(idx..).is_some_and(|rest| rest.starts_with(b"qw")) {
+        return false;
+    }
+    if idx > 0 && is_ident_byte(bytes[idx - 1]) {
+        return false;
+    }
+    let after = idx + 2;
+    after >= bytes.len() || !is_ident_byte(bytes[after])
 }
 
 fn is_ident_boundary(bytes: &[u8], start: usize, len: usize) -> bool {

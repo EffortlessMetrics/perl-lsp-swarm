@@ -53,6 +53,7 @@ pub fn parse_dist_ini(file_id: FileId, content: &str) -> DistAuthoringFacts {
             continue;
         }
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            flush_prereq_section(&mut collector, &mut section, line_start, line_end);
             let raw = trimmed.trim_matches(['[', ']']).trim();
             section = Section::from_heading(raw);
             collector.note_plugin(raw, line_start, line_end);
@@ -84,14 +85,24 @@ pub fn parse_dist_ini(file_id: FileId, content: &str) -> DistAuthoringFacts {
         );
         line_start = line_end;
     }
+    flush_prereq_section(&mut collector, &mut section, line_start, line_start);
 
     collector.finish()
 }
 
 #[derive(Debug, Clone)]
+struct PendingPrereq {
+    key: String,
+    value: String,
+    key_start: usize,
+    value_start: usize,
+    value_end: usize,
+}
+
+#[derive(Debug, Clone)]
 enum Section {
     Root,
-    Prereqs { phase: String, relation: String, recognized: bool },
+    Prereqs { phase: String, relation: String, recognized: bool, pending: Vec<PendingPrereq> },
     MetaResources,
     Other(String),
 }
@@ -106,7 +117,12 @@ impl Section {
         if plugin_eq(plugin, "Prereqs") || plugin_tail.eq_ignore_ascii_case("Prereqs") {
             let (phase, relation, recognized) =
                 phase_relation_from_label(rest.unwrap_or("RuntimeRequires"));
-            return Self::Prereqs { phase, relation, recognized: rest.is_none() || recognized };
+            return Self::Prereqs {
+                phase,
+                relation,
+                recognized: rest.is_none() || recognized,
+                pending: Vec::new(),
+            };
         }
         if plugin_eq(plugin, "MetaResources") {
             return Self::MetaResources;
@@ -152,14 +168,6 @@ fn apply_section_identity(
         {
             collector.set_generated_build_tool(DistAuthoringBuildTool::ModuleBuild, start, end);
         }
-        Section::Prereqs { recognized: false, .. } => {
-            collector.limitation(
-                "unknown_prereq_section",
-                "unrecognized Dist::Zilla prereq section label; modules in it are not treated as runtime/requires",
-                Some(start),
-                Some(end),
-            );
-        }
         _ => {}
     }
 }
@@ -190,38 +198,39 @@ fn apply_ini_entry(
                 false,
             ),
         },
-        Section::Prereqs { phase, relation, recognized } => {
-            if !*recognized {
-                return;
-            }
+        Section::Prereqs { phase, relation, recognized, pending } => {
             if key == "-phase" {
                 *phase = value.to_ascii_lowercase();
+                *recognized = true;
                 return;
             }
             if key == "-relationship" || key == "-relation" {
                 *relation = value.to_ascii_lowercase();
+                *recognized = true;
                 return;
             }
             if key.starts_with('-') {
                 return;
             }
-            if looks_dynamic_ini_value(&value) {
-                collector.add_literal_prereq(key, None, phase, relation, key_start, value_end);
-                collector.limitation(
-                    "dynamic_value",
-                    format!("prerequisite `{key}` version is not a static literal"),
-                    Some(value_start),
-                    Some(value_end),
-                );
-            } else {
-                collector.add_literal_prereq(
+            if *recognized {
+                add_prereq_ini_entry(
+                    collector,
                     key,
-                    Some(&value),
+                    &value,
                     phase,
                     relation,
                     key_start,
+                    value_start,
                     value_end,
                 );
+            } else {
+                pending.push(PendingPrereq {
+                    key: key.to_string(),
+                    value,
+                    key_start,
+                    value_start,
+                    value_end,
+                });
             }
         }
         Section::MetaResources => {
@@ -237,6 +246,67 @@ fn apply_ini_entry(
                 false,
             );
         }
+    }
+}
+
+fn flush_prereq_section(
+    collector: &mut DistCollector<'_>,
+    section: &mut Section,
+    start: usize,
+    end: usize,
+) {
+    let Section::Prereqs { phase, relation, recognized, pending } = section else {
+        return;
+    };
+    if *recognized {
+        let phase = phase.clone();
+        let relation = relation.clone();
+        for item in pending.drain(..) {
+            add_prereq_ini_entry(
+                collector,
+                &item.key,
+                &item.value,
+                &phase,
+                &relation,
+                item.key_start,
+                item.value_start,
+                item.value_end,
+            );
+        }
+        return;
+    }
+    if pending.is_empty() {
+        return;
+    }
+    pending.clear();
+    collector.limitation(
+        "unknown_prereq_section",
+        "unrecognized Dist::Zilla prereq section label; modules in it are not treated as runtime/requires",
+        Some(start),
+        Some(end),
+    );
+}
+
+fn add_prereq_ini_entry(
+    collector: &mut DistCollector<'_>,
+    key: &str,
+    value: &str,
+    phase: &str,
+    relation: &str,
+    key_start: usize,
+    value_start: usize,
+    value_end: usize,
+) {
+    if looks_dynamic_ini_value(value) {
+        collector.add_literal_prereq(key, None, phase, relation, key_start, value_end);
+        collector.limitation(
+            "dynamic_value",
+            format!("prerequisite `{key}` version is not a static literal"),
+            Some(value_start),
+            Some(value_end),
+        );
+    } else {
+        collector.add_literal_prereq(key, Some(value), phase, relation, key_start, value_end);
     }
 }
 
