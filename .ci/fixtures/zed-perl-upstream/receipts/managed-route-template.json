@@ -1,0 +1,37 @@
+{
+  "receipt": "zed_managed_route_receipt.v1",
+  "result": "not_run",
+  "observed_at": null,
+  "contract": {
+    "relative_path": ".ci/fixtures/zed-perl-upstream/managed-route.v1.json",
+    "sha256": null,
+    "schema_version": "zed_managed_route.v1"
+  },
+  "subject": {
+    "zed_version": null,
+    "extension_version": null,
+    "fixture_id": null,
+    "asset_sha256": null
+  },
+  "selection": {
+    "resolution_route": null,
+    "selected_provider": null,
+    "fallback_server_id": null,
+    "fallback_allowed": null,
+    "prior_managed_cache_absent": null,
+    "selected_subject_sha256": null,
+    "restart_subject_sha256": null,
+    "older_versions_preserved_until_launch": null
+  },
+  "journeys": {
+    "first_mile_install": null,
+    "restart_cache_reuse": null,
+    "normal_disable": null,
+    "shutdown_no_orphan": null
+  },
+  "recovery_observations": {},
+  "claim_boundary": {
+    "real_zed_managed_route": "not_proven",
+    "official_registry": "not_proven"
+  }
+}
