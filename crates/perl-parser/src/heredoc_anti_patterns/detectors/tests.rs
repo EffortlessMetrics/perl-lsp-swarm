@@ -456,6 +456,13 @@ fn tied_handle_missing_required_pattern_emits_no_findings() {
     let findings = super::detect_tied_handle(code, 0, &line_starts, None, Some(&print));
     assert!(findings.is_empty(), "missing TIE_PATTERN must not fabricate tied-handle findings");
 
+    let tie = Regex::new(r"tie\s+([*$]\w+)").expect("test tie pattern");
+    let findings = super::detect_tied_handle(code, 0, &line_starts, Some(&tie), None);
+    assert!(
+        findings.is_empty(),
+        "missing PRINT_HEREDOC_PATTERN must not fabricate tied-handle findings"
+    );
+
     let state = super::required_state(&[("TIE_PATTERN", false), ("PRINT_HEREDOC_PATTERN", true)]);
     assert_eq!(
         state,
