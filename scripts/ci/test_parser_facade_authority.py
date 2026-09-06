@@ -11,7 +11,14 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from parser_facade_authority import check, load_ledger
+from parser_facade_authority import check, load_ledger, render_markdown
+from parser_facade_inventory import (
+    CargoTarget,
+    cargo_targets,
+    feature_source_gates,
+    strip_cfg_test_modules,
+)
+from parser_facade_inventory import discover_consumer_contexts, feature_names
 
 FIXTURE_LEDGER = Path(__file__).resolve().parents[2] / ".ci/parser-facade"
 
@@ -28,6 +35,37 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         path = self.root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+
+    DEPENDENCY_TABLES = {
+        "normal": "dependencies",
+        "dev": "dev-dependencies",
+        "build": "build-dependencies",
+    }
+
+    def dependency_section(self, context: str) -> str:
+        if context.startswith("target("):
+            specification, _, kind = context.rpartition(":")
+            specification = specification.removeprefix("target(").removesuffix(")")
+            return f"target.'{specification}'.{self.DEPENDENCY_TABLES[kind]}"
+        return self.DEPENDENCY_TABLES[context]
+
+    def write_feature_gates(self, names: list[str], test_names: list[str] | None = None) -> None:
+        """Reproduce the cfg predicates that make a feature a real source boundary.
+
+        Production gates live under `src/`; test-profile gates live under `tests/`, so a
+        feature that only gates test source cannot be presented as a production boundary.
+        """
+        def body(values: list[str]) -> str:
+            return "".join(
+                f'#[cfg(feature = "{name}")]\nfn gate_{index}() {{}}\n'
+                for index, name in enumerate(values)
+            )
+
+        self.write("crates/perl-parser/src/feature_gates.rs", body(names))
+        self.write(
+            "crates/perl-parser/tests/feature_profiles.rs",
+            body(test_names if test_names is not None else self.test_gated_features),
+        )
 
     def write_ledger(self, ledger: dict[str, object]) -> None:
         mapping = {
@@ -51,29 +89,51 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
 
     def write_fixture(self) -> None:
         self.write_ledger(self.ledger)
+        optional_dependency = next(
+            row["name"] for row in self.ledger["dependencies"] if row["optional"]
+        )
         features = []
+        self.gated_features: list[str] = []
+        self.test_gated_features: list[str] = []
         for row in self.ledger["features"]:
-            value = json.dumps(self.ledger["default_features"]) if row["name"] == "default" else "[]"
-            features.append(f'{json.dumps(row["name"])} = {value}')
-        dependencies = []
+            name, isolation = row["name"], row["isolation"]
+            if name == "default":
+                # `default` is an aggregate: its class comes from the transitive
+                # closure of the features it enables, not from its own entries.
+                features.append(f'{json.dumps(name)} = {json.dumps(self.ledger["default_features"])}')
+                continue
+            if isolation == "feature_aggregate":
+                value = list(self.ledger["default_features"])
+            elif isolation in ("dependencies_and_source", "dependencies_only"):
+                value = [optional_dependency]
+            else:
+                value = []
+            if isolation in ("dependencies_and_source", "source_only"):
+                self.gated_features.append(name)
+            elif isolation == "test_source_only":
+                self.test_gated_features.append(name)
+            features.append(f'{json.dumps(name)} = {json.dumps(value)}')
+        sections: dict[str, list[str]] = {}
         for row in self.ledger["dependencies"]:
             value = '{ version = "1", optional = true }' if row["optional"] else '"1"'
-            dependencies.append(f'{row["name"]} = {value}')
+            for context in row["contexts"]:
+                sections.setdefault(
+                    self.dependency_section(context), []
+                ).append(f'{row["name"]} = {value}')
         targets = []
         for row in self.ledger["targets"]:
             targets += [f'[[{row["kind"]}]]', f'name = {json.dumps(row["name"])}']
             if row["required_features"]:
                 targets.append("required-features = " + json.dumps(row["required_features"]))
-        self.write(
-            "crates/perl-parser/Cargo.toml",
-            '[package]\nname="perl-parser"\nversion="0.1.0"\n\n[dependencies]\n'
-            + "\n".join(dependencies)
-            + "\n\n[features]\n"
-            + "\n".join(features)
-            + "\n\n"
-            + "\n".join(targets)
-            + "\n",
-        )
+        # Keep the synthetic feature-profile helper from becoming an unrelated
+        # implicit target; auto-discovery is exercised explicitly below.
+        manifest = ['[package]\nname="perl-parser"\nversion="0.1.0"\nautotests = false\n']
+        for header, lines in sections.items():
+            manifest.append(f"[{header}]\n" + "\n".join(lines) + "\n")
+        manifest.append("[features]\n" + "\n".join(features) + "\n")
+        manifest.append("\n".join(targets) + "\n")
+        self.write("crates/perl-parser/Cargo.toml", "\n".join(manifest))
+        self.write_feature_gates(self.gated_features)
         modules = "\n".join(f'pub mod {row["name"]};' for row in self.ledger["public_modules"])
         exports = "\n".join(
             f"pub use {member};"
@@ -114,6 +174,36 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         self.assertEqual(summary["ruling"], "staged_migration")
         self.assertEqual(summary["public_modules"], len(self.ledger["public_modules"]))
 
+    def test_optional_dependencies_have_implicit_cargo_features(self) -> None:
+        manifest = {
+            "features": {"explicit": []},
+            "dependencies": {"parser-alias": {"package": "perl-parser", "optional": True}},
+        }
+        self.assertEqual(feature_names(manifest), {"explicit", "parser-alias"})
+
+    def test_dep_alias_feature_suppresses_implicit_feature(self) -> None:
+        manifest = {
+            "features": {"feature-x": ["dep:parser-alias"]},
+            "dependencies": {"parser-alias": {"package": "perl-parser", "optional": True}},
+        }
+        self.assertEqual(feature_names(manifest), {"feature-x"})
+
+    def test_workspace_dependency_alias_resolves_to_package_consumer(self) -> None:
+        self.write(
+            "Cargo.toml",
+            '[workspace]\nmembers = ["crates/consumer"]\n'
+            '[workspace.dependencies]\nparser-alias = { package = "perl-parser", version = "1" }\n',
+        )
+        self.write(
+            "crates/consumer/Cargo.toml",
+            '[package]\nname = "consumer"\nversion = "0.1.0"\n'
+            '[dependencies]\nparser-alias = { workspace = true }\n',
+        )
+        contexts = discover_consumer_contexts(
+            self.root, self.root / "crates/perl-parser/Cargo.toml"
+        )
+        self.assertEqual(contexts["crates/consumer/Cargo.toml"], ("normal",))
+
     def test_new_public_module_fails(self) -> None:
         path = self.root / "crates/perl-parser/src/lib.rs"
         path.write_text(path.read_text() + "pub mod surprise;\n")
@@ -144,9 +234,28 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         path = self.root / self.ledger["consumer_groups"][0]["members"][0]
         path.write_text(path.read_text().replace(
             '[dependencies]\nperl-parser="1"',
-            '[dev-dependencies]\nparser_alias = { package = "perl-parser", version = "1" }',
+            '[dependencies]\nparser_alias = { package = "perl-parser", version = "1" }',
         ))
         check(self.root, self.ledger_path)
+
+    def test_dev_only_consumer_cannot_claim_production_usage(self) -> None:
+        path = self.root / self.ledger["consumer_groups"][0]["members"][0]
+        path.write_text(path.read_text().replace(
+            '[dependencies]\nperl-parser="1"',
+            '[dev-dependencies]\nperl-parser="1"',
+        ))
+        with self.assertRaisesRegex(ValueError, "claims production usage but reaches the facade as dev_only"):
+            check(self.root, self.ledger_path)
+
+    def test_partially_dev_consumer_group_must_declare_mixed_usage(self) -> None:
+        group = next(g for g in self.ledger["consumer_groups"] if len(g["members"]) > 1)
+        path = self.root / group["members"][0]
+        path.write_text(path.read_text().replace(
+            '[dependencies]\nperl-parser="1"',
+            '[dev-dependencies]\nperl-parser="1"',
+        ))
+        with self.assertRaisesRegex(ValueError, "reaches the facade as mixed"):
+            check(self.root, self.ledger_path)
 
     def test_ruling_cannot_repoint_governed_source(self) -> None:
         self.ledger["sources"]["manifest"] = "fixtures/alternate/Cargo.toml"
@@ -191,6 +300,614 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "forbidden product/transport"):
             check(self.root, self.ledger_path)
 
+    @property
+    def manifest_path(self) -> Path:
+        return self.root / "crates/perl-parser/Cargo.toml"
+
+    def add_dependency(self, section: str, line: str) -> None:
+        """Insert a dependency into an existing table, or create the table once."""
+        text = self.manifest_path.read_text()
+        header = f"[{section}]"
+        if header in text:
+            text = text.replace(header, f"{header}\n{line}", 1)
+        else:
+            text = f"{text}\n{header}\n{line}\n"
+        self.manifest_path.write_text(text)
+
+    def move_dependency(self, name: str, source: str, destination: str) -> None:
+        text = self.manifest_path.read_text()
+        for candidate in (f'{name} = "1"', f'{name} = {{ version = "1", optional = true }}'):
+            if candidate in text:
+                text = text.replace(f"{candidate}\n", "", 1)
+                self.manifest_path.write_text(text)
+                self.add_dependency(destination, candidate)
+                return
+        raise AssertionError(f"fixture does not declare {name} in {source}")
+
+    def dependency_row(self, name: str) -> dict:
+        return next(row for row in self.ledger["dependencies"] if row["name"] == name)
+
+    def append_target(self, text: str) -> None:
+        self.manifest_path.write_text(self.manifest_path.read_text() + "\n" + text)
+
+    def ledger_row_contexts(self, name: str, contexts: list[str]) -> None:
+        self.dependency_row(name)["contexts"] = contexts
+        self.write_ledger(self.ledger)
+
+    def feature_row(self, name: str) -> dict:
+        return next(row for row in self.ledger["features"] if row["name"] == name)
+
+    def independent_source_only_feature(self) -> dict:
+        """A `source_only` feature no default aggregate depends on.
+
+        Mutating a feature inside the default closure would change `default`'s own
+        class too, so these tests pick one outside it to keep the assertion pointed
+        at the feature under test.
+        """
+        return next(
+            row for row in self.ledger["features"]
+            if row["isolation"] == "source_only"
+            and row["name"] not in self.ledger["default_features"]
+        )
+
+    # --- dependency universe -------------------------------------------------
+
+    def test_new_normal_dependency_without_a_row_fails(self) -> None:
+        self.add_dependency("dependencies", 'surprise = "1"')
+        with self.assertRaisesRegex(ValueError, "unclassified=surprise"):
+            check(self.root, self.ledger_path)
+
+    def test_new_dev_dependency_without_a_row_fails(self) -> None:
+        self.add_dependency("dev-dependencies", 'surprise = "1"')
+        with self.assertRaisesRegex(ValueError, "unclassified=surprise"):
+            check(self.root, self.ledger_path)
+
+    def test_new_build_dependency_without_a_row_fails(self) -> None:
+        self.add_dependency("build-dependencies", 'surprise = "1"')
+        with self.assertRaisesRegex(ValueError, "unclassified=surprise"):
+            check(self.root, self.ledger_path)
+
+    def test_new_target_dependency_without_a_row_fails(self) -> None:
+        self.add_dependency("target.'cfg(windows)'.dependencies", 'surprise = "1"')
+        with self.assertRaisesRegex(ValueError, "unclassified=surprise"):
+            check(self.root, self.ledger_path)
+
+    def test_moving_a_dependency_between_target_platforms_fails(self) -> None:
+        """cfg(unix) and cfg(windows) are different denominator rows, not one."""
+        row = next(
+            row for row in self.ledger["dependencies"]
+            if row["contexts"] == ["normal"] and not row["optional"]
+        )
+        self.move_dependency(row["name"], "dependencies", "target.'cfg(unix)'.dependencies")
+        self.ledger_row_contexts(row["name"], ["target(cfg(unix)):normal"])
+        check(self.root, self.ledger_path)
+        self.manifest_path.write_text(
+            self.manifest_path.read_text().replace("cfg(unix)", "cfg(windows)")
+        )
+        with self.assertRaisesRegex(ValueError, f'dependency {row["name"]} claims contexts'):
+            check(self.root, self.ledger_path)
+
+    def test_mixed_optionality_is_rejected_rather_than_collapsed(self) -> None:
+        row = next(
+            row for row in self.ledger["dependencies"]
+            if row["contexts"] == ["normal"] and row["optional"]
+        )
+        self.add_dependency("dev-dependencies", f'{row["name"]} = "1"')
+        with self.assertRaisesRegex(
+            ValueError, f'dependency {row["name"]} has mixed optionality'
+        ):
+            check(self.root, self.ledger_path)
+
+    def test_unparseable_consumer_manifest_is_not_silently_dropped(self) -> None:
+        self.write("crates/broken/Cargo.toml", "[package\nname = broken\n")
+        with self.assertRaisesRegex(ValueError, "cannot read"):
+            check(self.root, self.ledger_path)
+
+    def test_build_output_manifests_are_not_workspace_consumers(self) -> None:
+        """`cargo package` writes target/package/<crate>/Cargo.toml."""
+        self.write(
+            "target/package/staged/Cargo.toml",
+            '[package]\nname="staged"\nversion="0.1.0"\n[dependencies]\nperl-parser="1"\n',
+        )
+        self.write("target/debug/broken/Cargo.toml", "[package\nname = broken\n")
+        check(self.root, self.ledger_path)
+
+    def test_dependency_context_drift_fails(self) -> None:
+        """A production dependency silently demoted to dev must not stay production."""
+        row = next(
+            row for row in self.ledger["dependencies"]
+            if row["contexts"] == ["normal"] and not row["optional"]
+        )
+        self.move_dependency(row["name"], "dependencies", "dev-dependencies")
+        with self.assertRaisesRegex(ValueError, f'dependency {row["name"]} claims contexts'):
+            check(self.root, self.ledger_path)
+
+    def test_target_dependency_context_is_distinguished_from_plain_normal(self) -> None:
+        """A target-qualified edge is not the same denominator row as an unconditional one."""
+        row = next(
+            row for row in self.ledger["dependencies"]
+            if row["contexts"] == ["normal"] and not row["optional"]
+        )
+        self.move_dependency(row["name"], "dependencies", "target.'cfg(unix)'.dependencies")
+        with self.assertRaisesRegex(ValueError, "claims contexts \\['normal'\\]"):
+            check(self.root, self.ledger_path)
+
+    def test_test_dev_only_cannot_cover_a_production_dependency(self) -> None:
+        row = self.dependency_row("perl-lexer")
+        row["classification"] = "test_dev_only"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "reachable from a production dependency context"):
+            check(self.root, self.ledger_path)
+
+    # --- feature isolation truth --------------------------------------------
+
+    def test_taxonomy_feature_cannot_claim_source_isolation(self) -> None:
+        row = next(r for r in self.ledger["features"] if r["isolation"] == "taxonomy_only")
+        row["isolation"] = "source_only"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "but selects taxonomy_only"):
+            check(self.root, self.ledger_path)
+
+    def test_removing_a_feature_cfg_gate_invalidates_source_isolation(self) -> None:
+        target = self.independent_source_only_feature()["name"]
+        self.write_feature_gates([name for name in self.gated_features if name != target])
+        with self.assertRaisesRegex(ValueError, f"feature {target} claims isolation source_only"):
+            check(self.root, self.ledger_path)
+
+    def test_test_only_gate_cannot_claim_production_source_isolation(self) -> None:
+        """A feature gated only from tests is a test profile, not a source boundary."""
+        row = next(r for r in self.ledger["features"] if r["isolation"] == "test_source_only")
+        row["isolation"] = "source_only"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(
+            ValueError, f'feature {row["name"]} claims isolation source_only but selects test_source_only'
+        ):
+            check(self.root, self.ledger_path)
+
+    def test_moving_a_gate_from_src_to_tests_downgrades_isolation(self) -> None:
+        gated = self.independent_source_only_feature()["name"]
+        self.write_feature_gates(
+            [name for name in self.gated_features if name != gated],
+            self.test_gated_features + [gated],
+        )
+        with self.assertRaisesRegex(ValueError, "but selects test_source_only"):
+            check(self.root, self.ledger_path)
+
+    def test_feature_isolation_value_must_be_supported(self) -> None:
+        self.feature_row("cli")["isolation"] = "architectural_boundary"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "isolation is unsupported"):
+            check(self.root, self.ledger_path)
+
+    def test_missing_feature_isolation_fails(self) -> None:
+        del self.feature_row("cli")["isolation"]
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "isolation must be a non-empty string"):
+            check(self.root, self.ledger_path)
+
+    # --- pending evidence ----------------------------------------------------
+
+    def test_review_row_without_pending_evidence_fails(self) -> None:
+        row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
+        del row["pending"]
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "pending must be an object for a review disposition"):
+            check(self.root, self.ledger_path)
+
+    def test_pending_requires_every_named_field(self) -> None:
+        row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
+        del row["pending"]["resolves_when"]
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "pending.resolves_when must be a non-empty string"):
+            check(self.root, self.ledger_path)
+
+    def test_pending_rejects_fields_the_row_already_carries(self) -> None:
+        """`owner`/`target_owner` already name the owner and predecessor."""
+        row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
+        row["pending"]["owner"] = "#7063"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "pending has unsupported fields: owner"):
+            check(self.root, self.ledger_path)
+
+    # --- target-gating features ---------------------------------------------
+
+    def test_bench_only_target_gate_is_a_test_profile_not_a_production_boundary(self) -> None:
+        """Gating a bench is a development surface; gating a binary ships."""
+        self.append_target('[[bench]]\nname = "probe_bench"\nrequired-features = ["utf16-complete"]\n')
+        self.feature_row("utf16-complete")["isolation"] = "target_only"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(
+            ValueError, "feature utf16-complete claims isolation target_only but selects test_source_only"
+        ):
+            check(self.root, self.ledger_path)
+
+    def test_bin_target_gate_remains_a_production_boundary(self) -> None:
+        """Negative control for the bench/bin split."""
+        self.append_target('[[bin]]\nname = "probe_bin"\nrequired-features = ["utf16-complete"]\n')
+        self.feature_row("utf16-complete")["isolation"] = "target_only"
+        self.ledger["targets"].append({
+            "name": "probe_bin", "kind": "bin", "required_features": ["utf16-complete"],
+            "classification": "product_composition", "disposition": "retain",
+            "owner": "#11373", "target_owner": "perl-parser",
+            "exit_condition": "fixture-only probe target.",
+        })
+        self.write_ledger(self.ledger)
+        check(self.root, self.ledger_path)
+
+    def test_auto_discovered_target_requires_a_ledger_row(self) -> None:
+        self.write("crates/perl-parser/tests/conventional_target.rs", "#[test]\nfn probe() {}\n")
+        self.manifest_path.write_text(self.manifest_path.read_text().replace(
+            "autotests = false", "autotests = true", 1
+        ))
+        with self.assertRaisesRegex(ValueError, "unclassified=test:conventional_target"):
+            check(self.root, self.ledger_path)
+
+    def test_auto_discovered_target_honors_package_opt_out(self) -> None:
+        self.write("crates/perl-parser/tests/conventional_target.rs", "#[test]\nfn probe() {}\n")
+        check(self.root, self.ledger_path)
+
+    def synthetic_targets(self, package: dict[str, object] | None = None) -> set[CargoTarget]:
+        root = self.root / "synthetic"
+        root.mkdir(parents=True, exist_ok=True)
+        manifest: dict[str, object] = {"package": {"name": "synthetic", **(package or {})}}
+        return cargo_targets(manifest, root)
+
+    def test_auto_discovery_matches_cargo_shallow_target_layout(self) -> None:
+        """Nested Rust modules are not independent Cargo targets."""
+        for relative in (
+            "src/main.rs", "src/bin/flat.rs", "src/bin/group/main.rs", "src/bin/group/helper.rs",
+            "examples/flat.rs", "examples/group/main.rs", "examples/group/helper.rs",
+            "tests/flat.rs", "tests/group/main.rs", "tests/group/helper.rs",
+            "benches/flat.rs", "benches/group/main.rs", "benches/group/helper.rs",
+        ):
+            self.write(f"synthetic/{relative}", "fn main() {}\n")
+        observed = self.synthetic_targets()
+        for kind, names in {
+            "bin": {"synthetic", "flat", "group"},
+            "example": {"flat", "group"},
+            "test": {"flat", "group"},
+            "bench": {"flat", "group"},
+        }.items():
+            self.assertEqual({target.name for target in observed if target.kind == kind}, names)
+
+    def test_explicit_default_directory_main_is_not_rediscovered(self) -> None:
+        """An explicit target's directory/main.rs default must suppress auto discovery."""
+        root = self.root / "synthetic"
+        for kind, directory in (("bin", "src/bin"), ("example", "examples"),
+                                ("test", "tests"), ("bench", "benches")):
+            self.write(f"synthetic/{directory}/named/main.rs", "fn main() {}\n")
+        manifest = {"package": {"name": "synthetic"}}
+        for kind in ("bin", "example", "test", "bench"):
+            manifest[kind] = [{
+                "name": "named", "required-features": [f"{kind}-feature"]
+            }]
+        observed = cargo_targets(manifest, root)
+        self.assertEqual(
+            observed,
+            {
+                CargoTarget(kind, "named", (f"{kind}-feature",))
+                for kind in ("bin", "example", "test", "bench")
+            },
+        )
+
+    def test_each_auto_target_family_opt_out_is_honored(self) -> None:
+        families = {
+            "bin": ("autobins", "src/bin/probe.rs"),
+            "bench": ("autobenches", "benches/probe.rs"),
+            "example": ("autoexamples", "examples/probe.rs"),
+            "test": ("autotests", "tests/probe.rs"),
+        }
+        for kind, (_, relative) in families.items():
+            self.write(f"synthetic/{relative}", "fn main() {}\n")
+            options = {option: True for option, _ in families.values()}
+            options[families[kind][0]] = False
+            observed = self.synthetic_targets(options)
+            self.assertNotIn(CargoTarget(kind, "probe", ()), observed)
+
+    def test_auto_target_switches_must_be_booleans(self) -> None:
+        with self.assertRaisesRegex(ValueError, "package autobins must be a boolean"):
+            self.synthetic_targets({"autobins": "false"})
+
+    def test_duplicate_conventional_target_names_are_rejected(self) -> None:
+        self.write("synthetic/examples/duplicate.rs", "fn main() {}\n")
+        self.write("synthetic/examples/duplicate/main.rs", "fn main() {}\n")
+        with self.assertRaisesRegex(ValueError, "duplicate Cargo target name: example:duplicate"):
+            self.synthetic_targets()
+
+    def test_duplicate_explicit_target_names_are_rejected(self) -> None:
+        manifest = {
+            "package": {"name": "synthetic"},
+            "example": [{"name": "duplicate"}, {"name": "duplicate", "path": "other.rs"}],
+        }
+        with self.assertRaisesRegex(ValueError, "duplicate Cargo target name: example:duplicate"):
+            cargo_targets(manifest)
+
+    def test_duplicate_ledger_target_identity_cannot_hide_conflicting_authority(self) -> None:
+        original = next(row for row in self.ledger["targets"] if row["kind"] == "bin")
+        duplicate = dict(original)
+        duplicate["disposition"] = "retain"
+        duplicate.pop("pending", None)
+        self.ledger["targets"].append(duplicate)
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(
+            ValueError, "duplicate parser facade ledger target identity: bin:perl-parse"
+        ):
+            check(self.root, self.ledger_path)
+
+    def test_cfg_test_stripping_ignores_rust_strings_and_comments(self) -> None:
+        source = (
+            '#[cfg(test)]\n#[allow(dead_code)]\nmod tests {\n'
+            '    let text = "a } {";\n'
+            "    let raw = r##\"raw } {\"##;\n"
+            "    /* nested { /* comment } */ still */\n"
+            "    // } this is only a comment\n"
+            "}\n"
+            '#[cfg(feature = "kept")]\nfn production() {}\n'
+        )
+        stripped = strip_cfg_test_modules(source)
+        self.assertNotIn("let text", stripped)
+        self.assertNotIn("let raw", stripped)
+        self.assertIn('#[cfg(feature = "kept")]', stripped)
+
+    def test_cfg_test_stripping_handles_char_literals(self) -> None:
+        source = "#[cfg(test)]\nmod tests { let brace = '}'; }\nfn production() {}\n"
+        self.assertEqual(strip_cfg_test_modules(source).lstrip("\n"), "fn production() {}\n")
+
+    def test_feature_gate_inventory_ignores_comments_and_literals(self) -> None:
+        self.write(
+            "crates/perl-parser/src/lib.rs",
+            '// #[cfg(feature = "comment-only")]\n'
+            'const TEXT: &str = r#"#[cfg(feature = "literal-only")]"#;\n'
+            "const CHAR: char = '}';\n"
+            '#[cfg(feature = "real-gate")]\nfn production() {}\n',
+        )
+        gates = feature_source_gates(self.root / "crates/perl-parser", ("src",))
+        self.assertIn("real-gate", gates)
+        self.assertNotIn("comment-only", gates)
+        self.assertNotIn("literal-only", gates)
+
+    def test_feature_gate_inventory_excludes_out_of_line_cfg_test_module(self) -> None:
+        self.write(
+            "crates/perl-parser/src/lib.rs",
+            '#[cfg(test)]\nmod test_support;\n',
+        )
+        self.write(
+            "crates/perl-parser/src/test_support/mod.rs",
+            '#[cfg(feature = "test-only-gate")]\nmod helper;\n',
+        )
+        self.write(
+            "crates/perl-parser/src/test_support/helper.rs",
+            '#[cfg(feature = "nested-test-only-gate")]\nfn gated() {}\n',
+        )
+        gates = feature_source_gates(
+            self.root / "crates/perl-parser", ("src",), skip_test_modules=True
+        )
+        self.assertNotIn("test-only-gate", gates)
+        self.assertNotIn("nested-test-only-gate", gates)
+
+    def test_feature_gate_inventory_resolves_path_attribute_and_masks_cfg_comments(self) -> None:
+        self.write(
+            "crates/perl-parser/src/lib.rs",
+            '// #[cfg(test)] mod fake { }\n'
+            '#[path = "support/fixtures.rs"]\n'
+            '#[cfg(test)]\nmod test_support;\n'
+            '#[cfg(feature = "real-gate")]\nfn production() {}\n',
+        )
+        self.write(
+            "crates/perl-parser/src/support/fixtures.rs",
+            '#[cfg(feature = "path-test-only-gate")]\nfn gated() {}\n',
+        )
+        gates = feature_source_gates(
+            self.root / "crates/perl-parser", ("src",), skip_test_modules=True
+        )
+        self.assertIn("real-gate", gates)
+        self.assertNotIn("path-test-only-gate", gates)
+
+    def test_feature_gate_inventory_keeps_path_attributes_adjacent(self) -> None:
+        self.write(
+            "crates/perl-parser/src/lib.rs",
+            '#[path = "unrelated.rs"]\nmod unrelated;\n'
+            '#[cfg(test)]\nmod test_support;\n',
+        )
+        self.write(
+            "crates/perl-parser/src/test_support.rs",
+            '#[cfg(feature = "path-test-only-gate")]\nfn gated() {}\n',
+        )
+        self.write(
+            "crates/perl-parser/src/unrelated.rs",
+            '#[cfg(feature = "production-gate")]\nfn real() {}\n',
+        )
+        gates = feature_source_gates(
+            self.root / "crates/perl-parser", ("src",), skip_test_modules=True
+        )
+        self.assertIn("production-gate", gates)
+        self.assertNotIn("path-test-only-gate", gates)
+
+    def test_feature_gate_inventory_excludes_nested_test_module_ancestry(self) -> None:
+        self.write(
+            "crates/perl-parser/src/lib.rs", "#[cfg(test)]\nmod foo;\n"
+        )
+        self.write(
+            "crates/perl-parser/src/foo.rs", "#[cfg(test)]\nmod tests;\n"
+        )
+        self.write(
+            "crates/perl-parser/src/foo/tests.rs",
+            '#[cfg(feature = "nested-test-only-gate")]\nfn gated() {}\n',
+        )
+        gates = feature_source_gates(
+            self.root / "crates/perl-parser", ("src",), skip_test_modules=True
+        )
+        self.assertNotIn("nested-test-only-gate", gates)
+
+    def test_feature_gate_inventory_resolves_nested_test_from_non_mod_parent(self) -> None:
+        """A child of detectors.rs lives below the detectors/ module directory."""
+        self.write(
+            "crates/perl-parser/src/lib.rs", "mod detectors;\n"
+        )
+        self.write(
+            "crates/perl-parser/src/detectors.rs", "#[cfg(test)]\nmod tests;\n"
+        )
+        self.write(
+            "crates/perl-parser/src/detectors/tests.rs",
+            '#[cfg(feature = "nested-detectors-test-gate")]\nfn gated() {}\n',
+        )
+        gates = feature_source_gates(
+            self.root / "crates/perl-parser", ("src",), skip_test_modules=True
+        )
+        self.assertNotIn("nested-detectors-test-gate", gates)
+
+    def test_feature_gate_inventory_resolves_multiline_path_with_comments(self) -> None:
+        self.write(
+            "crates/perl-parser/src/detectors.rs",
+            '#[path =\n'
+            '    "support/fixtures.rs"] // keep this path\n'
+            '// an allowed comment between attributes\n'
+            "#[cfg(test)]\nmod tests;\n",
+        )
+        self.write(
+            "crates/perl-parser/src/support/fixtures.rs",
+            '#[cfg(feature = "multiline-path-test-gate")]\nfn gated() {}\n',
+        )
+        gates = feature_source_gates(
+            self.root / "crates/perl-parser", ("src",), skip_test_modules=True
+        )
+        self.assertNotIn("multiline-path-test-gate", gates)
+
+    def test_feature_gate_inventory_ignores_comment_path_and_prior_attribute(self) -> None:
+        self.write(
+            "crates/perl-parser/src/lib.rs",
+            '// #[path = "fake.rs"]\n'
+            '#[path = "old.rs"]\nmod old;\n'
+            '#[path = "support/fixtures.rs"]\n'
+            '// comment between valid attributes\n'
+            '#[cfg(test)]\nmod test_support;\n',
+        )
+        self.write(
+            "crates/perl-parser/src/support/fixtures.rs",
+            '#[cfg(feature = "comment-path-test-gate")]\nfn gated() {}\n',
+        )
+        self.write(
+            "crates/perl-parser/src/old.rs",
+            '#[cfg(feature = "old-path-test-gate")]\nfn gated() {}\n',
+        )
+        gates = feature_source_gates(
+            self.root / "crates/perl-parser", ("src",), skip_test_modules=True
+        )
+        self.assertNotIn("comment-path-test-gate", gates)
+        self.assertIn("old-path-test-gate", gates)
+
+    def test_feature_gate_inventory_accepts_nested_attribute_and_path_comment(self) -> None:
+        self.write(
+            "crates/perl-parser/src/lib.rs",
+            '#[path = /* path comment */ "support/fixtures.rs"]\n'
+            '#[cfg_attr(feature = "nested", any())]\n'
+            '#[cfg(test)]\nmod test_support;\n',
+        )
+        self.write(
+            "crates/perl-parser/src/support/fixtures.rs",
+            '#[cfg(feature = "nested-attribute-test-gate")]\nfn gated() {}\n',
+        )
+        gates = feature_source_gates(
+            self.root / "crates/perl-parser", ("src",), skip_test_modules=True
+        )
+        self.assertNotIn("nested-attribute-test-gate", gates)
+
+    def test_review_row_target_owner_must_be_actionable(self) -> None:
+        row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
+        row["target_owner"] = "the parser team"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "target_owner must be a GitHub issue reference"):
+            check(self.root, self.ledger_path)
+
+    def test_settled_row_may_name_a_crate_as_destination(self) -> None:
+        """Negative control: crate destinations stay valid for non-pending rows."""
+        row = next(
+            r for r in self.ledger["dependencies"]
+            if r["disposition"] != "review" and r["target_owner"].startswith("#")
+        )
+        row["target_owner"] = "perl-parser-core"
+        self.write_ledger(self.ledger)
+        check(self.root, self.ledger_path)
+
+    def test_renamed_dependency_feature_edge_is_recognized(self) -> None:
+        """Feature entries name the manifest key, not the package identity."""
+        row = self.dependency_row("perl-lexer")
+        self.manifest_path.write_text(self.manifest_path.read_text().replace(
+            'perl-lexer = "1"',
+            'lexer_alias = { package = "perl-lexer", version = "1" }',
+            1,
+        ))
+        self.manifest_path.write_text(self.manifest_path.read_text().replace(
+            '"cli" = []', '"cli" = ["lexer_alias/flag"]', 1
+        ))
+        self.feature_row("cli")["isolation"] = "dependencies_only"
+        self.write_ledger(self.ledger)
+        check(self.root, self.ledger_path)
+        del row
+
+    def test_feature_required_by_a_target_is_not_taxonomy(self) -> None:
+        """`required-features` gates whether a binary is built at all."""
+        gating = next(
+            row["required_features"][0]
+            for row in self.ledger["targets"] if row["required_features"]
+        )
+        self.feature_row(gating)["isolation"] = "taxonomy_only"
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, f"feature {gating} claims isolation taxonomy_only"):
+            check(self.root, self.ledger_path)
+
+    def test_dropping_a_target_required_feature_downgrades_isolation(self) -> None:
+        row = next(r for r in self.ledger["features"] if r["isolation"] == "target_only")
+        self.manifest_path.write_text(
+            self.manifest_path.read_text().replace(
+                f'required-features = ["{row["name"]}"]\n', "", 1
+            )
+        )
+        with self.assertRaisesRegex(ValueError, f'feature {row["name"]} claims isolation target_only'):
+            check(self.root, self.ledger_path)
+
+    # --- production source proxy --------------------------------------------
+
+    def test_feature_gated_only_inside_a_cfg_test_module_is_not_a_source_boundary(self) -> None:
+        """A gate inside `#[cfg(test)] mod tests` gates test code, not production."""
+        row = self.independent_source_only_feature()
+        self.write_feature_gates(
+            [name for name in self.gated_features if name != row["name"]],
+            self.test_gated_features,
+        )
+        self.write(
+            "crates/perl-parser/src/inline_tests.rs",
+            "#[cfg(test)]\nmod tests {\n"
+            f'    #[cfg(feature = "{row["name"]}")]\n    #[test]\n    fn gated() {{}}\n'
+            "}\n",
+        )
+        with self.assertRaisesRegex(ValueError, f'feature {row["name"]} claims isolation source_only'):
+            check(self.root, self.ledger_path)
+
+    def test_production_gate_outside_a_test_module_still_counts(self) -> None:
+        """Negative control: the cfg(test) strip must not swallow real gates."""
+        row = self.independent_source_only_feature()
+        self.write_feature_gates(
+            [name for name in self.gated_features if name != row["name"]],
+            self.test_gated_features,
+        )
+        self.write(
+            "crates/perl-parser/src/inline_tests.rs",
+            "#[cfg(test)]\nmod tests {\n    fn helper() {}\n}\n"
+            f'#[cfg(feature = "{row["name"]}")]\nfn real() {{}}\n',
+        )
+        check(self.root, self.ledger_path)
+
+    def test_settled_row_cannot_carry_pending_evidence(self) -> None:
+        row = next(r for r in self.ledger["features"] if r["disposition"] != "review")
+        row["pending"] = {
+            "owner": "#7063", "predecessor": "none",
+            "reason": "unsettled", "resolves_when": "later",
+        }
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "pending is only valid for a review disposition"):
+            check(self.root, self.ledger_path)
+
     def test_incremental_generation_cannot_be_production(self) -> None:
         self.ledger["incremental_public_modules"][0]["production_eligible"] = True
         self.write_ledger(self.ledger)
@@ -221,6 +938,25 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         self.write_ledger(self.ledger)
         with self.assertRaisesRegex(ValueError, "canonical incremental export marker"):
             check(self.root, self.ledger_path)
+
+    def test_rendered_production_surface_matches_reviewed_ledger(self) -> None:
+        ledger, summary = check(self.root, self.ledger_path)
+        rendered = render_markdown(ledger, summary)
+        production = [
+            row["name"]
+            for row in ledger["incremental_public_exports"]
+            if row["production_eligible"] is True
+        ]
+        for name in production:
+            self.assertIn(f"`{name}`", rendered)
+        self.assertNotIn("`geometry_attachment::SourceGeometryAttachment`", rendered)
+
+    def test_controller_is_not_rendered_as_implementation_owner(self) -> None:
+        ledger, summary = check(self.root, self.ledger_path)
+        rendered = render_markdown(ledger, summary)
+        self.assertIn("#7063 is the convergence controller", rendered)
+        self.assertIn("not through #7063 itself", rendered)
+        self.assertNotIn("#7063 implements the staged boundary", rendered)
 
 
 if __name__ == "__main__":

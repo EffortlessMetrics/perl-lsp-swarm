@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,9 @@ from parser_facade_inventory import (
     cargo_targets,
     default_features,
     dependency_rows,
-    discover_consumers,
+    dependency_universe,
+    discover_consumer_contexts,
+    feature_isolation,
     feature_names,
     incremental_surface,
     load_toml,
@@ -23,9 +26,28 @@ SCHEMA_VERSION = 1
 ALLOWED_CLASSIFICATIONS = {
     "parser_kernel", "parser_output_contract", "incremental_parser",
     "compatibility_reexport", "product_composition", "workspace_or_lsp_adapter",
-    "experimental", "retire",
+    "experimental", "retire", "test_dev_only",
 }
 ALLOWED_DISPOSITIONS = {"retain", "move", "gate", "deprecate", "remove", "review"}
+DEPENDENCY_CONTEXT_KINDS = {"normal", "dev", "build"}
+PRODUCTION_CONTEXT_KINDS = {"normal", "build"}
+# `target(<cfg expression>):<kind>` keeps each platform gate distinct, so moving a
+# dependency between cfg(unix) and cfg(windows) is a visible denominator change.
+TARGET_CONTEXT_PATTERN = re.compile(r"^target\((?P<spec>.+)\):(?P<kind>normal|dev|build)$")
+ALLOWED_FEATURE_ISOLATIONS = {
+    "dependencies_and_source", "dependencies_only", "source_only", "target_only",
+    "test_source_only", "feature_aggregate", "taxonomy_only",
+}
+PRODUCTION_FEATURE_ISOLATIONS = {
+    "dependencies_and_source", "dependencies_only", "source_only", "target_only",
+}
+ALLOWED_CONSUMER_USAGES = {"production", "dev_only", "mixed"}
+# The row's own `owner`/`target_owner` already name the predecessor and the exact
+# implementation owner, so a pending block only has to add what they cannot: why the
+# row cannot close now and which event resolves it.
+PENDING_FIELDS = ("reason", "resolves_when")
+
+
 LEDGER_FILES = (
     "ruling.json", "features.json", "dependencies.json", "public-surface.json",
     "incremental.json", "consumers.json",
@@ -37,6 +59,20 @@ CANONICAL_SOURCE_PATHS = {
     "parser_core_manifest": "crates/perl-parser-core/Cargo.toml",
     "generated_doc": "docs/project/PARSER_FACADE_AUTHORITY.md",
 }
+
+
+def dependency_context_kind(context: str) -> str:
+    """Return the normal/dev/build kind of a context, rejecting unsupported shapes."""
+    if context in DEPENDENCY_CONTEXT_KINDS:
+        return context
+    match = TARGET_CONTEXT_PATTERN.match(context)
+    if match is None:
+        raise ValueError(f"unsupported dependency context: {context}")
+    return match.group("kind")
+
+
+def is_production_context(context: str) -> bool:
+    return dependency_context_kind(context) in PRODUCTION_CONTEXT_KINDS
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -73,6 +109,36 @@ def require_string(item: dict[str, Any], key: str, context: str) -> str:
     return value
 
 
+def require_issue_reference(value: str, context: str) -> None:
+    if not value.startswith("#") or not value[1:].isdigit():
+        raise ValueError(f"{context} must be a GitHub issue reference")
+
+
+def validate_pending(item: dict[str, Any], disposition: str, context: str) -> None:
+    """A pending row must state why it cannot close and what resolves it.
+
+    Combined with the row's mandatory `owner` and `target_owner`, this supplies the
+    four things #11373 requires of a pending row: exact implementation owner,
+    evidence predecessor, current reason, and resolving event. A `review` row
+    without them is an ownerless bucket, so the ledger rejects it.
+    """
+    pending = item.get("pending")
+    if disposition != "review":
+        if pending is not None:
+            raise ValueError(f"{context}.pending is only valid for a review disposition")
+        return
+    if not isinstance(pending, dict):
+        raise ValueError(f"{context}.pending must be an object for a review disposition")
+    # A settled row may name a crate as its destination, but a pending row's owner has
+    # to be something a later leaf can actually act on.
+    require_issue_reference(item["target_owner"], f"{context}.target_owner")
+    unknown = sorted(set(pending) - set(PENDING_FIELDS))
+    if unknown:
+        raise ValueError(f"{context}.pending has unsupported fields: {','.join(unknown)}")
+    for field in PENDING_FIELDS:
+        require_string(pending, field, f"{context}.pending")
+
+
 def validate_row(item: Any, context: str) -> dict[str, Any]:
     if not isinstance(item, dict):
         raise ValueError(f"{context} must be an object")
@@ -85,8 +151,8 @@ def validate_row(item: Any, context: str) -> dict[str, Any]:
         raise ValueError(f"{context}.classification is unsupported: {classification}")
     if disposition not in ALLOWED_DISPOSITIONS:
         raise ValueError(f"{context}.disposition is unsupported: {disposition}")
-    if not item["owner"].startswith("#") or not item["owner"][1:].isdigit():
-        raise ValueError(f"{context}.owner must be a GitHub issue reference")
+    require_issue_reference(item["owner"], f"{context}.owner")
+    validate_pending(item, disposition, context)
     return item
 
 
@@ -160,18 +226,47 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
     expected_defaults = tuple(ledger.get("default_features", []))
     if default_features(manifest) != expected_defaults:
         raise ValueError("default feature order differs from authority ledger")
+    observed_isolation = feature_isolation(manifest, manifest_path.parent)
     for name, row in features.items():
         if bool(row.get("default")) != (name in expected_defaults):
             raise ValueError(f"feature {name} has inconsistent default disposition")
         if row["classification"] == "experimental" and name in expected_defaults:
             raise ValueError(f"experimental feature {name} cannot be a default")
+        isolation = require_string(row, "isolation", f"features[{name}]")
+        if isolation not in ALLOWED_FEATURE_ISOLATIONS:
+            raise ValueError(f"feature {name} isolation is unsupported: {isolation}")
+        if isolation != observed_isolation[name]:
+            raise ValueError(
+                f"feature {name} claims isolation {isolation} but selects "
+                f"{observed_isolation[name]} in current source and manifest"
+            )
 
     dependencies = table_by_name(ledger.get("dependencies"), "dependencies")
-    observed_dependencies = dependency_rows(manifest)
+    observed_dependencies = dependency_universe(manifest)
     validate_exact("Cargo dependencies", set(observed_dependencies), set(dependencies))
-    for name, optional in observed_dependencies.items():
-        if dependencies[name].get("optional") is not optional:
+    for name, fact in observed_dependencies.items():
+        row = dependencies[name]
+        if row.get("optional") is not fact.optional:
             raise ValueError(f"dependency {name} optionality differs from authority ledger")
+        contexts = row.get("contexts")
+        if not isinstance(contexts, list) or any(not isinstance(x, str) for x in contexts):
+            raise ValueError(f"dependency {name} must record a contexts string list")
+        for context in contexts:
+            dependency_context_kind(context)
+        if contexts != sorted(set(contexts)):
+            raise ValueError(f"dependency {name} contexts must be unique and sorted")
+        if tuple(contexts) != fact.contexts:
+            raise ValueError(
+                f"dependency {name} claims contexts {contexts} but is declared in "
+                f"{list(fact.contexts)}"
+            )
+        if row["classification"] == "test_dev_only" and (
+            any(is_production_context(context) for context in contexts)
+        ):
+            raise ValueError(
+                f"dependency {name} is classified test_dev_only but is reachable from "
+                "a production dependency context"
+            )
 
     modules, exports = rust_public_surface(root / CANONICAL_SOURCE_PATHS["lib"])
     public_modules = table_by_name(ledger.get("public_modules"), "public_modules")
@@ -180,16 +275,31 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
     validate_exact("public re-exports", exports, set(public_exports))
 
     expected_targets: set[CargoTarget] = set()
+    expected_target_identities: set[tuple[str, str]] = set()
     for index, raw_target in enumerate(ledger.get("targets", [])):
         item = validate_row(raw_target, f"targets[{index}]")
         kind = require_string(item, "kind", f"targets[{index}]")
         name = require_string(item, "name", f"targets[{index}]")
+        identity = (kind, name)
+        if identity in expected_target_identities:
+            raise ValueError(
+                f"duplicate parser facade ledger target identity: {kind}:{name}"
+            )
+        expected_target_identities.add(identity)
         required = item.get("required_features", [])
         if not isinstance(required, list) or any(not isinstance(x, str) for x in required):
             raise ValueError(f"targets[{index}].required_features must be a string list")
         expected_targets.add(CargoTarget(kind, name, tuple(required)))
-    if cargo_targets(manifest) != expected_targets:
-        raise ValueError("Cargo bin/bench/example targets differ from authority ledger")
+    observed_targets = cargo_targets(manifest, manifest_path.parent)
+    if observed_targets != expected_targets:
+        missing = sorted(observed_targets - expected_targets, key=lambda target: (target.kind, target.name))
+        absent = sorted(expected_targets - observed_targets, key=lambda target: (target.kind, target.name))
+        details = []
+        if missing:
+            details.append("unclassified=" + ",".join(f"{target.kind}:{target.name}" for target in missing))
+        if absent:
+            details.append("absent=" + ",".join(f"{target.kind}:{target.name}" for target in absent))
+        raise ValueError("Cargo targets differ from authority ledger: " + "; ".join(details))
 
     inc_modules, inc_exports, inc_functions = incremental_surface(root / CANONICAL_SOURCE_PATHS["incremental"])
     module_rows = table_by_name(ledger.get("incremental_public_modules"), "incremental_public_modules")
@@ -218,8 +328,28 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
         raise ValueError("apply_edits must be the sole canonical public incremental function")
 
     consumers = member_table(ledger.get("consumer_groups"), "consumer_groups")
-    observed_consumers = discover_consumers(root, manifest_path)
-    validate_exact("workspace consumers", observed_consumers, set(consumers))
+    observed_consumers = discover_consumer_contexts(root, manifest_path)
+    validate_exact("workspace consumers", set(observed_consumers), set(consumers))
+    for group in ledger["consumer_groups"]:
+        usage = require_string(group, "usage", f"consumer_groups[{group['name']}]")
+        if usage not in ALLOWED_CONSUMER_USAGES:
+            raise ValueError(f"consumer group {group['name']} usage is unsupported: {usage}")
+        production = {
+            member
+            for member in group["members"]
+            if any(is_production_context(c) for c in observed_consumers[member])
+        }
+        if production == set(group["members"]):
+            observed_usage = "production"
+        elif not production:
+            observed_usage = "dev_only"
+        else:
+            observed_usage = "mixed"
+        if usage != observed_usage:
+            raise ValueError(
+                f"consumer group {group['name']} claims {usage} usage but reaches the "
+                f"facade as {observed_usage}"
+            )
 
     parser_core = load_toml(root / CANONICAL_SOURCE_PATHS["parser_core_manifest"])
     forbidden = sorted(name for name in dependency_rows(parser_core) if any(token in name for token in FORBIDDEN_KERNEL_DEPENDENCY_TOKENS))
@@ -236,7 +366,32 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
         "public_reexports": len(public_exports),
         "incremental_public_modules": len(module_rows),
         "incremental_public_exports": len(export_rows),
+        "production_incremental_exports": production_exports,
         "consumers": len(consumers),
+        "production_dependencies": sum(
+            1 for fact in observed_dependencies.values()
+            if any(is_production_context(c) for c in fact.contexts)
+        ),
+        "dev_only_dependencies": sum(
+            1 for fact in observed_dependencies.values()
+            if not any(is_production_context(c) for c in fact.contexts)
+        ),
+        "test_profile_features": sorted(
+            name for name, isolation in observed_isolation.items()
+            if isolation == "test_source_only"
+        ),
+        "taxonomy_only_features": sorted(
+            name for name, isolation in observed_isolation.items()
+            if isolation == "taxonomy_only"
+        ),
+        "production_boundary_features": sorted(
+            name for name, isolation in observed_isolation.items()
+            if isolation in PRODUCTION_FEATURE_ISOLATIONS
+        ),
+        "unresolved_review_rows": sum(
+            1 for section in ledger.values() if isinstance(section, list)
+            for row in section if isinstance(row, dict) and row.get("disposition") == "review"
+        ),
         "digest_scope": "full_normalized_ledger",
     }
     summary["authority_digest"] = hashlib.sha256(normalized_json(ledger)).hexdigest()
@@ -255,8 +410,22 @@ def render_markdown(ledger: dict[str, Any], summary: dict[str, Any]) -> str:
         f"- Public modules: {summary['public_modules']}",
         f"- Public re-exports: {summary['public_reexports']}",
         f"- Cargo features: {summary['features']}",
-        f"- Direct dependencies: {summary['dependencies']}",
-        f"- Workspace consumers: {summary['consumers']}", "",
+        f"- Declared dependencies: {summary['dependencies']}",
+        f"- Production-context dependencies: {summary['production_dependencies']}",
+        f"- Development-only dependencies: {summary['dev_only_dependencies']}",
+        f"- Workspace consumers: {summary['consumers']}",
+        f"- Unresolved review rows: {summary['unresolved_review_rows']}", "",
+        "## Feature isolation", "",
+        "A declared feature is a production boundary only when it selects dependencies or",
+        "gates `src/`. A feature that gates only test, bench, or example source is a test",
+        "profile, and a feature that gates nothing is taxonomy. Neither may be presented as",
+        "an architectural boundary.", "",
+        f"Production boundaries ({len(summary['production_boundary_features'])}): "
+        + ", ".join(f"`{name}`" for name in summary["production_boundary_features"]) + ".", "",
+        f"Test profiles ({len(summary['test_profile_features'])}): "
+        + ", ".join(f"`{name}`" for name in summary["test_profile_features"]) + ".", "",
+        f"Taxonomy only, isolating nothing ({len(summary['taxonomy_only_features'])}): "
+        + ", ".join(f"`{name}`" for name in summary["taxonomy_only_features"]) + ".", "",
         "## Dependency direction", "", "```text", "perl-lexer", "    ↓",
         "perl-parser-core          canonical parser kernel", "    ↓",
         "perl-parser               parser facade + bounded compatibility", "    ↓",
@@ -269,10 +438,11 @@ def render_markdown(ledger: dict[str, Any], summary: dict[str, Any]) -> str:
         lines.append(f"- `{feature}` — {row['classification']}; {row['exit_condition']}")
     lines += [
         "", "## Incremental authority", "",
-        "The only production API marker is `Edit` + `IncrementalState` + `apply_edits`, with `ReparseResult` as its result contract.",
-        "Historical named generations remain non-production until #6701/#6971/#6975 implement their disposition.", "",
+        "The production incremental surface is the reviewed export set below; `apply_edits` is its sole public function.",
+        "Production exports: " + ", ".join(f"`{name}`" for name in summary["production_incremental_exports"]) + ".",
+        "Historical named generations remain non-production until their executable migration leaves implement their disposition.", "",
         "## Next implementation PRs", "",
-        "1. #7063 implements the staged boundary and compatibility gates.",
+        "1. #7063 is the convergence controller; implementation proceeds through its executable leaves (including #6975), not through #7063 itself.",
         "2. #7065 makes supported feature/API/dependency/downstream matrices load-bearing.",
         "3. #6701/#6971/#6975 converge the incremental implementation and public surface.", "",
     ]

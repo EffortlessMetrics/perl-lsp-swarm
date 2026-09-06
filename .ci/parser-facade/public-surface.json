@@ -23,7 +23,11 @@
       "disposition": "review",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Retain only parser-owned builtin syntax data; move semantic/provider metadata above the parser."
+      "exit_condition": "Retain only parser-owned builtin syntax data; move semantic/provider metadata above the parser.",
+      "pending": {
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      }
     },
     {
       "name": "core",
@@ -47,7 +51,11 @@
       "disposition": "review",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Restrict to canonical parser contracts and remove product composition."
+      "exit_condition": "Restrict to canonical parser contracts and remove product composition.",
+      "pending": {
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      }
     },
     {
       "name": "refactor",
@@ -71,7 +79,11 @@
       "disposition": "review",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Retain only parser-owned token/trivia compatibility and canonical ownership."
+      "exit_condition": "Retain only parser-owned token/trivia compatibility and canonical ownership.",
+      "pending": {
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      }
     },
     {
       "name": "workspace",
@@ -134,6 +146,10 @@
       "owner": "#2477",
       "target_owner": "#7063",
       "exit_condition": "Retain only types/functions that belong to the minimal parser contract; move product helpers to their owners.",
+      "pending": {
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      },
       "members": [
         "perl_parser_core::line_index",
         "perl_parser_core::path_normalize",
@@ -152,6 +168,10 @@
       "owner": "#2477",
       "target_owner": "#7063",
       "exit_condition": "Converge on canonical parser-core token/trivia ownership and exact compatibility paths.",
+      "pending": {
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      },
       "members": [
         "pragma_tracker::PragmaState",
         "pragma_tracker::PragmaTracker",
@@ -327,90 +347,2464 @@
   ],
   "targets": [
     {
-      "kind": "bin",
-      "required_features": [
-        "cli"
-      ],
       "name": "perl-parse",
+      "kind": "bin",
       "classification": "product_composition",
       "disposition": "review",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Keep only if parser CLI ownership remains an intentional facade responsibility."
+      "exit_condition": "Keep only if parser CLI ownership remains an intentional facade responsibility.",
+      "pending": {
+        "reason": "PF01 is inventory-only and cannot change the facade boundary; the staged compatibility decision belongs to the #7063 migration leaves.",
+        "resolves_when": "A #7063 migration leaf lands the recorded exit condition for this row."
+      },
+      "required_features": [
+        "cli"
+      ]
     },
     {
-      "kind": "bench",
-      "required_features": [],
       "name": "parser_benchmark",
+      "kind": "bench",
       "classification": "parser_kernel",
       "disposition": "retain",
       "owner": "#6698",
       "target_owner": "perl-parser",
-      "exit_condition": "Name the exact fresh parser regime and evidence subject."
+      "exit_condition": "Name the exact fresh parser regime and evidence subject.",
+      "required_features": []
     },
     {
-      "kind": "bench",
-      "required_features": [
-        "incremental"
-      ],
       "name": "incremental_benchmark",
+      "kind": "bench",
       "classification": "incremental_parser",
       "disposition": "review",
       "owner": "#6707",
       "target_owner": "#7099",
-      "exit_condition": "Retain only with truthful strategy/work receipt taxonomy."
+      "exit_condition": "Retain only with truthful strategy/work receipt taxonomy.",
+      "pending": {
+        "reason": "Benchmark ownership depends on the reviewed parser validation surface rather than the facade inventory.",
+        "resolves_when": "#7099 settles benchmark target ownership."
+      },
+      "required_features": [
+        "incremental"
+      ]
     },
     {
-      "kind": "bench",
-      "required_features": [],
       "name": "scope_benchmark",
+      "kind": "bench",
       "classification": "product_composition",
       "disposition": "move",
       "owner": "#2477",
       "target_owner": "#7063",
-      "exit_condition": "Move semantic/scope performance ownership above the parser facade."
+      "exit_condition": "Move semantic/scope performance ownership above the parser facade.",
+      "required_features": []
     },
     {
-      "kind": "bench",
-      "required_features": [],
       "name": "cpan_patterns_benchmark",
+      "kind": "bench",
       "classification": "experimental",
       "disposition": "review",
       "owner": "#6696",
       "target_owner": "#7099",
-      "exit_condition": "Bind to governed corpus identities and an exact parser regime or retire."
+      "exit_condition": "Bind to governed corpus identities and an exact parser regime or retire.",
+      "pending": {
+        "reason": "Benchmark ownership depends on the reviewed parser validation surface rather than the facade inventory.",
+        "resolves_when": "#7099 settles benchmark target ownership."
+      },
+      "required_features": []
     },
     {
-      "kind": "example",
-      "required_features": [
-        "incremental"
-      ],
       "name": "test_incremental_v2",
+      "kind": "example",
       "classification": "experimental",
       "disposition": "deprecate",
       "owner": "#6701",
       "target_owner": "#6975",
-      "exit_condition": "Replace with the canonical incremental API example or remove."
+      "exit_condition": "Replace with the canonical incremental API example or remove.",
+      "required_features": [
+        "incremental"
+      ]
     },
     {
-      "kind": "bench",
-      "required_features": [],
       "name": "positions_bench",
+      "kind": "bench",
       "classification": "parser_kernel",
       "disposition": "retain",
       "owner": "#6698",
       "target_owner": "perl-parser",
-      "exit_condition": "Declare harness mode so nightly --noplot invocation stays valid; bind to an exact parser regime evidence subject."
+      "exit_condition": "Declare harness mode so nightly --noplot invocation stays valid; bind to an exact parser regime evidence subject.",
+      "required_features": []
     },
     {
-      "kind": "bench",
-      "required_features": [],
       "name": "substitution_performance",
+      "kind": "bench",
       "classification": "parser_kernel",
       "disposition": "retain",
       "owner": "#6698",
       "target_owner": "perl-parser",
-      "exit_condition": "Declare harness mode so nightly --noplot invocation stays valid; bind to an exact parser regime evidence subject."
+      "exit_condition": "Declare harness mode so nightly --noplot invocation stays valid; bind to an exact parser regime evidence subject.",
+      "required_features": []
+    },
+    {
+      "name": "incremental_parse_snapshot",
+      "kind": "test",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [
+        "incremental"
+      ],
+      "exit_condition": "Remain a feature-gated snapshot test target that does not widen the production surface."
+    },
+    {
+      "name": "analyze_test_failures",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "ast_visitor",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "basic_usage",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_ast_structure",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_bracket",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_caret",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_colon",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_compound",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_deref",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_division",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_double_diamond",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_double_diamond2",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_exit",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_hash",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_hash2",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_hash_context",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_heredoc_tokens",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_lexer_division",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_mult",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_no",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_package",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_power",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_pragma",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_prototype",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_qw",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_scope",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_special",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_sub_tokens",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_substitution",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_substitution_tokens",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_ternary",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_tokens",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_v_token",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "debug_vstring",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "demo",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "edge_cases",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "error_handling",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "error_recovery_demo",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "error_recovery_poc",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "failure_summary_table",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "file_parser",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "final_showcase",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "import_optimizer_demo",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "incremental_parsing_demo",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "incremental_simple_demo",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "list_declarations_demo",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "lsp_capabilities",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "perf_test_substitution",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "postfix_deref",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "quick_failure_test",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "showcase",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "simple_benchmark",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "trace_hash",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "transform_to_standard",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "trivia_demo",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "verify_sexp_fixes",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "workspace_refactor_demo",
+      "kind": "example",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a development example target."
+    },
+    {
+      "name": "advanced_reuse_analyzer_heuristics_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "ast_invariant_contract",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "ast_invariant_property_mutation_hardening",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "ast_snap",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "bless_parsing_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "block_list_interpolation_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "builtin_empty_blocks_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "collapsible_if_occupancy",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "complex_ternary_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "comprehensive_operator_precedence_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "comprehensive_unicode_edge_cases",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "corpus_gap_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "corpus_nodekind_coverage_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "crash_reproducer_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "dead_code_detector",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "declaration_edge_cases_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "declaration_micro_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "declaration_unit_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "documentation_validation_mutation_hardening",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "enhanced_edge_case_parsing_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "error_category_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "error_classifier_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "extreme_input_edge_cases",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "facade_pattern_edge_cases",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "fuzz_corpus_regression",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "fuzz_documentation_infrastructure_pr159",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "fuzz_incremental_parsing",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "fuzz_quote_parser_comprehensive",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "fuzz_quote_parser_regressions",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "fuzz_quote_parser_simplified",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "fuzz_regression_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "fuzz_transliteration_crash_repro",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "fuzz_utf16_debug",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "g2_api_regression_guards",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "hang_risk_deep_nesting_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "hash_vs_array_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "heredoc_antip_redos_guardrail",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "heredoc_boundary_validation",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "heredoc_regression_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "import_optimizer_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "increment_decrement_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_authority_contract",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_comprehensive_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_edge_cases_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_edit_set_normalization",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_integration_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_lexer_restart",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_node_position_index",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_parse_output",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_parser_accuracy",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_parsing_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_perf_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_performance_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_regression_slices",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_statistical_validation_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "incremental_whitespace_geometry_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "index_lifecycle_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "integration",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "integration_new_features",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "issue_146_architectural_integrity_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "issue_146_unit_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "label_uppercase_regression_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "layering_invariant_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "line_cache_fuzz",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "line_cache_property_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "lsp_cancellation_mutation_hardening",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "lsp_protocol_robustness_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "missing_docs_ac_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "modernize_perl_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "moniker_export_import_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "multibyte_edit_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "mutation_hardening_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "name_spans_special_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "nodekind_combination_control_flow",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "nodekind_combination_data_structures",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "nodekind_combination_edge_cases",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "nodekind_combination_error_handling_edge_cases",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "nodekind_combination_io_operations",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "nodekind_combination_modern_perl_features",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "nodekind_combination_regex_pattern_matching",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "nodekind_field_shape_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "nodekind_helpers_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "nodekind_long_tail_corpus",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_accuracy_e2e",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_accuracy_nodekind_vocabulary",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_additional_constructs_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_ast_shape_expansion_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_bdd_scenarios",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_boolean_logic_mutation_hardening",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_boundary_validation_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_concurrent_access_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_continue_redo_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_depth_limit_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_e2e_conformance",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_e2e_gold_fixtures",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_e2e_workflows",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_error_node_infrastructure_430",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_format_comprehensive_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_format_corpus_coverage_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_glob_assignment_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_hardening_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_memory_pressure_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_panic_free_invariant",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_performance_boundary_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_regressions",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_resource_exhaustion_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_tie_interface_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "parser_token_integration_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "performance_stress_edge_cases",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "perl_parse_cli",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "perl_parse_output_consumers",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "platform_specific_edge_cases",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "pod_inline_parsing_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "position_mutation_hardening",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "position_tracking_mutation_hardening",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "postfix_deref_complex_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "postfix_deref_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "postfix_dereference_corpus",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "prop_complete_programs",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "prop_corpus_invariants",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "prop_deletion",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "prop_invariants",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "prop_position_utf16",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "prop_quote_like",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "prop_qw",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "prop_round_trip",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "prop_test_utils",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "prop_whitespace",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "prop_whitespace_idempotence",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "provider_version_guard",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "provider_version_guard_init",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "public_documentation_examples",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "quote_disambiguation_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "quote_operator_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "quote_parser_advanced_hardening",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "quote_parser_critical_mutation_elimination",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "quote_parser_final_hardening",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "quote_parser_mutation_hardening",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "quote_parser_mutation_survivors_elimination",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "quote_parser_pr173_enhanced_mutation_killers",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "quote_parser_pr173_mutation_elimination",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "quote_parser_realistic_hardening",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "quote_substitution_strict_regression_bank",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "quote_transliteration_regression_bank",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "red_tdd_panic_on_user_input",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "regex_arbitrary_delimiters_comprehensive",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "regex_delimiters_issue_444",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "ripr_seam_proof_concept_ast_invariant_contract",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "scope_analysis_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "scope_analyzer_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "scope_analyzer_tie_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "semantic_nodekind_coverage_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "semantic_smoke_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "sprint_a_heredoc_ast_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "sprint_a_heredoc_body_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "sprint_a_heredoc_collection_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "sprint_a_heredoc_declaration_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "statement_termination_edge_cases_mutation_hardening",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "substitution_ac_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "substitution_debug_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "substitution_fixed_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "substitution_fuzz_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "substitution_operator_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "symbol_documentation_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "test_new_features",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "test_print_hash_subscript",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "test_runner",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "test_utils",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "truncated_input_termination_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "type_inference_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "utf16_boundary_bug_repro",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "utf16_code_lens_workspace_symbols_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "utf16_security_boundary_enhanced_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "vstring_incremental_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "wave4_completion_absorption_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "word_operator_precedence_test",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "workspace_index_tests",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
     }
   ]
 }
