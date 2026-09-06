@@ -252,3 +252,17 @@ fn flush_operators_offer_expression_ok_not_statement_only() {
         );
     }
 }
+
+/// After `;` the next construct is a statement: named `sub`, not anonymous.
+#[test]
+fn after_semicolon_sub_inserts_named_snippet() {
+    let completions = completions_at("my $x = 1;\n");
+    assert_eq!(
+        keyword_item(&completions, "sub").insert_text.as_deref(),
+        Some("sub ${1:name} {\n    $0\n}")
+    );
+    assert!(
+        has_keyword(&completions, "package"),
+        "after `;` must still offer statement-only `package`"
+    );
+}

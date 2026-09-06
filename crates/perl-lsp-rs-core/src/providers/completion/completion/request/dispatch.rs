@@ -728,6 +728,13 @@ mod indirect_helper_tests {
         assert!(is_in_expression_position("x =~", 4));
         assert!(is_in_expression_position("x //", 4));
     }
+
+    #[test]
+    fn semicolon_is_a_statement_position() {
+        assert!(!is_in_expression_position("foo;", 4));
+        assert!(!is_in_expression_position("foo; ", 5));
+        assert!(!is_in_expression_position("foo();\n", 7));
+    }
 }
 
 /// Heuristic: detect if the cursor is in a value/expression position.
@@ -749,10 +756,11 @@ fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
     // Multi-character value operators (`=>`, `==`, `=~`, `//`, …) already end
     // in one of these characters; they must stay expression positions even
     // when the prefix is flush against the operator (#14844).
+    // `;` ends a statement, so the next completion is a statement position
+    // (named `sub`, `package`, `if`) rather than an anonymous term.
     matches!(
         last_char,
         '=' | ','
-            | ';'
             | '('
             | '['
             | '{'
