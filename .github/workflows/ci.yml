@@ -1646,6 +1646,15 @@ jobs:
       - name: Dependabot dependency-name contract (required merge surface)
         run: cargo test -p xtask --test dependabot_cargo_dependency_names --locked -- --nocapture
 
+      # #13477: same required-surface reasoning as the dependency-name
+      # contract above. This suite asserts that the Cargo row keeps
+      # `prefix: "chore"` plus `include: "scope"` and rejects
+      # `prefix: "chore(deps)"` plus that include. `.github/dependabot.yml`
+      # is not in ci-scope's CI_CONFIG_PATHS, so a config-only revert of
+      # #13482 would never reach the advisory routed lane.
+      - name: Dependabot Cargo commit-message contract (required merge surface)
+        run: cargo test -p xtask --test dependabot_cargo_commit_message --locked -- --nocapture
+
       # #13484: nothing executed the `xtask` *bin* unit tests. The merge gate
       # runs `cargo test --workspace --lib` (a bin is not a lib target) and no
       # workflow names `--bin xtask`, so `tasks::changelog::tests` — the proof
