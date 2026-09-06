@@ -322,90 +322,10 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
         .get("allow")
         .and_then(toml::Value::as_array)
         .ok_or_else(|| eyre!("allowlist must define an allow array"))?;
-    let tables: Vec<&toml::map::Map<String, toml::Value>> =
-        entries.iter().filter_map(toml::Value::as_table).collect();
-    if let Some(conflict) = mispaired_provenance_conflicts(&tables).first() {
-        bail!("mispaired provenance: {conflict}");
-    }
-    let mut matchers = std::collections::BTreeSet::new();
-    for (index, raw) in entries.iter().enumerate() {
-        let table = raw.as_table().ok_or_else(|| eyre!("allow entry {index} is not a table"))?;
-        for key in table.keys() {
-            if !ALLOWED_ALLOW_FIELDS.contains(&key.as_str()) {
-                bail!("allow entry {index} has unknown field {key}");
-            }
-        }
-        let retired = table.get("retired").and_then(toml::Value::as_bool).unwrap_or(false);
-        if retired {
-            continue;
-        }
-        let id = table
-            .get("id")
-            .and_then(toml::Value::as_str)
-            .ok_or_else(|| eyre!("allow entry {index} missing id"))?;
-        let glob = table.get("glob").and_then(toml::Value::as_str);
-        let path = table.get("path").and_then(toml::Value::as_str);
-        if glob.is_some() == path.is_some() {
-            bail!("allow entry {id} must set exactly one matcher");
-        }
-        let matcher = glob.or(path).ok_or_else(|| eyre!("allow entry {id} has no matcher"))?;
-        if matcher.starts_with("./")
-            || matcher.starts_with('/')
-            || matcher.contains('\\')
-            || matcher.trim() != matcher
-        {
-            bail!("invalid repository-relative matcher in allow entry {id}");
-        }
-        if !matchers.insert(matcher.to_string()) {
-            bail!("duplicate matcher {matcher}");
-        }
-        if let Some(glob) = glob {
-            Pattern::new(glob).with_context(|| format!("invalid glob in allow entry {id}"))?;
-            if is_policy_broad_glob(glob)
-                && table
-                    .get("broad_glob_reason")
-                    .and_then(toml::Value::as_str)
-                    .is_none_or(|reason| reason.trim().is_empty())
-            {
-                bail!("broad glob in allow entry {id} lacks broad_glob_reason");
-            }
-        }
-        let classification =
-            table.get("classification").and_then(toml::Value::as_str).unwrap_or("");
-        if !KNOWN_CLASSIFICATIONS.contains(&classification) {
-            bail!("unknown classification {classification} in allow entry {id}");
-        }
-        let covered_by = table
-            .get("covered_by")
-            .ok_or_else(|| eyre!("allow entry {id} is missing covered_by"))?;
-        let coverage = covered_by.as_array();
-        if coverage.is_none_or(|items| !items.iter().all(|item| item.as_str().is_some())) {
-            bail!("allow entry {id} covered_by must be a list of strings");
-        }
-        if COVERAGE_REQUIRING_CLASSIFICATIONS.contains(&classification)
-            && coverage.is_none_or(Vec::is_empty)
-        {
-            bail!("allow entry {id} requires at least one covered_by entry");
-        }
-        let mut dates = BTreeMap::new();
-        for field in ["created", "review_after", "expires"] {
-            if let Some(date) = table.get(field).and_then(toml::Value::as_str) {
-                let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                    .with_context(|| format!("invalid {field} date in allow entry {id}"))?;
-                dates.insert(field, parsed);
-            }
-        }
-        if let (Some(created), Some(review_after)) =
-            (dates.get("created"), dates.get("review_after"))
-            && created >= review_after
-        {
-            bail!("created date is after review_after in allow entry {id}");
-        }
-        if let (Some(created), Some(expires)) = (dates.get("created"), dates.get("expires"))
-            && expires <= created
-        {
-            bail!("expires date is not after created in allow entry {id}");
-        }
+    let mut errors = Vec::new();
+    validate_allow_document_entries(entries, &mut errors);
+    if !errors.is_empty() {
+        bail!("{}", errors.join("; "));
     }
     Ok(())
 }
@@ -1726,17 +1646,33 @@ fn validate_policy_table(
         return 0;
     };
 
+    validate_policy_entries(entries, table_name, strict_allow_schema, errors);
+    entries.len()
+}
+
+/// Canonical allow-array schema, identity, matcher uniqueness, and provenance.
+///
+/// Exact-tree receipts and ordinary `validate-policy` both walk this path so a
+/// schema-field change cannot be applied to only one surface.
+fn validate_allow_document_entries(entries: &[toml::Value], errors: &mut Vec<String>) {
+    validate_policy_entries(entries, "allow", true, errors);
+}
+
+fn validate_policy_entries(
+    entries: &[toml::Value],
+    table_name: &str,
+    strict_allow_schema: bool,
+    errors: &mut Vec<String>,
+) {
     let mut seen_ids: BTreeMap<String, usize> = BTreeMap::new();
     let mut seen_matchers: BTreeMap<String, String> = BTreeMap::new();
     let mut coherence_tables: Vec<&toml::map::Map<String, toml::Value>> = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         let Some(table) = entry.as_table() else {
-            errors
-                .push(format!("{}: `{table_name}` entry #{index} must be a table", path.display()));
+            errors.push(format!("`{table_name}` entry #{index} must be a table"));
             continue;
         };
         coherence_tables.push(table);
-
         if strict_allow_schema {
             validate_allow_schema_entry(table, index, errors);
         }
@@ -1765,11 +1701,9 @@ fn validate_policy_table(
 
     if table_name == "allow" {
         for conflict in mispaired_provenance_conflicts(&coherence_tables) {
-            errors.push(format!("{}: mispaired provenance: {conflict}", path.display()));
+            errors.push(format!("mispaired provenance: {conflict}"));
         }
     }
-
-    entries.len()
 }
 
 fn validate_allow_schema_entry(
@@ -1804,6 +1738,9 @@ fn validate_allow_schema_entry(
                     "{entry_id}: glob `{matcher}` is broad; declare `broad_glob_reason`"
                 ));
             }
+        }
+        if has_glob && Pattern::new(matcher).is_err() {
+            errors.push(format!("{entry_id}: invalid glob `{matcher}`"));
         }
     }
 
@@ -4775,10 +4712,7 @@ review_after = "2026-06-01"
         ensure!(!exact.is_empty(), "exact-tree accepted malformed allowlist: {document}");
         ensure!(!ordinary.is_empty(), "ordinary policy accepted malformed allowlist: {document}");
         for needle in needles {
-            ensure!(
-                exact.contains(needle),
-                "exact-tree missed {needle:?} in {exact:?}"
-            );
+            ensure!(exact.contains(needle), "exact-tree missed {needle:?} in {exact:?}");
             ensure!(
                 ordinary.iter().any(|error| error.contains(*needle)),
                 "ordinary policy missed {needle:?} in {ordinary:?}"
@@ -4806,14 +4740,14 @@ review_after = "2026-06-01"
 
     #[test]
     fn malformed_allow_fields_fail_exact_tree_and_ordinary_schema_surfaces() -> Result<()> {
-        let valid = canonical_allow_document(&valid_allow_entry(
-            "ok",
-            "docs/ok.md",
-            "Valid control row.",
-        ));
+        let valid =
+            canonical_allow_document(&valid_allow_entry("ok", "docs/ok.md", "Valid control row."));
 
         assert_shared_allow_schema_rejects(
-            &valid.replace("review_after = \"2026-06-01\"\n", "review_after = \"2026-06-01\"\nunknown = \"field\"\n"),
+            &valid.replace(
+                "review_after = \"2026-06-01\"\n",
+                "review_after = \"2026-06-01\"\nunknown = \"field\"\n",
+            ),
             &["unknown field"],
         )?;
         assert_shared_allow_schema_rejects(
