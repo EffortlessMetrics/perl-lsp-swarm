@@ -4,7 +4,7 @@
 mod support;
 
 use std::fs;
-use support::{active_panic_registry, fixture_root, write_package, write_policy, write_registry};
+use support::{fixture_root, write_package, write_policy, write_registry};
 use xtask::no_panic_debt::{
     ClippyObservation, ClippyTargetObservation, DebtStatus, InstrumentStatus, InventoryRequest,
     OwnerState, build_inventory, canonical_json, check_inventory, semantic_delta,
