@@ -182,7 +182,11 @@ fn inner_capturing_alternation_does_not_count_toward_outer_branch_reset() {
 
 #[test]
 fn inner_branch_reset_branches_do_not_inflate_the_outer_count() {
-    let stream = parse("(?|a|(?|b|c|d))");
+    // Outer has two branches (`a` and the inner group); inner has two (`b` and `c`).
+    // If inner `|` events also incremented every open branch-reset frame, the outer
+    // count would become 3 and emit. Both groups are at the limit, so silence is
+    // the discriminating outcome.
+    let stream = parse("(?|a|(?|b|c))");
     let scan = scan_complexity(&stream, &config(10, 2));
     assert!(of_code(&scan.diagnostics, RegexDiagnosticCode::BranchResetBranchLimit).is_empty());
 }
@@ -296,6 +300,10 @@ fn complexity_source_does_not_rescan_the_open_group_stack() {
     assert!(
         !source.contains("&self.frames"),
         "complexity walk must not borrow the frame stack for a scan"
+    );
+    assert!(
+        !source.contains("self.frames[") && !source.contains("self.frames.get("),
+        "complexity walk must not index the frame stack to recover depth"
     );
 }
 
