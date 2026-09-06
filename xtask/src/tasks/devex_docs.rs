@@ -365,7 +365,7 @@ fn is_shell_flag_token(trimmed: &str) -> bool {
 
 fn normalize_extracted_command(raw: &str) -> Option<String> {
     let line = raw.trim();
-    if line.is_empty() || line.starts_with('#') {
+    if line.is_empty() || line.starts_with('#') || line.contains('\n') {
         return None;
     }
     let without_list = strip_markdown_list_marker(line);
@@ -765,6 +765,16 @@ mod tests {
         let xtask_subcommands = BTreeSet::from(["fmt".to_string()]);
         assert!(command_exists("just pr-fast", &just_recipes, &xtask_subcommands).is_ok());
         assert!(command_exists("cargo xtask fmt", &just_recipes, &xtask_subcommands).is_ok());
+    }
+
+    #[test]
+    fn untagged_fence_does_not_store_a_multiline_command() {
+        let commands = inline_devex_commands("```\njust pr-fast\ncargo xtask fmt\n```\n");
+        assert_eq!(commands, vec!["just pr-fast", "cargo xtask fmt"]);
+        assert!(
+            commands.iter().all(|command| !command.contains('\n')),
+            "a fence-body backtick split must not store a newline-joined command: {commands:?}"
+        );
     }
 
     #[test]
