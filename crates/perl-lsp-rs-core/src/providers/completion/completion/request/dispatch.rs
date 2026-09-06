@@ -735,6 +735,19 @@ mod indirect_helper_tests {
         assert!(!is_in_expression_position("foo; ", 5));
         assert!(!is_in_expression_position("foo();\n", 7));
     }
+
+    #[test]
+    fn c_style_for_semicolons_are_expression_positions() {
+        let cond = "for (my $i = 0; ";
+        let incr = "for (my $i = 0; $i < 10; ";
+        let flush = "for (my $i = 0;";
+        assert!(is_in_expression_position(cond, cond.len()));
+        assert!(is_in_expression_position(incr, incr.len()));
+        assert!(is_in_expression_position(flush, flush.len()));
+        assert!(is_in_expression_position("foreach (my $i = 0; ", 20));
+        let after_body_stmt = "for (my $i = 0; $i < 10; $i++) { foo;";
+        assert!(!is_in_expression_position(after_body_stmt, after_body_stmt.len()));
+    }
 }
 
 /// Heuristic: detect if the cursor is in a value/expression position.
@@ -756,8 +769,11 @@ fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
     // Multi-character value operators (`=>`, `==`, `=~`, `//`, …) already end
     // in one of these characters; they must stay expression positions even
     // when the prefix is flush against the operator (#14844).
-    // `;` ends a statement, so the next completion is a statement position
-    // (named `sub`, `package`, `if`) rather than an anonymous term.
+    // `;` ends a statement unless it separates C-style `for (;;)` clauses,
+    // which are still term positions.
+    if last_char == ';' {
+        return c_style_for_header_owns_semicolon(trimmed);
+    }
     matches!(
         last_char,
         '=' | ','
@@ -780,4 +796,47 @@ fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
             | '~'
             | '\\'
     )
+}
+
+/// True when `trimmed` ends at a `;` that separates C-style `for`/`foreach`
+/// header clauses rather than a completed statement.
+fn c_style_for_header_owns_semicolon(trimmed: &str) -> bool {
+    let Some(before_semi) = trimmed.strip_suffix(';') else {
+        return false;
+    };
+    let mut rest = before_semi;
+    let mut closer_depth: u32 = 0;
+    while let Some(idx) =
+        rest.char_indices().rev().find_map(|(i, ch)| matches!(ch, '(' | ')').then_some(i))
+    {
+        let Some(ch) = rest.get(idx..).and_then(|suffix| suffix.chars().next()) else {
+            return false;
+        };
+        match ch {
+            ')' => closer_depth = closer_depth.saturating_add(1),
+            '(' if closer_depth == 0 => {
+                return preceding_token_is_for(rest.get(..idx).unwrap_or(""));
+            }
+            '(' => closer_depth = closer_depth.saturating_sub(1),
+            _ => {}
+        }
+        rest = match rest.get(..idx) {
+            Some(next) => next,
+            None => return false,
+        };
+    }
+    false
+}
+
+fn preceding_token_is_for(prefix: &str) -> bool {
+    let trimmed = prefix.trim_end();
+    for keyword in ["foreach", "for"] {
+        let Some(rest) = trimmed.strip_suffix(keyword) else {
+            continue;
+        };
+        if rest.chars().next_back().is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_') {
+            return true;
+        }
+    }
+    false
 }

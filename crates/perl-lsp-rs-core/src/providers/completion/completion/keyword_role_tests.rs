@@ -266,3 +266,18 @@ fn after_semicolon_sub_inserts_named_snippet() {
         "after `;` must still offer statement-only `package`"
     );
 }
+
+/// C-style `for (;;)` clauses are term positions: anonymous `sub`, no `package`.
+#[test]
+fn c_style_for_clauses_offer_anonymous_sub_not_package() {
+    let sources = ["for (my $i = 0; ", "for (my $i = 0; $i < 10; "];
+    for source in sources {
+        let completions = completions_at(source);
+        assert_eq!(
+            keyword_item(&completions, "sub").insert_text.as_deref(),
+            Some("sub {\n    $0\n}"),
+            "{source:?} must insert anonymous `sub`"
+        );
+        assert!(!has_label(&completions, "package"), "{source:?} must not offer `package`");
+    }
+}
