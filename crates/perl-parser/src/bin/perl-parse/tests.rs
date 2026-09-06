@@ -1,6 +1,7 @@
 use super::{
     ByteRange, LEGACY_SUMMARY_LIMITATIONS, LEGACY_SUMMARY_SCHEMA, LEGACY_SUMMARY_SUBJECT,
-    OutputFormat, help_text, legacy_parse_summary, read_source_bytes, render_output,
+    OutputFormat, help_text, legacy_parse_summary, position_to_line_col, read_source_bytes,
+    render_output,
 };
 use perl_parser::{Node, NodeKind, SourceLocation};
 
@@ -78,6 +79,40 @@ fn help_identifies_legacy_and_unstable_surfaces() {
     assert!(help.contains("not canonical Tree-sitter output"));
     assert!(help.contains("not NativeParseArtifact"));
     assert!(help.contains("Unstable human-only Rust Debug output"));
+}
+
+#[test]
+fn position_to_line_col_preserves_ascii_boundaries() {
+    let source = "ab\ncd";
+
+    assert_eq!(position_to_line_col(source, 0), (1, 1));
+    assert_eq!(position_to_line_col(source, 2), (1, 3));
+    assert_eq!(position_to_line_col(source, 3), (2, 1));
+    assert_eq!(position_to_line_col(source, source.len()), (2, 3));
+}
+
+#[test]
+fn position_to_line_col_uses_utf8_byte_offsets() {
+    let source = "é\n🙂x";
+
+    assert_eq!(position_to_line_col(source, 0), (1, 1));
+    assert_eq!(position_to_line_col(source, "é".len()), (1, 2));
+    assert_eq!(position_to_line_col(source, "é\n".len()), (2, 1));
+    assert_eq!(position_to_line_col(source, "é\n🙂".len()), (2, 2));
+    assert_eq!(position_to_line_col(source, source.len()), (2, 3));
+}
+
+#[test]
+fn position_to_line_col_handles_empty_source() {
+    assert_eq!(position_to_line_col("", 0), (1, 1));
+}
+
+#[test]
+fn position_to_line_col_floors_offsets_inside_utf8_scalars() {
+    assert_eq!(position_to_line_col("é", 1), (1, 1));
+    assert_eq!(position_to_line_col("🙂", 1), (1, 1));
+    assert_eq!(position_to_line_col("🙂", 3), (1, 1));
+    assert_eq!(position_to_line_col("🙂", "🙂".len()), (1, 2));
 }
 
 #[test]
