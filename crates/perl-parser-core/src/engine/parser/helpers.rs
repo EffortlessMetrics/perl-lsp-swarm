@@ -128,6 +128,27 @@ impl<'a> Parser<'a> {
         self.block_depth = self.block_depth.saturating_sub(1);
     }
 
+    /// Run `f` inside a class grammar frame of `form`.
+    ///
+    /// Closure-based for the same reason as [`Self::with_depth`]: the context
+    /// can be restored without a `Drop` guard that aliases `&mut Parser`. The
+    /// context is restored to the depth observed on entry on success, parse
+    /// error, recovery, truncated input, cancellation, and early return, so no
+    /// caller has to remember a paired reset and no frame can leak into the
+    /// statements that follow the class body.
+    #[inline]
+    fn within_class_grammar<T>(
+        &mut self,
+        form: ClassGrammarForm,
+        f: impl FnOnce(&mut Self) -> ParseResult<T>,
+    ) -> ParseResult<T> {
+        let restore = self.class_grammar.mark();
+        self.class_grammar.enter(form);
+        let result = f(self);
+        self.class_grammar.restore(restore);
+        result
+    }
+
     /// Run `f` under the live production recursion-depth context.
     ///
     /// Closure-based so the tracker can be borrowed without a `Drop` guard
