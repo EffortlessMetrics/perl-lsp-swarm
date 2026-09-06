@@ -71,7 +71,7 @@ fn status_render_is_byte_deterministic() -> TestResult {
     assert!(rendered.contains("MISSING"));
     assert!(rendered.contains("n/a"));
     let catalog = NativeCriticRegistry::for_profile(NativeCriticProfile::Strict).len();
-    let remainder = catalog.saturating_sub(first.rules.len());
+    let remainder = catalog.saturating_sub(PILOT_RULES.len());
     assert!(
         rendered.contains(&format!("{remainder} catalog native rules")),
         "status remainder must follow the live strict catalog, not a hardcoded 4-rule total:\n{rendered}"
@@ -399,6 +399,14 @@ fn automatic_success_without_target_removal_fails_check() -> TestResult {
 }
 
 #[test]
+fn automatic_success_without_no_new_governed_fails_check() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["fix_round_trip"]["expect_no_new_governed"] =
+        json!(false);
+    expect_violation(&manifest, "no new governed diagnostic")
+}
+
+#[test]
 fn unknown_alias_shape_fails_schema() -> TestResult {
     let mut manifest = canonical_manifest()?;
     rule_mut(&mut manifest, "native.testing.require_use_strict").expect("strict")["identity_aliases"]
@@ -486,7 +494,19 @@ fn extra_catalog_rule_outside_pilot_fails_check() -> TestResult {
     extra["rule_id"] = json!("native.testing.require_use_warnings");
     extra["canonical_id"] = json!("critic.testing.require_use_warnings");
     manifest["rules"].as_array_mut().expect("rules").push(extra);
-    expect_violation(&manifest, "outside the closed PILOT_RULES set")
+    let error = match validate_manifest_value(&repo_root(), &manifest) {
+        Ok(_) => "manifest unexpectedly validated".to_string(),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        error.contains("outside the closed PILOT_RULES set"),
+        "expected closed-set rejection in:\n{error}"
+    );
+    assert!(
+        !error.contains("missing required evidence class"),
+        "extra catalog rows must fail the closed set only, not missing-class noise:\n{error}"
+    );
+    Ok(())
 }
 
 #[test]
