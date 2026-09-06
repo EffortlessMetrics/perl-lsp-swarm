@@ -62,8 +62,9 @@ use tasks::{
     shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
     swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
     unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
-    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
-    workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
+    validate_workspace_exclusions, workflow_authority_inventory, workflow_policy_lint,
+    workflow_trigger_lint, workspace_symbol_classes, worktree_allocator, worktrees,
+    writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
 use tasks::{bindings, compare_parsers, highlight};
@@ -1108,6 +1109,16 @@ enum Commands {
 
     /// Audit CI workflows for PR-safety and spend-risk controls.
     CiAuditWorkflows,
+
+    /// Classify credential derivation kinds in `.github/workflows/*.yml` (#14867).
+    ///
+    /// Advisory inventory of the credential column. Does not change workflow
+    /// behavior and is not a merge gate.
+    WorkflowAuthorityInventory {
+        /// Write JSON to this path instead of stdout.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+    },
 
     /// Lint GitHub workflow security policy invariants.
     WorkflowPolicyLint {
@@ -2916,17 +2927,17 @@ enum NonRustCommand {
     /// and emit `target/policy/non-rust-inventory.{md,json}`.
     ///
     /// By default this is a read-only scan: no tracked file is modified.
-    /// Pass `--write` to also regenerate the committed snapshot at
-    /// `docs/policy/NON_RUST_INVENTORY.md`.
+    /// Pass `--write` only to publish the default-branch reader reference at
+    /// `docs/policy/NON_RUST_INVENTORY.md`; that publication is not gate input.
     Inventory {
-        /// Check classification and newly added files without rewriting outputs.
-        /// Require the generated Markdown snapshot to match the committed snapshot
-        /// after line-ending normalization.
+        /// Validate the current tracked tree against the allowlist, emit
+        /// Markdown/JSON evidence under `target/policy/`, and reject newly
+        /// added unclassified paths against merge-base.
         #[arg(long)]
         check: bool,
 
-        /// Also overwrite `docs/policy/NON_RUST_INVENTORY.md` with the
-        /// regenerated content.  Mutually exclusive with `--check`.
+        /// Publish the generated Markdown as the tracked default-branch reader
+        /// reference. Mutually exclusive with `--check`.
         #[arg(long, conflicts_with = "check")]
         write: bool,
     },
@@ -5538,6 +5549,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::TestEdgeCases { bench, coverage, test } => edge_cases::run(bench, coverage, test),
         Commands::CiAuditWorkflows => ci_audit_workflows::run(),
+        Commands::WorkflowAuthorityInventory { receipt } => {
+            workflow_authority_inventory::run(receipt)
+        }
         Commands::WorkflowPolicyLint { receipt, fixture, check_lane_whitelist } => {
             workflow_policy_lint::run(workflow_policy_lint::WorkflowPolicyLintConfig {
                 receipt,

@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12739 |
-| Rust-family files | 3985 |
-| Non-Rust files | 8754 |
-| Allowlisted | 6515 |
+| Total tracked files | 12764 |
+| Rust-family files | 4000 |
+| Non-Rust files | 8764 |
+| Allowlisted | 6525 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 502 |
-| documentation | 2856 |
+| config | 508 |
+| documentation | 2860 |
 | generated | 2 |
 | production | 357 |
 | test | 2111 |
@@ -2308,6 +2308,7 @@
 | `.cargo/config.toml` | config | `non-rust-cargo-config` | release/ci |
 | `.cargo/mutants.toml` | config | `non-rust-cargo-config` | release/ci |
 | `.changes/header.tpl.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.changes/unreleased/product-0000-Added-environment-snapshot-builder-s1.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-0000-Changed-module-facade-seal.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10004-Changed-201500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10100-Added-025500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2355,6 +2356,7 @@
 | `.changes/unreleased/product-13191-Fixed-062500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13237-Fixed-111500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13283-Fixed-122901.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13496-Fixed-042442.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13500-Fixed-043011.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13796-Fixed-174500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13890-Fixed-225841.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2369,6 +2371,8 @@
 | `.changes/unreleased/product-14389-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14566-Fixed-143000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14588-Changed-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14883-Fixed-235000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14890-Fixed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2812,6 +2816,9 @@
 | `.ci/security/may-2026-findings/medium-2.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/security/release-settings-closeout.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/invalid-controller-no-packet.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-escaped-backtick.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-named-closed-issue.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-tracked-by-neighbor.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/invalid-explicit-unproven.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/invalid-partial-slice-6239-5016.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/invalid-phase-terminal-5023-5001.json` | config | `non-rust-ci-config` | release/ci |
@@ -2822,7 +2829,10 @@
 | `.ci/semantic-close-containment/fixtures/no-terminal-relation.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/valid-atomic.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/valid-controller-packet.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/valid-neighbor-disclaimer-inline-code.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/valid-neighbor-disclaimer-unproven.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/semantic-close-containment/fixtures/valid-phase-leaf-2624.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/semantic-close-containment/fixtures/valid-representation-scope-substring.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/ux-flakes.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/workflow-security-baseline.json` | config | `non-rust-ci-config` | release/ci |
 | `.claude/README.md` | documentation | `non-rust-root-governance-docs` | docs |

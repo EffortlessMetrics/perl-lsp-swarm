@@ -20,6 +20,6 @@
 mod impl_inlay_hints;
 
 pub use impl_inlay_hints::{
-    InlayHint, InlayHintKind, InlayHintsProvider, extract_param_names, parameter_hints,
-    parameter_hints_with_resolver, trivial_type_hints,
+    InlayHint, InlayHintKind, InlayHintsProvider, extract_param_names, inlay_hint_label_str,
+    parameter_hints, parameter_hints_with_resolver, trivial_type_hints,
 };

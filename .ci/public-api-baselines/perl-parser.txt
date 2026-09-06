@@ -1724,7 +1724,10 @@ pub fn perl_parser::refactor::refactoring::RefactoringResult::fmt(&self, f: &mut
 pub fn perl_parser::refactor::refactoring::RefactoringResult::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_parser::refactor::refactoring::RefactoringResult::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub mod perl_parser::tdd
-pub use perl_parser::tdd::<<perl_tdd_support::tdd::*>>
+pub use perl_parser::tdd::tdd_basic
+pub use perl_parser::tdd::tdd_workflow
+pub use perl_parser::tdd::test_generator
+pub use perl_parser::tdd::test_runner
 pub mod perl_parser::tokens
 pub use perl_parser::tokens::<<perl_parser_core::tokens::*>>
 pub mod perl_parser::workspace
