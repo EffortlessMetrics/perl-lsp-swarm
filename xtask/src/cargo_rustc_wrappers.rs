@@ -35,7 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, ErrorKind};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use perl_lsp_rs_core::hashing::sha256_hex;
 
@@ -203,18 +203,24 @@ pub(crate) fn resolve_compiler_wrappers_in(
     search_ceiling: Option<&Path>,
     fs: &dyn ConfigFs,
 ) -> ResolvedCompilerWrappers {
+    let workspace_root = absolute_or_normalized(workspace_root);
+    let search_ceiling = search_ceiling.map(absolute_or_normalized);
     let mut layers = ConfigLayers::default();
+    if !workspace_root.is_absolute() {
+        // A relative root whose cwd cannot be established cannot walk parents.
+        layers.fail(CARGO_CONFIG_WRAPPER_NOT_RESOLVED);
+    }
     match cargo_home_dir(env) {
         CargoHome::Path(path) => {
-            if let Err(limitation) = load_home_config(&path, workspace_root, fs, &mut layers) {
+            if let Err(limitation) = load_home_config(&path, &workspace_root, fs, &mut layers) {
                 layers.fail(limitation);
             }
         }
         CargoHome::Unknown => layers.fail(CARGO_CONFIG_WRAPPER_NOT_RESOLVED),
     }
 
-    for dir in search_dirs(workspace_root, search_ceiling).into_iter().rev() {
-        if let Err(limitation) = load_directory_config(&dir, workspace_root, fs, &mut layers) {
+    for dir in search_dirs(&workspace_root, search_ceiling.as_deref()).into_iter().rev() {
+        if let Err(limitation) = load_directory_config(&dir, &workspace_root, fs, &mut layers) {
             layers.fail(limitation);
         }
     }
@@ -225,7 +231,7 @@ pub(crate) fn resolve_compiler_wrappers_in(
         WRAPPER_CARGO_ENV,
         layers.rustc_wrapper.as_ref(),
         layers.complete,
-        workspace_root,
+        &workspace_root,
     );
     let rustc_workspace_wrapper = resolve_slot(
         env,
@@ -233,7 +239,7 @@ pub(crate) fn resolve_compiler_wrappers_in(
         WORKSPACE_WRAPPER_CARGO_ENV,
         layers.rustc_workspace_wrapper.as_ref(),
         layers.complete,
-        workspace_root,
+        &workspace_root,
     );
 
     finish(rustc_wrapper, rustc_workspace_wrapper, layers.limitations)
@@ -311,18 +317,31 @@ enum CargoHome {
 }
 
 fn cargo_home_dir(env: &EnvSnapshot) -> CargoHome {
+    cargo_home_dir_on(env, cfg!(windows))
+}
+
+/// Cargo's default home is platform-specific: `HOME` on Unix, `USERPROFILE`
+/// then `HOME` on Windows. A cross-platform `HOME.or(USERPROFILE)` reads the
+/// wrong variable when both exist.
+fn cargo_home_dir_on(env: &EnvSnapshot, windows: bool) -> CargoHome {
     match env.get(CARGO_HOME_ENV) {
         Some(value) if value.trim().is_empty() => return CargoHome::Unknown,
         Some(value) => return CargoHome::Path(PathBuf::from(value)),
         None => {}
     }
-    let home = env.get(HOME_ENV).or_else(|| env.get(USERPROFILE_ENV));
+    let home = if windows {
+        nonempty_env(env, USERPROFILE_ENV).or_else(|| nonempty_env(env, HOME_ENV))
+    } else {
+        nonempty_env(env, HOME_ENV)
+    };
     match home {
-        Some(value) if !value.trim().is_empty() => {
-            CargoHome::Path(PathBuf::from(value).join(".cargo"))
-        }
-        _ => CargoHome::Unknown,
+        Some(value) => CargoHome::Path(PathBuf::from(value).join(".cargo")),
+        None => CargoHome::Unknown,
     }
+}
+
+fn nonempty_env<'a>(env: &'a EnvSnapshot, key: &str) -> Option<&'a str> {
+    env.get(key).filter(|value| !value.trim().is_empty())
 }
 
 fn search_dirs(workspace_root: &Path, ceiling: Option<&Path>) -> Vec<PathBuf> {
@@ -495,11 +514,15 @@ fn durable_wrapper_identity(resolved: &Path, workspace_root: &Path) -> String {
     if !resolved.is_absolute() && !wrapper_value_has_directory(&display) {
         return display.replace('\\', "/");
     }
-    let abs =
-        if resolved.is_absolute() { resolved.to_path_buf() } else { workspace_root.join(resolved) };
-    if let Ok(relative) = abs.strip_prefix(workspace_root) {
+    let abs = lexically_normalize(&if resolved.is_absolute() {
+        resolved.to_path_buf()
+    } else {
+        workspace_root.join(resolved)
+    });
+    let workspace_root = lexically_normalize(workspace_root);
+    if let Ok(relative) = abs.strip_prefix(&workspace_root) {
         let rendered = relative.to_string_lossy().replace('\\', "/");
-        if !rendered.is_empty() {
+        if !rendered.is_empty() && !path_has_parent_dir(relative) {
             return rendered;
         }
     }
@@ -510,6 +533,35 @@ fn durable_wrapper_identity(resolved: &Path, workspace_root: &Path) -> String {
         .unwrap_or_else(|| "wrapper".to_string());
     let normalized = abs.to_string_lossy().replace('\\', "/");
     format!("{basename}@{}", sha256_hex(normalized.as_bytes()))
+}
+
+fn path_has_parent_dir(path: &Path) -> bool {
+    path.components().any(|component| matches!(component, Component::ParentDir))
+}
+
+/// Collapse `.` and `..` without requiring the path to exist.
+fn lexically_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn absolute_or_normalized(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return lexically_normalize(path);
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => lexically_normalize(&cwd.join(path)),
+        Err(_) => lexically_normalize(path),
+    }
 }
 
 fn finish(
@@ -1120,5 +1172,86 @@ mod tests {
         assert_ne!(injected_value.subject_digest(), honest_split.subject_digest());
         assert_eq!(with_newline.rustc_wrapper(), Some("a\nb"));
         assert!(with_newline.rustc_workspace_wrapper().is_none());
+    }
+
+    #[test]
+    fn relative_workspace_root_still_sees_parent_config() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let root = tempfile::tempdir_in(&cwd).expect("tempdir in cwd");
+        let rel_root = root.path().strip_prefix(&cwd).expect("tempdir under cwd");
+        let home = root.path().join("cargo-home");
+        let parent = root.path().join("parent");
+        let ws = parent.join("workspace");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(ws.join(".cargo")).unwrap();
+        write_config(
+            &parent.join(".cargo/config.toml"),
+            "[build]\nrustc-wrapper = \"from-parent\"\n",
+        );
+        let rel_ws = rel_root.join("parent").join("workspace");
+        let resolved =
+            resolve_compiler_wrappers_in(&rel_ws, &isolated_env(&home), Some(rel_root), &RealFs);
+        assert_eq!(resolved.rustc_wrapper(), Some("from-parent"));
+        assert!(resolved.is_complete());
+    }
+
+    #[test]
+    fn dotted_absolute_in_workspace_path_is_still_workspace_relative() {
+        let (root, home, ws, _) = fixture();
+        let dotted = ws.join("tools").join(".").join("sccache");
+        write_config(
+            &ws.join(".cargo/config.toml"),
+            &format!("[build]\nrustc-wrapper = \"{}\"\n", dotted.display()),
+        );
+        let resolved = resolve_tree(&ws, root.path(), &home);
+        assert_eq!(resolved.rustc_wrapper(), Some("tools/sccache"));
+        assert!(resolved.is_complete());
+    }
+
+    #[test]
+    fn parent_segments_that_escape_the_workspace_are_hashed_not_relative() {
+        let (root, home, ws, _) = fixture();
+        let escaped = ws.join("nested").join("..").join("..").join("outside").join("sccache");
+        write_config(
+            &ws.join(".cargo/config.toml"),
+            &format!("[build]\nrustc-wrapper = \"{}\"\n", escaped.display()),
+        );
+        let resolved = resolve_tree(&ws, root.path(), &home);
+        let durable = resolved.rustc_wrapper().expect("wrapper");
+        assert!(durable.starts_with("sccache@sha256:"), "{durable}");
+        assert!(!durable.contains(".."), "{durable}");
+        assert!(!durable.contains(root.path().to_string_lossy().as_ref()), "{durable}");
+        assert!(resolved.is_complete());
+    }
+
+    #[test]
+    fn unix_home_discovery_ignores_userprofile() {
+        let mut env = EnvSnapshot::default();
+        env.insert(USERPROFILE_ENV, "/windows/home");
+        assert!(matches!(cargo_home_dir_on(&env, false), CargoHome::Unknown));
+
+        env.insert(HOME_ENV, "/unix/home");
+        match cargo_home_dir_on(&env, false) {
+            CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/unix/home/.cargo")),
+            CargoHome::Unknown => panic!("HOME should win on Unix"),
+        }
+    }
+
+    #[test]
+    fn windows_home_discovery_prefers_userprofile() {
+        let mut both = EnvSnapshot::default();
+        both.insert(HOME_ENV, "/unix/home");
+        both.insert(USERPROFILE_ENV, "/windows/home");
+        match cargo_home_dir_on(&both, true) {
+            CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/windows/home/.cargo")),
+            CargoHome::Unknown => panic!("USERPROFILE should win on Windows"),
+        }
+
+        let mut home_only = EnvSnapshot::default();
+        home_only.insert(HOME_ENV, "/unix/home");
+        match cargo_home_dir_on(&home_only, true) {
+            CargoHome::Path(path) => assert_eq!(path, PathBuf::from("/unix/home/.cargo")),
+            CargoHome::Unknown => panic!("HOME is the Windows fallback"),
+        }
     }
 }
