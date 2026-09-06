@@ -1,18 +1,30 @@
 //! Live native-critic execution against rule-proof fixtures.
 
 use perl_lsp_rs_core::tooling::perl_critic::{
-    CriticConfig, CriticContext, CriticFinding, CriticRemediationEligibility, CriticTextEdit,
-    NativeCriticProfile, NativeCriticRegistry, Severity,
+    CriticConfig, CriticContext, CriticFinding, CriticTextEdit, NativeCriticRegistry,
 };
 use perl_parser::Parser;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
 use super::error::ProofError;
+use super::mapping::{native_profile, proof_remediation, proof_severity};
 use super::model::{
-    CaseRecord, ExpectedFinding, FixRoundTrip, ParseExpectation, ProofProfile, ProofRemediation,
-    ProofSeverity, RuleProofManifest, resolve_fixture_path,
+    CaseRecord, ExpectedFinding, FixRoundTrip, ParseExpectation, ProofRemediation,
+    RuleProofManifest, resolve_fixture_path,
 };
+
+/// Crate prefixes whose live behavior can change rule-proof findings.
+/// The advisory lane must dispatch when these owners change (#14560).
+pub const EXECUTE_LIVE_OWNER_PATHS: &[&str] = &[
+    "crates/perl-parser/**",
+    "crates/perl-parser-core/**",
+    "crates/perl-lexer/**",
+    "crates/perl-ast/**",
+    "crates/perl-semantic-analyzer/**",
+    "crates/perl-pragma/**",
+];
 
 /// Execute every case against the live native critic.
 pub fn execute_manifest(root: &Path, manifest: &RuleProofManifest) -> Result<(), ProofError> {
@@ -49,7 +61,13 @@ fn execute_case(root: &Path, case: &CaseRecord) -> Result<(), ProofError> {
     let findings = registry.check(&ctx);
     match_findings(&source, case, &findings)?;
     if let Some(selector) = case.suppression_selector.as_deref() {
-        prove_suppression_targets_governed_rule(&source, case, selector, &config, &registry)?;
+        prove_suppression_targets_governed_rule(
+            &source,
+            &case.rule_id,
+            selector,
+            &config,
+            &registry,
+        )?;
     }
     if let Some(round_trip) = &case.fix_round_trip {
         prove_automatic_round_trip(&source, case, &findings, round_trip, &config, &registry)?;
@@ -64,9 +82,14 @@ fn match_findings(
 ) -> Result<(), ProofError> {
     let mut unmatched: Vec<&CriticFinding> = findings.iter().collect();
     for expected in &case.expected_findings {
-        let Some(index) =
-            unmatched.iter().position(|finding| finding_matches(source, expected, finding))
-        else {
+        let mut matched = None;
+        for (index, finding) in unmatched.iter().enumerate() {
+            if finding_matches(source, expected, finding)? {
+                matched = Some(index);
+                break;
+            }
+        }
+        let Some(index) = matched else {
             return Err(ProofError::new(format!(
                 "missing expected finding for `{}` at bytes {}..{} ({})",
                 expected.rule_id, expected.start_byte, expected.end_byte, expected.excerpt
@@ -97,35 +120,57 @@ fn match_findings(
     Ok(())
 }
 
-fn finding_matches(source: &str, expected: &ExpectedFinding, finding: &CriticFinding) -> bool {
+fn finding_matches(
+    source: &str,
+    expected: &ExpectedFinding,
+    finding: &CriticFinding,
+) -> Result<bool, ProofError> {
     if finding.rule_id != expected.rule_id {
-        return false;
+        return Ok(false);
     }
     if finding.range.start.byte != expected.start_byte
         || finding.range.end.byte != expected.end_byte
     {
-        return false;
+        return Ok(false);
     }
-    let excerpt = source.get(expected.start_byte..expected.end_byte).unwrap_or("");
+    let excerpt = excerpt_at(source, expected.start_byte, expected.end_byte)?;
     if excerpt != expected.excerpt {
-        return false;
+        return Ok(false);
     }
     if proof_severity(finding.severity) != expected.severity {
-        return false;
+        return Ok(false);
     }
     if proof_remediation(finding.remediation_eligibility()) != expected.remediation_eligibility {
-        return false;
+        return Ok(false);
     }
-    match (&expected.fix_title, finding.fix.as_ref()) {
-        (Some(title), Some(fix)) => fix.title == *title,
-        (Some(_), None) => false,
-        (None, _) => true,
+    let actual_title = finding.fix.as_ref().map(|fix| fix.title.as_str());
+    match (expected.fix_title.as_deref(), actual_title) {
+        (Some(expected_title), Some(actual_title)) => Ok(expected_title == actual_title),
+        (None, None) => Ok(true),
+        _ => Ok(false),
     }
+}
+
+pub(crate) fn excerpt_at(source: &str, start: usize, end: usize) -> Result<&str, ProofError> {
+    if start > end || end > source.len() {
+        return Err(ProofError::new(format!(
+            "expected excerpt range {start}..{end} is outside source of length {}",
+            source.len()
+        )));
+    }
+    if !source.is_char_boundary(start) || !source.is_char_boundary(end) {
+        return Err(ProofError::new(format!(
+            "expected excerpt range {start}..{end} is not on a UTF-8 character boundary"
+        )));
+    }
+    source.get(start..end).ok_or_else(|| {
+        ProofError::new(format!("expected excerpt range {start}..{end} is not a valid slice"))
+    })
 }
 
 fn prove_suppression_targets_governed_rule(
     source: &str,
-    case: &CaseRecord,
+    rule_id: &str,
     selector: &str,
     config: &CriticConfig,
     registry: &NativeCriticRegistry,
@@ -145,10 +190,9 @@ fn prove_suppression_targets_governed_rule(
         .map_err(|_| ProofError::new("unsuppressed fixture failed to parse"))?;
     let ctx = CriticContext::new(&stripped, &ast, config);
     let findings = registry.check(&ctx);
-    if !findings.iter().any(|finding| finding.rule_id == case.rule_id) {
+    if !findings.iter().any(|finding| finding.rule_id == rule_id) {
         return Err(ProofError::new(format!(
-            "stripping suppression did not restore finding `{}`",
-            case.rule_id
+            "stripping suppression did not restore finding `{rule_id}`"
         )));
     }
     Ok(())
@@ -199,13 +243,12 @@ fn prove_automatic_round_trip(
                 return Err(ProofError::new("automatic edit did not remove the target diagnostic"));
             }
             if round_trip.expect_no_new_governed {
-                let governed: std::collections::BTreeSet<&str> =
-                    case.include.iter().map(String::as_str).collect();
-                let new_rules: Vec<&str> = after
-                    .iter()
-                    .map(|finding| finding.rule_id.as_str())
-                    .filter(|rule_id| governed.contains(rule_id) && *rule_id != case.rule_id)
-                    .collect();
+                let governed: BTreeSet<&str> = case.include.iter().map(String::as_str).collect();
+                let new_rules = newly_introduced_governed(
+                    findings.iter().map(|finding| finding.rule_id.as_str()),
+                    after.iter().map(|finding| finding.rule_id.as_str()),
+                    &governed,
+                );
                 if !new_rules.is_empty() {
                     return Err(ProofError::new(format!(
                         "automatic edit introduced governed diagnostic(s): {}",
@@ -218,9 +261,28 @@ fn prove_automatic_round_trip(
     Ok(())
 }
 
+/// Governed rule IDs present after a fix that were not present before.
+/// Pre-existing other diagnostics may remain; only newly introduced include-listed
+/// rules fail `expect_no_new_governed`.
+pub(crate) fn newly_introduced_governed<'a>(
+    before: impl IntoIterator<Item = &'a str>,
+    after: impl IntoIterator<Item = &'a str>,
+    governed: &BTreeSet<&str>,
+) -> Vec<&'a str> {
+    let before: BTreeSet<&str> = before.into_iter().filter(|id| governed.contains(id)).collect();
+    let mut seen = BTreeSet::new();
+    let mut introduced = Vec::new();
+    for id in after {
+        if governed.contains(id) && !before.contains(id) && seen.insert(id) {
+            introduced.push(id);
+        }
+    }
+    introduced
+}
+
 pub(crate) fn apply_edits(source: &str, edits: &[CriticTextEdit]) -> Result<String, ProofError> {
-    let mut spans: Vec<(usize, usize, &str)> = Vec::new();
-    for edit in edits {
+    let mut spans: Vec<(usize, usize, usize, &str)> = Vec::new();
+    for (index, edit) in edits.iter().enumerate() {
         let start = edit.range.start.byte;
         let end = edit.range.end.byte;
         if start > end || end > source.len() {
@@ -234,16 +296,20 @@ pub(crate) fn apply_edits(source: &str, edits: &[CriticTextEdit]) -> Result<Stri
                 "fix edit range {start}..{end} is not on a UTF-8 character boundary"
             )));
         }
-        spans.push((start, end, edit.new_text.as_str()));
+        spans.push((start, end, index, edit.new_text.as_str()));
     }
-    spans.sort_by(|left, right| right.0.cmp(&left.0).then(right.1.cmp(&left.1)));
+    // Later source positions first; same-position inserts keep list order by
+    // applying later-in-list edits first.
+    spans.sort_by(|left, right| {
+        right.0.cmp(&left.0).then(right.1.cmp(&left.1)).then(right.2.cmp(&left.2))
+    });
     for window in spans.windows(2) {
         if window[1].1 > window[0].0 {
             return Err(ProofError::new("fix edits overlap"));
         }
     }
     let mut output = source.to_string();
-    for (start, end, text) in spans {
+    for (start, end, _, text) in spans {
         output.replace_range(start..end, text);
     }
     Ok(output)
@@ -269,37 +335,16 @@ fn critic_config(case: &CaseRecord) -> CriticConfig {
     CriticConfig { include: case.include.clone(), ..CriticConfig::default() }
 }
 
-fn native_profile(profile: ProofProfile) -> NativeCriticProfile {
-    match profile {
-        ProofProfile::Recommended => NativeCriticProfile::Recommended,
-        ProofProfile::Strict => NativeCriticProfile::Strict,
-    }
-}
-
-fn proof_severity(severity: Severity) -> ProofSeverity {
-    match severity {
-        Severity::Gentle => ProofSeverity::Gentle,
-        Severity::Stern => ProofSeverity::Stern,
-        Severity::Harsh => ProofSeverity::Harsh,
-        Severity::Cruel => ProofSeverity::Cruel,
-        Severity::Brutal => ProofSeverity::Brutal,
-    }
-}
-
-fn proof_remediation(eligibility: CriticRemediationEligibility) -> ProofRemediation {
-    match eligibility {
-        CriticRemediationEligibility::None => ProofRemediation::None,
-        CriticRemediationEligibility::Manual => ProofRemediation::Manual,
-        CriticRemediationEligibility::PreviewCandidate => ProofRemediation::PreviewCandidate,
-        CriticRemediationEligibility::AutomaticCandidate => ProofRemediation::AutomaticCandidate,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::apply_edits;
-    use perl_lsp_rs_core::tooling::perl_critic::CriticTextEdit;
+    use super::{
+        apply_edits, excerpt_at, newly_introduced_governed, prove_suppression_targets_governed_rule,
+    };
+    use perl_lsp_rs_core::tooling::perl_critic::{
+        CriticConfig, CriticTextEdit, NativeCriticProfile, NativeCriticRegistry,
+    };
     use perl_parser_core::position::{Position, Range};
+    use std::collections::BTreeSet;
 
     fn edit(start: usize, end: usize, new_text: &str) -> CriticTextEdit {
         CriticTextEdit {
@@ -315,6 +360,13 @@ mod tests {
     fn apply_edits_inserts_from_the_end() {
         let applied = apply_edits("my $x = 1;\n", &[edit(0, 0, "use strict;\n")]).expect("apply");
         assert_eq!(applied, "use strict;\nmy $x = 1;\n");
+    }
+
+    #[test]
+    fn apply_edits_same_position_inserts_keep_list_order() {
+        let applied =
+            apply_edits("X", &[edit(0, 0, "A"), edit(0, 0, "B")]).expect("same-position inserts");
+        assert_eq!(applied, "ABX");
     }
 
     #[test]
@@ -336,5 +388,104 @@ mod tests {
         // "café" — é is U+00E9 encoded as c3 a9, so byte 4 sits inside the codepoint.
         let error = apply_edits("café", &[edit(4, 4, "x")]).expect_err("utf-8").to_string();
         assert!(error.contains("UTF-8 character boundary"), "{error}");
+    }
+
+    #[test]
+    fn excerpt_at_rejects_range_past_source_end() {
+        let error = excerpt_at("abc", 4, 4).expect_err("oob").to_string();
+        assert!(error.contains("outside source"), "{error}");
+    }
+
+    #[test]
+    fn excerpt_at_rejects_mid_codepoint_range() {
+        let error = excerpt_at("café", 4, 4).expect_err("utf-8").to_string();
+        assert!(error.contains("UTF-8 character boundary"), "{error}");
+    }
+
+    #[test]
+    fn expect_no_new_governed_allows_preexisting_other_diagnostics() {
+        let governed: BTreeSet<&str> =
+            ["native.testing.require_use_strict", "native.common.assignment_in_condition"]
+                .into_iter()
+                .collect();
+        let introduced = newly_introduced_governed(
+            ["native.testing.require_use_strict", "native.common.assignment_in_condition"],
+            ["native.common.assignment_in_condition"],
+            &governed,
+        );
+        assert!(introduced.is_empty(), "{introduced:?}");
+    }
+
+    #[test]
+    fn expect_no_new_governed_rejects_newly_introduced_include_rule() {
+        let governed: BTreeSet<&str> =
+            ["native.testing.require_use_strict", "native.common.assignment_in_condition"]
+                .into_iter()
+                .collect();
+        let introduced = newly_introduced_governed(
+            ["native.testing.require_use_strict"],
+            ["native.common.assignment_in_condition"],
+            &governed,
+        );
+        assert_eq!(introduced, ["native.common.assignment_in_condition"]);
+    }
+
+    fn strict_registry() -> (CriticConfig, NativeCriticRegistry) {
+        let config = CriticConfig {
+            include: vec!["native.testing.require_use_strict".to_string()],
+            ..CriticConfig::default()
+        };
+        let registry = NativeCriticRegistry::for_profile_with_config(
+            NativeCriticProfile::Recommended,
+            &config,
+        );
+        (config, registry)
+    }
+
+    #[test]
+    fn suppression_strip_on_already_clean_source_fails_counterfactual() {
+        let (config, registry) = strict_registry();
+        let source = "## no critic native.testing.require_use_strict\nuse strict;\nmy $x = 1;\n";
+        let error = prove_suppression_targets_governed_rule(
+            source,
+            "native.testing.require_use_strict",
+            "native.testing.require_use_strict",
+            &config,
+            &registry,
+        )
+        .expect_err("vacuous suppression")
+        .to_string();
+        assert!(error.contains("stripping suppression did not restore"), "{error}");
+    }
+
+    #[test]
+    fn ineffective_suppression_comment_does_not_count_as_selector() {
+        let (config, registry) = strict_registry();
+        let source = "my $x = 1;\n# native.testing.require_use_strict\n";
+        let error = prove_suppression_targets_governed_rule(
+            source,
+            "native.testing.require_use_strict",
+            "native.testing.require_use_strict",
+            &config,
+            &registry,
+        )
+        .expect_err("non-directive")
+        .to_string();
+        assert!(error.contains("does not name selector"), "{error}");
+    }
+
+    #[test]
+    fn suppression_strip_restores_governed_finding() {
+        let (config, registry) = strict_registry();
+        let source =
+            "## no critic native.testing.require_use_strict -- generated bootstrap\nmy $x = 1;\n";
+        prove_suppression_targets_governed_rule(
+            source,
+            "native.testing.require_use_strict",
+            "native.testing.require_use_strict",
+            &config,
+            &registry,
+        )
+        .expect("effective suppression counterfactual");
     }
 }
