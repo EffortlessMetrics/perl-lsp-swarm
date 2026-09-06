@@ -7,6 +7,10 @@
 //! When a later floor closes one of these, update this table. Do not promote a
 //! floored cell to keep the list non-empty, and do not treat an empty table as
 //! proof that flattening is impossible.
+//!
+//! Not every test binary consumes every symbol; that is expected.
+
+#![allow(dead_code)]
 
 use serde_json::Value;
 

@@ -47,8 +47,8 @@ mod dap_core_capability_witnesses;
 
 use anyhow::Result;
 use dap_core_capability_witnesses::{
-    DAP_CORE_DERIVED_TRUE_SIBLINGS, FORMER_TRUE_SIBLINGS_NOW_FLOORED, assert_capability_bool,
-    assert_capability_is_json_boolean,
+    DAP_CORE_DERIVED_TRUE_SIBLINGS, FORMER_TRUE_SIBLINGS_NOW_FLOORED, VALUE_FORMAT_FLOOR_FIELD,
+    assert_capability_bool, assert_capability_is_json_boolean,
 };
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use perl_dap::feature_catalog::has_feature;
@@ -213,6 +213,12 @@ fn anti_flattening_true_siblings_are_distinct_named_rows() {
             "{name} cannot be both a surviving true-sibling and a former-sibling floor pin"
         );
     }
+    assert!(
+        FORMER_TRUE_SIBLINGS_NOW_FLOORED
+            .iter()
+            .any(|(name, floor)| { *name == VALUE_FORMAT_FLOOR_FIELD && *floor == "#9581" }),
+        "{VALUE_FORMAT_FLOOR_FIELD} must remain a #9581 former-sibling pin, not a true-sibling"
+    );
 }
 
 // ---------------------------------------------------------------------------
