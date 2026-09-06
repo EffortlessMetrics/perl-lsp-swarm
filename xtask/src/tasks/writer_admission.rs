@@ -10,8 +10,8 @@
 //! - `scripts/swarm-doctor` — worktree inventory / dirty / disk / divergence
 //!   shape (`--json` mode).
 //! - `scripts/swarm-clean::branch_pr_status` — the tri-state (`open` /
-//!   `none` / `unknown`) PR-ownership pattern, where `unknown` (gh absent
-//!   or the query failed) is never silently promoted to a safe verdict.
+//!   `none` / `unknown`) PR-candidate pattern. This is candidate-existence
+//!   evidence for reuse/resume guidance, not writer-liveness evidence.
 //! - `scripts/clean-worktrees.sh` — the `FLOOR_GB=200` / `FLOOR_PCT=5` disk
 //!   floor convention (reused verbatim, not reinvented).
 //!
@@ -28,11 +28,16 @@
 //! 5. `dirty-unpushed` — an abnormally large staged/dirty change set
 //!    (possible synthetic mass-staged additions).
 //! 6. `disk-capacity` — free disk below the `clean-worktrees.sh` floor.
-//! 7. `writer-collision` — an open PR already exists for the target branch.
+//! 7. `remote-branch-identity` — distinguishes a known remote branch,
+//!    known absence, and an instrument failure that leaves CREATE/RESUME
+//!    selection `NOT_PROVEN`.
+//! 8. `candidate-presence` — surfaces an existing open PR for reuse/resume;
+//!    it never treats PR existence or lookup failure as a live writer.
 //!
-//! An instrument failure (a check's underlying git/gh call errors) reports
-//! that check as `NOT_PROVEN`, never a false `PASS` — see
-//! `docs/reference/ISSUE_PLAN_DOCTRINE.md`-style report-only doctrine.
+//! An instrument failure in a safety/identity check reports `NOT_PROVEN`,
+//! never a false `PASS` — see `docs/reference/ISSUE_PLAN_DOCTRINE.md`-style
+//! report-only doctrine. PR lookup is deliberately advisory: GitHub can say
+//! whether a candidate exists, not whether another session is alive.
 //!
 //! Advisory-first: `run` always returns `Ok(())`. The verdict is
 //! informational; nothing is blocked or mutated by W1 itself. Consuming the
@@ -45,12 +50,12 @@
 //! object (`AdmissionGuidance`) so a consumer (`/start-work`, #3982/#4103)
 //! can distinguish "admit a brand-new branch/worktree" from "resume an
 //! existing remote branch" or "reuse an existing worktree", rather than
-//! double-creating either. `guidance` is purely additive metadata computed
-//! from signals already gathered for the checks above (plus one new
-//! read-only `refs/remotes/origin/<branch>` lookup) — it never introduces a
-//! new `CheckResult` and never changes `aggregate_verdict`'s worst-status-
-//! wins outcome. The protected object stays the branch/worktree/local repo
-//! state, never a per-agent lease (#3957's explicit non-goal).
+//! double-creating either. `guidance` is additive metadata computed from
+//! signals already gathered for the checks above. Remote-branch lookup
+//! failure is also a typed `remote-branch-identity` check so guidance and
+//! aggregate verdict cannot disagree. The protected object stays the
+//! branch/worktree/local repo state, never a per-agent lease (#3957's
+//! explicit non-goal).
 
 use color_eyre::eyre::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -145,9 +150,10 @@ pub struct DiskInfo {
     pub error: Option<String>,
 }
 
-/// Mirrors `scripts/swarm-clean::branch_pr_status`'s tri-state exactly:
-/// `unknown` (gh absent or the query failed) must never be treated as
-/// `none` — see that script's own comment for the rationale.
+/// Mirrors `scripts/swarm-clean::branch_pr_status`'s tri-state exactly.
+/// The state says whether an existing PR candidate was observed. It does
+/// not identify a live writer, and `Unknown` must not be converted into a
+/// collision merely because the query was unavailable.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PrStatus {
@@ -267,8 +273,8 @@ impl std::fmt::Display for AdmissionVerdict {
 
 /// Informational resume/reuse guidance (#3957 W2) — never a `CheckResult`,
 /// never contributes to `aggregate_verdict`. A consumer (`/start-work`)
-/// reads this to decide RESUME/REUSE/ADMIT once STOP/BLOCKED (from
-/// `writer-collision`/`disk-capacity`) is already ruled out.
+/// reads this to decide RESUME/REUSE/ADMIT once deterministic local
+/// safety/capacity blockers are ruled out.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct AdmissionGuidance {
     /// Path of the single existing worktree already checked out on the
@@ -289,9 +295,8 @@ pub struct AdmissionGuidance {
     /// failed (a genuine `git` instrument failure, e.g. not a git
     /// repository, not a spawnable `git`), as opposed to a legitimate
     /// "branch doesn't exist yet" absence. A consumer must treat a non-null
-    /// value here as `NOT_PROVEN` for the RESUME decision, never silently
-    /// fall through to ADMIT — the same instrument-failure-must-never-be-
-    /// silently-clean invariant every check in this module already upholds.
+    /// value here as `NOT_PROVEN` for the RESUME decision; the aggregate
+    /// report carries the same fact through `remote-branch-identity`.
     pub remote_branch_lookup_error: Option<String>,
 }
 
@@ -367,7 +372,8 @@ pub fn run_checks(
         check_branch_worktree_mapping(snapshot),
         check_dirty_unpushed(snapshot, config),
         check_disk_capacity(snapshot, config),
-        check_writer_collision(snapshot),
+        check_remote_branch_identity(snapshot),
+        check_candidate_presence(snapshot),
     ]
 }
 
@@ -632,27 +638,84 @@ fn check_disk_capacity(
     }
 }
 
-fn check_writer_collision(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
-    let name = "writer-collision".to_string();
-    let info = &snapshot.pr_ownership;
+/// Prove enough remote-branch identity to choose CREATE versus RESUME.
+///
+/// A known absence is safe and means CREATE remains available. A known SHA
+/// means RESUME from that exact branch head. An instrument failure is
+/// different: it leaves branch identity unknown, so writer admission is
+/// `NOT_PROVEN` without inferring anything about another session's liveness.
+fn check_remote_branch_identity(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
+    let name = "remote-branch-identity".to_string();
+    if snapshot.target_branch == "(detached)" {
+        return CheckResult {
+            name,
+            status: CheckStatus::Pass,
+            reason: "detached checkout has no target branch identity to resolve".to_string(),
+        };
+    }
+    let info = &snapshot.remote_branch;
     if let Some(err) = &info.error {
         return CheckResult {
             name,
             status: CheckStatus::NotProven,
-            reason: format!("could not query PR ownership: {err}"),
+            reason: format!(
+                "could not resolve `refs/remotes/origin/{}`: {err}; CREATE versus RESUME is not proven",
+                snapshot.target_branch
+            ),
+        };
+    }
+    match &info.sha {
+        Some(sha) => CheckResult {
+            name,
+            status: CheckStatus::Pass,
+            reason: format!(
+                "remote branch `{}` resolves to {sha}; RESUME from that observed head",
+                snapshot.target_branch
+            ),
+        },
+        None => CheckResult {
+            name,
+            status: CheckStatus::Pass,
+            reason: format!(
+                "no remote branch observed for `{}`; CREATE remains available",
+                snapshot.target_branch
+            ),
+        },
+    }
+}
+
+/// Surface an existing PR candidate without inventing writer liveness.
+///
+/// #3957 says open PRs are surfaced while two *writers* on one branch are
+/// the collision. #3982 says an existing open PR should be continued and
+/// reused. GitHub PR existence therefore cannot by itself BLOCK writer
+/// admission, and a failed PR lookup cannot prove that a writer exists.
+fn check_candidate_presence(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
+    let name = "candidate-presence".to_string();
+    let info = &snapshot.pr_ownership;
+    if let Some(err) = &info.error {
+        return CheckResult {
+            name,
+            status: CheckStatus::Pass,
+            reason: format!(
+                "PR lookup unavailable ({err}); candidate presence is not proven, and no writer \
+                 collision is inferred from that absence of evidence"
+            ),
         };
     }
     match info.status {
         PrStatus::Open => CheckResult {
             name,
-            status: CheckStatus::Block,
+            status: CheckStatus::Pass,
             reason: match info.pr_number {
                 Some(n) => format!(
-                    "open PR #{n} already exists for branch `{}` — writer collision",
+                    "open PR #{n} already exists for branch `{}` — reuse/resume that candidate; \
+                     PR existence is not live-writer evidence",
                     snapshot.target_branch
                 ),
                 None => format!(
-                    "an open PR already exists for branch `{}` — writer collision",
+                    "an open PR already exists for branch `{}` — reuse/resume that candidate; \
+                     PR existence is not live-writer evidence",
                     snapshot.target_branch
                 ),
             },
@@ -660,14 +723,14 @@ fn check_writer_collision(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
         PrStatus::None => CheckResult {
             name,
             status: CheckStatus::Pass,
-            reason: format!("no open PR for branch `{}`", snapshot.target_branch),
+            reason: format!("no open PR observed for branch `{}`", snapshot.target_branch),
         },
         PrStatus::Unknown => CheckResult {
             name,
-            status: CheckStatus::NotProven,
-            // gh absent or the query failed — never silently treated as
-            // "none" (see scripts/swarm-clean::branch_pr_status).
-            reason: "gh unavailable or the PR-ownership query failed — not provable".to_string(),
+            status: CheckStatus::Pass,
+            reason: "PR candidate lookup unavailable; do not infer either candidate absence or a \
+                     live writer from this signal"
+                .to_string(),
         },
     }
 }
@@ -689,7 +752,7 @@ fn worktrees_matching_target_branch(snapshot: &WriterAdmissionSnapshot) -> Vec<&
 /// Computes the informational RESUME/REUSE guidance (#3957 W2) from signals
 /// already gathered for the checks above. Never itself a `CheckResult` and
 /// never consulted by `aggregate_verdict` — a consumer applies this only
-/// after ruling out STOP/BLOCKED via `writer-collision`/`disk-capacity`.
+/// after ruling out deterministic local safety/capacity blockers.
 ///
 /// The root checkout is never a valid REUSE target — WORKTREE_PROTOCOL.md is
 /// explicit that production writes must never land in the root checkout,
@@ -977,14 +1040,14 @@ fn gather_disk_info(root: &Path, worktree_count: u32) -> DiskInfo {
     }
 }
 
-/// Tri-state PR-ownership lookup — mirrors
-/// `scripts/swarm-clean::branch_pr_status` exactly: gh absent or the query
-/// failing must map to `Unknown`, never `None`.
+/// Tri-state candidate lookup — mirrors
+/// `scripts/swarm-clean::branch_pr_status` exactly. An open result means an
+/// existing PR should be reused/resumed; it does not mean a writer is live.
 fn gather_pr_ownership(branch: &str, repo: Option<&str>) -> PrOwnershipInfo {
     if branch.is_empty() {
         // An empty `--head` filter is not "no filter" from gh's point of
         // view in every code path — it must never be sent, or the query
-        // can match an unrelated PR and misattribute a writer collision.
+        // can match an unrelated PR and misattribute candidate presence.
         return PrOwnershipInfo { status: PrStatus::Unknown, pr_number: None, error: None };
     }
     if which_gh().is_none() {
@@ -1090,12 +1153,10 @@ fn gather_live_snapshot(config: &AdmissionConfig) -> WriterAdmissionSnapshot {
     let worktree_count = worktree_mapping.entries.len() as u32;
 
     // Use the *resolved* target branch (never the raw, possibly-absent
-    // `--branch` flag) for the PR-ownership query. Querying `gh pr list
-    // --head ""` would silently drop the filter and return an arbitrary
-    // open PR — a false writer-collision BLOCK against an unrelated
-    // branch, which is worse than a false PASS: it would misattribute a
-    // real incident. A detached (branch-less) checkout has no PR to
-    // collide with, so that case is Unknown/not-applicable, not queried.
+    // `--branch` flag) for the existing-candidate query. Querying `gh pr
+    // list --head ""` would silently drop the filter and return an
+    // unrelated open PR. A detached checkout has no branch identity to
+    // query, so that case is simply not applicable.
     let pr_ownership = if target_branch == "(detached)" {
         PrOwnershipInfo { status: PrStatus::None, pr_number: None, error: None }
     } else {
@@ -1350,31 +1411,80 @@ mod tests {
     }
 
     #[test]
-    fn open_pr_is_writer_collision_block() {
+    fn open_pr_is_candidate_presence_not_writer_collision() {
+        // #3957 surfaces an existing PR so callers can reuse the current
+        // candidate. It does not say that PR existence proves a live writer.
+        // This is the exact regression boundary: the old implementation
+        // converted `PrStatus::Open` into a writer-collision BLOCK.
         let mut snapshot = base_snapshot();
         snapshot.pr_ownership =
             PrOwnershipInfo { status: PrStatus::Open, pr_number: Some(42), error: None };
         let checks = run_checks(&snapshot, &default_config());
-        assert_eq!(aggregate_verdict(&checks), AdmissionVerdict::Block);
-    }
-
-    #[test]
-    fn gh_unavailable_is_not_proven_never_pass() {
-        let mut snapshot = base_snapshot();
-        snapshot.pr_ownership =
-            PrOwnershipInfo { status: PrStatus::Unknown, pr_number: None, error: None };
-        let checks = run_checks(&snapshot, &default_config());
-        assert_eq!(aggregate_verdict(&checks), AdmissionVerdict::NotProven);
+        assert_eq!(aggregate_verdict(&checks), AdmissionVerdict::Pass, "{checks:?}");
         assert!(
-            checks
-                .iter()
-                .any(|c| c.name == "writer-collision" && c.status == CheckStatus::NotProven),
-            "expected writer-collision check present and NOT_PROVEN: {checks:?}"
+            checks.iter().any(|c| {
+                c.name == "candidate-presence"
+                    && c.status == CheckStatus::Pass
+                    && c.reason.contains("reuse/resume")
+                    && c.reason.contains("not live-writer evidence")
+            }),
+            "expected open PR to be surfaced as candidate presence, not a collision: {checks:?}"
+        );
+        assert!(
+            !checks.iter().any(|c| c.name == "writer-collision"),
+            "writer-collision must not be synthesized from PR existence: {checks:?}"
         );
     }
 
     #[test]
-    fn tool_error_on_any_check_is_not_proven_never_pass() {
+    fn gh_unavailable_does_not_invent_writer_collision() {
+        // PR lookup can establish an existing candidate for reuse, but it
+        // cannot establish whether another session is alive. Losing that
+        // advisory lookup therefore must not become a liveness blocker.
+        let mut snapshot = base_snapshot();
+        snapshot.pr_ownership =
+            PrOwnershipInfo { status: PrStatus::Unknown, pr_number: None, error: None };
+        let checks = run_checks(&snapshot, &default_config());
+        assert_eq!(aggregate_verdict(&checks), AdmissionVerdict::Pass, "{checks:?}");
+        assert!(
+            checks.iter().any(|c| {
+                c.name == "candidate-presence"
+                    && c.status == CheckStatus::Pass
+                    && c.reason.contains("do not infer")
+            }),
+            "unavailable PR lookup must remain candidate uncertainty, not writer collision: {checks:?}"
+        );
+    }
+
+    #[test]
+    fn remote_branch_lookup_error_is_not_proven_without_inventing_liveness() {
+        // Unlike PR lookup, the remote-ref lookup owns a real identity
+        // decision: CREATE versus RESUME. A tool failure here cannot be
+        // folded into "branch absent" without risking recreation from the
+        // wrong base, but it still says nothing about writer liveness.
+        let mut snapshot = base_snapshot();
+        snapshot.remote_branch = RemoteBranchInfo {
+            sha: None,
+            error: Some("git rev-parse --verify failed: fatal: not a git repository".to_string()),
+        };
+        let checks = run_checks(&snapshot, &default_config());
+        assert_eq!(aggregate_verdict(&checks), AdmissionVerdict::NotProven, "{checks:?}");
+        assert!(
+            checks.iter().any(|c| {
+                c.name == "remote-branch-identity"
+                    && c.status == CheckStatus::NotProven
+                    && c.reason.contains("CREATE versus RESUME is not proven")
+            }),
+            "remote identity failure must be typed NOT_PROVEN: {checks:?}"
+        );
+        assert!(
+            !checks.iter().any(|c| c.name == "writer-collision"),
+            "remote identity failure must not be converted into writer liveness: {checks:?}"
+        );
+    }
+
+    #[test]
+    fn tool_error_on_any_safety_check_is_not_proven_never_pass() {
         let mut snapshot = base_snapshot();
         snapshot.disk.error = Some("df: command not found".to_string());
         snapshot.disk.avail_gb = None;
@@ -1414,13 +1524,13 @@ mod tests {
     }
 
     #[test]
-    fn empty_branch_never_reaches_the_pr_ownership_query() {
-        // Regression test for a real bug caught by a live smoke test: when
-        // no --branch is supplied and HEAD can't be resolved to a name,
-        // the PR-ownership lookup must never be sent an empty `--head`
-        // filter (gh silently drops it and can match an unrelated open
-        // PR, misattributing a writer collision). Empty branch must map
-        // straight to Unknown without spawning gh at all.
+    fn empty_branch_never_reaches_the_pr_candidate_query() {
+        // Regression test for a real live-smoke bug: when no --branch is
+        // supplied and HEAD cannot resolve to a name, an empty `--head`
+        // filter can be dropped by gh and match an unrelated PR. The object
+        // is now candidate presence rather than writer liveness, but the
+        // attribution bug is unchanged: empty branch must map straight to
+        // Unknown without spawning gh at all.
         let info = gather_pr_ownership("", None);
         assert_eq!(info.status, PrStatus::Unknown);
         assert!(info.pr_number.is_none());
@@ -1450,23 +1560,18 @@ mod tests {
 
     #[test]
     fn gather_shadow_refs_on_a_genuine_git_failure_reports_error_not_empty() -> Result<()> {
-        // The actual live-gathering bug: `git for-each-ref` exits 0 with
-        // empty stdout when nothing matches (a legitimate absence), so a
-        // NON-zero exit means something is genuinely wrong (here: not a
-        // git repository at all). Before the fix, `git_lines` swallowed
-        // ANY non-zero exit into `Ok(vec![])`, so this genuine failure
-        // was indistinguishable from "no shadow refs found" — a silent
-        // instrument-failure-to-false-PASS. It must instead surface as
-        // `ShadowRefInfo.error`, which `check_shadow_ref` already routes
-        // to NOT_PROVEN (see the check-level test above).
+        // `git for-each-ref` exits 0 with empty stdout when nothing matches,
+        // so a non-zero exit is a genuine instrument failure. Before the
+        // fix, `git_lines` swallowed that failure into `Ok(vec![])`, making
+        // "not a repository" indistinguishable from "no shadow refs" and
+        // silently manufacturing PASS.
         let dir = tempfile::tempdir()?;
         // dir.path() is deliberately NOT a git repository.
         let info = gather_shadow_refs(dir.path());
         assert!(
             info.error.is_some(),
-            "expected a genuine git failure (not a git repository) to be \
-             surfaced as an error, not silently folded into an empty \
-             match list: {info:?}"
+            "expected a genuine git failure (not a git repository) to be surfaced as an error, \
+             not silently folded into an empty match list: {info:?}"
         );
         assert!(info.refs.is_empty());
         Ok(())
@@ -1477,13 +1582,9 @@ mod tests {
         use perl_tdd_support::must_some;
         // Regression for the writer-admission fast-follow (#3957 W1): the
         // `git rev-parse` spawn-error arm of `gather_head_info` used to
-        // build its early-return `HeadInfo` with `..Default::default()`,
-        // which reset `symbolic_ref` back to `None` even though it had
-        // already been successfully resolved by the prior `git
-        // symbolic-ref` call. `head_info_spawn_error` is the exact helper
-        // that arm calls, so this pins the fix at the unit the bug lived
-        // in: the already-known `symbolic_ref` must survive a later
-        // spawn error, not be silently discarded.
+        // rebuild `HeadInfo` with `..Default::default()`, resetting a
+        // `symbolic_ref` that the earlier `git symbolic-ref` call had
+        // already proved. Pin the helper at the unit where that loss lived.
         let info = head_info_spawn_error(
             Some("refs/heads/impl/1234-feature".to_string()),
             "failed to spawn git rev-parse: boom".to_string(),
@@ -1500,8 +1601,8 @@ mod tests {
     #[test]
     fn head_info_spawn_error_with_no_prior_symbolic_ref_stays_none() -> Result<()> {
         use perl_tdd_support::must_some;
-        // Symmetric case: the `git symbolic-ref` spawn-error arm has
-        // nothing gathered yet, so it correctly passes `None` through.
+        // Symmetric control: if the first symbolic-ref call itself cannot
+        // spawn, there is no prior ref to preserve and None is correct.
         let info =
             head_info_spawn_error(None, "failed to spawn git symbolic-ref: boom".to_string());
         assert_eq!(info.symbolic_ref, None);
@@ -1527,9 +1628,8 @@ mod tests {
 
     #[test]
     fn guidance_reports_no_reuse_candidate_when_no_worktree_matches() {
-        // Regression proof this isn't hardcoded to "always Some": a
-        // snapshot with zero matching worktree entries must report None,
-        // not spuriously pick an unrelated worktree.
+        // Negative control: this must not be hardcoded to "always Some".
+        // Zero matching worktree entries means there is nothing to reuse.
         let mut snapshot = base_snapshot();
         snapshot.worktree_mapping.entries =
             vec![WorktreeEntry { path: "/repo".to_string(), branch: Some("main".to_string()) }];
@@ -1542,10 +1642,9 @@ mod tests {
 
     #[test]
     fn guidance_stays_none_when_worktree_mapping_is_ambiguous() {
-        // Mutation-check: if `compute_guidance` fell back to "first match"
-        // instead of "exactly one match", this would wrongly suggest
-        // reusing one of two worktrees already flagged as an unsafe
-        // duplicate mapping by `branch-worktree-mapping`'s own BLOCK.
+        // Mutation check: falling back to "first match" would suggest one
+        // of two worktrees even though branch-worktree-mapping correctly
+        // marks that topology ambiguous and unsafe.
         let mut snapshot = base_snapshot();
         snapshot.worktree_mapping.entries.push(WorktreeEntry {
             path: "/repo/.claude/worktrees/agent-2".to_string(),
@@ -1562,22 +1661,15 @@ mod tests {
     #[test]
     fn guidance_never_offers_the_root_checkout_as_a_reuse_candidate() {
         // Regression for a P1 caught by independent execution review of
-        // #3957 W2: `git worktree list --porcelain` always lists the
-        // main/root worktree alongside every linked one, so when THIS
-        // invocation's own checkout is the root and the root itself is
-        // sitting on the target branch (the exact "root checkout left on a
-        // feature branch" drift #3957's problem statement opens with),
-        // `worktrees_matching_target_branch` finds exactly one match — the
-        // root's own entry — and a naive `compute_guidance` would offer it
-        // as a REUSE candidate. `check_branch_worktree_mapping` already
-        // reports this identical condition as its own BLOCK
-        // ("root checkout is on feature branch..."); `compute_guidance`
-        // must never independently contradict that by handing Step 6c's
-        // REUSE outcome a path back into the root.
+        // #3957 W2. `git worktree list --porcelain` includes the main/root
+        // worktree. If this invocation is itself the root and the root has
+        // drifted onto the target feature branch, there can be exactly one
+        // matching entry — the root. A naive "exactly one => REUSE" rule
+        // would contradict branch-worktree-mapping's BLOCK and route writes
+        // straight back into the coordination checkout.
         let mut snapshot = base_snapshot();
         snapshot.is_root_checkout = true;
-        // Exactly the reviewer's repro: the sole worktree_mapping entry is
-        // the root path itself, and its branch is the target branch.
+        // Exactly the reviewer's repro: the sole matching path is root.
         snapshot.worktree_mapping.entries = vec![WorktreeEntry {
             path: "/repo".to_string(),
             branch: Some(snapshot.target_branch.clone()),
@@ -1594,8 +1686,8 @@ mod tests {
     fn guidance_reports_resume_candidate_from_remote_branch_sha() -> Result<()> {
         use perl_tdd_support::must_some;
         let mut snapshot = base_snapshot();
-        // No local worktree checked out on the branch yet, but it already
-        // exists on the remote — a RESUME candidate, not a fresh branch.
+        // No local worktree is on the branch, but the remote branch already
+        // exists. This is RESUME from the observed head, not fresh CREATE.
         snapshot.worktree_mapping.entries =
             vec![WorktreeEntry { path: "/repo".to_string(), branch: Some("main".to_string()) }];
         snapshot.remote_branch =
@@ -1614,15 +1706,11 @@ mod tests {
     #[test]
     fn guidance_propagates_a_genuine_remote_branch_lookup_failure() -> Result<()> {
         use perl_tdd_support::must_some;
-        // Regression for a real finding on #3957 W2's own PR: a genuine
-        // `refs/remotes/origin/<branch>` lookup failure (not a git
-        // repository, git unspawnable, etc.) must be distinguishable from
-        // "the branch legitimately doesn't exist yet" — both previously
-        // collapsed to `remote_branch_sha: None`, which would let a
-        // consumer silently ADMIT (recreate fresh off the base) on a
-        // transient instrument failure instead of surfacing NOT_PROVEN,
-        // exactly the silent-instrument-failure-to-false-clean pattern
-        // every other check in this module is built to avoid.
+        // Regression for #3957 W2: lookup failure and legitimate branch
+        // absence both used to collapse to `remote_branch_sha: None`. That
+        // can turn an instrument failure into fresh CREATE from the base.
+        // Keep the error in guidance while remote-branch-identity carries
+        // the same fact into the aggregate NOT_PROVEN verdict.
         let mut snapshot = base_snapshot();
         snapshot.remote_branch =
             RemoteBranchInfo { sha: None, error: Some("fatal: not a git repository".to_string()) };
@@ -1635,9 +1723,8 @@ mod tests {
 
     #[test]
     fn guidance_is_carried_through_the_full_report() -> Result<()> {
-        // End-to-end proof that `run`'s wiring actually reaches the
-        // consumer-visible `AdmissionReport.guidance` field, not just the
-        // standalone `compute_guidance` unit.
+        // End-to-end wiring control: guidance must reach the serialized
+        // AdmissionReport, not exist only in compute_guidance's unit tests.
         let snapshot = base_snapshot();
         let checks = run_checks(&snapshot, &default_config());
         let verdict = aggregate_verdict(&checks);
@@ -1660,10 +1747,9 @@ mod tests {
 
     #[test]
     fn gather_remote_branch_info_on_a_nonexistent_branch_is_none_not_an_error() -> Result<()> {
-        // `-q --verify` exiting non-zero for a branch that simply doesn't
-        // exist on the remote yet is a legitimate absence (brand-new
-        // branch case), not an instrument failure — mirrors
-        // `gather_head_info`'s detached-HEAD handling.
+        // `-q --verify` exiting non-zero for a ref that simply does not
+        // exist is a legitimate brand-new-branch absence. It must remain
+        // distinct from a repository/tool failure so CREATE stays valid.
         let dir = tempfile::tempdir()?;
         let init = Command::new("git")
             .args(["init", "-q"])
@@ -1679,11 +1765,9 @@ mod tests {
 
     #[test]
     fn gather_remote_branch_info_on_a_genuine_spawn_failure_reports_error() -> Result<()> {
-        // Not a git repository at all: `git rev-parse` itself cannot run
-        // meaningfully here — this must surface as `error`, not silently
-        // fold into "branch doesn't exist" (the same instrument-failure-
-        // must-never-be-silent invariant `gather_shadow_refs` already
-        // upholds).
+        // Not a git repository at all: rev-parse cannot establish remote-ref
+        // identity, so this must surface as error rather than silently look
+        // like "branch does not exist".
         let dir = tempfile::tempdir()?;
         let info = gather_remote_branch_info(dir.path(), "impl/1234-feature");
         assert!(

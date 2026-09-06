@@ -122,9 +122,10 @@ pub fn canonical_rows() -> Vec<CheckRow> {
             fact_key: "git.branch_worktree_collision".to_string(),
             current_implementation: "not checked by just doctor".to_string(),
             source_path: "justfile".to_string(),
-            canonical_authority: "cargo xtask writer-admission / writer-collision".to_string(),
+            canonical_authority: "cargo xtask writer-admission / branch-worktree-mapping"
+                .to_string(),
             authority_state: AuthorityState::Current,
-            subject: "target branch, worktree mapping, and open PR ownership".to_string(),
+            subject: "target branch and local worktree mapping".to_string(),
             current_mutation: MutationPosture::NotObserved,
             current_exit_behavior: "omitted".to_string(),
             target_result: ResultClass::BlockedOrNotProven,

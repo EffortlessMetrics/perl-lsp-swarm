@@ -103,24 +103,42 @@ fn low_disk_blocks() -> Result<()> {
 }
 
 #[test]
-fn writer_collision_open_pr_blocks() -> Result<()> {
+fn open_pr_is_candidate_presence_not_writer_collision() -> Result<()> {
+    // Legacy fixture name retained to avoid churn: the same observed open
+    // PR must now prove candidate presence/reuse, not a live second writer.
     let (ok, stdout) = run_fixture("writer-collision-open-pr.json")?;
     assert!(ok);
-    assert!(stdout.contains("\"verdict\": \"BLOCK\""), "expected BLOCK verdict, got: {stdout}");
+    assert!(stdout.contains("\"verdict\": \"PASS\""), "expected PASS verdict, got: {stdout}");
     assert!(
-        stdout.contains("writer-collision"),
-        "expected writer-collision check to fire: {stdout}"
+        stdout.contains("candidate-presence"),
+        "expected candidate-presence check to surface the existing PR: {stdout}"
+    );
+    assert!(
+        stdout.contains("reuse/resume") && stdout.contains("not live-writer evidence"),
+        "expected open PR to be routed to reuse/resume without inventing liveness: {stdout}"
+    );
+    assert!(
+        !stdout.contains("\"name\": \"writer-collision\""),
+        "PR existence must not synthesize a writer-collision check: {stdout}"
     );
     Ok(())
 }
 
 #[test]
-fn gh_unavailable_is_not_proven_never_a_silent_pass() -> Result<()> {
+fn gh_unavailable_does_not_invent_writer_collision() -> Result<()> {
+    // Candidate lookup is useful for reuse, but GitHub availability cannot
+    // prove whether another session is alive. Local safety checks remain
+    // authoritative for this command's verdict.
     let (ok, stdout) = run_fixture("gh-unavailable-not-proven.json")?;
     assert!(ok, "advisory-first must still exit 0: {stdout}");
+    assert!(stdout.contains("\"verdict\": \"PASS\""), "expected PASS verdict, got: {stdout}");
     assert!(
-        stdout.contains("\"verdict\": \"NOT_PROVEN\""),
-        "gh-unavailable must yield NOT_PROVEN, never a silent PASS: {stdout}"
+        stdout.contains("candidate-presence") && stdout.contains("do not infer"),
+        "unavailable PR lookup must remain candidate uncertainty, not writer liveness: {stdout}"
+    );
+    assert!(
+        !stdout.contains("\"name\": \"writer-collision\""),
+        "missing GitHub evidence must not invent a writer-collision check: {stdout}"
     );
     Ok(())
 }
@@ -230,22 +248,33 @@ fn root_checkout_on_feature_branch_never_offers_root_as_reuse() -> Result<()> {
 }
 
 #[test]
-fn remote_branch_lookup_failure_is_surfaced_not_silently_dropped() -> Result<()> {
+fn remote_branch_lookup_failure_is_typed_not_proven() -> Result<()> {
     // A genuine `refs/remotes/origin/<branch>` lookup failure (not a
-    // legitimate "branch doesn't exist yet" absence) must be visible in the
-    // JSON output via `remote_branch_lookup_error`, not silently collapsed
-    // into the same `remote_branch_sha: null` a brand-new branch would
-    // produce — otherwise a consumer can't tell "safe to ADMIT" apart from
-    // "the instrument itself failed".
+    // legitimate "branch doesn't exist yet" absence) means CREATE versus
+    // RESUME cannot be selected safely. This is identity uncertainty, not
+    // writer liveness, and must reach the aggregate verdict as NOT_PROVEN.
     let (ok, stdout) = run_fixture("remote-branch-lookup-failure.json")?;
     assert!(ok, "writer-admission must always exit 0 (advisory-first): {stdout}");
+    assert!(
+        stdout.contains("\"verdict\": \"NOT_PROVEN\""),
+        "remote branch identity failure must make the typed verdict NOT_PROVEN: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"name\": \"remote-branch-identity\"")
+            && stdout.contains("CREATE versus RESUME is not proven"),
+        "expected the remote-branch-identity check to own the failure: {stdout}"
+    );
     assert!(
         stdout.contains("\"remote_branch_sha\": null"),
         "no SHA was resolved on a lookup failure: {stdout}"
     );
     assert!(
         stdout.contains("\"remote_branch_lookup_error\": \"git rev-parse --verify failed: fatal: not a git repository\""),
-        "expected the lookup failure to be surfaced in guidance, not silently dropped: {stdout}"
+        "expected the lookup failure to remain visible in guidance: {stdout}"
+    );
+    assert!(
+        !stdout.contains("\"name\": \"writer-collision\""),
+        "remote identity failure must not be converted into writer liveness: {stdout}"
     );
     Ok(())
 }
