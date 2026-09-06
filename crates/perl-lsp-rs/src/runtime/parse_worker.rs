@@ -366,10 +366,35 @@ impl Coordinator {
     /// iff this call newly claimed `active` ownership of the URI (nothing
     /// was queued or in-flight for it) -- see the doc comment on
     /// `ParseWorker::enqueue`, the public wrapper this backs.
-    fn enqueue(&self, job: ParseJob) -> bool {
+    /// Enqueue only while the coordinator is still accepting asynchronous
+    /// work. The shutdown flag is checked under the same lock that orders
+    /// `take_next`'s final empty-queue check, so a caller cannot select a
+    /// worker, lose the last worker to shutdown, and then strand a job in a
+    /// queue that no thread will drain.
+    ///
+    /// The atomicity is against *shutdown*, the pool's only designed path to
+    /// zero live workers. Thread death without shutdown — a panic escaping
+    /// both `catch_unwind` and `FinishGuard` in the worker loop — is not
+    /// ordered by this lock; that case is covered by `ParseWorker::try_enqueue`'s
+    /// `is_operational()` pre-check, which is a sample rather than an
+    /// interlock. Stated so the next reader need not re-derive which
+    /// transition the lock actually orders.
+    fn try_enqueue(&self, job: ParseJob) -> Result<bool, ParseJob> {
+        let mut state = self.state.lock();
+        if self.shutdown.load(Ordering::SeqCst) {
+            return Err(job);
+        }
+        let newly_active = self.enqueue_locked(&mut state, job);
+        drop(state);
+        if newly_active {
+            self.cvar.notify_one();
+        }
+        Ok(newly_active)
+    }
+
+    fn enqueue_locked(&self, state: &mut QueueState, job: ParseJob) -> bool {
         self.metrics.jobs_enqueued.fetch_add(1, Ordering::SeqCst);
         let uri = job.normalized_uri.clone();
-        let mut state = self.state.lock();
         let replaced = state.pending.insert(uri.clone(), job).is_some();
         self.metrics.bump_queue_depth(state.pending.len());
         let newly_active = state.active.insert(uri.clone());
@@ -393,8 +418,6 @@ impl Coordinator {
             // `on_settled` decrement for this same lifecycle, full stop --
             // not merely "before `notify_one()`, which is usually enough."
             (self.on_activated)(&uri);
-            drop(state);
-            self.cvar.notify_one();
         } else if replaced {
             // Already owned by a worker (queued or in-flight); this enqueue
             // replaced a not-yet-started job that was waiting behind it.
@@ -982,6 +1005,11 @@ impl ParseWorker {
         handles.iter().any(|h| !h.is_finished())
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_request_shutdown(&self) {
+        self.coordinator.request_shutdown();
+    }
+
     /// Enqueue (or coalesce-replace) a parse job for `normalized_uri`.
     ///
     /// Returns `true` if this call established a NEW pending-parse lifecycle
@@ -993,6 +1021,16 @@ impl ParseWorker {
     /// burst increments the counter once per coalesced-away edit but only
     /// ever decrements it once (when the *one* surviving job eventually
     /// publishes), permanently over-counting (#3660).
+    /// Test-only admission that goes through the production path and asserts
+    /// the job was accepted.
+    ///
+    /// Deliberately a delegate rather than a second admission function. The
+    /// coalescing, settlement, metrics, and panic-recovery tests below are the
+    /// proof that those invariants hold for the admission production actually
+    /// uses; a parallel `enqueue` skipping `try_enqueue`'s shutdown and
+    /// liveness checks would leave every one of them green against a path no
+    /// caller takes.
+    #[cfg(test)]
     pub(crate) fn enqueue(
         &self,
         uri: String,
@@ -1001,14 +1039,38 @@ impl ParseWorker {
         generation_handle: Arc<AtomicU32>,
         text: Arc<str>,
     ) -> bool {
-        self.coordinator.enqueue(ParseJob {
-            uri,
-            normalized_uri,
-            generation,
-            generation_handle,
-            text,
-            enqueued_at: Instant::now(),
-        })
+        let admitted = self.try_enqueue(uri, normalized_uri, generation, generation_handle, text);
+        assert!(
+            admitted.is_ok(),
+            "test enqueue refused: the pool must be operational and not shut down here"
+        );
+        admitted.unwrap_or(false)
+    }
+
+    /// Try to enqueue a job, rejecting it when shutdown has already won the
+    /// admission race. The caller owns the synchronous fallback for a
+    /// rejected job.
+    pub(crate) fn try_enqueue(
+        &self,
+        uri: String,
+        normalized_uri: String,
+        generation: u32,
+        generation_handle: Arc<AtomicU32>,
+        text: Arc<str>,
+    ) -> Result<bool, ()> {
+        if !self.is_operational() {
+            return Err(());
+        }
+        self.coordinator
+            .try_enqueue(ParseJob {
+                uri,
+                normalized_uri,
+                generation,
+                generation_handle,
+                text,
+                enqueued_at: Instant::now(),
+            })
+            .map_err(|_| ())
     }
 
     /// Test-API-only consumer (`test_parse_worker_metrics`); dead in the
@@ -2291,6 +2353,24 @@ mod tests {
             !worker.is_operational(),
             "a pool with only finished (dead) handles must report not-operational (#3664)"
         );
+    }
+
+    #[test]
+    fn try_enqueue_rejects_after_shutdown_without_retaining_a_job() {
+        let uri = "file:///rejected-after-shutdown.pl";
+        let (documents, generation_handle) = one_doc(uri, "my $x = 1;\n");
+        let (callback, _calls) = counting_callback();
+        let worker = ParseWorker::spawn(documents, callback);
+        worker.coordinator.request_shutdown();
+
+        let result = worker.try_enqueue(
+            uri.to_string(),
+            uri.to_string(),
+            1,
+            generation_handle,
+            Arc::from("my $x = 2;\n"),
+        );
+        assert!(result.is_err(), "shutdown must reject new async work");
     }
 
     // ---- Lifecycle: LspServer <-> ParseWorker must not form an Arc cycle -

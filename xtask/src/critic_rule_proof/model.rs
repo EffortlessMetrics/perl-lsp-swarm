@@ -11,6 +11,15 @@ pub const STATUS_PATH: &str = "docs/project/status/critic_rule_proof.md";
 pub const FIXTURE_ROOT: &str = "fixtures/critic-rule-proof";
 pub const ISSUE: u32 = 6973;
 
+/// Closed four-rule #6973 cohort. Extra catalog rows are rejected so remaining
+/// classes stay missing on purpose (#14560). Catalog expansion is #6978.
+pub const PILOT_RULES: &[&str] = &[
+    "native.testing.require_use_strict",
+    "native.common.assignment_in_condition",
+    "native.security.string_eval",
+    "native.regex.capture_without_match",
+];
+
 /// Resolve a declared fixture path beneath the repository root and require it
 /// to stay inside the fixture root. Absolute paths, non-normal components
 /// (`.`, `..`, roots, prefixes), and symlinked escapes are rejected so a

@@ -197,11 +197,18 @@ fn spawn_reader_thread<R: std::io::Read + Send + 'static>(
         let mut msg_reader = ContentLengthMessageReader::new();
         let mut buf_reader = std::io::BufReader::new(reader);
         loop {
-            match msg_reader.read_next(&mut buf_reader) {
-                Ok(Some(request)) => {
+            match msg_reader.read_next_outcome(&mut buf_reader) {
+                Ok(Some(Ok(request))) => {
                     if tx.blocking_send(request).is_err() {
                         break;
                     }
+                }
+                Ok(Some(Err(error))) => {
+                    tracing::warn!(
+                        stage = error.stage().as_str(),
+                        payload_bytes = error.payload_bytes(),
+                        "incoming message rejected"
+                    );
                 }
                 Ok(None) => break,
                 Err(error) => {

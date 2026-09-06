@@ -599,7 +599,7 @@ jobs:
 
       - name: Install just
         if: needs.draft-pr-check.outputs.api_scope == 'true'
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
         with:
           tool: just
 
@@ -750,7 +750,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
         with:
           tool: just
 
@@ -1014,7 +1014,7 @@ jobs:
             # The cheapest control remains first for fast diagnosis, but the
             # shard runner now records every independent member before it
             # returns the aggregate failure verdict.
-            gates: msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check version_sync
+            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof release_trust_invariants docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check version_sync
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
@@ -1050,7 +1050,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
         with:
           tool: just
 
@@ -1363,7 +1363,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
         with:
           tool: just
 
@@ -1573,7 +1573,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
         with:
           tool: just
 
@@ -1592,7 +1592,7 @@ jobs:
       # both integration targets here because compile-all-targets alone cannot
       # execute their assertions, and the routed pr-fast lane is advisory.
       - name: Legacy parity library authority (required merge surface)
-        run: cargo test -p perl-kwalitee --test legacy_parity --locked -- --nocapture
+        run: cargo test -p perl-release-readiness --test legacy_parity --locked -- --nocapture
 
       - name: Legacy parity CLI authority (required merge surface)
         run: cargo test -p xtask --test perl_kwalitee_parity --locked -- --nocapture
@@ -1657,6 +1657,15 @@ jobs:
       - name: Dependabot dependency-name contract (required merge surface)
         run: cargo test -p xtask --test dependabot_cargo_dependency_names --locked -- --nocapture
 
+      # #13477: same required-surface reasoning as the dependency-name
+      # contract above. This suite asserts that the Cargo row keeps
+      # `prefix: "chore"` plus `include: "scope"` and rejects
+      # `prefix: "chore(deps)"` plus that include. `.github/dependabot.yml`
+      # is not in ci-scope's CI_CONFIG_PATHS, so a config-only revert of
+      # #13482 would never reach the advisory routed lane.
+      - name: Dependabot Cargo commit-message contract (required merge surface)
+        run: cargo test -p xtask --test dependabot_cargo_commit_message --locked -- --nocapture
+
       # #13484: nothing executed the `xtask` *bin* unit tests. The merge gate
       # runs `cargo test --workspace --lib` (a bin is not a lib target) and no
       # workflow names `--bin xtask`, so `tasks::changelog::tests` — the proof
@@ -1678,6 +1687,18 @@ jobs:
       # drop from this surface.
       - name: Changelog fragment gate contract (required merge surface)
         run: cargo test -p xtask --bin xtask --locked -- --nocapture changelog changie
+
+      # #14180: same required-surface reasoning as the Cargo dependency-name
+      # contract above. This suite asserts that the GitHub Actions `/` and npm
+      # `/vscode-extension` rows keep `prefix: "chore"` plus `include: "scope"`
+      # and reject `prefix: "chore(deps)"` plus that include. Cargo is out of
+      # this claim (#13482 / #14898). `.github/dependabot.yml` is not in
+      # ci-scope's CI_CONFIG_PATHS, so a config-only revert would never reach
+      # the advisory routed lane. Inserted after the changelog fragment gate
+      # so it does not occupy the insertion site #14898 uses after the Cargo
+      # name contract.
+      - name: Dependabot GitHub Actions and npm commit-message contract (required merge surface)
+        run: cargo test -p xtask --test dependabot_gha_npm_commit_message --locked -- --nocapture
 
       # #11933: the freshness cfg-binding test lives in
       # `xtask/tests/gate_policy_profile_tests.rs`. unit_routed_full only

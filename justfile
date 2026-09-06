@@ -1012,6 +1012,10 @@ ci-release-history:
 ci-install-target-selection:
     bash scripts/tests/test-install-target-selection.sh
 
+# Validate Termux detection, wrapper ownership, and source-mode selection.
+ci-install-termux-detection:
+    bash scripts/tests/test-installer-termux-detection.sh
+
 # Run gates with JSON output (for CI)
 gates-json tier='merge-gate':
     @cargo xtask gates --tier {{tier}} --format json --receipt

@@ -180,6 +180,21 @@ fn receipt_notes(receipt: &Value) -> Result<Vec<&str>, Box<dyn std::error::Error
     Ok(notes.iter().filter_map(Value::as_str).collect())
 }
 
+fn source_backed_runtime_receipt(receipt: &Value) -> Result<&Value, Box<dyn std::error::Error>> {
+    let value = receipt.get("source_backed_receipt").ok_or("missing source_backed_receipt")?;
+    if value.is_null() {
+        return Err(format!(
+            "expected semantic source-backed receipt, got runtime receipt: {receipt}"
+        )
+        .into());
+    }
+    assert!(
+        receipt.get("compiler_receipt").is_none(),
+        "source-backed runtime receipt must not carry a nominal compiler_receipt key: {receipt}"
+    );
+    Ok(value)
+}
+
 fn trace_with_fields(
     traces: &[Value],
     source: &str,
@@ -228,17 +243,14 @@ fn document_symbols_runtime_quality_receipt_reports_source_backed_live_cutover()
     assert_eq!(
         receipt.get("no_live_behavior_change").and_then(Value::as_bool),
         Some(false),
-        "source-backed module symbols should use the partial-live compiler path"
+        "source-backed module symbols should use the partial-live source-backed path"
     );
-    let compiler_receipt = receipt.get("compiler_receipt").ok_or("missing compiler receipt")?;
-    let source_backed_count = compiler_receipt
+    let source_backed = source_backed_runtime_receipt(&receipt)?;
+    let source_backed_count = source_backed
         .get("source_backed_count")
         .and_then(Value::as_u64)
         .ok_or("missing source_backed_count")?;
-    assert!(
-        source_backed_count > 0,
-        "module fixture must produce source-backed compiler document symbols"
-    );
+    assert!(source_backed_count > 0, "module fixture must produce source-backed document symbols");
     Ok(())
 }
 
@@ -328,8 +340,14 @@ fn document_symbols_runtime_quality_receipt_notes_record_quality_proof()
     assert!(
         notes
             .iter()
-            .any(|note| note.contains("source-backed parser syntax document symbols are live")),
-        "notes must record the source-backed live cutover: {notes:?}"
+            .any(|note| note.contains("source-backed parser syntax document symbols are live"))
+            && notes.iter().any(|note| note.contains("source_backed_candidates="))
+            && notes.iter().all(|note| !note.contains("source_backed_compiler_symbols=")),
+        "notes must record the source-backed live cutover without a compiler producer key: {notes:?}"
+    );
+    assert!(
+        receipt.get("compiler_receipt").is_none(),
+        "document-symbol live proof must not emit a nominal compiler_receipt key: {receipt}"
     );
     Ok(())
 }
@@ -356,11 +374,15 @@ fn document_symbols_runtime_quality_receipt_handles_unknown_uri_gracefully()
     );
     assert_eq!(
         receipt
-            .get("compiler_receipt")
+            .get("source_backed_receipt")
             .and_then(|value| value.get("reason"))
             .and_then(Value::as_str),
         Some("unknown_uri"),
         "unknown URI receipt must record fallback reason"
+    );
+    assert!(
+        receipt.get("compiler_receipt").is_none(),
+        "unknown URI proof must not emit a nominal compiler_receipt key: {receipt}"
     );
     Ok(())
 }
@@ -433,7 +455,7 @@ fn workspace_symbols_runtime_quality_receipt_count_matches_live_result()
 }
 
 #[test]
-fn workspace_symbols_runtime_quality_receipt_records_source_backed_compiler_slice()
+fn workspace_symbols_runtime_quality_receipt_records_source_backed_slice()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_server();
     open_symbol_workspace(&server)?;
@@ -443,21 +465,21 @@ fn workspace_symbols_runtime_quality_receipt_records_source_backed_compiler_slic
         .test_workspace_symbols_runtime_quality_receipt(Some(params))?
         .ok_or("missing workspace symbols receipt")?;
 
-    let compiler_receipt = receipt.get("compiler_receipt").ok_or("missing compiler_receipt")?;
-    assert_eq!(compiler_receipt.get("source").and_then(Value::as_str), Some("CompilerFact"));
-    assert_eq!(compiler_receipt.get("provenance").and_then(Value::as_str), Some("ExactAst"));
-    assert_eq!(compiler_receipt.get("confidence").and_then(Value::as_str), Some("High"));
-    assert_eq!(compiler_receipt.get("freshness").and_then(Value::as_str), Some("Fresh"));
-    let source_backed_count = compiler_receipt
+    let source_backed = source_backed_runtime_receipt(&receipt)?;
+    assert_eq!(source_backed.get("source").and_then(Value::as_str), Some("CompilerFact"));
+    assert_eq!(source_backed.get("provenance").and_then(Value::as_str), Some("ExactAst"));
+    assert_eq!(source_backed.get("confidence").and_then(Value::as_str), Some("High"));
+    assert_eq!(source_backed.get("freshness").and_then(Value::as_str), Some("Fresh"));
+    let source_backed_count = source_backed
         .get("source_backed_count")
         .and_then(Value::as_u64)
         .ok_or("missing source_backed_count")?;
     assert!(
         source_backed_count > 0,
-        "ready workspace index query must expose source-backed compiler symbols"
+        "ready workspace index query must expose source-backed symbols"
     );
     assert_eq!(
-        compiler_receipt.get("claim_boundary").and_then(Value::as_str),
+        source_backed.get("claim_boundary").and_then(Value::as_str),
         Some(
             "ready workspace index source-backed symbols plus labeled source-backed generated/framework pilot symbols only; dynamic, stale, ambiguous, fallback/noise, and partial-index candidates remain gated"
         )
@@ -500,38 +522,38 @@ fn workspace_symbols_runtime_quality_receipt_records_labeled_generated_pilot()
         "live workspace-symbol output must include the explicit generated/framework label: {live_symbols:?}"
     );
 
-    let compiler_receipt = receipt.get("compiler_receipt").ok_or("missing compiler receipt")?;
+    let source_backed = source_backed_runtime_receipt(&receipt)?;
     assert_eq!(
-        compiler_receipt.get("source").and_then(Value::as_str),
+        source_backed.get("source").and_then(Value::as_str),
         Some("FrameworkAdapter"),
         "generated-only pilot receipts must not report exact compiler facts"
     );
     assert_eq!(
-        compiler_receipt.get("provenance").and_then(Value::as_str),
+        source_backed.get("provenance").and_then(Value::as_str),
         Some("FrameworkAnchor"),
         "generated-only pilot receipts must report source-anchor semantics"
     );
     assert_eq!(
-        compiler_receipt.get("confidence").and_then(Value::as_str),
+        source_backed.get("confidence").and_then(Value::as_str),
         Some("Medium"),
         "generated-only pilot receipts must not overclaim high confidence"
     );
     assert_eq!(
-        compiler_receipt.get("source_backed_count").and_then(Value::as_u64),
+        source_backed.get("source_backed_count").and_then(Value::as_u64),
         Some(0),
         "generated pilot must not inflate exact source-backed syntax count"
     );
     assert_eq!(
-        compiler_receipt.get("generated_pilot_count").and_then(Value::as_u64),
+        source_backed.get("generated_pilot_count").and_then(Value::as_u64),
         Some(1),
         "generated pilot count must record the source-backed framework member"
     );
     assert_eq!(
-        compiler_receipt.get("generated_pilot_location_semantics").and_then(Value::as_str),
+        source_backed.get("generated_pilot_location_semantics").and_then(Value::as_str),
         Some("source_anchor_not_exact_generated_body"),
         "generated pilot must not imply exact generated method bodies"
     );
-    let boundary = compiler_receipt
+    let boundary = source_backed
         .get("claim_boundary")
         .and_then(Value::as_str)
         .ok_or("missing claim boundary")?;
@@ -589,34 +611,34 @@ fn workspace_symbols_runtime_quality_receipt_proves_scoped_generated_symbol_cuto
         "generated-only query must be the scoped generated-label live pilot"
     );
 
-    let compiler_receipt = receipt.get("compiler_receipt").ok_or("missing compiler receipt")?;
+    let source_backed = source_backed_runtime_receipt(&receipt)?;
     assert_eq!(
-        compiler_receipt.get("source").and_then(Value::as_str),
+        source_backed.get("source").and_then(Value::as_str),
         Some("FrameworkAdapter"),
         "generated cutover must stay framework-adapter scoped"
     );
     assert_eq!(
-        compiler_receipt.get("provenance").and_then(Value::as_str),
+        source_backed.get("provenance").and_then(Value::as_str),
         Some("FrameworkAnchor"),
         "generated cutover must be anchored to the framework declaration"
     );
     assert_eq!(
-        compiler_receipt.get("confidence").and_then(Value::as_str),
+        source_backed.get("confidence").and_then(Value::as_str),
         Some("Medium"),
         "generated cutover must not overclaim high-confidence exact source facts"
     );
     assert_eq!(
-        compiler_receipt.get("source_backed_count").and_then(Value::as_u64),
+        source_backed.get("source_backed_count").and_then(Value::as_u64),
         Some(0),
         "generated pilot must not inflate exact source-backed syntax counts"
     );
     assert_eq!(
-        compiler_receipt.get("generated_pilot_count").and_then(Value::as_u64),
+        source_backed.get("generated_pilot_count").and_then(Value::as_u64),
         Some(1),
         "generated pilot must count only the labeled framework member"
     );
     assert_eq!(
-        compiler_receipt.get("generated_pilot_location_semantics").and_then(Value::as_str),
+        source_backed.get("generated_pilot_location_semantics").and_then(Value::as_str),
         Some("source_anchor_not_exact_generated_body"),
         "generated pilot must not claim exact generated method bodies"
     );
@@ -700,34 +722,34 @@ fn workspace_symbols_runtime_quality_receipt_proves_predicate_generated_symbol_c
         "predicate query must remain inside the scoped generated-label live pilot"
     );
 
-    let compiler_receipt = receipt.get("compiler_receipt").ok_or("missing compiler receipt")?;
+    let source_backed = source_backed_runtime_receipt(&receipt)?;
     assert_eq!(
-        compiler_receipt.get("source").and_then(Value::as_str),
+        source_backed.get("source").and_then(Value::as_str),
         Some("FrameworkAdapter"),
         "predicate cutover must stay framework-adapter scoped"
     );
     assert_eq!(
-        compiler_receipt.get("provenance").and_then(Value::as_str),
+        source_backed.get("provenance").and_then(Value::as_str),
         Some("FrameworkAnchor"),
         "predicate cutover must be anchored to the framework declaration"
     );
     assert_eq!(
-        compiler_receipt.get("confidence").and_then(Value::as_str),
+        source_backed.get("confidence").and_then(Value::as_str),
         Some("Medium"),
         "predicate cutover must not overclaim high-confidence exact source facts"
     );
     assert_eq!(
-        compiler_receipt.get("source_backed_count").and_then(Value::as_u64),
+        source_backed.get("source_backed_count").and_then(Value::as_u64),
         Some(0),
         "predicate pilot must not inflate exact source-backed syntax counts"
     );
     assert_eq!(
-        compiler_receipt.get("generated_pilot_count").and_then(Value::as_u64),
+        source_backed.get("generated_pilot_count").and_then(Value::as_u64),
         Some(1),
         "predicate pilot must count only the labeled generated member"
     );
     assert_eq!(
-        compiler_receipt.get("generated_pilot_location_semantics").and_then(Value::as_str),
+        source_backed.get("generated_pilot_location_semantics").and_then(Value::as_str),
         Some("source_anchor_not_exact_generated_body"),
         "predicate pilot must not claim exact generated method bodies"
     );
@@ -771,9 +793,13 @@ fn workspace_symbols_runtime_quality_receipt_blocks_generated_no_source_candidat
         "generated/no-source proof must not broaden live workspace-symbol behavior"
     );
     assert_eq!(
-        receipt.get("compiler_receipt"),
+        receipt.get("source_backed_receipt"),
         Some(&Value::Null),
-        "no-source runtime-generated method must not produce source-backed compiler receipt"
+        "no-source runtime-generated method must not produce a source-backed receipt"
+    );
+    assert!(
+        receipt.get("compiler_receipt").is_none(),
+        "no-source proof must not emit a nominal compiler_receipt key: {receipt}"
     );
 
     let live_symbols = receipt
@@ -883,24 +909,24 @@ fn workspace_symbols_runtime_quality_receipt_records_generated_expansion_rank_no
         "mixed source/generated pilot query is part of the narrow live slice"
     );
 
-    let compiler_receipt = receipt.get("compiler_receipt").ok_or("missing compiler receipt")?;
+    let source_backed = source_backed_runtime_receipt(&receipt)?;
     assert_eq!(
-        compiler_receipt.get("source").and_then(Value::as_str),
+        source_backed.get("source").and_then(Value::as_str),
         Some("CompilerFact+FrameworkAdapter"),
         "mixed receipt must identify exact compiler facts plus generated framework anchors"
     );
     assert_eq!(
-        compiler_receipt.get("provenance").and_then(Value::as_str),
+        source_backed.get("provenance").and_then(Value::as_str),
         Some("MixedExactAstFrameworkAnchor"),
         "mixed receipt must keep generated/framework provenance distinct"
     );
     assert_eq!(
-        compiler_receipt.get("source_backed_count").and_then(Value::as_u64),
+        source_backed.get("source_backed_count").and_then(Value::as_u64),
         Some(1),
         "query must include the exact source-backed Symbols::Quality::name symbol"
     );
     assert_eq!(
-        compiler_receipt.get("generated_pilot_count").and_then(Value::as_u64),
+        source_backed.get("generated_pilot_count").and_then(Value::as_u64),
         Some(1),
         "query must include the labeled generated/framework display_name symbol"
     );
@@ -1097,10 +1123,9 @@ fn workspace_symbols_runtime_quality_receipt_blocks_generated_dynamic_false_exac
         "generated pilot must not expose an unlabeled exact generated symbol before edit: {initial_symbols:?}"
     );
 
-    let compiler_receipt =
-        initial_receipt.get("compiler_receipt").ok_or("missing compiler receipt")?;
+    let source_backed = source_backed_runtime_receipt(&initial_receipt)?;
     assert_eq!(
-        compiler_receipt.get("generated_pilot_location_semantics").and_then(Value::as_str),
+        source_backed.get("generated_pilot_location_semantics").and_then(Value::as_str),
         Some("source_anchor_not_exact_generated_body"),
         "generated workspace symbols must remain source anchors, not exact generated bodies"
     );
@@ -1195,20 +1220,19 @@ fn workspace_symbols_runtime_quality_receipt_blocks_generated_dynamic_false_exac
         "post-edit generated pilot must still avoid unlabeled exact generated symbols: {updated_symbols:?}"
     );
 
-    let updated_compiler_receipt =
-        updated_receipt.get("compiler_receipt").ok_or("missing updated compiler receipt")?;
+    let updated_source_backed = source_backed_runtime_receipt(&updated_receipt)?;
     assert_eq!(
-        updated_compiler_receipt.get("freshness").and_then(Value::as_str),
+        updated_source_backed.get("freshness").and_then(Value::as_str),
         Some("Fresh"),
         "post-edit generated pilot receipt must stay fresh"
     );
     assert_eq!(
-        updated_compiler_receipt.get("generated_pilot_count").and_then(Value::as_u64),
+        updated_source_backed.get("generated_pilot_count").and_then(Value::as_u64),
         Some(1),
         "post-edit generated pilot count must reflect the fresh edited symbol"
     );
     assert_eq!(
-        updated_compiler_receipt.get("generated_pilot_location_semantics").and_then(Value::as_str),
+        updated_source_backed.get("generated_pilot_location_semantics").and_then(Value::as_str),
         Some("source_anchor_not_exact_generated_body"),
         "post-edit generated symbol must remain a source-anchor location"
     );
@@ -1285,8 +1309,9 @@ fn workspace_symbols_runtime_quality_receipt_notes_record_quality_proof()
         "notes must identify this as a workspace-symbol runtime quality receipt: {notes:?}"
     );
     assert!(
-        notes.iter().any(|note| note.contains("source_backed_compiler_symbols=")),
-        "notes must record source-backed compiler symbol count: {notes:?}"
+        notes.iter().any(|note| note.contains("source_backed_candidates="))
+            && notes.iter().all(|note| !note.contains("source_backed_compiler_symbols=")),
+        "notes must record source-backed candidate count without a compiler producer key: {notes:?}"
     );
     Ok(())
 }
@@ -1306,6 +1331,38 @@ fn workspace_symbols_runtime_quality_receipt_handles_empty_query()
         receipt.get("no_live_behavior_change").and_then(Value::as_bool),
         Some(true),
         "receipt must report no live behavior change for empty query"
+    );
+    assert_eq!(
+        receipt.get("source_backed_receipt"),
+        Some(&Value::Null),
+        "empty query must keep the source-backed receipt key with a null producer payload"
+    );
+    assert!(
+        receipt.get("compiler_receipt").is_none(),
+        "empty query must not emit a nominal compiler_receipt key: {receipt}"
+    );
+    Ok(())
+}
+
+#[test]
+fn document_symbols_runtime_quality_receipt_missing_params_rejects_nominal_compiler_key()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    let receipt = server
+        .test_document_symbols_runtime_quality_receipt(None)?
+        .ok_or("missing document symbols receipt")?;
+
+    assert!(
+        receipt.get("compiler_receipt").is_none(),
+        "missing-params document-symbol proof must not emit a nominal compiler_receipt key: {receipt}"
+    );
+    assert_eq!(
+        receipt
+            .get("source_backed_receipt")
+            .and_then(|value| value.get("reason"))
+            .and_then(Value::as_str),
+        Some("missing_params"),
+        "missing-params proof must still name the source-backed receipt key"
     );
     Ok(())
 }

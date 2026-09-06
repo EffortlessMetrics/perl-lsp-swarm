@@ -1889,7 +1889,7 @@ use warnings;
     ///   categorically outside the promoted lexical slice —
     ///   `references.rs::may_use_source_backed_references` only allows
     ///   variable symbols through when `include_declaration == false`
-    ///   (`!symbol_is_variable || (ENABLE_PIR_A_LEXICAL_REFERENCES_LIVE && !include_declaration)`).
+    ///   (`!symbol_is_variable || (ENABLE_SEMANTIC_SOURCE_BACKED_REFERENCES_LIVE && !include_declaration)`).
     ///   Non-activation for this request shape is a policy exclusion, not a
     ///   gap — it says nothing about entity-linking or declaration-shape
     ///   correctness. (Bareword/sub symbols are unaffected: `symbol_is_variable`

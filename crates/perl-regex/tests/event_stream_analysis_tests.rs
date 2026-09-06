@@ -232,6 +232,45 @@ fn policy_limits_consume_the_same_group_and_unicode_events()
 }
 
 #[test]
+fn policy_limit_diagnostics_keep_identity_range_and_emit_once()
+-> Result<(), Box<dyn std::error::Error>> {
+    let validator = RegexValidator::with_config(RegexValidationConfig {
+        max_nesting: 1,
+        max_unicode_properties: 1,
+        max_branch_reset_branches: 1,
+    });
+    let pattern = r"(?<=(?<=a))(?<=(?<=b))(?|(?|x)|y|z)\p{L}\p{N}";
+    let analysis = validator.analyze(pattern);
+
+    let lookbehind = analysis
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == RegexDiagnosticCode::LookbehindNestingLimit)
+        .collect::<Vec<_>>();
+    assert_eq!(lookbehind.len(), 1);
+    assert_eq!(lookbehind[0].limit, Some(1));
+    assert_eq!(lookbehind[0].range.start, 4);
+    assert_eq!(lookbehind[0].range.end, 8);
+
+    let branch_reset = analysis
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == RegexDiagnosticCode::BranchResetNestingLimit)
+        .collect::<Vec<_>>();
+    assert_eq!(branch_reset.len(), 1);
+    assert_eq!(branch_reset[0].limit, Some(1));
+
+    let branches = analysis
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == RegexDiagnosticCode::BranchResetBranchLimit)
+        .collect::<Vec<_>>();
+    assert_eq!(branches.len(), 1);
+    assert_eq!(branches[0].limit, Some(1));
+    Ok(())
+}
+
+#[test]
 fn malformed_structure_is_retained_without_fabricated_findings()
 -> Result<(), Box<dyn std::error::Error>> {
     let analysis = RegexValidator::new().analyze("[unterminated");

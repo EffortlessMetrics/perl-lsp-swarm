@@ -18,7 +18,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{Digest, fnv1a};
 
 /// Schema version for [`ProjectEnvironmentSnapshot`].
-pub const PROJECT_ENVIRONMENT_SCHEMA_VERSION: u32 = 2;
+///
+/// Bump when the snapshot contract or fingerprint material changes. Version 3
+/// includes each published path's redacted `public_id` in fingerprint material.
+pub const PROJECT_ENVIRONMENT_SCHEMA_VERSION: u32 = 3;
 
 const ENVIRONMENT_INPUT_ID_DOMAIN: &str = "project_environment.input.v1";
 const INCLUDE_ENTRY_ID_DOMAIN: &str = "project_environment.include.v1";
@@ -562,6 +565,11 @@ pub struct EnvironmentLimitation {
 }
 
 /// Deterministic identity of a complete environment snapshot.
+///
+/// Fingerprint material includes each published path's redacted
+/// [`EnvironmentPathRef::public_id`] alongside the internal `normalized` half,
+/// so a cache keyed on this identity cannot serve a receipt whose published
+/// identities no longer match the snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct EnvironmentFingerprint(Digest);
@@ -1449,7 +1457,12 @@ fn compute_fingerprint(
 
     if let Some(interpreter) = selected_interpreter {
         push_field(&mut material, "interpreter.logical", interpreter.logical_id.as_str());
-        push_field(&mut material, "interpreter.path", interpreter.executable.normalized.as_str());
+        push_path_ref(
+            &mut material,
+            "interpreter.path",
+            "interpreter.public_id",
+            &interpreter.executable,
+        );
         push_field(
             &mut material,
             "interpreter.evidence",
@@ -1461,7 +1474,7 @@ fn compute_fingerprint(
     for entry in include_entries {
         push_field(&mut material, "include.id", entry.id.as_str());
         push_field(&mut material, "include.role", entry.role.identity_tag());
-        push_field(&mut material, "include.path", entry.path.normalized.as_str());
+        push_path_ref(&mut material, "include.path", "include.public_id", &entry.path);
         push_field(&mut material, "include.input", entry.input_id.as_str());
         push_field(&mut material, "include.order", &entry.source_order.to_string());
     }
@@ -1469,7 +1482,7 @@ fn compute_fingerprint(
     for root in project_roots {
         push_field(&mut material, "root.id", root.id.as_str());
         push_field(&mut material, "root.role", root.role.identity_tag());
-        push_field(&mut material, "root.path", root.path.normalized.as_str());
+        push_path_ref(&mut material, "root.path", "root.public_id", &root.path);
         push_field(&mut material, "root.input", root.input_id.as_str());
     }
 
@@ -1486,7 +1499,7 @@ fn compute_fingerprint(
         let tool_role = tool.role.identity_key();
         push_field(&mut material, "tool.role", tool_role.as_str());
         push_field(&mut material, "tool.name", tool.logical_name.as_str());
-        push_field(&mut material, "tool.path", tool.executable.normalized.as_str());
+        push_path_ref(&mut material, "tool.path", "tool.public_id", &tool.executable);
         push_field(&mut material, "tool.input", tool.input_id.as_str());
     }
 
@@ -1511,6 +1524,18 @@ fn push_field(output: &mut String, tag: &str, value: &str) {
     output.push_str(value.len().to_string().as_str());
     output.push(':');
     output.push_str(value);
+}
+
+/// Hash both halves of a published path so a redaction-map change cannot share
+/// an [`EnvironmentFingerprint`] with a different public receipt.
+fn push_path_ref(
+    output: &mut String,
+    path_tag: &'static str,
+    public_id_tag: &'static str,
+    path: &EnvironmentPathRef,
+) {
+    push_field(output, path_tag, path.normalized.as_str());
+    push_field(output, public_id_tag, path.public_id.as_str());
 }
 
 fn stable_id(domain: &str, fields: &[&str]) -> String {
@@ -1741,6 +1766,238 @@ mod tests {
         Ok(())
     }
 
+    #[derive(Clone)]
+    struct PublishedPaths {
+        interpreter: EnvironmentPathRef,
+        include: EnvironmentPathRef,
+        root: EnvironmentPathRef,
+        tool: EnvironmentPathRef,
+    }
+
+    fn published_paths_baseline() -> PublishedPaths {
+        PublishedPaths {
+            interpreter: EnvironmentPathRef::new("/opt/perl/bin/perl", "tool:perl"),
+            include: EnvironmentPathRef::new("/repo/lib", "path:lib"),
+            root: EnvironmentPathRef::new("/repo", "root:workspace"),
+            tool: EnvironmentPathRef::new("/opt/perl/bin/prove", "tool:prove"),
+        }
+    }
+
+    fn snapshot_with_published_paths(
+        paths: &PublishedPaths,
+    ) -> Result<ProjectEnvironmentSnapshot, EnvironmentBuildError> {
+        let interpreter_input = input(
+            "interpreter.selected",
+            EnvironmentInputAuthority::UserConfiguration,
+            "perl",
+            "settings",
+        );
+        let include_input = input(
+            "include.configured",
+            EnvironmentInputAuthority::UserConfiguration,
+            "lib",
+            "client",
+        );
+        let root_input = input(
+            "root.workspace",
+            EnvironmentInputAuthority::WorkspaceConvention,
+            "root",
+            "workspace",
+        );
+        let tool_input = input(
+            "tool.prove",
+            EnvironmentInputAuthority::WorkspaceConvention,
+            "prove",
+            "path_search",
+        );
+
+        ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+            .with_input(interpreter_input.clone())
+            .with_input(include_input.clone())
+            .with_input(root_input.clone())
+            .with_input(tool_input.clone())
+            .with_selected_interpreter(InterpreterIdentityRef {
+                logical_id: "perl:selected".to_string(),
+                executable: paths.interpreter.clone(),
+                evidence_fingerprint: Digest::of("probe"),
+                input_id: interpreter_input.id,
+            })
+            .with_include_entry(IncludeEntry::new(
+                IncludeEntryRole::WorkspaceConfigured,
+                paths.include.clone(),
+                include_input.id,
+                0,
+            ))
+            .with_project_root(ProjectRoot::new(
+                ProjectRootRole::Workspace,
+                paths.root.clone(),
+                root_input.id,
+            ))
+            .with_tool_candidate(ToolCandidate::new(
+                ToolCandidateRole::TestRunner,
+                "prove",
+                paths.tool.clone(),
+                tool_input.id,
+            ))
+            .build()
+    }
+
+    fn published_path_halves(
+        snapshot: &ProjectEnvironmentSnapshot,
+    ) -> Vec<(&'static str, &str, &str)> {
+        let mut halves = Vec::new();
+        if let Some(interpreter) = &snapshot.selected_interpreter {
+            halves.push((
+                "selected_interpreter",
+                interpreter.executable.normalized.as_str(),
+                interpreter.executable.public_id.as_str(),
+            ));
+        }
+        for entry in &snapshot.include_entries {
+            halves.push((
+                "include_entry",
+                entry.path.normalized.as_str(),
+                entry.path.public_id.as_str(),
+            ));
+        }
+        for root in &snapshot.project_roots {
+            halves.push((
+                "project_root",
+                root.path.normalized.as_str(),
+                root.path.public_id.as_str(),
+            ));
+        }
+        for tool in &snapshot.tool_candidates {
+            halves.push((
+                "tool_candidate",
+                tool.executable.normalized.as_str(),
+                tool.executable.public_id.as_str(),
+            ));
+        }
+        halves
+    }
+
+    fn published_normalized_halves(
+        snapshot: &ProjectEnvironmentSnapshot,
+    ) -> Vec<(&'static str, &str)> {
+        published_path_halves(snapshot)
+            .into_iter()
+            .map(|(owner, normalized, _)| (owner, normalized))
+            .collect()
+    }
+
+    fn published_public_ids(snapshot: &ProjectEnvironmentSnapshot) -> Vec<(&'static str, &str)> {
+        published_path_halves(snapshot)
+            .into_iter()
+            .map(|(owner, _, public_id)| (owner, public_id))
+            .collect()
+    }
+
+    fn assert_redaction_map_moves_fingerprint(
+        baseline: &ProjectEnvironmentSnapshot,
+        variant: &ProjectEnvironmentSnapshot,
+        owner: &str,
+    ) {
+        assert_eq!(
+            published_normalized_halves(baseline),
+            published_normalized_halves(variant),
+            "{owner}: every normalized half must stay equal so a fingerprint move cannot be blamed on an internal path change"
+        );
+        assert_ne!(
+            published_public_ids(baseline),
+            published_public_ids(variant),
+            "{owner}: the published redaction map must actually change"
+        );
+        assert_ne!(
+            baseline.public_receipt(),
+            variant.public_receipt(),
+            "{owner}: public receipts must differ when the redaction map changes"
+        );
+        assert_ne!(
+            baseline.fingerprint, variant.fingerprint,
+            "{owner}: EnvironmentFingerprint must move with the published identities"
+        );
+    }
+
+    #[test]
+    fn a_receipt_redaction_difference_moves_the_environment_fingerprint()
+    -> Result<(), EnvironmentBuildError> {
+        let baseline_paths = published_paths_baseline();
+        let baseline = snapshot_with_published_paths(&baseline_paths)?;
+        assert_eq!(
+            published_path_halves(&baseline)
+                .into_iter()
+                .map(|(owner, _, _)| owner)
+                .collect::<Vec<_>>(),
+            ["selected_interpreter", "include_entry", "project_root", "tool_candidate"],
+            "fixture must publish every path kind the receipt exposes"
+        );
+
+        let again = snapshot_with_published_paths(&baseline_paths)?;
+        assert_eq!(published_normalized_halves(&baseline), published_normalized_halves(&again));
+        assert_eq!(baseline.fingerprint, again.fingerprint);
+
+        let variants = [
+            ("selected_interpreter", {
+                let mut paths = baseline_paths.clone();
+                paths.interpreter =
+                    EnvironmentPathRef::new("/opt/perl/bin/perl", "tool:perl-redacted-b");
+                paths
+            }),
+            ("include_entry", {
+                let mut paths = baseline_paths.clone();
+                paths.include = EnvironmentPathRef::new("/repo/lib", "path:lib-redacted-b");
+                paths
+            }),
+            ("project_root", {
+                let mut paths = baseline_paths.clone();
+                paths.root = EnvironmentPathRef::new("/repo", "root:workspace-redacted-b");
+                paths
+            }),
+            ("tool_candidate", {
+                let mut paths = baseline_paths.clone();
+                paths.tool =
+                    EnvironmentPathRef::new("/opt/perl/bin/prove", "tool:prove-redacted-b");
+                paths
+            }),
+        ];
+
+        for (owner, paths) in variants {
+            let variant = snapshot_with_published_paths(&paths)?;
+            assert_redaction_map_moves_fingerprint(&baseline, &variant, owner);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn reassigned_public_ids_move_the_fingerprint_even_when_the_id_set_is_unchanged()
+    -> Result<(), EnvironmentBuildError> {
+        let baseline_paths = published_paths_baseline();
+        let baseline = snapshot_with_published_paths(&baseline_paths)?;
+
+        let mut swapped = baseline_paths;
+        std::mem::swap(&mut swapped.interpreter.public_id, &mut swapped.tool.public_id);
+        let variant = snapshot_with_published_paths(&swapped)?;
+
+        assert_eq!(published_normalized_halves(&baseline), published_normalized_halves(&variant));
+        let mut baseline_ids: Vec<&str> =
+            published_public_ids(&baseline).into_iter().map(|(_, id)| id).collect();
+        let mut variant_ids: Vec<&str> =
+            published_public_ids(&variant).into_iter().map(|(_, id)| id).collect();
+        baseline_ids.sort_unstable();
+        variant_ids.sort_unstable();
+        assert_eq!(
+            baseline_ids, variant_ids,
+            "the unordered public_id set is unchanged; only slot assignment differs"
+        );
+        assert_ne!(
+            baseline.fingerprint, variant.fingerprint,
+            "hashing the public_id bag without pairing it to its published path would miss this"
+        );
+        Ok(())
+    }
+
     #[test]
     fn behavior_bearing_changes_move_the_fingerprint() -> Result<(), EnvironmentBuildError> {
         let first =
@@ -1929,9 +2186,9 @@ mod tests {
     }
 
     #[test]
-    fn schema_v1_snapshots_are_rejected_after_the_v2_contract_bump()
+    fn prior_schema_snapshots_are_rejected_after_the_v3_contract_bump()
     -> Result<(), Box<dyn std::error::Error>> {
-        assert_eq!(PROJECT_ENVIRONMENT_SCHEMA_VERSION, 2);
+        assert_eq!(PROJECT_ENVIRONMENT_SCHEMA_VERSION, 3);
         let snapshot =
             ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
                 .with_input(input(
@@ -1941,16 +2198,22 @@ mod tests {
                     "client",
                 ))
                 .build()?;
-        let mut value = serde_json::to_value(&snapshot)?;
-        value["schema_version"] = serde_json::Value::from(1_u32);
-        let Err(error) = serde_json::from_value::<ProjectEnvironmentSnapshot>(value.clone()) else {
-            return Err(format!(
-                "v1 snapshots must not gain v2 authority implicitly: \
-                 deserialization unexpectedly succeeded for value: {value:?}"
-            )
-            .into());
-        };
-        assert!(error.to_string().contains("unsupported project environment schema version"));
+        for prior in [1_u32, 2_u32] {
+            let mut value = serde_json::to_value(&snapshot)?;
+            value["schema_version"] = serde_json::Value::from(prior);
+            let Err(error) = serde_json::from_value::<ProjectEnvironmentSnapshot>(value.clone())
+            else {
+                return Err(format!(
+                    "v{prior} snapshots must not gain v3 authority implicitly: \
+                     deserialization unexpectedly succeeded for value: {value:?}"
+                )
+                .into());
+            };
+            assert!(
+                error.to_string().contains("unsupported project environment schema version"),
+                "v{prior} rejection must name the schema mismatch: {error}"
+            );
+        }
         Ok(())
     }
 

@@ -1,0 +1,36 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-09-05",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14790",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/14788"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves only that CP00-EXPLICITLY-NOT-PROVEN ignores a neighboring-issue disclaimer when the closed issue's own claim is stated as fully proved."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990011,
+    "title": "fix(hir): represent one construct as an explicit boundary (#9000601)",
+    "body": "## Claim Boundary\n\nThis PR proves #9000601's claim in full.\n\nWork owned by #9000602 is not established.\n\nCloses #9000601."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9000601,
+      "title": "fix(hir): represent one construct as an explicit boundary",
+      "body": "## Acceptance\n\nThe named construct emits an explicit dynamic boundary and the neighboring issue retains the remaining families."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9000601,
+        "code": "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
+      }
+    ]
+  }
+}

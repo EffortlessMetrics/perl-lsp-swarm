@@ -3104,7 +3104,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::io::Write;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc as StdArc;
     use std::time::{Duration, Instant};
 
@@ -3113,6 +3113,28 @@ mod tests {
     fn resolved_temp_root(temp: &tempfile::TempDir) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let canonical = std::fs::canonicalize(temp.path())?;
         Ok(crate::execute_command::normalize_path_for_external_command(&canonical))
+    }
+
+    /// Production PL900 lookup: the document must bind to `expected_folder`,
+    /// then the folder-local `[perl].version` is returned. A tempfile spelling
+    /// mismatch fails closed here instead of looking like an isolation leak.
+    fn bound_folder_project_version(
+        server: &LspServer,
+        doc_uri: &str,
+        expected_folder: &Path,
+    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        let folder = server
+            .folder_for_doc_uri(doc_uri)
+            .ok_or_else(|| format!("document {doc_uri} is not bound to any workspace folder"))?;
+        if folder.path.as_deref() != Some(expected_folder) {
+            return Err(format!(
+                "document {doc_uri} bound to folder {:?}, expected {}",
+                folder.path,
+                expected_folder.display()
+            )
+            .into());
+        }
+        Ok(server.project_config_for_uri(doc_uri).and_then(|config| config.perl.version))
     }
 
     /// Shared-buffer writer for capturing outbound LSP notifications in tests.
@@ -3748,6 +3770,13 @@ mod tests {
         Ok(())
     }
 
+    /// Reloading one folder's `[perl].version` must not retarget a sibling
+    /// folder's PL900 fallback or invalidate its cached workspace report.
+    ///
+    /// Folder matching uses filesystem-path prefix, so both folders are built
+    /// from `resolved_temp_root`. A tempfile 8.3 / symlink spelling mismatch
+    /// fails the binding oracle rather than looking like an isolation leak
+    /// (#14862, #14854).
     #[test]
     fn workspace_reload_preserves_per_folder_project_version_isolation()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3804,6 +3833,16 @@ mod tests {
                 "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": source}
             })))?;
         }
+        assert_eq!(
+            bound_folder_project_version(&server, &first_uri, &first_folder)?,
+            Some("5.20".to_string()),
+            "first folder must start on the 5.20 project target"
+        );
+        assert_eq!(
+            bound_folder_project_version(&server, &second_uri, &second_folder)?,
+            Some("5.20".to_string()),
+            "second folder must start on the 5.20 project target"
+        );
 
         let first_report = server
             .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
@@ -3841,6 +3880,16 @@ mod tests {
         };
         assert_eq!(reloaded_first_config_generation, first_config_generation + 1);
         assert_eq!(reloaded_second_config_generation, second_config_generation);
+        assert_eq!(
+            bound_folder_project_version(&server, &first_uri, &first_folder)?,
+            Some("5.40".to_string()),
+            "first folder must accept the reloaded 5.40 target"
+        );
+        assert_eq!(
+            bound_folder_project_version(&server, &second_uri, &second_folder)?,
+            Some("5.20".to_string()),
+            "second folder must keep its 5.20 target after a sibling reload"
+        );
         let reloaded = server
             .handle_workspace_diagnostic(Some(json!({
                 "previousResultIds": [
