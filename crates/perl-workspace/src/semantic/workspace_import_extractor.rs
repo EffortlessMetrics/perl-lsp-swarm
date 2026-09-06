@@ -38,6 +38,7 @@
 //! | `Foo->import(@names)` (standalone)         | `ManualImport`      | `Dynamic`                |
 
 use crate::ast::{Node, NodeKind};
+use perl_parser_core::hir::arguments_outside_configuration_hashes;
 use perl_semantic_facts::{
     AnchorId, Confidence, FileId, ImportKind, ImportSpec, ImportSymbols, Provenance, UseLibFact,
 };
@@ -495,9 +496,13 @@ fn classify_args(args: &[String], module: &str, node: &Node) -> (ImportKind, Imp
 
     let mut explicit_names: Vec<String> = Vec::new();
     let mut tags: Vec<String> = Vec::new();
+    // These names reach the live `ImportExportIndex`, so a configuration hash
+    // read as an import list resolves its keys and values as symbols this file
+    // imported.
+    let requested = arguments_outside_configuration_hashes(args);
 
-    for arg in args {
-        let trimmed = arg.trim();
+    for trimmed in &requested {
+        let trimmed = *trimmed;
 
         if let Some(inner) = parse_qw_content(trimmed) {
             for word in inner.split_whitespace() {
@@ -525,11 +530,13 @@ fn classify_args(args: &[String], module: &str, node: &Node) -> (ImportKind, Imp
         }
     }
 
+    // Only arguments outside a configuration hash may keep this from being an
+    // empty import. `use Sub::Exporter -setup => { exports => [qw(foo)] };`
+    // requests nothing, and falling through to `Use`/`Default` would claim the
+    // file receives the module's default exports.
     if explicit_names.is_empty() && tags.is_empty() && !args.is_empty() {
-        let has_any_symbol = args.iter().any(|a| {
-            let t = a.trim();
-            looks_like_symbol_name(t) || parse_qw_content(t).is_some()
-        });
+        let has_any_symbol =
+            requested.iter().any(|t| looks_like_symbol_name(t) || parse_qw_content(t).is_some());
         if !has_any_symbol {
             return (ImportKind::UseEmpty, ImportSymbols::None);
         }
@@ -960,6 +967,135 @@ mod tests {
             dynamic_specs.is_empty(),
             "explicit import args must not produce a Dynamic spec, got: {dynamic_specs:#?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn trailing_configuration_hash_contributes_no_imported_symbols()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // These specs populate the live `ImportExportIndex`, so a key or value
+        // read out of a configuration hash resolves as a symbol the file
+        // imported. The statement asks for `param1` and `param2`; `key` and
+        // `value` configure the module.
+        let specs = parse_and_extract("use Another::Module 'param1', 'param2', {key => 'value'};");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Another::Module")
+            .ok_or("expected an ImportSpec for Another::Module")?;
+
+        assert_eq!(
+            spec.symbols,
+            ImportSymbols::Explicit(vec!["param1".to_string(), "param2".to_string()])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_configuration_only_use_is_an_empty_import_not_a_default_one()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Asserting the kind, not just the absence of leaked names. Skipping the
+        // hash body leaves nothing that looks like a symbol, and the
+        // empty-result fallback must reach `UseEmpty` on that basis rather than
+        // finding `exports` inside the skipped hash and falling through to
+        // `Use`/`Default` — which would claim this file receives Sub::Exporter's
+        // default exports.
+        let specs = parse_and_extract("use Sub::Exporter -setup => { exports => [qw(foo bar)] };");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Sub::Exporter")
+            .ok_or("expected an ImportSpec for Sub::Exporter")?;
+
+        assert_eq!(spec.kind, ImportKind::UseEmpty);
+        assert_eq!(spec.symbols, ImportSymbols::None);
+        Ok(())
+    }
+
+    #[test]
+    fn a_per_symbol_option_hash_keeps_the_installed_name() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // `foo => { -as => 'bar' }` installs `bar`, not `foo`. This pass does not
+        // model the rename — that is a stated non-goal — but skipping the option
+        // hash would drop `bar` and keep only `foo`, turning an imprecise answer
+        // into a wrong one. A dash-prefixed first key marks the per-symbol form.
+        let specs = parse_and_extract("use Module foo => { -as => 'bar' };");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Module")
+            .ok_or("expected an ImportSpec for Module")?;
+
+        match &spec.symbols {
+            ImportSymbols::Explicit(names) => assert!(
+                names.iter().any(|name| name == "bar"),
+                "the installed name must survive: {names:?}"
+            ),
+            other => return Err(format!("expected an explicit list, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_affix_rename_hash_publishes_neither_the_fragment_nor_a_composed_name()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `-postfix` carries a fragment, not a name: `ok => { -postfix => '_ok' }`
+        // installs `ok_ok`, as `perl-lsp-rs-core`'s Test2 provider composes it.
+        // Keeping the hash would publish `_ok`, which is nothing at all, so the
+        // affix options are skipped like any other configuration. Composing the
+        // alias is rename modelling and is not done here.
+        let specs = parse_and_extract("use Test2::V0 ok => { -postfix => '_ok' };");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Test2::V0")
+            .ok_or("expected an ImportSpec for Test2::V0")?;
+
+        match &spec.symbols {
+            ImportSymbols::Explicit(names) => {
+                assert!(
+                    !names.iter().any(|name| name == "_ok"),
+                    "a fragment is not an imported symbol: {names:?}"
+                );
+                assert!(
+                    !names.iter().any(|name| name == "postfix"),
+                    "an option key is not an imported symbol: {names:?}"
+                );
+            }
+            other => return Err(format!("expected an explicit list, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_configuration_hash_opening_with_a_dashed_key_is_still_skipped()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The converse of the per-symbol case. A dashed first key alone does not
+        // make a hash per-symbol options — an ordinary module configuration may
+        // open with one — so only the documented option names retain the body.
+        // `-config` is not one, so `config` and `value` stay out of the imports.
+        let specs = parse_and_extract("use Module 'foo', { -config => 'value' };");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Module")
+            .ok_or("expected an ImportSpec for Module")?;
+
+        assert_eq!(spec.symbols, ImportSymbols::Explicit(vec!["foo".to_string()]));
+        Ok(())
+    }
+
+    #[test]
+    fn a_setup_hash_contributes_no_imported_symbols() -> Result<(), Box<dyn std::error::Error>> {
+        // A module configuring its own exports requests nothing, so neither the
+        // setup keys nor the names it exports are symbols this file imports.
+        let specs = parse_and_extract("use Sub::Exporter -setup => { exports => [qw(foo bar)] };");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Sub::Exporter")
+            .ok_or("expected an ImportSpec for Sub::Exporter")?;
+
+        if let ImportSymbols::Explicit(names) = &spec.symbols {
+            assert!(
+                !names.iter().any(|name| ["exports", "foo", "bar"].contains(&name.as_str())),
+                "setup configuration leaked into the imported symbols: {names:?}"
+            );
+        }
         Ok(())
     }
 }

@@ -1,5 +1,6 @@
 use super::ImportMap;
 use perl_parser_core::ast::{Node, NodeKind};
+use perl_parser_core::hir::arguments_outside_configuration_hashes;
 use perl_semantic_analyzer::analysis::import_extractor::ImportExtractor;
 use perl_semantic_facts::{FileId, ImportKind, ImportSymbols};
 use std::collections::{HashMap, HashSet};
@@ -110,7 +111,12 @@ fn collect_use_import(module: &str, args: &[String], map: &mut ImportMap) {
     let mut has_symbol_args = false;
     let mut has_unresolved_tag = false;
 
-    for arg in args.iter().filter(|arg| is_symbol_arg_candidate(arg)) {
+    // `collect_import_symbols` skips a bare brace token but not the body
+    // between them, so configuration hashes are removed here instead.
+    for arg in arguments_outside_configuration_hashes(args) {
+        if !is_symbol_arg_candidate(arg) {
+            continue;
+        }
         // The second tuple element signals an unresolvable export tag.  We used
         // to bail out on any unresolved tag, silently discarding all symbols
         // collected so far (#1700).  Now we treat it as a partial miss: the
@@ -177,6 +183,85 @@ mod tests {
         let symbols = must_some(map.get("Foo::Bar"));
         assert!(symbols.contains("alpha"), "alpha must be present; got: {symbols:?}");
         assert!(symbols.contains("beta"), "beta must be present; got: {symbols:?}");
+    }
+
+    /// A configuration hash is not an import list. These symbols become the
+    /// filter deciding which completions a module may offer, so reading the
+    /// hash body would hide every real export behind its keys and values.
+    #[test]
+    fn trailing_configuration_hash_contributes_no_import_filter_symbols() {
+        let code = "use Another::Module 'param1', 'param2', {key => 'value'};\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        let symbols = must_some(map.get("Another::Module"));
+        assert!(symbols.contains("param1"), "param1 is requested; got: {symbols:?}");
+        assert!(symbols.contains("param2"), "param2 is requested; got: {symbols:?}");
+        assert!(!symbols.contains("key"), "a hash key is not imported; got: {symbols:?}");
+        assert!(!symbols.contains("value"), "a hash value is not imported; got: {symbols:?}");
+    }
+
+    /// `foo => { -as => 'bar' }` installs `bar`. Skipping the option hash would
+    /// leave the filter allowing `foo` — which is not installed — and blocking
+    /// `bar`, which is, hiding a real symbol from completion.
+    #[test]
+    fn a_per_symbol_option_hash_keeps_the_installed_name_in_the_filter() {
+        let code = "use Module foo => { -as => 'bar' };\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        let symbols = must_some(map.get("Module"));
+        assert!(symbols.contains("bar"), "the installed name must survive; got: {symbols:?}");
+    }
+
+    /// An affix option carries a fragment, not a name: `ok => { -postfix => '_ok' }`
+    /// installs `ok_ok`, which the Test2 provider composes. Publishing `_ok` into
+    /// the completion filter would name nothing, so affix hashes are skipped.
+    #[test]
+    fn an_affix_rename_hash_publishes_no_fragment_into_the_filter() {
+        let code = "use Test2::V0 ok => { -postfix => '_ok' };\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        let symbols = must_some(map.get("Test2::V0"));
+        assert!(!symbols.contains("_ok"), "a fragment is not a symbol; got: {symbols:?}");
+        assert!(!symbols.contains("postfix"), "an option key is not a symbol; got: {symbols:?}");
+    }
+
+    /// A dashed first key alone does not mark a hash as per-symbol options; an
+    /// ordinary module configuration may open with one. Only the documented
+    /// option names retain the body.
+    #[test]
+    fn a_configuration_hash_opening_with_a_dashed_key_is_still_skipped() {
+        let code = "use Module 'foo', { -config => 'value' };\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        let symbols = must_some(map.get("Module"));
+        assert!(symbols.contains("foo"), "the requested name survives; got: {symbols:?}");
+        assert!(!symbols.contains("config"), "a config key is not imported; got: {symbols:?}");
+        assert!(!symbols.contains("value"), "a config value is not imported; got: {symbols:?}");
+    }
+
+    #[test]
+    fn a_setup_hash_contributes_no_import_filter_symbols() {
+        let code = "use Sub::Exporter -setup => { exports => [qw(foo bar)] };\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        if let Some(symbols) = map.get("Sub::Exporter") {
+            for leaked in ["exports", "foo", "bar"] {
+                assert!(
+                    !symbols.contains(leaked),
+                    "setup configuration leaked into the import filter: {symbols:?}"
+                );
+            }
+        }
     }
 
     #[test]
