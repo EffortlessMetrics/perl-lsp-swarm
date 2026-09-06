@@ -1085,29 +1085,29 @@ impl SemanticAnalyzer {
             .get_or_init(|| Regex::new(r"(?s)(=[a-zA-Z0-9].*?\r?\n=cut(?:\r?\n)?)\s*\z"))
             .as_ref()
             .ok()?;
-        if let Some(caps) = pod_re.captures(before) {
-            if let Some(pod_text) = caps.get(1) {
-                // Strip POD inline formatting codes (B<>, I<>, C<>, L<>, E<>, etc.)
-                // so hover displays clean text, not raw POD markup.
-                return Some(perl_pod::strip_pod_formatting(pod_text.as_str().trim()));
-            }
+        if let Some(caps) = pod_re.captures(before)
+            && let Some(pod_text) = caps.get(1)
+        {
+            // Strip POD inline formatting codes (B<>, I<>, C<>, L<>, E<>, etc.)
+            // so hover displays clean text, not raw POD markup.
+            return Some(perl_pod::strip_pod_formatting(pod_text.as_str().trim()));
         }
 
         // Check for consecutive comment lines, anchored at end of string.
         let comment_re =
             COMMENT_RE.get_or_init(|| Regex::new(r"(?m)(#.*\r?\n)+[\t ]*\z")).as_ref().ok()?;
-        if let Some(caps) = comment_re.captures(before) {
-            if let Some(comment_match) = caps.get(0) {
-                // Strip the # prefix from each comment line
-                let doc = comment_match
-                    .as_str()
-                    .lines()
-                    .map(|line| line.trim_start_matches('#').trim())
-                    .filter(|line| !line.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                return Some(doc);
-            }
+        if let Some(caps) = comment_re.captures(before)
+            && let Some(comment_match) = caps.get(0)
+        {
+            // Strip the # prefix from each comment line
+            let doc = comment_match
+                .as_str()
+                .lines()
+                .map(|line| line.trim_start_matches('#').trim())
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            return Some(doc);
         }
 
         None

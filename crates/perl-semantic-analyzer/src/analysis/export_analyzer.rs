@@ -265,18 +265,22 @@ impl ExportSymbolExtractor {
             }
             // Pattern 4a: `our @ISA = qw(Exporter ...);` (declared form)
             NodeKind::VariableDeclaration { variable, initializer: Some(init), .. } => {
-                if let NodeKind::Variable { sigil, name } = &variable.kind {
-                    if sigil == "@" && name == "ISA" && Self::initializer_contains_exporter(init) {
-                        return Some(ExporterDetector::OurIsaExporter);
-                    }
+                if let NodeKind::Variable { sigil, name } = &variable.kind
+                    && sigil == "@"
+                    && name == "ISA"
+                    && Self::initializer_contains_exporter(init)
+                {
+                    return Some(ExporterDetector::OurIsaExporter);
                 }
             }
             // Pattern 4b: `@ISA = qw(Exporter ...);` (bare assignment without `our`)
             NodeKind::Assignment { lhs, rhs, .. } => {
-                if let NodeKind::Variable { sigil, name } = &lhs.kind {
-                    if sigil == "@" && name == "ISA" && Self::initializer_contains_exporter(rhs) {
-                        return Some(ExporterDetector::OurIsaExporter);
-                    }
+                if let NodeKind::Variable { sigil, name } = &lhs.kind
+                    && sigil == "@"
+                    && name == "ISA"
+                    && Self::initializer_contains_exporter(rhs)
+                {
+                    return Some(ExporterDetector::OurIsaExporter);
                 }
             }
             _ => {}
@@ -436,11 +440,11 @@ impl ExportSymbolExtractor {
                 // Check if this ArrayLiteral contains only one element which is itself an ArrayLiteral
                 // This happens with `[qw(tag_a tag_b)]` where the outer [...] creates an ArrayLiteral
                 // containing the result of qw()
-                if elements.len() == 1 {
-                    if let NodeKind::ArrayLiteral { .. } = &elements[0].kind {
-                        // Recursively parse the inner array which contains the actual strings
-                        return Self::parse_qw_array(&elements[0]);
-                    }
+                if elements.len() == 1
+                    && let NodeKind::ArrayLiteral { .. } = &elements[0].kind
+                {
+                    // Recursively parse the inner array which contains the actual strings
+                    return Self::parse_qw_array(&elements[0]);
                 }
                 // Normal case: ArrayLiteral with direct String elements
                 elements

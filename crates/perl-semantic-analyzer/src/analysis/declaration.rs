@@ -433,12 +433,11 @@ impl<'a> DeclarationProvider<'a> {
                 break;
             };
 
-            if matches!(parent.kind, NodeKind::Subroutine { .. } | NodeKind::Method { .. }) {
-                if let Some(links) =
+            if matches!(parent.kind, NodeKind::Subroutine { .. } | NodeKind::Method { .. })
+                && let Some(links) =
                     self.find_signature_parameter_declaration(parent, usage, var_name)
-                {
-                    return Some(links);
-                }
+            {
+                return Some(links);
             }
 
             // Check siblings before this node in the current scope
@@ -449,37 +448,30 @@ impl<'a> DeclarationProvider<'a> {
                 }
 
                 // Check if this is a variable declaration matching our name
-                if let NodeKind::VariableDeclaration { variable, .. } = &child.kind {
-                    if let NodeKind::Variable { name, .. } = &variable.kind {
-                        if name == var_name {
-                            return Some(vec![LocationLink {
-                                origin_selection_range: (usage.location.start, usage.location.end),
-                                target_uri: self.document_uri.clone(),
-                                target_range: (child.location.start, child.location.end),
-                                target_selection_range: (
-                                    variable.location.start,
-                                    variable.location.end,
-                                ),
-                            }]);
-                        }
-                    }
+                if let NodeKind::VariableDeclaration { variable, .. } = &child.kind
+                    && let NodeKind::Variable { name, .. } = &variable.kind
+                    && name == var_name
+                {
+                    return Some(vec![LocationLink {
+                        origin_selection_range: (usage.location.start, usage.location.end),
+                        target_uri: self.document_uri.clone(),
+                        target_range: (child.location.start, child.location.end),
+                        target_selection_range: (variable.location.start, variable.location.end),
+                    }]);
                 }
 
                 // Also check variable list declarations
                 if let NodeKind::VariableListDeclaration { variables, .. } = &child.kind {
                     for var in variables {
-                        if let NodeKind::Variable { name, .. } = &var.kind {
-                            if name == var_name {
-                                return Some(vec![LocationLink {
-                                    origin_selection_range: (
-                                        usage.location.start,
-                                        usage.location.end,
-                                    ),
-                                    target_uri: self.document_uri.clone(),
-                                    target_range: (child.location.start, child.location.end),
-                                    target_selection_range: (var.location.start, var.location.end),
-                                }]);
-                            }
+                        if let NodeKind::Variable { name, .. } = &var.kind
+                            && name == var_name
+                        {
+                            return Some(vec![LocationLink {
+                                origin_selection_range: (usage.location.start, usage.location.end),
+                                target_uri: self.document_uri.clone(),
+                                target_range: (child.location.start, child.location.end),
+                                target_selection_range: (var.location.start, var.location.end),
+                            }]);
                         }
                     }
                 }
@@ -788,12 +780,11 @@ impl<'a> DeclarationProvider<'a> {
         let parent = node_lookup.get(&parent_ptr).copied()?;
 
         // Check direct parent is a modifier FunctionCall where the string is first arg.
-        if let NodeKind::FunctionCall { name, args } = &parent.kind {
-            if matches!(name.as_str(), "before" | "after" | "around" | "override") {
-                if args.first().map(|a| std::ptr::eq(a, string_node)).unwrap_or(false) {
-                    return self.find_subroutine_declaration(string_node, bare_name);
-                }
-            }
+        if let NodeKind::FunctionCall { name, args } = &parent.kind
+            && matches!(name.as_str(), "before" | "after" | "around" | "override")
+            && args.first().map(|a| std::ptr::eq(a, string_node)).unwrap_or(false)
+        {
+            return self.find_subroutine_declaration(string_node, bare_name);
         }
 
         // The FunctionCall may be wrapped in an ExpressionStatement — check one
@@ -801,12 +792,11 @@ impl<'a> DeclarationProvider<'a> {
         let grandparent_ptr = parent_map.get(&parent_ptr).copied()?;
         let grandparent = node_lookup.get(&grandparent_ptr).copied()?;
 
-        if let NodeKind::FunctionCall { name, args } = &grandparent.kind {
-            if matches!(name.as_str(), "before" | "after" | "around" | "override") {
-                if args.first().map(|a| std::ptr::eq(a, string_node)).unwrap_or(false) {
-                    return self.find_subroutine_declaration(string_node, bare_name);
-                }
-            }
+        if let NodeKind::FunctionCall { name, args } = &grandparent.kind
+            && matches!(name.as_str(), "before" | "after" | "around" | "override")
+            && args.first().map(|a| std::ptr::eq(a, string_node)).unwrap_or(false)
+        {
+            return self.find_subroutine_declaration(string_node, bare_name);
         }
 
         None
@@ -990,29 +980,29 @@ impl<'a> DeclarationProvider<'a> {
         const_name: &str,
         constants: &mut Vec<&'b Node>,
     ) {
-        if let NodeKind::Use { module, args, .. } = &node.kind {
-            if module == "constant" {
-                // Strip leading options like -strict, -nonstrict, -force
-                let stripped_args = self.strip_constant_options(args);
+        if let NodeKind::Use { module, args, .. } = &node.kind
+            && module == "constant"
+        {
+            // Strip leading options like -strict, -nonstrict, -force
+            let stripped_args = self.strip_constant_options(args);
 
-                // Form 1: FOO => ...
-                if stripped_args.first().map(|s| s.as_str()) == Some(const_name) {
-                    constants.push(node);
-                    // keep scanning siblings too (there can be multiple `use constant`)
-                }
+            // Form 1: FOO => ...
+            if stripped_args.first().map(|s| s.as_str()) == Some(const_name) {
+                constants.push(node);
+                // keep scanning siblings too (there can be multiple `use constant`)
+            }
 
-                // Flattened args text once (cheap)
-                let args_text = stripped_args.join(" ");
+            // Flattened args text once (cheap)
+            let args_text = stripped_args.join(" ");
 
-                // Form 2: { FOO => 1, BAR => 2 }
-                if self.contains_name_in_hash(&args_text, const_name) {
-                    constants.push(node);
-                }
+            // Form 2: { FOO => 1, BAR => 2 }
+            if self.contains_name_in_hash(&args_text, const_name) {
+                constants.push(node);
+            }
 
-                // Form 3: qw(FOO BAR) / qw/FOO BAR/
-                if self.contains_name_in_qw(&args_text, const_name) {
-                    constants.push(node);
-                }
+            // Form 3: qw(FOO BAR) / qw/FOO BAR/
+            if self.contains_name_in_qw(&args_text, const_name) {
+                constants.push(node);
             }
         }
 
@@ -1853,10 +1843,10 @@ fn symbol_at_cursor_internal(
                 NodeKind::Block { statements } => Some(statements.as_slice()),
                 _ => None,
             };
-            if let Some(statements) = stmts {
-                if let Some(module) = scan_statements_for_require_import(statements, name) {
-                    return Some(module);
-                }
+            if let Some(statements) = stmts
+                && let Some(module) = scan_statements_for_require_import(statements, name)
+            {
+                return Some(module);
             }
 
             for child in get_node_children(node) {
@@ -1989,21 +1979,18 @@ fn symbol_at_cursor_internal(
                 NodeKind::VariableDeclaration { variable, initializer, .. } => {
                     if let (Some(variable_name), Some(initializer)) =
                         (node_variable_name(variable), initializer.as_ref())
-                    {
-                        if let Some(package_name) =
+                        && let Some(package_name) =
                             infer_constructor_package(initializer, current_pkg, receiver_packages)
-                        {
-                            receiver_packages.insert(variable_name.to_string(), package_name);
-                        }
+                    {
+                        receiver_packages.insert(variable_name.to_string(), package_name);
                     }
                 }
                 NodeKind::Assignment { lhs, rhs, .. } => {
-                    if let Some(variable_name) = node_variable_name(lhs) {
-                        if let Some(package_name) =
+                    if let Some(variable_name) = node_variable_name(lhs)
+                        && let Some(package_name) =
                             infer_constructor_package(rhs, current_pkg, receiver_packages)
-                        {
-                            receiver_packages.insert(variable_name.to_string(), package_name);
-                        }
+                    {
+                        receiver_packages.insert(variable_name.to_string(), package_name);
                     }
                 }
                 _ => {}

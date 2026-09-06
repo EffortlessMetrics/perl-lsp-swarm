@@ -556,20 +556,17 @@ impl ClassModelBuilder {
             NodeKind::ExpressionStatement { expression } => {
                 if let NodeKind::FunctionCall { name, args } = &expression.kind
                     && name == "push"
+                    && let Some(first_arg) = args.first()
+                    && let NodeKind::Variable { sigil, name: var_name } = &first_arg.kind
+                    && sigil == "@"
+                    && var_name == "ISA"
                 {
-                    if let Some(first_arg) = args.first() {
-                        if let NodeKind::Variable { sigil, name: var_name } = &first_arg.kind
-                            && sigil == "@"
-                            && var_name == "ISA"
-                        {
-                            self.current_parents_explicit = true;
-                            self.current_parents_additive = true;
-                            for arg in args.iter().skip(1) {
-                                self.extract_isa_from_node(arg);
-                            }
-                            return;
-                        }
+                    self.current_parents_explicit = true;
+                    self.current_parents_additive = true;
+                    for arg in args.iter().skip(1) {
+                        self.extract_isa_from_node(arg);
                     }
+                    return;
                 }
                 // Fall through: visit the inner expression for assignments, etc.
                 self.visit_node(expression);
@@ -887,32 +884,30 @@ impl ClassModelBuilder {
                     if matches!(&expression.kind, NodeKind::Identifier { name } if name == "has")
             );
 
-            if is_has_marker {
-                if let NodeKind::ExpressionStatement { expression } = &second.kind {
-                    let has_location =
-                        SourceLocation { start: first.location.start, end: second.location.end };
+            if is_has_marker && let NodeKind::ExpressionStatement { expression } = &second.kind {
+                let has_location =
+                    SourceLocation { start: first.location.start, end: second.location.end };
 
-                    match &expression.kind {
-                        NodeKind::HashLiteral { pairs } => {
-                            self.extract_has_from_pairs(pairs, has_location, false);
-                            return Some(2);
-                        }
-                        NodeKind::ArrayLiteral { elements } => {
-                            if let Some(Node { kind: NodeKind::HashLiteral { pairs }, .. }) =
-                                elements.last()
-                            {
-                                let mut names = Vec::new();
-                                for el in elements.iter().take(elements.len() - 1) {
-                                    names.extend(collect_symbol_names(el));
-                                }
-                                if !names.is_empty() {
-                                    self.extract_has_with_names(&names, pairs, has_location);
-                                    return Some(2);
-                                }
+                match &expression.kind {
+                    NodeKind::HashLiteral { pairs } => {
+                        self.extract_has_from_pairs(pairs, has_location, false);
+                        return Some(2);
+                    }
+                    NodeKind::ArrayLiteral { elements } => {
+                        if let Some(Node { kind: NodeKind::HashLiteral { pairs }, .. }) =
+                            elements.last()
+                        {
+                            let mut names = Vec::new();
+                            for el in elements.iter().take(elements.len() - 1) {
+                                names.extend(collect_symbol_names(el));
+                            }
+                            if !names.is_empty() {
+                                self.extract_has_with_names(&names, pairs, has_location);
+                                return Some(2);
                             }
                         }
-                        _ => {}
                     }
+                    _ => {}
                 }
             }
         }
@@ -1975,15 +1970,16 @@ fn expand_arg_to_names(arg: &str) -> Vec<String> {
             '<' => '>',
             c => c,
         };
-        if let (Some(start), Some(end)) = (arg.find(open), arg.rfind(close)) {
-            if start < end {
-                let content = &arg[start + 1..end];
-                return content
-                    .split_whitespace()
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-                    .collect();
-            }
+        if let (Some(start), Some(end)) = (arg.find(open), arg.rfind(close))
+            && start + open.len_utf8() <= end
+        {
+            // Byte-boundary-safe slice: qw delimiters may be multi-byte UTF-8.
+            let content = &arg[start + open.len_utf8()..end];
+            return content
+                .split_whitespace()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
         }
     }
     // Quoted string or bare identifier
@@ -2107,6 +2103,21 @@ mod tests {
     use crate::parser::Parser;
     use perl_tdd_support::{must, must_some};
     use std::collections::HashSet;
+
+    #[test]
+    fn expand_arg_to_names_handles_multibyte_qw_delimiters_without_panic() {
+        // Byte-boundary safety only: a multi-byte delimiter must neither panic
+        // nor split mid-character. Whether Perl accepts this delimiter is not
+        // claimed here (#12731 review).
+        assert_eq!(
+            expand_arg_to_names("qw•Base1 Base2•"),
+            ["Base1".to_string(), "Base2".to_string()]
+        );
+        assert_eq!(
+            expand_arg_to_names("qw(Base1 Base2)"),
+            ["Base1".to_string(), "Base2".to_string()]
+        );
+    }
 
     fn build_models(code: &str) -> Vec<ClassModel> {
         let mut parser = Parser::new(code);
@@ -2989,6 +3000,15 @@ has 'status' => (
         let models = build_models(code);
         let model = find_model(&models, "Child").expect("Child model");
         assert_eq!(model.framework, Framework::PlainOO);
+        assert!(model.parents.contains(&"Base1".to_string()), "parents should contain Base1");
+        assert!(model.parents.contains(&"Base2".to_string()), "parents should contain Base2");
+    }
+
+    #[test]
+    fn use_parent_brace_qw_delimiter() {
+        let code = "package Child; use parent qw{Base1 Base2}; 1;";
+        let models = build_models(code);
+        let model = find_model(&models, "Child").expect("Child model");
         assert!(model.parents.contains(&"Base1".to_string()), "parents should contain Base1");
         assert!(model.parents.contains(&"Base2".to_string()), "parents should contain Base2");
     }
