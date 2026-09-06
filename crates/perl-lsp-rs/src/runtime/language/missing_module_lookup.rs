@@ -424,14 +424,16 @@ fn startup_inc_retry_state(snapshot: &SystemIncProbeSnapshot) -> &'static str {
 /// user-facing channel that writes `WorkspaceConfig::perl_path` (see
 /// `perl_remediation::PERL_REMEDIATION`, #5376), so an unavailable
 /// interpreter routes to install/PATH/restart and a persistently slow one to
-/// PATH order, never to an interpreter-path setting.
+/// PATH order plus a restart (the running server keeps its inherited PATH and
+/// its terminal probe outcome until it restarts or the setting toggles),
+/// never to an interpreter-path setting.
 fn startup_inc_remediation(snapshot: &SystemIncProbeSnapshot) -> &'static str {
     match snapshot.outcome {
         SystemIncProbeOutcomeKind::Disabled => "enable_perl_workspace_use_system_inc",
         SystemIncProbeOutcomeKind::NotObserved => "await_first_live_lookup",
         SystemIncProbeOutcomeKind::TimedOut if snapshot.retry_eligible() => "retry_lookup",
         SystemIncProbeOutcomeKind::TimedOut => {
-            "toggle_use_system_inc_or_put_faster_perl_first_on_path"
+            "toggle_use_system_inc_or_put_faster_perl_first_on_path_and_restart"
         }
         SystemIncProbeOutcomeKind::Unavailable => "install_perl_add_to_path_and_restart",
         SystemIncProbeOutcomeKind::IoFailed | SystemIncProbeOutcomeKind::NonZeroExit => {
@@ -558,6 +560,7 @@ fn missing_module_root_missing_payload(request: &MissingModuleLookupRequest) -> 
                 "resolved": false,
                 "resolved_uri": null,
                 "source": "workspace",
+                "search_complete": false,
                 "why": "No workspace root is available, so perl-lsp cannot assemble effective @INC roots.",
             },
             "effective_include_paths": [],
@@ -582,6 +585,7 @@ fn missing_module_root_missing_payload(request: &MissingModuleLookupRequest) -> 
             "requested_module": request.module,
             "expected_relative_path": module_name_to_path(&request.module),
             "result": "workspace_root_missing",
+            "search_complete": false,
             "workspace_root_class": "none",
             "workspace_root_hash": null,
             "effective_include_path_count": 0,
@@ -792,7 +796,7 @@ mod tests {
                 "terminal_degraded",
                 "exhausted",
                 "omitted_terminal",
-                "toggle_use_system_inc_or_put_faster_perl_first_on_path",
+                "toggle_use_system_inc_or_put_faster_perl_first_on_path_and_restart",
                 false,
                 true,
             ),
