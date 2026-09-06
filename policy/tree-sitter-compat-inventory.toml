@@ -77,7 +77,13 @@ removal_owner = "#8890"
 # invalidates every disposition below and fails the task until they are
 # re-audited. Prose files are excluded so a README edit does not force a
 # re-audit.
-source_digest = "sha256:8808149a51e4a706dea655c3d7c4e015f3653746c3179d2777f62c68444d7590"
+#
+# Re-audited for #14777 against current crate source. The digest moved because
+# `highlight.rs` and `sexp.rs` replaced cfg(test) `unwrap` with `must_with`
+# (ae10ab5e5 / #13203). Public declarations, visibilities, Tier-A vs incidental
+# dispositions, Cargo dependents (still none), and the consumer set are
+# unchanged; no row was added, removed, or reclassified.
+source_digest = "sha256:0bd28c41cdda2b66f6317ee41b741fdd723a00f8044a67a723a467cb2773b3cf"
 
 # Digest of the external documents that ADJUDICATE these dispositions, as
 # distinct from the crate source they describe. `docs/explanation/

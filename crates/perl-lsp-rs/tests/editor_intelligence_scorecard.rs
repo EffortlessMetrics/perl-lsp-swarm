@@ -29,10 +29,11 @@ mod common;
 use common::test_utils::TestServerBuilder;
 use perl_corpus::gold::{
     CompletionAssertionKind, CompletionGoldFixture, GoldAssertion, GoldFixture, GotoAssertionKind,
-    GotoGoldFixture, HoverAssertionKind, HoverGoldFixture, RenameAssertion, RenameAssertionKind,
+    GotoGoldFixture, HoverAssertionRigor, HoverGoldFixture, RenameAssertion, RenameAssertionKind,
     RenameExpectedEdit, RenameGoldFixture, load_completion_gold_fixtures,
     load_document_symbol_gold_fixtures, load_gold_fixtures, load_goto_gold_fixtures,
-    load_hover_gold_fixtures, load_rename_gold_fixtures,
+    load_hover_gold_fixtures, load_rename_gold_fixtures, match_hover_assertion,
+    observe_hover_response,
 };
 use perl_corpus::{DocumentSymbolAssertionKind, DocumentSymbolGoldFixture};
 use serde_json::Value;
@@ -57,16 +58,6 @@ fn gold_corpus_root() -> PathBuf {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| crate_dir.clone());
     workspace_root.join("test_corpus").join("gold")
-}
-
-fn hover_content_from_response(resp: &Value) -> Option<String> {
-    let result = resp.get("result")?;
-    if result.is_null() {
-        return None;
-    }
-    let contents = result.get("contents")?;
-    let value = contents.get("value")?.as_str()?;
-    if value.is_empty() { None } else { Some(value.to_string()) }
 }
 
 fn completion_labels_from_response(resp: &Value) -> Vec<String> {
@@ -145,6 +136,10 @@ fn test_hover_gold_corpus() -> TestResult {
 
     let mut total = 0usize;
     let mut passed = 0usize;
+    let mut compatibility_total = 0usize;
+    let mut compatibility_passed = 0usize;
+    let mut exact_total = 0usize;
+    let mut exact_passed = 0usize;
     let mut failures: Vec<String> = Vec::new();
 
     for fixture in &fixtures {
@@ -156,26 +151,35 @@ fn test_hover_gold_corpus() -> TestResult {
         for assertion in &fixture.hover_assertions {
             total += 1;
             let resp = server.get_hover(&uri, assertion.line, assertion.character);
-            let content = hover_content_from_response(&resp);
-
-            let ok = match &assertion.kind {
-                HoverAssertionKind::HoverNonNull => content.is_some(),
-                HoverAssertionKind::HoverNull => content.is_none(),
-                HoverAssertionKind::HoverContains { needle } => {
-                    content.as_deref().is_some_and(|c| c.contains(needle.as_str()))
+            let observation = observe_hover_response(&resp);
+            let match_result = match_hover_assertion(&observation, assertion);
+            let ok = match_result.is_ok();
+            match assertion.kind.rigor() {
+                HoverAssertionRigor::Compatibility => {
+                    compatibility_total += 1;
+                    if ok {
+                        compatibility_passed += 1;
+                    }
                 }
-                HoverAssertionKind::HoverAbsent { needle } => {
-                    !content.as_deref().is_some_and(|c| c.contains(needle.as_str()))
+                HoverAssertionRigor::Exact => {
+                    exact_total += 1;
+                    if ok {
+                        exact_passed += 1;
+                    }
                 }
-            };
+            }
 
-            if ok {
-                passed += 1;
-            } else {
+            if let Err(failure) = match_result {
                 failures.push(format!(
-                    "  FAIL [{}] {:?} at line:{} char:{} — got: {:?}",
-                    fixture.name, assertion.kind, assertion.line, assertion.character, content
+                    "  FAIL [{}] {:?} at line:{} char:{} — {}",
+                    fixture.name,
+                    assertion.kind,
+                    assertion.line,
+                    assertion.character,
+                    failure.reason
                 ));
+            } else {
+                passed += 1;
             }
         }
     }
@@ -185,6 +189,22 @@ fn test_hover_gold_corpus() -> TestResult {
         passed,
         total,
         if total > 0 { passed as f64 / total as f64 * 100.0 } else { 100.0 }
+    );
+    println!(
+        "Hover gold corpus compatibility: {}/{} ({:.0}%)",
+        compatibility_passed,
+        compatibility_total,
+        if compatibility_total > 0 {
+            compatibility_passed as f64 / compatibility_total as f64 * 100.0
+        } else {
+            100.0
+        }
+    );
+    println!(
+        "Hover gold corpus exact: {}/{} ({:.0}%)",
+        exact_passed,
+        exact_total,
+        if exact_total > 0 { exact_passed as f64 / exact_total as f64 * 100.0 } else { 100.0 }
     );
     for f in &failures {
         println!("{f}");

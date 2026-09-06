@@ -80,3 +80,18 @@ reason = "Command-line analysis capability matrix generated from the conformance
 covered_by = ["cargo xtask check-generated", "cargo xtask oneliner-capability-matrix --check"]
 created = "2026-08-31"
 review_after = "2026-11-29"
+
+[[allow]]
+id = "generated-release-trust-invariants-status"
+path = "docs/project/status/release_trust_invariants.md"
+kind = "status_page"
+generated_by = "cargo xtask release-trust-invariants write-status"
+regenerate = "cargo xtask release-trust-invariants write-status"
+owner = "release/ci"
+reason = "Deterministic Markdown projection of policy/release-trust-invariants.v1.json (#9392). Named separately from the broad status-page glob so policy reports identify the real generator and check command."
+covered_by = [
+  "cargo xtask release-trust-invariants check",
+  "cargo test -p xtask --locked --test release_trust_invariants",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"

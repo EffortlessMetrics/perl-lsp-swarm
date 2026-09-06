@@ -139,18 +139,8 @@ impl<'a> Parser<'a> {
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->@*
-                                let star = self.consume_token()?; // consume *
-                                let start = expr.location.start;
-                                let end = star.end();
-
+                                expr = self.consume_arrow_star_deref(expr, "->@*")?;
                                 record_postfix_layer()?;
-                                expr = Node::new(
-                                    NodeKind::Unary {
-                                        op: "->@*".to_string(),
-                                        operand: Box::new(expr),
-                                    },
-                                    SourceLocation { start, end },
-                                );
                             } else if self.peek_kind() == Some(TokenKind::LeftBracket) {
                                 // ->@[...] array slice
                                 self.tokens.next()?; // consume [
@@ -196,18 +186,8 @@ impl<'a> Parser<'a> {
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->%*
-                                let star = self.consume_token()?; // consume *
-                                let start = expr.location.start;
-                                let end = star.end();
-
+                                expr = self.consume_arrow_star_deref(expr, "->%*")?;
                                 record_postfix_layer()?;
-                                expr = Node::new(
-                                    NodeKind::Unary {
-                                        op: "->%*".to_string(),
-                                        operand: Box::new(expr),
-                                    },
-                                    SourceLocation { start, end },
-                                );
                             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // ->%{...} hash slice
                                 self.tokens.next()?; // consume {
@@ -235,18 +215,8 @@ impl<'a> Parser<'a> {
                             self.tokens.next()?; // consume $
 
                             if self.peek_kind() == Some(TokenKind::Star) {
-                                let star = self.consume_token()?; // consume *
-                                let start = expr.location.start;
-                                let end = star.end();
-
+                                expr = self.consume_arrow_star_deref(expr, "->$*")?;
                                 record_postfix_layer()?;
-                                expr = Node::new(
-                                    NodeKind::Unary {
-                                        op: "->$*".to_string(),
-                                        operand: Box::new(expr),
-                                    },
-                                    SourceLocation { start, end },
-                                );
                             }
                         }
 
@@ -255,18 +225,8 @@ impl<'a> Parser<'a> {
                             self.tokens.next()?; // consume &
 
                             if self.peek_kind() == Some(TokenKind::Star) {
-                                let star = self.consume_token()?; // consume *
-                                let start = expr.location.start;
-                                let end = star.end();
-
+                                expr = self.consume_arrow_star_deref(expr, "->&*")?;
                                 record_postfix_layer()?;
-                                expr = Node::new(
-                                    NodeKind::Unary {
-                                        op: "->&*".to_string(),
-                                        operand: Box::new(expr),
-                                    },
-                                    SourceLocation { start, end },
-                                );
                             }
                         }
 
@@ -275,18 +235,8 @@ impl<'a> Parser<'a> {
                             self.tokens.next()?; // consume first *
 
                             if self.peek_kind() == Some(TokenKind::Star) {
-                                let star = self.consume_token()?; // consume second *
-                                let start = expr.location.start;
-                                let end = star.end();
-
+                                expr = self.consume_arrow_star_deref(expr, "->**")?;
                                 record_postfix_layer()?;
-                                expr = Node::new(
-                                    NodeKind::Unary {
-                                        op: "->**".to_string(),
-                                        operand: Box::new(expr),
-                                    },
-                                    SourceLocation { start, end },
-                                );
                             }
                         }
 
@@ -301,17 +251,8 @@ impl<'a> Parser<'a> {
                                     .is_ok_and(|t| t.kind() == TokenKind::Star)
                             {
                                 self.tokens.next()?; // consume $#
-                                let star = self.consume_token()?; // consume *
-                                let start = expr.location.start;
-                                let end = star.end();
+                                expr = self.consume_arrow_star_deref(expr, "->$#*")?;
                                 record_postfix_layer()?;
-                                expr = Node::new(
-                                    NodeKind::Unary {
-                                        op: "->$#*".to_string(),
-                                        operand: Box::new(expr),
-                                    },
-                                    SourceLocation { start, end },
-                                );
                                 continue;
                             }
 
@@ -969,6 +910,7 @@ impl<'a> Parser<'a> {
                             } else {
                                 // Parse arguments without parentheses
                                 let mut args = Vec::new();
+                                let mut flattened_qw_end = None;
 
                                 // Special handling for sort/map/grep/first/any/all/etc.
                                 // with block first argument
@@ -1204,6 +1146,13 @@ impl<'a> Parser<'a> {
                                         // assignment first would consume `$fh %hash` as a
                                         // modulo expression and lose the indirect-call boundary.
                                         args.push(self.parse_primary()?);
+                                    } else if self.peek_is_qw_list_start() {
+                                        // `has qw(a b)` is `has('a', 'b')` in list context.
+                                        // Keep parenthesized `has(qw(a b))` on parse_args().
+                                        let (words, qw_location) =
+                                            self.parse_flattened_qw_list_argument()?;
+                                        flattened_qw_end = Some(qw_location.end);
+                                        args.extend(words);
                                     } else {
                                         args.push(self.parse_assignment_or_declaration()?);
                                     }
@@ -1349,11 +1298,9 @@ impl<'a> Parser<'a> {
 
                                 let end = args
                                     .last()
-                                    .ok_or_else(|| {
-                                        ParseError::syntax("Empty arguments list", start)
-                                    })?
-                                    .location
-                                    .end;
+                                    .map(|arg| arg.location.end)
+                                    .or(flattened_qw_end)
+                                    .unwrap_or_else(|| self.previous_position());
 
                                 expr = if scalar_filehandle {
                                     let mut message_args = args;
@@ -1666,5 +1613,19 @@ impl<'a> Parser<'a> {
 
         let end = elements.last().map(|n| n.location.end).unwrap_or(start);
         Ok(Some(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })))
+    }
+
+    /// Finish an arrow star-form postfix dereference from the consumed `*` token.
+    ///
+    /// The Unary end is `star.end()`, matching generic postfix's `op_token.end()`
+    /// pattern. Using `previous_position()` after `tokens.next()` would leave the
+    /// node span on the receiver only (#13891).
+    fn consume_arrow_star_deref(&mut self, expr: Node, op: &'static str) -> ParseResult<Node> {
+        let star = self.consume_token()?;
+        let start = expr.location.start;
+        Ok(Node::new(
+            NodeKind::Unary { op: op.to_string(), operand: Box::new(expr) },
+            SourceLocation { start, end: star.end() },
+        ))
     }
 }

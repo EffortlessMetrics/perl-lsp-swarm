@@ -11,19 +11,12 @@ use std::path::Path;
 
 use super::digest::file_digest;
 use super::error::ProofError;
+use super::mapping::{native_profile, origin_name, shape_name};
 use super::model::{
-    EvidenceClass, FIXTURE_ROOT, FixApply, ISSUE, MANIFEST_NAME, MANIFEST_PATH, ParseExpectation,
-    ProofProfile, ProofRemediation, RuleProofManifest, SCHEMA_PATH, SCHEMA_VERSION,
+    EvidenceClass, FIXTURE_ROOT, FixApply, ISSUE, MANIFEST_NAME, MANIFEST_PATH, PILOT_RULES,
+    ParseExpectation, ProofRemediation, RuleProofManifest, SCHEMA_PATH, SCHEMA_VERSION,
     resolve_fixture_path,
 };
-
-/// Pilot rules that must carry a complete applicable evidence set.
-pub const PILOT_RULES: &[&str] = &[
-    "native.testing.require_use_strict",
-    "native.common.assignment_in_condition",
-    "native.security.string_eval",
-    "native.regex.capture_without_match",
-];
 
 /// Load, schema-validate, and structurally check the committed manifest.
 pub fn load_and_validate(root: &Path) -> Result<RuleProofManifest, ProofError> {
@@ -159,6 +152,11 @@ fn validate_rules(manifest: &RuleProofManifest, violations: &mut Vec<String>) {
             violations.push(format!("rule `{}`: unknown native rule id", rule.rule_id));
             continue;
         }
+        if !PILOT_RULES.contains(&rule.rule_id.as_str()) {
+            violations
+                .push(format!("rules: `{}` is outside the closed PILOT_RULES set", rule.rule_id));
+            continue;
+        }
         let Some(entry) = CriticIdentityRegistry::by_canonical_id(&rule.canonical_id) else {
             violations.push(format!(
                 "rule `{}`: canonical_id `{}` is not in the identity registry",
@@ -218,28 +216,6 @@ fn expected_alias_rows(
             )
         })
         .collect()
-}
-
-fn origin_name(origin: CriticFindingOrigin) -> &'static str {
-    match origin {
-        CriticFindingOrigin::BuiltInDiagnostic => "built_in_diagnostic",
-        CriticFindingOrigin::NativeCritic => "native_critic",
-        CriticFindingOrigin::LegacyPolicy => "legacy_policy",
-        CriticFindingOrigin::ExternalPerlCritic => "external_perl_critic",
-    }
-}
-
-fn shape_name(shape: CriticFindingShape) -> &'static str {
-    match shape {
-        CriticFindingShape::General => "general",
-        CriticFindingShape::LiteralUndefComparison => "literal_undef_comparison",
-        CriticFindingShape::PotentiallyUndefComparison => "potentially_undef_comparison",
-        CriticFindingShape::Backtick => "backtick",
-        CriticFindingShape::Qx => "qx",
-        CriticFindingShape::Readpipe => "readpipe",
-        CriticFindingShape::SystemCall => "system_call",
-        CriticFindingShape::ExecCall => "exec_call",
-    }
 }
 
 fn validate_cases(manifest: &RuleProofManifest, violations: &mut Vec<String>) {
@@ -337,6 +313,20 @@ fn validate_cases(manifest: &RuleProofManifest, violations: &mut Vec<String>) {
                 ));
             }
         }
+        if case.evidence_classes.contains(&EvidenceClass::Boundary)
+            && matches!(case.parse_expectation, ParseExpectation::Ok)
+        {
+            let has_finding =
+                case.expected_findings.iter().any(|finding| finding.rule_id == case.rule_id);
+            let has_non_finding =
+                case.expected_non_findings.iter().any(|rule_id| rule_id == &case.rule_id);
+            if !has_finding && !has_non_finding {
+                violations.push(format!(
+                    "case `{}`: ordinary boundary evidence must name a governed finding or non-finding",
+                    case.case_id
+                ));
+            }
+        }
         if case.evidence_classes.contains(&EvidenceClass::FileLevelSuppression) {
             match case.suppression_selector.as_deref() {
                 None => violations.push(format!(
@@ -395,23 +385,25 @@ fn validate_cases(manifest: &RuleProofManifest, violations: &mut Vec<String>) {
                 case.case_id
             ));
         }
-        if matches!(
-            rule.declared_remediation,
-            ProofRemediation::None | ProofRemediation::Manual | ProofRemediation::PreviewCandidate
-        ) {
-            for finding in &case.expected_findings {
-                if finding.remediation_eligibility == ProofRemediation::AutomaticCandidate {
-                    violations.push(format!(
-                        "case `{}`: diagnostic-only or preview-only findings cannot be represented as automatic success",
-                        case.case_id
-                    ));
-                }
-            }
-        }
         for finding in &case.expected_findings {
-            if finding.rule_id == case.rule_id
-                && finding.remediation_eligibility != rule.declared_remediation
+            if finding.rule_id != case.rule_id {
+                continue;
+            }
+            if finding.remediation_eligibility == rule.declared_remediation {
+                continue;
+            }
+            if matches!(
+                rule.declared_remediation,
+                ProofRemediation::None
+                    | ProofRemediation::Manual
+                    | ProofRemediation::PreviewCandidate
+            ) && finding.remediation_eligibility == ProofRemediation::AutomaticCandidate
             {
+                violations.push(format!(
+                    "case `{}`: diagnostic-only or preview-only findings cannot be represented as automatic success",
+                    case.case_id
+                ));
+            } else {
                 violations.push(format!(
                     "case `{}`: expected finding remediation `{}` does not match declared_remediation `{}`",
                     case.case_id,
@@ -422,6 +414,9 @@ fn validate_cases(manifest: &RuleProofManifest, violations: &mut Vec<String>) {
         }
     }
     for rule in &manifest.rules {
+        if !PILOT_RULES.contains(&rule.rule_id.as_str()) {
+            continue;
+        }
         let present = classes_by_rule.get(rule.rule_id.as_str()).cloned().unwrap_or_default();
         for class in EvidenceClass::all() {
             if !class.required_for_every_pilot_rule() {
@@ -452,42 +447,7 @@ fn validate_cases(manifest: &RuleProofManifest, violations: &mut Vec<String>) {
     }
 }
 
-fn native_profile(profile: ProofProfile) -> NativeCriticProfile {
-    match profile {
-        ProofProfile::Recommended => NativeCriticProfile::Recommended,
-        ProofProfile::Strict => NativeCriticProfile::Strict,
-    }
-}
-
 fn read_text(root: &Path, rel: &str) -> Result<String, ProofError> {
     fs::read_to_string(root.join(rel))
         .map_err(|error| ProofError::new(format!("{rel}: cannot read: {error}")))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{origin_name, shape_name};
-    use perl_lsp_rs_core::tooling::perl_critic::{CriticFindingOrigin, CriticFindingShape};
-
-    #[test]
-    fn origin_and_shape_spellings_match_schema_enums() {
-        assert_eq!(origin_name(CriticFindingOrigin::BuiltInDiagnostic), "built_in_diagnostic");
-        assert_eq!(origin_name(CriticFindingOrigin::NativeCritic), "native_critic");
-        assert_eq!(origin_name(CriticFindingOrigin::LegacyPolicy), "legacy_policy");
-        assert_eq!(origin_name(CriticFindingOrigin::ExternalPerlCritic), "external_perl_critic");
-        assert_eq!(shape_name(CriticFindingShape::General), "general");
-        assert_eq!(
-            shape_name(CriticFindingShape::LiteralUndefComparison),
-            "literal_undef_comparison"
-        );
-        assert_eq!(
-            shape_name(CriticFindingShape::PotentiallyUndefComparison),
-            "potentially_undef_comparison"
-        );
-        assert_eq!(shape_name(CriticFindingShape::Backtick), "backtick");
-        assert_eq!(shape_name(CriticFindingShape::Qx), "qx");
-        assert_eq!(shape_name(CriticFindingShape::Readpipe), "readpipe");
-        assert_eq!(shape_name(CriticFindingShape::SystemCall), "system_call");
-        assert_eq!(shape_name(CriticFindingShape::ExecCall), "exec_call");
-    }
 }

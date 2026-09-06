@@ -118,7 +118,7 @@ impl<'a> Parser<'a> {
     }
 
     fn is_adjust_block_start(&mut self) -> bool {
-        self.in_class_body > 0
+        self.class_grammar.admits_class_members()
             && self.peek_kind() == Some(TokenKind::Identifier)
             && self.tokens.peek().ok().is_some_and(|t| t.text.as_ref() == "ADJUST")
             && self
