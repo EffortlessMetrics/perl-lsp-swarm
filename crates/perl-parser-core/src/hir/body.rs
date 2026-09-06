@@ -714,61 +714,90 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
                 NodeKind::Assignment { lhs, .. } => lhs.as_ref(),
                 _ => variable.as_ref(),
             };
-            // Extract variable name and sigil from the inner Variable node.
-            let (sigil_str, var_name) = match &binding_node.kind {
-                NodeKind::Variable { sigil, name } => (sigil.as_str(), name.clone()),
-                _ => ("$", String::from("<unknown>")),
-            };
-            let sigil = Sigil::from_str(sigil_str);
-            let storage = DeclStorageClass::from_str(declarator);
+            match named_variable_from_node(binding_node) {
+                Some((sigil_str, var_name)) => {
+                    let sigil = Sigil::from_str(sigil_str);
+                    let storage = DeclStorageClass::from_str(declarator);
 
-            let init_expr_id = initializer.as_ref().map(|init_node| {
-                // The initializer is the full RHS expression.
-                // For `my $x = $a + $b`, the AST may represent this as:
-                //   VariableDeclaration { variable: $x, initializer: Binary(+, $a, $b) }
-                // We model the assignment as:
-                //   Assign { lhs: Variable($x, Write), rhs: lower_expr(initializer) }
+                    let init_expr_id = initializer.as_ref().map(|init_node| {
+                        let place_expr = HirExpr::Variable(HirVariable {
+                            sigil: Sigil::from_str(sigil_str),
+                            name: var_name.clone(),
+                            kind: VariableKind::Lexical,
+                            access: AccessMode::Write,
+                        });
+                        let place_id = builder.alloc_expr(place_expr, variable.location);
+                        let rhs_id = lower_expr(builder, init_node);
+                        let assign_range = SourceLocation {
+                            start: variable.location.start,
+                            end: init_node.location.end,
+                        };
+                        let assign_expr = HirExpr::Assign {
+                            lhs: place_id,
+                            rhs: rhs_id,
+                            mode: AssignMode::Simple,
+                        };
+                        builder.alloc_expr(assign_expr, assign_range)
+                    });
+                    let init_expr_id = init_expr_id.or_else(|| match &variable.kind {
+                        NodeKind::Assignment { lhs, rhs, op } => Some(lower_assignment(
+                            builder,
+                            variable,
+                            lhs,
+                            rhs,
+                            op,
+                            VariableKind::Package,
+                        )),
+                        _ => None,
+                    });
 
-                // Allocate the write-place for $x
-                let place_expr = HirExpr::Variable(HirVariable {
-                    sigil: Sigil::from_str(sigil_str),
-                    name: var_name.clone(),
-                    kind: VariableKind::Lexical,
-                    access: AccessMode::Write,
-                });
-                let place_id = builder.alloc_expr(place_expr, variable.location);
-
-                // Lower the RHS value expression
-                let rhs_id = lower_expr(builder, init_node);
-
-                // Wrap in an Assign node spanning the full declaration range
-                let assign_range =
-                    SourceLocation { start: variable.location.start, end: init_node.location.end };
-                let assign_expr =
-                    HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
-                builder.alloc_expr(assign_expr, assign_range)
-            });
-            let init_expr_id = init_expr_id.or_else(|| match &variable.kind {
-                // `local $x OP EXPR`: the parser stores the whole assignment in
-                // `variable`. Lower it directly so the operator picks the mode;
-                // the place is the dynamically scoped package slot, never a
-                // lexical, so a PIR consumer sees a stash modification.
-                NodeKind::Assignment { lhs, rhs, op } => {
-                    Some(lower_assignment(builder, variable, lhs, rhs, op, VariableKind::Package))
+                    builder.alloc_stmt(
+                        HirStmt::Let {
+                            name: var_name,
+                            sigil,
+                            storage,
+                            init: init_expr_id,
+                            binding_range: binding_node.location,
+                        },
+                        range,
+                    )
                 }
-                _ => None,
-            });
-
-            builder.alloc_stmt(
-                HirStmt::Let {
-                    name: var_name,
-                    sigil,
-                    storage,
-                    init: init_expr_id,
-                    binding_range: binding_node.location,
-                },
-                range,
-            )
+                None => {
+                    let effect_id = match (initializer.as_deref(), &variable.kind) {
+                        (None, NodeKind::Assignment { lhs, rhs, op }) => {
+                            lower_assignment(builder, variable, lhs, rhs, op, VariableKind::Package)
+                        }
+                        (None, _) => lower_place(
+                            builder,
+                            binding_node,
+                            VariableKind::Package,
+                            AccessMode::Write,
+                        ),
+                        (Some(init_node), _) => {
+                            let place_id = lower_place(
+                                builder,
+                                binding_node,
+                                VariableKind::Package,
+                                AccessMode::Write,
+                            );
+                            let rhs_id = lower_expr(builder, init_node);
+                            let assign_range = SourceLocation {
+                                start: binding_node.location.start,
+                                end: init_node.location.end,
+                            };
+                            builder.alloc_expr(
+                                HirExpr::Assign {
+                                    lhs: place_id,
+                                    rhs: rhs_id,
+                                    mode: AssignMode::Simple,
+                                },
+                                assign_range,
+                            )
+                        }
+                    };
+                    builder.alloc_stmt(HirStmt::Expr(effect_id), range)
+                }
+            }
         }
 
         // Expression statement fallback
@@ -776,6 +805,14 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
             let expr_id = lower_expr(builder, node);
             builder.alloc_stmt(HirStmt::Expr(expr_id), range)
         }
+    }
+}
+
+fn named_variable_from_node(node: &Node) -> Option<(&str, String)> {
+    match &node.kind {
+        NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone())),
+        NodeKind::VariableWithAttributes { variable, .. } => named_variable_from_node(variable),
+        _ => None,
     }
 }
 
