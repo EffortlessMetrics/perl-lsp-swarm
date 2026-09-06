@@ -33,10 +33,10 @@ The implemented slice lives in `crates/perl-parser-core/src/pir/` and lowers a
   `PirMethod`, `PirSourceAnchor`, `PirEdge`, `PirReceipt`);
 - HIR-to-PIR lowering for the operation families HIR can prove from source, with
   every source-derived node anchored and visible `Unknown` context where context
-  is not provable. The live operation-family inventory is
+  is not provable. Which families are modeled is
   `PirOperation::ALL_OPERATION_NAMES` in
   [`crates/perl-parser-core/src/pir/model.rs`](../../crates/perl-parser-core/src/pir/model.rs);
-  this status section does not restate that list;
+  lowering coverage of that set is reported by receipts, not restated here;
 - dynamic-boundary preservation, including the link from a coderef `Call` to the
   HIR-emitted boundary, plus dynamic-exit CFG edges;
 - a conservative first control-flow graph (intra-scope fallthrough edges and
