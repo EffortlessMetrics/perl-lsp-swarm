@@ -369,8 +369,10 @@ fn validate_controller_requirements(
     owners: &BTreeMap<u32, &super::model::OwnerAuthority>,
     violations: &mut Vec<String>,
 ) {
-    let invariant_ids: BTreeSet<&str> =
-        registry.invariants.iter().map(|row| row.invariant_id.as_str()).collect();
+    // Rows may name consumers before a controller lists them as mandatory.
+    // The reverse is not allowed: a mandatory ID must list that controller.
+    let rows_by_id: BTreeMap<&str, &super::model::InvariantRow> =
+        registry.invariants.iter().map(|row| (row.invariant_id.as_str(), row)).collect();
     let mut seen_controllers = BTreeSet::new();
     for requirement in &registry.controller_requirements {
         if !seen_controllers.insert(requirement.controller_issue) {
@@ -399,11 +401,18 @@ fn validate_controller_requirements(
                     requirement.controller_issue
                 ));
             }
-            if !invariant_ids.contains(invariant_id.as_str()) {
-                violations.push(format!(
+            match rows_by_id.get(invariant_id.as_str()) {
+                None => violations.push(format!(
                     "controller_requirements.#{}: mandatory invariant `{invariant_id}` has no row",
                     requirement.controller_issue
-                ));
+                )),
+                Some(row) if !row.release_consumers.contains(&requirement.controller_issue) => {
+                    violations.push(format!(
+                        "controller_requirements.#{}: mandatory invariant `{invariant_id}` does not list this controller as a release_consumer",
+                        requirement.controller_issue
+                    ));
+                }
+                Some(_) => {}
             }
         }
     }

@@ -301,6 +301,22 @@ fn controller_mandatory_id_without_row_fails() -> TestResult {
 }
 
 #[test]
+fn controller_mandatory_id_without_consumer_fails() -> TestResult {
+    let mut registry = canonical_registry()?;
+    let controller = registry["controller_requirements"][0]["controller_issue"]
+        .as_u64()
+        .ok_or_else(|| missing("controller_issue"))?;
+    let invariant_id = registry["controller_requirements"][0]["mandatory_invariant_ids"][0]
+        .as_str()
+        .ok_or_else(|| missing("mandatory_invariant_ids[0]"))?
+        .to_string();
+    let consumers =
+        array_mut(&mut invariant_mut(&mut registry, &invariant_id)?["release_consumers"])?;
+    consumers.retain(|value| value.as_u64() != Some(controller));
+    expect_violation(&registry, "does not list this controller as a release_consumer")
+}
+
+#[test]
 fn superseded_negative_control_owner_fails() -> TestResult {
     let mut registry = canonical_registry()?;
     let owner = owner_mut(&mut registry, 8507)?;
