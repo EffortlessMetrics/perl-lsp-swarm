@@ -1,0 +1,153 @@
+name: Verify PR 14647 lock contract
+
+on:
+  push:
+    branches: ['verify/14647-lock-contract-6d6676dd']
+    paths: ['.github/workflows/verify-14647-lock-contract.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-14647-lock-contract-6d6676dd
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_TERM_COLOR: never
+      PROOF_DIR: ${{ runner.temp }}/lock-contract-proof
+    steps:
+      - name: Checkout exact candidate without retained credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 6d6676dd505422ffeb089b92af45104fee74b1ca
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Bind subject and changed-file boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PROOF_DIR"
+          test "$(git rev-parse HEAD)" = 6d6676dd505422ffeb089b92af45104fee74b1ca
+          test "$(git rev-parse HEAD^)" = a024f4c7769554855fb2f124a7dfd9c47f451edb
+          test "$(git hash-object xtask/tests/file_policy.rs)" = a7639e5815dc9bd190082f9faf7309428ca22cd1
+          test "$(git diff --name-only HEAD^ HEAD)" = xtask/tests/file_policy.rs
+          git diff --check HEAD^ HEAD
+          printf '%s\n' 'subject_sha=6d6676dd505422ffeb089b92af45104fee74b1ca' 'file_blob=a7639e5815dc9bd190082f9faf7309428ca22cd1' > "$PROOF_DIR/subject.txt"
+
+      - name: Install pinned compiler and checkers
+        shell: bash
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+
+      - name: Format check
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.95.0 fmt -p xtask -- --check 2>&1 | tee "$PROOF_DIR/format.log"
+
+      - name: Focused lock contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.95.0 test -p xtask --test file_policy --locked lock_tests:: 2>&1 | tee "$PROOF_DIR/focused.log"
+
+      - name: Challenge old and strengthened tests against wrong implementations
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          path = Path('xtask/tests/file_policy.rs')
+          original = path.read_text()
+          old = subprocess.check_output(['git', 'show', 'HEAD^:xtask/tests/file_policy.rs'], text=True)
+          proof = Path(os.environ['PROOF_DIR'])
+          command = ['cargo', '+1.95.0', 'test', '-p', 'xtask', '--test', 'file_policy', '--locked', 'lock_tests::']
+          results = []
+
+          def replace_one(text, before, after):
+              if before not in text:
+                  raise RuntimeError('mutation anchor is absent')
+              return text.replace(before, after, 1)
+
+          def run_case(name, text, expect_pass):
+              path.write_text(text)
+              log = proof / (name + '.log')
+              with log.open('w') as out:
+                  result = subprocess.run(command, stdout=out, stderr=subprocess.STDOUT, timeout=180, check=False)
+              output = log.read_text()
+              observed_pass = result.returncode == 0 and 'test result: ok.' in output
+              observed_test_failure = result.returncode != 0 and 'test result: FAILED.' in output
+              accepted = observed_pass if expect_pass else observed_test_failure
+              results.append({'name': name, 'expected': 'pass' if expect_pass else 'test_failure', 'exit_code': result.returncode, 'observed_as_expected': accepted, 'log': log.name})
+              if not accepted:
+                  raise RuntimeError(f'{name}: unexpected outcome; compile errors and timeouts are not mutant kills')
+
+          start = original.index('fn lock_or_recover<T>')
+          end = original.index('\nfn inventory_output_lock()', start)
+          real_helper = original[start:end]
+          substitute = '''fn lock_or_recover(lock: &Mutex<()>) -> MutexGuard<'_, ()> {
+              static OTHER: Mutex<()> = Mutex::new(());
+              let original = match lock.lock() {
+                  Ok(guard) => guard,
+                  Err(poisoned) => poisoned.into_inner(),
+              };
+              drop(original);
+              match OTHER.lock() {
+                  Ok(guard) => guard,
+                  Err(poisoned) => poisoned.into_inner(),
+              }
+          }
+          '''
+          try:
+              run_case('old-tests-wrong-mutex-survives', replace_one(old, real_helper, substitute), True)
+              run_case('new-tests-wrong-mutex-killed', replace_one(original, real_helper, substitute), False)
+              run_case('recovery-removed-killed', replace_one(original, 'Err(poisoned) => poisoned.into_inner(),', 'Err(_) => panic!("mutation: refuse poisoned lock"),'), False)
+              run_case('poison-erased-killed', replace_one(original, 'Err(poisoned) => poisoned.into_inner(),', 'Err(poisoned) => { lock.clear_poison(); poisoned.into_inner() },'), False)
+          finally:
+              path.write_text(original)
+              (proof / 'mutation-results.json').write_text(json.dumps({'subject_sha': '6d6676dd505422ffeb089b92af45104fee74b1ca', 'cases': results}, indent=2) + '\n')
+          run_case('restored-candidate', original, True)
+          (proof / 'mutation-results.json').write_text(json.dumps({'subject_sha': '6d6676dd505422ffeb089b92af45104fee74b1ca', 'cases': results}, indent=2) + '\n')
+          PY
+
+      - name: Full file-policy target without snapshot repair
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object xtask/tests/file_policy.rs)" = a7639e5815dc9bd190082f9faf7309428ca22cd1
+          cargo +1.95.0 test -p xtask --test file_policy --locked 2>&1 | tee "$PROOF_DIR/full-target.log"
+
+      - name: Scoped Clippy without allowances
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.95.0 clippy -p xtask --test file_policy --locked -- -D warnings 2>&1 | tee "$PROOF_DIR/clippy.log"
+
+      - name: Verify candidate bytes were restored
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object xtask/tests/file_policy.rs)" = a7639e5815dc9bd190082f9faf7309428ca22cd1
+          git diff --exit-code
+
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr14647-lock-contract-6d6676dd
+          path: ${{ runner.temp }}/lock-contract-proof
+          if-no-files-found: error
+          retention-days: 7
