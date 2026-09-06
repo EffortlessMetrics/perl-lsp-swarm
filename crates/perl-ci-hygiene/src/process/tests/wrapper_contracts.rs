@@ -8,26 +8,44 @@ use super::{TempDir, TestResult};
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::os::fd::FromRawFd;
 use std::process::ExitStatus;
 use std::time::Duration;
 
-const FIXTURE_SCENARIO_ENV: &str = "PERL_CI_HYGIENE_PROCESS_FIXTURE";
+pub(super) const FIXTURE_SCENARIO_ENV: &str = "PERL_CI_HYGIENE_PROCESS_FIXTURE";
 const FIXTURE_VALUE_ENV: &str = "PERL_CI_HYGIENE_PROCESS_VALUE";
 const FIXTURE_FILTER: &str = "process::tests::wrapper_contracts::process_fixture_child";
 const FIXTURE_CWD_SENTINEL: &str = "process-fixture-cwd";
 const STDOUT_MARKER: &str = "__PERL_CI_HYGIENE_STDOUT__";
 const STDERR_MARKER: &str = "__PERL_CI_HYGIENE_STDERR__";
 const STDIN_MARKER: &str = "__PERL_CI_HYGIENE_STDIN__";
-const STDIN_BYTES_MARKER: &str = "__PERL_CI_HYGIENE_STDIN_BYTES__";
-const STDIN_EOF_MARKER: &str = "__PERL_CI_HYGIENE_STDIN_EOF__";
+pub(super) const STDIN_BYTES_MARKER: &str = "__PERL_CI_HYGIENE_STDIN_BYTES__";
+pub(super) const STDIN_EOF_MARKER: &str = "__PERL_CI_HYGIENE_STDIN_EOF__";
+pub(super) const STDIN_DIGEST_MARKER: &str = "__PERL_CI_HYGIENE_STDIN_DIGEST__";
+pub(super) const STDOUT_BEFORE_STDIN_MARKER: &str = "__PERL_CI_HYGIENE_STDOUT_BEFORE_STDIN__";
+pub(super) const STDERR_BEFORE_STDIN_MARKER: &str = "__PERL_CI_HYGIENE_STDERR_BEFORE_STDIN__";
+pub(super) const EARLY_EXIT_MARKER: &str = "__PERL_CI_HYGIENE_EARLY_EXIT__";
+pub(super) const CLOSED_STDIN_MARKER: &str = "__PERL_CI_HYGIENE_CLOSED_STDIN__";
 const ENV_MARKER: &str = "__PERL_CI_HYGIENE_ENV__";
 const CWD_MARKER: &str = "__PERL_CI_HYGIENE_CWD_SENTINEL__";
 const ARGS_MARKER: &str = "__PERL_CI_HYGIENE_ARGS__";
 const ARGS_SEP: &str = "\u{1e}";
 const LARGE_STREAM_BYTES: usize = 128 * 1024;
+/// Larger than an ordinary pipe buffer so write-before-read fills both sides.
+pub(super) const PIPE_PRESSURE_BYTES: usize = 256 * 1024;
 const STDIN_PAYLOAD: &str = "line 1\narg with spaces\n$HOME\n\"quoted\"\n";
 
-fn fixture_command() -> TestResult<String> {
+pub(super) fn stdin_digest(bytes: &[u8]) -> u64 {
+    let mut hash = 2_166_136_261u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    hash
+}
+
+pub(super) fn fixture_command() -> TestResult<String> {
     env::current_exe()?.into_os_string().into_string().map_err(|path| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -40,7 +58,7 @@ fn fixture_command() -> TestResult<String> {
     })
 }
 
-fn fixture_args() -> [&'static str; 3] {
+pub(super) fn fixture_args() -> [&'static str; 3] {
     [FIXTURE_FILTER, "--exact", "--nocapture"]
 }
 
@@ -69,6 +87,29 @@ fn emit_fixture_output(stdin_payload: Option<&str>) -> TestResult {
     stdout.flush()?;
     stderr.flush()?;
     Ok(())
+}
+
+fn close_stdin_keep_stdout() -> TestResult {
+    #[cfg(unix)]
+    {
+        // SAFETY: this fixture inherited fd 0 as stdin. Owning and dropping it
+        // closes the read end so the parent observes EPIPE while this process
+        // keeps stdout open and stays alive.
+        let stdin = unsafe { std::fs::File::from_raw_fd(0) };
+        drop(stdin);
+        let mut stdout = io::stdout().lock();
+        writeln!(stdout, "{CLOSED_STDIN_MARKER}")?;
+        stdout.flush()?;
+        loop {
+            std::thread::sleep(Duration::from_secs(30));
+        }
+    }
+    #[cfg(not(unix))]
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "close-stdin-keep-stdout is a Unix pipe-closure fixture",
+    )
+    .into())
 }
 
 /// Exact libtest-owned child. Inert unless `PERL_CI_HYGIENE_PROCESS_FIXTURE` is set,
@@ -133,6 +174,57 @@ fn process_fixture_child() -> TestResult {
             stderr.flush()?;
             Ok(())
         }
+        "write-before-read" => {
+            {
+                let mut stdout = io::stdout().lock();
+                writeln!(stdout, "{STDOUT_BEFORE_STDIN_MARKER}")?;
+                stdout.write_all(&vec![b'~'; PIPE_PRESSURE_BYTES])?;
+                writeln!(stdout)?;
+                stdout.flush()?;
+            }
+            {
+                let mut stderr = io::stderr().lock();
+                writeln!(stderr, "{STDERR_BEFORE_STDIN_MARKER}")?;
+                stderr.write_all(&vec![b'^'; PIPE_PRESSURE_BYTES])?;
+                writeln!(stderr)?;
+                stderr.flush()?;
+            }
+            let mut payload = Vec::new();
+            io::stdin().read_to_end(&mut payload)?;
+            let mut stdout = io::stdout().lock();
+            writeln!(stdout, "{STDIN_BYTES_MARKER}:{}", payload.len())?;
+            writeln!(stdout, "{STDIN_DIGEST_MARKER}:{:016x}", stdin_digest(&payload))?;
+            writeln!(stdout, "{STDIN_EOF_MARKER}:1")?;
+            stdout.flush()?;
+            Ok(())
+        }
+        "write-small-before-read" => {
+            {
+                let mut stdout = io::stdout().lock();
+                writeln!(stdout, "{STDOUT_BEFORE_STDIN_MARKER}")?;
+                stdout.flush()?;
+            }
+            {
+                let mut stderr = io::stderr().lock();
+                writeln!(stderr, "{STDERR_BEFORE_STDIN_MARKER}")?;
+                stderr.flush()?;
+            }
+            let mut payload = Vec::new();
+            io::stdin().read_to_end(&mut payload)?;
+            let mut stdout = io::stdout().lock();
+            writeln!(stdout, "{STDIN_BYTES_MARKER}:{}", payload.len())?;
+            writeln!(stdout, "{STDIN_DIGEST_MARKER}:{:016x}", stdin_digest(&payload))?;
+            writeln!(stdout, "{STDIN_EOF_MARKER}:1")?;
+            stdout.flush()?;
+            Ok(())
+        }
+        "early-exit-without-stdin" => {
+            let mut stdout = io::stdout().lock();
+            writeln!(stdout, "{EARLY_EXIT_MARKER}")?;
+            stdout.flush()?;
+            std::process::exit(3);
+        }
+        "close-stdin-keep-stdout" => close_stdin_keep_stdout(),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unknown process fixture scenario: {other}"),

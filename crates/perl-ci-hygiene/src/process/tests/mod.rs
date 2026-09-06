@@ -10,6 +10,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod drain_while_stdin;
 mod wrapper_contracts;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
