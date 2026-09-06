@@ -542,6 +542,13 @@ pub struct DocumentState {
     /// Only compiled when the `incremental` feature is enabled.
     #[cfg(feature = "incremental")]
     pub incremental_state: Option<perl_parser::incremental::IncrementalState>,
+
+    /// Set when a `didChange` array violated the advertised Full/UTF-16 envelope.
+    ///
+    /// Last-good text remains retained as predecessor evidence. It is not current
+    /// client state: [`Self::current_parsed`] returns `None` until an accepted
+    /// full-document replacement, close/reopen, or restart clears the flag.
+    full_sync_required: bool,
 }
 
 impl DocumentState {
@@ -563,6 +570,7 @@ impl DocumentState {
             incremental_doc: None,
             #[cfg(feature = "incremental")]
             incremental_state: None,
+            full_sync_required: false,
         }
     }
 
@@ -609,7 +617,19 @@ impl DocumentState {
             incremental_doc: None,
             #[cfg(feature = "incremental")]
             incremental_state: None,
+            full_sync_required: false,
         }
+    }
+
+    /// Mark the open document as requiring an explicit full-document resync.
+    pub(crate) fn mark_full_sync_required(&mut self) {
+        self.full_sync_required = true;
+    }
+
+    /// Whether later ranged changes and current-answer facts are unavailable.
+    #[must_use]
+    pub(crate) fn full_sync_required(&self) -> bool {
+        self.full_sync_required
     }
 
     /// Update document content and invalidate caches
@@ -705,7 +725,8 @@ impl DocumentState {
     /// Returns an **owned** `Arc<ParsedSnapshot>` for the same reason as
     /// [`Self::latest_parsed`] -- see that method's doc comment.
     ///
-    /// Returns `None` when no snapshot has ever been published, or when the
+    /// Returns `None` when no snapshot has ever been published, when a
+    /// Full-sync violation left [`Self::full_sync_required`] set, or when the
     /// last published snapshot is stale (parsed from an older generation
     /// than the document is now at). This is the freshness-correct default:
     /// once an async parse worker can publish out of order, a stale
@@ -717,6 +738,9 @@ impl DocumentState {
     /// old `ast`/`parse_errors`/`parent_map`/`degradation_tier` fields
     /// directly.
     pub fn current_parsed(&self) -> Option<Arc<ParsedSnapshot>> {
+        if self.full_sync_required {
+            return None;
+        }
         let snapshot = self.parsed.clone()?;
         (snapshot.generation == self.current_generation()).then_some(snapshot)
     }
@@ -740,7 +764,8 @@ impl DocumentState {
         expected_generation: u32,
         snapshot: Arc<ParsedSnapshot>,
     ) -> bool {
-        if self.current_generation() != expected_generation
+        if self.full_sync_required
+            || self.current_generation() != expected_generation
             || snapshot.generation != expected_generation
         {
             return false;
@@ -858,6 +883,25 @@ mod tests {
         assert!(doc.publish_parsed_if_current(doc_gen, snapshot));
         let current = must_some(doc.current_parsed());
         assert_eq!(current.generation(), doc_gen);
+    }
+
+    #[test]
+    fn current_parsed_none_when_full_sync_is_required() {
+        let mut doc = DocumentState::new("my $x = 1;", 1);
+        let doc_gen = doc.current_generation();
+        let snapshot = Arc::new(snapshot_for("my $x = 1;", doc_gen));
+        assert!(doc.publish_parsed_if_current(doc_gen, snapshot));
+        doc.mark_full_sync_required();
+        assert!(
+            doc.current_parsed().is_none(),
+            "last-good parse cannot masquerade as current after a Full-sync violation"
+        );
+        assert_eq!(doc.text_str(), "my $x = 1;");
+        assert!(doc.full_sync_required());
+        assert!(
+            !doc.publish_parsed_if_current(doc_gen, Arc::new(snapshot_for("my $x = 1;", doc_gen))),
+            "a later parse of last-good text must not republish as current while unavailable"
+        );
     }
 
     #[test]

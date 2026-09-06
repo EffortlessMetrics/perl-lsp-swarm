@@ -247,7 +247,7 @@ Using `lsp-mode`:
 
 #### Document Synchronization
 - [x] `textDocument/didOpen`
-- [x] `textDocument/didChange` (incremental)
+- [x] `textDocument/didChange` (full-document UTF-16; ranged transfer is not applied)
 - [x] `textDocument/didClose`
 - [x] `textDocument/didSave`
 
@@ -274,7 +274,7 @@ Using `lsp-mode`:
 The server adapts its behavior based on client capabilities:
 - Hierarchical document symbols (if supported)
 - Semantic token support with custom token types
-- Incremental text synchronization
+- Full-document text synchronization with UTF-16 positions (v0.18 envelope; incremental transfer is not claimed)
 - Dynamic registration (planned)
 
 ## Architecture

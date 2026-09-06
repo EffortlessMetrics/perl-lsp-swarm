@@ -1,0 +1,39 @@
+{
+  "schema_version": "v0_18_text_sync_envelope.v1",
+  "release": "0.18.0",
+  "subject_sha": "494faa8e9ab47e8b7b97035488fb5e4bd0aa5a6d",
+  "decision": "full_document_utf16",
+  "active_encoding_set": ["utf-16"],
+  "text_sync_kind": "full",
+  "required_owner_issues": [8129],
+  "production_authorities": [
+    "crates/perl-lsp-rs/src/runtime/v0_18_text_sync_envelope.rs",
+    "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs",
+    "crates/perl-lsp-rs/src/runtime/text_sync.rs",
+    "crates/perl-lsp-rs-core/src/protocol/capabilities/sections.rs",
+    "vscode-extension/src/languageClientDocumentSync.ts"
+  ],
+  "removed_or_disabled_authorities": [
+    "production didChange apply_changes ranged/clamp/skip path",
+    "initialize silent utf-16 fallback for nonempty lists that omit utf-16",
+    "stored client preference encoding distinct from advertised utf-16"
+  ],
+  "exact_process_receipts": [
+    "cargo test -p perl-lsp-rs --lib --locked -- v0_18_text_sync_envelope",
+    "cargo test -p perl-lsp-rs --lib --locked -- text_sync::tests::test_did_change_ranged_edit",
+    "cargo test -p perl-lsp-rs --test lsp_text_sync_kind_test --locked",
+    "cargo test -p perl-lsp-rs --test lsp_3_17_sync_tests --locked"
+  ],
+  "editor_receipts": [
+    "vscode-languageclient follows advertised TextDocumentSyncKind::Full; client options do not force Incremental",
+    "open-document replay after restart sends full text (languageClientDocumentSync)"
+  ],
+  "limitations": [
+    "Long-term atomic incremental programme #1690/#7409/#7417 remains open and is not this envelope.",
+    "UTF-8 and UTF-32 wire encodings are unsupported; nonempty client lists that omit utf-16 fail initialize.",
+    "Internal full reparse is allowed and is not claimed as incremental parsing.",
+    "Exact installed VSIX host-row proof and #4346 packaged journey remain separate receipts; this packet records the selected contract, not freeze SHA publication.",
+    "Typed #7417 Desynchronized recovery beyond full-sync-required / full-replacement / close-reopen is not this claim."
+  ],
+  "public_claim_ceiling": "v0.18 text synchronization is full-document; wire position encoding is UTF-16; incremental text-sync and UTF-8/UTF-32 wire support are not claimed."
+}

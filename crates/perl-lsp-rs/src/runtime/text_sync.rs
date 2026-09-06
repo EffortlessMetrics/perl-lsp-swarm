@@ -2,11 +2,10 @@
 //!
 //! Handles didOpen, didChange, didClose, didSave notifications.
 //!
-//! We advertise `TextDocumentSyncKind::Incremental` (2): the client sends
-//! range-based text edits which are applied to the in-memory Rope via
-//! [`apply_changes`].  After applying the edits the *entire* document is
-//! reparsed — incremental *parsing* is future work.  The sync kind is about
-//! how document text is transferred, not the parsing strategy.
+//! v0.18 advertises `TextDocumentSyncKind::Full` (1): the client sends complete
+//! document text. Ranged incremental transfer is not the supported envelope.
+//! After an accepted replacement the *entire* document is reparsed — incremental
+//! *parsing* remains future work and is independent of the transfer kind.
 
 #[cfg(test)]
 use super::*;
@@ -30,8 +29,6 @@ mod lifecycle;
 mod srp_helpers;
 mod symbols;
 use document_state::{empty_state, minimal_state, minimal_state_from_rope};
-#[cfg(feature = "incremental")]
-use srp_helpers::build_incremental_edit_set;
 use srp_helpers::{is_embedded_template_uri, is_perl_language_id};
 
 /// Last path segment of a document URI (bounded to 64 chars), used as the
@@ -690,6 +687,7 @@ impl LspServer {
                     }
                 }
 
+                let document_was_open = existing_doc.is_some();
                 let mut doc_state =
                     existing_doc.unwrap_or_else(|| empty_state(incoming_version.unwrap_or(0)));
 
@@ -720,6 +718,59 @@ impl LspServer {
                         .unwrap_or(DegradationTier::Minimal)
                         == DegradationTier::Minimal;
 
+                let admission =
+                    super::v0_18_text_sync_envelope::admit_full_document_changes(changes);
+                let text = match admission {
+                    super::v0_18_text_sync_envelope::FullDocumentAdmission::Accepted {
+                        replacements,
+                    } => {
+                        super::v0_18_text_sync_envelope::final_full_replacement_text(&replacements)
+                            .unwrap_or("")
+                            .to_string()
+                    }
+                    super::v0_18_text_sync_envelope::FullDocumentAdmission::Violation {
+                        reason,
+                    } => {
+                        if !document_was_open {
+                            tracing::warn!(
+                                "Ignoring unsupported didChange for unopened document {}: {reason}",
+                                uri
+                            );
+                            return Ok(());
+                        }
+                        tracing::warn!(
+                            "Full-sync violation for {uri}: {reason}; last-good text was not mutated"
+                        );
+                        let symbols_identity = SymbolsIdentity::for_document(
+                            &normalized_uri,
+                            &doc_state.generation,
+                            doc_state.current_generation(),
+                        );
+                        let identity = PushDiagnosticIdentity::for_document(
+                            &normalized_uri,
+                            &doc_state.generation,
+                            doc_state.current_generation(),
+                            self.workspace_identity_generation.load(Ordering::SeqCst),
+                        )
+                        .with_folder_config_generation(
+                            self.project_config_generation_for_uri(&normalized_uri),
+                        );
+                        doc_state.mark_full_sync_required();
+                        documents.insert(normalized_uri.clone(), doc_state);
+                        drop(documents);
+                        let _outcome = self.commit_push_diagnostics(
+                            &identity,
+                            json!({
+                                "uri": uri,
+                                "diagnostics": []
+                            }),
+                            PushDiagnosticsDisposition::Clear,
+                        );
+                        self.clear_document_symbols_for_identity(&symbols_identity);
+                        return Ok(());
+                    }
+                };
+
                 // Increment generation counter for this change
                 let next_gen = doc_state.generation.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
                 let target_version = version;
@@ -734,53 +785,24 @@ impl LspServer {
                     next_gen,
                 );
 
-                // Apply incremental changes with UTF-16 aware mapping
-                use crate::textdoc::{Doc, PosEnc, apply_changes};
-                use lsp_types::TextDocumentContentChangeEvent;
-
-                let mut doc = Doc { rope: doc_state.rope.clone(), version };
-
-                // Convert JSON changes to proper LSP types with error logging
-                // (Silent filter_map failures can mask document state corruption)
-                let mut lsp_changes = Vec::with_capacity(changes.len());
-                for (i, c) in changes.iter().enumerate() {
-                    match serde_json::from_value::<TextDocumentContentChangeEvent>(c.clone()) {
-                        Ok(change) => lsp_changes.push(change),
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to deserialize change {} for {}: {}",
-                                i,
-                                uri,
-                                e
-                            );
-                            tracing::error!("Change JSON: {:?}", c);
-                            // Continue processing other changes; LSP has no server-initiated
-                            // full sync, so logging is critical for diagnosing state issues.
-                        }
-                    }
-                }
-
-                // Build incremental edits from the OLD source BEFORE mutating the rope.
-                // UTF-16 line/char → byte conversion must use the pre-change line index.
-                #[cfg(feature = "incremental")]
-                let incremental_edits_opt: Option<
-                    perl_parser::incremental::incremental_edit::IncrementalEditSet,
-                > = build_incremental_edit_set(&doc_state.rope, &lsp_changes);
-
-                // Apply changes with UTF-16 encoding (as advertised in initialize)
+                use crate::textdoc::Doc;
                 let t_apply_start = std::time::Instant::now();
-                apply_changes(&mut doc, &lsp_changes, PosEnc::Utf16);
+                let doc = Doc { rope: ropey::Rope::from_str(&text), version };
                 let apply_changes_ms = crate::runtime::timing::elapsed_ms(t_apply_start);
 
                 let t_rope_start = std::time::Instant::now();
-                let text = doc.rope.to_string();
                 let text_arc: std::sync::Arc<str> = std::sync::Arc::from(text.as_str());
                 let rope_to_string_ms = crate::runtime::timing::elapsed_ms(t_rope_start);
                 tracing::debug!("Document changed: {} (version {})", uri, version);
 
+                #[cfg(feature = "incremental")]
+                let incremental_edits_opt: Option<
+                    perl_parser::incremental::incremental_edit::IncrementalEditSet,
+                > = None;
+
                 // The text-sync sink owns the parser-robustness bound for the
-                // resulting buffer. Check after applying both ranged and full
-                // replacements, before any document state is committed. The
+                // resulting buffer. Check after admitting a full-document
+                // replacement, before any document state is committed. The
                 // didSave text-reconciliation path reuses this lifecycle.
                 if let Err(err) = crate::security::validate_buffer_line_lengths(&text) {
                     return Err(invalid_params(&err.to_string()));

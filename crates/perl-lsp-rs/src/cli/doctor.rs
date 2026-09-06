@@ -135,6 +135,11 @@ fn build_doctor_report_struct(dir: &str) -> Result<DoctorReport, String> {
         configured_paths,
         effective_paths,
         system_inc,
+        text_sync_envelope: TextSyncEnvelopeReport {
+            decision: crate::runtime::v0_18_text_sync_envelope::DECISION,
+            text_sync_kind: "full",
+            position_encoding: crate::runtime::v0_18_text_sync_envelope::WIRE_ENCODING,
+        },
     })
 }
 
@@ -151,6 +156,14 @@ struct DoctorReport {
     configured_paths: Vec<PathReport>,
     effective_paths: Vec<PathReport>,
     system_inc: SystemIncReport,
+    text_sync_envelope: TextSyncEnvelopeReport,
+}
+
+#[derive(Clone, Copy, Serialize)]
+struct TextSyncEnvelopeReport {
+    decision: &'static str,
+    text_sync_kind: &'static str,
+    position_encoding: &'static str,
 }
 
 #[derive(Clone, Serialize)]
@@ -596,6 +609,17 @@ fn render_report(report: DoctorReport) -> String {
         }
     }
     out.push('\n');
+
+    out.push_str("v0.18 text/position envelope:\n");
+    out.push_str(&format!("  decision: {}\n", report.text_sync_envelope.decision));
+    out.push_str(&format!(
+        "  textDocumentSync.change: {}\n",
+        report.text_sync_envelope.text_sync_kind
+    ));
+    out.push_str(&format!(
+        "  positionEncoding: {}\n\n",
+        report.text_sync_envelope.position_encoding
+    ));
 
     out.push_str("Module lookup example:\n");
     out.push_str(
@@ -1257,6 +1281,8 @@ mod tests {
         assert!(report.contains("Project config: loaded .perl-lsp.toml"));
         assert!(report.contains("custom/lib"));
         assert!(report.contains("PERL5LIB precedence: prepend"));
+        assert!(report.contains("v0.18 text/position envelope:"));
+        assert!(report.contains("decision: full_document_utf16"));
         assert!(report.contains("Claim boundary:"));
         Ok(())
     }
@@ -1536,6 +1562,10 @@ mod tests {
 
         assert!(report.contains("perltidy:"));
         assert!(report.contains("perlcritic:"));
+        assert!(report.contains("v0.18 text/position envelope:"));
+        assert!(report.contains("decision: full_document_utf16"));
+        assert!(report.contains("textDocumentSync.change: full"));
+        assert!(report.contains("positionEncoding: utf-16"));
         Ok(())
     }
 
@@ -1572,6 +1602,11 @@ mod tests {
             configured_paths: Vec::new(),
             effective_paths: Vec::new(),
             system_inc: SystemIncReport { status: "disabled", paths: Vec::new() },
+            text_sync_envelope: TextSyncEnvelopeReport {
+                decision: crate::runtime::v0_18_text_sync_envelope::DECISION,
+                text_sync_kind: "full",
+                position_encoding: crate::runtime::v0_18_text_sync_envelope::WIRE_ENCODING,
+            },
         });
 
         assert!(rendered.contains("Install perltidy (cpanm Perl::Tidy)"));

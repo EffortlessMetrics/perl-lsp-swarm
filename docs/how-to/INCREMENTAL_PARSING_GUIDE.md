@@ -2,63 +2,51 @@
 
 ## Current State
 
-The LSP server advertises `TextDocumentSyncKind::Incremental` (value 2) to clients. This refers to **how document text is transferred**, not whether parsing itself is incremental.
+The LSP server advertises `TextDocumentSyncKind::Full` (value 1) to clients for
+the v0.18 envelope (#8129). That refers to **how document text is transferred**,
+not whether parsing itself is incremental.
 
-### What "Incremental" Means Here
+### What "Full" means here
 
-When a client sends `textDocument/didChange`, it uses LSP's incremental sync format: each change carries a `range` and replacement `text`, rather than the full document content. The server applies these range-based edits to its in-memory Rope buffer via [`apply_changes`](../../crates/perl-lsp-rs/src/textdoc.rs).
+When a client sends `textDocument/didChange`, each admitted member is a complete
+document replacement (`range` omitted). The server commits the last replacement
+atomically. Ranged incremental edits are protocol violations: they do not mutate
+last-good text, and current parse/provider facts become unavailable until an
+accepted full replacement, close/reopen, or restart.
 
-### What Happens After Each Edit
+Wire positions are UTF-16 only. A nonempty `general.positionEncodings` list that
+omits `utf-16` fails initialize instead of silently advertising another encoding.
 
-After applying the text edits to the Rope, the LSP server does a **full reparse** of the document. There is no AST subtree reuse — `Parser::new(source).parse()` runs on the complete source text every time. This is correct and produces accurate diagnostics and symbol information, but it means every keystroke triggers a full parse regardless of edit size.
+### What happens after each admitted edit
 
-See [`crates/perl-lsp-rs/src/runtime/text_sync.rs`](../../crates/perl-lsp-rs/src/runtime/text_sync.rs) for the implementation.
+After committing the replacement Rope, the LSP server does a **full reparse** of
+the document. There is no AST subtree reuse — `Parser::new(source).parse()` runs
+on the complete source text every time. Full transfer and full parse are
+independent facts.
+
+See [`crates/perl-lsp-rs/src/runtime/text_sync.rs`](../../crates/perl-lsp-rs/src/runtime/text_sync.rs)
+and [`crates/perl-lsp-rs/src/runtime/v0_18_text_sync_envelope.rs`](../../crates/perl-lsp-rs/src/runtime/v0_18_text_sync_envelope.rs).
 
 ## The `perl-incremental-parsing` Crate
 
-The `perl-incremental-parsing` crate exists and contains substantial incremental parsing infrastructure:
-
-- **`IncrementalState`** — Rope-backed document state with lexer checkpoints and token cache reuse
-- **`IncrementalDocument`** — `Arc<Node>`-based document with subtree cache and priority-aware eviction
-- **`IncrementalParserV2`** — Production-grade parser with AST subtree reuse metrics
-- **`DocumentParser`** — Enum wrapper (`Full` | `Incremental`) gated on `PERL_LSP_INCREMENTAL` env var
-
-This crate is a feature-gated optional dependency of `perl-parser` (behind the `incremental` feature flag). However, it is **not wired into the `perl-lsp` server** — `perl-lsp` does not depend on this crate and does not invoke it on `didChange` events.
-
-The infrastructure in `perl-incremental-parsing` represents real implementation work but is not connected to the running LSP. Wiring it in is tracked as future work.
-
-## Performance Characteristics (Current)
-
-The full-reparse approach is fast enough for typical Perl files in practice:
-
-- The v3 recursive-descent parser is written in Rust and generally handles small-to-medium files in under a millisecond on modern hardware
-- The live server does not retain or reuse an AST-only cache: `didOpen`, `didChange`, and the asynchronous parse-worker route run the full parser for every current document parse, including repeated identical text. This preserves the complete parser outcome, including recovery diagnostics; a complete parse-artifact store is future work.
-- Files larger than the configured size limit (`PERL_LSP_MAX_FILE_SIZE_KB`, default 512 KB) are skipped entirely with no AST
-
-No 65µs or 99.7% node-reuse benchmarks apply to the current LSP path — those numbers were measured against the `perl-incremental-parsing` crate's internal test suite, which is not connected to the server.
+The `perl-incremental-parsing` crate exists and contains substantial incremental
+parsing infrastructure. It is a feature-gated optional dependency of
+`perl-parser` and is **not** the v0.18 text-sync envelope. Dormant incremental
+fields, Rope mutation helpers, and parser-incrementality epics (#1690/#7409/#7417)
+remain open long-term work.
 
 ## Rope Integration
 
-The server does use a Rope for efficient text management and UTF-16 position conversion. Key modules:
-
-- [`crates/perl-lsp-rs/src/textdoc.rs`](../../crates/perl-lsp-rs/src/textdoc.rs) — `Doc` struct, `apply_changes`, UTF-16 position conversion
-- [`crates/perl-lsp-rs/src/state/document.rs`](../../crates/perl-lsp-rs/src/state/document.rs) — `DocumentState` holding the Rope, AST, and `LineStartsCache`
-
-The Rope is used correctly for applying incremental text edits. It is not used to avoid reparsing.
-
-## Roadmap
-
-True incremental parsing (reusing AST subtrees across edits) requires wiring `perl-incremental-parsing` into `perl-lsp`'s `handle_did_change` path. The infrastructure exists; the integration does not. Contributions are welcome.
+The server uses a Rope for text storage and UTF-16 position conversion on
+outgoing ranges. Production `didChange` no longer applies ranged
+`apply_changes` under the supported envelope.
 
 ## Testing Commands
 
 ```bash
-# Run the LSP text-sync tests (exercises full-reparse path)
-RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs -- --test-threads=2
+# Envelope unit tests
+cargo test -p perl-lsp-rs --lib --locked -- v0_18_text_sync_envelope
 
-# Run incremental-parsing crate unit tests (not connected to LSP server)
-cargo test -p perl-incremental-parsing
-
-# Run perl-parser incremental tests (feature-gated)
-cargo test -p perl-parser --features incremental
+# Text-sync production path
+RUST_TEST_THREADS=2 cargo test -p perl-lsp-rs --lib --locked -- text_sync -- --test-threads=2
 ```

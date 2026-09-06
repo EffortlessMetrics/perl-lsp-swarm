@@ -50,6 +50,7 @@ mod text_sync;
 /// `PERL_LSP_TIMING` phase-1 instrumentation sink (opt-in span timings).
 pub(crate) mod timing;
 mod types;
+pub(crate) mod v0_18_text_sync_envelope;
 mod window;
 mod workspace;
 mod workspace_folder;

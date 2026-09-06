@@ -42,14 +42,11 @@ fn presence_at(params: &Value, pointer: &str) -> ClientFact {
     if params.pointer(pointer).is_some() { ClientFact::Supported } else { ClientFact::Absent }
 }
 
-/// Replicate the server-selected negotiated position encoding rule.
+/// Replicate the v0.18 UTF-16-only session encoding rule (#8129).
 fn negotiated_encoding(params: &Value) -> Option<PositionEncoding> {
-    let encodings = params.pointer("/capabilities/general/positionEncodings")?.as_array()?;
-    encodings.iter().find_map(|entry| match entry.as_str() {
-        Some("utf-8") => Some(PositionEncoding::Utf8),
-        Some("utf-16") => Some(PositionEncoding::Utf16),
-        _ => None,
-    })
+    super::super::v0_18_text_sync_envelope::classify_position_encoding_offer(params)
+        .ok()
+        .map(|_| PositionEncoding::Utf16)
 }
 
 /// Build model inputs from initialize params exactly as the runtime consumes
@@ -331,8 +328,7 @@ fn malformed_unknown_future_and_sparse_facts_match_runtime_collapse() -> Result<
 }
 
 #[test]
-fn pull_diagnostic_client_with_refresh_supports_and_utf8_preference_matches() -> Result<(), String>
-{
+fn pull_diagnostic_client_with_refresh_supports_and_utf16_envelope_matches() -> Result<(), String> {
     assert_initialize_matches_model(json!({
         "clientInfo": { "name": "neovim" },
         "capabilities": {
@@ -343,7 +339,7 @@ fn pull_diagnostic_client_with_refresh_supports_and_utf8_preference_matches() ->
                 "diagnostic": { "refreshSupport": true }
             },
             "textDocument": { "diagnostic": {} },
-            "general": { "positionEncodings": ["utf-32", "utf-8"] }
+            "general": { "positionEncodings": ["utf-32", "utf-8", "utf-16"] }
         }
     }))?;
     Ok(())

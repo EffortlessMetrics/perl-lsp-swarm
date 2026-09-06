@@ -1946,7 +1946,7 @@ state_owner = "missing"
 tests = ["crates/perl-lsp-rs/tests/lsp_text_sync_tests.rs"]
 evidence = []
 limitations = [
-  "No qualifying behavior-evidence citation identified at reclassification; advertisement and implementation unchanged (#7029).",
+  "v0.18 envelope is full-document UTF-16 (#8129). Ranged incremental transfer is not advertised or applied. Internal full reparse is an implementation fact, not incremental parsing.",
 ]
 description = "didOpen/didChange/didClose text synchronization"
 

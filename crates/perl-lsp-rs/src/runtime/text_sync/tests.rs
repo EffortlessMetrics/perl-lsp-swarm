@@ -212,7 +212,7 @@ fn test_incremental_path_taken_on_ranged_change() -> Result<(), Box<dyn std::err
         assert!(doc.incremental_doc.is_some(), "incremental_doc must be initialized on didOpen");
     }
 
-    // Apply a ranged change: replace "42" with "43"
+    // Ranged change is a Full-sync violation: last-good text is retained.
     server.handle_did_change(Some(json!({
         "textDocument": { "uri": uri, "version": 2 },
         "contentChanges": [{
@@ -224,39 +224,15 @@ fn test_incremental_path_taken_on_ranged_change() -> Result<(), Box<dyn std::err
         }]
     })))?;
 
-    // Document must still be stored with updated content and a present AST
     {
         let docs = server.documents.lock();
         let doc = docs.get(uri).ok_or("document not stored after didChange")?;
-        assert!(doc.text.contains("43"), "document text must be updated");
+        assert!(doc.text.contains("42"), "ranged didChange must not mutate last-good text");
+        assert!(!doc.text.contains("43"), "ranged didChange must not apply the replacement");
+        assert!(doc.full_sync_required(), "ranged didChange must enter full-sync-required");
         assert!(
-            doc.current_parsed().is_some_and(|p| p.ast().is_some()),
-            "AST must be present after incremental change"
-        );
-        // incremental_doc must still be present after a ranged edit
-        assert!(doc.incremental_doc.is_some(), "incremental_doc must survive a ranged edit");
-        // The incremental doc's internal source must reflect the edit.
-        // This catches a silent reinit-instead-of-apply bug: reinit would also hold
-        // "43" in the source, but would not have the version counter bumped from 0.
-        // Checking the source text is the strongest behavioral assertion available
-        // without mocking the apply_edits call itself.
-        let inc = doc.incremental_doc.as_ref().unwrap();
-        assert!(
-            inc.source.contains("43"),
-            "incremental_doc.source must contain the edit result; got: {:?}",
-            inc.source
-        );
-        assert!(
-            !inc.source.contains("42"),
-            "incremental_doc.source must not contain the old value; got: {:?}",
-            inc.source
-        );
-        // version > 0 proves apply_edits was called (increments version), not just reinit
-        // (which starts at version 0 after IncrementalDocument::new).
-        assert!(
-            inc.version > 0,
-            "incremental_doc.version must be > 0 after at least one edit; got {}",
-            inc.version
+            doc.current_parsed().is_none(),
+            "last-good AST cannot masquerade as current after a Full-sync violation"
         );
     }
     Ok(())
@@ -303,14 +279,10 @@ fn test_incremental_fallback_on_parse_error() -> Result<(), Box<dyn std::error::
                           "text": "my $x = 42;\n" }
     }))?;
 
-    // Replace with broken syntax — must not panic; document must survive
+    // Replace with broken syntax via full-document transfer — must not panic.
     server.handle_did_change(Some(json!({
         "textDocument": { "uri": uri, "version": 2 },
-        "contentChanges": [{
-            "range": { "start": { "line": 0, "character": 0 },
-                       "end":   { "line": 0, "character": 11 } },
-            "text": "sub { !!!"
-        }]
+        "contentChanges": [{ "text": "sub { !!!" }]
     })))?;
 
     assert!(server.documents.lock().contains_key(uri), "document must survive broken syntax");
@@ -339,10 +311,11 @@ fn test_incremental_empty_content_changes() -> Result<(), Box<dyn std::error::Er
 
     let docs = server.documents.lock();
     let doc = docs.get(uri).ok_or("document not stored after empty change")?;
-    // Text must be unchanged
     assert_eq!(doc.text, text, "empty contentChanges must not modify document text");
-    // incremental_doc must still be present (reinit from same text is fine)
-    assert!(doc.incremental_doc.is_some(), "incremental_doc must be present after no-op change");
+    assert!(
+        doc.full_sync_required(),
+        "empty contentChanges is a Full-sync violation, not a silent no-op"
+    );
     Ok(())
 }
 
@@ -368,6 +341,77 @@ fn test_did_change_ranged_edit_ignored_for_unopened_document()
     Ok(())
 }
 
+#[test]
+fn test_did_change_ranged_edit_does_not_mutate_open_document()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///opened-full-sync.pl";
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "sub old_symbol { 1 }\n"
+        }
+    }))?;
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 4 },
+                "end": { "line": 0, "character": 14 }
+            },
+            "text": "new_symbol"
+        }]
+    })))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("open document must remain stored")?;
+    assert_eq!(doc.text, "sub old_symbol { 1 }\n");
+    assert_eq!(doc.version, 1);
+    assert!(doc.full_sync_required());
+    assert!(doc.current_parsed().is_none());
+    Ok(())
+}
+
+#[test]
+fn test_full_document_did_change_recovers_after_ranged_violation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///recover-full-sync.pl";
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "sub old_symbol { 1 }\n"
+        }
+    }))?;
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })))?;
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 3 },
+        "contentChanges": [{ "text": "sub new_symbol { 1 }\n" }]
+    })))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("recovered document must remain stored")?;
+    assert_eq!(doc.text, "sub new_symbol { 1 }\n");
+    assert_eq!(doc.version, 3);
+    assert!(!doc.full_sync_required());
+    assert!(doc.current_parsed().is_some_and(|p| p.ast().is_some()));
+    Ok(())
+}
+
 /// Verify that an edit at the very end of the document (zero-length insertion) is handled.
 /// This is the most common case for autocompletion triggers.
 #[cfg(feature = "incremental")]
@@ -382,16 +426,10 @@ fn test_incremental_insert_at_end_of_document() -> Result<(), Box<dyn std::error
         "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": text }
     }))?;
 
-    // Insert a new line at the end (line 1, char 0 — past the only line)
+    // Insert a new line via full-document replacement.
     server.handle_did_change(Some(json!({
         "textDocument": { "uri": uri, "version": 2 },
-        "contentChanges": [{
-            "range": {
-                "start": { "line": 1, "character": 0 },
-                "end":   { "line": 1, "character": 0 }
-            },
-            "text": "my $y = 2;\n"
-        }]
+        "contentChanges": [{ "text": "my $x = 1;\nmy $y = 2;\n" }]
     })))?;
 
     let docs = server.documents.lock();
@@ -419,16 +457,10 @@ fn test_incremental_utf16_multi_byte_character_positions() -> Result<(), Box<dyn
         "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": text }
     }))?;
 
-    // Replace the emoji (UTF-16: start=12, end=14) with the ASCII "xx"
+    // Replace the emoji via full-document transfer (v0.18 envelope).
     server.handle_did_change(Some(json!({
         "textDocument": { "uri": uri, "version": 2 },
-        "contentChanges": [{
-            "range": {
-                "start": { "line": 0, "character": 12 },
-                "end":   { "line": 0, "character": 14 }
-            },
-            "text": "xx"
-        }]
+        "contentChanges": [{ "text": "my $emoji = xx;\n" }]
     })))?;
 
     let docs = server.documents.lock();
@@ -441,7 +473,7 @@ fn test_incremental_utf16_multi_byte_character_positions() -> Result<(), Box<dyn
 }
 
 /// Verify that the `incremental_state` fast-path field is initialized on
-/// `didOpen` and survives a ranged `didChange` (Gap A wiring, issue #2080).
+/// `didOpen` and survives a full-document `didChange` (Gap A wiring, issue #2080).
 ///
 /// This test fails before the `IncrementalState` field is wired into
 /// `DocumentState` and confirmed after it is. It also verifies that the
@@ -478,20 +510,12 @@ fn test_incremental_state_wired_into_did_change() -> Result<(), Box<dyn std::err
         );
     }
 
-    // Edit the last line: change `my $var_29 = 29;` -> `my $var_29 = 999;`
-    // A checkpoint before the edit site means we should reparse < full doc.
-    let edit_line = lines.len() as u64 - 1;
+    // Edit the last line via full-document replacement.
     lines[29] = "my $var_29 = 999;".to_string();
 
     server.handle_did_change(Some(json!({
         "textDocument": { "uri": uri, "version": 2 },
-        "contentChanges": [{
-            "range": {
-                "start": { "line": edit_line, "character": 13 },
-                "end":   { "line": edit_line, "character": 15 }
-            },
-            "text": "999"
-        }]
+        "contentChanges": [{ "text": lines.join("\n") + "\n" }]
     })))?;
 
     // After didChange, incremental_state must survive and source must be updated.
@@ -500,7 +524,7 @@ fn test_incremental_state_wired_into_did_change() -> Result<(), Box<dyn std::err
         let doc = docs.get(uri).ok_or("document not stored after didChange")?;
         assert!(
             doc.incremental_state.is_some(),
-            "incremental_state must survive a ranged edit (Gap A wiring absent)"
+            "incremental_state must survive a full-document edit (Gap A wiring absent)"
         );
         let state = doc.incremental_state.as_ref().unwrap();
         assert!(
@@ -549,16 +573,10 @@ fn test_incremental_state_off_by_default_on_did_change() -> Result<(), Box<dyn s
         );
     }
 
-    // A ranged edit: replace "42" with "43".
+    // A full-document replacement: "42" becomes "43".
     server.handle_did_change(Some(json!({
         "textDocument": { "uri": uri, "version": 2 },
-        "contentChanges": [{
-            "range": {
-                "start": { "line": 0, "character": 8 },
-                "end":   { "line": 0, "character": 10 }
-            },
-            "text": "43"
-        }]
+        "contentChanges": [{ "text": "my $x = 43;\nmy $y = 99;\n" }]
     })))?;
 
     // After didChange: incremental fields stay None, but the committed AST and
@@ -568,17 +586,17 @@ fn test_incremental_state_off_by_default_on_did_change() -> Result<(), Box<dyn s
         let doc = docs.get(uri).ok_or("document not stored after didChange")?;
         assert!(
             doc.incremental_doc.is_none(),
-            "incremental_doc must stay None by default after a ranged edit"
+            "incremental_doc must stay None by default after a full-document edit"
         );
         assert!(
             doc.incremental_state.is_none(),
-            "incremental_state must stay None by default after a ranged edit"
+            "incremental_state must stay None by default after a full-document edit"
         );
         assert!(doc.text.contains("43"), "document text must be updated by the full parse path");
         assert!(!doc.text.contains("42"), "old value must be gone from committed text");
         assert!(
             doc.current_parsed().is_some_and(|p| p.ast().is_some()),
-            "committed AST must be present after the ranged edit"
+            "committed AST must be present after the full-document edit"
         );
     }
 
@@ -1537,42 +1555,55 @@ fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn
     let uri = "file:///test_did_change_line_bound.pl";
     let overlong = "x".repeat(100_001);
 
-    let changes = [
-        json!({
+    let full = json!({"text": overlong.clone()});
+
+    let server = LspServer::new();
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "short\n"
+        }
+    }))?;
+    let ranged = server.handle_did_change(Some(json!({
+        "textDocument": {"uri": uri, "version": 2},
+        "contentChanges": [{
             "range": {
                 "start": {"line": 0, "character": 0},
                 "end": {"line": 0, "character": 5}
             },
             "text": overlong.clone()
-        }),
-        json!({"text": overlong.clone()}),
-    ];
-
-    for (case, change) in changes.into_iter().enumerate() {
-        let server = LspServer::new();
-        server.did_open(json!({
-            "textDocument": {
-                "uri": uri,
-                "languageId": "perl",
-                "version": 1,
-                "text": "short\n"
-            }
-        }))?;
-
-        let result = server.handle_did_change(Some(json!({
-            "textDocument": {"uri": uri, "version": 2},
-            "contentChanges": [change]
-        })));
-        assert!(result.is_err(), "didChange case {case} must reject an overlong line");
-
-        let document = server
-            .documents
-            .lock()
-            .get(uri)
-            .ok_or("rejected didChange must retain the document")?
-            .clone();
-        assert_eq!(document.text, "short\n", "rejected didChange must not commit case {case}");
+        }]
+    })));
+    assert!(ranged.is_ok(), "ranged didChange is a notification violation, not InvalidParams");
+    {
+        let document = server.documents.lock().get(uri).ok_or("document retained")?.clone();
+        assert_eq!(document.text, "short\n");
+        assert!(document.full_sync_required());
     }
+
+    let server = LspServer::new();
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": "short\n"
+        }
+    }))?;
+    let result = server.handle_did_change(Some(json!({
+        "textDocument": {"uri": uri, "version": 2},
+        "contentChanges": [full]
+    })));
+    assert!(result.is_err(), "full didChange must reject an overlong line");
+    let document = server
+        .documents
+        .lock()
+        .get(uri)
+        .ok_or("rejected didChange must retain the document")?
+        .clone();
+    assert_eq!(document.text, "short\n", "rejected full didChange must not commit");
 
     Ok(())
 }

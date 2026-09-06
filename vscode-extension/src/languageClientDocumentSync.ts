@@ -5,6 +5,13 @@ export interface OpenTextDocumentSnapshot {
   readonly text: string;
 }
 
+/** v0.18 selected text/position envelope (#8129). vscode-languageclient follows advertised Full + UTF-16. */
+export const V0_18_TEXT_SYNC_ENVELOPE = {
+  decision: 'full_document_utf16',
+  textSyncKind: 'Full',
+  positionEncoding: 'utf-16',
+} as const;
+
 export interface TextDocumentNotificationClient {
   sendNotification(method: string, params: unknown): Promise<void>;
 }

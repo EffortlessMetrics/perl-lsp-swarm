@@ -1323,6 +1323,22 @@ covered_by = [
 created = "2026-08-30"
 review_after = "2026-11-30"
 
+[[allow]]
+id = "non-rust-v0-18-text-sync-envelope-schema"
+path = "schemas/v0_18_text_sync_envelope.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "JSON Schema for the v0.18 text/position envelope decision packet consumed by #8129/#6065/#5888. Records the selected full-document UTF-16 contract without freeze SHA publication."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test v0_18_text_sync_envelope_packet --locked",
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
+
 # =============================================================================
 # Receipts / status / metrics
 # =============================================================================
