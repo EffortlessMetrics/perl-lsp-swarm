@@ -513,8 +513,12 @@ fn node_problems(doc: &Value, vocab: &Vocabulary<'_>, violations: &mut Vec<Viola
 // ---------------------------------------------------------------------------
 
 struct Graph<'a> {
-    /// hard + evidence node edges, source -> targets.
+    /// hard + evidence node edges, source -> targets (acyclicity law).
     ordering: BTreeMap<&'a str, BTreeSet<&'a str>>,
+    /// hard node edges only, source -> targets. Only a hard path proves two
+    /// writers are serialized: an evidence dependency lets its source land
+    /// while the target is still `not_proven`, so it orders nothing.
+    hard_ordering: BTreeMap<&'a str, BTreeSet<&'a str>>,
 }
 
 fn edge_problems<'a>(
@@ -528,6 +532,7 @@ fn edge_problems<'a>(
     let package_rank = vocab.horizon_rank.get("package_externalization").copied().unwrap_or(6);
 
     let mut ordering: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let mut hard_ordering: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     let mut derived_consumers: BTreeMap<&str, BTreeSet<&str>> =
         by_id.keys().map(|id| (*id, BTreeSet::new())).collect();
 
@@ -609,6 +614,9 @@ fn edge_problems<'a>(
                             ));
                         }
                         ordering.entry(source).or_default().insert(target);
+                        if class == "hard" {
+                            hard_ordering.entry(source).or_default().insert(target);
+                        }
                         if let Some(consumers) = derived_consumers.get_mut(target) {
                             consumers.insert(source);
                         }
@@ -645,7 +653,7 @@ fn edge_problems<'a>(
         }
     }
 
-    Graph { ordering }
+    Graph { ordering, hard_ordering }
 }
 
 fn find_cycle<'a>(graph: &Graph<'a>) -> Option<Vec<&'a str>> {
@@ -686,15 +694,15 @@ fn find_cycle<'a>(graph: &Graph<'a>) -> Option<Vec<&'a str>> {
     None
 }
 
-/// Transitive closure of the hard/evidence ordering, used to prove two
-/// same-key writers are serialized by a dependency path.
+/// Transitive closure of the hard ordering, used to prove two same-key
+/// writers are serialized by a dependency path.
 fn reachability<'a>(graph: &Graph<'a>) -> BTreeMap<&'a str, BTreeSet<&'a str>> {
     let mut closure: BTreeMap<&'a str, BTreeSet<&'a str>> = BTreeMap::new();
-    for source in graph.ordering.keys() {
+    for source in graph.hard_ordering.keys() {
         let mut seen: BTreeSet<&'a str> = BTreeSet::new();
         let mut stack: Vec<&'a str> = vec![source];
         while let Some(current) = stack.pop() {
-            if let Some(targets) = graph.ordering.get(current) {
+            if let Some(targets) = graph.hard_ordering.get(current) {
                 for target in targets {
                     if seen.insert(target) {
                         stack.push(target);
@@ -728,7 +736,7 @@ fn conflict_problems(doc: &Value, graph: &Graph<'_>, violations: &mut Vec<Violat
                 if !ordered {
                     violations.push(Violation::new(
                         "CONFLICT_KEY_PARALLEL_COLLISION",
-                        format!("nodes {left} and {right} both own exclusive conflict key {key} without a dependency path between them; two writers would mutate one authority"),
+                        format!("nodes {left} and {right} both own exclusive conflict key {key} without a hard dependency path between them; two writers would mutate one authority"),
                     ));
                 }
             }

@@ -415,6 +415,24 @@ fn falsifier_12_generated_output_is_invariant_under_shuffle_root_and_order() -> 
 // --- additional laws --------------------------------------------------------
 
 #[test]
+fn evidence_edge_does_not_serialize_a_shared_exclusive_key() -> Result<()> {
+    // #11583 carries only an evidence edge to #11579; an evidence dependency
+    // lets #11583 land while #11579 is still not_proven, so sharing #11579's
+    // exclusive key must be a parallel collision, not a serialized pair.
+    let mut doc = load(MANIFEST_PATH)?;
+    let node = node_mut(&mut doc, "pc_parser_accuracy_matrix_11583")?;
+    set(
+        node,
+        "exclusive_conflict_keys",
+        string_list(&[
+            "perl_corpus.parser_accuracy_matrix",
+            "perl_corpus.expectation_consumers_metrics",
+        ]),
+    );
+    assert_code(&doc, "CONFLICT_KEY_PARALLEL_COLLISION")
+}
+
+#[test]
 fn hard_cycle_is_rejected() -> Result<()> {
     let mut doc = load(MANIFEST_PATH)?;
     let node = node_mut(&mut doc, "pc_asset_path_10555")?;

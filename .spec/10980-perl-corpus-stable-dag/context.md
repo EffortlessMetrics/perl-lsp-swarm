@@ -78,8 +78,8 @@ cargo xtask perl-corpus-train explain-static <node>
 - **Conflict keys**: the issue's key list plus the narrow additions needed so that
   genuinely parallel siblings (the three CI routes, the three consumer families, the
   three parser-accuracy strata, the two #11030 consumer leaves) never share one
-  exclusive key; two selectable nodes may share a key only when a hard/evidence path
-  orders them (`CONFLICT_KEY_PARALLEL_COLLISION`).
+  exclusive key; two selectable nodes may share a key only when a hard path orders them
+  (an evidence edge lets its source land first, so it orders nothing) (`CONFLICT_KEY_PARALLEL_COLLISION`).
 - **Legacy exits**: every implementation/cutover leaf names an exit owner and removal
   condition; proof leaves are exempt because they move no authority.
 - **Candidate lineages**: PR references live in a registry with reuse policy only;

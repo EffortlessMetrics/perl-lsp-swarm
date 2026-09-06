@@ -30,7 +30,7 @@
 - **File:** `.spec/10980-perl-corpus-stable-dag/train.manifest.json`,
   `.spec/10980-perl-corpus-stable-dag/shuffled/train.manifest.json` (CREATE)
 - **Change:** Every current #8826 controller and concrete leaf (106 nodes, 256 typed
-  edges with header/comment provenance, 62 conflict keys, candidate lineages, exits).
+  edges with header/comment provenance, 63 conflict keys, candidate lineages, exits).
 - **Verify:** `cargo xtask perl-corpus-train check`
 
 ### Step 5: Generated projections

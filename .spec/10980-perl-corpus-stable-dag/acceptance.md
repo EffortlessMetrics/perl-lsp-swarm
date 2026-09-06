@@ -6,7 +6,7 @@
 |---|---|---|
 | `cargo xtask perl-corpus-train check` on the landed tree | Green: closed JSON Schema applied, every named law passes, shuffled control canonizes/projects identically, every invalid fixture fails with its named code, projections current | `run_check` |
 | A controller, decision, external action, or historical node is marked selectable | `NON_LEAF_SELECTABLE` | falsifier 1 |
-| Two selectable nodes own one exclusive conflict key with no hard/evidence path between them | `CONFLICT_KEY_PARALLEL_COLLISION` | falsifiers 2, 5, 11 |
+| Two selectable nodes own one exclusive conflict key with no hard dependency path between them (an evidence edge orders nothing) | `CONFLICT_KEY_PARALLEL_COLLISION` | falsifiers 2, 5, 11 |
 | Two active nodes declare the same `authority_after` | `DUPLICATE_ACTIVE_AUTHORITY` | falsifiers 2, 8 |
 | A banned state key, a status word in a lineage row, a commit hash, or a branch/pull coordinate appears in stable bytes | `MUTABLE_STATE_EMBEDDED` | falsifier 3 |
 | A pull request is the subject of a non-historical node | `CANDIDATE_AS_ACTIVE_NODE` | falsifier 3 |
@@ -59,7 +59,7 @@ Formatted: `cargo fmt -p xtask -- --check`
 
 | Item | Kind | Signature / Range | Dup-risk (grep result) | Caller count |
 |---|---|---|---|---|
-| `perl_corpus_train.v1` (`train.manifest.json`) | stable graph | 106 nodes, 256 typed edges, 62 conflict keys, 9 horizons, 7 roles, 3 classes | none (`grep perl_corpus_train` empty on main) | consumed by #10992/#11001/#11010/#11017 |
+| `perl_corpus_train.v1` (`train.manifest.json`) | stable graph | 106 nodes, 256 typed edges, 63 conflict keys, 9 horizons, 7 roles, 3 classes | none (`grep perl_corpus_train` empty on main) | consumed by #10992/#11001/#11010/#11017 |
 | `schemas/perl_corpus_train.v1.schema.json` | JSON Schema | closed, `additionalProperties: false` at every level | none | applied by `run_check` |
 | `perl_corpus_train::validate_document` | function | `fn(&Value) -> Vec<Violation>` | mirrors `native_neovim_train::validate_document` shape, programme-local laws | 1 (`run_check`) + tests |
 | `perl_corpus_train::render_projections` | function | `fn(&Value) -> Result<Vec<(&'static str, String)>>` | none | `run_graph`, `projection_drift`, tests |
@@ -95,6 +95,7 @@ Formatted: `cargo fmt -p xtask -- --check`
 | consumed_by law | negative | `consumed_by_must_equal_the_derived_reverse_set` | derived reverse set |
 | Fingerprint drift | negative | `title_fingerprint_drift_is_rejected` | retitle detected |
 | Unknown conflict key | negative | `unknown_conflict_key_is_rejected` | registry closed |
+| Evidence edge as writer ordering | negative | `evidence_edge_does_not_serialize_a_shared_exclusive_key` | only hard paths serialize shared keys |
 | Node census | positive | `every_selectable_leaf_has_a_complete_contract_and_every_controller_is_unselectable` | ≥13 controllers, ≥60 selectable leaves, no selectable controller |
 | explain-static | positive/negative | `explain_static_renders_a_bounded_packet_without_readiness` | packet bounded, no readiness, unknown node fails |
 | Gate command end to end | positive | `gate_command_run_check_is_green_on_the_landed_tree` | schema + laws + fixtures + projections |
@@ -119,4 +120,6 @@ does not prove that any node is implemented, ready, or landed on the current tre
 (#10992), that any candidate exists (#11001), that a spec packet or work packet is
 correct (#11010/#11017), or that the topology is the semantically correct reading of
 every leaf body beyond the header statements it cites (the #8826 revision route owns
-corrections). Those remain `not_proven` here.
+corrections). Authority uniqueness is checked as exact `authority_after` text; a
+differently worded overlap of product semantics into a generic-topology node is a
+review obligation, not a checker law. Those remain `not_proven` here.
