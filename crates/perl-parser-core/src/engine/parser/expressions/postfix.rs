@@ -969,6 +969,7 @@ impl<'a> Parser<'a> {
                             } else {
                                 // Parse arguments without parentheses
                                 let mut args = Vec::new();
+                                let mut flattened_qw_end = None;
 
                                 // Special handling for sort/map/grep/first/any/all/etc.
                                 // with block first argument
@@ -1207,7 +1208,10 @@ impl<'a> Parser<'a> {
                                     } else if self.peek_is_qw_list_start() {
                                         // `has qw(a b)` is `has('a', 'b')` in list context.
                                         // Keep parenthesized `has(qw(a b))` on parse_args().
-                                        args.extend(self.parse_flattened_qw_list_argument()?);
+                                        let (words, qw_location) =
+                                            self.parse_flattened_qw_list_argument()?;
+                                        flattened_qw_end = Some(qw_location.end);
+                                        args.extend(words);
                                     } else {
                                         args.push(self.parse_assignment_or_declaration()?);
                                     }
@@ -1354,6 +1358,7 @@ impl<'a> Parser<'a> {
                                 let end = args
                                     .last()
                                     .map(|arg| arg.location.end)
+                                    .or(flattened_qw_end)
                                     .unwrap_or_else(|| self.previous_position());
 
                                 expr = if scalar_filehandle {

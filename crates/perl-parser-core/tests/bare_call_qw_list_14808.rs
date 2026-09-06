@@ -47,10 +47,10 @@ fn string_payload(node: &Node) -> Option<&str> {
     }
 }
 
-fn named_call(source: &str, name: &str) -> (String, Vec<Node>) {
+fn named_call_node(source: &str, name: &str) -> Node {
     let ast = parse(source);
     let mut found = Vec::new();
-    collect_named_calls(&ast, name, &mut found);
+    collect_named_call_nodes(&ast, name, &mut found);
     assert_eq!(
         found.len(),
         1,
@@ -61,14 +61,33 @@ fn named_call(source: &str, name: &str) -> (String, Vec<Node>) {
     must_some_with(found.pop(), "exactly one matching FunctionCall")
 }
 
-fn collect_named_calls(node: &Node, name: &str, out: &mut Vec<(String, Vec<Node>)>) {
-    if let NodeKind::FunctionCall { name: call_name, args } = &node.kind
+fn named_call(source: &str, name: &str) -> (String, Vec<Node>) {
+    let node = named_call_node(source, name);
+    must_with(
+        match node.into_parts().0 {
+            NodeKind::FunctionCall { name, args } => Ok((name, args)),
+            kind => Err(format!("expected FunctionCall, got {}", kind.kind_name())),
+        },
+        "named call node is a FunctionCall",
+    )
+}
+
+fn call_span(source: &str, name: &str) -> String {
+    let node = named_call_node(source, name);
+    must_some_with(
+        source.get(node.location.start..node.location.end).map(str::to_string),
+        format!("call span {}..{} inside `{source}`", node.location.start, node.location.end),
+    )
+}
+
+fn collect_named_call_nodes(node: &Node, name: &str, out: &mut Vec<Node>) {
+    if let NodeKind::FunctionCall { name: call_name, .. } = &node.kind
         && call_name == name
     {
-        out.push((call_name.clone(), args.clone()));
+        out.push(node.clone());
     }
     for child in node.children() {
-        collect_named_calls(child, name, out);
+        collect_named_call_nodes(child, name, out);
     }
 }
 
@@ -296,6 +315,24 @@ fn empty_qw_is_a_zero_arg_call_not_two_statements() {
     assert_eq!(kind_names(source), ["ExpressionStatement"]);
     let (_, args) = named_call(source, "has");
     assert!(args.is_empty(), "has qw(); must be has() with no args, got {} args", args.len());
+    assert_eq!(
+        call_span(source, "has"),
+        "has qw()",
+        "empty qw must keep the call span through the list, not truncate at the name"
+    );
+}
+
+#[test]
+fn all_comment_qw_call_span_covers_the_list() {
+    let source = "has qw(# none\n);";
+    assert_clean_parse(source);
+    let (_, args) = named_call(source, "has");
+    assert!(args.is_empty(), "comment-only qw must flatten to no args, got {} args", args.len());
+    assert_eq!(
+        call_span(source, "has"),
+        "has qw(# none\n)",
+        "comment-only qw must keep the call span through the list"
+    );
 }
 
 #[test]

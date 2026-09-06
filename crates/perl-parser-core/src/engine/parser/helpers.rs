@@ -1220,15 +1220,19 @@ impl<'a> Parser<'a> {
     ///
     /// Standalone `qw(a b)` remains an ArrayLiteral. List-operator calls treat the
     /// same node as the flattened words, matching `func 'a', 'b'`.
-    fn parse_flattened_qw_list_argument(&mut self) -> ParseResult<Vec<Node>> {
+    ///
+    /// The returned location is the consumed qw container. Empty or
+    /// comment-only lists have no element ends, and `QuoteWords` is consumed
+    /// with `tokens.next()`, which leaves `previous_position()` stale.
+    fn parse_flattened_qw_list_argument(&mut self) -> ParseResult<(Vec<Node>, SourceLocation)> {
         let node = self.parse_assignment_or_declaration()?;
         Ok(Self::flatten_qw_list_argument(node))
     }
 
-    fn flatten_qw_list_argument(node: Node) -> Vec<Node> {
+    fn flatten_qw_list_argument(node: Node) -> (Vec<Node>, SourceLocation) {
         match node.into_parts() {
-            (NodeKind::ArrayLiteral { elements }, _) => elements,
-            (kind, location) => vec![Node::new(kind, location)],
+            (NodeKind::ArrayLiteral { elements }, location) => (elements, location),
+            (kind, location) => (vec![Node::new(kind, location)], location),
         }
     }
 
