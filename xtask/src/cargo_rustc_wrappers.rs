@@ -20,10 +20,18 @@
 //! - no automatic `.cargo/config.local.toml` (not a Cargo-native file);
 //! - unstable `include` is not followed on stable Cargo; its presence keeps
 //!   `cargo_config_wrapper_not_resolved` rather than silently applying or
-//!   silently ignoring included wrappers.
+//!   silently ignoring included wrappers;
+//! - relative wrapper values with a directory component are resolved from the
+//!   parent of the directory that holds the config file (project `.cargo/` or
+//!   `$CARGO_HOME`), matching stable Cargo; environment values use the
+//!   workspace root as cwd; bare names stay PATH lookups;
+//! - empty string (`""`) clears a wrapper; whitespace-only values are present
+//!   programs, as Cargo does not trim.
 //!
-//! Absolute paths never enter the durable projection. Unresolvable layers raise
-//! a named limitation and never serialize as "no wrapper".
+//! Absolute paths never enter the durable projection: in-workspace paths become
+//! workspace-relative, and external paths become `{basename}@{sha256:...}` of
+//! the slash-normalized absolute path. Unresolvable layers raise a named
+//! limitation and never serialize as "no wrapper".
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, ErrorKind};
@@ -198,7 +206,7 @@ pub(crate) fn resolve_compiler_wrappers_in(
     let mut layers = ConfigLayers::default();
     match cargo_home_dir(env) {
         CargoHome::Path(path) => {
-            if let Err(limitation) = load_home_config(&path, fs, &mut layers) {
+            if let Err(limitation) = load_home_config(&path, workspace_root, fs, &mut layers) {
                 layers.fail(limitation);
             }
         }
@@ -206,7 +214,7 @@ pub(crate) fn resolve_compiler_wrappers_in(
     }
 
     for dir in search_dirs(workspace_root, search_ceiling).into_iter().rev() {
-        if let Err(limitation) = load_directory_config(&dir, fs, &mut layers) {
+        if let Err(limitation) = load_directory_config(&dir, workspace_root, fs, &mut layers) {
             layers.fail(limitation);
         }
     }
@@ -215,7 +223,7 @@ pub(crate) fn resolve_compiler_wrappers_in(
         env,
         WRAPPER_ENV,
         WRAPPER_CARGO_ENV,
-        layers.rustc_wrapper.as_deref(),
+        layers.rustc_wrapper.as_ref(),
         layers.complete,
         workspace_root,
     );
@@ -223,7 +231,7 @@ pub(crate) fn resolve_compiler_wrappers_in(
         env,
         WORKSPACE_WRAPPER_ENV,
         WORKSPACE_WRAPPER_CARGO_ENV,
-        layers.rustc_workspace_wrapper.as_deref(),
+        layers.rustc_workspace_wrapper.as_ref(),
         layers.complete,
         workspace_root,
     );
@@ -253,9 +261,15 @@ impl ConfigFs for RealFs {
     }
 }
 
+/// Raw config value plus the directory Cargo joins relative wrappers against.
+struct ConfiguredValue {
+    raw: String,
+    origin_dir: PathBuf,
+}
+
 struct ConfigLayers {
-    rustc_wrapper: Option<String>,
-    rustc_workspace_wrapper: Option<String>,
+    rustc_wrapper: Option<ConfiguredValue>,
+    rustc_workspace_wrapper: Option<ConfiguredValue>,
     complete: bool,
     limitations: BTreeSet<String>,
 }
@@ -266,15 +280,16 @@ impl ConfigLayers {
         self.limitations.insert(limitation.to_string());
     }
 
-    fn apply_file(&mut self, parsed: ParsedConfig) {
+    fn apply_file(&mut self, parsed: ParsedConfig, origin_dir: PathBuf) {
         if parsed.include_present {
             self.fail(CARGO_CONFIG_WRAPPER_NOT_RESOLVED);
         }
         if let Some(value) = parsed.rustc_wrapper {
-            self.rustc_wrapper = Some(value);
+            self.rustc_wrapper =
+                Some(ConfiguredValue { raw: value, origin_dir: origin_dir.clone() });
         }
         if let Some(value) = parsed.rustc_workspace_wrapper {
-            self.rustc_workspace_wrapper = Some(value);
+            self.rustc_workspace_wrapper = Some(ConfiguredValue { raw: value, origin_dir });
         }
     }
 }
@@ -329,22 +344,25 @@ fn search_dirs(workspace_root: &Path, ceiling: Option<&Path>) -> Vec<PathBuf> {
 
 fn load_home_config(
     cargo_home: &Path,
+    workspace_root: &Path,
     fs: &dyn ConfigFs,
     layers: &mut ConfigLayers,
 ) -> Result<(), &'static str> {
-    load_named_config(cargo_home, fs, layers)
+    load_named_config(cargo_home, workspace_root, fs, layers)
 }
 
 fn load_directory_config(
     dir: &Path,
+    workspace_root: &Path,
     fs: &dyn ConfigFs,
     layers: &mut ConfigLayers,
 ) -> Result<(), &'static str> {
-    load_named_config(&dir.join(".cargo"), fs, layers)
+    load_named_config(&dir.join(".cargo"), workspace_root, fs, layers)
 }
 
 fn load_named_config(
     dir: &Path,
+    workspace_root: &Path,
     fs: &dyn ConfigFs,
     layers: &mut ConfigLayers,
 ) -> Result<(), &'static str> {
@@ -363,8 +381,22 @@ fn load_named_config(
         Err(_) => return Err(CARGO_CONFIG_WRAPPER_NOT_RESOLVED),
     };
     let parsed = parse_config(&body)?;
-    layers.apply_file(parsed);
+    layers.apply_file(parsed, origin_dir_for_config_path(&path, workspace_root));
     Ok(())
+}
+
+/// Parent of the directory that holds the config file.
+///
+/// `{workspace}/.cargo/config.toml` → `{workspace}`. `$CARGO_HOME/config.toml`
+/// → parent of `$CARGO_HOME`. Relative wrappers with a directory component are
+/// joined against this origin, matching stable Cargo.
+fn origin_dir_for_config_path(config_path: &Path, workspace_root: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| workspace_root.to_path_buf())
 }
 
 struct ParsedConfig {
@@ -387,13 +419,10 @@ fn config_string(
     table: &str,
     key: &str,
 ) -> Result<Option<String>, &'static str> {
-    if let Some(nested) = value.get(table)
-        && let Some(entry) = nested.get(key)
-    {
-        return string_entry(entry);
-    }
-    let dotted = format!("{table}.{key}");
-    match value.get(&dotted) {
+    // Only `[build] rustc-wrapper` (or unquoted dotted keys that TOML nests
+    // into that table). A quoted root key `"build.rustc-wrapper"` is a
+    // different string key; stable Cargo ignores it.
+    match value.get(table).and_then(|nested| nested.get(key)) {
         Some(entry) => string_entry(entry),
         None => Ok(None),
     }
@@ -410,58 +439,77 @@ fn resolve_slot(
     env: &EnvSnapshot,
     dedicated: &str,
     cargo_mapped: &str,
-    from_config: Option<&str>,
+    from_config: Option<&ConfiguredValue>,
     config_complete: bool,
     workspace_root: &Path,
 ) -> WrapperSlot {
     if let Some(value) = env.get(dedicated) {
-        return slot_from_env_value(value, workspace_root);
+        return slot_from_env_value(value, workspace_root, workspace_root);
     }
     if let Some(value) = env.get(cargo_mapped) {
-        return slot_from_env_value(value, workspace_root);
+        return slot_from_env_value(value, workspace_root, workspace_root);
     }
     if !config_complete {
         return WrapperSlot::Unresolved;
     }
     match from_config {
-        Some(value) if !value.trim().is_empty() => present_from_configured(value, workspace_root),
+        Some(configured) if !configured.raw.is_empty() => {
+            present_from_configured(&configured.raw, &configured.origin_dir, workspace_root)
+        }
         _ => WrapperSlot::Absent,
     }
 }
 
-fn slot_from_env_value(value: &str, workspace_root: &Path) -> WrapperSlot {
-    if value.trim().is_empty() {
+fn slot_from_env_value(value: &str, origin_dir: &Path, workspace_root: &Path) -> WrapperSlot {
+    if value.is_empty() {
         WrapperSlot::Absent
     } else {
-        present_from_configured(value, workspace_root)
+        present_from_configured(value, origin_dir, workspace_root)
     }
 }
 
-fn present_from_configured(value: &str, workspace_root: &Path) -> WrapperSlot {
-    let local = value.trim().replace('\\', "/");
-    let durable = durable_wrapper(&local, workspace_root);
+fn present_from_configured(value: &str, origin_dir: &Path, workspace_root: &Path) -> WrapperSlot {
+    let resolved = resolve_wrapper_path(value, origin_dir);
+    let durable = durable_wrapper_identity(&resolved, workspace_root);
+    let local = resolved.to_string_lossy().replace('\\', "/");
     WrapperSlot::Present { durable, local }
 }
 
-fn durable_wrapper(value: &str, workspace_root: &Path) -> String {
+fn wrapper_value_has_directory(value: &str) -> bool {
+    value.contains('/') || value.contains('\\')
+}
+
+fn resolve_wrapper_path(value: &str, origin_dir: &Path) -> PathBuf {
     let path = Path::new(value);
-    if !value.chars().any(|ch| ch == '/' || ch == '\\') && !path.is_absolute() {
-        return value.to_string();
-    }
     if path.is_absolute() {
-        if let Ok(relative) = path.strip_prefix(workspace_root) {
-            let rendered = relative.to_string_lossy().replace('\\', "/");
-            if !rendered.is_empty() {
-                return rendered;
-            }
-        }
-        return path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "wrapper".to_string());
+        return path.to_path_buf();
     }
-    value.replace('\\', "/")
+    if wrapper_value_has_directory(value) {
+        return origin_dir.join(path);
+    }
+    PathBuf::from(value)
+}
+
+fn durable_wrapper_identity(resolved: &Path, workspace_root: &Path) -> String {
+    let display = resolved.to_string_lossy();
+    if !resolved.is_absolute() && !wrapper_value_has_directory(&display) {
+        return display.replace('\\', "/");
+    }
+    let abs =
+        if resolved.is_absolute() { resolved.to_path_buf() } else { workspace_root.join(resolved) };
+    if let Ok(relative) = abs.strip_prefix(workspace_root) {
+        let rendered = relative.to_string_lossy().replace('\\', "/");
+        if !rendered.is_empty() {
+            return rendered;
+        }
+    }
+    let basename = abs
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "wrapper".to_string());
+    let normalized = abs.to_string_lossy().replace('\\', "/");
+    format!("{basename}@{}", sha256_hex(normalized.as_bytes()))
 }
 
 fn finish(
@@ -483,10 +531,11 @@ fn finish(
     let rustc_workspace_wrapper_local = local_of(&rustc_workspace_wrapper);
     let rustc_wrapper = durable_of(&rustc_wrapper);
     let rustc_workspace_wrapper = durable_of(&rustc_workspace_wrapper);
-    let encoded = format!(
-        "rustc_wrapper={}\nrustc_workspace_wrapper={}\nrustc_wrapper_unresolved={rustc_wrapper_unresolved}\nrustc_workspace_wrapper_unresolved={rustc_workspace_wrapper_unresolved}\n",
-        encode_slot(rustc_wrapper.as_deref(), rustc_wrapper_unresolved),
-        encode_slot(rustc_workspace_wrapper.as_deref(), rustc_workspace_wrapper_unresolved),
+    let encoded = encode_digest_payload(
+        rustc_wrapper.as_deref(),
+        rustc_workspace_wrapper.as_deref(),
+        rustc_wrapper_unresolved,
+        rustc_workspace_wrapper_unresolved,
     );
     ResolvedCompilerWrappers {
         rustc_wrapper,
@@ -496,17 +545,49 @@ fn finish(
         rustc_wrapper_unresolved,
         rustc_workspace_wrapper_unresolved,
         limitations: limitations.into_iter().collect(),
-        subject_digest: sha256_hex(encoded.as_bytes()),
+        subject_digest: sha256_hex(&encoded),
     }
 }
 
-fn encode_slot(value: Option<&str>, unresolved: bool) -> String {
+/// Length-prefixed encoding so embedded newlines or field-like text in a
+/// wrapper value cannot collide with another slot assignment.
+fn encode_digest_payload(
+    rustc_wrapper: Option<&str>,
+    rustc_workspace_wrapper: Option<&str>,
+    rustc_wrapper_unresolved: bool,
+    rustc_workspace_wrapper_unresolved: bool,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_digest_slot(&mut out, b"rustc_wrapper", rustc_wrapper, rustc_wrapper_unresolved);
+    encode_digest_slot(
+        &mut out,
+        b"rustc_workspace_wrapper",
+        rustc_workspace_wrapper,
+        rustc_workspace_wrapper_unresolved,
+    );
+    out
+}
+
+fn encode_digest_slot(out: &mut Vec<u8>, name: &[u8], value: Option<&str>, unresolved: bool) {
+    out.extend_from_slice(name);
+    out.push(0);
     if unresolved {
-        "unresolved".to_string()
-    } else {
-        match value {
-            Some(text) => format!("present:{text}"),
-            None => "absent".to_string(),
+        out.extend_from_slice(b"unresolved");
+        out.push(0);
+        return;
+    }
+    match value {
+        None => {
+            out.extend_from_slice(b"absent");
+            out.push(0);
+        }
+        Some(text) => {
+            out.extend_from_slice(b"present");
+            out.push(0);
+            out.extend_from_slice(text.len().to_string().as_bytes());
+            out.push(0);
+            out.extend_from_slice(text.as_bytes());
+            out.push(0);
         }
     }
 }
@@ -591,11 +672,23 @@ mod tests {
     }
 
     #[test]
-    fn dotted_build_key_at_the_root_table_is_read() {
+    fn quoted_dotted_build_key_at_the_root_table_is_ignored() {
         let (root, home, ws, _) = fixture();
-        write_config(&ws.join(".cargo/config.toml"), "\"build.rustc-wrapper\" = \"dotted\"\n");
+        write_config(
+            &ws.join(".cargo/config.toml"),
+            "\"build.rustc-wrapper\" = \"quoted-dotted\"\n",
+        );
         let resolved = resolve_tree(&ws, root.path(), &home);
-        assert_eq!(resolved.rustc_wrapper(), Some("dotted"));
+        assert!(resolved.rustc_wrapper().is_none());
+        assert!(resolved.is_complete());
+    }
+
+    #[test]
+    fn unquoted_dotted_build_key_nests_into_the_build_table() {
+        let (root, home, ws, _) = fixture();
+        write_config(&ws.join(".cargo/config.toml"), "build.rustc-wrapper = \"nested-dotted\"\n");
+        let resolved = resolve_tree(&ws, root.path(), &home);
+        assert_eq!(resolved.rustc_wrapper(), Some("nested-dotted"));
         assert!(resolved.is_complete());
     }
 
@@ -887,5 +980,145 @@ mod tests {
         let resolved = resolve_tree(&ws, root.path(), &home);
         assert!(!resolved.is_complete());
         assert!(resolved.rustc_wrapper().is_none());
+    }
+
+    #[test]
+    fn parent_relative_wrapper_resolves_from_the_parent_origin_not_the_workspace() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = root.path().join("cargo-home");
+        let parent = root.path().join("parent");
+        let ws = parent.join("workspace");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(ws.join(".cargo")).unwrap();
+        write_config(
+            &parent.join(".cargo/config.toml"),
+            "[build]\nrustc-wrapper = \"tools/rel-parent\"\n",
+        );
+        write_config(
+            &ws.join(".cargo/config.toml"),
+            "[build]\nrustc-wrapper = \"tools/rel-parent\"\n",
+        );
+        let from_parent = {
+            fs::remove_file(ws.join(".cargo/config.toml")).unwrap();
+            resolve_tree(&ws, root.path(), &home)
+        };
+        write_config(
+            &ws.join(".cargo/config.toml"),
+            "[build]\nrustc-wrapper = \"tools/rel-parent\"\n",
+        );
+        let from_workspace = resolve_tree(&ws, root.path(), &home);
+        assert_ne!(from_parent.subject_digest(), from_workspace.subject_digest());
+        assert_eq!(from_workspace.rustc_wrapper(), Some("tools/rel-parent"));
+        let parent_durable = from_parent.rustc_wrapper().expect("parent wrapper");
+        assert_ne!(parent_durable, "tools/rel-parent");
+        assert!(parent_durable.starts_with("rel-parent@sha256:"), "{parent_durable}");
+        let parent_local = from_parent.rustc_wrapper_local().expect("parent local");
+        assert!(parent_local.ends_with("parent/tools/rel-parent"), "{parent_local}");
+        assert!(from_parent.is_complete());
+        assert!(from_workspace.is_complete());
+    }
+
+    #[test]
+    fn cargo_home_relative_wrapper_resolves_from_parent_of_cargo_home() {
+        let (root, home, ws, _) = fixture();
+        write_config(
+            &home.join("config.toml"),
+            "[build]\nrustc-wrapper = \"home-tools/rel-home\"\n",
+        );
+        let resolved = resolve_tree(&ws, root.path(), &home);
+        let durable = resolved.rustc_wrapper().expect("wrapper");
+        assert!(durable.starts_with("rel-home@sha256:"), "{durable}");
+        let local = resolved.rustc_wrapper_local().expect("local");
+        let expected = home.parent().expect("home parent").join("home-tools").join("rel-home");
+        assert_eq!(local, expected.to_string_lossy().replace('\\', "/"));
+        assert!(resolved.is_complete());
+    }
+
+    #[test]
+    fn env_relative_wrapper_resolves_from_the_workspace_root() {
+        let (root, home, ws, _) = fixture();
+        let mut env = isolated_env(&home);
+        env.insert(WRAPPER_ENV, "tools/env-rel");
+        env.insert(WORKSPACE_WRAPPER_ENV, "");
+        let resolved = resolve_compiler_wrappers_in(&ws, &env, Some(root.path()), &RealFs);
+        assert_eq!(resolved.rustc_wrapper(), Some("tools/env-rel"));
+        let local = resolved.rustc_wrapper_local().expect("local");
+        assert_eq!(local, ws.join("tools/env-rel").to_string_lossy().replace('\\', "/"));
+        assert!(resolved.is_complete());
+    }
+
+    #[test]
+    fn distinct_absolute_wrappers_with_the_same_basename_have_distinct_digests() {
+        let (root, home, ws, _) = fixture();
+        let first_path = root.path().join("usr").join("bin").join("sccache");
+        let second_path = root.path().join("opt").join("sccache");
+        write_config(
+            &ws.join(".cargo/config.toml"),
+            &format!("[build]\nrustc-wrapper = \"{}\"\n", first_path.display()),
+        );
+        let first = resolve_tree(&ws, root.path(), &home);
+        write_config(
+            &ws.join(".cargo/config.toml"),
+            &format!("[build]\nrustc-wrapper = \"{}\"\n", second_path.display()),
+        );
+        let second = resolve_tree(&ws, root.path(), &home);
+        let first_durable = first.rustc_wrapper().expect("first");
+        let second_durable = second.rustc_wrapper().expect("second");
+        assert!(first_durable.starts_with("sccache@sha256:"), "{first_durable}");
+        assert!(second_durable.starts_with("sccache@sha256:"), "{second_durable}");
+        assert_ne!(first_durable, second_durable);
+        assert_ne!(first.subject_digest(), second.subject_digest());
+        assert!(!first_durable.contains(root.path().to_string_lossy().as_ref()));
+        assert!(!second_durable.contains(root.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn whitespace_only_env_is_a_present_wrapper_and_empty_string_still_clears() {
+        let (root, home, ws, _) = fixture();
+        write_config(&ws.join(".cargo/config.toml"), "[build]\nrustc-wrapper = \"from-config\"\n");
+        let mut spaces = isolated_env(&home);
+        spaces.insert(WRAPPER_ENV, "   ");
+        spaces.insert(WORKSPACE_WRAPPER_ENV, "");
+        let spaced = resolve_compiler_wrappers_in(&ws, &spaces, Some(root.path()), &RealFs);
+        assert_eq!(spaced.rustc_wrapper(), Some("   "));
+        assert!(spaced.is_complete());
+
+        let mut empty = isolated_env(&home);
+        empty.insert(WRAPPER_ENV, "");
+        empty.insert(WORKSPACE_WRAPPER_ENV, "");
+        let cleared = resolve_compiler_wrappers_in(&ws, &empty, Some(root.path()), &RealFs);
+        assert!(cleared.rustc_wrapper().is_none());
+        assert_ne!(spaced.subject_digest(), cleared.subject_digest());
+        assert!(cleared.is_complete());
+    }
+
+    #[test]
+    fn newline_in_a_wrapper_value_does_not_collide_with_another_slot_assignment() {
+        let (root, home, ws, _) = fixture();
+        let mut embedded = isolated_env(&home);
+        embedded.insert(WRAPPER_ENV, "a\nb");
+        embedded.insert(WORKSPACE_WRAPPER_ENV, "");
+        let with_newline = resolve_compiler_wrappers_in(&ws, &embedded, Some(root.path()), &RealFs);
+
+        let mut split = isolated_env(&home);
+        split.insert(WRAPPER_ENV, "a");
+        split.insert(WORKSPACE_WRAPPER_ENV, "b");
+        let split_slots = resolve_compiler_wrappers_in(&ws, &split, Some(root.path()), &RealFs);
+
+        let mut injected = isolated_env(&home);
+        injected.insert(WRAPPER_ENV, "foo\nrustc_workspace_wrapper=present:bar");
+        injected.insert(WORKSPACE_WRAPPER_ENV, "");
+        let injected_value =
+            resolve_compiler_wrappers_in(&ws, &injected, Some(root.path()), &RealFs);
+
+        let mut honest = isolated_env(&home);
+        honest.insert(WRAPPER_ENV, "foo");
+        honest.insert(WORKSPACE_WRAPPER_ENV, "bar");
+        let honest_split = resolve_compiler_wrappers_in(&ws, &honest, Some(root.path()), &RealFs);
+
+        assert_ne!(with_newline.subject_digest(), split_slots.subject_digest());
+        assert_ne!(injected_value.subject_digest(), honest_split.subject_digest());
+        assert_eq!(with_newline.rustc_wrapper(), Some("a\nb"));
+        assert!(with_newline.rustc_workspace_wrapper().is_none());
     }
 }
