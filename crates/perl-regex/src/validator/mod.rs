@@ -9,6 +9,8 @@ mod nested_quantifier;
 
 #[cfg(test)]
 mod analysis_contract_tests;
+#[cfg(test)]
+mod complexity_contract_tests;
 
 pub use analysis::{
     EmbeddedCodeFact, EmbeddedCodeKind, RegexAnalysis, RegexAnalysisBudget,
