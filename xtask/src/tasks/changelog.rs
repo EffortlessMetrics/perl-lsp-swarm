@@ -1283,18 +1283,25 @@ fn report_category_hint(changed: &[String], changelog_paths: &[&str], report: &m
 ///
 /// Returns the sample defect lines (unreadable, unparseable, or
 /// schema-invalid). An empty vec is not a pass-by-flatten: it means no sample
-/// failed. A missing samples directory, or a directory with no `*.yaml`
-/// files, is a non-fatal WARN and returns an empty vec so the caller stays
-/// [`CheckOutcome::PolicySatisfied`]. Instrument failures remain `Err`.
+/// failed. A missing samples directory (`NotFound`) is a non-fatal WARN and
+/// returns an empty vec so the caller stays [`CheckOutcome::PolicySatisfied`].
+/// Any other `read_dir` failure (not a directory, permission denied) is an
+/// instrument error. Instrument failures remain `Err`.
 fn run_self_test(
     root: &Path,
     cfg: &ChangieConfig,
     report: &mut Report,
 ) -> std::result::Result<Vec<String>, String> {
     let samples = root.join(SAMPLES_DIR);
-    let Ok(entries) = std::fs::read_dir(&samples) else {
-        report.warn(format!("no samples directory at {}", samples.display()));
-        return Ok(Vec::new());
+    let entries = match std::fs::read_dir(&samples) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            report.warn(format!("no samples directory at {}", samples.display()));
+            return Ok(Vec::new());
+        }
+        Err(e) => {
+            return Err(format!("failed to read samples directory {}: {e}", samples.display()));
+        }
     };
     let mut sample_files: Vec<PathBuf> = entries
         .flatten()
@@ -3380,6 +3387,39 @@ changelog = "vscode-extension/CHANGELOG.md"
         assert!(
             rendered.contains("bad.yaml"),
             "the sample defect must still be WARNed; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A path that exists at `.changes/samples` but is not a directory is not
+    /// "missing": `read_dir` fails with something other than `NotFound`, and
+    /// that must be an instrument failure (exit 2), not the missing-directory
+    /// WARN that would flatten to `PolicySatisfied` on origin/main.
+    #[test]
+    fn check_self_test_samples_path_that_is_not_a_directory_is_instrument_failure()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        std::fs::create_dir_all(dir.join(".changes")).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(SAMPLES_DIR), "not a directory").map_err(|e| e.to_string())?;
+        let result =
+            check_inner(Some("HEAD".to_string()), None, None, true, Some(dir.to_path_buf()));
+        let err = match result {
+            Ok((outcome, report)) => {
+                return Err(format!(
+                    "a samples path that exists but is not a directory must be an \
+                     instrument failure, not {outcome:?}:\n{}",
+                    report.lines.join("\n")
+                ));
+            }
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("samples"),
+            "instrument failure must name the samples path; got {err}"
         );
         Ok(())
     }
