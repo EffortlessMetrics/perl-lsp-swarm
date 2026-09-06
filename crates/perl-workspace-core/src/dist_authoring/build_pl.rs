@@ -60,6 +60,7 @@ fn build_pairs(content: &str) -> Option<Vec<ScanPair>> {
             let method_start = idx + 2;
             if let Some(open) = call_open_paren(content, method_start, "new".len())
                 && let Some((pairs, _)) = parse_paren_hash(content, open)
+                && !pairs.is_empty()
             {
                 return Some(pairs);
             }

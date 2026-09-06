@@ -943,7 +943,7 @@ my @words = qw{ \} WriteMakefile(NAME => 'Wrong::Qw') };
 WriteMakefile(
     NAME => q{Foo\}::Bar},
     VERSION => qq{1.00\},0},
-    LICENSE => qw{ perl artistic_2 \}},
+    LICENSE => [qw{ perl artistic_2 \}}],
 );
 "#;
     let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
