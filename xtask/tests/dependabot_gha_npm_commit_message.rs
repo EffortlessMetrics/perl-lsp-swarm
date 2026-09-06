@@ -195,14 +195,11 @@ fn duplicate_npm_rows_fail_closed() -> Result<()> {
 /// Missing either governed row is a defect, not a vacuously empty pass.
 #[test]
 fn missing_governed_row_fails_closed() -> Result<()> {
-    must_err_containing(
-        &format!("updates:\n{}", row_yaml("npm", "/vscode-extension", "chore", Some("scope")),),
-        "must keep a github-actions `/` update entry",
-    )?;
-    must_err_containing(
-        &format!("updates:\n{}", row_yaml("github-actions", "/", "chore", Some("scope")),),
-        "must keep a npm `/vscode-extension` update entry",
-    )
+    let npm_only =
+        format!("updates:\n{}", row_yaml("npm", "/vscode-extension", "chore", Some("scope")));
+    let gha_only = format!("updates:\n{}", row_yaml("github-actions", "/", "chore", Some("scope")));
+    must_err_containing(&npm_only, "must keep a github-actions `/` update entry")?;
+    must_err_containing(&gha_only, "must keep a npm `/vscode-extension` update entry")
 }
 
 /// A github-actions row at a directory other than `/` does not satisfy the
