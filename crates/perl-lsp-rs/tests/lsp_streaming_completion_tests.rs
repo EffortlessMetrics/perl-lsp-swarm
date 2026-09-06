@@ -93,7 +93,7 @@ fn notify_generic_ai_config(
 /// server and previously accepted state is preserved. The helper remains so
 /// transport-level regressions prove that exact rejection end-to-end.
 fn enable_ai_streaming(harness: &mut LspHarness) -> TestResult {
-    let _ = notify_generic_ai_config(
+    notify_generic_ai_config(
         harness,
         json!({
             "enabled": true,
@@ -108,7 +108,7 @@ fn enable_ai_streaming(harness: &mut LspHarness) -> TestResult {
 /// Helper: generic enable attempt with fallback=false, the payload shape that
 /// used to select the no-backend progress contract before #4997.
 fn enable_ai_streaming_progress_contract(harness: &mut LspHarness) -> TestResult {
-    let _ = notify_generic_ai_config(
+    notify_generic_ai_config(
         harness,
         json!({
             "enabled": true,
@@ -124,7 +124,7 @@ fn enable_ai_streaming_progress_contract(harness: &mut LspHarness) -> TestResult
 /// Helper: generic enable-plus-disable-streaming attempt. Both directions are
 /// unauthorized under #4997; neither may change AI state.
 fn enable_ai_disable_streaming(harness: &mut LspHarness) -> TestResult {
-    let _ = notify_generic_ai_config(
+    notify_generic_ai_config(
         harness,
         json!({
             "enabled": true,
