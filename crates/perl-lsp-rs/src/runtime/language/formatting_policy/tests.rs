@@ -263,7 +263,7 @@ fn tab_indentation_on_type_is_a_typed_refusal() -> Result<(), Box<dyn std::error
     assert_eq!(result, Some(json!([])));
     let receipt = receipt(&server)?;
     assert_eq!(receipt["decision"], "blocked");
-    assert_eq!(receipt["reason"], "unsupported_syntax");
+    assert_eq!(receipt["reason"], "tabs_requested");
     assert_eq!(receipt["result_count"], 0);
     Ok(())
 }

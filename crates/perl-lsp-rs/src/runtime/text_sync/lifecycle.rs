@@ -34,6 +34,7 @@ impl LspServer {
             }
 
             self.evict_open_document_session_state(uri);
+            self.clear_formatting_receipt_for_close(uri);
 
             // If the closed document has no backing file on disk it existed only in
             // the editor buffer (e.g. a new unsaved file or a test virtual document).
