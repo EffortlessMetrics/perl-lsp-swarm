@@ -36,8 +36,6 @@ use std::path::Path;
 #[path = "perl_corpus_train_tests.rs"]
 mod tests;
 
-/// Repository-relative bundle directory of the stable train.
-pub const BUNDLE_DIR: &str = ".spec/10980-perl-corpus-stable-dag";
 /// Canonical manifest bytes.
 pub const MANIFEST_PATH: &str = ".spec/10980-perl-corpus-stable-dag/train.manifest.json";
 /// Order-shuffled determinism control; must canonize identically and validate.
@@ -218,15 +216,14 @@ fn walk_stable_bytes(value: &Value, path: &str, violations: &mut Vec<Violation>)
                 walk_stable_bytes(child, &format!("{path}[{index}]"), violations);
             }
         }
-        Value::String(text) => {
+        Value::String(text)
             if looks_like_commit_hash(text)
-                || BANNED_VALUE_FRAGMENTS.iter().any(|fragment| text.contains(fragment))
-            {
-                violations.push(Violation::new(
-                    "MUTABLE_STATE_EMBEDDED",
-                    format!("{path}: value carries a commit/branch/pull coordinate; stable bytes never bind live state"),
-                ));
-            }
+                || BANNED_VALUE_FRAGMENTS.iter().any(|fragment| text.contains(fragment)) =>
+        {
+            violations.push(Violation::new(
+                "MUTABLE_STATE_EMBEDDED",
+                format!("{path}: value carries a commit/branch/pull coordinate; stable bytes never bind live state"),
+            ));
         }
         _ => {}
     }
