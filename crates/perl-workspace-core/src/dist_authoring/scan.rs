@@ -317,7 +317,12 @@ fn parse_pairs(source: &str, idx: &mut usize, stop: usize) -> Vec<ScanPair> {
         }
         skip_ws_comments(source, idx);
         let value_start = *idx;
-        let value = parse_value(source, idx);
+        let mut value = parse_value(source, idx);
+        skip_ws_comments(source, idx);
+        if at_expression_continuation(source, *idx) {
+            *idx = value_start;
+            value = take_dynamic(source, idx);
+        }
         let value_end = (*idx).min(stop);
         pairs.push(ScanPair { key, key_start, key_end, value, value_start, value_end });
         skip_ws_comments(source, idx);
@@ -371,10 +376,18 @@ fn parse_list_value(source: &str, idx: &mut usize) -> ScanValue {
             continue;
         }
         skip_ws_comments(source, idx);
+        let item_start = *idx;
         let flatten_qw = at_qw(source, *idx);
-        match parse_value_in(source, idx, flatten_qw) {
-            ScanValue::List(inner) if flatten_qw => items.extend(inner),
-            other => items.push(other),
+        let item = parse_value_in(source, idx, flatten_qw);
+        skip_ws_comments(source, idx);
+        if at_expression_continuation(source, *idx) {
+            *idx = item_start;
+            items.push(take_dynamic(source, idx));
+        } else {
+            match item {
+                ScanValue::List(inner) if flatten_qw => items.extend(inner),
+                other => items.push(other),
+            }
         }
         skip_ws_comments(source, idx);
         if source.as_bytes().get(*idx) == Some(&b',') {
@@ -755,6 +768,41 @@ fn skip_balanced_value(source: &str, idx: &mut usize) {
             }
         }
     }
+}
+
+fn at_expression_continuation(source: &str, idx: usize) -> bool {
+    let bytes = source.as_bytes();
+    let Some(&byte) = bytes.get(idx) else {
+        return false;
+    };
+    match byte {
+        b'.' | b'+' | b'*' | b'/' | b'%' => true,
+        b'-' => match bytes.get(idx + 1) {
+            Some(&b'>' | &b'-') => true,
+            Some(next) => next.is_ascii_digit() || next.is_ascii_whitespace(),
+            None => false,
+        },
+        b'&' => bytes.get(idx + 1) == Some(&b'&'),
+        b'|' => bytes.get(idx + 1) == Some(&b'|'),
+        b'[' | b'(' => true,
+        _ => matches!(
+            peek_ident(source, idx).as_deref(),
+            Some("x" | "and" | "or" | "xor" | "eq" | "ne" | "le" | "ge" | "lt" | "gt" | "cmp")
+        ),
+    }
+}
+
+fn peek_ident(source: &str, idx: usize) -> Option<String> {
+    let bytes = source.as_bytes();
+    let first = *bytes.get(idx)?;
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return None;
+    }
+    let mut end = idx + 1;
+    while end < bytes.len() && is_ident_byte(bytes[end]) {
+        end += 1;
+    }
+    source.get(idx..end).map(ToOwned::to_owned)
 }
 
 fn at_qw(source: &str, idx: usize) -> bool {

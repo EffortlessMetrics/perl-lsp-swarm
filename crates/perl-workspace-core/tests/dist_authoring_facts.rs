@@ -611,6 +611,36 @@ Module::Build->new(
 }
 
 #[test]
+fn build_pl_does_not_take_unrelated_new_without_module_build() {
+    let src = r#"
+Some::Other->new(
+    module_name => 'Wrong::Pkg',
+    dist_version => '9.99',
+);
+"#;
+    let facts = parse_build_pl(fid("Build.PL", src), src);
+    assert!(facts.name.is_none());
+    assert!(facts.version.is_none());
+    assert!(facts.limitations.iter().any(|l| l.kind == "missing_module_build_new"));
+}
+
+#[test]
+fn concatenated_and_arithmetic_literals_are_dynamic() {
+    let src = r#"
+WriteMakefile(
+    NAME => 'Foo::Bar',
+    VERSION => '1'.'2',
+    PREREQ_PM => { 'Moo' => 1 + 2 },
+);
+"#;
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    assert_eq!(facts.name.as_deref(), Some("Foo-Bar"));
+    assert!(facts.version.is_none(), "VERSION => '1'.'2' is concatenation, not 1");
+    assert!(facts.prereqs.iter().any(|p| p.module == "Moo" && p.dynamic));
+    assert!(facts.limitations.iter().any(|l| l.kind == "dynamic_value"));
+}
+
+#[test]
 fn fact_fingerprint_includes_resource_web_type_and_provides_file() {
     let with_web = r#"
 WriteMakefile(

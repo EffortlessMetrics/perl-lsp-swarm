@@ -67,9 +67,6 @@ fn build_pairs(content: &str) -> Option<Vec<ScanPair>> {
             break;
         }
     }
-    if let Some(pairs) = method_new_pairs(content, "new") {
-        return Some(pairs);
-    }
     assigned_hash(content, "args")
 }
 
@@ -96,12 +93,6 @@ fn ident_before_arrow(source: &str, arrow_idx: usize) -> Option<&str> {
 
 fn is_module_build_constructor(ident: &str) -> bool {
     ident == "Module::Build" || ident.starts_with("Module::Build::")
-}
-
-fn method_new_pairs(content: &str, method: &str) -> Option<Vec<ScanPair>> {
-    let ident = find_ident(content, method, 0)?;
-    let open = call_open_paren(content, ident, method.len())?;
-    parse_paren_hash(content, open).map(|(pairs, _)| pairs)
 }
 
 fn assigned_hash(content: &str, name: &str) -> Option<Vec<ScanPair>> {
