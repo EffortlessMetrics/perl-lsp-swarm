@@ -163,3 +163,64 @@ fn dist_facts_absent_when_not_requested() {
     // …but its content is not parsed into dist facts.
     assert!(model.dist_metadata.is_empty(), "DIST not requested → no dist facts");
 }
+
+#[test]
+fn builder_keeps_postfix_conditions_out_of_distribution_facts() {
+    let model = build(
+        "cpan-postfix-conditions",
+        &[(
+            "cpanfile",
+            r#"
+                requires 'Win32::Conditional' if $^O eq 'MSWin32';
+                test_requires 'Author::Conditional' unless $enabled;
+                recommends('Loop::Conditional') for @targets;
+                requires 'Kept::Runtime', '1';
+                on 'test' => sub {
+                    requires 'Nested::Conditional' if $enabled;
+                    recommends 'Kept::Test', '2';
+                };
+            "#,
+        )],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let extracted = model.dist_metadata.iter().flat_map(|facts| &facts.prereqs).collect::<Vec<_>>();
+    assert_eq!(extracted.len(), 2, "only unconditional declarations may reach dist facts");
+    let aggregate = model.all_prereqs();
+    assert_eq!(aggregate.len(), 2, "the consumer aggregate must not restore conditional facts");
+    for facts in [&extracted, &aggregate] {
+        assert!(facts.iter().any(|p| p.module == "Kept::Runtime"
+            && p.phase == "runtime"
+            && p.relation == "requires"
+            && p.version.as_deref() == Some("1")));
+        assert!(facts.iter().any(|p| p.module == "Kept::Test"
+            && p.phase == "test"
+            && p.relation == "recommends"
+            && p.version.as_deref() == Some("2")));
+    }
+}
+
+#[test]
+fn builder_refuses_runtime_selected_callbacks_and_escaped_names() {
+    let model = build(
+        "cpan-runtime-selected",
+        &[(
+            "cpanfile",
+            r#"
+                on 'test' => $enabled ? sub { requires 'Leak::First'; } : sub { requires 'Leak::Second'; };
+                requires "Foo\x3a\x3aBar";
+                my $note = q#a { brace#;
+                requires 'Kept::Runtime', '1';
+                on test => sub { recommends 'Kept::Test'; };
+            "#,
+        )],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let extracted = model.dist_metadata.iter().flat_map(|facts| &facts.prereqs).collect::<Vec<_>>();
+    assert_eq!(
+        extracted.len(),
+        2,
+        "run-time selected callbacks and escaped names are not facts: {extracted:?}"
+    );
+    assert!(extracted.iter().any(|p| p.module == "Kept::Runtime" && p.phase == "runtime"));
+    assert!(extracted.iter().any(|p| p.module == "Kept::Test" && p.phase == "test"));
+}
