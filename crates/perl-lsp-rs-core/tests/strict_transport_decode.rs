@@ -45,6 +45,17 @@ fn truncated_utf8_json_body() -> Vec<u8> {
     body
 }
 
+fn require_err(body: &[u8]) -> Result<IncomingMessageError, String> {
+    match decode_incoming_body(body) {
+        Err(error) => Ok(error),
+        Ok(request) => Err(format!("expected decode error, got method {}", request.method)),
+    }
+}
+
+fn require_ok(body: &[u8]) -> Result<perl_lsp_rs_core::protocol::JsonRpcRequest, String> {
+    decode_incoming_body(body).map_err(|error| format!("expected request, got {error:?}"))
+}
+
 fn assert_payload_private(error: &IncomingMessageError) {
     let display = error.to_string();
     let debug = format!("{error:?}");
@@ -96,156 +107,150 @@ fn multibyte_unicode_uses_byte_accurate_content_length() -> io::Result<()> {
 }
 
 #[test]
-fn valid_utf8_replacement_char_is_not_an_encoding_failure() {
+fn valid_utf8_replacement_char_is_not_an_encoding_failure() -> Result<(), String> {
     let body = r#"{"jsonrpc":"2.0","id":1,"method":"test","params":{"text":"abc�"}}"#;
-    let request = match decode_incoming_body(body.as_bytes()) {
-        Ok(request) => request,
-        Err(error) => panic!("valid UTF-8 U+FFFD must decode: {error:?}"),
-    };
-    let params = match request.params {
-        Some(params) => params,
-        None => panic!("expected params"),
-    };
+    let request = require_ok(body.as_bytes())?;
+    let params = request.params.ok_or_else(|| "expected params".to_string())?;
     assert_eq!(params["text"], "abc\u{FFFD}");
+    Ok(())
 }
 
 #[test]
-fn invalid_utf8_is_typed_encoding_failure_not_lossy_json() {
+fn invalid_utf8_is_typed_encoding_failure_not_lossy_json() -> Result<(), String> {
     let body = invalid_utf8_json_body();
-    match decode_incoming_body(&body) {
-        Err(error @ IncomingMessageError::InvalidUtf8 { payload_bytes, valid_up_to }) => {
-            assert_eq!(payload_bytes, body.len());
-            assert!(valid_up_to < body.len());
-            assert_eq!(error.stage(), IncomingMessageStage::Encoding);
-            assert_payload_private(&error);
-        }
-        other => panic!("expected InvalidUtf8, got {other:?}"),
+    let error = require_err(&body)?;
+    if !matches!(
+        error,
+        IncomingMessageError::InvalidUtf8 { payload_bytes, valid_up_to }
+            if payload_bytes == body.len() && valid_up_to < body.len()
+    ) {
+        return Err(format!("expected InvalidUtf8, got {error:?}"));
     }
+    assert_eq!(error.stage(), IncomingMessageStage::Encoding);
+    assert_payload_private(&error);
+    Ok(())
 }
 
 #[test]
-fn truncated_utf8_is_typed_encoding_failure() {
-    let body = truncated_utf8_json_body();
-    match decode_incoming_body(&body) {
-        Err(error @ IncomingMessageError::InvalidUtf8 { .. }) => {
-            assert_eq!(error.stage(), IncomingMessageStage::Encoding);
-            assert_payload_private(&error);
-        }
-        other => panic!("expected InvalidUtf8 for truncated sequence, got {other:?}"),
+fn truncated_utf8_is_typed_encoding_failure() -> Result<(), String> {
+    let error = require_err(&truncated_utf8_json_body())?;
+    if !matches!(error, IncomingMessageError::InvalidUtf8 { .. }) {
+        return Err(format!("expected InvalidUtf8 for truncated sequence, got {error:?}"));
     }
+    assert_eq!(error.stage(), IncomingMessageStage::Encoding);
+    assert_payload_private(&error);
+    Ok(())
 }
 
 #[test]
-fn malformed_json_is_distinct_from_message_shape() {
+fn malformed_json_is_distinct_from_message_shape() -> Result<(), String> {
     let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{SECRET}""#);
-    match decode_incoming_body(body.as_bytes()) {
-        Err(error @ IncomingMessageError::MalformedJson { payload_bytes, line, column }) => {
-            assert_eq!(payload_bytes, body.len());
-            assert_eq!(line, 1);
-            assert!(column > 1);
-            assert_eq!(error.stage(), IncomingMessageStage::Json);
-            assert_payload_private(&error);
-        }
-        other => panic!("expected MalformedJson, got {other:?}"),
+    let error = require_err(body.as_bytes())?;
+    if !matches!(
+        error,
+        IncomingMessageError::MalformedJson { payload_bytes, line, column }
+            if payload_bytes == body.len() && line == 1 && column > 1
+    ) {
+        return Err(format!("expected MalformedJson, got {error:?}"));
     }
+    assert_eq!(error.stage(), IncomingMessageStage::Json);
+    assert_payload_private(&error);
+    Ok(())
 }
 
 #[test]
-fn json_scalar_is_message_shape_failure() {
-    match decode_incoming_body(b"42") {
-        Err(error @ IncomingMessageError::InvalidMessageShape { recoverable_id: None, .. }) => {
-            assert_eq!(error.stage(), IncomingMessageStage::JsonRpcShape);
-            assert_ne!(
-                error.to_string(),
-                IncomingMessageError::MalformedJson { payload_bytes: 2, line: 1, column: 1 }
-                    .to_string()
-            );
-        }
-        other => panic!("expected InvalidMessageShape for scalar, got {other:?}"),
+fn json_scalar_is_message_shape_failure() -> Result<(), String> {
+    let error = require_err(b"42")?;
+    if !matches!(error, IncomingMessageError::InvalidMessageShape { recoverable_id: None, .. }) {
+        return Err(format!("expected InvalidMessageShape for scalar, got {error:?}"));
     }
+    assert_eq!(error.stage(), IncomingMessageStage::JsonRpcShape);
+    assert_ne!(
+        error.to_string(),
+        IncomingMessageError::MalformedJson { payload_bytes: 2, line: 1, column: 1 }.to_string()
+    );
+    Ok(())
 }
 
 #[test]
-fn json_rpc_batch_array_is_distinct_from_scalar_shape() {
-    let body = br#"[{"jsonrpc":"2.0","id":1,"method":"test"}]"#;
-    let batch = match decode_incoming_body(body) {
-        Err(error) => error,
-        Ok(request) => panic!("batch must not decode as {request:?}"),
-    };
-    let scalar = match decode_incoming_body(b"42") {
-        Err(error) => error,
-        Ok(request) => panic!("scalar must not decode as {request:?}"),
-    };
-    assert!(matches!(batch, IncomingMessageError::UnsupportedBatch { .. }));
-    assert!(matches!(scalar, IncomingMessageError::InvalidMessageShape { .. }));
+fn json_rpc_batch_array_is_distinct_from_scalar_shape() -> Result<(), String> {
+    let batch = require_err(br#"[{"jsonrpc":"2.0","id":1,"method":"test"}]"#)?;
+    let scalar = require_err(b"42")?;
+    if !matches!(batch, IncomingMessageError::UnsupportedBatch { .. }) {
+        return Err(format!("expected UnsupportedBatch, got {batch:?}"));
+    }
+    if !matches!(scalar, IncomingMessageError::InvalidMessageShape { .. }) {
+        return Err(format!("expected InvalidMessageShape, got {scalar:?}"));
+    }
     assert_ne!(batch.to_string(), scalar.to_string());
     assert_eq!(batch.stage(), IncomingMessageStage::JsonRpcShape);
     assert_eq!(scalar.stage(), IncomingMessageStage::JsonRpcShape);
+    Ok(())
 }
 
 #[test]
-fn missing_jsonrpc_on_method_object_preserves_recoverable_id() {
-    let body = br#"{"id":4,"method":"test","params":{}}"#;
-    match decode_incoming_body(body) {
-        Err(IncomingMessageError::InvalidJsonRpc { recoverable_id, .. }) => {
-            assert_eq!(recoverable_id, Some(JsonRpcId::Integer(4)));
-        }
-        other => panic!("expected InvalidJsonRpc, got {other:?}"),
+fn missing_jsonrpc_on_method_object_preserves_recoverable_id() -> Result<(), String> {
+    let error = require_err(br#"{"id":4,"method":"test","params":{}}"#)?;
+    if !matches!(
+        error,
+        IncomingMessageError::InvalidJsonRpc { recoverable_id: Some(JsonRpcId::Integer(4)), .. }
+    ) {
+        return Err(format!("expected InvalidJsonRpc, got {error:?}"));
     }
+    Ok(())
 }
 
 #[test]
-fn numeric_jsonrpc_is_invalid_jsonrpc_not_malformed_json() {
-    let body = br#"{"jsonrpc":2.0,"id":5,"method":"test"}"#;
-    match decode_incoming_body(body) {
-        Err(IncomingMessageError::InvalidJsonRpc { recoverable_id, .. }) => {
-            assert_eq!(recoverable_id, Some(JsonRpcId::Integer(5)));
-        }
-        other => panic!("expected InvalidJsonRpc for numeric jsonrpc, got {other:?}"),
+fn numeric_jsonrpc_is_invalid_jsonrpc_not_malformed_json() -> Result<(), String> {
+    let error = require_err(br#"{"jsonrpc":2.0,"id":5,"method":"test"}"#)?;
+    if !matches!(
+        error,
+        IncomingMessageError::InvalidJsonRpc { recoverable_id: Some(JsonRpcId::Integer(5)), .. }
+    ) {
+        return Err(format!("expected InvalidJsonRpc for numeric jsonrpc, got {error:?}"));
     }
+    Ok(())
 }
 
 #[test]
-fn jsonrpc_1_0_string_still_decodes_as_current_request() {
+fn jsonrpc_1_0_string_still_decodes_as_current_request() -> Result<(), String> {
     // Exact "2.0" enforcement is #9636. Rejecting "1.0" here would change the
     // current shipped Invalid Request response path owned by #6720.
-    let body = br#"{"jsonrpc":"1.0","id":1,"method":"initialize","params":{}}"#;
-    match decode_incoming_body(body) {
-        Ok(request) => assert_eq!(request.method, "initialize"),
-        Err(error) => panic!("jsonrpc 1.0 string must remain a current request: {error:?}"),
-    }
+    let request = require_ok(br#"{"jsonrpc":"1.0","id":1,"method":"initialize","params":{}}"#)?;
+    assert_eq!(request.method, "initialize");
+    Ok(())
 }
 
 #[test]
-fn malformed_object_without_id_does_not_invent_one() {
-    let body = br#"{"jsonrpc":"2.0"}"#;
-    match decode_incoming_body(body) {
-        Err(IncomingMessageError::InvalidMessageShape { recoverable_id: None, .. }) => {}
-        other => panic!("expected shape failure with no invented id, got {other:?}"),
+fn malformed_object_without_id_does_not_invent_one() -> Result<(), String> {
+    let error = require_err(br#"{"jsonrpc":"2.0"}"#)?;
+    if !matches!(error, IncomingMessageError::InvalidMessageShape { recoverable_id: None, .. }) {
+        return Err(format!("expected shape failure with no invented id, got {error:?}"));
     }
+    Ok(())
 }
 
 #[test]
-fn method_with_non_string_value_preserves_id() {
-    let body = br#"{"jsonrpc":"2.0","id":8,"method":1}"#;
-    match decode_incoming_body(body) {
-        Err(IncomingMessageError::InvalidMessageShape { recoverable_id, .. }) => {
-            assert_eq!(recoverable_id, Some(JsonRpcId::Integer(8)));
+fn method_with_non_string_value_preserves_id() -> Result<(), String> {
+    let error = require_err(br#"{"jsonrpc":"2.0","id":8,"method":1}"#)?;
+    if !matches!(
+        error,
+        IncomingMessageError::InvalidMessageShape {
+            recoverable_id: Some(JsonRpcId::Integer(8)),
+            ..
         }
-        other => panic!("expected InvalidMessageShape, got {other:?}"),
+    ) {
+        return Err(format!("expected InvalidMessageShape, got {error:?}"));
     }
+    Ok(())
 }
 
 #[test]
-fn client_response_without_method_still_routes_internally() {
-    let body = br#"{"jsonrpc":"2.0","id":7,"result":{}}"#;
-    match decode_incoming_body(body) {
-        Ok(request) => {
-            assert_eq!(request.method, "$/perl-lsp/clientResponse");
-            assert!(request.id.is_none());
-        }
-        Err(error) => panic!("response conversion must remain #7626's mapping: {error:?}"),
-    }
+fn client_response_without_method_still_routes_internally() -> Result<(), String> {
+    let request = require_ok(br#"{"jsonrpc":"2.0","id":7,"result":{}}"#)?;
+    assert_eq!(request.method, "$/perl-lsp/clientResponse");
+    assert!(request.id.is_none());
+    Ok(())
 }
 
 #[test]
