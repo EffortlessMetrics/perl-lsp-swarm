@@ -1083,7 +1083,7 @@ fn issue_names_pull_as_historical_predecessor(issue_body: &str, pull_number: u64
 const PROOF_LEVEL_TERMS: [&str; 6] =
     ["installed", "public", "packaged", "presentation", "release", "actual host"];
 
-const PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS: [&str; 16] = [
+const PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS: [&str; 21] = [
     "unchanged",
     "does not change",
     "do not change",
@@ -1100,6 +1100,11 @@ const PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS: [&str; 16] = [
     "do not require",
     "doesn't require",
     "not required",
+    "not needed",
+    "isn't required",
+    "aren't required",
+    "isn't needed",
+    "aren't needed",
 ];
 
 const PROOF_LEVEL_REQUIREMENT_PREDICATES: [&str; 6] =
@@ -1141,55 +1146,179 @@ fn requirement_units(text: &str) -> Vec<String> {
 
 fn split_markdown_list_items(text: String) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= 1 {
+    if !lines.iter().any(|line| list_item_body(line).is_some()) {
         return vec![text];
     }
-    let has_list_marker = lines.iter().any(|line| {
-        let trimmed = line.trim_start();
-        trimmed.starts_with("- ") || trimmed.starts_with("* ")
-    });
-    if !has_list_marker {
-        return vec![text];
+    let mut items = Vec::new();
+    let mut current = String::new();
+    for line in lines {
+        if let Some(body) = list_item_body(line) {
+            if !current.is_empty() {
+                items.push(std::mem::take(&mut current));
+            }
+            current = body.trim().to_string();
+            continue;
+        }
+        if current.is_empty() {
+            current = line.trim().to_string();
+            continue;
+        }
+        let continuation = line.trim();
+        if !continuation.is_empty() {
+            current.push(' ');
+            current.push_str(continuation);
+        }
     }
-    lines
-        .into_iter()
-        .map(|line| {
-            let trimmed = line.trim_start();
-            trimmed
-                .strip_prefix("- ")
-                .or_else(|| trimmed.strip_prefix("* "))
-                .unwrap_or(trimmed)
-                .trim()
-                .to_string()
-        })
-        .filter(|line| !line.is_empty())
-        .collect()
+    if !current.is_empty() {
+        items.push(current);
+    }
+    if items.is_empty() { vec![text] } else { items }
+}
+
+fn list_item_body(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if let Some(body) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+        return Some(body);
+    }
+    let digit_count = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+    if digit_count == 0 {
+        return None;
+    }
+    trimmed.get(digit_count..).and_then(|tail| tail.strip_prefix(". "))
 }
 
 fn split_on_semicolons(text: &str) -> Vec<String> {
     text.split(';').map(str::trim).filter(|part| !part.is_empty()).map(ToOwned::to_owned).collect()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PolaritySignal {
+    Negative,
+    Require,
+}
+
 fn unit_requires_proof_level_term(unit: &str, term: &str) -> bool {
     let segments = split_coordinated_clauses(unit);
-    let negative: Vec<bool> =
+    let local: Vec<Option<bool>> =
+        segments.iter().map(|segment| term_local_requirement(segment, term)).collect();
+    let negative_segment: Vec<bool> =
         segments.iter().map(|segment| clause_has_negative_polarity(segment)).collect();
-    let local_predicate: Vec<bool> = segments
-        .iter()
-        .map(|segment| {
-            clause_has_negative_polarity(segment) || clause_has_requirement_predicate(segment)
-        })
-        .collect();
+    let local_predicate: Vec<bool> =
+        segments.iter().map(|segment| segment_has_local_predicate(segment)).collect();
 
-    segments.iter().enumerate().any(|(index, segment)| {
-        if !contains_proof_level_term(segment, term) || negative[index] {
-            return false;
+    local.iter().enumerate().any(|(index, requirement)| match requirement {
+        Some(true) => true,
+        Some(false) => false,
+        None => {
+            if !contains_proof_level_term(&segments[index], term) {
+                return false;
+            }
+            let inherited_negative = ((index + 1)..segments.len()).any(|later| {
+                negative_segment[later] && (index..later).all(|between| !local_predicate[between])
+            });
+            !inherited_negative
         }
-        let inherited_negative = ((index + 1)..segments.len()).any(|later| {
-            negative[later] && (index..later).all(|between| !local_predicate[between])
-        });
-        !inherited_negative
     })
+}
+
+fn term_local_requirement(segment: &str, term: &str) -> Option<bool> {
+    let lower = segment.to_ascii_lowercase();
+    let matches = proof_level_term_indices(&lower, term);
+    if matches.is_empty() {
+        return None;
+    }
+    let mut required = false;
+    let mut unsignaled = false;
+    for start in matches {
+        let Some(end) = start.checked_add(term.len()) else {
+            continue;
+        };
+        let before = lower.get(..start).unwrap_or("");
+        let after = lower.get(end..).unwrap_or("");
+        match nearest_polarity_signal(before, after) {
+            Some(PolaritySignal::Require) => required = true,
+            Some(PolaritySignal::Negative) => {}
+            None => unsignaled = true,
+        }
+    }
+    if required {
+        Some(true)
+    } else if unsignaled {
+        None
+    } else {
+        Some(false)
+    }
+}
+
+fn nearest_polarity_signal(before: &str, after: &str) -> Option<PolaritySignal> {
+    earliest_polarity_signal(after).or_else(|| earliest_polarity_signal(before))
+}
+
+fn earliest_polarity_signal(text: &str) -> Option<PolaritySignal> {
+    let mut best: Option<(usize, PolaritySignal)> = None;
+    for marker in PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS {
+        if let Some(index) = text.find(marker) {
+            replace_earlier_signal(&mut best, index, PolaritySignal::Negative);
+        }
+    }
+    for predicate in PROOF_LEVEL_REQUIREMENT_PREDICATES {
+        if let Some(index) = first_word_index(text, predicate) {
+            replace_earlier_signal(&mut best, index, PolaritySignal::Require);
+        }
+    }
+    best.map(|(_, signal)| signal)
+}
+
+fn replace_earlier_signal(
+    best: &mut Option<(usize, PolaritySignal)>,
+    index: usize,
+    signal: PolaritySignal,
+) {
+    match *best {
+        Some((current, PolaritySignal::Negative)) if index >= current => {}
+        Some((current, _)) if index > current => {}
+        Some((current, _)) if index == current && signal != PolaritySignal::Negative => {}
+        _ => *best = Some((index, signal)),
+    }
+}
+
+fn segment_has_local_predicate(segment: &str) -> bool {
+    earliest_polarity_signal(&segment.to_ascii_lowercase()).is_some()
+}
+
+fn clause_has_negative_polarity(clause: &str) -> bool {
+    earliest_polarity_signal(&clause.to_ascii_lowercase()) == Some(PolaritySignal::Negative)
+}
+
+fn proof_level_term_indices(text: &str, term: &str) -> Vec<usize> {
+    if term.contains(' ') {
+        text.match_indices(term).map(|(index, _)| index).collect()
+    } else {
+        word_match_indices(text, term)
+    }
+}
+
+fn first_word_index(text: &str, word: &str) -> Option<usize> {
+    word_match_indices(text, word).into_iter().next()
+}
+
+fn word_match_indices(text: &str, word: &str) -> Vec<usize> {
+    text.match_indices(word)
+        .filter(|(index, _)| word_boundaries_hold(text, *index, word.len()))
+        .map(|(index, _)| index)
+        .collect()
+}
+
+fn word_boundaries_hold(text: &str, index: usize, len: usize) -> bool {
+    let before_ok = text
+        .get(..index)
+        .and_then(|prefix| prefix.chars().next_back())
+        .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
+    let after_ok = text
+        .get(index + len..)
+        .and_then(|suffix| suffix.chars().next())
+        .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
+    before_ok && after_ok
 }
 
 fn split_coordinated_clauses(text: &str) -> Vec<String> {
@@ -1234,16 +1363,6 @@ fn coordinated_separator_len(lower: &str, index: usize) -> Option<usize> {
         }
     }
     None
-}
-
-fn clause_has_negative_polarity(clause: &str) -> bool {
-    let lower = clause.to_ascii_lowercase();
-    PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS.iter().any(|marker| lower.contains(marker))
-}
-
-fn clause_has_requirement_predicate(clause: &str) -> bool {
-    let lower = clause.to_ascii_lowercase();
-    PROOF_LEVEL_REQUIREMENT_PREDICATES.iter().any(|marker| contains_word(&lower, marker))
 }
 
 fn contains_proof_level_term(text: &str, term: &str) -> bool {
@@ -1498,18 +1617,7 @@ fn references_number(text: &str, number: u64) -> bool {
 }
 
 fn contains_word(text: &str, word: &str) -> bool {
-    text.match_indices(word).any(|(index, _)| {
-        let before_ok = text
-            .get(..index)
-            .and_then(|prefix| prefix.chars().next_back())
-            .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
-        let after_index = index + word.len();
-        let after_ok = text
-            .get(after_index..)
-            .and_then(|suffix| suffix.chars().next())
-            .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
-        before_ok && after_ok
-    })
+    !word_match_indices(text, word).is_empty()
 }
 
 fn suggested_advances(key: &IssueKey, current_repository: &str) -> String {
@@ -2033,10 +2141,47 @@ mod tests {
     }
 
     #[test]
-    fn proof_level_list_items_are_independent_requirement_units() -> Result<()> {
-        let issue = "## Acceptance\n- The public constructor remains deliberately unchanged.\n- Installed proof is required.\n";
+    fn proof_level_required_while_unrelated_helper_unchanged_still_arms() -> Result<()> {
+        let issue = "## Acceptance\nPublic proof is required while the helper remains unchanged.\n";
+        assert!(
+            proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "an unrelated later unchanged helper must not disarm a required public term in the same sentence"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_numbered_list_items_are_independent() -> Result<()> {
+        let issue = "## Acceptance\n1. The public constructor remains unchanged.\n2. Installed proof is required.\n";
         assert!(!proof_level_from_bodies(issue, &excluding_pr("Public"))?);
         assert!(proof_level_from_bodies(issue, &excluding_pr("Installed"))?);
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_wrapped_bullet_keeps_unchanged_with_its_term() -> Result<()> {
+        let issue = "## Acceptance\n- The public constructor remains\n  unchanged.\n- Installed proof is required.\n";
+        assert!(
+            !proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "a wrapped unchanged predicate must stay with its public term"
+        );
+        assert!(proof_level_from_bodies(issue, &excluding_pr("Installed"))?);
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_not_needed_and_isnt_required_are_negative_polarity() -> Result<()> {
+        let pr = excluding_pr("Public");
+        for issue in [
+            "## Acceptance\nPublic proof is not needed.\n",
+            "## Acceptance\nPublic proof isn't required.\n",
+            "## Acceptance\nPublic proof isn't needed.\n",
+        ] {
+            assert!(
+                !proof_level_from_bodies(issue, &pr)?,
+                "negative polarity failed to disarm public for {issue:?}"
+            );
+        }
         Ok(())
     }
 
