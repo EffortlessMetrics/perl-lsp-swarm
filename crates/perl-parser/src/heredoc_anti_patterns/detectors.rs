@@ -823,8 +823,9 @@ impl AntiPatternDetector {
 
         detectors.sort_by_key(|obs| obs.id);
         diagnostics.sort_by_key(|diagnostic| diagnostic.pattern.offset());
+        let status = detection_status(&detectors);
 
-        DetectionReport { diagnostics, detectors, status: detection_status(&detectors) }
+        DetectionReport { diagnostics, detectors, status }
     }
 
     /// Format a list of diagnostics as a human-readable plain-text report.
