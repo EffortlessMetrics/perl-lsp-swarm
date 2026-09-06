@@ -96,6 +96,32 @@ fn non_rust_inventory_check_source_has_no_publication_authority() -> Result<()> 
     Ok(())
 }
 
+#[test]
+fn exact_tree_schema_validation_delegates_to_canonical_allow_schema() -> Result<()> {
+    let root = project_root()?;
+    let source = std::fs::read_to_string(root.join("xtask/src/tasks/file_policy.rs"))?;
+    let start = source
+        .find("fn validate_exact_policy_bytes")
+        .ok_or_else(|| eyre!("exact-tree byte validator missing"))?;
+    let end = source[start..]
+        .find("\n/// Match options for every allowlist glob.")
+        .map(|offset| start + offset)
+        .ok_or_else(|| eyre!("exact-tree byte validator boundary missing"))?;
+    let exact = &source[start..end];
+    ensure!(
+        exact.contains("validate_allow_document_entries("),
+        "exact-tree must reuse the canonical allow-array schema path"
+    );
+    ensure!(
+        !exact.contains("ALLOWED_ALLOW_FIELDS")
+            && !exact.contains("KNOWN_CLASSIFICATIONS")
+            && !exact.contains("COVERAGE_REQUIRING_CLASSIFICATIONS")
+            && !exact.contains("validate_allow_schema_entry("),
+        "exact-tree must not reimplement or bypass allowlist field schema checks"
+    );
+    Ok(())
+}
+
 /// End-to-end test: runs on the actual repo and exits 0.
 #[test]
 fn non_rust_inventory_command_exits_zero() -> Result<()> {

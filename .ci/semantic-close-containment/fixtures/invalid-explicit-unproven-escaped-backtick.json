@@ -1,0 +1,36 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-09-06",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14790",
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/14879"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves CP00-EXPLICITLY-NOT-PROVEN still rejects a close whose unnumbered remaining-work exclusion uses escaped backticks around `?` before a neighboring tracker sentence."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990016,
+    "title": "fix(query): gate one escaped-literal caller (#9001101)",
+    "body": "## Claim Boundary\n\nThis PR does not prove the complete remaining work for \\`foo? bar\\`. That work is tracked by #9001102.\n\nCloses #9001101."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9001101,
+      "title": "fix(query): gate the complete escaped-literal cohort",
+      "body": "## Acceptance\n\nEvery current caller is generation-gated and the exact five-row denominator is reconciled."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "FAIL_EXPLICIT_UNPROVEN_REQUIRED_WORK",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9001101,
+        "code": "FAIL_EXPLICIT_UNPROVEN_REQUIRED_WORK"
+      }
+    ]
+  }
+}

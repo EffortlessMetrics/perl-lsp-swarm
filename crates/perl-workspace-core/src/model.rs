@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::boundary::DynamicBoundary;
 use crate::dist::DistMetadataFacts;
+use crate::dist_authoring::DistAuthoringFacts;
 use crate::effects::CompileEffectFacts;
 pub use crate::error::ModelLimitation;
 use crate::export::ExportFact;
@@ -45,6 +46,12 @@ pub struct ProjectModel {
     pub compile_effects: Vec<CompileEffectFacts>,
     /// Distribution-metadata facts (from `META.json` / `cpanfile`), ordered by file.
     pub dist_metadata: Vec<DistMetadataFacts>,
+    /// Authoring-file facts (`Makefile.PL` / `Build.PL` / `dist.ini`), ordered by file.
+    ///
+    /// Kept separate from [`Self::dist_metadata`] so Kwalitee can compare authoring
+    /// declarations with final `META.*` facts instead of silently merging them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dist_authoring: Vec<DistAuthoringFacts>,
     /// Test-file facts (framework + assertion counts), ordered by file.
     pub tests: Vec<TestFact>,
     /// POD documentation facts, ordered by file.
@@ -74,6 +81,7 @@ impl ProjectModel {
             exports: Vec::new(),
             compile_effects: Vec::new(),
             dist_metadata: Vec::new(),
+            dist_authoring: Vec::new(),
             tests: Vec::new(),
             pod: Vec::new(),
             relations: Vec::new(),
@@ -132,9 +140,46 @@ impl ProjectModel {
     }
 
     /// All declared prerequisites across every metadata file in the model.
+    ///
+    /// Authoring-file prerequisites are **not** included; use
+    /// [`Self::compare_authoring_with_metadata`] rather than merging them here.
     #[must_use]
     pub fn all_prereqs(&self) -> Vec<&crate::dist::Prereq> {
         self.dist_metadata.iter().flat_map(|d| d.prereqs.iter()).collect()
+    }
+
+    /// Compare authoring facts with final metadata facts without merging them.
+    ///
+    /// Compares against every parsed [`crate::dist::DistMetadataSource`] except
+    /// `cpanfile`, pairing authoring and metadata files that share a parent
+    /// directory so nested distributions do not cross-compare. That includes
+    /// `META.json` today and will include `META.yml` once #8458 / PR #14424
+    /// lands that source — this crate does not add `MetaYml` itself. Authoring
+    /// and metadata remain separate vectors.
+    #[must_use]
+    pub fn compare_authoring_with_metadata(
+        &self,
+    ) -> Vec<crate::dist_authoring::DistFactComparison> {
+        use crate::dist::DistMetadataSource;
+        use crate::dist_authoring::compare_authoring_with_meta;
+        let mut out = Vec::new();
+        for authoring in &self.dist_authoring {
+            let Some(authoring_dir) = distribution_dir(self, &authoring.file_id) else {
+                continue;
+            };
+            for metadata in
+                self.dist_metadata.iter().filter(|item| item.source != DistMetadataSource::Cpanfile)
+            {
+                let Some(metadata_dir) = distribution_dir(self, &metadata.file_id) else {
+                    continue;
+                };
+                if authoring_dir != metadata_dir {
+                    continue;
+                }
+                out.extend(compare_authoring_with_meta(authoring, metadata));
+            }
+        }
+        out
     }
 
     /// Total number of facts across all classes — a quick health signal.
@@ -147,6 +192,7 @@ impl ProjectModel {
             + self.exports.len()
             + self.compile_effects.len()
             + self.dist_metadata.len()
+            + self.dist_authoring.len()
             + self.tests.len()
             + self.pod.len()
             + self.relations.len()
@@ -178,6 +224,7 @@ impl ProjectModel {
         });
         self.compile_effects.sort_by(|a, b| a.file_id.as_str().cmp(b.file_id.as_str()));
         self.dist_metadata.sort_by(|a, b| a.file_id.as_str().cmp(b.file_id.as_str()));
+        self.dist_authoring.sort_by(|a, b| a.file_id.as_str().cmp(b.file_id.as_str()));
         self.tests.sort_by(|a, b| a.file_id.as_str().cmp(b.file_id.as_str()));
         self.pod.sort_by(|a, b| a.file_id.as_str().cmp(b.file_id.as_str()));
         self.relations.sort_by(|a, b| {
@@ -231,6 +278,7 @@ impl ProjectModel {
         self.exports.extend(shard.exports);
         self.compile_effects.extend(shard.compile_effects);
         self.dist_metadata.extend(shard.dist_metadata);
+        self.dist_authoring.extend(shard.dist_authoring);
         self.tests.extend(shard.tests);
         self.pod.extend(shard.pod);
         self.relations.extend(shard.relations);
@@ -311,6 +359,7 @@ impl ProjectModel {
         self.exports.retain(|fact| &fact.file_id != file_id);
         self.compile_effects.retain(|fact| &fact.file_id != file_id);
         self.dist_metadata.retain(|fact| &fact.file_id != file_id);
+        self.dist_authoring.retain(|fact| &fact.file_id != file_id);
         self.tests.retain(|fact| &fact.file_id != file_id);
         self.pod.retain(|fact| &fact.file_id != file_id);
         self.relations.retain(|fact| &fact.file_id != file_id);
@@ -345,6 +394,14 @@ impl ProjectModel {
         }
         dependents.into_iter().collect()
     }
+}
+
+fn distribution_dir<'a>(model: &'a ProjectModel, file_id: &FileId) -> Option<&'a str> {
+    let path = model.files.iter().find(|file| &file.file_id == file_id)?.relative_path.as_str();
+    Some(match path.rsplit_once('/') {
+        Some((dir, _)) => dir,
+        None => "",
+    })
 }
 
 #[cfg(test)]

@@ -707,10 +707,14 @@ fn evaluate_relation(
         }
     }
 
-    let explicitly_unproven_text = relation_scoped_section_text(
-        sections,
-        &[SectionKind::ClaimBoundary, SectionKind::NonGoals],
-        relation_count,
+    let explicitly_unproven_text = exclusion_text_attributable_to_closed_issue(
+        &relation_scoped_section_text(
+            sections,
+            &[SectionKind::ClaimBoundary, SectionKind::NonGoals],
+            relation_count,
+            &relation.key,
+            &pull.repository,
+        ),
         &relation.key,
         &pull.repository,
     );
@@ -1076,6 +1080,36 @@ fn issue_names_pull_as_historical_predecessor(issue_body: &str, pull_number: u64
     })
 }
 
+const PROOF_LEVEL_TERMS: [&str; 6] =
+    ["installed", "public", "packaged", "presentation", "release", "actual host"];
+
+const PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS: [&str; 21] = [
+    "unchanged",
+    "does not change",
+    "do not change",
+    "doesn't change",
+    "must not change",
+    "must not be changed",
+    "is not changed",
+    "are not changed",
+    "will not change",
+    "cannot change",
+    "without changing",
+    "no change to",
+    "does not require",
+    "do not require",
+    "doesn't require",
+    "not required",
+    "not needed",
+    "isn't required",
+    "aren't required",
+    "isn't needed",
+    "aren't needed",
+];
+
+const PROOF_LEVEL_REQUIREMENT_PREDICATES: [&str; 6] =
+    ["required", "requires", "require", "must", "needed", "needs"];
+
 fn proof_level_is_explicitly_excluded(
     pr_sections: &BTreeMap<SectionKind, Section>,
     issue_sections: &BTreeMap<SectionKind, Section>,
@@ -1083,36 +1117,276 @@ fn proof_level_is_explicitly_excluded(
     let issue_requirements = section_text(
         issue_sections,
         &[SectionKind::Acceptance, SectionKind::Objective, SectionKind::Outcome],
-    )
-    .to_ascii_lowercase();
+    );
     let exclusions =
-        section_text(pr_sections, &[SectionKind::ClaimBoundary, SectionKind::NonGoals])
-            .to_ascii_lowercase();
-    if !contains_explicit_exclusion(&exclusions) {
+        section_text(pr_sections, &[SectionKind::ClaimBoundary, SectionKind::NonGoals]);
+    let exclusions_lower = exclusions.to_ascii_lowercase();
+    if !contains_explicit_exclusion(&exclusions_lower) {
         return false;
     }
-    const TERMS: [&str; 6] =
-        ["installed", "public", "packaged", "presentation", "release", "actual host"];
-    TERMS.iter().any(|term| issue_requirements.contains(term) && exclusions.contains(term))
+    PROOF_LEVEL_TERMS.iter().any(|term| {
+        issue_requires_proof_level_term(&issue_requirements, term)
+            && contains_proof_level_term(&exclusions_lower, term)
+    })
 }
+
+fn issue_requires_proof_level_term(text: &str, term: &str) -> bool {
+    requirement_units(text).iter().any(|unit| unit_requires_proof_level_term(unit, term))
+}
+
+fn requirement_units(text: &str) -> Vec<String> {
+    markdown_paragraphs(text)
+        .into_iter()
+        .flat_map(split_markdown_list_items)
+        .flat_map(|item| split_sentences(&item))
+        .flat_map(|sentence| split_on_semicolons(&sentence))
+        .filter(|unit| !unit.is_empty())
+        .collect()
+}
+
+fn split_markdown_list_items(text: String) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    if !lines.iter().any(|line| list_item_body(line).is_some()) {
+        return vec![text];
+    }
+    let mut items = Vec::new();
+    let mut current = String::new();
+    for line in lines {
+        if let Some(body) = list_item_body(line) {
+            if !current.is_empty() {
+                items.push(std::mem::take(&mut current));
+            }
+            current = body.trim().to_string();
+            continue;
+        }
+        if current.is_empty() {
+            current = line.trim().to_string();
+            continue;
+        }
+        let continuation = line.trim();
+        if !continuation.is_empty() {
+            current.push(' ');
+            current.push_str(continuation);
+        }
+    }
+    if !current.is_empty() {
+        items.push(current);
+    }
+    if items.is_empty() { vec![text] } else { items }
+}
+
+fn list_item_body(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if let Some(body) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+        return Some(body);
+    }
+    let digit_count = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+    if digit_count == 0 {
+        return None;
+    }
+    trimmed.get(digit_count..).and_then(|tail| tail.strip_prefix(". "))
+}
+
+fn split_on_semicolons(text: &str) -> Vec<String> {
+    text.split(';').map(str::trim).filter(|part| !part.is_empty()).map(ToOwned::to_owned).collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PolaritySignal {
+    Negative,
+    Require,
+}
+
+fn unit_requires_proof_level_term(unit: &str, term: &str) -> bool {
+    let segments = split_coordinated_clauses(unit);
+    let local: Vec<Option<bool>> =
+        segments.iter().map(|segment| term_local_requirement(segment, term)).collect();
+    let negative_segment: Vec<bool> =
+        segments.iter().map(|segment| clause_has_negative_polarity(segment)).collect();
+    let local_predicate: Vec<bool> =
+        segments.iter().map(|segment| segment_has_local_predicate(segment)).collect();
+
+    local.iter().enumerate().any(|(index, requirement)| match requirement {
+        Some(true) => true,
+        Some(false) => false,
+        None => {
+            if !contains_proof_level_term(&segments[index], term) {
+                return false;
+            }
+            let inherited_negative = ((index + 1)..segments.len()).any(|later| {
+                negative_segment[later] && (index..later).all(|between| !local_predicate[between])
+            });
+            !inherited_negative
+        }
+    })
+}
+
+fn term_local_requirement(segment: &str, term: &str) -> Option<bool> {
+    let lower = segment.to_ascii_lowercase();
+    let matches = proof_level_term_indices(&lower, term);
+    if matches.is_empty() {
+        return None;
+    }
+    let mut required = false;
+    let mut unsignaled = false;
+    for start in matches {
+        let Some(end) = start.checked_add(term.len()) else {
+            continue;
+        };
+        let before = lower.get(..start).unwrap_or("");
+        let after = lower.get(end..).unwrap_or("");
+        match nearest_polarity_signal(before, after) {
+            Some(PolaritySignal::Require) => required = true,
+            Some(PolaritySignal::Negative) => {}
+            None => unsignaled = true,
+        }
+    }
+    if required {
+        Some(true)
+    } else if unsignaled {
+        None
+    } else {
+        Some(false)
+    }
+}
+
+fn nearest_polarity_signal(before: &str, after: &str) -> Option<PolaritySignal> {
+    earliest_polarity_signal(after).or_else(|| earliest_polarity_signal(before))
+}
+
+fn earliest_polarity_signal(text: &str) -> Option<PolaritySignal> {
+    let mut best: Option<(usize, PolaritySignal)> = None;
+    for marker in PROOF_LEVEL_NEGATIVE_POLARITY_MARKERS {
+        if let Some(index) = text.find(marker) {
+            replace_earlier_signal(&mut best, index, PolaritySignal::Negative);
+        }
+    }
+    for predicate in PROOF_LEVEL_REQUIREMENT_PREDICATES {
+        if let Some(index) = first_word_index(text, predicate) {
+            replace_earlier_signal(&mut best, index, PolaritySignal::Require);
+        }
+    }
+    best.map(|(_, signal)| signal)
+}
+
+fn replace_earlier_signal(
+    best: &mut Option<(usize, PolaritySignal)>,
+    index: usize,
+    signal: PolaritySignal,
+) {
+    match *best {
+        Some((current, PolaritySignal::Negative)) if index >= current => {}
+        Some((current, _)) if index > current => {}
+        Some((current, _)) if index == current && signal != PolaritySignal::Negative => {}
+        _ => *best = Some((index, signal)),
+    }
+}
+
+fn segment_has_local_predicate(segment: &str) -> bool {
+    earliest_polarity_signal(&segment.to_ascii_lowercase()).is_some()
+}
+
+fn clause_has_negative_polarity(clause: &str) -> bool {
+    earliest_polarity_signal(&clause.to_ascii_lowercase()) == Some(PolaritySignal::Negative)
+}
+
+fn proof_level_term_indices(text: &str, term: &str) -> Vec<usize> {
+    if term.contains(' ') {
+        text.match_indices(term).map(|(index, _)| index).collect()
+    } else {
+        word_match_indices(text, term)
+    }
+}
+
+fn first_word_index(text: &str, word: &str) -> Option<usize> {
+    word_match_indices(text, word).into_iter().next()
+}
+
+fn word_match_indices(text: &str, word: &str) -> Vec<usize> {
+    text.match_indices(word)
+        .filter(|(index, _)| word_boundaries_hold(text, *index, word.len()))
+        .map(|(index, _)| index)
+        .collect()
+}
+
+fn word_boundaries_hold(text: &str, index: usize, len: usize) -> bool {
+    let before_ok = text
+        .get(..index)
+        .and_then(|prefix| prefix.chars().next_back())
+        .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
+    let after_ok = text
+        .get(index + len..)
+        .and_then(|suffix| suffix.chars().next())
+        .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
+    before_ok && after_ok
+}
+
+fn split_coordinated_clauses(text: &str) -> Vec<String> {
+    let lower = text.to_ascii_lowercase();
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    while index < lower.len() {
+        if let Some(separator_len) = coordinated_separator_len(&lower, index) {
+            if let Some(segment) = text.get(start..index) {
+                let segment = segment.trim();
+                if !segment.is_empty() {
+                    segments.push(segment.to_string());
+                }
+            }
+            start = index + separator_len;
+            index = start;
+            continue;
+        }
+        let next =
+            lower.get(index..).and_then(|tail| tail.chars().next()).map_or(1, char::len_utf8);
+        index += next;
+    }
+    if let Some(tail) = text.get(start..) {
+        let tail = tail.trim();
+        if !tail.is_empty() {
+            segments.push(tail.to_string());
+        }
+    }
+    if segments.is_empty() {
+        let trimmed = text.trim();
+        if trimmed.is_empty() { Vec::new() } else { vec![trimmed.to_string()] }
+    } else {
+        segments
+    }
+}
+
+fn coordinated_separator_len(lower: &str, index: usize) -> Option<usize> {
+    for separator in [" and ", " but "] {
+        if lower.get(index..).is_some_and(|tail| tail.starts_with(separator)) {
+            return Some(separator.len());
+        }
+    }
+    None
+}
+
+fn contains_proof_level_term(text: &str, term: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    if term.contains(' ') { text.contains(term) } else { contains_word(&text, term) }
+}
+
+const REQUIRED_WORK_SCOPE_MARKERS: [&str; 10] = [
+    "full",
+    "complete",
+    "remaining",
+    "every",
+    "all",
+    "installed",
+    "public",
+    "packaged",
+    "acceptance",
+    "presentation",
+];
 
 fn explicitly_not_proven_required_work(text: &str) -> bool {
     let text = text.to_ascii_lowercase();
     contains_explicit_exclusion(&text)
-        && [
-            "full",
-            "complete",
-            "remaining",
-            "every",
-            "all ",
-            "installed",
-            "public",
-            "packaged",
-            "acceptance",
-            "presentation",
-        ]
-        .iter()
-        .any(|marker| text.contains(marker))
+        && REQUIRED_WORK_SCOPE_MARKERS.iter().any(|marker| contains_word(&text, marker))
 }
 
 fn contains_explicit_exclusion(text: &str) -> bool {
@@ -1176,6 +1450,162 @@ fn relation_scoped_section_text(
         .join("\n")
 }
 
+/// Keep claim-boundary / non-goal units whose exclusions can be attributed to the
+/// issue named in the closing relation.
+///
+/// Units are sentences inside Markdown paragraphs. A whitespace-only line is
+/// a paragraph break, matching rendered Markdown rather than a literal `\n\n`.
+/// Sentence ends are `.`, `!`, or `?` followed by whitespace or end of text,
+/// except inside Markdown inline code spans (matched backtick runs). A
+/// backtick escaped by an odd-length backslash run is literal prose and does
+/// not open or close a span.
+/// A unit that mentions some other issue and does not mention the closed issue
+/// is a neighboring-issue disclaimer. Unnumbered prose still counts: atomic
+/// closes often describe "the remaining work" without repeating `#N`, even
+/// when a later sentence names the issue that tracks that leftover.
+fn exclusion_text_attributable_to_closed_issue(
+    text: &str,
+    key: &IssueKey,
+    current_repository: &str,
+) -> String {
+    attribution_units(text)
+        .into_iter()
+        .filter(|unit| !foreign_issue_disclaimer(unit, key, current_repository))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn attribution_units(text: &str) -> Vec<String> {
+    markdown_paragraphs(text)
+        .into_iter()
+        .flat_map(|paragraph| split_sentences(&paragraph))
+        .filter(|unit| !unit.is_empty())
+        .collect()
+}
+
+fn markdown_paragraphs(text: &str) -> Vec<String> {
+    let mut paragraphs = Vec::new();
+    let mut current = String::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(line);
+    }
+    if !current.is_empty() {
+        paragraphs.push(current);
+    }
+    paragraphs
+}
+
+fn split_sentences(text: &str) -> Vec<String> {
+    let mut sentences = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    while index < text.len() {
+        let Some(character) = text[index..].chars().next() else {
+            break;
+        };
+        if character == '`' {
+            if backtick_is_escaped(text, index) {
+                index += 1;
+                continue;
+            }
+            let run = text[index..].chars().take_while(|next| *next == '`').count();
+            if let Some(span_end) = matching_inline_code_span_end(text, index, run) {
+                index = span_end;
+                continue;
+            }
+            index += run;
+            continue;
+        }
+        let after = index + character.len_utf8();
+        if matches!(character, '.' | '!' | '?') {
+            let boundary = text
+                .get(after..)
+                .and_then(|tail| tail.chars().next())
+                .is_none_or(char::is_whitespace);
+            if boundary {
+                if let Some(sentence) = text.get(start..after) {
+                    let sentence = sentence.trim();
+                    if !sentence.is_empty() {
+                        sentences.push(sentence.to_string());
+                    }
+                }
+                start = after;
+            }
+        }
+        index = after;
+    }
+    if let Some(tail) = text.get(start..) {
+        let tail = tail.trim();
+        if !tail.is_empty() {
+            sentences.push(tail.to_string());
+        }
+    }
+    sentences
+}
+
+fn matching_inline_code_span_end(text: &str, opener_start: usize, run: usize) -> Option<usize> {
+    let mut index = opener_start.checked_add(run)?;
+    while index < text.len() {
+        let Some(character) = text[index..].chars().next() else {
+            break;
+        };
+        if character == '`' {
+            let close_run = text[index..].chars().take_while(|next| *next == '`').count();
+            if close_run == run {
+                return index.checked_add(run);
+            }
+            index += close_run;
+            continue;
+        }
+        index += character.len_utf8();
+    }
+    None
+}
+
+fn backtick_is_escaped(text: &str, index: usize) -> bool {
+    let Some(prefix) = text.get(..index) else {
+        return false;
+    };
+    let backslashes = prefix.chars().rev().take_while(|character| *character == '\\').count();
+    backslashes % 2 == 1
+}
+
+fn foreign_issue_disclaimer(text: &str, key: &IssueKey, current_repository: &str) -> bool {
+    mentions_an_issue_subject(text) && !references_issue(text, key, current_repository)
+}
+
+fn mentions_an_issue_subject(text: &str) -> bool {
+    hash_issue_number_present(text) || github_issue_url_present(text)
+}
+
+fn hash_issue_number_present(text: &str) -> bool {
+    text.match_indices('#').any(|(index, _)| {
+        text.get(index + 1..)
+            .and_then(|tail| tail.chars().next())
+            .is_some_and(|character| character.is_ascii_digit())
+    })
+}
+
+fn github_issue_url_present(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let Some(index) = lower.find("/issues/") else {
+        return false;
+    };
+    lower
+        .get(index + "/issues/".len()..)
+        .and_then(|tail| tail.chars().next())
+        .is_some_and(|character| character.is_ascii_digit())
+}
+
 fn references_number(text: &str, number: u64) -> bool {
     let needle = format!("#{number}");
     text.match_indices(&needle).any(|(index, _)| {
@@ -1187,18 +1617,7 @@ fn references_number(text: &str, number: u64) -> bool {
 }
 
 fn contains_word(text: &str, word: &str) -> bool {
-    text.match_indices(word).any(|(index, _)| {
-        let before_ok = text
-            .get(..index)
-            .and_then(|prefix| prefix.chars().next_back())
-            .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
-        let after_index = index + word.len();
-        let after_ok = text
-            .get(after_index..)
-            .and_then(|suffix| suffix.chars().next())
-            .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
-        before_ok && after_ok
-    })
+    !word_match_indices(text, word).is_empty()
 }
 
 fn suggested_advances(key: &IssueKey, current_repository: &str) -> String {
@@ -1314,7 +1733,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 12] = [
+    const FIXTURES: [(&str, &str); 20] = [
         (
             "invalid-phase-terminal-5023-5001",
             include_str!(concat!(
@@ -1337,6 +1756,20 @@ mod tests {
             )),
         ),
         (
+            "valid-proof-level-unchanged-release",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-proof-level-unchanged-release.json"
+            )),
+        ),
+        (
+            "invalid-proof-level-required-release",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-proof-level-required-release.json"
+            )),
+        ),
+        (
             "invalid-predecessor-successor-5968-5231",
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -1355,6 +1788,27 @@ mod tests {
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven.json"
+            )),
+        ),
+        (
+            "invalid-explicit-unproven-named-closed-issue",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-named-closed-issue.json"
+            )),
+        ),
+        (
+            "invalid-explicit-unproven-tracked-by-neighbor",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-tracked-by-neighbor.json"
+            )),
+        ),
+        (
+            "invalid-explicit-unproven-escaped-backtick",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-escaped-backtick.json"
             )),
         ),
         (
@@ -1383,6 +1837,27 @@ mod tests {
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../.ci/semantic-close-containment/fixtures/valid-atomic.json"
+            )),
+        ),
+        (
+            "valid-neighbor-disclaimer-unproven",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-neighbor-disclaimer-unproven.json"
+            )),
+        ),
+        (
+            "valid-neighbor-disclaimer-inline-code",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-neighbor-disclaimer-inline-code.json"
+            )),
+        ),
+        (
+            "valid-representation-scope-substring",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-representation-scope-substring.json"
             )),
         ),
         (
@@ -1551,6 +2026,314 @@ mod tests {
         assert_eq!(report.rows[0].code, ResultCode::FailExplicitUnprovenRequiredWork);
         assert_eq!(report.rows[1].code, ResultCode::PassNoHighConfidenceContradiction);
         Ok(())
+    }
+
+    #[test]
+    fn contains_word_rejects_presentation_inside_representation() {
+        assert!(contains_word("presentation", "presentation"));
+        assert!(contains_word("a presentation layer", "presentation"));
+        assert!(!contains_word("representation", "presentation"));
+        assert!(!contains_word("the hir representation of this slice", "presentation"));
+        assert!(!contains_word("fallback", "all"));
+        assert!(!contains_word("called", "all"));
+        assert!(contains_word("in all four families", "all"));
+        assert!(!contains_word("completeness", "complete"));
+        assert!(!contains_word("everything", "every"));
+        assert!(!contains_word("publicly", "public"));
+        assert!(!contains_word("uninstalled", "installed"));
+    }
+
+    fn proof_level_from_bodies(issue_body: &str, pr_body: &str) -> Result<bool> {
+        let issue_sections = parse_sections(issue_body, MAX_ISSUE_BODY_BYTES)?;
+        let pr_sections = parse_sections(pr_body, MAX_PR_BODY_BYTES)?;
+        Ok(proof_level_is_explicitly_excluded(&pr_sections, &issue_sections))
+    }
+
+    fn excluding_pr(term: &str) -> String {
+        format!("## Claim Boundary\n{term} evidence is explicitly out of scope.\n\nCloses #1\n")
+    }
+
+    #[test]
+    fn proof_level_polarity_does_not_arm_an_unchanged_public_surface() -> Result<()> {
+        let issue =
+            "## Acceptance\nThe public unchecked constructor remains deliberately unchanged.\n";
+        assert!(
+            !proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "an unchanged public surface must not count as a required proof level"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_polarity_still_arms_a_required_public_surface() -> Result<()> {
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        assert!(
+            proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "a genuine public proof requirement must still arm the rule"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_polarity_is_clause_scoped_not_section_wide_not() -> Result<()> {
+        let issue =
+            "## Acceptance\nPublic proof is required.\nThe helper is not used in the fixture.\n";
+        assert!(
+            proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "a bare 'not' in another sentence must not suppress a genuine public requirement"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_negative_polarity_markers_cover_the_issue_examples() -> Result<()> {
+        let pr = excluding_pr("Public");
+        for issue in [
+            "## Acceptance\nThe public parser constructor does not change in this PR.\n",
+            "## Acceptance\nThis PR must not change the public Parser::from_tokens.\n",
+            "## Acceptance\nThe public API must not be changed.\n",
+            "## Acceptance\nThe public surface is unchanged.\n",
+            "## Acceptance\nThe issue does not require public proof.\n",
+            "## Objective\nLeave the public constructor unchanged.\n",
+            "## Outcome\nNo change to the public installed surface.\n",
+        ] {
+            assert!(
+                !proof_level_from_bodies(issue, &pr)?,
+                "negative polarity failed to disarm public for {issue:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_mixed_sentence_keeps_required_term_and_drops_unchanged_term() -> Result<()> {
+        let issue = "## Acceptance\nThe public constructor remains unchanged and installed proof is required.\n";
+        assert!(
+            !proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "unchanged public must not arm when installed is the required term"
+        );
+        assert!(
+            proof_level_from_bodies(issue, &excluding_pr("Installed"))?,
+            "installed proof required after an unchanged public clause must still arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_coordinated_subjects_share_a_trailing_unchanged_predicate() -> Result<()> {
+        let issue =
+            "## Acceptance\nThe public constructor and production consumers remain unchanged.\n";
+        assert!(
+            !proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "coordinated subjects of one unchanged predicate must not arm public"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_later_unchanged_helper_does_not_suppress_an_earlier_requirement() -> Result<()> {
+        let issue = "## Acceptance\nPublic proof is required and the helper does not change.\n";
+        assert!(
+            proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "a later unrelated 'does not change' must not disarm a required public term"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_required_while_unrelated_helper_unchanged_still_arms() -> Result<()> {
+        let issue = "## Acceptance\nPublic proof is required while the helper remains unchanged.\n";
+        assert!(
+            proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "an unrelated later unchanged helper must not disarm a required public term in the same sentence"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_numbered_list_items_are_independent() -> Result<()> {
+        let issue = "## Acceptance\n1. The public constructor remains unchanged.\n2. Installed proof is required.\n";
+        assert!(!proof_level_from_bodies(issue, &excluding_pr("Public"))?);
+        assert!(proof_level_from_bodies(issue, &excluding_pr("Installed"))?);
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_wrapped_bullet_keeps_unchanged_with_its_term() -> Result<()> {
+        let issue = "## Acceptance\n- The public constructor remains\n  unchanged.\n- Installed proof is required.\n";
+        assert!(
+            !proof_level_from_bodies(issue, &excluding_pr("Public"))?,
+            "a wrapped unchanged predicate must stay with its public term"
+        );
+        assert!(proof_level_from_bodies(issue, &excluding_pr("Installed"))?);
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_not_needed_and_isnt_required_are_negative_polarity() -> Result<()> {
+        let pr = excluding_pr("Public");
+        for issue in [
+            "## Acceptance\nPublic proof is not needed.\n",
+            "## Acceptance\nPublic proof isn't required.\n",
+            "## Acceptance\nPublic proof isn't needed.\n",
+        ] {
+            assert!(
+                !proof_level_from_bodies(issue, &pr)?,
+                "negative polarity failed to disarm public for {issue:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_terms_are_whole_words_not_publicly_or_uninstalled() -> Result<()> {
+        let issue = "## Acceptance\nThe publicly documented helper and uninstalled leftover are required.\n";
+        let pr = "## Claim Boundary\nPublic and installed evidence is explicitly out of scope.\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "publicly/uninstalled must not satisfy public/installed via substring"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_actual_host_phrase_still_matches() -> Result<()> {
+        let issue = "## Acceptance\nActual host proof is required.\n";
+        let pr = "## Claim Boundary\nActual host evidence is explicitly out of scope.\n";
+        assert!(proof_level_from_bodies(issue, pr)?);
+        let unchanged = "## Acceptance\nThe actual host surface remains unchanged.\n";
+        assert!(!proof_level_from_bodies(unchanged, pr)?);
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_requirement_units_discriminate_mixed_and_unrelated_not() {
+        assert!(issue_requires_proof_level_term(
+            "Public proof is required. The helper is not used.",
+            "public"
+        ));
+        assert!(!issue_requires_proof_level_term(
+            "The public constructor remains unchanged.",
+            "public"
+        ));
+        assert!(issue_requires_proof_level_term("Installed proof is required.", "installed"));
+        assert!(!issue_requires_proof_level_term(
+            "The public constructor remains unchanged and installed proof is required.",
+            "public"
+        ));
+        assert!(issue_requires_proof_level_term(
+            "The public constructor remains unchanged and installed proof is required.",
+            "installed"
+        ));
+    }
+
+    #[test]
+    fn explicitly_not_proven_required_work_uses_whole_word_scope_markers() {
+        assert!(explicitly_not_proven_required_work(
+            "this does not prove remaining work in all four families"
+        ));
+        assert!(explicitly_not_proven_required_work(
+            "the complete remaining call-site cohort is not established"
+        ));
+        assert!(!explicitly_not_proven_required_work(
+            "the required hir representation, fallback path, called helper, completeness remainder, everything publicly uninstalled here is not established"
+        ));
+        assert!(!explicitly_not_proven_required_work("this pr proves the claim in full"));
+    }
+
+    #[test]
+    fn neighbor_issue_disclaimer_is_not_attributable_unproven_required_work() {
+        let key = IssueKey { repository: "effortlessmetrics/perl-lsp-swarm".into(), number: 10 };
+        let current = "effortlessmetrics/perl-lsp-swarm";
+        let text = "This PR proves #10's claim in full.\n\nWork owned by #11 is not established.";
+        let attributable = exclusion_text_attributable_to_closed_issue(text, &key, current);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable),
+            "filtered text must drop the neighboring-issue exclusion: {attributable:?}"
+        );
+        assert!(
+            explicitly_not_proven_required_work(text),
+            "unfiltered text must still show why attribution is load-bearing"
+        );
+
+        let named_closed = "This PR does not prove #10's remaining required work.\n\nWork owned by #11 is separately not established.";
+        let attributable_named =
+            exclusion_text_attributable_to_closed_issue(named_closed, &key, current);
+        assert!(
+            explicitly_not_proven_required_work(&attributable_named),
+            "naming the closed issue must keep the exclusion: {attributable_named:?}"
+        );
+
+        let spaced =
+            "This PR proves #10's claim in full.\n \t\nWork owned by #11 is not established.";
+        let attributable_spaced =
+            exclusion_text_attributable_to_closed_issue(spaced, &key, current);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_spaced),
+            "whitespace-only blank lines must still drop the neighboring disclaimer: {attributable_spaced:?}"
+        );
+
+        let tracked =
+            "This PR does not prove the complete remaining work. That work is tracked by #11.";
+        let attributable_tracked =
+            exclusion_text_attributable_to_closed_issue(tracked, &key, current);
+        assert!(
+            explicitly_not_proven_required_work(&attributable_tracked),
+            "an unnumbered closed-issue exclusion must survive a later tracker sentence: {attributable_tracked:?}"
+        );
+
+        for terminator in ['!', '?'] {
+            let punctuated = format!(
+                "This PR does not prove the complete remaining work{terminator} That work is tracked by #11."
+            );
+            let attributable_punctuated =
+                exclusion_text_attributable_to_closed_issue(&punctuated, &key, current);
+            assert!(
+                explicitly_not_proven_required_work(&attributable_punctuated),
+                "sentence terminators other than '.' must still keep the exclusion: {attributable_punctuated:?}"
+            );
+        }
+
+        let inline_question =
+            "Complete behavior is not established for `$ready ? $new : $old`; see #11.";
+        let attributable_inline_question =
+            exclusion_text_attributable_to_closed_issue(inline_question, &key, current);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_inline_question),
+            "a `?` inside an inline code span must not split off the neighbor reference: {attributable_inline_question:?}"
+        );
+        assert!(
+            explicitly_not_proven_required_work(inline_question),
+            "unfiltered inline-code neighbor text must still show why attribution is load-bearing"
+        );
+
+        let inline_bang = "Complete behavior is not established for `die $msg! now`; see #11.";
+        let attributable_inline_bang =
+            exclusion_text_attributable_to_closed_issue(inline_bang, &key, current);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_inline_bang),
+            "a `!` inside an inline code span must not split off the neighbor reference: {attributable_inline_bang:?}"
+        );
+        assert!(
+            explicitly_not_proven_required_work(inline_bang),
+            "unfiltered inline-bang neighbor text must still show why attribution is load-bearing"
+        );
+
+        let inline_dot = "Complete behavior is not established for `$x. meth $y`; see #11.";
+        let attributable_inline_dot =
+            exclusion_text_attributable_to_closed_issue(inline_dot, &key, current);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable_inline_dot),
+            "a `.` inside an inline code span must not split off the neighbor reference: {attributable_inline_dot:?}"
+        );
+
+        let escaped = "This PR does not prove the complete remaining work for \\`foo? bar\\`. That work is tracked by #11.";
+        let attributable_escaped =
+            exclusion_text_attributable_to_closed_issue(escaped, &key, current);
+        assert!(
+            explicitly_not_proven_required_work(&attributable_escaped),
+            "escaped backticks must not hide an unnumbered closed-issue exclusion: {attributable_escaped:?}"
+        );
     }
 
     #[test]
