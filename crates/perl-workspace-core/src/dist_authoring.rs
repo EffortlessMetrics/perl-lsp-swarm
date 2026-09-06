@@ -330,14 +330,24 @@ pub fn compare_authoring_with_meta(
         keys.insert((prereq.module.clone(), prereq.phase.clone(), prereq.relation.clone()));
     }
     for (module, phase, relation) in keys {
-        let authoring_value = authoring
-            .prereqs
-            .iter()
-            .filter(|item| {
-                item.module == module && item.phase == phase && item.relation == relation
-            })
-            .map(|item| item.version.clone().unwrap_or_else(|| "0".to_string()))
-            .next();
+        let limited = authoring.prereqs.iter().any(|item| {
+            item.module == module
+                && item.phase == phase
+                && item.relation == relation
+                && item.dynamic
+        });
+        let authoring_value = if limited {
+            None
+        } else {
+            authoring
+                .prereqs
+                .iter()
+                .filter(|item| {
+                    item.module == module && item.phase == phase && item.relation == relation
+                })
+                .map(|item| item.version.clone().unwrap_or_else(|| "0".to_string()))
+                .next()
+        };
         let metadata_value = metadata
             .prereqs
             .iter()
@@ -346,12 +356,6 @@ pub fn compare_authoring_with_meta(
             })
             .map(|item| item.version.clone().unwrap_or_else(|| "0".to_string()))
             .next();
-        let limited = authoring.prereqs.iter().any(|item| {
-            item.module == module
-                && item.phase == phase
-                && item.relation == relation
-                && item.dynamic
-        });
         push_field_comparison(
             &mut out,
             authoring,
