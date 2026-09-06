@@ -105,10 +105,10 @@
         },
         "artifact_set_id": { "$ref": "#/$defs/bounded_id" },
         "available_until": {
-          "type": ["string", "null"],
+          "type": "string",
           "minLength": 1,
           "maxLength": 64,
-          "description": "RFC3339 expiry of the transport object. Expiry forces candidate regeneration; it is not rebuild authority."
+          "description": "RFC3339 expiry of the transport object. Omit the field when unused; explicit null is not a second representation of absence. Expiry forces candidate regeneration; it is not rebuild authority."
         }
       }
     },
@@ -155,9 +155,10 @@
           "enum": ["release_archive", "vsix", "checksums", "sbom"]
         },
         "target": {
-          "type": ["string", "null"],
+          "type": "string",
           "minLength": 1,
-          "maxLength": 128
+          "maxLength": 128,
+          "description": "Required for release_archive members. Omit the field for roles without a target; explicit null is not canonical."
         },
         "name": {
           "type": "string",

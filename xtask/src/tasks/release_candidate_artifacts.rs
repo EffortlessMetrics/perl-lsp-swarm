@@ -322,6 +322,12 @@ pub fn check() -> Result<()> {
         "invalid_freeze_expiry",
         freeze_invalid_available_until_check(&topology),
     );
+    push_failure(&mut failures, "colliding_names", colliding_vsix_archive_name_check(&topology));
+    push_failure(
+        &mut failures,
+        "explicit_nulls",
+        explicit_null_fields_fail_schema_check(&topology),
+    );
     push_failure(&mut failures, "determinism", determinism_check(&topology));
 
     if failures.is_empty() {
@@ -595,6 +601,13 @@ fn load_topology(path: &Path) -> Result<TopologyMembership> {
         return Err(HandoffError::new(
             ReasonCode::VersionMetadataMismatch,
             format!("vsix asset_name does not contain release {release}"),
+        )
+        .into());
+    }
+    if archives.iter().any(|(name, _)| name == &vsix_asset_name) {
+        return Err(HandoffError::new(
+            ReasonCode::DuplicateArtifactName,
+            format!("vsix asset_name {vsix_asset_name} collides with a topology archive"),
         )
         .into());
     }
@@ -1290,6 +1303,51 @@ fn freeze_invalid_available_until_check(topology: &Path) -> Result<()> {
     expect_reason(freeze_packet(&cfg), ReasonCode::MalformedDocument)
 }
 
+fn colliding_vsix_archive_name_check(topology: &Path) -> Result<()> {
+    let dirs = scenario_dirs(topology)?;
+    let mut topo: Value = serde_json::from_slice(&fs::read(&dirs.topology)?)?;
+    let archive = required_string(
+        topo.get("binary_targets")
+            .and_then(Value::as_array)
+            .and_then(|targets| targets.first())
+            .ok_or_else(|| eyre!("fixture topology missing binary_targets[0]"))?,
+        "archive_name",
+    )?;
+    if let Some(vsix) = topo.get_mut("vsix") {
+        vsix["asset_name"] = Value::String(archive);
+    }
+    fs::write(&dirs.topology, serde_json::to_vec_pretty(&topo)?)?;
+    expect_reason(
+        freeze_packet(&freeze_cfg(&dirs, "run-1", "set-rc1")),
+        ReasonCode::DuplicateArtifactName,
+    )
+}
+
+fn explicit_null_fields_fail_schema_check(topology: &Path) -> Result<()> {
+    let dirs = scenario_dirs(topology)?;
+    let packet = freeze_packet(&freeze_cfg(&dirs, "run-1", "set-rc1"))?;
+    let schema = load_schema(&project_root()?)?;
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| eyre!("schema compile failed: {error}"))?;
+    let mut with_null_expiry = serde_json::to_value(&packet)?;
+    with_null_expiry["transport"]["available_until"] = Value::Null;
+    if validator.iter_errors(&with_null_expiry).next().is_none() {
+        bail!("schema accepted explicit null available_until");
+    }
+    let mut with_null_target = serde_json::to_value(&packet)?;
+    if let Some(first) = with_null_target
+        .get_mut("artifacts")
+        .and_then(Value::as_array_mut)
+        .and_then(|artifacts| artifacts.first_mut())
+    {
+        first["target"] = Value::Null;
+    }
+    if validator.iter_errors(&with_null_target).next().is_none() {
+        bail!("schema accepted explicit null artifact target");
+    }
+    Ok(())
+}
+
 fn determinism_check(topology: &Path) -> Result<()> {
     let dirs = scenario_dirs(topology)?;
     let first = freeze_packet(&freeze_cfg(&dirs, "run-1", "set-rc1"))?;
@@ -1387,6 +1445,16 @@ mod tests {
     #[test]
     fn freeze_rejects_non_rfc3339_available_until() -> Result<()> {
         freeze_invalid_available_until_check(&topology()?)
+    }
+
+    #[test]
+    fn colliding_vsix_and_archive_name_fails_freeze() -> Result<()> {
+        colliding_vsix_archive_name_check(&topology()?)
+    }
+
+    #[test]
+    fn explicit_null_optional_fields_fail_schema() -> Result<()> {
+        explicit_null_fields_fail_schema_check(&topology()?)
     }
 
     #[test]
