@@ -339,6 +339,8 @@ mod tests {
         assert_ne!(env!("CARGO_PKG_NAME"), HISTORICAL_PACKAGE_NAME);
         assert_eq!(env!("CARGO_PKG_NAME"), "perl-release-readiness");
         assert_eq!(env!("CARGO_CRATE_NAME"), "perl_release_readiness");
+        assert_ne!(env!("CARGO_PKG_NAME"), "perl-kwalitee");
+        assert_ne!(env!("CARGO_CRATE_NAME"), "perl_kwalitee");
         let live_home = Path::new(env!("CARGO_MANIFEST_DIR"));
         assert!(
             live_home.ends_with("perl-release-readiness"),

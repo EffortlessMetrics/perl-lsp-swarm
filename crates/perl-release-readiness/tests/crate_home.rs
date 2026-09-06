@@ -15,7 +15,12 @@ use perl_release_readiness::{
 #[test]
 fn live_package_and_library_names_are_release_readiness() {
     assert_eq!(env!("CARGO_PKG_NAME"), "perl-release-readiness");
-    assert_eq!(env!("CARGO_CRATE_NAME"), "perl_release_readiness");
+    // Integration-test binaries have their own CARGO_CRATE_NAME. The library
+    // name is `perl_release_readiness` because this file compiles against it.
+    let _library: fn(
+        &perl_release_readiness::KwaliteeOptions,
+    ) -> perl_release_readiness::KwaliteeReceipt = perl_release_readiness::evaluate;
+    let _ = _library;
 }
 
 #[test]
