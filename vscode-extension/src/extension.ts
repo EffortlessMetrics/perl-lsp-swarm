@@ -174,6 +174,7 @@ import type { LegacyMigrationState } from './configurationMigrationLive';
 import {
   LegacyMigrationSurface,
   refreshLegacyMigrationOnConfigurationChange,
+  registerLegacyMigrationFolderWatcher,
 } from './configurationMigrationHost';
 
 // Compatibility projections for existing command/provider code. Lifecycle
@@ -825,12 +826,13 @@ async function runExtensionActivation(
   // stale setting is being ignored are already in the output channel when the domain it
   // used to configure reports itself inert (#14966). The reader interprets configuration
   // and never writes it.
-  legacyMigrationSurface = new LegacyMigrationSurface(
+  const migrationSurface = new LegacyMigrationSurface(
     outputChannel,
     (context.extension.packageJSON.version as string) ?? 'unknown',
   );
+  legacyMigrationSurface = migrationSurface;
   try {
-    legacyMigrationSurface.refresh();
+    migrationSurface.refresh();
   } catch (error: unknown) {
     // A support surface must not decide whether activation succeeds. The failure is
     // reported rather than swallowed, and the published state stays empty.
@@ -1255,6 +1257,18 @@ async function runExtensionActivation(
     }),
   );
   activation.own('workspace_listeners', 'mandatory_for_activation', configurationWatcher);
+
+  // Registered after the configuration watcher so the existing workspace_listeners
+  // ordinals keep their meaning. The migration surface depends on the folder set as well
+  // as configuration content, and VS Code reports folder changes on their own event.
+  const legacyMigrationFolderWatcher = registerLegacyMigrationFolderWatcher(
+    migrationSurface,
+    (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      outputChannel.error(`[configuration-migration] folder-change read failed: ${message}`);
+    },
+  );
+  activation.own('workspace_listeners', 'optional_degradable', legacyMigrationFolderWatcher);
 
   const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
     try {

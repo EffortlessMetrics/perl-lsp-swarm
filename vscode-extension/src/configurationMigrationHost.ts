@@ -193,3 +193,26 @@ export function refreshLegacyMigrationOnConfigurationChange(
     surface.refresh();
   }
 }
+
+/**
+ * Re-read when the workspace folder set changes.
+ *
+ * The published state is a function of the folder list, not only of configuration
+ * content: a folder added mid-session brings its own `.vscode/settings.json` with it, a
+ * removed folder takes its occurrence away, and the remaining folders renumber. VS Code
+ * signals that through `onDidChangeWorkspaceFolders` rather than a configuration change,
+ * so without this listener the state can describe a folder set that no longer exists
+ * until some unrelated edit to a registered legacy key happens to arrive.
+ */
+export function registerLegacyMigrationFolderWatcher(
+  surface: LegacyMigrationSurface,
+  onError: (error: unknown) => void,
+): vscode.Disposable {
+  return vscode.workspace.onDidChangeWorkspaceFolders(() => {
+    try {
+      surface.refresh();
+    } catch (error: unknown) {
+      onError(error);
+    }
+  });
+}

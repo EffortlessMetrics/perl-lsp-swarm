@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import {
   LegacyMigrationSurface,
   refreshLegacyMigrationOnConfigurationChange,
+  registerLegacyMigrationFolderWatcher,
 } from '../configurationMigrationHost';
 import type { ConfigurationMigrationRegistry } from '../configurationMigrationRegistry';
 import { V018_CONFIGURATION_MIGRATIONS } from '../configurationMigrationRegistry';
@@ -23,6 +24,7 @@ type Inspection = {
 const workspaceMock = vscode.workspace as unknown as {
   getConfiguration: jest.Mock;
   workspaceFolders: Array<{ uri: { fsPath: string } }> | undefined;
+  onDidChangeWorkspaceFolders: jest.Mock;
 };
 
 /** Every `update` the code under test could have called, across all scopes. */
@@ -274,6 +276,66 @@ describe('legacy migration host adapter', () => {
     expect(reader.snapshot().entries).toEqual([]);
     const published = reader.refresh();
     expect(reader.snapshot()).toBe(published);
+  });
+
+  // The state depends on the folder list, not only on configuration content. A folder
+  // added mid-session brings its own settings, and VS Code announces that on its own
+  // event rather than as a configuration change.
+  test('a folder added mid-session is read without any configuration change', () => {
+    stubConfiguration({});
+    const { surface: reader, warnings } = surface();
+    let listener: (() => void) | undefined;
+    workspaceMock.onDidChangeWorkspaceFolders.mockImplementation((callback: () => void) => {
+      listener = callback;
+      return { dispose: jest.fn() };
+    });
+
+    registerLegacyMigrationFolderWatcher(reader, () => undefined);
+    expect(reader.refresh().entries).toEqual([]);
+
+    stubConfiguration({}, [{ workspaceFolderValue: STALE_MCP_VALUE }]);
+    listener?.();
+
+    expect(reader.snapshot().entries).toHaveLength(1);
+    expect(reader.snapshot().entries[0]?.folderId).toBe('folder:0');
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('a removed folder drops out of the published state', () => {
+    stubConfiguration({}, [{ workspaceFolderValue: STALE_MCP_VALUE }]);
+    const { surface: reader } = surface();
+    let listener: (() => void) | undefined;
+    workspaceMock.onDidChangeWorkspaceFolders.mockImplementation((callback: () => void) => {
+      listener = callback;
+      return { dispose: jest.fn() };
+    });
+
+    registerLegacyMigrationFolderWatcher(reader, () => undefined);
+    expect(reader.refresh().entries).toHaveLength(1);
+
+    stubConfiguration({});
+    listener?.();
+
+    expect(reader.snapshot().entries).toEqual([]);
+  });
+
+  test('a folder-change read failure is reported, not thrown at the host', () => {
+    stubConfiguration({});
+    const { surface: reader } = surface();
+    let listener: (() => void) | undefined;
+    workspaceMock.onDidChangeWorkspaceFolders.mockImplementation((callback: () => void) => {
+      listener = callback;
+      return { dispose: jest.fn() };
+    });
+    const failures: unknown[] = [];
+
+    registerLegacyMigrationFolderWatcher(reader, (error) => failures.push(error));
+    workspaceMock.getConfiguration.mockImplementation(() => {
+      throw new Error('host refused inspection');
+    });
+
+    expect(() => listener?.()).not.toThrow();
+    expect(failures).toHaveLength(1);
   });
 
   test('a configuration change refreshes only when a registered legacy key changed', () => {
