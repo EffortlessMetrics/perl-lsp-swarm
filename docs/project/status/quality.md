@@ -43,7 +43,7 @@
 | perl-position-tracking | — | 73 |
 | perl-pragma | — | 1 |
 | perl-regex | — | 80 |
-| perl-release-readiness | — | 84 |
+| perl-release-readiness | — | 150 |
 | perl-ripr-facts | — | 147 |
 | perl-semantic-analyzer | — | 532 |
 | perl-semantic-facts | — | 253 |
