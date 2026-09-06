@@ -35,6 +35,7 @@ use crate::model::{
     DebugBreakpoint, DebugEvent, DebugFunctionBreakpoint, DebugScope, DebugSource, DebugStackFrame,
     DebugVariable, FrameId, ResolvedBreakpoint, ThreadId, VariablesRef,
 };
+use crate::mutation::{MutationOperation, MutationOutcome, MutationTargetCohort};
 use crate::peer_protocol::message::PeerFailureCause;
 
 /// Errors a backend can surface.
@@ -376,6 +377,33 @@ pub trait DebugBackend: Send {
         false
     }
 
+    /// Whether this backend can apply a scalar mutation to the given cohort
+    /// (#10736).
+    ///
+    /// The default is `false`: a backend opts in explicitly, so a domain
+    /// variant existing never makes a backend cell true.
+    fn supports_scalar_mutation(&self, _cohort: MutationTargetCohort) -> bool {
+        false
+    }
+
+    /// Apply one admitted scalar mutation and report a typed outcome (#10736).
+    ///
+    /// The return type is [`MutationOutcome`], not `BackendResult<_>`, on
+    /// purpose. A backend must be able to say "the command was dispatched and
+    /// I do not know whether it landed", and an error/ok pair cannot express
+    /// that — see [`MutationOutcome::possible_application`].
+    ///
+    /// The default fails explicitly as unsupported and names the exact
+    /// backend/mode/profile cell that refused, so an unimplemented backend is
+    /// never mistaken for a policy refusal or a successful no-op.
+    fn mutate_scalar(&mut self, operation: &MutationOperation) -> MutationOutcome {
+        MutationOutcome::Unsupported {
+            backend: self.name().to_string(),
+            mode: operation.backend_mode().to_string(),
+            profile: operation.value_profile(),
+        }
+    }
+
     /// Disconnect from the engine.
     fn disconnect(&mut self, terminate_debuggee: bool) -> BackendResult<()>;
 }
@@ -491,6 +519,57 @@ mod tests {
         must(b.initialize(InitializeBackendParams::default()));
         let events = b.drain_events();
         assert_eq!(events, vec![DebugEvent::Initialized]);
+    }
+
+    /// The mutation seam must survive `Box<dyn DebugBackend>` (#10736), and a
+    /// backend that has not implemented it must say so explicitly rather than
+    /// look like a policy refusal or a silent no-op.
+    #[test]
+    fn scalar_mutation_seam_is_object_safe_and_defaults_to_unsupported() {
+        use crate::mutation::{
+            MutationDeadline, MutationLocationKind, MutationMember, MutationOperation,
+            MutationOrigin, MutationOutcome, MutationTargetCandidate, MutationTargetCohort,
+            MutationValue, MutationValueProfile, ResponseValueFormat, WritabilityDisposition,
+        };
+
+        let candidate = MutationTargetCandidate {
+            session_generation: Some(1),
+            suspension_generation: Some(1),
+            value_authority_generation: Some(1),
+            frame_identity: "frame#1".to_string(),
+            binding_identity: "pad:$x@0".to_string(),
+            kind: Some(MutationLocationKind::CurrentFrameLexicalScalar),
+            member: Some(MutationMember::WholeScalar),
+            inspected_value: None,
+            writability: WritabilityDisposition::Writable,
+            backend_mode: "mock-mode".to_string(),
+        };
+        let target = must(candidate.bind());
+        let operation = MutationOperation::new(
+            1,
+            MutationOrigin::SetVariable,
+            target,
+            MutationValue::Undef,
+            1,
+            MutationDeadline::default(),
+            ResponseValueFormat::default(),
+        );
+
+        let mut backend: Box<dyn DebugBackend> = Box::new(MockBackend::default());
+        assert!(!backend.supports_scalar_mutation(MutationTargetCohort::CurrentFrameLexicalScalar));
+
+        let outcome = backend.mutate_scalar(&operation);
+        assert_eq!(
+            outcome,
+            MutationOutcome::Unsupported {
+                backend: "mock".to_string(),
+                mode: "mock-mode".to_string(),
+                profile: MutationValueProfile::ScalarV1,
+            }
+        );
+        // An unsupported default is a before-dispatch refusal: nothing was written.
+        assert!(outcome.is_before_dispatch());
+        assert!(!outcome.possible_application());
     }
 
     #[test]
