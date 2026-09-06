@@ -64,6 +64,16 @@ impl LocalSymbolTable {
     /// an opener whose body never closes is left unarmed, so opener-shaped prose
     /// cannot hide the declarations after it.
     ///
+    /// That bounds, but does not remove, one residue. The terminator is matched
+    /// by line shape, so opener-shaped prose can bind to a lone `.` that belongs
+    /// to something else, suppressing declarations in between. It needs the
+    /// prepass to be already mis-scanning a region — the same confusion that
+    /// makes POD swallow to EOF here today — and the region bounds the damage
+    /// where POD does not. Repairing it means recognizing heredoc openers the
+    /// prepass currently misses, which requires term-versus-operator position
+    /// (`my $z = $x <<'END';` is a left shift, not a heredoc), so it belongs to
+    /// the heredoc owners rather than this region. Tracked by #14927.
+    ///
     /// Perl alternates picture lines and argument lines inside a body, and a
     /// `sub NAME {}` on an *argument* line is genuinely declared, so excluding
     /// the region drops that declaration. The trade is deliberate: picture lines
@@ -1514,6 +1524,46 @@ mod tests {
         assert!(
             table.is_known_sub("helper"),
             "opener-shaped prose erased the declarations after it"
+        );
+    }
+
+    #[test]
+    fn opener_shaped_prose_can_still_bind_to_an_unrelated_terminator() {
+        // Recorded boundary, not a desired behavior. Arming requires a
+        // terminator, which bounds the damage, but the terminator is found by
+        // line shape and can belong to something else entirely — here a lone `.`
+        // inside a second heredoc. A declaration between the two is suppressed.
+        //
+        // This is valid Perl, and the root cause is upstream of this region: the
+        // prepass does not recognize `print $fh <<'END';` as a heredoc, so prose
+        // reaches the scanner as code. The same confusion already makes POD
+        // swallow to EOF on main, so this is an instance of an accepted class
+        // rather than a new hazard, and the region bounds it where POD does not.
+        //
+        // It is deliberately not repaired here: recognizing that heredoc needs
+        // term-versus-operator position, since `my $z = $x <<'END';` is a left
+        // shift, not a heredoc (verified with perl 5.38.2). That is the heredoc
+        // owners' seam. Tracked by #14927.
+        let src = concat!(
+            "open(my $fh, '>', '/dev/null') or die;\n",
+            "print $fh <<'END';\n",
+            "format STDOUT =\n",
+            "END\n",
+            "sub real_between { 1 }\n",
+            "print $fh <<'TWO';\n",
+            ".\n",
+            "TWO\n",
+            "sub after_all { 1 }\n",
+        );
+        let table = LocalSymbolTable::scan_subs(src);
+
+        assert!(
+            !table.is_known_sub("real_between"),
+            "behavior improved — update this recorded boundary and the scan_subs docs"
+        );
+        assert!(
+            table.is_known_sub("after_all"),
+            "suppression must end at the bound terminator, not run to EOF"
         );
     }
 
