@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 
+use perl_workspace_core::{Confidence, EvidenceSource};
 use perl_workspace_core::{Digest, FileId};
 use perl_workspace_core::{
     DistAuthoringBuildTool, DistAuthoringSource, DistFactAgreement, DistMetadataSource,
@@ -428,5 +429,276 @@ fn authoring_absent_when_dist_not_requested() {
 fn provenance_is_present_and_honest() {
     let facts = parse_makefile_pl(fid("Makefile.PL", MAKEFILE), MAKEFILE);
     assert_eq!(facts.provenance.producer.name, "perl-workspace-core");
-    assert_eq!(facts.provenance.source, perl_workspace_core::EvidenceSource::DistMetadata);
+    assert_eq!(facts.provenance.source, EvidenceSource::Heuristic);
+}
+
+#[test]
+fn interpolating_double_quotes_are_dynamic_not_static_literals() {
+    let src = r#"
+WriteMakefile(
+    NAME => 'Foo::Bar',
+    VERSION => "$VERSION",
+    ABSTRACT => "cost is $price",
+    LICENSE => qq{$lic},
+);
+"#;
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    assert_eq!(facts.name.as_deref(), Some("Foo-Bar"));
+    assert!(facts.version.is_none(), "VERSION => \"$VERSION\" is interpolation, not a literal");
+    assert!(facts.summary.is_none());
+    assert!(facts.licenses.is_empty());
+    assert!(facts.declarations.iter().any(|d| d.key == "VERSION" && d.dynamic));
+    assert!(facts.limitations.iter().any(|l| l.kind == "dynamic_value"));
+}
+
+#[test]
+fn single_quoted_and_escaped_sigils_stay_static() {
+    let src = r#"
+WriteMakefile(
+    NAME => 'Foo$Bar',
+    VERSION => "1.00",
+    LICENSE => q{$not_interpolated},
+);
+"#;
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    assert_eq!(facts.name.as_deref(), Some("Foo$Bar"));
+    assert_eq!(facts.version.as_deref(), Some("1.00"));
+    assert_eq!(facts.licenses, vec!["$not_interpolated"]);
+}
+
+#[test]
+fn escaped_dollar_in_double_quotes_is_static() {
+    let src = "WriteMakefile(\n    NAME => 'Foo::Bar',\n    VERSION => \"\\$VERSION\",\n);\n";
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    assert_eq!(facts.version.as_deref(), Some("$VERSION"));
+}
+
+#[test]
+fn comparison_limits_only_the_dynamic_field() {
+    let makefile = r#"
+WriteMakefile(
+    NAME => "$pkg",
+    VERSION => '1.23',
+    LICENSE => 'perl',
+    PREREQ_PM => { 'Moo' => '2.0' },
+);
+"#;
+    let meta = r#"{"name":"Foo-Bar","version":"1.23","license":["perl_5"],
+        "prereqs":{"runtime":{"requires":{"Moo":"2.0"}}}}"#;
+    let model = build(
+        "field-limit-name",
+        &[("Makefile.PL", makefile), ("META.json", meta)],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let compared = model.compare_authoring_with_metadata();
+    assert!(
+        compared.iter().any(|c| c.field == "name" && c.agreement == DistFactAgreement::Limited)
+    );
+    assert!(
+        compared.iter().any(|c| c.field == "version" && c.agreement == DistFactAgreement::Agree)
+    );
+    assert!(
+        compared.iter().any(|c| c.field == "license" && c.agreement == DistFactAgreement::Agree)
+    );
+}
+
+#[test]
+fn license_only_dynamic_does_not_limit_name_or_version() {
+    let makefile = r#"
+WriteMakefile(
+    NAME => 'Foo::Bar',
+    VERSION => '1.23',
+    LICENSE => $lic,
+);
+"#;
+    let meta = r#"{"name":"Foo-Bar","version":"1.23","license":["perl_5"]}"#;
+    let model = build(
+        "field-limit-license",
+        &[("Makefile.PL", makefile), ("META.json", meta)],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let compared = model.compare_authoring_with_metadata();
+    assert!(
+        compared.iter().any(|c| c.field == "license" && c.agreement == DistFactAgreement::Limited)
+    );
+    assert!(compared.iter().any(|c| c.field == "name" && c.agreement == DistFactAgreement::Agree));
+    assert!(
+        compared.iter().any(|c| c.field == "version" && c.agreement == DistFactAgreement::Agree)
+    );
+}
+
+#[test]
+fn dynamic_prereq_version_does_not_limit_identity_fields() {
+    let makefile = r#"
+WriteMakefile(
+    NAME => 'Foo::Bar',
+    VERSION => '1.23',
+    LICENSE => 'perl',
+    PREREQ_PM => { 'Moo' => $ver },
+);
+"#;
+    let meta = r#"{"name":"Foo-Bar","version":"1.23","license":["perl_5"],
+        "prereqs":{"runtime":{"requires":{"Moo":"2.0"}}}}"#;
+    let model = build(
+        "field-limit-prereq",
+        &[("Makefile.PL", makefile), ("META.json", meta)],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let compared = model.compare_authoring_with_metadata();
+    assert!(compared.iter().any(|c| {
+        c.field.contains("prereq:runtime:requires:Moo") && c.agreement == DistFactAgreement::Limited
+    }));
+    assert!(compared.iter().any(|c| c.field == "name" && c.agreement == DistFactAgreement::Agree));
+    assert!(
+        compared.iter().any(|c| c.field == "version" && c.agreement == DistFactAgreement::Agree)
+    );
+}
+
+#[test]
+fn build_pl_skips_unrelated_constructor_before_module_build() {
+    let src = r#"
+Some::Other->new(name => 'Wrong::Pkg', version => '9.99');
+Module::Build->new(
+    module_name => 'Foo::Bar',
+    dist_version => '1.23',
+);
+"#;
+    let facts = parse_build_pl(fid("Build.PL", src), src);
+    assert_eq!(facts.name.as_deref(), Some("Foo-Bar"));
+    assert_eq!(facts.version.as_deref(), Some("1.23"));
+    assert!(!facts.declarations.iter().any(|d| d.value.as_deref() == Some("Wrong-Pkg")));
+}
+
+#[test]
+fn fact_fingerprint_includes_resource_web_type_and_provides_file() {
+    let with_web = r#"
+WriteMakefile(
+    NAME => 'Foo::Bar',
+    META_MERGE => {
+        resources => {
+            repository => {
+                type => 'git',
+                url  => 'https://example.invalid/foo.git',
+                web  => 'https://example.invalid/foo',
+            },
+        },
+        provides => {
+            'Foo::Bar' => { file => 'lib/Foo/Bar.pm', version => '1.23' },
+        },
+    },
+);
+"#;
+    let other_web = r#"
+WriteMakefile(
+    NAME => 'Foo::Bar',
+    META_MERGE => {
+        resources => {
+            repository => {
+                type => 'git',
+                url  => 'https://example.invalid/foo.git',
+                web  => 'https://example.invalid/other',
+            },
+        },
+        provides => {
+            'Foo::Bar' => { file => 'lib/Foo/Bar.pm', version => '1.23' },
+        },
+    },
+);
+"#;
+    let other_file = r#"
+WriteMakefile(
+    NAME => 'Foo::Bar',
+    META_MERGE => {
+        resources => {
+            repository => {
+                type => 'git',
+                url  => 'https://example.invalid/foo.git',
+                web  => 'https://example.invalid/foo',
+            },
+        },
+        provides => {
+            'Foo::Bar' => { file => 'lib/Foo/Other.pm', version => '1.23' },
+        },
+    },
+);
+"#;
+    let spaced = r#"
+WriteMakefile(
+
+    NAME => 'Foo::Bar',
+
+    META_MERGE => {
+        resources => {
+            repository => {
+                type => 'git',
+                url  => 'https://example.invalid/foo.git',
+                web  => 'https://example.invalid/foo',
+            },
+        },
+        provides => {
+            'Foo::Bar' => { file => 'lib/Foo/Bar.pm', version => '1.23' },
+        },
+    },
+);
+"#;
+    let first = parse_makefile_pl(fid("Makefile.PL", with_web), with_web);
+    let second = parse_makefile_pl(fid("Makefile.PL", other_web), other_web);
+    let third = parse_makefile_pl(fid("Makefile.PL", other_file), other_file);
+    let spaced_facts = parse_makefile_pl(fid("Makefile.PL", spaced), spaced);
+    assert_ne!(first.fact_fingerprint, second.fact_fingerprint);
+    assert_ne!(first.fact_fingerprint, third.fact_fingerprint);
+    assert_eq!(first.fact_fingerprint, spaced_facts.fact_fingerprint);
+    assert_ne!(first.source_fingerprint, spaced_facts.source_fingerprint);
+}
+
+#[test]
+fn conditional_declaration_prevents_high_confidence() {
+    let src = r#"
+if ($ENV{RELEASE}) {
+    Module::Build->new(
+        module_name => 'Foo::Bar',
+        dist_version => '1.23',
+    );
+}
+"#;
+    let facts = parse_build_pl(fid("Build.PL", src), src);
+    assert_eq!(facts.name.as_deref(), Some("Foo-Bar"));
+    assert!(facts.limitations.iter().any(|l| l.kind == "conditional_declaration"));
+    assert_ne!(facts.provenance.confidence, Confidence::High);
+}
+
+#[test]
+fn meta_yml_is_left_for_issue_8458() {
+    let model = build(
+        "meta-yml-coexist",
+        &[("META.yml", "---\nname: Foo-Bar\nversion: 1.0\n")],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    assert!(
+        model.dist_metadata.is_empty(),
+        "this PR must not absorb META.yml; #8458 / #14424 owns that source"
+    );
+    assert!(model.dist_authoring.is_empty());
+}
+
+#[test]
+fn compare_authoring_skips_cpanfile_and_keeps_meta_json() {
+    let makefile = r#"
+WriteMakefile(
+    NAME => 'Foo::Bar',
+    VERSION => '1.00',
+);
+"#;
+    let meta = r#"{"name":"Foo-Bar","version":"1.00"}"#;
+    let cpanfile = "requires 'Moo', '2.0';\n";
+    let model = build(
+        "skip-cpanfile",
+        &[("Makefile.PL", makefile), ("META.json", meta), ("cpanfile", cpanfile)],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    assert!(model.dist_metadata.iter().any(|d| d.source == DistMetadataSource::MetaJson));
+    assert!(model.dist_metadata.iter().any(|d| d.source == DistMetadataSource::Cpanfile));
+    let compared = model.compare_authoring_with_metadata();
+    assert!(!compared.is_empty());
+    assert!(compared.iter().all(|c| c.metadata_source == DistMetadataSource::MetaJson));
 }

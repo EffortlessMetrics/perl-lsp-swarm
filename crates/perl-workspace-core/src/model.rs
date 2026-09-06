@@ -148,11 +148,12 @@ impl ProjectModel {
         self.dist_metadata.iter().flat_map(|d| d.prereqs.iter()).collect()
     }
 
-    /// Compare authoring facts with final `META.json` facts without merging them.
+    /// Compare authoring facts with final metadata facts without merging them.
     ///
-    /// `META.yml` is owned by #7176 and is not a `DistMetadataSource` yet; this
-    /// helper only compares against parsed `META.json` records. Authoring and
-    /// metadata remain separate vectors regardless.
+    /// Compares against every parsed [`crate::dist::DistMetadataSource`] except
+    /// `cpanfile`. That includes `META.json` today and will include `META.yml`
+    /// once #8458 / PR #14424 lands that source — this crate does not add
+    /// `MetaYml` itself. Authoring and metadata remain separate vectors.
     #[must_use]
     pub fn compare_authoring_with_metadata(
         &self,
@@ -162,7 +163,7 @@ impl ProjectModel {
         let mut out = Vec::new();
         for authoring in &self.dist_authoring {
             for metadata in
-                self.dist_metadata.iter().filter(|item| item.source == DistMetadataSource::MetaJson)
+                self.dist_metadata.iter().filter(|item| item.source != DistMetadataSource::Cpanfile)
             {
                 out.extend(compare_authoring_with_meta(authoring, metadata));
             }

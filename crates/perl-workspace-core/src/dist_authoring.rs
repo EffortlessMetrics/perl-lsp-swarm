@@ -296,11 +296,11 @@ pub fn compare_authoring_with_meta(
         "name",
         authoring.name.clone(),
         metadata.name.clone(),
-        authoring.version_from.is_some() && authoring.name.is_none(),
+        field_is_limited(authoring, DistDeclarationKind::Name, authoring.name.is_none()),
     );
     let version_limited = authoring.version.is_none()
         && (authoring.version_from.is_some()
-            || authoring.limitations.iter().any(|item| item.kind == "dynamic_value"));
+            || field_is_limited(authoring, DistDeclarationKind::Version, true));
     push_field_comparison(
         &mut out,
         authoring,
@@ -319,7 +319,7 @@ pub fn compare_authoring_with_meta(
         "license",
         authoring_license,
         metadata_license,
-        false,
+        field_is_limited(authoring, DistDeclarationKind::License, authoring.licenses.is_empty()),
     );
 
     let mut keys = std::collections::BTreeSet::new();
@@ -363,6 +363,14 @@ pub fn compare_authoring_with_meta(
         );
     }
     out
+}
+
+fn field_is_limited(
+    authoring: &DistAuthoringFacts,
+    kind: DistDeclarationKind,
+    missing_static: bool,
+) -> bool {
+    missing_static && authoring.declarations.iter().any(|item| item.kind == kind && item.dynamic)
 }
 
 fn push_field_comparison(
@@ -1043,7 +1051,11 @@ impl<'a> DistCollector<'a> {
             && self.limitations.iter().all(|item| {
                 !matches!(
                     item.kind.as_str(),
-                    "dynamic_value" | "plugin_generated" | "executable_construct"
+                    "dynamic_value"
+                        | "plugin_generated"
+                        | "executable_construct"
+                        | "conditional_declaration"
+                        | "dynamic_constructor_arg"
                 )
             })
         {
@@ -1057,7 +1069,7 @@ impl<'a> DistCollector<'a> {
             source: self.source,
             provenance: Provenance {
                 producer: Producer::workspace_core(),
-                source: EvidenceSource::DistMetadata,
+                source: EvidenceSource::Heuristic,
                 confidence,
             },
             name,
@@ -1140,12 +1152,14 @@ fn fingerprint_facts(facts: &DistAuthoringFacts) -> Digest {
         version: &'a Option<String>,
         version_from: &'a Option<String>,
         summary: &'a Option<String>,
+        abstract_from: &'a Option<String>,
+        authors: &'a [String],
         licenses: &'a [String],
         build_tool: DistAuthoringBuildTool,
         generated_build_tool: Option<DistAuthoringBuildTool>,
         plugins: &'a [String],
-        resources: Vec<(&'a str, Option<&'a str>)>,
-        provides: Vec<(&'a str, Option<&'a str>)>,
+        resources: Vec<(&'a str, Option<&'a str>, Option<&'a str>, Option<&'a str>)>,
+        provides: Vec<(&'a str, Option<&'a str>, Option<&'a str>)>,
         prereqs: Vec<(&'a str, Option<&'a str>, &'a str, &'a str)>,
         conflicts: usize,
         limitation_kinds: Vec<&'a str>,
@@ -1156,6 +1170,8 @@ fn fingerprint_facts(facts: &DistAuthoringFacts) -> Digest {
         version: &facts.version,
         version_from: &facts.version_from,
         summary: &facts.summary,
+        abstract_from: &facts.abstract_from,
+        authors: &facts.authors,
         licenses: &facts.licenses,
         build_tool: facts.build_tool,
         generated_build_tool: facts.generated_build_tool,
@@ -1163,12 +1179,19 @@ fn fingerprint_facts(facts: &DistAuthoringFacts) -> Digest {
         resources: facts
             .resources
             .iter()
-            .map(|item| (item.kind.as_str(), item.url.as_deref()))
+            .map(|item| {
+                (
+                    item.kind.as_str(),
+                    item.url.as_deref(),
+                    item.web.as_deref(),
+                    item.type_name.as_deref(),
+                )
+            })
             .collect(),
         provides: facts
             .provides
             .iter()
-            .map(|item| (item.module.as_str(), item.version.as_deref()))
+            .map(|item| (item.module.as_str(), item.file.as_deref(), item.version.as_deref()))
             .collect(),
         prereqs: facts
             .prereqs

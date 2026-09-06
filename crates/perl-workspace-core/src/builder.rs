@@ -145,7 +145,9 @@ pub fn build_project_model(
 /// Extract distribution-metadata facts from a metadata file, dispatched by
 /// filename. `META.json` and `cpanfile` remain final/advisory metadata.
 /// Authoring files (`Makefile.PL`, `Build.PL`, `dist.ini`) are parsed by
-/// [`crate::dist_authoring`]. `META.yml` stays indexed until that source lands.
+/// [`crate::dist_authoring`], not as extra [`crate::dist::DistMetadataSource`]
+/// variants. `META.yml` / `META.yaml` stay indexed here; #8458 / PR #14424 owns
+/// that parse substrate.
 fn extract_dist_metadata(
     file_id: &FileId,
     relative_path: &str,

@@ -159,6 +159,7 @@ pub(crate) fn parse_value(source: &str, idx: &mut usize) -> ScanValue {
             Quoted::Words(words) => {
                 ScanValue::List(words.into_iter().map(ScanValue::String).collect())
             }
+            Quoted::Dynamic { snippet } => ScanValue::Dynamic { snippet },
         };
     }
     if bytes.get(*idx) == Some(&b'{') {
@@ -319,6 +320,7 @@ fn parse_key(source: &str, idx: &mut usize) -> Option<(String, usize, usize)> {
         let key = match literal {
             Quoted::Scalar(value) => value,
             Quoted::Words(words) => words.into_iter().next().unwrap_or_default(),
+            Quoted::Dynamic { .. } => return None,
         };
         return Some((key, start, *idx));
     }
@@ -366,15 +368,59 @@ fn parse_list_value(source: &str, idx: &mut usize) -> ScanValue {
 enum Quoted {
     Scalar(String),
     Words(Vec<String>),
+    Dynamic { snippet: String },
 }
 
 fn parse_string(source: &str, idx: &mut usize) -> Option<Quoted> {
     let bytes = source.as_bytes();
     let quote = *bytes.get(*idx)?;
-    if quote == b'\'' || quote == b'"' {
+    if quote == b'\'' {
         return parse_quoted(source, idx, quote).map(Quoted::Scalar);
     }
+    if quote == b'"' {
+        return parse_double_quoted(source, idx);
+    }
     parse_quotelike(source, idx)
+}
+
+fn parse_double_quoted(source: &str, idx: &mut usize) -> Option<Quoted> {
+    let inner_start = *idx + 1;
+    let mut interpolating = false;
+    let bytes = source.as_bytes();
+    if bytes.get(*idx) != Some(&b'"') {
+        return None;
+    }
+    let mut value = String::new();
+    *idx += 1;
+    let mut escaped = false;
+    while *idx < source.len() {
+        let ch = source[*idx..].chars().next()?;
+        *idx += ch.len_utf8();
+        if escaped {
+            value.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            if interpolating {
+                return Some(Quoted::Dynamic { snippet: snippet(source, inner_start, *idx - 1) });
+            }
+            return Some(Quoted::Scalar(value));
+        }
+        if ch == '$' || ch == '@' {
+            interpolating = true;
+        }
+        value.push(ch);
+    }
+    if interpolating {
+        Some(Quoted::Dynamic { snippet: snippet(source, inner_start, *idx) })
+    } else {
+        Some(Quoted::Scalar(value))
+    }
 }
 
 fn parse_quoted(source: &str, idx: &mut usize, quote: u8) -> Option<String> {
@@ -446,7 +492,7 @@ fn parse_quotelike(source: &str, idx: &mut usize) -> Option<Quoted> {
                         value.split_whitespace().map(ToOwned::to_owned).collect(),
                     ));
                 }
-                return Some(Quoted::Scalar(value));
+                return Some(finish_quotelike(kind, value));
             }
         } else if ch.len_utf8() == 1 && byte == open && open != close {
             depth += 1;
@@ -457,8 +503,34 @@ fn parse_quotelike(source: &str, idx: &mut usize) -> Option<Quoted> {
     if kind == "qw" {
         Some(Quoted::Words(value.split_whitespace().map(ToOwned::to_owned).collect()))
     } else {
-        Some(Quoted::Scalar(value))
+        Some(finish_quotelike(kind, value))
     }
+}
+
+fn finish_quotelike(kind: &str, value: String) -> Quoted {
+    if kind == "qq" && has_interpolation(&value) {
+        Quoted::Dynamic { snippet: value }
+    } else {
+        Quoted::Scalar(value)
+    }
+}
+
+fn has_interpolation(raw: &str) -> bool {
+    let mut escaped = false;
+    for ch in raw.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '$' || ch == '@' {
+            return true;
+        }
+    }
+    false
 }
 
 fn matching_quotelike_close(open: u8) -> u8 {

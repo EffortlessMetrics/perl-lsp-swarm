@@ -51,18 +51,51 @@ pub fn parse_build_pl(file_id: FileId, content: &str) -> DistAuthoringFacts {
 }
 
 fn build_pairs(content: &str) -> Option<Vec<ScanPair>> {
-    if let Some(idx) = content.find("->new") {
-        let ident = idx + 2;
-        if let Some(open) = call_open_paren(content, ident, "new".len())
-            && let Some((pairs, _)) = parse_paren_hash(content, open)
-        {
-            return Some(pairs);
+    let mut from = 0;
+    while let Some(rel) = content.get(from..).and_then(|rest| rest.find("->new")) {
+        let idx = from + rel;
+        if ident_before_arrow(content, idx).is_some_and(is_module_build_constructor) {
+            let method_start = idx + 2;
+            if let Some(open) = call_open_paren(content, method_start, "new".len())
+                && let Some((pairs, _)) = parse_paren_hash(content, open)
+            {
+                return Some(pairs);
+            }
+        }
+        from = idx.saturating_add("->new".len());
+        if from <= idx {
+            break;
         }
     }
     if let Some(pairs) = method_new_pairs(content, "new") {
         return Some(pairs);
     }
     assigned_hash(content, "args")
+}
+
+fn ident_before_arrow(source: &str, arrow_idx: usize) -> Option<&str> {
+    let bytes = source.as_bytes();
+    let mut end = arrow_idx;
+    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    if end == 0 {
+        return None;
+    }
+    let mut start = end;
+    while start > 0 {
+        let prev = bytes[start - 1];
+        if prev.is_ascii_alphanumeric() || prev == b'_' || prev == b':' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    if start == end { None } else { source.get(start..end) }
+}
+
+fn is_module_build_constructor(ident: &str) -> bool {
+    ident == "Module::Build" || ident.starts_with("Module::Build::")
 }
 
 fn method_new_pairs(content: &str, method: &str) -> Option<Vec<ScanPair>> {
