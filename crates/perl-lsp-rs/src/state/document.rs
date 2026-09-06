@@ -603,7 +603,7 @@ impl DocumentState {
     /// Edit-producing providers must not format or rewrite from that buffer
     /// while a Full-sync violation is outstanding.
     #[must_use]
-    pub fn text_for_user_answers(&self) -> Option<&str> {
+    pub(crate) fn text_for_user_answers(&self) -> Option<&str> {
         if self.full_sync_required { None } else { Some(self.text_str()) }
     }
 
@@ -768,7 +768,7 @@ impl DocumentState {
     /// not pending parse: predecessor AST must not answer the user until an
     /// accepted full replacement recovers.
     #[must_use]
-    pub fn parsed_for_user_answers(&self) -> Option<Arc<ParsedSnapshot>> {
+    pub(crate) fn parsed_for_user_answers(&self) -> Option<Arc<ParsedSnapshot>> {
         if self.full_sync_required {
             None
         } else {
