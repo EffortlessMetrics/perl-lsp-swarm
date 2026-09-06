@@ -1581,7 +1581,7 @@ jobs:
       # both integration targets here because compile-all-targets alone cannot
       # execute their assertions, and the routed pr-fast lane is advisory.
       - name: Legacy parity library authority (required merge surface)
-        run: cargo test -p perl-kwalitee --test legacy_parity --locked -- --nocapture
+        run: cargo test -p perl-release-readiness --test legacy_parity --locked -- --nocapture
 
       - name: Legacy parity CLI authority (required merge surface)
         run: cargo test -p xtask --test perl_kwalitee_parity --locked -- --nocapture

@@ -55,7 +55,7 @@ destination_id = "native_product.dap_cli_native_only"
 action = "transfer"
 owner_issue = 7168
 evidence_source = "shipped perl-dap CLI surface"
-reproduce = "cargo test -p perl-kwalitee evidence::dap::tests::clean_cli_passes -- --exact"
+reproduce = "cargo test -p perl-release-readiness evidence::dap::tests::clean_cli_passes -- --exact"
 removal_condition = "native_product_readiness.v1 owns the DAP product-surface proposition"
 note = "DAP implementation and installed behavior remain separate evidence."
 
