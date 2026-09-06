@@ -1615,63 +1615,10 @@ impl DebugAdapter {
         });
     }
 
-    /// Verify that a target process exists and is accessible before attaching.
-    ///
-    /// Returns `Ok(true)` if the process is verified to exist and is signalable,
-    /// `Ok(false)` if the process exists but is owned by a different user (warned
-    /// but allowed to proceed), or `Err(msg)` if the process does not exist or
-    /// cannot be queried.
-    fn verify_attach_target(pid: u32) -> Result<bool, String> {
-        #[cfg(unix)]
-        {
-            use nix::errno::Errno;
-            let nix_pid = Pid::from_raw(pid as i32);
-            // Signal 0 (None) checks process existence without actually sending a signal.
-            match signal::kill(nix_pid, None) {
-                Ok(()) => Ok(true),
-                Err(Errno::EPERM) => {
-                    tracing::warn!(
-                        pid,
-                        "Attach target exists but is owned by a different user (EPERM); \
-                         proceeding with limited capabilities"
-                    );
-                    Ok(false)
-                }
-                Err(Errno::ESRCH) => Err(format!("Process {pid} does not exist (no such process)")),
-                Err(e) => Err(format!("Cannot verify process {pid}: {e}")),
-            }
-        }
-        #[cfg(windows)]
-        {
-            use winapi::um::handleapi::CloseHandle;
-            use winapi::um::processthreadsapi::OpenProcess;
-            use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
-
-            // SAFETY: OpenProcess is a standard Win32 API.  We request only
-            // query-limited information, which is a read-only access right.
-            // The handle is closed immediately after the existence check.
-            let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-            if handle.is_null() {
-                return Err(format!(
-                    "Process {pid} does not exist or is not accessible (OpenProcess failed)"
-                ));
-            }
-            // SAFETY: CloseHandle on a valid process handle is always safe.
-            unsafe { CloseHandle(handle) };
-            Ok(true)
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = pid;
-            Err("Process verification not supported on this platform".to_string())
-        }
-    }
-
     /// Handle attach request
     ///
-    /// Attaches to a running Perl process. Supports two modes:
-    /// 1. TCP attachment - Connect to Perl::LanguageServer DAP via host:port
-    /// 2. Process ID attachment - Signal-control mode for local Perl process
+    /// Attaches to a running Perl debugger transport. Supports one mode:
+    /// TCP attachment - connect to the debugger's DAP listener via `host:port`.
     ///
     /// For TCP attachment, the arguments should contain:
     /// - `host`: Hostname or IP address (default: "localhost")
@@ -1680,10 +1627,12 @@ impl DebugAdapter {
     ///
     /// # Current Implementation
     ///
-    /// TCP attachment is implemented with socket support.
-    /// Process ID attachment is implemented in signal-control mode (pause/continue
-    /// signaling and thread identity), with limited stack/evaluate capabilities
-    /// unless a debugger transport is active.
+    /// TCP attachment is implemented with socket support. Process ID
+    /// (signal-control) attachment is refused fail-closed (#8109): verifying
+    /// that a process exists and holding signal control never established a
+    /// debugger transport or observed a stop transition, so the previous
+    /// successful attach response with synthetic `stopped(attach)`/`entry`
+    /// events represented a session the adapter did not own.
     pub(super) fn handle_attach(
         &self,
         seq: i64,
@@ -1692,94 +1641,35 @@ impl DebugAdapter {
     ) -> DapMessage {
         // Parse attach arguments
         if let Some(args) = arguments {
-            let process_id =
-                args.get("processId").and_then(|p| p.as_u64()).map(Self::u64_to_u32_saturating);
-
-            // PID attachment mode: best-effort process control without requiring TCP shim transport.
-            if let Some(pid) = process_id {
-                if pid == 0 {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some("processId must be greater than zero".to_string()),
-                    };
-                }
-
-                // Verify the target process exists before attaching (#4638).
-                if let Err(msg) = Self::verify_attach_target(pid) {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "attach".to_string(),
-                        body: None,
-                        message: Some(msg),
-                    };
-                }
-
-                // Reset existing process/tcp attachment state before switching to PID mode.
-                self.begin_session_generation();
-                self.clear_active_session_state();
-
-                if let Ok(mut guard) = self.attached_pid.lock() {
-                    *guard = Some(pid);
-                }
-
-                let stop_on_entry =
-                    args.get("stopOnEntry").and_then(|s| s.as_bool()).unwrap_or(false);
-                let thread_id = Self::i64_to_i32_saturating(i64::from(pid));
-
-                // Always emit the "attach" stopped event to signal the client that the
-                // debugger is connected and paused.
-                self.send_event(
-                    "stopped",
-                    Some(json!({
-                        "reason": "attach",
-                        "threadId": thread_id,
-                        "allThreadsStopped": true
-                    })),
-                );
-
-                // When stopOnEntry is requested, emit an additional "entry" stopped event
-                // so the IDE pauses at the first available program location.
-                if stop_on_entry {
-                    self.send_event(
-                        "stopped",
-                        Some(json!({
-                            "reason": "entry",
-                            "threadId": thread_id,
-                            "allThreadsStopped": true,
-                            "description": "Paused on entry"
-                        })),
-                    );
-                }
-
-                tracing::info!(
-                    pid,
-                    stop_on_entry,
-                    "Attach request: Process ID attachment (signal-control mode)"
-                );
-
-                DapMessage::Response {
+            // #8109: processId attachment is refused before any target
+            // inspection, session mutation, signal, or event emission.
+            // Process existence plus signal control is not a stopped debugger
+            // session. The refusal is input-independent — any `processId`
+            // member (numeric or otherwise) takes this early gate, so a
+            // malformed value cannot slip into the TCP branch — and leaves any
+            // active launch/TCP session untouched: no generation bump, no
+            // state clear, no stored PID, no signal, and no
+            // stopped/entry/continued/thread/process/terminal event. The
+            // target process is never contacted. Re-enable requires a real
+            // debugger transport with a behavior-backed attach journey
+            // (#6684 real-session matrix owns that proof).
+            if args.get("processId").is_some() {
+                return DapMessage::Response {
                     seq,
                     request_seq,
-                    success: true,
+                    success: false,
                     command: "attach".to_string(),
-                    body: Some(json!({
-                        "threadId": thread_id,
-                        "processId": pid,
-                        "mode": "processId"
-                    })),
+                    body: None,
                     message: Some(
-                        "Attached in signal-control mode. Stack/evaluate are limited without a \
-                         debugger transport."
+                        "attach by processId is not supported: no debugger transport or \
+                         behavior-backed attach journey exists (#8109). Use TCP attach with \
+                         host/port instead."
                             .to_string(),
                     ),
-                }
-            } else {
+                };
+            }
+
+            {
                 // Extract host and port for TCP attachment.
                 let host = args.get("host").and_then(|h| h.as_str()).unwrap_or("localhost");
                 let normalized_host = host.trim();
@@ -1927,8 +1817,8 @@ impl DebugAdapter {
                 command: "attach".to_string(),
                 body: None,
                 message: Some(
-                    "Missing attach arguments. Provide either 'processId' for process attachment \
-                     or 'host' and 'port' for TCP attachment."
+                    "Missing attach arguments. Provide 'host' and 'port' for TCP attachment; \
+                     attach by processId is not supported (#8109)."
                         .to_string(),
                 ),
             }
