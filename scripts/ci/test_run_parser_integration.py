@@ -518,6 +518,164 @@ class ParserIntegrationRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "manifest subject does not match"):
             runner.validate_receipt_subject(root, receipt, manifest, lock)
 
+    # Origin/main proof ids immediately before #14926. This list is the
+    # non-shrink / non-reorder control: a later append may follow
+    # class-grammar admission, but these rows must remain present in this
+    # relative order. Do not treat this as a general tests/ coverage ratchet.
+    PRIOR_PARSER_INTEGRATION_PROOF_IDS = (
+        "parser.ast.behavior",
+        "parser.cli.continued_read_failure_stats",
+        "parser.recovery.regression",
+        "parser.recovery.incomplete_brace",
+        "parser.hir.postfix_modifiers",
+        "parser.pir.branch_body",
+        "parser.pir.loop_body",
+        "parser.incremental.integration",
+        "parser.incremental.accuracy",
+        "parser.red_black_tree_access_paths",
+        "parser.red_black_tree_delete_fixup",
+        "parser.semantic.smoke",
+        "parser.incremental.authority",
+        "parser.incremental.parse_output",
+        "parser.incremental.lexer_restart",
+        "parser.incremental.parse_snapshot",
+        "parser.concepts.magic_token_arguments",
+        "parser.concepts.magic_token_fat_arrow_pairs",
+        "parser.literals.structural",
+        "parser.ripr.seam_proof",
+        "parser.command_line.oneliners",
+    )
+    CLASS_GRAMMAR_ADMISSION_ID = "parser.class_grammar.admission"
+    CLASS_GRAMMAR_TARGET = "class_grammar_context"
+
+    def class_grammar_admission_plan(
+        self, plans: list[runner.TargetPlan]
+    ) -> runner.TargetPlan:
+        by_id = [plan for plan in plans if plan.proof_id == self.CLASS_GRAMMAR_ADMISSION_ID]
+        by_target = [plan for plan in plans if plan.target == self.CLASS_GRAMMAR_TARGET]
+        self.assertEqual(
+            by_id,
+            by_target,
+            "class-grammar admission must be one id bound to class_grammar_context",
+        )
+        self.assertEqual(
+            len(by_id),
+            1,
+            "class_grammar_context must be one unconditional parser_integration execute target",
+        )
+        return by_id[0]
+
+    def assert_unconditional_class_grammar_identity(
+        self, plan: runner.TargetPlan
+    ) -> None:
+        self.assertEqual(plan.package, "perl-parser-core")
+        self.assertEqual(plan.features, ())
+        self.assertFalse(plan.no_default_features)
+        self.assertEqual(plan.cargo_args, ())
+        self.assertEqual(plan.test_args, ("--test-threads=4",))
+        self.assertEqual(plan.disposition, "execute")
+        self.assertEqual(plan.boundedness, "focused")
+        self.assertEqual(
+            runner.cargo_command(plan),
+            [
+                "cargo",
+                "test",
+                "--locked",
+                "--package",
+                "perl-parser-core",
+                "--test",
+                "class_grammar_context",
+                "--",
+                "--test-threads=4",
+            ],
+        )
+
+    def test_missing_class_grammar_row_is_not_an_unconditional_execute_target(
+        self,
+    ) -> None:
+        """Opposite-direction control: a denominator without the row fails."""
+
+        plans = runner.load_targets(
+            self.manifest(
+                [
+                    self.target("parser.one", target="semantic_smoke_tests"),
+                    self.target(
+                        "parser.two",
+                        package="perl-parser-core",
+                        target="error_recovery_regression",
+                    ),
+                ]
+            )
+        )
+        with self.assertRaisesRegex(
+            AssertionError,
+            "class_grammar_context must be one unconditional parser_integration execute target",
+        ):
+            self.class_grammar_admission_plan(plans)
+
+    def test_wrong_package_class_grammar_row_is_not_admission_proof(self) -> None:
+        """A present row on the wrong package is not the gated class-grammar target."""
+
+        wrong_package = runner.load_targets(
+            self.manifest(
+                [
+                    self.target(
+                        self.CLASS_GRAMMAR_ADMISSION_ID,
+                        package="perl-parser",
+                        target=self.CLASS_GRAMMAR_TARGET,
+                    )
+                ]
+            )
+        )
+        plan = self.class_grammar_admission_plan(wrong_package)
+        with self.assertRaisesRegex(AssertionError, "perl-parser-core"):
+            self.assert_unconditional_class_grammar_identity(plan)
+
+    def test_filtered_class_grammar_row_cannot_enter_the_manifest(self) -> None:
+        """A name-filter would let the gate pass without running the suite."""
+
+        filtered = self.target(
+            self.CLASS_GRAMMAR_ADMISSION_ID,
+            package="perl-parser-core",
+            target=self.CLASS_GRAMMAR_TARGET,
+        )
+        with self.assertRaisesRegex(ValueError, "filters can run zero tests"):
+            runner.load_targets(
+                self.manifest(
+                    [
+                        {
+                            **filtered,
+                            "test_args": [
+                                "adjust_inside_a_block_class_body_is_admitted_as_a_class_member"
+                            ],
+                        }
+                    ]
+                )
+            )
+
+    def test_class_grammar_context_is_an_unconditional_execute_target(self) -> None:
+        plans = runner.load_targets(runner.TARGETS_PATH)
+        plan = self.class_grammar_admission_plan(plans)
+        self.assert_unconditional_class_grammar_identity(plan)
+
+    def test_class_grammar_registration_does_not_drop_or_reorder_existing_proofs(
+        self,
+    ) -> None:
+        ids = [plan.proof_id for plan in runner.load_targets(runner.TARGETS_PATH)]
+        prior_index = 0
+        for proof_id in ids:
+            if (
+                prior_index < len(self.PRIOR_PARSER_INTEGRATION_PROOF_IDS)
+                and proof_id == self.PRIOR_PARSER_INTEGRATION_PROOF_IDS[prior_index]
+            ):
+                prior_index += 1
+        self.assertEqual(
+            prior_index,
+            len(self.PRIOR_PARSER_INTEGRATION_PROOF_IDS),
+            "existing parser_integration proofs were removed or reordered",
+        )
+        self.assertIn(self.CLASS_GRAMMAR_ADMISSION_ID, ids)
+
     def test_checked_in_manifest_matches_exact_identity_lock(self) -> None:
         plans = runner.load_targets(runner.TARGETS_PATH)
         lock = runner.load_lock(runner.LOCK_PATH)
@@ -526,6 +684,7 @@ class ParserIntegrationRunnerTests(unittest.TestCase):
 
         self.assertEqual(len(plans), len(lock))
         self.assertTrue(all(plan.disposition == "execute" for plan in plans))
+        self.assertIn(self.CLASS_GRAMMAR_ADMISSION_ID, lock)
 
 
 if __name__ == "__main__":
