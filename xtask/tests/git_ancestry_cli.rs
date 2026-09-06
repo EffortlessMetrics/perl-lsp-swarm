@@ -1,17 +1,29 @@
 //! Process-level proof that the `git-ancestry` CLI maps dispositions to the
 //! documented typed exit codes.
+//!
+//! Fixture classification (#13697): identity-pinning and hermetic. The fixture
+//! commits are built through `git_test_support::HermeticGit` and the CLI child
+//! inherits the same hermetic environment, so ambient signing, hooks, filters,
+//! object-format defaults, and locale cannot perturb the commit identities the
+//! dispositions are asserted against.
 
-use anyhow::{Context, Result, bail};
-use std::path::Path;
+use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use tempfile::TempDir;
+
+mod git_test_support;
+
+use git_test_support::HermeticGit;
 
 #[test]
 fn ancestor_exits_zero() -> Result<()> {
-    let repository = initialized_repository()?;
-    let base = git(repository.path(), &["rev-parse", "HEAD"])?;
-    commit_file(repository.path(), "second.txt", "second\n", "second")?;
+    let (tmp, hermetic) = initialized_repository()?;
+    let repository = tmp.path().join("repo");
+    let base = hermetic.git(&repository, &["rev-parse", "HEAD"])?;
+    commit_file(&hermetic, &repository, "second.txt", "second\n", "second")?;
 
-    let output = run_cli(repository.path(), &base, "HEAD", &[])?;
+    let output = run_cli(&hermetic, &repository, &base, "HEAD", &[])?;
 
     assert_eq!(output.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&output.stdout).contains("git-ancestry: ancestor"));
@@ -20,13 +32,14 @@ fn ancestor_exits_zero() -> Result<()> {
 
 #[test]
 fn unrelated_exits_two() -> Result<()> {
-    let repository = initialized_repository()?;
-    let original = git(repository.path(), &["rev-parse", "HEAD"])?;
-    git(repository.path(), &["switch", "--orphan", "orphan"])?;
-    git(repository.path(), &["rm", "-rf", "--ignore-unmatch", "."])?;
-    commit_file(repository.path(), "orphan.txt", "orphan\n", "orphan")?;
+    let (tmp, hermetic) = initialized_repository()?;
+    let repository = tmp.path().join("repo");
+    let original = hermetic.git(&repository, &["rev-parse", "HEAD"])?;
+    hermetic.git(&repository, &["switch", "--orphan", "orphan"])?;
+    hermetic.git(&repository, &["rm", "-rf", "--ignore-unmatch", "."])?;
+    commit_file(&hermetic, &repository, "orphan.txt", "orphan\n", "orphan")?;
 
-    let output = run_cli(repository.path(), &original, "HEAD", &[])?;
+    let output = run_cli(&hermetic, &repository, &original, "HEAD", &[])?;
 
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stdout).contains("git-ancestry: unrelated"));
@@ -35,9 +48,10 @@ fn unrelated_exits_two() -> Result<()> {
 
 #[test]
 fn invalid_input_exits_four() -> Result<()> {
-    let repository = initialized_repository()?;
+    let (tmp, hermetic) = initialized_repository()?;
+    let repository = tmp.path().join("repo");
 
-    let output = run_cli(repository.path(), "", "HEAD", &["--json"])?;
+    let output = run_cli(&hermetic, &repository, "", "HEAD", &["--json"])?;
 
     assert_eq!(output.status.code(), Some(4));
     assert!(String::from_utf8_lossy(&output.stdout).contains("\"invalid_input\""));
@@ -45,6 +59,7 @@ fn invalid_input_exits_four() -> Result<()> {
 }
 
 fn run_cli(
+    hermetic: &HermeticGit,
     repository: &Path,
     base: &str,
     head: &str,
@@ -59,36 +74,28 @@ fn run_cli(
         .arg("--head")
         .arg(head)
         .args(extra);
+    hermetic.apply_env(&mut command);
     command.output().context("failed to execute git-ancestry CLI")
 }
 
-fn initialized_repository() -> Result<tempfile::TempDir> {
-    let repository = tempfile::tempdir()?;
-    git(repository.path(), &["init", "--initial-branch", "main"])?;
-    git(repository.path(), &["config", "user.name", "test"])?;
-    git(repository.path(), &["config", "user.email", "test@example.com"])?;
-    commit_file(repository.path(), "tracked.txt", "base\n", "base")?;
-    Ok(repository)
+fn initialized_repository() -> Result<(TempDir, HermeticGit)> {
+    let tmp = tempfile::tempdir()?;
+    let hermetic = HermeticGit::at(&tmp.path().join("git-fixture-pins"))?;
+    let repository: PathBuf = tmp.path().join("repo");
+    hermetic.init_repo(&repository)?;
+    commit_file(&hermetic, &repository, "tracked.txt", "base\n", "base")?;
+    Ok((tmp, hermetic))
 }
 
-fn commit_file(repository: &Path, path: &str, contents: &str, message: &str) -> Result<()> {
+fn commit_file(
+    hermetic: &HermeticGit,
+    repository: &Path,
+    path: &str,
+    contents: &str,
+    message: &str,
+) -> Result<()> {
     std::fs::write(repository.join(path), contents)?;
-    git(repository, &["add", "--", path])?;
-    git(repository, &["commit", "-m", message])?;
+    hermetic.git(repository, &["add", "--", path])?;
+    hermetic.git(repository, &["commit", "-m", message])?;
     Ok(())
-}
-
-fn git(repository: &Path, arguments: &[&str]) -> Result<String> {
-    let output = Command::new("git").args(arguments).current_dir(repository).output()?;
-    if !output.status.success() {
-        bail!(
-            "git {} failed with status {}\nstderr:\n{}",
-            arguments.join(" "),
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    String::from_utf8(output.stdout)
-        .context("git command returned non-UTF-8 output")
-        .map(|value| value.trim().to_string())
 }
