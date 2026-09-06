@@ -883,7 +883,7 @@ fn local_element_initializer_body_path_keeps_the_target_fail_closed() {
         !graph.nodes.iter().any(|node| match &node.operation {
             PirOperation::StashWrite { symbol }
             | PirOperation::StashRead { symbol }
-            | PirOperation::StashModify { symbol } => symbol.name == "<unknown>",
+            | PirOperation::StashModify { symbol, .. } => symbol.name == "<unknown>",
             _ => false,
         }),
         "element local must not stash-write <unknown>: {names:?}"

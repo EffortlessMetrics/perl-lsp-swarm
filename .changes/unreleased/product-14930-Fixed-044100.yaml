@@ -1,0 +1,12 @@
+project: product
+component: Parser and lexer
+kind: Fixed
+body: >-
+  Complex-lvalue `local` (elements, slices, parenthesized argument form) no
+  longer lowers to a placeholder `<unknown>` Let/StashWrite; body HIR and PIR-A
+  keep the real target place or an explicit fail-closed marker.
+time: 2026-09-06T04:41:00Z
+custom:
+  PR: "14930"
+  Slug: hir-local-complex-lvalue
+  Breaking: "no"

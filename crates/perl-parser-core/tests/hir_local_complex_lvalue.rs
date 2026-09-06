@@ -9,8 +9,8 @@ mod cpan_test_helpers;
 
 use cpan_test_helpers::{assert_clean_parse, parse};
 use perl_parser_core::hir::{
-    AccessMode, AssignMode, DeclStorageClass, HirBody, HirExpr, HirStmt, SubscriptKind,
-    VariableKind, lower_ast, lower_body,
+    AccessMode, AssignMode, DeclStorageClass, HirBody, HirExpr, HirStmt, SubscriptKind, lower_ast,
+    lower_body,
 };
 use perl_parser_core::pir::{PirGraph, PirOperation, lower_hir_bodies};
 use perl_parser_core::{Parser, hir::HirFile};
@@ -54,7 +54,7 @@ fn placeholder_pir_symbols(graph: &PirGraph) -> Vec<&'static str> {
         .filter_map(|node| match &node.operation {
             PirOperation::StashWrite { symbol }
             | PirOperation::StashRead { symbol }
-            | PirOperation::StashModify { symbol }
+            | PirOperation::StashModify { symbol, .. }
                 if symbol.name == PLACEHOLDER =>
             {
                 Some(node.operation.name())
@@ -86,8 +86,8 @@ fn require_no_placeholder(body: &HirBody, graph: &PirGraph, source: &str) -> Res
 }
 
 /// An assignment whose LHS is a hash/array element with the expected access.
-fn element_assign<'a>(
-    body: &'a HirBody,
+fn element_assign(
+    body: &HirBody,
     container: &str,
     kind: SubscriptKind,
     access: AccessMode,
@@ -120,10 +120,10 @@ fn element_assign<'a>(
 
 fn named_local_let(body: &HirBody, name: &str) -> Result<(), String> {
     for stmt in body.stmts.iter() {
-        if let HirStmt::Let { name: got, storage: DeclStorageClass::Local, .. } = stmt {
-            if got == name {
-                return Ok(());
-            }
+        if let HirStmt::Let { name: got, storage: DeclStorageClass::Local, .. } = stmt
+            && got == name
+        {
+            return Ok(());
         }
     }
     Err(format!("expected named local Let {name:?}"))
