@@ -1431,51 +1431,73 @@ mod tests {
 
     #[test]
     fn format_keyword_lookalikes_do_not_open_a_region() {
-        // Each case must be defeated by exactly one live guard — the
-        // statement-position rule, the end-of-line completion check, or the
-        // keyword's trailing-character check — so that dropping any one of them
-        // leaves a case red. Cases that several guards reject prove none of them.
-        let cases = [
-            // Only the trailing-character check rejects this: `_width` would
-            // otherwise parse as the format's name and leave `=` ending the
-            // line. The terminator below is deliberate — without it the
-            // arming check alone would refuse, and the guard would go unproven.
-            ("longer name starting with the keyword", "format_width =\nsub real { }\n.\n"),
-            // Only the statement-position guard rejects these: the keyword is
-            // followed by a bare `=` that does end the line.
-            ("scalar assignment", "my $format =\n    1;\nsub real { }\n"),
-            ("package scalar assignment", "$Report::format =\n    1;\nsub real { }\n"),
-            // Only the fat-comma guard rejects this: the key starts its line, so
-            // the keyword genuinely sits where a statement could begin.
-            ("fat comma at line start", "my %h = (\n    format =>\n    1,\n);\nsub real { }\n"),
-            // Only the label rule's single-colon check rejects these. Accepting
-            // a statement label must not accept the `::` package separator or a
-            // ternary's `:`, both of which also leave a colon before `format`.
-            ("nested package scalar", "$Deep::Report::format =\n    1;\nsub real { }\n"),
+        // Each pinning case is defeated by exactly one live guard and carries a
+        // later `.` plus a `sub hidden` on the would-be picture line. Without
+        // that terminator the arming check alone keeps the lookalike inert, so
+        // dropping the named guard would still be green. `hidden` must stay
+        // known; if the guard is removed, the region arms and swallows it.
+        let pinning_cases = [
+            // Trailing-character check: `_width` would otherwise parse as the
+            // format's name and leave `=` ending the line.
+            (
+                "longer name starting with the keyword",
+                "format_width =\nsub hidden { }\n.\nsub real { }\n",
+            ),
+            // Statement-position: the keyword is followed by a bare `=` that
+            // does end the line.
+            ("scalar assignment", "my $format =\nsub hidden { }\n.\nsub real { }\n"),
+            ("package scalar assignment", "$Report::format =\nsub hidden { }\n.\nsub real { }\n"),
+            // End-of-line completion: the key starts its line, so the keyword
+            // sits where a statement could begin, and `=>` is the only reject.
+            (
+                "fat comma at line start",
+                "my %h = (\n    format =>\nsub hidden { }\n.\n    1,\n);\nsub real { }\n",
+            ),
+            // Label rule's single-colon check: accepting a statement label must
+            // not accept the `::` package separator or a ternary's `:`.
+            ("nested package scalar", "$Deep::Report::format =\nsub hidden { }\n.\nsub real { }\n"),
             // A label word only introduces a statement when it starts one. This
             // is a mid-edit buffer — an unfinished space-free ternary — which an
             // LSP lexes routinely, and which is the one realistic shape that
             // puts `IDENT:` in front of `format` away from a statement start.
-            ("label word mid-expression", "my $x = $a ?$b: format =\nsub real { }\n"),
+            (
+                "label word mid-expression",
+                "my $x = $a ?$b: format =\nsub hidden { }\n.\nsub real { }\n",
+            ),
             // Peeling labels in a loop must not turn a ternary into a label
             // chain: a bareword branch also leaves `word :` before the keyword.
-            ("ternary bareword branch", "my $x = $c ? foo : format =\nsub real { }\n"),
-            ("ternary sigil branch", "my $x = $c ? $b : format =\nsub real { }\n"),
+            (
+                "ternary bareword branch",
+                "my $x = $c ? foo : format =\nsub hidden { }\n.\nsub real { }\n",
+            ),
+            (
+                "ternary sigil branch",
+                "my $x = $c ? $b : format =\nsub hidden { }\n.\nsub real { }\n",
+            ),
             // A Perl label is an identifier, so it cannot begin with a digit.
-            ("numeric label word", "123: format =\nsub real { }\n"),
-            // Rejected before either guard, but kept as ordinary regressions.
+            ("numeric label word", "123: format =\nsub hidden { }\n.\nsub real { }\n"),
+            // Completion check, not statement-position: prefix `$h{` ends with
+            // `{`, so a statement can begin, but `}` sits between `format` and
+            // `=` and is neither empty nor a comment.
+            ("hash subscript", "my %h; $h{format} = 1;\nsub hidden { }\n.\nsub real { }\n"),
+        ];
+
+        for (context, source) in pinning_cases {
+            assert!(
+                LocalSymbolTable::scan_subs(source).is_known_sub("hidden"),
+                "{context}: lookalike armed a format region and swallowed hidden"
+            );
+            assert_membership_and_slash(source, &["real", "hidden"], &[]);
+        }
+
+        // Several guards reject these, so they cannot pin any one of them.
+        let ordinary_cases = [
             ("fat comma inline", "my %h = (format => 1);\nsub real { }\n"),
             ("method call", "my $o; $o->format();\nsub real { }\n"),
             ("prefixed name", "sub format_it { }\nsub real { }\n"),
-            ("hash subscript", "my %h; $h{format} = 1;\nsub real { }\n"),
         ];
 
-        for (context, source) in cases {
-            let table = LocalSymbolTable::scan_subs(source);
-            assert!(
-                table.is_known_sub("real"),
-                "{context}: opened a format region and swallowed real code"
-            );
+        for (_context, source) in ordinary_cases {
             assert_membership_and_slash(source, &["real"], &[]);
         }
 
