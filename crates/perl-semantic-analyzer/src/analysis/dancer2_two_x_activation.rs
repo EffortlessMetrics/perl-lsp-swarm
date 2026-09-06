@@ -321,7 +321,6 @@ fn walk_activation_sites(
             // argument and stays.
             let spelled = spelled_version_requirement(source, span_start, span_end);
             let mut node_args: Vec<String> = node_args(node).to_vec();
-            eprintln!("[dbg spelled] requirement={spelled:?} module={module:?}");
             if let Some(requirement) = &spelled {
                 let folded = module.split_once(' ').map(|(_, version)| version).unwrap_or("");
                 if let Some(continuation) = requirement.strip_prefix(folded) {
@@ -672,7 +671,6 @@ get '/x' => sub { 1 };
     }
 
     #[test]
-    #[test]
     fn contiguous_three_part_version_is_consumed_whole() {
         // The parser folds `2.0` into the module and leaves `.` and `1` as
         // separate tokens; the spelled-requirement consumption must join
@@ -716,7 +714,7 @@ get '/x' => sub { 1 };
         );
     }
 
-    #[test]
+
     fn leading_double_colon_addresses_main_root() {
         // `sub ::get` is main::get: the leading `::` addresses main's root,
         // so the leaf lands on main's shadow list.

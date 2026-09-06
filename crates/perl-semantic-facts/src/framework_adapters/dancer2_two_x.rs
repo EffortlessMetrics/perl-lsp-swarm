@@ -514,6 +514,18 @@ pub struct Dancer2TwoXImportEvidence {
 /// dynamic selections, never defaults.
 #[must_use]
 pub fn parse_dancer2_two_x_import_args(args: &[String]) -> Dancer2TwoXImportEvidence {
+    parse_dancer2_two_x_import_args_inner(args, true)
+}
+
+/// `version_slot` marks whether the first positional token may still be the
+/// `use MODULE VERSION` requirement. A parenthesized import list
+/// (`use Dancer2 (v2.01);`) delivers its contents as plain arguments — the
+/// parens are consumed by the parser — so a leading v-string there is an
+/// import argument, never a version slot.
+fn parse_dancer2_two_x_import_args_inner(
+    args: &[String],
+    version_slot: bool,
+) -> Dancer2TwoXImportEvidence {
     let mut evidence = Dancer2TwoXImportEvidence::default();
     // Pass 1 mirrors the pinned import loop: filter no-op tags and
     // `:nopragmas`, expand `!keyword` into `(!keyword, 1)` pairs, and collect
@@ -537,6 +549,7 @@ pub fn parse_dancer2_two_x_import_args(args: &[String]) -> Dancer2TwoXImportEvid
             // token can occupy that slot — a quoted `'v2.01'` is a literal
             // string import argument, not a version (#14408 review).
             if word.quoting == TokenQuoting::Unquoted
+                && version_slot
                 && positional_index == 1
                 && word.text.len() > 1
                 && word.text.starts_with('v')
