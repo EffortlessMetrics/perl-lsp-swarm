@@ -1,0 +1,18 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: >-
+  The `perl-lexer` local-subroutine prepass no longer learns declaration names
+  out of Perl `format` bodies, so report text such as `sub NAME` on a picture
+  line can no longer create a false known sub and flip a later `name /pattern/`
+  from division to the regex path. Opener and terminator semantics follow perl:
+  an optional (including qualified or absent) format name followed by `=` as the
+  last non-comment token on the line, closed by a line whose content is exactly
+  `.`, where trailing horizontal whitespace is allowed and leading whitespace is
+  not. A `sub` declared on a format *argument* line is deliberately not recorded;
+  that bounded limitation is documented on `LocalSymbolTable::scan_subs`.
+time: 2026-09-06T00:00:00Z
+custom:
+  PR: "0000"
+  Slug: format-body-prepass-exclusion-14916
+  Breaking: "no"

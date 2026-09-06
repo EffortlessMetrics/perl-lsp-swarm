@@ -13,8 +13,8 @@
 //!
 //! The phase-0 scan shares the lexer's Unicode identifier policy and excludes
 //! line comments, ordinary and quote-like strings, pattern bodies, POD,
-//! heredoc bodies, and data sections. Formats, imports, generated code, and
-//! source filters remain explicit follow-up boundaries under #6732.
+//! heredoc bodies, `format` bodies, and data sections. Imports, generated code,
+//! and source filters remain explicit follow-up boundaries under #6732.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
@@ -50,12 +50,29 @@ impl LocalSymbolTable {
     /// identifier starts/continuations as the native lexer, including `::` and
     /// legacy apostrophe package separators. It excludes declarations spelled
     /// inside line comments, ordinary and quote-like strings, pattern bodies,
-    /// POD, recognized heredoc bodies, and `__DATA__`/`__END__`.
+    /// POD, recognized heredoc bodies, `format` bodies, and
+    /// `__DATA__`/`__END__`.
     ///
-    /// Imported symbols, dynamic declarations, format bodies, `eval`, `AUTOLOAD`,
-    /// source filters, and workspace symbols are not inferred. A heredoc opener
-    /// is therefore still missed when its callable is only imported, never
+    /// Imported symbols, dynamic declarations, `eval`, `AUTOLOAD`, source
+    /// filters, and workspace symbols are not inferred. A heredoc opener is
+    /// therefore still missed when its callable is only imported, never
     /// declared in this file.
+    ///
+    /// # Format bodies
+    ///
+    /// A `format` body is excluded whole. Perl alternates picture lines and
+    /// argument lines inside one, and a `sub NAME {}` on an *argument* line is
+    /// genuinely declared, so excluding the region drops that declaration.
+    /// The trade is deliberate: picture lines carry arbitrary report text, which
+    /// makes a false declaration realistic, whereas a named declaration on an
+    /// argument line is pathological. Missing a declaration falls back to the
+    /// division path — already the standing behavior for imported subs — while a
+    /// false one actively mis-tokenizes. Distinguishing the two line kinds would
+    /// put a second Perl grammar inside the prepass. See #14916.
+    ///
+    /// A bare `/.../` regex body is still scanned as code, because recognizing
+    /// an unprefixed slash requires the regex-versus-division decision this
+    /// table exists to inform.
     ///
     /// # Cost
     ///
@@ -160,6 +177,7 @@ struct ScanState {
     quote_like: Option<QuoteLikeState>,
     awaiting_sub_name: bool,
     in_pod: bool,
+    in_format: bool,
     pending_heredocs: VecDeque<PendingHeredoc>,
 }
 
@@ -224,6 +242,51 @@ fn is_data_marker(line: &str) -> bool {
     matches!(line.trim_end_matches([' ', '\t']), "__DATA__" | "__END__")
 }
 
+/// Return `true` if `line` terminates a `format` body.
+///
+/// Perl accepts trailing horizontal whitespace after the terminating `.` but
+/// rejects an indented one, so leading whitespace deliberately keeps the body
+/// open rather than releasing it back to code.
+fn is_format_terminator(line: &str) -> bool {
+    line.trim_end_matches([' ', '\t']) == "."
+}
+
+/// Return `true` if the `format` keyword at `offset` sits where a statement can
+/// begin and is not part of a longer name, a method call, or a hash subscript.
+fn is_format_keyword_boundary(line: &str, offset: usize) -> bool {
+    let before = line[..offset].trim_end_matches([' ', '\t']);
+    if !before.is_empty() && !before.ends_with([';', '{', '}']) {
+        return false;
+    }
+
+    let after_offset = offset + "format".len();
+    let after = line[after_offset..].chars().next();
+    !after.is_some_and(|ch| is_perl_identifier_continue(ch) || matches!(ch, ':' | '\''))
+}
+
+/// Return `true` if a `format` opener beginning at `after_keyword` completes on
+/// this line, i.e. an optional name followed by `=` as the last non-comment
+/// token.
+///
+/// The trailing check is what separates a real opener from an operator: `=>`,
+/// `==` and `=~` all leave their second character in `rest`, which is neither
+/// empty nor a comment, so no separate operator test is needed.
+fn format_opener_completes_line(line: &str, after_keyword: usize) -> bool {
+    let mut offset = skip_horizontal_whitespace(line, after_keyword);
+
+    if let Some((_, end)) = parse_qualified_name(line, offset) {
+        offset = skip_horizontal_whitespace(line, end);
+    }
+
+    if !line[offset..].starts_with('=') {
+        return false;
+    }
+    offset += '='.len_utf8();
+
+    let rest = line[offset..].trim_start_matches([' ', '\t']);
+    rest.is_empty() || rest.starts_with('#')
+}
+
 /// Run one full forward scan, treating `hints` as additional callable names.
 ///
 /// `hints` is empty on the first pass and carries the first pass's declaration
@@ -242,6 +305,14 @@ fn scan_pass(input: &str, hints: &HashSet<Box<str>>) -> HashSet<Box<str>> {
         if let Some(pending) = state.pending_heredocs.front() {
             if pending.matches_terminator(line) {
                 state.pending_heredocs.pop_front();
+            }
+            line_start = next_line_start;
+            continue;
+        }
+
+        if state.in_format {
+            if is_format_terminator(line) {
+                state.in_format = false;
             }
             line_start = next_line_start;
             continue;
@@ -363,6 +434,16 @@ fn scan_code_line(
             state.awaiting_sub_name = true;
             offset += "sub".len();
             continue;
+        }
+
+        if line[offset..].starts_with("format")
+            && is_format_keyword_boundary(line, offset)
+            && format_opener_completes_line(line, offset + "format".len())
+        {
+            // The picture body starts on the next line; nothing after the `=`
+            // on this line is code.
+            state.in_format = true;
+            return;
         }
 
         offset += ch.len_utf8();
@@ -1176,5 +1257,169 @@ mod tests {
         assert!(table.is_known_sub("real"));
         assert!(!table.is_known_sub("fake_pattern"));
         assert!(!table.is_known_sub("fake_replacement"));
+    }
+
+    #[test]
+    fn format_bodies_cannot_create_known_subs() {
+        let source = concat!(
+            "sub before { }\n",
+            "format STDOUT =\n",
+            "sub fake_picture { }\n",
+            ".\n",
+            "sub after { }\n",
+        );
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert!(table.is_known_sub("before"), "declaration before the format was lost");
+        assert!(table.is_known_sub("after"), "declaration after the format was lost");
+        assert!(!table.is_known_sub("fake_picture"), "format body leaked a declaration");
+    }
+
+    #[test]
+    fn a_format_body_name_retains_the_division_path() {
+        let source = concat!(
+            "format STDOUT =\n",
+            "sub fake_fmt { }\n",
+            ".\n",
+            "sub real_fmt { }\n",
+            "fake_fmt /x/;\n",
+        );
+        let table = LocalSymbolTable::scan_subs(source);
+        assert!(!table.is_known_sub("fake_fmt"));
+        assert!(table.is_known_sub("real_fmt"));
+
+        let tokens = tokens_with_table(source, table);
+        assert!(
+            tokens.iter().any(|token| matches!(&token.token_type, TokenType::Division)),
+            "format-body name did not retain the division path"
+        );
+        assert!(
+            !tokens.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)),
+            "format-body name unexpectedly took the regex path"
+        );
+    }
+
+    #[test]
+    fn format_opener_spellings_are_recognized() {
+        let cases = [
+            ("named", "format STDOUT =\nsub fake { }\n.\nsub real { }\n"),
+            ("unnamed", "format =\nsub fake { }\n.\nsub real { }\n"),
+            ("qualified", "format Foo::BAR =\nsub fake { }\n.\nsub real { }\n"),
+            ("indented keyword", "  format STDOUT =\nsub fake { }\n.\nsub real { }\n"),
+            ("after a statement", "my $x = 1; format STDOUT =\nsub fake { }\n.\nsub real { }\n"),
+            ("trailing comment", "format STDOUT = # pic\nsub fake { }\n.\nsub real { }\n"),
+            ("padded equals", "format STDOUT =\t \nsub fake { }\n.\nsub real { }\n"),
+        ];
+
+        for (context, source) in cases {
+            let table = LocalSymbolTable::scan_subs(source);
+            assert!(!table.is_known_sub("fake"), "{context}: format body leaked a declaration");
+            assert!(table.is_known_sub("real"), "{context}: lost the declaration after the body");
+        }
+    }
+
+    #[test]
+    fn format_terminator_semantics_match_perl() {
+        // `perl -c` accepts trailing horizontal whitespace after the terminating
+        // `.` and rejects an indented one, so an indented `.` must keep the body
+        // open rather than releasing it back to code.
+        let trailing_space = "format STDOUT =\nsub fake { }\n.  \nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(trailing_space);
+        assert!(!table.is_known_sub("fake"));
+        assert!(table.is_known_sub("real"), "a padded terminator failed to close the body");
+
+        let crlf = "format STDOUT =\r\nsub fake { }\r\n.\r\nsub real { }\r\n";
+        let table = LocalSymbolTable::scan_subs(crlf);
+        assert!(!table.is_known_sub("fake"));
+        assert!(table.is_known_sub("real"), "a CRLF terminator failed to close the body");
+
+        let indented_dot = "format STDOUT =\nsub fake { }\n  .\nsub also_fake { }\n";
+        let table = LocalSymbolTable::scan_subs(indented_dot);
+        assert!(!table.is_known_sub("fake"));
+        assert!(
+            !table.is_known_sub("also_fake"),
+            "an indented `.` released the body, but perl does not accept it as a terminator"
+        );
+
+        let empty_body = "format STDOUT =\n.\nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(empty_body);
+        assert!(table.is_known_sub("real"), "an empty format body swallowed following code");
+
+        let unterminated = "format STDOUT =\nsub fake { }\n";
+        let table = LocalSymbolTable::scan_subs(unterminated);
+        assert!(!table.is_known_sub("fake"), "an unterminated format body leaked a declaration");
+    }
+
+    #[test]
+    fn format_keyword_lookalikes_do_not_open_a_region() {
+        // Each case must be defeated by exactly one guard, so that dropping
+        // either the statement-position check or the `=>`/`==`/`=~` check
+        // leaves a case red. Cases where both guards apply prove neither.
+        let cases = [
+            // Only the statement-position guard rejects these: the keyword is
+            // followed by a bare `=` that does end the line.
+            ("scalar assignment", "my $format =\n    1;\nsub real { }\n"),
+            ("package scalar assignment", "$Report::format =\n    1;\nsub real { }\n"),
+            // Only the fat-comma guard rejects this: the key starts its line, so
+            // the keyword genuinely sits where a statement could begin.
+            ("fat comma at line start", "my %h = (\n    format =>\n    1,\n);\nsub real { }\n"),
+            // Rejected before either guard, but kept as ordinary regressions.
+            ("fat comma inline", "my %h = (format => 1);\nsub real { }\n"),
+            ("method call", "my $o; $o->format();\nsub real { }\n"),
+            ("prefixed name", "sub format_it { }\nsub real { }\n"),
+            ("hash subscript", "my %h; $h{format} = 1;\nsub real { }\n"),
+        ];
+
+        for (context, source) in cases {
+            let table = LocalSymbolTable::scan_subs(source);
+            assert!(
+                table.is_known_sub("real"),
+                "{context}: opened a format region and swallowed real code"
+            );
+        }
+
+        // `sub format { }` declares a subroutine named `format`; the opener must
+        // not consume it as a region introducer.
+        let table = LocalSymbolTable::scan_subs("sub format { }\nsub real { }\n");
+        assert!(table.is_known_sub("format"));
+        assert!(table.is_known_sub("real"));
+    }
+
+    #[test]
+    fn format_opener_text_inside_excluded_regions_does_not_open_a_region() {
+        let cases = [
+            ("string", "my $t = \"format STDOUT =\";\nsub real { }\n"),
+            ("comment", "# format STDOUT =\nsub real { }\n"),
+            ("pod", "=pod\nformat STDOUT =\n=cut\nsub real { }\n"),
+            ("heredoc", "my $d = <<'END';\nformat STDOUT =\nEND\nsub real { }\n"),
+            ("quote-like", "my $q = q{format STDOUT =};\nsub real { }\n"),
+        ];
+
+        for (context, source) in cases {
+            let table = LocalSymbolTable::scan_subs(source);
+            assert!(
+                table.is_known_sub("real"),
+                "{context}: opener text inside an excluded region opened a format body"
+            );
+        }
+    }
+
+    #[test]
+    fn format_argument_line_declarations_are_a_documented_limitation() {
+        // Measured with perl 5.38.2: a `sub NAME {}` on a format *argument*
+        // line is genuinely declared, while the same text on a picture line is
+        // not. The prepass excludes the whole body rather than growing a second
+        // format grammar, so this declaration is deliberately not recorded.
+        // Missing a declaration degrades to the division path, which is already
+        // the standing behavior for imported subs; a false declaration would
+        // instead actively mis-tokenize. See #14916.
+        let source = "format STDOUT =\n@<<<\nsub argument_line { 1 }\n.\nsub real { }\n";
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert!(table.is_known_sub("real"));
+        assert!(
+            !table.is_known_sub("argument_line"),
+            "argument-line handling changed; revisit the limitation recorded on scan_subs"
+        );
     }
 }
