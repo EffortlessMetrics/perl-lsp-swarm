@@ -616,7 +616,14 @@ fn split_delimited_quote_like<'a>(token: &'a str, kind: &str) -> Option<(String,
     let symmetric = open == close;
     let after_open = rest.strip_prefix(open)?;
     let mut depth = 0usize;
-    for (index, character) in after_open.char_indices() {
+    let mut characters = after_open.char_indices().peekable();
+    while let Some((index, character)) = characters.next() {
+        // An escaped character (including an escaped delimiter or backslash)
+        // is literal inside the quoted construct.
+        if character == '\\' {
+            characters.next();
+            continue;
+        }
         if character == open && !symmetric {
             depth += 1;
             continue;
@@ -763,20 +770,29 @@ impl Dancer2TwoXActivationFacts {
 }
 
 /// Derive application identity for an admitted 2.x activation.
+///
+/// Dancer2's own app-name assignment treats a falsy literal (`''`, `0`,
+/// `'0'`) as no name at all and falls back to the caller package, so the
+/// facts do the same instead of recording an exact identity the runtime
+/// would replace.
 #[must_use]
 pub fn dancer2_two_x_application_identity(
     package_name: Option<&str>,
     appname: Option<&AppNameSelection>,
 ) -> AppNameSelection {
     match appname {
-        Some(selection @ AppNameSelection::Literal(_)) => selection.clone(),
+        Some(selection @ AppNameSelection::Literal(value)) if !value.is_empty() && value != "0" => {
+            selection.clone()
+        }
         Some(selection @ AppNameSelection::Dynamic { .. }) => selection.clone(),
-        Some(AppNameSelection::Default) | None => match package_name {
-            Some(package) if !package.trim().is_empty() => AppNameSelection::Default,
-            _ => AppNameSelection::Dynamic {
-                reason: "activating package name is unavailable".to_string(),
-            },
-        },
+        Some(AppNameSelection::Default) | None | Some(AppNameSelection::Literal(_)) => {
+            match package_name {
+                Some(package) if !package.trim().is_empty() => AppNameSelection::Default,
+                _ => AppNameSelection::Dynamic {
+                    reason: "activating package name is unavailable".to_string(),
+                },
+            }
+        }
     }
 }
 
@@ -1384,6 +1400,42 @@ mod tests {
         assert_eq!(identity, AppNameSelection::Default);
         let identity = dancer2_two_x_application_identity(None, None);
         assert!(matches!(identity, AppNameSelection::Dynamic { .. }));
+    }
+
+    #[test]
+    #[test]
+    fn escaped_delimiter_does_not_truncate_a_q_string_argument() {
+        // `q{...}` is ONE string argument: word-splitting never applies. The
+        // escaped close stays literal text, so the exclusion is the whole
+        // inner string minus the leading `!` — not a truncation at `\\}`.
+        let evidence = parse_dancer2_two_x_import_args(&[
+            "q{!get \\} !post}".to_string(),
+        ]);
+        assert_eq!(
+            evidence.excluded_keywords,
+            vec!["get \\} !post".to_string()],
+            "the escaped close must stay literal text inside the single string argument"
+        );
+        // The single-word form remains an exclusion.
+        let evidence = parse_dancer2_two_x_import_args(&["q{!get}".to_string()]);
+        assert!(evidence.excluded_keywords.contains(&"get".to_string()));
+    }
+    #[test]
+    fn falsy_appnames_fall_back_to_the_caller_package() {
+        // Dancer2's own assignment treats '' / 0 / '0' as no name and uses
+        // the caller package — the facts must not record an exact identity
+        // the runtime would replace (#14408 review).
+        for falsy in ["''", "0", "'0'"] {
+            let evidence =
+                parse_dancer2_two_x_import_args(&["appname".to_string(), falsy.to_string()]);
+            let identity =
+                dancer2_two_x_application_identity(Some("My::App"), evidence.appname.as_ref());
+            assert_eq!(
+                identity,
+                AppNameSelection::Default,
+                "falsy appname {falsy} must fall back to the caller package, got {identity:?}"
+            );
+        }
     }
 
     // --- #14408 review round: quoting, delimiters, and version slots -------
