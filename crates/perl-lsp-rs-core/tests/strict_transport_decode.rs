@@ -22,6 +22,11 @@ fn framed(body: &[u8]) -> Vec<u8> {
     frame
 }
 
+fn framed_request(id: u64, method: &str) -> Vec<u8> {
+    let body = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{{}}}}"#);
+    framed(body.as_bytes())
+}
+
 fn framed_request_content_type_first(id: u64, method: &str) -> Vec<u8> {
     let body = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{{}}}}"#);
     let mut frame = format!(
