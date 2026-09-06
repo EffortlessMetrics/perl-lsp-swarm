@@ -131,8 +131,7 @@ pub(crate) fn join(
         });
     }
 
-    let failed_paths: BTreeSet<String> = discovered
-        .instruments
+    let failed_paths: BTreeSet<String> = instruments
         .iter()
         .filter(|instrument| {
             instrument.kind == "source_parse" && instrument.status == InstrumentStatus::NotProven
