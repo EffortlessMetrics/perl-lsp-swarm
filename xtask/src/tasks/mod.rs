@@ -39,6 +39,7 @@ pub mod ci_policy;
 pub mod ci_pr_summary;
 pub mod ci_route;
 pub mod ci_scope;
+pub mod ci_stack_increment;
 pub mod ci_subject;
 pub mod clean;
 pub mod clippy_cost_measure;

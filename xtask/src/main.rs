@@ -96,6 +96,15 @@ enum Commands {
         command: Option<CiSubcommand>,
     },
 
+    /// Prove one exact parent-head -> child-head stack increment (#11229 S1).
+    #[command(name = "ci-stack")]
+    StackIncrement {
+        /// Sub-command selecting subject assembly, plan selection, artifact
+        /// validation, or advisory explanation.
+        #[command(subcommand)]
+        command: tasks::ci_stack_increment::StackIncrementCommand,
+    },
+
     /// Run format and clippy checks only (no tests)
     CheckOnly,
 
@@ -4960,6 +4969,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 ci_explain::run(receipt, run_id, base)
             }
         },
+        Commands::StackIncrement { command } => tasks::ci_stack_increment::run(command),
         Commands::CheckOnly => ci::check_only(),
         Commands::CheckAgentContext => check_agent_context::run(),
         Commands::CheckLintPolicy => check_lint_policy::run(),
