@@ -849,6 +849,38 @@ impl LspServer {
         coordinator.index().index_file(url, text.to_string())
     }
 
+    /// Test-only live source commit at an owner-supplied non-zero generation.
+    ///
+    /// Prefer this over `index_file_with_generation` in new fixtures so #8129
+    /// tests do not grow the #11301 compatibility baseline.
+    #[cfg(feature = "workspace")]
+    pub fn test_index_live_file(
+        &self,
+        uri: &str,
+        text: &str,
+        generation: u32,
+    ) -> Result<(), String> {
+        use perl_workspace::workspace_index::{SourceCommit, SourceCommitOutcome};
+        use std::num::NonZeroU32;
+
+        let Some(coordinator) = self.index_coordinator.as_ref() else {
+            return Err("No coordinator available".to_string());
+        };
+        let Some(commit_gen) = NonZeroU32::new(generation) else {
+            return Err("zero generation is not a live commit identity".to_string());
+        };
+        let url = url::Url::parse(uri).map_err(|e| e.to_string())?;
+        match coordinator.index().index_live_file(
+            url,
+            text.to_string(),
+            SourceCommit::new(commit_gen),
+        ) {
+            SourceCommitOutcome::Accepted | SourceCommitOutcome::NoOp => Ok(()),
+            SourceCommitOutcome::RejectedStale => Err("rejected stale live commit".to_string()),
+            SourceCommitOutcome::Failed(msg) => Err(msg),
+        }
+    }
+
     /// Register workspace folder URIs on the server for multi-root workspace tests.
     ///
     /// Used by deterministic regression tests (e.g. #1514) that need workspace

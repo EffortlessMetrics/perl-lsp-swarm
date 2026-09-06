@@ -2178,6 +2178,8 @@ export function createLanguageClient(serverPath: string): LanguageClient {
       { scheme: 'file', language: 'perl' },
       { scheme: 'untitled', language: 'perl' },
     ],
+    // v0.18 (#8129): do not override document sync. vscode-languageclient uses
+    // the server's advertised TextDocumentSyncKind::Full and UTF-16 encoding.
     synchronize: {
       fileEvents: vscode.workspace.createFileSystemWatcher('**/.perltidyrc'),
     },

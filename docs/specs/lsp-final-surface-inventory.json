@@ -1507,7 +1507,7 @@
         "BuildFlags (ga-lock | production | all census profiles)"
       ],
       "disposition": "static",
-      "runtime_route_owner": "textDocument/didChange (Full=1 reparse)",
+      "runtime_route_owner": "textDocument/didChange (Full=1 complete document transfer)",
       "evidence_owner": "features.toml#lsp.text_document_sync; lifecycle tests text_document_sync_advertises_full_sync_and_open_close",
       "competing_paths": [],
       "target_issue": "#9665",
@@ -2241,7 +2241,7 @@
     {
       "surface_id": "compat.protocol.positionEncodingUtf16Pin",
       "kind": "compatibility",
-      "protocol_field": "positionEncoding always advertised utf-16 despite general.positionEncodings negotiation",
+      "protocol_field": "positionEncoding always advertised utf-16; well-formed lists that omit utf-16 accept via mandatory UTF-16 fallback",
       "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
         "general.positionEncodings"
@@ -2249,13 +2249,13 @@
       "build_profile_config_tool_inputs": [],
       "disposition": "unadvertised",
       "runtime_route_owner": "n/a (negotiation-time behavior branch)",
-      "evidence_owner": "phase-comment block in handle_initialize; position authority #2298",
+      "evidence_owner": "v0.18 full-document UTF-16 envelope (#8129); initialize offer classification",
       "competing_paths": [],
       "target_issue": "#9665",
       "compatibility": {
-        "subject": "every client negotiating a non-UTF-16 preferred encoding",
-        "reason": "providers still compute UTF-16 offsets; advertising anything else would corrupt positions, so the negotiated value is stored but not advertised",
-        "expiry": "#8032 train stage threading the negotiated encoding through position/text contracts"
+        "subject": "every client that omits utf-16 from a nonempty general.positionEncodings list",
+        "reason": "v0.18 stores and advertises utf-16 only; UTF-8/UTF-32 wire support is not claimed",
+        "expiry": "#1690/#9282 end-to-end encoding activation remains open and is not this envelope"
       },
       "additional_owned_pointers": [],
       "rewrites_surface_pointer": null,
@@ -2407,12 +2407,12 @@
       "protocol_field": "positionEncoding",
       "builder_mutator_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs handle_initialize",
       "client_capability_inputs": [
-        "general.positionEncodings (negotiated, stored, NOT advertised)"
+        "general.positionEncodings (classified; utf-16 selected or initialize fails)"
       ],
       "build_profile_config_tool_inputs": [],
       "disposition": "static",
       "runtime_route_owner": "n/a (initialize response assembly)",
-      "evidence_owner": "position contract pinned utf-16 until negotiated encoding threads through providers; see compat.protocol.positionEncodingUtf16Pin",
+      "evidence_owner": "v0.18 UTF-16-only envelope (#8129); see compat.protocol.positionEncodingUtf16Pin",
       "competing_paths": [],
       "target_issue": "#9665",
       "compatibility": null,

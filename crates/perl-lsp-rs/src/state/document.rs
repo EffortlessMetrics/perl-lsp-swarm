@@ -491,7 +491,12 @@ pub struct DocumentState {
     /// (#5053).
     pub text_arc: std::sync::Arc<str>,
 
-    /// LSP document version number for synchronization
+    /// Newest observed client document version.
+    ///
+    /// After an accepted full replacement this matches the committed buffer.
+    /// After a Full-sync violation it is raised to the rejected notification's
+    /// version without mutating last-good text, so a delayed older replacement
+    /// cannot recover.
     pub version: i32,
 
     /// Latest published parse result, if any.
@@ -542,6 +547,16 @@ pub struct DocumentState {
     /// Only compiled when the `incremental` feature is enabled.
     #[cfg(feature = "incremental")]
     pub incremental_state: Option<perl_parser::incremental::IncrementalState>,
+
+    /// Set when a `didChange` array violated the advertised Full/UTF-16 envelope.
+    ///
+    /// Last-good text remains retained as predecessor evidence. It is not current
+    /// client state: [`Self::current_parsed`] and [`Self::parsed_for_user_answers`]
+    /// return `None` until an accepted full-document replacement, close/reopen, or
+    /// restart clears the flag. [`Self::latest_parsed`] still exposes the
+    /// predecessor snapshot so workspace-index eligibility can tell “was indexed”
+    /// from “never parsed.”
+    full_sync_required: bool,
 }
 
 impl DocumentState {
@@ -563,6 +578,7 @@ impl DocumentState {
             incremental_doc: None,
             #[cfg(feature = "incremental")]
             incremental_state: None,
+            full_sync_required: false,
         }
     }
 
@@ -579,6 +595,16 @@ impl DocumentState {
     /// removed once all callers migrate.
     pub fn text_str(&self) -> &str {
         &self.text_arc
+    }
+
+    /// Source text usable for user-facing answers.
+    ///
+    /// Predecessor text remains in [`Self::text_str`] as last-good evidence.
+    /// Edit-producing providers must not format or rewrite from that buffer
+    /// while a Full-sync violation is outstanding.
+    #[must_use]
+    pub(crate) fn text_for_user_answers(&self) -> Option<&str> {
+        if self.full_sync_required { None } else { Some(self.text_str()) }
     }
 
     /// Construct a document state from raw rope/text/version parts while
@@ -609,7 +635,43 @@ impl DocumentState {
             incremental_doc: None,
             #[cfg(feature = "incremental")]
             incremental_state: None,
+            full_sync_required: false,
         }
+    }
+
+    /// Mark the open document as requiring an explicit full-document resync.
+    ///
+    /// Bumps [`Self::generation`] on the false→true transition so workspace-index
+    /// freshness treats last-good facts as predecessor, matching ordinary edits.
+    /// Repeated violations while already desynchronized do not bump again.
+    pub(crate) fn mark_full_sync_required(&mut self) {
+        if self.full_sync_required {
+            return;
+        }
+        self.full_sync_required = true;
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Raise the client-version watermark without accepting the notification text.
+    ///
+    /// The existing out-of-order `didChange` gate compares against [`Self::version`].
+    /// Recording the rejected notification here keeps last-good text untouched while
+    /// still refusing delayed older full replacements.
+    pub(crate) fn observe_change_version(&mut self, incoming: i32) {
+        if incoming > self.version {
+            self.version = incoming;
+        }
+    }
+
+    /// Whether later ranged changes and current-answer facts are unavailable.
+    #[must_use]
+    pub(crate) fn full_sync_required(&self) -> bool {
+        self.full_sync_required
+    }
+
+    /// Clear the Full-sync violation after an accepted complete replacement.
+    pub(crate) fn clear_full_sync_required(&mut self) {
+        self.full_sync_required = false;
     }
 
     /// Update document content and invalidate caches
@@ -699,13 +761,29 @@ impl DocumentState {
         self.parsed.clone()
     }
 
+    /// Snapshot usable for user-facing answers.
+    ///
+    /// Ordinary pending parse may fall back to [`Self::latest_parsed`] when the
+    /// current generation has no snapshot yet. Full-sync desynchronization is
+    /// not pending parse: predecessor AST must not answer the user until an
+    /// accepted full replacement recovers.
+    #[must_use]
+    pub(crate) fn parsed_for_user_answers(&self) -> Option<Arc<ParsedSnapshot>> {
+        if self.full_sync_required {
+            None
+        } else {
+            self.current_parsed().or_else(|| self.latest_parsed())
+        }
+    }
+
     /// The published parse result, but only if it was parsed from the
     /// document's *current* generation.
     ///
     /// Returns an **owned** `Arc<ParsedSnapshot>` for the same reason as
     /// [`Self::latest_parsed`] -- see that method's doc comment.
     ///
-    /// Returns `None` when no snapshot has ever been published, or when the
+    /// Returns `None` when no snapshot has ever been published, when a
+    /// Full-sync violation left [`Self::full_sync_required`] set, or when the
     /// last published snapshot is stale (parsed from an older generation
     /// than the document is now at). This is the freshness-correct default:
     /// once an async parse worker can publish out of order, a stale
@@ -717,6 +795,9 @@ impl DocumentState {
     /// old `ast`/`parse_errors`/`parent_map`/`degradation_tier` fields
     /// directly.
     pub fn current_parsed(&self) -> Option<Arc<ParsedSnapshot>> {
+        if self.full_sync_required {
+            return None;
+        }
         let snapshot = self.parsed.clone()?;
         (snapshot.generation == self.current_generation()).then_some(snapshot)
     }
@@ -740,7 +821,8 @@ impl DocumentState {
         expected_generation: u32,
         snapshot: Arc<ParsedSnapshot>,
     ) -> bool {
-        if self.current_generation() != expected_generation
+        if self.full_sync_required
+            || self.current_generation() != expected_generation
             || snapshot.generation != expected_generation
         {
             return false;
@@ -858,6 +940,67 @@ mod tests {
         assert!(doc.publish_parsed_if_current(doc_gen, snapshot));
         let current = must_some(doc.current_parsed());
         assert_eq!(current.generation(), doc_gen);
+    }
+
+    #[test]
+    fn current_parsed_none_when_full_sync_is_required() {
+        let mut doc = DocumentState::new("my $x = 1;", 1);
+        let doc_gen = doc.current_generation();
+        let snapshot = Arc::new(snapshot_for("my $x = 1;", doc_gen));
+        assert!(doc.publish_parsed_if_current(doc_gen, snapshot));
+        doc.mark_full_sync_required();
+        let desync_gen = doc.current_generation();
+        assert!(
+            desync_gen > doc_gen,
+            "desync must bump generation so workspace-index freshness rejects predecessor facts"
+        );
+        assert!(
+            doc.current_parsed().is_none(),
+            "last-good parse cannot masquerade as current after a Full-sync violation"
+        );
+        assert!(
+            doc.parsed_for_user_answers().is_none(),
+            "stale-tolerant user answers must not use predecessor AST while desynchronized"
+        );
+        assert!(
+            doc.latest_parsed().is_some(),
+            "predecessor snapshot stays retained as last-good evidence"
+        );
+        assert_eq!(doc.text_str(), "my $x = 1;");
+        assert!(
+            doc.text_for_user_answers().is_none(),
+            "predecessor text must not answer user-facing edit providers while desynchronized"
+        );
+        assert!(doc.full_sync_required());
+        doc.observe_change_version(3);
+        assert_eq!(
+            doc.version, 3,
+            "observed client version must rise without treating rejected text as accepted"
+        );
+        assert_eq!(doc.text_str(), "my $x = 1;");
+        doc.observe_change_version(2);
+        assert_eq!(doc.version, 3, "older observed versions must not lower the watermark");
+        assert!(
+            !doc.publish_parsed_if_current(doc_gen, Arc::new(snapshot_for("my $x = 1;", doc_gen))),
+            "a parse of the pre-desync generation must not republish"
+        );
+        assert!(
+            !doc.publish_parsed_if_current(
+                desync_gen,
+                Arc::new(snapshot_for("my $x = 1;", desync_gen))
+            ),
+            "a later parse of last-good text must not republish as current while unavailable"
+        );
+        doc.clear_full_sync_required();
+        assert!(
+            doc.publish_parsed_if_current(
+                desync_gen,
+                Arc::new(snapshot_for("my $x = 1;", desync_gen))
+            ),
+            "an accepted full replacement must allow current publication again"
+        );
+        assert!(doc.current_parsed().is_some());
+        assert!(doc.parsed_for_user_answers().is_some());
     }
 
     #[test]
@@ -1069,6 +1212,7 @@ mod tests {
                 let mentions_parsed = line.contains(".parsed") && !line.contains(".parsed_range");
                 let via_accessor = line.contains("current_parsed")
                     || line.contains("latest_parsed")
+                    || line.contains("parsed_for_user_answers")
                     || line.contains("publish_parsed_if_current");
                 if mentions_parsed && !via_accessor {
                     offenders.push(format!("{}:{}: {}", path.display(), idx + 1, line.trim()));

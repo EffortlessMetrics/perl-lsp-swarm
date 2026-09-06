@@ -537,21 +537,16 @@ sub test { print "hello" }
         })),
     )?;
 
-    // Simulate rapid edits around quotes and braces
-    let edits = [
-        // Insert quote in string
-        (1, 10, "\""),
-        // Delete closing brace
-        (3, 25, ""),
-        // Add random characters
-        (2, 15, "xyz"),
-        // Insert newline in string
-        (1, 12, "\n"),
-        // Delete opening paren
-        (2, 14, ""),
+    // Simulate rapid full-document replacements around quotes and braces.
+    let replacements = [
+        "#!/usr/bin/perl\nmy $x = \"te\"st\";\nmy @arr = (1, 2, 3);\nsub test { print \"hello\" }\n",
+        "#!/usr/bin/perl\nmy $x = \"te\"st\";\nmy @arr = (1, 2, 3);\nsub test { print \"hello\" \n",
+        "#!/usr/bin/perl\nmy $x = \"te\"st\";\nmy @arr = (1, 2xyz, 3);\nsub test { print \"hello\" \n",
+        "#!/usr/bin/perl\nmy $x = \"te\"\nst\";\nmy @arr = (1, 2xyz, 3);\nsub test { print \"hello\" \n",
+        "#!/usr/bin/perl\nmy $x = \"te\"\nst\";\nmy @arr = (1, 2xyz, 3);\nsub test { print \"hello\" \n",
     ];
 
-    for (version, (line, char, text)) in edits.iter().enumerate() {
+    for (version, replacement) in replacements.iter().enumerate() {
         ctx.send_notification(
             "textDocument/didChange",
             Some(json!({
@@ -560,11 +555,7 @@ sub test { print "hello" }
                     "version": version + 2
                 },
                 "contentChanges": [{
-                    "range": {
-                        "start": { "line": line, "character": char },
-                        "end": { "line": line, "character": char }
-                    },
-                    "text": text
+                    "text": replacement
                 }]
             })),
         )?;
@@ -574,7 +565,7 @@ sub test { print "hello" }
             "textDocument/hover",
             Some(json!({
                 "textDocument": { "uri": "file:///tmp/fuzz_test.pl" },
-                "position": { "line": line, "character": char }
+                "position": { "line": 1, "character": 10 }
             })),
         );
 

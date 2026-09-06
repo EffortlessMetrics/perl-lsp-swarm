@@ -235,7 +235,7 @@ Checked static inventory generated from `crates/perl-lsp-rs/src/runtime/parse_ef
 - sink-local subject: documents_map entry installed as minimal state, text-state-replaced ahead of a deferred parse, or reinstated after the synchronous fallback publish
 - store: documents_map
 - owns mutation sites: yes
-- mutation boundary: minimal_state/minimal_state_from_rope guard inserts, replace_text_state advances, and the scoped documents.insert(doc_state) sites in didChange/didOpen lifecycle code
+- mutation boundary: minimal_state/minimal_state_from_rope guard inserts, replace_text_state advances, the scoped documents.insert(doc_state) sites in didChange/didOpen lifecycle code, and the Full-sync violation reinstall that writes the same last-good DocumentState after marking desync
 - currentness comparison: same-thread admission before acceptance exists
 - terminal/clear policy:
   - clean: replace

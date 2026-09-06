@@ -1510,6 +1510,22 @@ impl LspServer {
         item
     }
 
+    fn empty_completion_list() -> Value {
+        json!({"isIncomplete": false, "items": []})
+    }
+
+    fn publish_completion_answer(&self, uri: &str, generation: Option<u32>, value: Value) -> Value {
+        match generation {
+            Some(generation) => self.publish_user_answer_value(
+                uri,
+                generation,
+                value,
+                Self::empty_completion_list(),
+            ),
+            None => Self::empty_completion_list(),
+        }
+    }
+
     /// Handle completion request
     pub(crate) fn handle_completion(
         &self,
@@ -1555,9 +1571,12 @@ impl LspServer {
             // just this one -- for the full analysis duration below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
-            let doc_owned = {
+            let (doc_owned, captured_generation) = {
                 let documents = self.documents_guard();
-                self.get_document(&documents, uri).cloned()
+                match self.get_document(&documents, uri) {
+                    Some(doc) => (Some(doc.clone()), Some(doc.current_generation())),
+                    None => (None, None),
+                }
             };
             // documents guard dropped here
             if timing_on {
@@ -1597,7 +1616,9 @@ impl LspServer {
                 // completion request arrived, leaving `current_parsed()` empty).
                 // For completions, a slightly-stale AST is always more useful than
                 // the symbol-table-free `lexical_complete` fallback (#11858).
-                let parsed = doc.current_parsed().or_else(|| doc.latest_parsed());
+                // Full-sync desynchronization is not pending parse: predecessor
+                // AST must not answer the user (#8129).
+                let parsed = doc.parsed_for_user_answers();
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // One `@INC` context per request, shared by the module roots
@@ -1687,18 +1708,22 @@ impl LspServer {
                     }
 
                     base_completions
+                } else if doc.full_sync_required() {
+                    Vec::new()
                 } else {
                     // Fallback: provide basic keyword completions when AST is unavailable
                     self.lexical_complete(&doc.text, offset, Some(uri))
                 };
 
-                self.add_declared_dependency_completions(
-                    &mut completions,
-                    &doc.text,
-                    uri,
-                    offset,
-                    None,
-                );
+                if !doc.full_sync_required() {
+                    self.add_declared_dependency_completions(
+                        &mut completions,
+                        &doc.text,
+                        uri,
+                        offset,
+                        None,
+                    );
+                }
 
                 // Add workspace-wide completions using routing policy
                 #[cfg(feature = "workspace")]
@@ -1799,11 +1824,15 @@ impl LspServer {
                 ));
             }
             if let Some(response) = response {
-                return Ok(Some(response));
+                return Ok(Some(self.publish_completion_answer(
+                    uri,
+                    captured_generation,
+                    response,
+                )));
             }
         }
 
-        Ok(Some(json!({"isIncomplete": false, "items": []})))
+        Ok(Some(Self::empty_completion_list()))
     }
 
     /// Handle completion request with cancellation support
@@ -1894,9 +1923,12 @@ impl LspServer {
             // below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
-            let doc_owned = {
+            let (doc_owned, captured_generation) = {
                 let documents = self.documents_guard();
-                self.get_document(&documents, uri).cloned()
+                match self.get_document(&documents, uri) {
+                    Some(doc) => (Some(doc.clone()), Some(doc.current_generation())),
+                    None => (None, None),
+                }
             };
             // documents guard dropped here
             if timing_on {
@@ -1973,7 +2005,9 @@ impl LspServer {
                 // completion request arrived, leaving `current_parsed()` empty).
                 // For completions, a slightly-stale AST is always more useful than
                 // the symbol-table-free `lexical_complete` fallback (#11858).
-                let parsed = doc.current_parsed().or_else(|| doc.latest_parsed());
+                // Full-sync desynchronization is not pending parse: predecessor
+                // AST must not answer the user (#8129).
+                let parsed = doc.parsed_for_user_answers();
                 let ast_available = parsed.as_ref().is_some_and(|p| p.ast().is_some());
 
                 // Create optimized cancellation callback with reduced frequency
@@ -2034,6 +2068,8 @@ impl LspServer {
                         Some(uri),
                         &cancel_fn,
                     )
+                } else if doc.full_sync_required() {
+                    Vec::new()
                 } else {
                     self.lexical_complete(&doc.text, offset, Some(uri))
                 };
@@ -2048,13 +2084,15 @@ impl LspServer {
                 }
 
                 let should_continue = || !token.is_cancelled_relaxed();
-                self.add_declared_dependency_completions(
-                    &mut completions,
-                    &doc.text,
-                    uri,
-                    offset,
-                    Some(&should_continue),
-                );
+                if !doc.full_sync_required() {
+                    self.add_declared_dependency_completions(
+                        &mut completions,
+                        &doc.text,
+                        uri,
+                        offset,
+                        Some(&should_continue),
+                    );
+                }
 
                 #[cfg(feature = "workspace")]
                 self.add_runtime_workspace_completions(
@@ -2180,10 +2218,14 @@ impl LspServer {
                 ))
             };
             if let Some(response) = response {
-                return Ok(Some(response));
+                return Ok(Some(self.publish_completion_answer(
+                    uri,
+                    captured_generation,
+                    response,
+                )));
             }
 
-            Ok(Some(json!({"isIncomplete": false, "items": []})))
+            Ok(Some(Self::empty_completion_list()))
         } else {
             self.handle_completion(params)
         }
@@ -3584,6 +3626,166 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn completion_does_not_use_predecessor_ast_while_full_sync_required()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/desync_completion.pl";
+        let v1 = "package DesyncCompletion;\nsub unique_pred_for_desync {}\nunique_pred_for_des\n";
+        let v2 = "package DesyncCompletion;\nsub unique_recovered_for_desync {}\nunique_recovered_for_des\n";
+
+        server.test_apply_did_open(uri, v1, 1)?;
+        server.test_index_file_in_building_state(uri, v1).map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "position": { "line": 2, "character": 20 }
+        })))?;
+        let fresh = explain_provider_decision(&server, "completion")?;
+        let fresh_receipt = fresh
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing fresh completion request receipt")?;
+        assert_eq!(
+            fresh_receipt.get("ast_available").and_then(Value::as_bool),
+            Some(true),
+            "parsed document must expose AST to completion: {fresh:?}"
+        );
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 1, "character": 4 },
+                    "end": { "line": 1, "character": 25 }
+                },
+                "text": "renamed"
+            }]
+        })))?;
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "position": { "line": 2, "character": 20 }
+        })))?;
+        let desync = explain_provider_decision(&server, "completion")?;
+        let desync_receipt = desync
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing desync completion request receipt")?;
+        assert_eq!(
+            desync_receipt.get("ast_available").and_then(Value::as_bool),
+            Some(false),
+            "predecessor AST must not answer completion while Full-sync is required: {desync:?}"
+        );
+        assert_eq!(
+            desync_receipt.get("workspace_index_state").and_then(Value::as_str),
+            Some("none"),
+            "desynchronized document must disable workspace-index completion: {desync:?}"
+        );
+        assert_eq!(
+            desync_receipt.get("item_count").and_then(Value::as_u64),
+            Some(0),
+            "lexical and declared-dependency fallbacks must not answer from last-good text: {desync:?}"
+        );
+
+        server.test_apply_did_change(uri, v2, 3)?;
+        let recovered_gen = {
+            let docs = server.documents.lock();
+            docs.get(uri).ok_or("recovered completion document")?.current_generation()
+        };
+        server.test_index_live_file(uri, v2, recovered_gen).map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": uri, "version": 3 },
+            "position": { "line": 2, "character": 25 }
+        })))?;
+        let recovered = explain_provider_decision(&server, "completion")?;
+        let recovered_receipt = recovered
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing recovered completion request receipt")?;
+        assert_eq!(
+            recovered_receipt.get("ast_available").and_then(Value::as_bool),
+            Some(true),
+            "full-document recovery must restore AST-backed completion: {recovered:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_does_not_publish_in_flight_predecessor_after_violation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/inflight_completion.pl";
+        let predecessor =
+            "package InflightCompletion;\nsub unique_pred_for_inflight {}\nunique_pred_for_inf\n";
+
+        server.test_apply_did_open(uri, predecessor, 1)?;
+        let snapshot = server
+            .snapshot_user_answer_text(uri)
+            .ok_or("open document must have a usable user-answer snapshot")?;
+        let computed = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "position": { "line": 2, "character": 19 }
+            })))?
+            .ok_or("in-flight completion must return a result")?;
+        let live_labels = completion_item_labels(&computed)?;
+        assert!(
+            live_labels.iter().any(|label| label.contains("unique_pred_for_inflight")),
+            "in-flight completion must see the predecessor subroutine: {computed}"
+        );
+
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 1, "character": 4 },
+                    "end": { "line": 1, "character": 28 }
+                },
+                "text": "renamed"
+            }]
+        })))?;
+        assert!(
+            !server.user_answer_text_is_current(uri, snapshot.generation),
+            "ranged violation must invalidate the captured user-answer generation"
+        );
+        let published = server.publish_completion_answer(uri, Some(snapshot.generation), computed);
+        let published_labels = completion_item_labels(&published)?;
+        assert!(
+            published_labels.is_empty(),
+            "in-flight predecessor completions must not publish after invalidation: {published}"
+        );
+
+        let live = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "position": { "line": 2, "character": 19 }
+            })))?
+            .ok_or("live completion must return a result")?;
+        let live_after = completion_item_labels(&live)?;
+        assert!(
+            live_after.is_empty(),
+            "live completion after Full-sync violation must fail closed: {live}"
+        );
+        Ok(())
+    }
+
+    fn completion_item_labels(value: &Value) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let items = value
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or("completion must return an items array")?;
+        Ok(items
+            .iter()
+            .filter_map(|item| item.get("label").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect())
     }
 
     #[test]

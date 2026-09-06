@@ -50,6 +50,7 @@ mod text_sync;
 /// `PERL_LSP_TIMING` phase-1 instrumentation sink (opt-in span timings).
 pub(crate) mod timing;
 mod types;
+pub(crate) mod v0_18_text_sync_envelope;
 mod window;
 mod workspace;
 mod workspace_folder;
@@ -170,6 +171,12 @@ pub struct LspServer {
     pub(crate) documents: Arc<Mutex<HashMap<String, DocumentState>>>,
     /// Whether the `initialize` request has been received
     initialize_requested: AtomicBool,
+    /// Whether the first `initialize` attempt was accepted.
+    ///
+    /// Attempted-but-rejected initialize consumes `initialize_requested` so the
+    /// one-shot cannot retry, but it must not open serving, `initialized`, or
+    /// compat auto-init.
+    initialization_accepted: AtomicBool,
     /// Whether the server is initialized
     initialized: AtomicBool,
     /// Whether shutdown was received (for LSP-compliant exit handling)

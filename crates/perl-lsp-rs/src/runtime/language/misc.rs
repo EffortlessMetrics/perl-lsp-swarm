@@ -845,6 +845,9 @@ impl LspServer {
             };
 
             if let Some(doc) = doc_snapshot {
+                if doc.full_sync_required() {
+                    return Ok(Some(json!([])));
+                }
                 let start = Instant::now();
                 let deadline = code_lens_resolve_deadline();
                 let parsed = doc.current_parsed();
@@ -1059,15 +1062,20 @@ impl LspServer {
             let (text, snapshot_identity) = {
                 let documents = self.documents_guard();
                 match self.get_document(&documents, uri) {
-                    Some(doc) => (
-                        doc.text_arc.to_string(),
-                        InlineCompletionSnapshotIdentity {
-                            document_version: Some(i64::from(doc.version)),
-                            source_generation: Some(u64::from(
-                                doc.generation.load(std::sync::atomic::Ordering::Acquire),
-                            )),
-                        },
-                    ),
+                    Some(doc) => match doc.text_for_user_answers() {
+                        Some(text) => (
+                            text.to_string(),
+                            InlineCompletionSnapshotIdentity {
+                                document_version: Some(i64::from(doc.version)),
+                                source_generation: Some(u64::from(
+                                    doc.generation.load(std::sync::atomic::Ordering::Acquire),
+                                )),
+                            },
+                        ),
+                        None => {
+                            return Ok(Some(json!({ "items": [] })));
+                        }
+                    },
                     None => {
                         return Ok(Some(json!({ "items": [] })));
                     }
@@ -1577,8 +1585,12 @@ impl LspServer {
             data: None,
         })?;
 
+        let Some(text) = doc.text_for_user_answers() else {
+            return Ok(Some(json!([])));
+        };
+
         // Detect colors in the document text
-        let color_infos = super::colors::detect_colors(&doc.text);
+        let color_infos = super::colors::detect_colors(text);
 
         // Convert to LSP format
         let lsp_colors: Vec<Value> = color_infos
@@ -1661,8 +1673,10 @@ impl LspServer {
 
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
-                let result =
-                    crate::linked_editing::handle_linked_editing(&doc.text, line, character);
+                let Some(text) = doc.text_for_user_answers() else {
+                    return Ok(Some(Value::Null));
+                };
+                let result = crate::linked_editing::handle_linked_editing(text, line, character);
                 return Ok(Some(serde_json::to_value(result).map_err(|e| {
                     crate::protocol::internal_error(&format!(
                         "Failed to serialize linked editing ranges: {}",

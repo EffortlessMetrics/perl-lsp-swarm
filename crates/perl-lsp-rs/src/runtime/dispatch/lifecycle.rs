@@ -73,7 +73,7 @@ impl LspServer {
     }
 
     pub(super) fn auto_initialize_for_compat(&self, method: &str) {
-        if self.initialize_requested.load(Ordering::Acquire)
+        if self.initialization_accepted.load(Ordering::Acquire)
             && !self.initialized.load(Ordering::Acquire)
         {
             tracing::warn!(
@@ -171,7 +171,7 @@ impl LspServer {
 
     /// Handle initialized notification
     pub(crate) fn handle_initialized_dispatch(&self) -> Result<Option<Value>, JsonRpcError> {
-        if !self.initialize_requested.load(Ordering::Acquire) {
+        if !self.initialization_accepted.load(Ordering::Acquire) {
             return Err(JsonRpcError {
                 code: -32002, // ServerNotInitialized per LSP spec
                 message: "Server not initialized".to_string(),
@@ -486,6 +486,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct LifecycleModel {
         initialize_requested: bool,
+        initialization_accepted: bool,
         initialized: bool,
     }
 
@@ -495,11 +496,12 @@ mod tests {
                 return Err(-32600);
             }
             self.initialize_requested = true;
+            self.initialization_accepted = true;
             Ok(())
         }
 
         fn initialized_notification(&mut self) -> Result<(), i32> {
-            if !self.initialize_requested {
+            if !self.initialization_accepted {
                 return Err(-32002);
             }
             if self.initialized {
@@ -510,7 +512,7 @@ mod tests {
         }
 
         fn auto_initialize_compat(&mut self) {
-            if self.initialize_requested {
+            if self.initialization_accepted {
                 self.initialized = true;
             }
         }
@@ -569,6 +571,11 @@ mod tests {
                     server.initialize_requested.load(Ordering::Acquire),
                     model.initialize_requested,
                     "initialize_requested flag must track model"
+                );
+                prop_assert_eq!(
+                    server.initialization_accepted.load(Ordering::Acquire),
+                    model.initialization_accepted,
+                    "initialization_accepted flag must track model"
                 );
                 prop_assert_eq!(
                     server.is_initialized(),

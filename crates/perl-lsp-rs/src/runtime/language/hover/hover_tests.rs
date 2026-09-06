@@ -1133,3 +1133,60 @@ fn hover_trace_source_region_kind_is_not_shared_across_concurrent_requests() {
         assert!(handle.join().is_ok(), "hover trace worker panicked");
     }
 }
+
+fn ranged_violation(uri: &str, version: i32) -> serde_json::Value {
+    json!({
+        "textDocument": { "uri": uri, "version": version },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]
+    })
+}
+
+#[test]
+fn hover_does_not_publish_in_flight_predecessor_after_violation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///workspace/inflight_hover.pl";
+    let predecessor = "require PredHoverMod;\n";
+
+    server.test_apply_did_open(uri, predecessor, 1)?;
+    let snapshot = server
+        .snapshot_user_answer_text(uri)
+        .ok_or("open document must have a usable user-answer snapshot")?;
+    let computed = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 0, "character": 10 }
+    })))?);
+    let value = must_some(computed["contents"]["value"].as_str());
+    assert!(
+        value.contains("PredHoverMod"),
+        "in-flight hover must see the predecessor module: {value}"
+    );
+
+    server.handle_did_change(Some(ranged_violation(uri, 2)))?;
+    assert!(
+        !server.user_answer_text_is_current(uri, snapshot.generation),
+        "ranged violation must invalidate the captured user-answer generation"
+    );
+    let published =
+        server.publish_user_answer_value(uri, snapshot.generation, computed, json!(null));
+    assert!(
+        published.is_null(),
+        "in-flight predecessor hover must not publish after invalidation: {published}"
+    );
+
+    let live = server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 0, "character": 10 }
+    })))?;
+    assert!(
+        live.as_ref().is_none_or(serde_json::Value::is_null),
+        "live hover after Full-sync violation must fail closed: {live:?}"
+    );
+    Ok(())
+}
