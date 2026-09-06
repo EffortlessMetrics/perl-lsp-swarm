@@ -34,6 +34,13 @@ const REDIRECT_PREFIX: &str = "hx-red";
 const MIXED_REQUEST_PREFIX: &str = "Hx-Req";
 const PATH_PREFIX: &str = "templates/";
 
+/// Catalog labels for prefix `HX-Tri`, in catalog order. Exact-set is the
+/// protocol receipt that the matcher is prefix-shaped and call-site agnostic:
+/// `HX-Trigger-Name` (request) is offered at a response site, and the After-*
+/// response headers are offered at a request site.
+const TRIGGER_PREFIX_LABELS: [&str; 4] =
+    ["HX-Trigger", "HX-Trigger-After-Settle", "HX-Trigger-After-Swap", "HX-Trigger-Name"];
+
 const DANCER2_PROBE_PATH: &str = "bin/htmx_headers.pl";
 const MOJO_PROBE_PATH: &str = "lib/HtmxHeaderController.pm";
 const PLACK_PROBE_PATH: &str = "app.psgi";
@@ -292,11 +299,12 @@ fn has_item_with_shape(
     })
 }
 
-fn trigger_labels_present(items: &[Value]) -> bool {
-    let found: Vec<&str> = items.iter().filter_map(item_label).collect();
-    found.contains(&"HX-Trigger")
-        && found.contains(&"HX-Trigger-After-Settle")
-        && found.contains(&"HX-Trigger-After-Swap")
+fn trigger_prefix_labels(items: &[Value]) -> Vec<&str> {
+    items.iter().filter_map(item_label).collect()
+}
+
+fn trigger_prefix_set_is_exact(items: &[Value]) -> bool {
+    trigger_prefix_labels(items) == TRIGGER_PREFIX_LABELS
 }
 
 fn stack_harness(stack: Stack) -> Result<UxHarness> {
@@ -407,9 +415,9 @@ fn prove_stack(
         complete(&harness, path, source, stack.response_trigger_needle, TRIGGER_PREFIX)?;
     recorder.check(
         &format!(
-            "{name} response site completes HX-Trigger, HX-Trigger-After-Settle, and HX-Trigger-After-Swap"
+            "{name} response-site HX-Tri is the exact catalog set including request-direction HX-Trigger-Name"
         ),
-        trigger_labels_present(&response_items),
+        trigger_prefix_set_is_exact(&response_items),
     )?;
     check_header(
         recorder,
@@ -445,14 +453,26 @@ fn prove_stack(
         "HX-Trigger-After-Swap",
         "htmx response header",
     )?;
+    check_header(
+        recorder,
+        format!(
+            "{name} HX-Trigger-Name serializes as a request header with prefix-only textEdit at the response site"
+        ),
+        &response_items,
+        source,
+        stack.response_trigger_needle,
+        TRIGGER_PREFIX,
+        "HX-Trigger-Name",
+        "htmx request header",
+    )?;
 
     let request_trigger_items =
         complete(&harness, path, source, stack.request_trigger_needle, TRIGGER_PREFIX)?;
     recorder.check(
         &format!(
-            "{name} request-site HX-Tri still offers HX-Trigger (call-site agnostic, not site-filtered)"
+            "{name} request-site HX-Tri is the same exact catalog set (call-site agnostic, not site-filtered)"
         ),
-        trigger_labels_present(&request_trigger_items),
+        trigger_prefix_set_is_exact(&request_trigger_items),
     )?;
 
     let redirect_items = complete(&harness, path, source, stack.redirect_needle, REDIRECT_PREFIX)?;
@@ -562,6 +582,27 @@ fn parse_error_oracle_accepts_parser_family_codes_only() {
     assert!(is_parse_error_diagnostic(&serde_json::json!({"code": {"value": "PL003"}})));
     assert!(!is_parse_error_diagnostic(&serde_json::json!({"code": "PL701"})));
     assert!(!is_hx_header_item(&serde_json::json!({"label": "templates/foo"})));
+}
+
+#[test]
+fn trigger_prefix_oracle_requires_the_exact_catalog_set_in_order() {
+    let exact: Vec<Value> =
+        TRIGGER_PREFIX_LABELS.iter().map(|label| serde_json::json!({"label": label})).collect();
+    assert!(trigger_prefix_set_is_exact(&exact));
+
+    let missing_name: Vec<Value> = TRIGGER_PREFIX_LABELS[..3]
+        .iter()
+        .map(|label| serde_json::json!({"label": label}))
+        .collect();
+    assert!(!trigger_prefix_set_is_exact(&missing_name));
+
+    let mut extra = exact.clone();
+    extra.push(serde_json::json!({"label": "HX-Target"}));
+    assert!(!trigger_prefix_set_is_exact(&extra));
+
+    let mut reordered = exact;
+    reordered.swap(2, 3);
+    assert!(!trigger_prefix_set_is_exact(&reordered));
 }
 
 #[test]
