@@ -20,6 +20,10 @@
       "invocation_sha256": "562d66111ff70e436552bfb60f662804c475f19d5d22beb7227028128cdf9349"
     },
     {
+      "id": "parser.command_line.regex_modifier_matrix",
+      "invocation_sha256": "612c3748f429a49411b0d18af1bf5b576c88442de9639a72500af2abec6850f4"
+    },
+    {
       "id": "parser.concepts.magic_token_arguments",
       "invocation_sha256": "3b687b9c5247a2017313d1c328e3a19bcc0b66e01c9fcce2936cb6b8245dea0c"
     },

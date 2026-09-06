@@ -18,6 +18,7 @@
 
 use std::error::Error;
 
+use perl_parser_core::hir::{HirFile, HirKind, lower_ast};
 use perl_parser_core::{Node, NodeKind, Parser};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -158,6 +159,79 @@ fn collect_operator_facts(
     Ok(())
 }
 
+/// Collect the same operator facts from lowered HIR.
+///
+/// `hir/lower.rs` rebuilds each payload with its own hand-written `clone()`
+/// calls rather than reusing the AST node, so a lowering that swaps `search`
+/// and `replace`, drops `modifiers`, or loses `negated` is invisible to an
+/// AST-only assertion. Collecting HIR through the same `OperatorFact` shape
+/// makes AST and HIR prove each other.
+fn collect_hir_operator_facts(
+    hir: &HirFile,
+    source: &str,
+    facts: &mut Vec<OperatorFact>,
+) -> Result<(), Box<dyn Error>> {
+    for item in &hir.items {
+        let fact = match &item.kind {
+            HirKind::RegexExpr(expr) => Some((
+                Family::Regex,
+                expr.modifiers.clone(),
+                expr.pattern.clone(),
+                expr.replacement.clone().unwrap_or_default(),
+                false,
+                expr.has_embedded_code,
+            )),
+            HirKind::MatchExpr(expr) => Some((
+                Family::Match,
+                expr.modifiers.clone(),
+                expr.pattern.clone(),
+                String::new(),
+                expr.negated,
+                expr.has_embedded_code,
+            )),
+            HirKind::SubstitutionExpr(expr) => Some((
+                Family::Substitution,
+                expr.modifiers.clone(),
+                expr.pattern.clone(),
+                expr.replacement.clone(),
+                expr.negated,
+                expr.has_embedded_code,
+            )),
+            HirKind::TransliterationExpr(expr) => Some((
+                Family::Transliteration,
+                expr.modifiers.clone(),
+                expr.search.clone(),
+                expr.replace.clone(),
+                expr.negated,
+                false,
+            )),
+            _ => None,
+        };
+
+        let Some((family, modifiers, left, right, negated, embedded_code)) = fact else {
+            continue;
+        };
+
+        let span_text = source.get(item.range.start..item.range.end).ok_or_else(|| {
+            format!(
+                "HIR item range {}..{} is not a source boundary in {source:?}",
+                item.range.start, item.range.end
+            )
+        })?;
+
+        facts.push(OperatorFact::new(
+            family,
+            span_text,
+            &modifiers,
+            &left,
+            &right,
+            negated,
+            embedded_code,
+        ));
+    }
+    Ok(())
+}
+
 /// Parse `source`, require it to be clean, and return every regex-family
 /// operator in source order.
 fn operator_facts(source: &str) -> Result<Vec<OperatorFact>, Box<dyn Error>> {
@@ -179,10 +253,16 @@ fn operator_facts(source: &str) -> Result<Vec<OperatorFact>, Box<dyn Error>> {
 
     let mut facts = Vec::new();
     collect_operator_facts(&ast, source, &mut facts)?;
+
+    let mut hir_facts = Vec::new();
+    collect_hir_operator_facts(&lower_ast(&ast), source, &mut hir_facts)?;
+    assert_eq!(hir_facts, facts, "lowered HIR operators disagree with the AST for {source:?}");
+
     Ok(facts)
 }
 
-/// Assert the operators of `source` are exactly `expected`, in order.
+/// Assert the operators of `source` are exactly `expected`, in order, at both
+/// the AST and HIR layers.
 fn assert_operators(source: &str, expected: &[OperatorFact]) -> TestResult {
     let actual = operator_facts(source)?;
     assert_eq!(actual.as_slice(), expected, "operator facts mismatch for {source:?}");
@@ -289,7 +369,7 @@ fn bound_match_modifier_matrix_retains_binding_polarity() -> TestResult {
 
 #[test]
 fn substitution_modifier_matrix_retains_ordered_payload_and_operator_range() -> TestResult {
-    let cases: [(&str, OperatorFact); 6] = [
+    let cases: [(&str, OperatorFact); 7] = [
         (
             r#"s/foo/bar/g;"#,
             OperatorFact::new(Family::Substitution, "s/foo/bar/g", "g", "foo", "bar", false, false),
@@ -347,6 +427,20 @@ fn substitution_modifier_matrix_retains_ordered_payload_and_operator_range() -> 
                 false,
             ),
         ),
+        // Polarity control: `!~ s///` is ordinary Perl, so `negated` must track
+        // the binding operator rather than being hardcoded for this family.
+        (
+            r#"$x !~ s/foo/bar/g;"#,
+            OperatorFact::new(
+                Family::Substitution,
+                "$x !~ s/foo/bar/g",
+                "g",
+                "foo",
+                "bar",
+                true,
+                false,
+            ),
+        ),
     ];
 
     for (source, expected) in cases {
@@ -387,7 +481,7 @@ fn substitution_e_and_ee_are_recorded_as_embedded_code_not_permission_to_execute
 
 #[test]
 fn transliteration_modifier_matrix_retains_ordered_payload_and_operator_range() -> TestResult {
-    let cases: [(&str, OperatorFact); 6] = [
+    let cases: [(&str, OperatorFact); 7] = [
         (
             r#"tr/a-z/A-Z/;"#,
             OperatorFact::new(
@@ -451,6 +545,19 @@ fn transliteration_modifier_matrix_retains_ordered_payload_and_operator_range() 
                 "a-z",
                 "A-Z",
                 false,
+                false,
+            ),
+        ),
+        // Polarity control, as for `s///` above.
+        (
+            r#"$x !~ tr/a-z/A-Z/;"#,
+            OperatorFact::new(
+                Family::Transliteration,
+                "$x !~ tr/a-z/A-Z/",
+                "",
+                "a-z",
+                "A-Z",
+                true,
                 false,
             ),
         ),
@@ -529,13 +636,13 @@ fn assert_invalid_modifier_is_diagnosed_within_operator(
         "expected a diagnostic naming {needle:?} for {source:?}; got {errors:#?}"
     );
 
+    // Read the offset through the typed accessor rather than scraping the
+    // `Debug` rendering, so a field reorder or a message that happens to
+    // contain "location: " cannot corrupt what this control measures.
     let located = errors.iter().any(|error| {
-        let rendered = format!("{error:?}");
-        rendered.contains(needle)
-            && rendered
-                .split("location: ")
-                .nth(1)
-                .and_then(|tail| tail.trim_end_matches([' ', '}']).parse::<usize>().ok())
+        format!("{error:?}").contains(needle)
+            && error
+                .location()
                 .is_some_and(|location| (operator_start..operator_end).contains(&location))
     });
     assert!(
