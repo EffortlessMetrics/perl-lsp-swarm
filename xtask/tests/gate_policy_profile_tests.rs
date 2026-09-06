@@ -912,7 +912,22 @@ fn freshness_gate_commands_satisfy_every_named_suite_cfg() -> Result<(), Box<dyn
 
         let features = declared_features(&gate.command);
         let targets = declared_test_targets(&gate.command);
-        assert!(!targets.is_empty(), "{gate_name} must name at least one --test target");
+        let expected_targets: &[&str] = match gate_name {
+            "pending_parse_freshness" => &[
+                "pending_parse_provider_freshness_tests",
+                "post_edit_index_staleness_tests",
+                "navigation_same_document_toctou_regression_tests",
+            ],
+            "pull_diagnostics_freshness" => &["pull_diagnostics_freshness_tests"],
+            _ => unreachable!("loop only names the two freshness gates"),
+        };
+        assert_eq!(
+            targets,
+            expected_targets.iter().map(|name| (*name).to_string()).collect::<Vec<_>>(),
+            "{gate_name} must keep its named --test targets; dropping a suite is the same \
+             silent-rot class as dropping a feature flag — the remaining command still \
+             exits 0"
+        );
 
         for target in &targets {
             let source_path = root.join(format!("crates/perl-lsp-rs/tests/{target}.rs"));

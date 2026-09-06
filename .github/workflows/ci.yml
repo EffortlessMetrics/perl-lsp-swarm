@@ -1640,6 +1640,18 @@ jobs:
       - name: Dependabot dependency-name contract (required merge surface)
         run: cargo test -p xtask --test dependabot_cargo_dependency_names --locked -- --nocapture
 
+      # #11933: the freshness cfg-binding test lives in
+      # `xtask/tests/gate_policy_profile_tests.rs`. unit_routed_full only
+      # executes xtask integration tests when the PR diff selects xtask, and
+      # `.ci/gate-policy.yaml` is not an xtask-policy-guarded input. A
+      # gate-policy-only edit that dropped `workspace` from
+      # `pending_parse_freshness` would compile zero tests, exit 0, and leave
+      # every required check green — the exact silent-rot this gate exists to
+      # catch. Compile-all-targets is the required merge surface that still
+      # runs when only `.ci/` changes.
+      - name: Freshness-gate cfg-binding contract (required merge surface)
+        run: cargo test -p xtask --test gate_policy_profile_tests --locked -- freshness_gate_commands_satisfy_every_named_suite_cfg --nocapture
+
   lsp-memory-smoke:
     name: LSP Memory Smoke
     runs-on: ubuntu-24.04
