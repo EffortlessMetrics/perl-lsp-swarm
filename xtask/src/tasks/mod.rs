@@ -97,6 +97,7 @@ pub mod hook_checks;
 pub mod ignored_tests;
 pub mod inc_claim_boundary;
 pub mod incremental_proof;
+pub mod init_environment;
 pub mod inject_sha_assets;
 pub mod inline_completion_quality;
 pub mod inline_completion_smoke;
