@@ -234,6 +234,8 @@ mod tests {
             Some(RuleId::PredicateOrNegation)
         );
         assert_eq!(rule_of("flag.is_some() || !flag.is_some()"), None);
+        assert_eq!(rule_of("*value || !*value"), None);
+        assert_eq!(rule_of("item.flag || !item.flag"), None);
     }
 
     #[test]

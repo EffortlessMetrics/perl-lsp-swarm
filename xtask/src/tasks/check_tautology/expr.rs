@@ -13,9 +13,17 @@ pub(crate) enum QueryKind {
     Result,
 }
 
-#[derive(Debug, Default, Clone)]
+/// Lexical Option/Result ascriptions. Inner scopes shadow outer names, including
+/// with an explicit unknown binding so an untyped `let` hides a prior Option.
+#[derive(Debug, Clone)]
 pub(crate) struct TypeEnv {
-    bindings: BTreeMap<String, QueryKind>,
+    scopes: Vec<BTreeMap<String, Option<QueryKind>>>,
+}
+
+impl Default for TypeEnv {
+    fn default() -> Self {
+        Self { scopes: vec![BTreeMap::new()] }
+    }
 }
 
 impl TypeEnv {
@@ -23,12 +31,38 @@ impl TypeEnv {
         Self::default()
     }
 
+    pub(crate) fn push_scope(&mut self) {
+        self.scopes.push(BTreeMap::new());
+    }
+
+    pub(crate) fn pop_scope(&mut self) {
+        if self.scopes.len() > 1 {
+            self.scopes.pop();
+        }
+    }
+
     pub(crate) fn bind(&mut self, ident: String, kind: QueryKind) {
-        self.bindings.insert(ident, kind);
+        self.shadow(ident, Some(kind));
+    }
+
+    /// Record a binding in the current scope. `None` means the name is bound
+    /// but not a proven Option/Result, so it hides an outer ascription.
+    pub(crate) fn shadow(&mut self, ident: String, kind: Option<QueryKind>) {
+        if self.scopes.is_empty() {
+            self.scopes.push(BTreeMap::new());
+        }
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(ident, kind);
+        }
     }
 
     pub(crate) fn kind_of(&self, ident: &str) -> Option<QueryKind> {
-        self.bindings.get(ident).copied()
+        for scope in self.scopes.iter().rev() {
+            if let Some(kind) = scope.get(ident) {
+                return *kind;
+            }
+        }
+        None
     }
 }
 
@@ -45,17 +79,17 @@ pub(crate) fn expr_eq(left: &Expr, right: &Expr) -> bool {
 }
 
 /// Returns true only for expressions the checker treats as free of observable
-/// evaluation effects. Function and arbitrary method calls are excluded.
+/// evaluation effects. Function calls, arbitrary methods, unary dereference,
+/// and field access are excluded: they can run user `Deref`/`Index` code.
 /// Standard Option/Result queries are included only when the receiver is a
 /// proven Option/Result.
 pub(crate) fn is_side_effect_free(expr: &Expr, env: &TypeEnv) -> bool {
     match peel(expr) {
         Expr::Path(_) | Expr::Lit(_) | Expr::Const(_) => true,
         Expr::Reference(reference) => is_side_effect_free(&reference.expr, env),
-        Expr::Unary(unary) if matches!(unary.op, UnOp::Not(_) | UnOp::Deref(_) | UnOp::Neg(_)) => {
+        Expr::Unary(unary) if matches!(unary.op, UnOp::Not(_) | UnOp::Neg(_)) => {
             is_side_effect_free(&unary.expr, env)
         }
-        Expr::Field(field) => is_side_effect_free(&field.base, env),
         Expr::Tuple(tuple) => tuple.elems.iter().all(|elem| is_side_effect_free(elem, env)),
         Expr::Array(array) => array.elems.iter().all(|elem| is_side_effect_free(elem, env)),
         Expr::Repeat(repeat) => {
@@ -103,11 +137,62 @@ pub(crate) fn bind_pat_type(env: &mut TypeEnv, pat: &Pat, ty: &Type) {
     match pat {
         Pat::Type(typed) => bind_pat_type(env, &typed.pat, &typed.ty),
         Pat::Ident(ident) => {
-            if let Some(kind) = option_or_result_kind(ty) {
-                env.bind(ident.ident.to_string(), kind);
+            env.shadow(ident.ident.to_string(), option_or_result_kind(ty));
+            if let Some((_, subpat)) = &ident.subpat {
+                bind_unknown_pat(env, subpat);
             }
         }
         Pat::Reference(reference) => bind_pat_type(env, &reference.pat, ty),
+        other => bind_unknown_pat(env, other),
+    }
+}
+
+/// Bind a pattern, recording Option/Result only when the pattern is ascribed.
+/// Untyped names shadow any outer ascription as unknown.
+pub(crate) fn bind_binding_pat(env: &mut TypeEnv, pat: &Pat) {
+    match pat {
+        Pat::Type(typed) => bind_pat_type(env, &typed.pat, &typed.ty),
+        other => bind_unknown_pat(env, other),
+    }
+}
+
+fn bind_unknown_pat(env: &mut TypeEnv, pat: &Pat) {
+    match pat {
+        Pat::Type(typed) => bind_pat_type(env, &typed.pat, &typed.ty),
+        Pat::Ident(ident) => {
+            env.shadow(ident.ident.to_string(), None);
+            if let Some((_, subpat)) = &ident.subpat {
+                bind_unknown_pat(env, subpat);
+            }
+        }
+        Pat::Reference(reference) => bind_unknown_pat(env, &reference.pat),
+        Pat::Paren(paren) => bind_unknown_pat(env, &paren.pat),
+        Pat::Guard(guard) => bind_unknown_pat(env, &guard.pat),
+        Pat::Or(or_pat) => {
+            for case in &or_pat.cases {
+                bind_unknown_pat(env, case);
+            }
+        }
+        Pat::Tuple(tuple) => {
+            for elem in &tuple.elems {
+                bind_unknown_pat(env, elem);
+            }
+        }
+        Pat::TupleStruct(tuple) => {
+            for elem in &tuple.elems {
+                bind_unknown_pat(env, elem);
+            }
+        }
+        Pat::Slice(slice) => {
+            for elem in &slice.elems {
+                bind_unknown_pat(env, elem);
+            }
+        }
+        Pat::Struct(strct) => {
+            for field in &strct.fields {
+                bind_unknown_pat(env, &field.pat);
+            }
+        }
         _ => {}
     }
 }
@@ -288,6 +373,31 @@ mod tests {
         assert!(!is_known_reflexive_eq_operand(&expr("TransportMode::Socket { port: 100 }")));
         assert!(!is_known_reflexive_eq_operand(&expr("-f32::NAN")));
         assert!(!is_known_reflexive_eq_operand(&expr("[path; 3]")));
+    }
+
+    #[test]
+    #[test]
+    fn deref_and_field_access_are_not_side_effect_free() {
+        let env = TypeEnv::new();
+        assert!(!is_side_effect_free(&expr("*value"), &env));
+        assert!(!is_side_effect_free(&expr("item.flag"), &env));
+        assert!(!is_side_effect_free(&expr("!item.flag"), &env));
+        assert!(is_side_effect_free(&expr("ready"), &env));
+        assert!(is_side_effect_free(&expr("!ready"), &env));
+    }
+
+    #[test]
+    fn shadowing_and_scopes_restore_option_identity() {
+        let mut env = TypeEnv::new();
+        env.bind("value".to_string(), QueryKind::Option);
+        assert_eq!(env.kind_of("value"), Some(QueryKind::Option));
+        env.push_scope();
+        env.shadow("value".to_string(), None);
+        assert_eq!(env.kind_of("value"), None);
+        env.pop_scope();
+        assert_eq!(env.kind_of("value"), Some(QueryKind::Option));
+        env.shadow("value".to_string(), None);
+        assert_eq!(env.kind_of("value"), None);
     }
 
     #[test]
