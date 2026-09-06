@@ -281,3 +281,27 @@ fn c_style_for_clauses_offer_anonymous_sub_not_package() {
         assert!(!has_label(&completions, "package"), "{source:?} must not offer `package`");
     }
 }
+
+/// A `(` inside a string is not the header closer; the following `;` is still
+/// the condition/increment separator.
+#[test]
+fn c_style_for_string_paren_still_offers_anonymous_sub() {
+    let source = r#"for (my $x = "("; "#;
+    let completions = completions_at(source);
+    assert_eq!(keyword_item(&completions, "sub").insert_text.as_deref(), Some("sub {\n    $0\n}"));
+    assert!(!has_label(&completions, "package"), "string `(` must not hide the for-clause `;`");
+}
+
+/// `;` inside `do { }` in a for INIT is a statement terminator, not a clause.
+#[test]
+fn c_style_for_nested_do_block_semicolon_is_a_statement() {
+    let completions = completions_at("for (do { foo; ");
+    assert_eq!(
+        keyword_item(&completions, "sub").insert_text.as_deref(),
+        Some("sub ${1:name} {\n    $0\n}")
+    );
+    assert!(
+        has_keyword(&completions, "package"),
+        "nested do-block `;` must still offer statement-only `package`"
+    );
+}

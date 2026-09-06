@@ -4,6 +4,7 @@ use super::super::{
     workspace, xs_api,
 };
 use super::CompletionFlow;
+use perl_lexer::{PerlLexer, TokenType};
 use perl_pragma::PragmaTracker;
 use perl_semantic_analyzer::symbol::SymbolKind;
 
@@ -747,6 +748,10 @@ mod indirect_helper_tests {
         assert!(is_in_expression_position("foreach (my $i = 0; ", 20));
         let after_body_stmt = "for (my $i = 0; $i < 10; $i++) { foo;";
         assert!(!is_in_expression_position(after_body_stmt, after_body_stmt.len()));
+        let paren_in_string = r#"for (my $x = "("; "#;
+        assert!(is_in_expression_position(paren_in_string, paren_in_string.len()));
+        let nested_do_block = "for (do { foo; ";
+        assert!(!is_in_expression_position(nested_do_block, nested_do_block.len()));
     }
 }
 
@@ -800,43 +805,89 @@ fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
 
 /// True when `trimmed` ends at a `;` that separates C-style `for`/`foreach`
 /// header clauses rather than a completed statement.
+///
+/// Lexes from the last bare `for`/`foreach` so parentheses inside strings or
+/// comments are not delimiters, and `{` / `}` nesting keeps `do { foo; ` as a
+/// statement. Still a prefix heuristic: `q()`/`qq()` with unusual delimiters
+/// and heredocs are not claimed.
 fn c_style_for_header_owns_semicolon(trimmed: &str) -> bool {
     let Some(before_semi) = trimmed.strip_suffix(';') else {
         return false;
     };
-    let mut rest = before_semi;
-    let mut closer_depth: u32 = 0;
-    while let Some(idx) =
-        rest.char_indices().rev().find_map(|(i, ch)| matches!(ch, '(' | ')').then_some(i))
-    {
-        let Some(ch) = rest.get(idx..).and_then(|suffix| suffix.chars().next()) else {
-            return false;
-        };
-        match ch {
-            ')' => closer_depth = closer_depth.saturating_add(1),
-            '(' if closer_depth == 0 => {
-                return preceding_token_is_for(rest.get(..idx).unwrap_or(""));
+    let Some(start) = last_for_keyword_start(before_semi) else {
+        return false;
+    };
+    let Some(header) = before_semi.get(start..) else {
+        return false;
+    };
+
+    let mut lexer = PerlLexer::new(header);
+    let mut paren_depth: u32 = 0;
+    let mut brace_depth: u32 = 0;
+    let mut started_header = false;
+    while let Some(token) = lexer.next_token() {
+        if token.token_type.is_trivia() {
+            continue;
+        }
+        match &token.token_type {
+            TokenType::EOF => break,
+            TokenType::LeftParen => {
+                paren_depth = paren_depth.saturating_add(1);
+                started_header = true;
             }
-            '(' => closer_depth = closer_depth.saturating_sub(1),
+            TokenType::RightParen => {
+                paren_depth = paren_depth.saturating_sub(1);
+            }
+            TokenType::LeftBrace => {
+                if !started_header {
+                    return false;
+                }
+                brace_depth = brace_depth.saturating_add(1);
+            }
+            TokenType::RightBrace => {
+                brace_depth = brace_depth.saturating_sub(1);
+            }
+            _ if !started_header => {
+                // C-style headers are `for (` / `foreach (`, not `for my $i (`.
+                return false;
+            }
             _ => {}
         }
-        rest = match rest.get(..idx) {
-            Some(next) => next,
-            None => return false,
-        };
     }
-    false
+    started_header && paren_depth > 0 && brace_depth == 0
 }
 
-fn preceding_token_is_for(prefix: &str) -> bool {
-    let trimmed = prefix.trim_end();
+fn last_for_keyword_start(source: &str) -> Option<usize> {
+    let mut last = None;
     for keyword in ["foreach", "for"] {
-        let Some(rest) = trimmed.strip_suffix(keyword) else {
-            continue;
-        };
-        if rest.chars().next_back().is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_') {
-            return true;
+        let mut end = source.len();
+        while let Some(at) = source.get(..end).and_then(|prefix| prefix.rfind(keyword)) {
+            if is_bare_keyword_at(source, at, keyword.len()) {
+                last = Some(last.map_or(at, |prev| prev.max(at)));
+                break;
+            }
+            if at == 0 {
+                break;
+            }
+            end = at;
         }
     }
-    false
+    last
+}
+
+fn is_bare_keyword_at(source: &str, start: usize, keyword_len: usize) -> bool {
+    let before_ok = start == 0
+        || source
+            .get(..start)
+            .and_then(|prefix| prefix.chars().next_back())
+            .is_none_or(|ch| !is_perl_ident_continue(ch));
+    let after_ok = source
+        .get(start.saturating_add(keyword_len)..)
+        .and_then(|suffix| suffix.chars().next())
+        .is_none_or(|ch| !is_perl_ident_continue(ch));
+    before_ok && after_ok
+}
+
+fn is_perl_ident_continue(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
 }
