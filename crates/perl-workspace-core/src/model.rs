@@ -149,6 +149,10 @@ impl ProjectModel {
     }
 
     /// Compare authoring facts with final `META.json` facts without merging them.
+    ///
+    /// `META.yml` is owned by #7176 and is not a `DistMetadataSource` yet; this
+    /// helper only compares against parsed `META.json` records. Authoring and
+    /// metadata remain separate vectors regardless.
     #[must_use]
     pub fn compare_authoring_with_metadata(
         &self,

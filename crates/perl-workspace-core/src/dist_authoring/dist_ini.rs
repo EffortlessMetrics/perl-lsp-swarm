@@ -91,7 +91,7 @@ pub fn parse_dist_ini(file_id: FileId, content: &str) -> DistAuthoringFacts {
 #[derive(Debug, Clone)]
 enum Section {
     Root,
-    Prereqs { phase: String, relation: String },
+    Prereqs { phase: String, relation: String, recognized: bool },
     MetaResources,
     Other(String),
 }
@@ -104,8 +104,9 @@ impl Section {
         let (plugin, rest) = split_section_name(raw);
         let plugin_tail = plugin.rsplit("::").next().unwrap_or(plugin);
         if plugin_eq(plugin, "Prereqs") || plugin_tail.eq_ignore_ascii_case("Prereqs") {
-            let (phase, relation) = phase_relation_from_label(rest.unwrap_or("RuntimeRequires"));
-            return Self::Prereqs { phase, relation };
+            let (phase, relation, recognized) =
+                phase_relation_from_label(rest.unwrap_or("RuntimeRequires"));
+            return Self::Prereqs { phase, relation, recognized: rest.is_none() || recognized };
         }
         if plugin_eq(plugin, "MetaResources") {
             return Self::MetaResources;
@@ -151,6 +152,14 @@ fn apply_section_identity(
         {
             collector.set_generated_build_tool(DistAuthoringBuildTool::ModuleBuild, start, end);
         }
+        Section::Prereqs { recognized: false, .. } => {
+            collector.limitation(
+                "unknown_prereq_section",
+                "unrecognized Dist::Zilla prereq section label; modules in it are not treated as runtime/requires",
+                Some(start),
+                Some(end),
+            );
+        }
         _ => {}
     }
 }
@@ -181,7 +190,10 @@ fn apply_ini_entry(
                 false,
             ),
         },
-        Section::Prereqs { phase, relation } => {
+        Section::Prereqs { phase, relation, recognized } => {
+            if !*recognized {
+                return;
+            }
             if key == "-phase" {
                 *phase = value.to_ascii_lowercase();
                 return;
@@ -236,18 +248,18 @@ fn split_section_name(raw: &str) -> (&str, Option<&str>) {
     }
 }
 
-fn phase_relation_from_label(label: &str) -> (String, String) {
+fn phase_relation_from_label(label: &str) -> (String, String, bool) {
     let compact: String = label.chars().filter(|ch| !ch.is_whitespace()).collect();
     const PHASES: &[&str] = &["Runtime", "Test", "Build", "Configure", "Develop"];
     const RELATIONS: &[&str] = &["Requires", "Recommends", "Suggests", "Conflicts"];
     for phase in PHASES {
         for relation in RELATIONS {
             if compact.eq_ignore_ascii_case(&format!("{phase}{relation}")) {
-                return (phase.to_ascii_lowercase(), relation.to_ascii_lowercase());
+                return (phase.to_ascii_lowercase(), relation.to_ascii_lowercase(), true);
             }
         }
     }
-    ("runtime".to_string(), "requires".to_string())
+    ("runtime".to_string(), "requires".to_string(), false)
 }
 
 fn plugin_eq(name: &str, expected: &str) -> bool {

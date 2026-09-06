@@ -241,6 +241,7 @@ WriteMakefile(
 "#;
     let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
     assert!(facts.conflicts.iter().any(|c| c.field == "name"));
+    assert!(facts.conflicts.iter().any(|c| c.field == "prereq:runtime:requires:Moo"));
     assert!(facts.name.is_none());
 }
 
@@ -284,12 +285,59 @@ fn dist_ini_extracts_root_prereqs_resources_and_plugin_limitations() {
 }
 
 #[test]
+fn makefile_pl_meta_add_and_v2_prereq_overlay() {
+    let src = r#"
+WriteMakefile(
+    NAME => 'Foo::Bar',
+    META_ADD => {
+        resources => { homepage => 'https://example.invalid/add' },
+        prereqs => { runtime => { requires => { 'JSON::PP' => '4' } } },
+    },
+);
+"#;
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    assert!(facts.resources.iter().any(|r| r.kind == "homepage"));
+    assert!(facts.prereqs.iter().any(|p| p.module == "JSON::PP" && p.phase == "runtime"));
+}
+
+#[test]
+fn makefile_pl_qw_license_list_keeps_every_token() {
+    let src = "WriteMakefile(\n    NAME => 'Foo::Bar',\n    LICENSE => qw(perl artistic_2),\n);\n";
+    let facts = parse_makefile_pl(fid("Makefile.PL", src), src);
+    assert!(facts.licenses.iter().any(|l| l == "perl_5"));
+    assert!(facts.licenses.iter().any(|l| l == "artistic_2"));
+}
+
+#[test]
 fn dist_ini_phase_override_and_comments() {
     let src = "[Prereqs]\n-phase = test\n-relationship = requires\nTest::More = 0.88 ; comment\n";
     let facts = parse_dist_ini(fid("dist.ini", src), src);
     let prereq = facts.prereqs.iter().find(|p| p.module == "Test::More").unwrap();
     assert_eq!(prereq.phase, "test");
     assert_eq!(prereq.relation, "requires");
+}
+
+#[test]
+fn dist_ini_develop_suggests_conflicts_and_unknown_section_label() {
+    let src = r#"
+[Prereqs / DevelopRequires]
+Perl::Critic = 1.140
+
+[Prereqs / RuntimeSuggests]
+JSON::PP = 4
+
+[Prereqs / RuntimeConflicts]
+Broken::Mod = 0
+
+[Prereqs / NotARealPhase]
+Mystery::Mod = 1
+"#;
+    let facts = parse_dist_ini(fid("dist.ini", src), src);
+    assert!(facts.prereqs.iter().any(|p| p.module == "Perl::Critic" && p.phase == "develop"));
+    assert!(facts.prereqs.iter().any(|p| p.module == "JSON::PP" && p.relation == "suggests"));
+    assert!(facts.prereqs.iter().any(|p| p.module == "Broken::Mod" && p.relation == "conflicts"));
+    assert!(facts.limitations.iter().any(|l| l.kind == "unknown_prereq_section"));
+    assert!(!facts.prereqs.iter().any(|p| p.module == "Mystery::Mod"));
 }
 
 #[test]

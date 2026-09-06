@@ -150,8 +150,16 @@ pub(crate) fn parse_value(source: &str, idx: &mut usize) -> ScanValue {
             *idx = next;
         }
     }
-    if let Some(string) = parse_string(source, idx) {
-        return ScanValue::String(string);
+    if let Some(literal) = parse_string(source, idx) {
+        return match literal {
+            Quoted::Scalar(value) => ScanValue::String(value),
+            Quoted::Words(words) if words.len() <= 1 => {
+                ScanValue::String(words.into_iter().next().unwrap_or_default())
+            }
+            Quoted::Words(words) => {
+                ScanValue::List(words.into_iter().map(ScanValue::String).collect())
+            }
+        };
     }
     if bytes.get(*idx) == Some(&b'{') {
         return parse_hash_value(source, idx);
@@ -307,8 +315,12 @@ fn parse_pairs(source: &str, idx: &mut usize, stop: usize) -> Vec<ScanPair> {
 fn parse_key(source: &str, idx: &mut usize) -> Option<(String, usize, usize)> {
     skip_ws_comments(source, idx);
     let start = *idx;
-    if let Some(string) = parse_string(source, idx) {
-        return Some((string, start, *idx));
+    if let Some(literal) = parse_string(source, idx) {
+        let key = match literal {
+            Quoted::Scalar(value) => value,
+            Quoted::Words(words) => words.into_iter().next().unwrap_or_default(),
+        };
+        return Some((key, start, *idx));
     }
     let bare = parse_bareword_value(source, idx)?;
     Some((bare, start, *idx))
@@ -351,11 +363,16 @@ fn parse_list_value(source: &str, idx: &mut usize) -> ScanValue {
     ScanValue::List(items)
 }
 
-fn parse_string(source: &str, idx: &mut usize) -> Option<String> {
+enum Quoted {
+    Scalar(String),
+    Words(Vec<String>),
+}
+
+fn parse_string(source: &str, idx: &mut usize) -> Option<Quoted> {
     let bytes = source.as_bytes();
     let quote = *bytes.get(*idx)?;
     if quote == b'\'' || quote == b'"' {
-        return parse_quoted(source, idx, quote);
+        return parse_quoted(source, idx, quote).map(Quoted::Scalar);
     }
     parse_quotelike(source, idx)
 }
@@ -388,7 +405,7 @@ fn parse_quoted(source: &str, idx: &mut usize, quote: u8) -> Option<String> {
     Some(value)
 }
 
-fn parse_quotelike(source: &str, idx: &mut usize) -> Option<String> {
+fn parse_quotelike(source: &str, idx: &mut usize) -> Option<Quoted> {
     let bytes = source.as_bytes();
     let start = *idx;
     let kind = if bytes[start..].starts_with(b"qq") {
@@ -425,9 +442,11 @@ fn parse_quotelike(source: &str, idx: &mut usize) -> Option<String> {
             if depth == 0 {
                 *idx += 1;
                 if kind == "qw" {
-                    return Some(value.split_whitespace().next().unwrap_or("").to_string());
+                    return Some(Quoted::Words(
+                        value.split_whitespace().map(ToOwned::to_owned).collect(),
+                    ));
                 }
-                return Some(value);
+                return Some(Quoted::Scalar(value));
             }
         } else if ch.len_utf8() == 1 && byte == open && open != close {
             depth += 1;
@@ -435,7 +454,11 @@ fn parse_quotelike(source: &str, idx: &mut usize) -> Option<String> {
         value.push(ch);
         *idx += ch.len_utf8();
     }
-    Some(value)
+    if kind == "qw" {
+        Some(Quoted::Words(value.split_whitespace().map(ToOwned::to_owned).collect()))
+    } else {
+        Some(Quoted::Scalar(value))
+    }
 }
 
 fn matching_quotelike_close(open: u8) -> u8 {
