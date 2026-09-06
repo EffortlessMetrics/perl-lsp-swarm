@@ -251,9 +251,7 @@
       "consumed_by": [
         "pc_topo"
       ],
-      "supersedes": [
-        "pc_hist"
-      ],
+      "supersedes": [],
       "superseded_by": null,
       "duplicate_of": null,
       "transferred_to": null,
@@ -350,7 +348,9 @@
         "owner": "#8826"
       },
       "claim_ceiling": "fixture claim ceiling bounded to one authority result",
-      "stop_conditions": [],
+      "stop_conditions": [
+        "fixture stop condition"
+      ],
       "authority_before": "before pc_topo",
       "authority_after": "after pc_topo establishes its authority",
       "legacy_exit": {

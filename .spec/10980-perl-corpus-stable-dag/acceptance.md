@@ -11,8 +11,9 @@
 | A banned state key, a status word in a lineage row, a commit hash, or a branch/pull coordinate appears in stable bytes | `MUTABLE_STATE_EMBEDDED` | falsifier 3 |
 | A pull request is the subject of a non-historical node | `CANDIDATE_AS_ACTIVE_NODE` | falsifier 3 |
 | A node ranked before `package_externalization` hard/evidence-depends on a package or publication node | `PUBLICATION_PROMOTED_INTO_FOUNDATION` | falsifier 4 |
-| An authorization edge is carried by a coding node, or targets a non-symbolic authority | `AUTHORIZATION_ON_CODING_NODE` / `DEPENDENCY_CLASS_COLLAPSED` | falsifier 4 |
+| An authorization edge is carried by a coding node, or targets anything other than the declared `#EXPLICIT-AUTHORIZATION` authority | `AUTHORIZATION_ON_CODING_NODE` / `DEPENDENCY_CLASS_COLLAPSED` | falsifier 4 |
 | An external action carries no authorization edge | `AUTHORIZATION_MISSING` | acceptance bullet |
+| A node carries two retirement dispositions, points a disposition at itself, `superseded_by`/`supersedes` are not mirrored, or dispositions form a cycle | `SUPERSESSION_INCONSISTENT` | law |
 | An implementation/cutover leaf has no legacy exit owner or condition | `MISSING_LEGACY_EXIT` | falsifier 6 |
 | A node carries `superseded_by`/`duplicate_of`/`transferred_to` but is not historical | `SUPERSEDED_REACTIVATED` | falsifier 7 |
 | A selectable leaf lacks proposition, falsifier, ceiling, stop conditions, proofs, negatives, verification, keys, surfaces, or forbidden surfaces | `INCOMPLETE_ONE_PR_CONTRACT` | falsifier 9 |
@@ -23,7 +24,8 @@
 | `consumed_by` differs from the derived reverse edge set | `CONSUMED_BY_MISMATCH` | law |
 | A title changes without re-fingerprinting | `TITLE_FINGERPRINT_MISMATCH` | law |
 | A conflict key is not in the registry | `CONFLICT_KEY_UNKNOWN` | law |
-| Horizon ranks drift from the closed order, or a role's selectability contradicts the closed role law | `VOCABULARY_DRIFT` | law |
+| Horizon ranks drift from the closed order, a role's selectability contradicts the closed role law, or `role_vocabulary`/`dependency_classes` is not the closed set declared once each | `VOCABULARY_DRIFT` | law |
+| A `semantic_authority_refs` entry is neither a declared external authority nor a node subject | `UNKNOWN_EDGE_TARGET` | law |
 | `cargo xtask perl-corpus-train graph --check` after a manifest edit without regeneration | Fails: projection drift | generated-output freshness |
 | `cargo xtask perl-corpus-train explain-static pc_opened_asset_7693` | One bounded static packet ending with an explicit "readiness: not evaluated here" line; an unknown node fails | no readiness claim |
 

@@ -249,7 +249,9 @@
       ],
       "dependencies": [],
       "consumed_by": [],
-      "supersedes": [],
+      "supersedes": [
+        "pc_hist"
+      ],
       "superseded_by": null,
       "duplicate_of": null,
       "transferred_to": null,

@@ -624,3 +624,58 @@ fn numeric_semantic_authority_must_resolve_to_a_node_or_declared_authority() -> 
     }
     Ok(())
 }
+
+#[test]
+fn authorization_must_target_the_explicit_authorization_authority() -> Result<()> {
+    // A newly declared symbol must not be able to stand in for explicit approval.
+    let mut doc = load(MANIFEST_PATH)?;
+    doc.get_mut("external_authorities")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| eyre!("external_authorities is an array"))?
+        .push(serde_json::json!({"id": "#RELEASE-MANAGER", "subject": "an alternate approval symbol"}));
+    let node = node_mut(&mut doc, "pc_repository_import_8850")?;
+    let deps = node
+        .get_mut("dependencies")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| eyre!("dependencies is an array"))?;
+    let edge = deps
+        .iter_mut()
+        .filter_map(Value::as_object_mut)
+        .find(|edge| edge.get("class").and_then(Value::as_str) == Some("authorization"))
+        .ok_or_else(|| eyre!("pc_repository_import_8850 carries an authorization edge"))?;
+    edge.insert("target".to_string(), Value::String("#RELEASE-MANAGER".to_string()));
+    assert_code(&doc, "DEPENDENCY_CLASS_COLLAPSED")
+}
+
+#[test]
+fn supersession_links_must_be_reciprocal_exclusive_and_acyclic() -> Result<()> {
+    // Drop the mirror: 7705 no longer lists 7188 under supersedes.
+    let mut doc = load(MANIFEST_PATH)?;
+    let node = node_mut(&mut doc, "pc_hist_root_authority_7705")?;
+    set(node, "supersedes", string_list(&[]));
+    assert_code(&doc, "SUPERSESSION_INCONSISTENT")?;
+
+    // Two dispositions on one node.
+    let mut doc = load(MANIFEST_PATH)?;
+    let node = node_mut(&mut doc, "pc_hist_root_candidate_7188")?;
+    set(node, "duplicate_of", Value::String("pc_hist_root_authority_7705".to_string()));
+    assert_code(&doc, "SUPERSESSION_INCONSISTENT")?;
+
+    // A self-referential transfer.
+    let mut doc = load(MANIFEST_PATH)?;
+    let node = node_mut(&mut doc, "pc_hist_loader_candidate_7200")?;
+    set(node, "transferred_to", Value::String("pc_hist_loader_candidate_7200".to_string()));
+    assert_code(&doc, "SUPERSESSION_INCONSISTENT")?;
+
+    // A two-node supersession cycle with both mirrors in place.
+    let mut doc = load(MANIFEST_PATH)?;
+    let node = node_mut(&mut doc, "pc_hist_root_authority_7705")?;
+    set(node, "superseded_by", Value::String("pc_hist_root_candidate_7188".to_string()));
+    let node = node_mut(&mut doc, "pc_hist_root_candidate_7188")?;
+    set(node, "supersedes", string_list(&["pc_hist_root_authority_7705"]));
+    let doc_codes = codes(&doc);
+    if !doc_codes.iter().any(|code| code == "SUPERSESSION_INCONSISTENT") {
+        bail!("a supersession cycle must be rejected, got {doc_codes:?}");
+    }
+    Ok(())
+}

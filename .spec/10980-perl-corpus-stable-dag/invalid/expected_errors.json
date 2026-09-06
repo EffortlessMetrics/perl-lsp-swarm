@@ -8,6 +8,7 @@
   "authorization_on_coding_node.json": "AUTHORIZATION_ON_CODING_NODE",
   "missing_legacy_exit.json": "MISSING_LEGACY_EXIT",
   "superseded_reactivated.json": "SUPERSEDED_REACTIVATED",
+  "supersession_not_reciprocal.json": "SUPERSESSION_INCONSISTENT",
   "hard_cycle.json": "HARD_DEPENDENCY_CYCLE",
   "dependency_on_controller.json": "DEPENDENCY_ON_CONTROLLER",
   "external_action_without_authorization.json": "AUTHORIZATION_MISSING",

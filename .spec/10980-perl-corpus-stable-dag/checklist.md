@@ -12,7 +12,7 @@
 ### Step 2: Checker, projections, explain-static
 - **File:** `xtask/src/tasks/perl_corpus_train.rs` (CREATE); `xtask/src/tasks/mod.rs`,
   `xtask/src/main.rs` (MODIFY: module registration, `perl-corpus-train` subcommand)
-- **Change:** `validate_document` with the 21 named reason codes; `render_projections`
+- **Change:** `validate_document` with the 22 named reason codes; `render_projections`
   (JSON/Markdown/DOT/Mermaid, sorted, digest-bound); `render_explain_static`;
   `run_check` / `run_graph` / `run_explain_static`. Reuses
   `module_train::canonical_digest` and `native_neovim_train::canonical_form`.

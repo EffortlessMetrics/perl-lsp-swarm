@@ -62,6 +62,11 @@ const EXIT_BEARING_ROLES: &[&str] = &["implementation", "cutover"];
 /// Closed dependency classes; the manifest's `dependency_classes` must declare
 /// exactly this set once each.
 const DEPENDENCY_CLASSES: &[&str] = &["hard", "evidence", "authorization"];
+/// The only authority an authorization edge may target; no other declared
+/// symbol can stand in for explicit approval.
+const EXPLICIT_AUTHORIZATION: &str = "#EXPLICIT-AUTHORIZATION";
+/// Fields that retire a node into history; a node carries at most one.
+const SUPERSESSION_FIELDS: &[&str] = &["superseded_by", "duplicate_of", "transferred_to"];
 
 /// Closed horizon order; the manifest's `release_horizons.rank` must agree.
 const HORIZON_ORDER: &[&str] = &[
@@ -432,7 +437,7 @@ fn node_problems(doc: &Value, vocab: &Vocabulary<'_>, violations: &mut Vec<Viola
             _ => {}
         }
 
-        let superseded = ["superseded_by", "duplicate_of", "transferred_to"]
+        let superseded = SUPERSESSION_FIELDS
             .iter()
             .filter_map(|field| optional_str(node, field))
             .collect::<Vec<_>>();
@@ -634,10 +639,10 @@ fn edge_problems<'a>(
             match class {
                 "authorization" => {
                     authorization_edges += 1;
-                    if !is_symbolic_authority(target) || !target_is_external {
+                    if target != EXPLICIT_AUTHORIZATION || !target_is_external {
                         violations.push(Violation::new(
                             "DEPENDENCY_CLASS_COLLAPSED",
-                            format!("node {source}: authorization dependencies target a declared explicit-authorization authority, not {target}"),
+                            format!("node {source}: authorization dependencies target the declared {EXPLICIT_AUTHORIZATION} authority only, not {target}"),
                         ));
                     }
                     if role != "external_action" {
@@ -773,6 +778,95 @@ fn reachability<'a>(graph: &Graph<'a>) -> BTreeMap<&'a str, BTreeSet<&'a str>> {
     closure
 }
 
+/// Supersession links form a consistent history: a node carries at most one
+/// retirement disposition, never points at itself, `superseded_by` and
+/// `supersedes` mirror each other exactly, and following dispositions never
+/// cycles.
+fn supersession_problems(doc: &Value, violations: &mut Vec<Violation>) {
+    let nodes = objects(doc, "nodes");
+    let by_id: BTreeMap<&str, &Map<String, Value>> =
+        nodes.iter().map(|node| (str_field(node, "node_id"), *node)).collect();
+    let mut successor: BTreeMap<&str, &str> = BTreeMap::new();
+
+    for node in &nodes {
+        let id = str_field(node, "node_id");
+        let dispositions: Vec<(&str, &str)> = SUPERSESSION_FIELDS
+            .iter()
+            .filter_map(|field| optional_str(node, field).map(|target| (*field, target)))
+            .collect();
+        if dispositions.len() > 1 {
+            violations.push(Violation::new(
+                "SUPERSESSION_INCONSISTENT",
+                format!("node {id}: carries more than one retirement disposition ({})", {
+                    dispositions.iter().map(|(field, _)| *field).collect::<Vec<_>>().join(", ")
+                }),
+            ));
+        }
+        for (field, target) in &dispositions {
+            if *target == id {
+                violations.push(Violation::new(
+                    "SUPERSESSION_INCONSISTENT",
+                    format!("node {id}: {field} points at itself"),
+                ));
+            } else {
+                successor.insert(id, target);
+            }
+        }
+        if let Some(target) = optional_str(node, "superseded_by") {
+            let mirrored = by_id
+                .get(target)
+                .is_some_and(|successor| strings(successor, "supersedes").contains(&id));
+            if target != id && by_id.contains_key(target) && !mirrored {
+                violations.push(Violation::new(
+                    "SUPERSESSION_INCONSISTENT",
+                    format!("node {id}: superseded_by {target} but {target} does not list it under supersedes"),
+                ));
+            }
+        }
+        for target in strings(node, "supersedes") {
+            if target == id {
+                violations.push(Violation::new(
+                    "SUPERSESSION_INCONSISTENT",
+                    format!("node {id}: supersedes itself"),
+                ));
+                continue;
+            }
+            let mirrored =
+                by_id.get(target).is_some_and(|old| optional_str(old, "superseded_by") == Some(id));
+            if by_id.contains_key(target) && !mirrored {
+                violations.push(Violation::new(
+                    "SUPERSESSION_INCONSISTENT",
+                    format!(
+                        "node {id}: supersedes {target} but {target} is not superseded_by {id}"
+                    ),
+                ));
+            }
+        }
+    }
+
+    // Each node has at most one successor, so a walk either terminates or
+    // returns to a node already on the current path.
+    let mut reported: BTreeSet<&str> = BTreeSet::new();
+    for start in successor.keys() {
+        let mut path: Vec<&str> = vec![start];
+        let mut current = *start;
+        while let Some(next) = successor.get(current) {
+            if let Some(position) = path.iter().position(|item| item == next) {
+                let cycle = &path[position..];
+                if cycle.iter().any(|item| reported.insert(item)) {
+                    violations.push(Violation::new(
+                        "SUPERSESSION_INCONSISTENT",
+                        format!("supersession cycle: {} -> {next}", cycle.join(" -> ")),
+                    ));
+                }
+                break;
+            }
+            path.push(next);
+            current = next;
+        }
+    }
+}
+
 /// Two selectable owners of one exclusive key must be serialized by a hard path.
 fn conflict_problems(doc: &Value, graph: &Graph<'_>, violations: &mut Vec<Violation>) {
     let nodes = objects(doc, "nodes");
@@ -813,6 +907,7 @@ pub fn validate_document(doc: &Value) -> Vec<Violation> {
     }
     let vocab = vocabulary_problems(doc, &mut violations);
     node_problems(doc, &vocab, &mut violations);
+    supersession_problems(doc, &mut violations);
     let graph = edge_problems(doc, &vocab, &mut violations);
     if let Some(cycle) = find_cycle(&graph) {
         violations.push(Violation::new(
