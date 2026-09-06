@@ -329,6 +329,21 @@
       "boundedness": "focused"
     },
     {
+      "id": "parser.command_line.regex_modifier_matrix",
+      "package": "perl-parser-core",
+      "target": "command_line_regex_modifier_matrix",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#13663",
+      "reason": "Prove compact regex-family operators retain their modifier payload in author order, keep their byte range bounded to the operator, and diagnose invalid s///-and-tr/// modifiers inside that range.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
       "id": "parser.class_grammar.admission",
       "package": "perl-parser-core",
       "target": "class_grammar_context",
