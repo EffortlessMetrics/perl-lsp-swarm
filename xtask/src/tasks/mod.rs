@@ -71,6 +71,7 @@ pub mod e2e_validate;
 pub mod edge_cases;
 pub mod emacs_train_context;
 pub mod emacs_train_specs;
+pub mod feature_readiness_packets;
 pub mod features;
 pub mod file_policy;
 pub mod finalize_check;
