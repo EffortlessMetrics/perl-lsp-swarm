@@ -29,7 +29,7 @@ pub fn render_status(registry: &TrustInvariantRegistry) -> String {
             "| #{} | `{}` | {successor} | {} |\n",
             owner.issue,
             owner.status.as_str(),
-            owner.title
+            markdown_table_cell(&owner.title)
         ));
     }
 
@@ -47,7 +47,7 @@ pub fn render_status(registry: &TrustInvariantRegistry) -> String {
             producer.producer_kind.as_str(),
             producer.status.as_str(),
             producer.owner_issue,
-            producer.command_or_workflow
+            markdown_table_cell(&producer.command_or_workflow)
         ));
     }
 
@@ -91,7 +91,11 @@ pub fn render_status(registry: &TrustInvariantRegistry) -> String {
 
     markdown.push_str("\n## Claim boundaries\n\n");
     for row in &registry.invariants {
-        markdown.push_str(&format!("- `{}`: {}\n", row.invariant_id, row.claim_boundary));
+        markdown.push_str(&format!(
+            "- `{}`: {}\n",
+            row.invariant_id,
+            markdown_inline(&row.claim_boundary)
+        ));
     }
 
     markdown.push_str("\n## What this does not establish\n\n");
@@ -99,6 +103,20 @@ pub fn render_status(registry: &TrustInvariantRegistry) -> String {
         "This projection does not consume live candidate receipts, execute falsifiers, aggregate evidence, or change release controllers.\n",
     );
     markdown
+}
+
+/// Flatten newlines and escape `|` so registry text cannot split a table row.
+fn markdown_table_cell(text: &str) -> String {
+    markdown_inline(text).replace('|', r"\|")
+}
+
+/// Keep generated list or paragraph text on one semantic line.
+fn markdown_inline(text: &str) -> String {
+    text.split(['\r', '\n'])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Byte-compare generated status against the committed file.

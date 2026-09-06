@@ -107,6 +107,53 @@ fn status_render_is_byte_deterministic() -> TestResult {
 }
 
 #[test]
+fn status_table_escapes_pipes_and_newlines() -> TestResult {
+    let mut registry = canonical_registry()?;
+    owner_mut(&mut registry, 4343)?["title"] = json!("Zero-budget | table\nbreak");
+    producer_mut(&mut registry, "provider_decision_receipt")?["command_or_workflow"] =
+        json!("cargo xtask | decision\nreceipt");
+    invariant_mut(&mut registry, "false_exact")?["claim_boundary"] =
+        json!("Exact answers stay exact.\nPipes | stay inline.");
+    let typed = validate_registry_value(&repo_root(), &registry).map_err(|error| error.to_string())?;
+    let rendered = render_status(&typed);
+    let owner_row = rendered
+        .lines()
+        .find(|line| line.contains("Zero-budget"))
+        .ok_or_else(|| missing("escaped owner title row"))?;
+    assert!(
+        owner_row.contains(r"Zero-budget \| table break"),
+        "owner title must stay one escaped cell:\n{owner_row}"
+    );
+    assert_eq!(
+        owner_row.matches('|').count(),
+        5,
+        "owner table row must keep four columns:\n{owner_row}"
+    );
+    let producer_row = rendered
+        .lines()
+        .find(|line| line.contains("decision"))
+        .ok_or_else(|| missing("escaped producer command row"))?;
+    assert!(
+        producer_row.contains(r"cargo xtask \| decision receipt"),
+        "command_or_workflow must stay one escaped cell:\n{producer_row}"
+    );
+    assert_eq!(
+        producer_row.matches('|').count(),
+        6,
+        "producer table row must keep five columns:\n{producer_row}"
+    );
+    let claim_line = rendered
+        .lines()
+        .find(|line| line.contains("`false_exact`:"))
+        .ok_or_else(|| missing("claim-boundary list item"))?;
+    assert!(
+        claim_line.starts_with("- `false_exact`: Exact answers stay exact. Pipes | stay inline."),
+        "claim-boundary list item must stay one line:\n{claim_line}"
+    );
+    Ok(())
+}
+
+#[test]
 fn generated_projection_diverges_from_registry() -> TestResult {
     let root = repo_root();
     let tmp = tempfile::tempdir()?;
