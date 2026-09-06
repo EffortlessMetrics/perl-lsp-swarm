@@ -1,10 +1,14 @@
 //! Walk a parsed Rust file and collect tautological assertion macros.
 
-use super::detect::{Detection, RuleId, classify_assert_condition, classify_assert_eq};
+use super::detect::{Detection, RuleId, classify_assert_condition_in, classify_assert_eq};
+use super::expr::{TypeEnv, bind_pat_type};
 use syn::parse::{ParseStream, Parser};
 use syn::spanned::Spanned;
 use syn::visit::Visit;
-use syn::{Expr, ExprMacro, File, ItemMacro, Macro, StmtMacro};
+use syn::{
+    Expr, ExprClosure, ExprMacro, File, ImplItemFn, ItemFn, ItemMacro, Local, Macro, StmtMacro,
+    TraitItemFn,
+};
 
 const ASSERT_MACROS: &[&str] = &["assert", "debug_assert"];
 const ASSERT_EQ_MACROS: &[&str] = &["assert_eq", "debug_assert_eq"];
@@ -29,7 +33,7 @@ pub fn scan_file(path: &str, source: &str) -> Result<Vec<Finding>, String> {
 }
 
 pub fn scan_ast(path: &str, file: &File) -> Vec<Finding> {
-    let mut visitor = AssertionVisitor { path, findings: Vec::new() };
+    let mut visitor = AssertionVisitor { path, findings: Vec::new(), env: Vec::new() };
     visitor.visit_file(file);
     visitor.findings.sort();
     visitor.findings
@@ -38,9 +42,65 @@ pub fn scan_ast(path: &str, file: &File) -> Vec<Finding> {
 struct AssertionVisitor<'a> {
     path: &'a str,
     findings: Vec<Finding>,
+    env: Vec<TypeEnv>,
+}
+
+impl AssertionVisitor<'_> {
+    fn current_env(&self) -> TypeEnv {
+        self.env.last().cloned().unwrap_or_default()
+    }
+
+    fn push_fn_env(&mut self, inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>) {
+        let mut env = TypeEnv::new();
+        for input in inputs {
+            if let syn::FnArg::Typed(typed) = input {
+                bind_pat_type(&mut env, &typed.pat, &typed.ty);
+            }
+        }
+        self.env.push(env);
+    }
 }
 
 impl<'ast> Visit<'ast> for AssertionVisitor<'_> {
+    fn visit_item_fn(&mut self, node: &'ast ItemFn) {
+        self.push_fn_env(&node.sig.inputs);
+        syn::visit::visit_item_fn(self, node);
+        self.env.pop();
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast ImplItemFn) {
+        self.push_fn_env(&node.sig.inputs);
+        syn::visit::visit_impl_item_fn(self, node);
+        self.env.pop();
+    }
+
+    fn visit_trait_item_fn(&mut self, node: &'ast TraitItemFn) {
+        if let Some(block) = &node.default {
+            self.push_fn_env(&node.sig.inputs);
+            syn::visit::visit_block(self, block);
+            self.env.pop();
+        }
+    }
+
+    fn visit_expr_closure(&mut self, node: &'ast ExprClosure) {
+        let mut env = TypeEnv::new();
+        for input in &node.inputs {
+            if let syn::Pat::Type(typed) = input {
+                bind_pat_type(&mut env, &typed.pat, &typed.ty);
+            }
+        }
+        self.env.push(env);
+        syn::visit::visit_expr_closure(self, node);
+        self.env.pop();
+    }
+
+    fn visit_local(&mut self, node: &'ast Local) {
+        if let (Some(env), syn::Pat::Type(typed)) = (self.env.last_mut(), &node.pat) {
+            bind_pat_type(env, &typed.pat, &typed.ty);
+        }
+        syn::visit::visit_local(self, node);
+    }
+
     fn visit_expr_macro(&mut self, node: &'ast ExprMacro) {
         self.inspect_macro(&node.mac);
         syn::visit::visit_expr_macro(self, node);
@@ -64,7 +124,7 @@ impl AssertionVisitor<'_> {
         };
         if ASSERT_MACROS.iter().any(|candidate| name == *candidate) {
             if let Some(expr) = parse_assert_condition(mac.tokens.clone()) {
-                self.push(classify_assert_condition(&expr), mac);
+                self.push(classify_assert_condition_in(&expr, &self.current_env()), mac);
             }
             return;
         }
@@ -195,12 +255,18 @@ mod tests {
     #[test]
     fn scan_skips_stateful_receivers_and_non_reflexive_eq_but_keeps_path_tautologies() {
         let source = r#"
-            fn probe(value: Option<u8>) {
+            fn probe(value: Option<u8>, mut probe: Probe) {
                 assert!(value.is_some() || value.is_none());
                 assert!(counter().is_some() || counter().is_none());
+                assert!(probe.is_some() || probe.is_none());
                 assert_eq!(f32::NAN, f32::NAN);
                 assert_eq!(1, 1);
                 assert_eq!(1.0, 1.0);
+            }
+            struct Probe { n: u8 }
+            impl Probe {
+                fn is_some(&mut self) -> bool { self.n += 1; false }
+                fn is_none(&self) -> bool { false }
             }
             fn counter() -> Option<u8> { None }
         "#;

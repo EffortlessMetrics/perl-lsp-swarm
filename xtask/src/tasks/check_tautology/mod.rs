@@ -187,7 +187,7 @@ mod tests {
         fn sanitize_completion_path_input(_path: &str) -> Option<String> { None }
         #[test]
         fn test_traversal_encoded_dot_segments_completion() {
-            let value = sanitize_completion_path_input("..%2f..%2fetc%2fpasswd");
+            let value: Option<String> = sanitize_completion_path_input("..%2f..%2fetc%2fpasswd");
             assert!(value.is_some() || value.is_none());
             assert!(sanitize_completion_path_input("../foo").is_none());
         }
@@ -250,7 +250,7 @@ mod tests {
                     sanitize_completion_path_input("..%2f..%2fetc%2fpasswd"),
                     Some("..%2f..%2fetc%2fpasswd".to_string())
                 );"#,
-            r#"let value = sanitize_completion_path_input("..%2f..%2fetc%2fpasswd");
+            r#"let value: Option<String> = sanitize_completion_path_input("..%2f..%2fetc%2fpasswd");
                 assert!(value.is_some() || value.is_none());"#,
         );
         let findings = scan_file("path_security.rs", &reinserted).expect("parse reinsertion");
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn opposite_direction_controls_stay_green() {
         let source = r#"
-            fn probe(result: Result<(), Expected>, item: Item, ready: bool) {
+            fn probe(result: Result<(), Expected>, item: Item, ready: bool, mut probe: Probe) {
                 assert!(result.is_ok() || matches!(result, Err(Expected::Deferred)));
                 assert!(item.code.is_some() || item.data.is_none());
                 let _ = ready || !ready;
@@ -270,9 +270,16 @@ mod tests {
                 assert!(counter().is_some() || counter().is_none());
                 assert_eq!(f32::NAN, f32::NAN);
                 assert_eq!(f64::NAN, f64::NAN);
+                assert!(probe.is_some() || probe.is_none());
+                assert!(probe.is_some() || !probe.is_some());
             }
             enum Expected { Deferred }
             struct Item { code: Option<u8>, data: Option<u8> }
+            struct Probe { n: u8 }
+            impl Probe {
+                fn is_some(&mut self) -> bool { self.n += 1; false }
+                fn is_none(&self) -> bool { false }
+            }
             fn tick() -> bool { true }
             fn counter() -> Option<u8> { None }
             // Historical example: assert!(value.is_some() || value.is_none());

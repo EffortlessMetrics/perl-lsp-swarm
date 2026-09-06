@@ -1,12 +1,14 @@
 //! Conservative structural tautology detection for assertion expressions.
 //!
-//! False negatives are acceptable. False positives are not. Patterns that
-//! require type inference or purity analysis of arbitrary calls are skipped.
-//! Option/Result method pairs are governed only when the receiver is
-//! side-effect-free after paren-normalization. Identical `assert_eq!` operands
-//! are governed only when PartialEq reflexivity is known from syntax.
+//! False negatives are acceptable. False positives are not. Option/Result
+//! method pairs fire only when the receiver is a constructor or an explicitly
+//! ascribed Option/Result. Identical `assert_eq!` operands are governed only
+//! when PartialEq reflexivity is known from syntax.
 
-use super::expr::{expr_eq, is_known_reflexive_eq_operand, is_side_effect_free, peel};
+use super::expr::{
+    QueryKind, TypeEnv, expr_eq, is_known_reflexive_eq_operand, is_side_effect_free, peel,
+    proven_query_kind,
+};
 use syn::spanned::Spanned;
 use syn::{BinOp, Expr, UnOp};
 
@@ -62,7 +64,11 @@ pub struct Detection {
 }
 
 pub fn classify_assert_condition(expr: &Expr) -> Option<Detection> {
-    classify_or(peel(expr)).map(|rule| Detection { rule, line: line_of(expr) })
+    classify_assert_condition_in(expr, &TypeEnv::new())
+}
+
+pub fn classify_assert_condition_in(expr: &Expr, env: &TypeEnv) -> Option<Detection> {
+    classify_or(peel(expr), env).map(|rule| Detection { rule, line: line_of(expr) })
 }
 
 pub fn classify_assert_eq(left: &Expr, right: &Expr) -> Option<Detection> {
@@ -73,7 +79,7 @@ pub fn classify_assert_eq(left: &Expr, right: &Expr) -> Option<Detection> {
     }
 }
 
-fn classify_or(expr: &Expr) -> Option<RuleId> {
+fn classify_or(expr: &Expr, env: &TypeEnv) -> Option<RuleId> {
     let Expr::Binary(binary) = expr else {
         return None;
     };
@@ -84,11 +90,11 @@ fn classify_or(expr: &Expr) -> Option<RuleId> {
     let left = peel(&binary.left);
     let right = peel(&binary.right);
 
-    if let Some(rule) = option_or_result_pair(left, right) {
+    if let Some(rule) = option_or_result_pair(left, right, env) {
         return Some(rule);
     }
 
-    if !is_side_effect_free(left) || !is_side_effect_free(right) {
+    if !is_side_effect_free(left, env) || !is_side_effect_free(right, env) {
         return None;
     }
 
@@ -107,22 +113,20 @@ fn identical_known_reflexive_eq(left: &Expr, right: &Expr) -> bool {
     expr_eq(left, right) && is_known_reflexive_eq_operand(left)
 }
 
-fn option_or_result_pair(left: &Expr, right: &Expr) -> Option<RuleId> {
+fn option_or_result_pair(left: &Expr, right: &Expr, env: &TypeEnv) -> Option<RuleId> {
     let (left_recv, left_method) = method_name(left)?;
     let (right_recv, right_method) = method_name(right)?;
     if !expr_eq(left_recv, right_recv) {
         return None;
     }
-    // Identical method-call receivers (`iter.next()`) and identical function-call
-    // receivers (`counter()`, `sanitize_completion_path_input(...)`) can yield
-    // different values on each evaluation. Only side-effect-free receivers are
-    // a proven Option/Result tautology.
-    if !is_side_effect_free(left_recv) {
-        return None;
-    }
-    match (left_method.as_str(), right_method.as_str()) {
-        ("is_some", "is_none") | ("is_none", "is_some") => Some(RuleId::OptionSomeOrNone),
-        ("is_ok", "is_err") | ("is_err", "is_ok") => Some(RuleId::ResultOkOrErr),
+    let kind = proven_query_kind(left_recv, env)?;
+    match (kind, left_method.as_str(), right_method.as_str()) {
+        (QueryKind::Option, "is_some", "is_none") | (QueryKind::Option, "is_none", "is_some") => {
+            Some(RuleId::OptionSomeOrNone)
+        }
+        (QueryKind::Result, "is_ok", "is_err") | (QueryKind::Result, "is_err", "is_ok") => {
+            Some(RuleId::ResultOkOrErr)
+        }
         _ => None,
     }
 }
@@ -157,12 +161,24 @@ fn line_of(expr: &Expr) -> u32 {
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-    use super::{RuleId, classify_assert_condition, classify_assert_eq};
+    use super::super::expr::{QueryKind, TypeEnv};
+    use super::{
+        RuleId, classify_assert_condition, classify_assert_condition_in, classify_assert_eq,
+    };
     use syn::parse_str;
 
     fn rule_of(src: &str) -> Option<RuleId> {
         let expr = parse_str(src).unwrap_or_else(|error| panic!("parse `{src}`: {error}"));
         classify_assert_condition(&expr).map(|detection| detection.rule)
+    }
+
+    fn typed_rule(src: &str, bindings: &[(&str, QueryKind)]) -> Option<RuleId> {
+        let expr = parse_str(src).unwrap_or_else(|error| panic!("parse `{src}`: {error}"));
+        let mut env = TypeEnv::new();
+        for (ident, kind) in bindings {
+            env.bind((*ident).to_string(), *kind);
+        }
+        classify_assert_condition_in(&expr, &env).map(|detection| detection.rule)
     }
 
     fn eq_rule(left: &str, right: &str) -> Option<RuleId> {
@@ -174,28 +190,50 @@ mod tests {
 
     #[test]
     fn flags_option_some_or_none() {
-        assert_eq!(rule_of("value.is_some() || value.is_none()"), Some(RuleId::OptionSomeOrNone));
-        assert_eq!(rule_of("value.is_none() || value.is_some()"), Some(RuleId::OptionSomeOrNone));
         assert_eq!(
-            rule_of("(value.is_some()) || (value.is_none())"),
+            typed_rule("value.is_some() || value.is_none()", &[("value", QueryKind::Option)]),
             Some(RuleId::OptionSomeOrNone)
         );
+        assert_eq!(
+            typed_rule("value.is_none() || value.is_some()", &[("value", QueryKind::Option)]),
+            Some(RuleId::OptionSomeOrNone)
+        );
+        assert_eq!(
+            typed_rule("(value.is_some()) || (value.is_none())", &[("value", QueryKind::Option)]),
+            Some(RuleId::OptionSomeOrNone)
+        );
+        assert_eq!(
+            rule_of("Some(1).is_some() || Some(1).is_none()"),
+            Some(RuleId::OptionSomeOrNone)
+        );
+        assert_eq!(rule_of("None.is_some() || None.is_none()"), Some(RuleId::OptionSomeOrNone));
     }
 
     #[test]
     fn flags_result_ok_or_err() {
-        assert_eq!(rule_of("result.is_ok() || result.is_err()"), Some(RuleId::ResultOkOrErr));
         assert_eq!(
-            rule_of("parse_result.is_err() || parse_result.is_ok()"),
+            typed_rule("result.is_ok() || result.is_err()", &[("result", QueryKind::Result)]),
             Some(RuleId::ResultOkOrErr)
         );
+        assert_eq!(
+            typed_rule(
+                "parse_result.is_err() || parse_result.is_ok()",
+                &[("parse_result", QueryKind::Result)]
+            ),
+            Some(RuleId::ResultOkOrErr)
+        );
+        assert_eq!(rule_of("Ok(()).is_ok() || Ok(()).is_err()"), Some(RuleId::ResultOkOrErr));
     }
 
     #[test]
     fn flags_predicate_or_negation_and_reverse() {
         assert_eq!(rule_of("ready || !ready"), Some(RuleId::PredicateOrNegation));
         assert_eq!(rule_of("!ready || ready"), Some(RuleId::PredicateOrNegation));
-        assert_eq!(rule_of("flag.is_some() || !flag.is_some()"), Some(RuleId::PredicateOrNegation));
+        assert_eq!(
+            typed_rule("flag.is_some() || !flag.is_some()", &[("flag", QueryKind::Option)]),
+            Some(RuleId::PredicateOrNegation)
+        );
+        assert_eq!(rule_of("flag.is_some() || !flag.is_some()"), None);
     }
 
     #[test]
@@ -285,12 +323,27 @@ mod tests {
 
     #[test]
     fn still_flags_side_effect_free_option_and_result_paths_after_purity_narrowing() {
-        assert_eq!(rule_of("value.is_some() || value.is_none()"), Some(RuleId::OptionSomeOrNone));
-        assert_eq!(rule_of("item.flag.is_ok() || item.flag.is_err()"), Some(RuleId::ResultOkOrErr));
         assert_eq!(
-            rule_of("(value.is_some()) || (value.is_none())"),
+            typed_rule("value.is_some() || value.is_none()", &[("value", QueryKind::Option)]),
             Some(RuleId::OptionSomeOrNone)
         );
+        assert_eq!(
+            typed_rule("result.is_ok() || result.is_err()", &[("result", QueryKind::Result)]),
+            Some(RuleId::ResultOkOrErr)
+        );
+        assert_eq!(
+            typed_rule("(value.is_some()) || (value.is_none())", &[("value", QueryKind::Option)]),
+            Some(RuleId::OptionSomeOrNone)
+        );
+        assert_eq!(rule_of("value.is_some() || value.is_none()"), None);
+        assert_eq!(rule_of("item.flag.is_ok() || item.flag.is_err()"), None);
+    }
+
+    #[test]
+    fn does_not_flag_custom_query_methods() {
+        assert_eq!(rule_of("probe.is_some() || probe.is_none()"), None);
+        assert_eq!(rule_of("probe.is_ok() || probe.is_err()"), None);
+        assert_eq!(rule_of("probe.is_some() || !probe.is_some()"), None);
     }
 
     #[test]
