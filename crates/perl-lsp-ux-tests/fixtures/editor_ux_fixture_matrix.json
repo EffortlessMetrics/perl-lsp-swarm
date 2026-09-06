@@ -2136,7 +2136,7 @@
       ],
       "expected_outcomes": [
         "request-header detection sites complete HX-Request with request-direction detail and a textEdit that replaces only the typed prefix inside the quotes",
-        "response-header emission sites complete HX-Trigger, HX-Trigger-After-Settle, and HX-Trigger-After-Swap with the same serialization shape in all three stacks",
+        "HX-Tri at request and response sites is the exact catalog set in order: HX-Trigger, HX-Trigger-After-Settle, HX-Trigger-After-Swap, HX-Trigger-Name, each with prefix-only textEdit in all three stacks",
         "case-insensitive hx-red inserts canonical HX-Redirect over the typed prefix",
         "dynamic $event_name header values and ordinary templates/ strings produce no HX-* completion item",
         "probe fixtures open without parse-error diagnostics while a broken control file still publishes a parser-family diagnostic",
