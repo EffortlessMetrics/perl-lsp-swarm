@@ -561,6 +561,13 @@ impl MutationTarget {
     /// digest gives that discrimination without putting the frame or binding
     /// spelling, or hash key data, into the receipt.
     ///
+    /// The rule this must satisfy: the fingerprint discriminates **at least as
+    /// finely as [`MutationLocationProvenance`]'s own equality**. Every field
+    /// that makes two locations different has to reach the hash, or the
+    /// durable receipt would collapse cells the type itself keeps apart.
+    /// `location_fingerprint_covers_every_identity_field` enforces that
+    /// field-by-field, so a later field addition cannot silently omit itself.
+    ///
     /// Every field is length-prefixed before hashing, so no two different
     /// field splits can produce the same input, and the input opens with a
     /// versioned mutation-location tag so a location identity cannot collide
@@ -574,6 +581,18 @@ impl MutationTarget {
         push(&mut bytes, MUTATION_LOCATION_DIGEST_DOMAIN);
         push(&mut bytes, self.location.frame_identity().as_bytes());
         push(&mut bytes, self.location.binding_identity().as_bytes());
+        push(&mut bytes, format!("{:?}", self.location.kind()).as_bytes());
+        // The proven container referent is part of location identity. Without
+        // it, a binding later reaching a *different* array or hash would hash
+        // identically at the same member selector, and the fingerprint would
+        // discriminate more coarsely than the provenance it projects.
+        match self.location.referent_identity() {
+            Some(referent) => {
+                push(&mut bytes, b"referent");
+                push(&mut bytes, referent.as_bytes());
+            }
+            None => push(&mut bytes, b"no-referent"),
+        }
         match self.location.member() {
             MutationMember::WholeScalar => push(&mut bytes, b"scalar"),
             MutationMember::ArrayIndex(index) => {

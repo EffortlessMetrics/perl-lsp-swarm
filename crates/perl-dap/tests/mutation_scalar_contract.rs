@@ -1114,3 +1114,74 @@ fn a_character_key_and_a_byte_key_with_equal_bytes_stay_distinct() -> TestResult
     }
     Ok(())
 }
+
+#[test]
+fn location_fingerprint_covers_every_identity_field() -> TestResult {
+    // The rule, stated once instead of patched per field: the fingerprint must
+    // discriminate at least as finely as MutationLocationProvenance's own
+    // equality. Anything that makes two locations different has to reach the
+    // hash, or the durable receipt collapses cells the type keeps apart.
+    //
+    // Each case below perturbs exactly one identity field of an otherwise
+    // identical container claim and requires both the target AND its
+    // fingerprint to change. A future field that forgets to reach the hash
+    // fails here rather than silently colliding in receipts.
+    let base = || -> MutationTargetCandidate {
+        let mut candidate = lexical_candidate("frame#1", "pad:@rows@0");
+        candidate.kind = Some(MutationLocationKind::CurrentFrameArrayElement);
+        candidate.member = Some(MutationMember::ArrayIndex(0));
+        candidate.inspected_value = Some(InspectedValueIdentity {
+            value_node: "node".to_string(),
+            referent: Some("ARRAY(0xdead)".to_string()),
+            value_authority_generation: 11,
+        });
+        candidate
+    };
+
+    let mut perturbations: Vec<(&str, MutationTargetCandidate)> = Vec::new();
+
+    let mut other_frame = base();
+    other_frame.frame_identity = "frame#2".to_string();
+    perturbations.push(("frame_identity", other_frame));
+
+    let mut other_binding = base();
+    other_binding.binding_identity = "pad:@cols@1".to_string();
+    perturbations.push(("binding_identity", other_binding));
+
+    let mut other_member = base();
+    other_member.member = Some(MutationMember::ArrayIndex(1));
+    perturbations.push(("member", other_member));
+
+    // The case this test was written for: one binding reaching a *replacement*
+    // container. Same frame, same binding, same index -- another storage cell.
+    let mut other_referent = base();
+    other_referent.inspected_value = Some(InspectedValueIdentity {
+        value_node: "node".to_string(),
+        referent: Some("ARRAY(0xbeef)".to_string()),
+        value_authority_generation: 11,
+    });
+    perturbations.push(("referent_identity", other_referent));
+
+    let baseline = bind(&base())?;
+    let baseline_fingerprint = baseline.receipt_projection().location_fingerprint;
+
+    for (field, candidate) in perturbations {
+        let perturbed = bind(&candidate)?;
+        if perturbed == baseline {
+            return Err(format!("changing {field} did not change the target"));
+        }
+        if perturbed.receipt_projection().location_fingerprint == baseline_fingerprint {
+            return Err(format!(
+                "changing {field} left the location fingerprint unchanged; \
+                 the receipt discriminates more coarsely than the provenance"
+            ));
+        }
+    }
+
+    // Stability in the other direction: an identical claim reproduces the
+    // fingerprint, so it identifies the location and not the call.
+    if bind(&base())?.receipt_projection().location_fingerprint != baseline_fingerprint {
+        return Err("one location produced two fingerprints".to_string());
+    }
+    Ok(())
+}
