@@ -188,3 +188,23 @@ fn cargo_target_dir_symlink_alias_does_not_publish() {
     assert_eq!(path, root.join("target/token_performance_scorecard.json"));
     let _ = fs::remove_dir_all(&root);
 }
+
+#[cfg(unix)]
+#[test]
+fn cargo_target_dir_symlink_parent_alias_does_not_publish() {
+    let root = unique_temp_dir("symlink-parent");
+    make_repo_layout(&root);
+    let nested = root.join("docs/project/status/nested");
+    fs::create_dir_all(&nested).expect("nested status dir");
+    let alias = root.join("alias-nested");
+    std::os::unix::fs::symlink(&nested, &alias).expect("symlink into status subdirectory");
+    let aliased = alias.join("..");
+    let path = resolve_artifact_path(&root, Some(&aliased), false)
+        .expect("symlink-then-parent alias must fall back to repo target");
+    assert!(
+        !is_tracked_docs_artifact(&path),
+        "CARGO_TARGET_DIR symlink/.. alias must not select tracked docs: {path:?}"
+    );
+    assert_eq!(path, root.join("target/token_performance_scorecard.json"));
+    let _ = fs::remove_dir_all(&root);
+}

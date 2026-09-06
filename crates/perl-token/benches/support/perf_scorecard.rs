@@ -124,7 +124,9 @@ fn would_write_tracked_docs(cwd: &Path, candidate: &Path) -> bool {
     let Some(repo_root) = find_repo_root(cwd) else {
         return false;
     };
-    same_existing_file_or_parent(&lexical, &repo_root.join(TRACKED_ARTIFACT_RELATIVE_PATH))
+    // Canonicalize the unresolved path so `symlink/..` follows the link
+    // before `..`, matching filesystem write behavior.
+    same_existing_file_or_parent(&resolved, &repo_root.join(TRACKED_ARTIFACT_RELATIVE_PATH))
 }
 
 fn normalize_lexically(path: &Path) -> PathBuf {
