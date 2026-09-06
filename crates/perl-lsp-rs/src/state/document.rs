@@ -3,8 +3,8 @@
 //! Manages document content with Rope-based storage for efficient
 //! incremental updates and UTF-16 position mapping.
 
-use perl_parser::declaration::ParentMap;
 use perl_parser::position::LineStartsCache;
+use perl_semantic_analyzer::analysis::declaration::ParentMap;
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};

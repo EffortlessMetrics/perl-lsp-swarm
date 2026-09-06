@@ -1896,6 +1896,7 @@ dependencies = [
  "perl-pod",
  "perl-position-tracking",
  "perl-ripr-facts",
+ "perl-semantic-analyzer",
  "perl-semantic-facts",
  "perl-source-identity",
  "perl-subprocess-runtime",

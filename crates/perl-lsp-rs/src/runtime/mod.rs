@@ -83,8 +83,8 @@ use perl_lsp_rs_core::tooling::perl_critic::BuiltInAnalyzer;
 use perl_parser::{
     Parser,
     ast::{Node, NodeKind},
-    declaration::ParentMap,
 };
+use perl_semantic_analyzer::analysis::declaration::ParentMap;
 use perl_tdd_support::{
     tdd_basic::TestGenerator,
     test_runner::{TestKind, TestRunner},
