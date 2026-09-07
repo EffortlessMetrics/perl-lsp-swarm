@@ -50,6 +50,21 @@ fn workspace_server(dir: &TempDir) -> LspServer {
     server
 }
 
+/// A server whose folder narrows `include_paths`, so a detected root is
+/// genuinely detector-owned and its retirement is observable. The default
+/// config already lists `local/lib/perl5`, which would mask that.
+fn workspace_server_without_default_local_lib(dir: &TempDir) -> LspServer {
+    let server = LspServer::new();
+    let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+    config.include_paths = vec!["lib".to_string(), ".".to_string()];
+    let mut folder = WorkspaceFolderState::new(dir_uri(dir))
+        .with_path(dir.path().to_path_buf())
+        .with_effective_workspace_config(config);
+    folder.refresh_workspace_metadata();
+    server.workspace_folders.lock().push(folder);
+    server
+}
+
 fn watched(server: &LspServer, changes: &[(&str, i32)]) {
     let changes =
         changes.iter().map(|(uri, typ)| json!({ "uri": uri, "type": typ })).collect::<Vec<_>>();
@@ -208,14 +223,22 @@ fn deleted_cpanfile_downgrades_declared_dependencies() {
 /// or a delete-and-rewrite save — must not erase facts the staged buffer still
 /// declares, and must not retire the include root that `cpanfile`'s presence
 /// gates.
+///
+/// The folder deliberately omits the default `local/lib/perl5` entry: with it,
+/// the root is user-configured and could never be retired, so the assertion
+/// would pass regardless of the behavior under test.
 #[test]
 fn deleting_an_open_metadata_file_does_not_erase_buffer_owned_facts() {
     let dir = TempDir::new().expect("tempdir");
     write_file(&dir, "cpanfile", "requires 'JSON::PP';\n");
     write_file(&dir, "carton.lock", "snapshot\n");
-    let server = workspace_server(&dir);
+    let server = workspace_server_without_default_local_lib(&dir);
     let uri = file_uri(&dir, "cpanfile");
     assert_eq!(declared_modules(&server), vec!["JSON::PP".to_string()]);
+    assert!(
+        include_paths(&server).contains(&"local/lib/perl5".to_string()),
+        "the detected root is contributed at baseline"
+    );
 
     server
         .handle_did_open(Some(json!({
@@ -237,12 +260,77 @@ fn deleting_an_open_metadata_file_does_not_erase_buffer_owned_facts() {
         "an external delete must not erase facts an open metadata buffer still declares"
     );
     assert!(
-        server.all_workspace_folders().first().is_some_and(|folder| folder
-            .effective_workspace_config
-            .include_paths
-            .iter()
-            .any(|path| path == "local/lib/perl5")),
-        "the Carton include root must survive a delete race on an open cpanfile"
+        include_paths(&server).contains(&"local/lib/perl5".to_string()),
+        "an open cpanfile keeps gating the Carton root across a delete of its backing file"
+    );
+}
+
+/// The same delete with no buffer behind it is a genuine delete: the root is
+/// retired. This is the opposite-direction control for the test above — without
+/// it, always-keeping the root would pass.
+#[test]
+fn deleting_a_closed_cpanfile_retires_the_detected_include_root() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "cpanfile", "requires 'JSON::PP';\n");
+    write_file(&dir, "carton.lock", "snapshot\n");
+    let server = workspace_server_without_default_local_lib(&dir);
+    assert!(include_paths(&server).contains(&"local/lib/perl5".to_string()));
+
+    std::fs::remove_file(dir.path().join("cpanfile")).expect("remove cpanfile");
+    watched(&server, &[(&file_uri(&dir, "cpanfile"), DELETED)]);
+
+    assert!(
+        !include_paths(&server).contains(&"local/lib/perl5".to_string()),
+        "a deleted cpanfile with no buffer behind it must retire the detected root"
+    );
+}
+
+/// Directory subjects (#13640): watcher and file-operation notifications can
+/// name a directory rather than each descendant, so removing a metadata
+/// ancestor must still invalidate.
+#[test]
+fn deleting_a_directory_containing_metadata_refreshes_facts() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "cpanfile", "requires 'JSON::PP';\n");
+    write_file(&dir, "local/.carmel", "");
+    let server = workspace_server_without_default_local_lib(&dir);
+    assert!(
+        include_paths(&server).contains(&"local/lib/perl5".to_string()),
+        "the Carmel rollout sentinel contributes the root at baseline"
+    );
+
+    std::fs::remove_dir_all(dir.path().join("local")).expect("remove local/");
+    server
+        .handle_did_delete_files(Some(json!({
+            "files": [{ "uri": file_uri(&dir, "local") }]
+        })))
+        .expect("didDeleteFiles params are valid");
+
+    assert!(
+        !include_paths(&server).contains(&"local/lib/perl5".to_string()),
+        "deleting the directory holding local/.carmel must retire the root it gated"
+    );
+}
+
+/// A removed workspace folder must not keep a staleness entry.
+#[test]
+fn removing_a_workspace_folder_prunes_its_stale_marker() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "cpanfile", "requires 'JSON::PP';\n");
+    let server = workspace_server(&dir);
+    write_unreadable_cpanfile(&dir);
+    watched(&server, &[(&file_uri(&dir, "cpanfile"), CHANGED)]);
+    assert!(server.dependency_facts_are_stale(&dir_uri(&dir)), "folder is stale first");
+
+    server
+        .handle_did_change_workspace_folders(Some(json!({
+            "event": { "added": [], "removed": [{ "uri": dir_uri(&dir), "name": "ws" }] }
+        })))
+        .expect("didChangeWorkspaceFolders params are valid");
+
+    assert!(
+        !server.dependency_facts_are_stale(&dir_uri(&dir)),
+        "a removed folder must not remain marked stale"
     );
 }
 

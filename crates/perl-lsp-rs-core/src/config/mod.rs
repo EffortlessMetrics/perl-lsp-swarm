@@ -29,7 +29,9 @@ pub mod toolchain_profile;
 
 pub(crate) use critic_state::CriticSettingsCandidate;
 pub use critic_state::{EffectiveCriticState, EffectiveNativeCriticConfig};
-pub use dependency_detection::detect_dependency_include_paths;
+pub use dependency_detection::{
+    detect_dependency_include_paths, detect_dependency_include_paths_with_declaration,
+};
 pub use metadata_dependencies::{
     DeclaredDependency, DeclaredDependencySource, MetadataSourceRead,
     declared_dependencies_from_reads, detect_declared_dependencies, extract_build_pl_requirements,
@@ -43,7 +45,9 @@ pub use native_build_hints::{
 pub use perl_lsp_perltidy::FormatterMode;
 #[cfg(not(target_arch = "wasm32"))]
 pub use perl_oracle_env::PerlOracleEnv;
-pub use project_metadata::{ProjectMetadataKind, classify_project_metadata_path};
+pub use project_metadata::{
+    ProjectMetadataKind, classify_project_metadata_path, project_metadata_relative_paths,
+};
 pub use toolchain_profile::PerlToolchainProfile;
 
 /// Critic diagnostic engine used for LSP policy diagnostics.
@@ -1545,7 +1549,22 @@ impl WorkspaceConfig {
     /// [`Self::detected_dependency_include_paths`], so a path the user
     /// configured is never removed even when the detector also reports it.
     pub fn refresh_dependency_include_paths(&mut self, workspace_root: &Path) {
-        let detected = detect_dependency_include_paths(workspace_root);
+        self.refresh_dependency_include_paths_with_declaration(workspace_root, None);
+    }
+
+    /// As [`Self::refresh_dependency_include_paths`], with an authoritative
+    /// override for whether the `cpanfile` declaration exists (#13640).
+    ///
+    /// An open editor buffer is the authority for its document and outlives an
+    /// external delete of the backing file, so a deleted-but-open `cpanfile`
+    /// must keep gating the Carton/Carmel root until its buffer closes.
+    pub fn refresh_dependency_include_paths_with_declaration(
+        &mut self,
+        workspace_root: &Path,
+        declaration_present: Option<bool>,
+    ) {
+        let detected =
+            detect_dependency_include_paths_with_declaration(workspace_root, declaration_present);
         let detected_normalized: Vec<String> =
             detected.iter().filter_map(|path| normalize_include_path(path)).collect();
 
@@ -1628,6 +1647,13 @@ impl WorkspaceConfig {
                             .push(RejectedClientIncludePath { entry: entry.to_string(), reason }),
                     }
                 }
+                // An explicit configuration channel replaces the whole list,
+                // so detector ownership no longer describes any entry here
+                // (#13640). Clearing it keeps a user-supplied path that
+                // happens to equal a detected root from being retired later
+                // when its marker disappears; the next refresh re-observes it
+                // as already-present and leaves it unowned.
+                self.detected_dependency_include_paths.clear();
                 self.include_paths = valid;
             }
             if let Some(paths) = workspace.get("externalIncludePaths").and_then(|v| v.as_array()) {
@@ -2601,6 +2627,10 @@ impl ProjectConfig {
                 valid.push(entry.clone());
             }
             if !skip_include_paths {
+                // Project-file configuration replaces the list; drop detector
+                // ownership for the same reason as the client-settings channel
+                // (#13640).
+                config.detected_dependency_include_paths.clear();
                 config.include_paths = valid;
             }
         }
@@ -4463,6 +4493,44 @@ profile = "recommended"
 
         assert!(config.perlcritic_enabled);
         assert!(config.inlay_hints_enabled);
+    }
+
+    /// Detector ownership must not survive an explicit configuration
+    /// replacement (#13640). If it did, a user-supplied path equal to a
+    /// previously detected root would be retired when its marker disappeared.
+    #[test]
+    fn client_settings_replacement_releases_detector_ownership() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(workspace.path().join("carton.lock"), "snapshot\n")?;
+
+        let mut config = WorkspaceConfig {
+            include_paths: vec!["lib".to_string()],
+            ..WorkspaceConfig::default()
+        };
+        config.refresh_dependency_include_paths(workspace.path());
+        assert!(
+            config.detected_dependency_include_paths.contains(&"local/lib/perl5".to_string()),
+            "the detector owns the root it contributed"
+        );
+
+        // The user now configures the same path explicitly.
+        config.update_from_value(&serde_json::json!({
+            "workspace": { "includePaths": ["lib", "local/lib/perl5"] }
+        }));
+        assert!(
+            config.detected_dependency_include_paths.is_empty(),
+            "an explicit replacement releases detector ownership"
+        );
+
+        // The marker disappears; the user-configured path must survive.
+        std::fs::remove_file(workspace.path().join("carton.lock"))?;
+        config.refresh_dependency_include_paths(workspace.path());
+        assert!(
+            config.include_paths.contains(&"local/lib/perl5".to_string()),
+            "a user-configured path is never retired by marker detection"
+        );
+        Ok(())
     }
 
     #[test]

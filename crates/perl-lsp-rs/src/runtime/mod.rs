@@ -226,13 +226,14 @@ pub struct LspServer {
     /// least one folder, so a burst of metadata writes is one observable
     /// refresh rather than one per event.
     pub(crate) dependency_facts_generation: Arc<AtomicU64>,
-    /// Workspace folder URIs whose dependency/environment snapshot could not
-    /// be refreshed from disk and is therefore retained but not current
-    /// (#13640).
+    /// Workspace folder URIs holding at least one metadata source that could
+    /// not be read, whose previous facts are therefore retained rather than
+    /// observed (#13640).
     ///
-    /// A folder is marked when a metadata file is present but unreadable, or
-    /// when an open buffer holds unsaved metadata text; it is cleared by the
-    /// next refresh that observes readable disk state.
+    /// A folder is marked only when a metadata file exists but cannot be read
+    /// as text. An open buffer is *not* stale: its staged text is the
+    /// authority, so buffer-derived facts are current. The marker is cleared
+    /// by the next refresh in which every source resolves.
     pub(crate) stale_dependency_facts: Arc<Mutex<std::collections::BTreeSet<String>>>,
     /// Serializes workspace identity invalidation with diagnostic publication.
     pub(crate) workspace_identity_lock: Arc<Mutex<()>>,

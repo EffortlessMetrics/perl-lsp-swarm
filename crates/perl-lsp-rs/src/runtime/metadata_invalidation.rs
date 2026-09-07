@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 
 use perl_lsp_rs_core::config::{
     DeclaredDependencySource, MetadataSourceRead, classify_project_metadata_path,
+    project_metadata_relative_paths,
 };
 use perl_uri::uri_to_fs_path;
 
@@ -37,9 +38,9 @@ use super::LspServer;
 impl LspServer {
     /// Workspace-folder roots whose metadata facts `uri` affects.
     ///
-    /// Empty when the path is not project metadata, is not inside any current
-    /// workspace folder, or is not a filesystem path at all — so events from
-    /// unrelated trees can never trigger a refresh.
+    /// Empty when the path neither is nor contains project metadata, is not
+    /// inside any current workspace folder, or is not a filesystem path at all
+    /// — so events from unrelated trees can never trigger a refresh.
     pub(crate) fn project_metadata_roots_for_uri(&self, uri: &str) -> Vec<PathBuf> {
         let Some(path) = uri_to_fs_path(uri) else {
             return Vec::new();
@@ -50,11 +51,36 @@ impl LspServer {
             let Some(root) = folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri)) else {
                 continue;
             };
-            if classify_project_metadata_path(&root, &path).is_some() && !roots.contains(&root) {
+            if !roots.contains(&root) && Self::subtree_touches_metadata(&root, &path) {
                 roots.push(root);
             }
         }
         roots
+    }
+
+    /// Whether `path` is, or contains, project metadata for `root`.
+    ///
+    /// Watcher and file-operation notifications can name a directory rather
+    /// than each descendant (the catch-all watcher delivers directory delete
+    /// and rename events, and `didDeleteFiles`/`didRenameFiles` accept
+    /// directory subjects). Matching only exact metadata files would leave
+    /// facts stale when a workspace root, `local/`, or `.carmel/` is removed
+    /// or moved, so a governed path *under* the event subject counts too.
+    ///
+    /// Component-wise `starts_with` keeps sibling names safe: a `cpanfile2`
+    /// event does not match `cpanfile`. For an exact metadata file this is
+    /// identical to classification, which the shared path set guarantees.
+    fn subtree_touches_metadata(root: &Path, path: &Path) -> bool {
+        if classify_project_metadata_path(root, path).is_some() {
+            return true;
+        }
+        project_metadata_relative_paths().any(|relative| {
+            let mut metadata_path = root.to_path_buf();
+            for component in relative.split('/') {
+                metadata_path.push(component);
+            }
+            metadata_path.starts_with(path)
+        })
     }
 
     /// Refresh dependency and environment facts for `roots`, at most once each.
@@ -182,15 +208,23 @@ impl LspServer {
     }
 
     /// Current dependency/environment fact generation (#13640).
+    ///
+    /// Test/observation seam only: deliberately not public API, and compiled
+    /// only under test because no production consumer reads it yet.
+    #[cfg(test)]
     #[must_use]
-    pub fn dependency_facts_generation(&self) -> u64 {
+    pub(crate) fn dependency_facts_generation(&self) -> u64 {
         self.dependency_facts_generation.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Whether `folder_uri`'s dependency/environment snapshot is retained but
     /// not current (#13640).
+    ///
+    /// Test/observation seam only: deliberately not public API, and compiled
+    /// only under test because no production consumer reads it yet.
+    #[cfg(test)]
     #[must_use]
-    pub fn dependency_facts_are_stale(&self, folder_uri: &str) -> bool {
+    pub(crate) fn dependency_facts_are_stale(&self, folder_uri: &str) -> bool {
         self.stale_dependency_facts.lock().contains(folder_uri)
     }
 

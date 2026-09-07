@@ -5,7 +5,7 @@ use std::path::Path;
 /// Marker paths are defined once in `super::project_metadata` so watcher
 /// invalidation (#13640) classifies exactly the paths this detector probes.
 use super::project_metadata::{
-    CARMEL_DEV_STATE, CARMEL_ROLLOUT_SENTINEL, CARTON_LOCK, CPANFILE_SNAPSHOT,
+    CARMEL_DEV_STATE, CARMEL_ROLLOUT_SENTINEL, CARTON_LOCK, CPANFILE_DECLARATION, CPANFILE_SNAPSHOT,
 };
 
 /// Carton and rolled-out Carmel share one install-base layout: a standard
@@ -37,7 +37,26 @@ const LOCAL_INSTALL_INCLUDE_PATH: &str = "local/lib/perl5";
 /// (configuration observation train, #10817).
 #[must_use]
 pub fn detect_dependency_include_paths(workspace_root: &Path) -> Vec<String> {
-    if !workspace_root.join("cpanfile").is_file() {
+    detect_dependency_include_paths_with_declaration(workspace_root, None)
+}
+
+/// As [`detect_dependency_include_paths`], with an authoritative override for
+/// whether the `cpanfile` declaration exists (#13640).
+///
+/// The declaration gate is normally an on-disk probe, but an open editor
+/// buffer is the authority for its document (#8041) and outlives an external
+/// delete of the backing file. `declaration_present` carries that captured
+/// state; `None` falls back to the filesystem. Only the declaration gate is
+/// overridable — the install-root markers are genuine filesystem state and are
+/// always probed on disk.
+#[must_use]
+pub fn detect_dependency_include_paths_with_declaration(
+    workspace_root: &Path,
+    declaration_present: Option<bool>,
+) -> Vec<String> {
+    let declared =
+        declaration_present.unwrap_or_else(|| workspace_root.join(CPANFILE_DECLARATION).is_file());
+    if !declared {
         return Vec::new();
     }
 

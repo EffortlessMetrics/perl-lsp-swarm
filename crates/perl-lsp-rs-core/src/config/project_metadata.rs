@@ -56,6 +56,12 @@ pub(crate) const CARMEL_DEV_STATE: &str = ".carmel/MySetup.pm";
 /// Carton lock marker.
 pub(crate) const CARTON_LOCK: &str = "carton.lock";
 
+/// The `cpanfile` declaration that gates include-root detection.
+///
+/// Same spelling as [`DeclaredDependencySource::Cpanfile`]'s file name; the
+/// equality is asserted by a test below so the two cannot drift.
+pub(crate) const CPANFILE_DECLARATION: &str = "cpanfile";
+
 /// Shared Carton/Carmel snapshot lock.
 pub(crate) const CPANFILE_SNAPSHOT: &str = "cpanfile.snapshot";
 
@@ -77,6 +83,19 @@ pub enum ProjectMetadataKind {
     EnvironmentRoots,
     /// Feeds both families.
     Both,
+}
+
+/// Every workspace-root-relative path that feeds dependency or environment
+/// facts, in a deterministic order.
+///
+/// Callers that must decide whether a filesystem *subtree* contains project
+/// metadata (a directory delete or rename) use this rather than re-deriving
+/// the set, so subtree matching cannot drift from exact classification.
+pub fn project_metadata_relative_paths() -> impl Iterator<Item = &'static str> {
+    DeclaredDependencySource::ALL
+        .into_iter()
+        .map(DeclaredDependencySource::file_name)
+        .chain(ENVIRONMENT_MARKER_PATHS.iter().copied())
 }
 
 /// Returns the metadata family `path` feeds for `workspace_root`, if any.
@@ -159,6 +178,14 @@ mod tests {
     }
 
     #[test]
+    fn cpanfile_declaration_constant_matches_the_declared_source() {
+        assert_eq!(
+            super::CPANFILE_DECLARATION,
+            super::DeclaredDependencySource::Cpanfile.file_name()
+        );
+    }
+
+    #[test]
     fn cpanfile_feeds_both_families() {
         assert_eq!(classify("cpanfile"), Some(ProjectMetadataKind::Both));
     }
@@ -194,6 +221,17 @@ mod tests {
     fn paths_outside_the_workspace_never_classify() {
         let outside = if cfg!(windows) { r"C:\other\cpanfile" } else { "/other/cpanfile" };
         assert_eq!(classify_project_metadata_path(&root(), Path::new(outside)), None);
+    }
+
+    /// The subtree path set must cover exactly what classification accepts.
+    #[test]
+    fn relative_path_set_matches_classification() {
+        for relative in super::project_metadata_relative_paths() {
+            assert!(
+                classify(relative).is_some(),
+                "{relative} is listed as governed metadata but does not classify"
+            );
+        }
     }
 
     /// Byte-exact comparison: a differently-cased spelling is not silently

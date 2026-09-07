@@ -90,10 +90,11 @@ impl WorkspaceFolderState {
     ///
     /// Declared dependencies come from `reads`, so an open metadata buffer's
     /// staged text is authoritative and an unreadable source keeps only its own
-    /// previous entries. Dependency-manager include roots are reconciled from
-    /// the filesystem regardless: those markers are existence probes, so an
-    /// unreadable declaration file must not stop a deleted `carton.lock` from
-    /// retiring its root.
+    /// previous entries. Dependency-manager include roots are reconciled on
+    /// every call, so an unreadable declaration file cannot stop a deleted
+    /// `carton.lock` from retiring its root. Their install-base markers are
+    /// probed on disk; only the `cpanfile` declaration gate follows the
+    /// captured read, because an open buffer is authoritative for it.
     pub fn refresh_workspace_metadata_from_reads(
         &mut self,
         reads: &[(
@@ -103,7 +104,21 @@ impl WorkspaceFolderState {
     ) {
         self.effective_workspace_config.apply_declared_dependency_reads(reads);
         if let Some(path) = self.path.as_deref() {
-            self.effective_workspace_config.refresh_dependency_include_paths(path);
+            // The declaration gate follows the captured read, not a fresh disk
+            // probe: an open `cpanfile` buffer is authoritative and outlives an
+            // external delete of the backing file, so the Carton/Carmel root
+            // must not be retired underneath it. `Unreadable` still counts as
+            // present — the file exists, we merely could not parse it.
+            let declaration_present = reads
+                .iter()
+                .find(|(source, _)| {
+                    *source == perl_lsp_rs_core::config::DeclaredDependencySource::Cpanfile
+                })
+                .map(|(_, read)| {
+                    !matches!(read, perl_lsp_rs_core::config::MetadataSourceRead::Absent)
+                });
+            self.effective_workspace_config
+                .refresh_dependency_include_paths_with_declaration(path, declaration_present);
         }
     }
 
