@@ -326,6 +326,33 @@ impl DebugAdapter {
                 };
             }
         };
+        // #9568: `supportsSetExpression` is advertised false because there is no
+        // exact current-frame l-value assignment proof yet. Refuse here — before
+        // format parsing, before expression/value screening, before frame or
+        // session lookup, before any debugger command is written, and before any
+        // variables reference is allocated — so a client that ignores the
+        // advertised floor still cannot reach the raw assignment path.
+        //
+        // The gate is deliberately input-independent: every request that passes
+        // envelope validation receives the same deterministic refusal, whatever
+        // its expression, value, frameId, or format, and no rejected request can
+        // mutate debugger or session state.
+        // Bound to the same authority `handle_initialize` advertises, so a future
+        // promotion cannot leave the capability true while this still refuses.
+        if crate::backend::capabilities::refuse_set_expression(
+            crate::backend::capabilities::advertises_set_expression(),
+        ) {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "setExpression".to_string(),
+                body: None,
+                message: Some(
+                    crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE.to_string(),
+                ),
+            };
+        }
         // `format` affects the response rendering only; the assigned data below
         // is always the admitted client `value` (#9588; #8364/#9070 own
         // admission and read-back).

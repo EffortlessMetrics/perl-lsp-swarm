@@ -13,6 +13,9 @@ use crate::protocol::{req_position, req_uri};
 use crate::runtime::readiness::IndexReadinessPolicy;
 use crate::state::ParsedSnapshot;
 use crate::util::escape_markdown_text;
+use perl_parser_core::syntax::source_context::{
+    RangeClassification, SourceRegionIndex, SourceRegionKind,
+};
 use std::sync::Arc;
 mod hover_cards;
 mod hover_extracted;
@@ -211,15 +214,23 @@ impl LspServer {
             let t_analyze_start = std::time::Instant::now();
             let (extracted, live_compiler_context, hover_range) = match locked {
                 Some((offset, parsed, text, range)) => {
-                    // Trace-only source-region classification (#5003). Recorded for the
-                    // dispatcher receipt in `runtime::language::misc`; it does not select
-                    // a hover branch and does not change the hover response payload.
-                    let source_region_kind = parsed.as_ref().map(|snapshot| {
-                        snapshot.source_region_index().kind_at_offset(offset).as_str().to_string()
-                    });
+                    // Generation-bound source-region evidence (#5003). Beyond the
+                    // dispatcher trace, it now routes the generic fallback paths:
+                    // semantic/index lookups and the token/builtin fallback only
+                    // fire in proven code (#4967).
+                    let source_region =
+                        parsed.as_ref().map(|snapshot| snapshot.source_region_index());
+                    let source_region_kind = source_region
+                        .as_ref()
+                        .map(|index| index.kind_at_offset(offset).as_str().to_string());
                     set_hover_trace_source_region_kind(source_region_kind.clone());
-                    let live_compiler_context =
-                        Self::live_hover_compiler_context(uri, &text, offset, source_region_kind);
+                    let live_compiler_context = Self::live_hover_compiler_context(
+                        uri,
+                        &text,
+                        offset,
+                        source_region_kind,
+                        source_region.as_deref(),
+                    );
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                         // Canonical Dancer2 hover (#8928): one selected
                         // authority. Under exact activation the canonical
@@ -306,7 +317,7 @@ impl LspServer {
                         (extracted, live_compiler_context, range)
                     } else {
                         (
-                            Self::extract_token_hover(uri, &text, offset),
+                            Self::extract_token_hover(uri, &text, offset, source_region.as_deref()),
                             live_compiler_context,
                             range,
                         )
@@ -436,7 +447,14 @@ impl LspServer {
         offset: usize,
         parsed: &Option<Arc<ParsedSnapshot>>,
     ) -> HoverExtracted {
-        if let Some(xs_hover) = Self::extract_xs_api_hover(uri, text, offset) {
+        let source_region = parsed.as_ref().map(|snapshot| snapshot.source_region_index());
+        let source_region = source_region.as_deref();
+
+        // XS API names are claimed by raw token scan, so the claim is only
+        // allowed in proven code (#4967).
+        if Self::token_fallback_is_proven_code(source_region, text, offset)
+            && let Some(xs_hover) = Self::extract_xs_api_hover(uri, text, offset)
+        {
             return HoverExtracted::Complete(xs_hover);
         }
 
@@ -462,8 +480,20 @@ impl LspServer {
             return HoverExtracted::None;
         };
 
-        if let Some(symbol_info) =
-            analyzer.symbol_at(crate::SourceLocation { start: offset, end: offset })
+        // Analyzer claims are gated on proven code (#4967): `symbol_at` and
+        // `find_definition`'s `symbol_at` fallback return the smallest
+        // declaration *containing* the offset, so a `sub` symbol also contains
+        // the comments, strings, and heredocs inside its body. Answering from
+        // containment in non-code leaked the enclosing sub's generic card
+        // (review 5062479350). The inherited-method path below is text-scanned
+        // (`extract_arrow_receiver` has no region awareness), so it is gated on
+        // the same predicate. Span-exact islands above are reachable regardless.
+        let token_candidate_is_proven =
+            Self::token_fallback_is_proven_code(source_region, text, offset);
+
+        if token_candidate_is_proven
+            && let Some(symbol_info) =
+                analyzer.symbol_at(crate::SourceLocation { start: offset, end: offset })
             && let Some(modifier_kind) =
                 symbol_info.attributes.iter().find_map(|a| a.strip_prefix("modifier="))
         {
@@ -481,46 +511,52 @@ impl LspServer {
         // is surfaced at call sites instead of the generic subroutine card.
         // Only discard when find_definition returned the enclosing sub (token
         // mismatch) or when the class model has modifier metadata for the callee.
-        let symbol_at_cursor = analyzer.find_definition(offset).filter(|sym| {
-            let token = Self::get_token_at_position_static(text, offset);
-            #[cfg(feature = "workspace")]
-            {
-                if matches!(
-                    sym.kind,
-                    crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
-                ) && Self::extract_arrow_receiver(text, offset).is_some()
-                    && sym.declaration.as_deref() != Some("has")
+        let symbol_at_cursor = if token_candidate_is_proven {
+            analyzer.find_definition(offset).filter(|sym| {
+                let token = Self::get_token_at_position_static(text, offset);
+                #[cfg(feature = "workspace")]
                 {
-                    if token != sym.name && !token.is_empty() {
-                        return false;
-                    }
-                    if token == sym.name
-                        && let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset)
+                    if matches!(
+                        sym.kind,
+                        crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
+                    ) && Self::extract_arrow_receiver(text, offset).is_some()
+                        && sym.declaration.as_deref() != Some("has")
                     {
-                        let receiver_pkg =
-                            Self::resolve_receiver_package_name(ast, offset, &raw_receiver);
-                        if !receiver_pkg.is_empty()
-                            && analyzer
-                                .resolve_inherited_method_hover(&receiver_pkg, &sym.name)
-                                .is_some_and(|hover| {
-                                    hover
-                                        .details
-                                        .iter()
-                                        .any(|detail| detail.starts_with("Decorated with:"))
-                                })
-                        {
+                        if token != sym.name && !token.is_empty() {
                             return false;
+                        }
+                        if token == sym.name
+                            && let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset)
+                        {
+                            let receiver_pkg =
+                                Self::resolve_receiver_package_name(ast, offset, &raw_receiver);
+                            if !receiver_pkg.is_empty()
+                                && analyzer
+                                    .resolve_inherited_method_hover(&receiver_pkg, &sym.name)
+                                    .is_some_and(|hover| {
+                                        hover
+                                            .details
+                                            .iter()
+                                            .any(|detail| detail.starts_with("Decorated with:"))
+                                    })
+                            {
+                                return false;
+                            }
                         }
                     }
                 }
-            }
-            // If the token matches the symbol name this IS a direct hover on that
-            // symbol (e.g. hovering on `sub run` where cursor is on `run`).
-            if token == sym.name || token.is_empty() {
-                return true; // keep — cursor is directly on the symbol
-            }
-            true
-        });
+                // If the token matches the symbol name this IS a direct hover on that
+                // symbol (e.g. hovering on `sub run` where cursor is on `run`).
+                if token == sym.name || token.is_empty() {
+                    return true; // keep — cursor is directly on the symbol
+                }
+                true
+            })
+        } else {
+            // Not proven code: the containment-based fallback fails closed
+            // (#4967); the generic token fallback below applies its own gate.
+            None
+        };
         if let Some(symbol_info) = symbol_at_cursor {
             // Detect Moo/Moose attribute accessors (declaration == "has") early and
             // render a dedicated card that shows the attribute metadata clearly,
@@ -699,12 +735,17 @@ impl LspServer {
         // Inherited method hover: cursor is on a `->method()` call but find_definition
         // found nothing in the current file.  Try the in-file class model first
         // (resolve_inherited_method_hover handles same-file parent/role chains), then
-        // emit InheritedMethod for Phase 2 (workspace index BFS).
+        // emit InheritedMethod for Phase 2 (workspace index BFS). This is an
+        // analyzer/index claim, so it runs only in proven code (#4967): the arrow
+        // receiver scan is text-based and would otherwise answer for `Pkg->method`
+        // text inside comments and strings.
         #[cfg(feature = "workspace")]
         {
             use perl_semantic_facts::Provenance;
 
-            if let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset) {
+            if token_candidate_is_proven
+                && let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset)
+            {
                 // Extract the method name token at the cursor
                 let method_name = Self::get_token_at_position_static(text, offset);
                 if !method_name.is_empty() && !method_name.starts_with(['$', '@', '%']) {
@@ -775,14 +816,55 @@ impl LspServer {
             }
         }
 
-        Self::extract_token_hover(uri, text, offset)
+        Self::extract_token_hover(uri, text, offset, source_region)
+    }
+
+    /// Whether the whole token candidate range at `offset` is proven
+    /// executable code by the generation-bound source-region index
+    /// (#5003/#4967).
+    ///
+    /// The whole candidate range — not just the cursor byte — must be proven:
+    /// a broad enclosing literal is not permission for generic identifier
+    /// fallback anywhere inside it. Missing evidence fails closed.
+    fn token_fallback_is_proven_code(
+        region_index: Option<&SourceRegionIndex>,
+        text: &str,
+        offset: usize,
+    ) -> bool {
+        let Some(index) = region_index else {
+            return false;
+        };
+        let (start, end) = Self::token_byte_bounds_of(text, offset);
+        matches!(
+            index.classify_range(start, end),
+            RangeClassification::Proven { kind: SourceRegionKind::Code }
+        )
     }
 
     /// Extract hover information from the token fallback path.
-    fn extract_token_hover(uri: &str, text: &str, offset: usize) -> HoverExtracted {
+    fn extract_token_hover(
+        uri: &str,
+        text: &str,
+        offset: usize,
+        region_index: Option<&SourceRegionIndex>,
+    ) -> HoverExtracted {
         // Check if the cursor is inside a regex literal and provide explanation.
-        if let Some(regex_hover) = Self::extract_regex_hover(text, offset) {
+        //
+        // Semantic island: regex construct documentation claims an exact
+        // operator/pattern span and stays possible inside genuine regex
+        // regions. The scan itself is a whole-line lexical heuristic, so the
+        // claimed span must carry generation-bound `RegexLike` evidence to
+        // answer; regex-shaped text in comments, strings, POD, heredocs, or
+        // recovery input fails closed (#4967).
+        if let Some(regex_hover) = Self::extract_regex_hover(text, offset, region_index) {
             return HoverExtracted::Complete(regex_hover);
+        }
+
+        // Generic symbol/token/builtin fallback: proven code only. Comments,
+        // POD, literals, quote-likes, regex bodies, heredocs, `__DATA__`, and
+        // recovery-ambiguous input fail closed to `None` (#4967).
+        if !Self::token_fallback_is_proven_code(region_index, text, offset) {
+            return HoverExtracted::None;
         }
 
         // Check for special/punctuation variables (e.g. $!, $/, $$, $^W)

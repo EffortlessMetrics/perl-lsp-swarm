@@ -39,6 +39,8 @@
 --      the no-leak case fails (the "#2" byte string lands in the buffer);
 --   3. apply the fallback for unsuffixed rows too -> the legacy-fallback
 --      case fails (the apply-once flag flips without the plugin fallback).
+--   4. bypass prefix replacement for suffixed rows -> buffer controls fail
+--      for both primary and secondary carets; legacy fallback stays green.
 
 local init_module_path = arg and arg[1] or nil
 
@@ -160,6 +162,15 @@ Doc.get_selection = function(self)
   return s.line, s.col, s.line, s.col
 end
 Doc.get_char = function() return "" end
+Doc.get_selections = function(self)
+  local pending = true
+  return function()
+    if pending then
+      pending = false
+      return 1, self:get_selection()
+    end
+  end
+end
 Doc.set_selection = function(self, line1, col1)
   self.selections[#self.selections + 1] = { line1 = line1, col1 = col1 }
 end
@@ -424,7 +435,22 @@ local function plugin_select(key, item)
   item.text = key
   local handled = item.onselect(1, item)
   if not handled then
-    core_mod.active_view.doc:text_input(item.text)
+    local doc = core_mod.active_view.doc
+    local line2, col2 = doc:get_selection()
+    local line1, col1 = doc:position_offset(line2, col2)
+    local partial = doc:get_text(line1, col1, line2, col2)
+    -- v2.1.8 autocomplete.lua:633-649, including shorter suffix matching.
+    for _, first_line, first_col, last_line in doc:get_selections(true) do
+      local n = first_col - 1
+      for i = 1, #partial + 1 do
+        local j = #partial - i
+        if partial:sub(i) == doc.lines[first_line]:sub(n - j, n) then
+          doc:remove(first_line, first_col, last_line, n - j)
+          break
+        end
+      end
+    end
+    doc:text_input(item.text)
   end
   return handled
 end
@@ -772,6 +798,88 @@ do
   ok(plugin_select("foo#2", item) == true,
     "caseH: not-queued duplicate selection is claimed")
   ok(#doc.edits == 0, "caseH: not-queued refusal cannot leak the suffix")
+end
+
+-- Buffer-level consumer proof: preserve all carets and replace the typed
+-- prefix, including a shorter matching suffix at a secondary caret. This
+-- models the v2.1.8 Doc contract rather than merely recording text_input.
+local function buffer_doc(lines, carets)
+  local doc = make_doc("C:/proj/buffer.pl", lines, carets[1][1], carets[1][2])
+  doc.carets = carets
+  function doc:get_selection()
+    return table.unpack(self.carets[1])
+  end
+  function doc:get_selections(reverse)
+    local i = reverse and #self.carets + 1 or 0
+    return function()
+      i = i + (reverse and -1 or 1)
+      if self.carets[i] then return i, table.unpack(self.carets[i]) end
+    end
+  end
+  function doc:position_offset(line, col)
+    local prefix = self.lines[line]:sub(1, col - 1):match("[%w_]*$")
+    return line, col - #prefix
+  end
+  function doc:get_text(line1, col1, line2, col2)
+    return self.lines[line1]:sub(col1, col2 - 1)
+  end
+  function doc:set_selection(line1, col1, line2, col2)
+    self.carets = { { line1, col1, line2 or line1, col2 or col1 } }
+  end
+  function doc:remove(line1, col1, line2, col2)
+    if col1 > col2 then col1, col2 = col2, col1 end
+    self.lines[line1] = self.lines[line1]:sub(1, col1 - 1)
+      .. self.lines[line1]:sub(col2)
+    for _, s in ipairs(self.carets) do
+      for offset = 1, 3, 2 do
+        if s[offset] == line1 and s[offset + 1] >= col1 then
+          s[offset + 1] = math.max(col1, s[offset + 1] - (col2 - col1))
+        end
+      end
+    end
+  end
+  function doc:text_input(text)
+    for _, line1, col1, line2, col2 in self:get_selections(true) do
+      self:remove(line1, col1, line2, col2)
+      local col = math.min(col1, col2)
+      self.lines[line1] = self.lines[line1]:sub(1, col - 1)
+        .. text .. self.lines[line1]:sub(col)
+      for _, s in ipairs(self.carets) do
+        for offset = 1, 3, 2 do
+          if s[offset] == line1 and s[offset + 1] >= col then
+            s[offset + 1] = s[offset + 1] + #text
+          end
+        end
+      end
+    end
+  end
+  return doc
+end
+
+for _, mode in ipairs({ "suffixed", "explicit", "legacy" }) do
+  local explicit = mode == "explicit"
+  for _, multiple in ipairs({ false, true }) do
+    local lsp = fresh_module_load()
+    local server = make_server("perllsp", PLAIN_COMPLETION_CAPS)
+    register(lsp, "perllsp", server)
+    local carets = { { 1, 6, 1, 6 } }
+    if multiple then carets[2] = { 2, 5, 2, 5 } end
+    local doc = buffer_doc({ "x: fo;\n", "y: o;\n" }, carets)
+    local source = explicit and { { label = "foo", insertText = "food" } }
+      or mode == "legacy" and { { label = "foo" } }
+      or { { label = "foo" }, { label = "foo" } }
+    local items = open_completion(lsp, server, doc, source)
+    activate(setmetatable({ doc = doc }, require "core.docview"))
+    local key = mode == "suffixed" and "foo#2" or "foo"
+    ok(plugin_select(key, items[key]) == (mode ~= "legacy"),
+      "buffer: only legacy uses consumer fallback")
+    local expected = explicit and "food" or "foo"
+    ok(doc.lines[1] == "x: " .. expected .. ";\n",
+      "buffer: typed prefix replaced (explicit=" .. tostring(explicit) .. ")")
+    ok(doc.lines[2] == (multiple and "y: " .. expected .. ";\n" or "y: o;\n"),
+      "buffer: secondary suffix replaced only when selected")
+    ok(#doc.carets == (multiple and 2 or 1), "buffer: all carets retained")
+  end
 end
 
 print(string.format("%d passed, %d failed", passed, failed))

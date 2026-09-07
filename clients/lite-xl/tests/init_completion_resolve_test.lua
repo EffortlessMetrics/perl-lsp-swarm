@@ -192,6 +192,15 @@ Doc.insert = function(self, line1, col1, text)
   self.edits[#self.edits + 1] =
     { op = "insert", line1 = line1, col1 = col1, text = text }
 end
+Doc.get_selections = function(self)
+  local pending = true
+  return function()
+    if pending then
+      pending = false
+      return 1, self:get_selection()
+    end
+  end
+end
 Doc.position_offset = function(self, line, col) return line, col end
 Doc.get_text = function() return "" end
 Doc.move_to_cursor = function() end

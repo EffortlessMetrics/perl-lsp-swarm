@@ -895,11 +895,34 @@ local function merge_resolve_description(item, symbol)
     :gsub("\n\n\n+", "\n\n")
 end
 
+-- Match Lite XL v2.1.8 autocomplete's plain insertion contract: remove the
+-- primary partial's longest matching suffix at each caret, then insert once
+-- through Doc so all selections survive. Returning handled bypasses that
+-- consumer fallback, so explicit insertText and synthetic menu keys need it here.
+local function insert_plain_completion(doc, text)
+  local line, col = doc:get_selection()
+  local start_line, start_col = doc:position_offset(line, col, translate.start_of_word)
+  local partial = doc:get_text(start_line, start_col, line, col)
+  for _, line1, col1, line2 in doc:get_selections(true) do
+    local prefix = doc.lines[line1]:sub(1, col1 - 1)
+    for offset = 1, #partial + 1 do
+      local suffix = partial:sub(offset)
+      if #suffix == 0 or prefix:sub(-#suffix) == suffix then
+        if #suffix > 0 then
+          doc:remove(line1, col1, line2, col1 - #suffix)
+        end
+        break
+      end
+    end
+  end
+  doc:text_input(text)
+end
+
 ---Apply the selected item exactly once from its final effective fields
 ---(#11188). Resolution outcomes decide the effective item: a resolved item
 ---overlays the original; a not_needed item applies as received; failed,
 ---timed_out, and stale terminals fall back only when the original alone
----proves its own application surface (its own textEdit or LSP-snippet
+---proves its own application surface (its own textEdit or explicit
 ---insertText - fields resolution would only enrich) and otherwise refuse
 ---without partial mutation. Every application revalidates the captured
 ---round subject before any effect, so a terminal that arrives after edits,
@@ -996,11 +1019,7 @@ local function apply_selected_completion(item, rstate)
       edit_applied = true
     end
   elseif dv and effective.insertText then
-    local doc = dv.doc
-    local line2, col2 = doc:get_selection()
-    local line1, col1 = doc:position_offset(line2, col2, translate.start_of_word)
-    doc:set_selection(line1, col1, line2, col2)
-    doc:text_input(effective.insertText)
+    insert_plain_completion(dv.doc, effective.insertText)
     edit_applied = true
   end
   if edit_applied and effective.additionalTextEdits and #effective.additionalTextEdits > 0 then
@@ -1023,7 +1042,7 @@ local function apply_selected_completion(item, rstate)
     and item.data.insert_text
     and item.data.internal_key_suffixed
   then
-    dv.doc:text_input(item.data.insert_text)
+    insert_plain_completion(dv.doc, item.data.insert_text)
     edit_applied = true
   end
   if edit_applied then

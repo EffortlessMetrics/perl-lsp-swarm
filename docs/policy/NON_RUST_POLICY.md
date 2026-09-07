@@ -7,20 +7,39 @@ declares which non-Rust files are permitted in `perl-lsp` and on what terms.
 ## Source of truth
 
 ```text
-policy/non-rust-allowlist.toml   # the active allowlist
-policy/non-rust-debt.toml        # uncertain entries pending classification
-docs/policy/NON_RUST_INVENTORY.md  # generated inventory (PR 3)
+policy/non-rust-allowlist.toml              # active policy authority
+policy/non-rust-debt.toml                   # uncertain entries pending classification
+target/policy/non-rust-inventory.{md,json}  # ignored per-run evidence
+docs/policy/NON_RUST_INVENTORY.md           # published default-branch reference
 ```
 
 Reader / writer:
 
 ```text
-cargo xtask non-rust inventory        # emit Markdown + JSON inventory
-cargo xtask non-rust propose          # propose entries for unallowlisted files
-cargo xtask non-rust validate-policy  # validate allowlist/debt TOML schema
+cargo xtask non-rust inventory          # emit current-tree Markdown + JSON evidence
+cargo xtask non-rust inventory --check  # validate current tree and reject newly introduced debt
+cargo xtask non-rust inventory --write  # explicitly publish the default-branch reference
+cargo xtask non-rust propose            # propose entries for unallowlisted files
+cargo xtask non-rust validate-policy    # validate allowlist/debt TOML schema
 cargo xtask non-rust migration-candidates  # find tooling candidates to migrate into Rust-owned surfaces
-cargo xtask check-file-policy         # enforce the allowlist
+cargo xtask check-file-policy           # enforce the allowlist
 ```
+
+## Authority boundary
+
+The merge check validates the allowlist, classifies the current tracked tree,
+and writes both evidence files before applying its merge-base ratchet. The
+added-path set is `merge-base(baseline, HEAD)..HEAD` with `--no-renames`, not
+the live tip of `origin/main`. Inherited unclassified paths remain visible as
+warnings; newly added unclassified paths fail and remain named in the retained
+evidence.
+
+The tracked Markdown is publication, not policy input. Ordinary feature
+branches do not refresh it, and `inventory --check` does not read or compare
+it. The policy shard retains both ignored projections when they are produced,
+including on a newly unclassified-path failure. The post-merge workflow may
+publish a current default-branch copy without healing, weakening, or otherwise
+changing a branch verdict.
 
 ## Schema
 
@@ -50,6 +69,14 @@ retired         = false               # optional; true keeps the receipt for his
 - **`glob` vs `path`.** Use `path` for an exact file. Use `glob` for a tree
   or extension. A glob entry must include `**`, `*`, or `?` to be considered
   a glob; otherwise the checker treats it as a typo.
+
+  `*` and `?` match **within one path segment** and stop at `/`; only `**`
+  crosses directory boundaries. So `.changes/unreleased/*.yaml` governs the
+  files sitting directly in that directory and nothing nested beneath it,
+  while `docs/**` owns the whole tree and `**/*.md` owns markdown at every
+  depth. Pick the narrowest matcher that covers the surface: a single-segment
+  glob is the way to govern one flat directory class without also adopting
+  everything a future subdirectory might hold.
 - **`kind`.** A short category. The current vocabulary:
   `documentation`, `language_fixture`, `editor_extension`,
   `native_parser_binding`, `ci_declarative`, `ci_policy_config`,
@@ -221,7 +248,7 @@ ambiguous and a maintainer wants a tracked place for the question.
 
 | Trigger                                          | Action                                        |
 | ------------------------------------------------ | --------------------------------------------- |
-| New non-Rust file in PR                          | `cargo xtask check-file-policy` fails; author runs `cargo xtask non-rust propose` and adds an entry. |
+| New non-Rust file in PR                          | `cargo xtask non-rust inventory --check` rejects an unclassified added path; author runs `cargo xtask non-rust propose` and adds an entry. |
 | `review_after` date passes                       | Strict mode flags; owner re-justifies, advances date, or removes the entry. |
 | `expires` date passes                            | Hard fail in any blocking mode. Owner removes or replaces the entry. |
 | Surface goes away                                | Owner sets `retired = true`. Strict mode flags any remaining matches. |

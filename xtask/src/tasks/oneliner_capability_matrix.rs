@@ -622,7 +622,7 @@ fn classify_spans(source: &str) -> Vec<Span> {
     let mut spans = vec![Span::Code; bytes.len()];
     let mut i = 0usize;
 
-    let mut fill = |spans: &mut Vec<Span>, from: usize, to: usize, span: Span| {
+    let fill = |spans: &mut Vec<Span>, from: usize, to: usize, span: Span| {
         for slot in spans.iter_mut().take(to.min(bytes.len())).skip(from) {
             *slot = span;
         }

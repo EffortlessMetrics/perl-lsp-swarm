@@ -1,5 +1,6 @@
 #[cfg(test)]
 use super::implementation::TextPosition;
+use super::implementation::counters::{self, NativePipelineCounters, PipelineCollectorScope};
 use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
@@ -223,6 +224,28 @@ impl NativeFormatter {
         classify_native_result(source, config, context, FormatRequestTarget::Document, result)
     }
 
+    /// Format a complete document recording deterministic pipeline work
+    /// counters. The outcome is byte-identical to [`Self::format_document_typed`];
+    /// only the collector observes the stages (NPC-001/NPC-002).
+    #[must_use]
+    pub fn format_document_typed_with_counters(
+        &self,
+        source: &str,
+        config: &FormatConfig,
+        context: &FormatContext,
+        counters: &mut NativePipelineCounters,
+    ) -> TypedFormatResult {
+        let scope = PipelineCollectorScope::install();
+        let started = std::time::Instant::now();
+        let result = <Self as PerlFormatter>::format_document(self, source, config);
+        scope.merge_into(counters);
+        observe_edits_derived(counters, &result);
+        let typed =
+            classify_native_result(source, config, context, FormatRequestTarget::Document, result);
+        observe_elapsed(counters, started.elapsed());
+        typed
+    }
+
     /// Format one range and return an explicit typed terminal outcome.
     #[must_use]
     pub fn format_range_typed(
@@ -249,6 +272,57 @@ impl NativeFormatter {
             result,
         )
     }
+
+    /// Format one range recording deterministic pipeline work counters. The
+    /// outcome is byte-identical to [`Self::format_range_typed`].
+    #[must_use]
+    pub fn format_range_typed_with_counters(
+        &self,
+        source: &str,
+        range: TextRange,
+        config: &FormatConfig,
+        context: &FormatContext,
+        counters: &mut NativePipelineCounters,
+    ) -> TypedFormatResult {
+        let scope = PipelineCollectorScope::install();
+        let started = std::time::Instant::now();
+        let result = if valid_range(source, range) {
+            <Self as PerlFormatter>::format_range(self, source, range, config)
+        } else {
+            FormatResult::unsafe_to_format(
+                source,
+                UNSAFE_RANGE_CODE,
+                "native range formatting refused because the requested UTF-16 range is invalid",
+            )
+        };
+        scope.merge_into(counters);
+        observe_edits_derived(counters, &result);
+        let typed = classify_native_result(
+            source,
+            config,
+            context,
+            FormatRequestTarget::Range { range },
+            result,
+        );
+        observe_elapsed(counters, started.elapsed());
+        typed
+    }
+}
+
+fn observe_edits_derived(counters: &mut NativePipelineCounters, result: &FormatResult) {
+    let edits = u64::try_from(result.edits.len()).unwrap_or(u64::MAX);
+    let replacement_bytes =
+        result.edits.iter().map(|edit| edit.new_text.len() as u64).fold(0_u64, u64::saturating_add);
+    counters.observe_edits_derived(edits, replacement_bytes);
+    // A typed entry may be nested inside a caller-owned collector. The
+    // supplied snapshot and the outer scope must observe the same derived
+    // output, just as they already do for pipeline-stage counters.
+    counters::record_with(|outer| outer.observe_edits_derived(edits, replacement_bytes));
+}
+
+fn observe_elapsed(counters: &mut NativePipelineCounters, elapsed: std::time::Duration) {
+    counters.observe_elapsed(elapsed);
+    counters::record_with(|outer| outer.observe_elapsed(elapsed));
 }
 
 fn classify_native_result(
