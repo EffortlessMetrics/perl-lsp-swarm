@@ -54,6 +54,7 @@ anyhow = { workspace = true, optional = true }
 
 [[bin]]
 name = "perl-parse"
+path = "src/bin/perl-parse/main.rs"
 required-features = ["cli"]
 
 [package.metadata.docs.rs]

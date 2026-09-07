@@ -3,7 +3,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const ALLOWED_CURRENT_CONSUMERS: &[&str] = &["crates/perl-parser/src/bin/perl-parse.rs"];
+const ALLOWED_CURRENT_CONSUMERS: &[&str] = &["crates/perl-parser/src/bin/perl-parse/cli.rs"];
 const SKIPPED_DIRECTORIES: &[&str] = &[".git", "target", "node_modules", "archive"];
 const TEXT_EXTENSIONS: &[&str] =
     &["json", "md", "ps1", "rs", "sh", "toml", "ts", "txt", "yaml", "yml"];
