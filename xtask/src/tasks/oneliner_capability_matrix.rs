@@ -2105,7 +2105,7 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
         let corpus = fs::read_to_string(root.join(CORPUS_PATH)).expect("corpus readable");
         assert!(corpus.contains("macro_rules! command_line_oneliner"), "corpus shape changed");
         let evidence = extract_corpus_evidence(&corpus);
-        assert_eq!(evidence.switch_cases.len(), 18, "{:?}", evidence.switch_cases.keys());
+        assert_eq!(evidence.switch_cases.len(), 20, "{:?}", evidence.switch_cases.keys());
     }
 
     /// Whitespace inside an attribute, or after `mod`, must not decide whether
