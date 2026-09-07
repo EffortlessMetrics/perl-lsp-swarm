@@ -143,20 +143,25 @@ fn is_static_name(name: &str) -> bool {
         && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
-/// Decode the first trait of `kind` in source order.
+/// Decode every attribute spelling on one `field` declaration, in source order.
+///
+/// Each spelling is decoded exactly once; callers then select the families
+/// they care about from the result.
+pub(crate) fn decode_all(attributes: &[String]) -> Vec<DecodedFieldTrait> {
+    attributes.iter().map(|attribute| DecodedFieldTrait::decode(attribute)).collect()
+}
+
+/// Select the first decoded trait of `kind` in source order.
 ///
 /// The first trait of a family owns that family's result. A malformed or
 /// unsupported first spelling fails closed rather than falling through to a
 /// later duplicate, so a broken spelling can never be repaired into a
 /// generated member by an unrelated attribute.
 pub(crate) fn first_trait_of_kind(
-    attributes: &[String],
+    decoded: &[DecodedFieldTrait],
     kind: FieldTraitKind,
-) -> Option<DecodedFieldTrait> {
-    attributes
-        .iter()
-        .map(|attribute| DecodedFieldTrait::decode(attribute))
-        .find(|decoded| decoded.kind == kind)
+) -> Option<&DecodedFieldTrait> {
+    decoded.iter().find(|decoded| decoded.kind == kind)
 }
 
 #[cfg(test)]
@@ -287,7 +292,8 @@ mod tests {
             "writer(write_name)".to_owned(),
         ];
 
-        let reader = first_trait_of_kind(&attributes, FieldTraitKind::Reader)
+        let decoded = decode_all(&attributes);
+        let reader = first_trait_of_kind(&decoded, FieldTraitKind::Reader)
             .expect("a reader trait is present");
         assert_eq!(
             reader.argument,
@@ -295,10 +301,10 @@ mod tests {
             "a malformed first spelling must not be repaired by a later duplicate"
         );
 
-        let writer = first_trait_of_kind(&attributes, FieldTraitKind::Writer)
+        let writer = first_trait_of_kind(&decoded, FieldTraitKind::Writer)
             .expect("a writer trait is present");
         assert_eq!(writer.argument, FieldTraitArgument::StaticName("write_name".to_owned()));
 
-        assert_eq!(first_trait_of_kind(&attributes, FieldTraitKind::Mutator), None);
+        assert!(first_trait_of_kind(&decoded, FieldTraitKind::Mutator).is_none());
     }
 }

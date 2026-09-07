@@ -322,10 +322,9 @@ impl ClassModel {
     /// A bare `:param` contributes the field's own name; `:param(external)`
     /// contributes `external` instead of, not in addition to, the field name.
     pub fn object_pad_constructor_param_names(&self) -> impl Iterator<Item = &str> {
-        self.fields
-            .iter()
-            .filter(|field| field.param)
-            .map(|field| field.param_name.as_deref().unwrap_or(field.name.as_str()))
+        self.fields.iter().filter(|field| field.param).map(|field| {
+            field.param_name.as_deref().unwrap_or_else(|| object_pad_public_name(&field.name))
+        })
     }
 }
 
@@ -1382,28 +1381,24 @@ impl ClassModelBuilder {
             allow_bare_writer,
         )?;
         let location = field.location;
-        let field_name = field.name.clone();
-        let traits = field.attributes.clone();
 
-        self.current_fields.push(field);
-
-        if let Some(reader) = Self::object_pad_reader_name(&field_name, &traits) {
+        // The field already carries every resolved generated-member name, so
+        // the synthetic methods are published from it rather than re-decoding
+        // the same attributes a second time.
+        if let Some(reader) = field.reader.clone() {
             self.current_methods.push(MethodInfo::synthetic(reader, location, None));
         }
-        if let Some(writer) = Self::object_pad_writer_name(
-            &field_name,
-            &traits,
-            allow_named_writer,
-            allow_bare_writer,
-        ) {
+        if let Some(writer) = field.writer.clone() {
             self.current_methods.push(MethodInfo::synthetic_writer(writer, location));
         }
-        if let Some(accessor) = Self::object_pad_accessor_name(&field_name, &traits) {
+        if let Some(accessor) = field.accessor.clone() {
             self.current_methods.push(MethodInfo::synthetic(accessor, location, None));
         }
-        if let Some(mutator) = Self::object_pad_mutator_name(&field_name, &traits) {
+        if let Some(mutator) = field.mutator.clone() {
             self.current_methods.push(MethodInfo::synthetic(mutator, location, None));
         }
+
+        self.current_fields.push(field);
 
         Some(1)
     }
@@ -1449,7 +1444,9 @@ impl ClassModelBuilder {
         // trait identity is decoded from these spellings rather than matched
         // against exact bare strings.
         let traits: Vec<String> = attributes.iter().map(|attr| attr.trim().to_string()).collect();
-        let (param, param_name) = Self::object_pad_param_identity(&traits);
+        // Decode every spelling once; each family then selects from the result.
+        let decoded = field_trait::decode_all(&traits);
+        let (param, param_name) = Self::object_pad_param_identity(&decoded);
 
         let mut field = FieldInfo {
             name: name.clone(),
@@ -1464,15 +1461,15 @@ impl ClassModelBuilder {
             default: initializer.as_ref().map(|node| Self::value_summary(node)),
         };
 
-        field.reader = Self::object_pad_reader_name(&field.name, &field.attributes);
+        field.reader = Self::object_pad_reader_name(&field.name, &decoded);
         field.writer = Self::object_pad_writer_name(
             &field.name,
-            &field.attributes,
+            &decoded,
             allow_named_writer,
             allow_bare_writer,
         );
-        field.accessor = Self::object_pad_accessor_name(&field.name, &field.attributes);
-        field.mutator = Self::object_pad_mutator_name(&field.name, &field.attributes);
+        field.accessor = Self::object_pad_accessor_name(&field.name, &decoded);
+        field.mutator = Self::object_pad_mutator_name(&field.name, &decoded);
 
         Some(field)
     }
@@ -1489,15 +1486,15 @@ impl ClassModelBuilder {
     /// admitted, so decoding an argument never widens a core or `Object::Pad`
     /// claim.
     fn generated_member_name(
-        traits: &[String],
+        decoded_traits: &[DecodedFieldTrait],
         kind: FieldTraitKind,
         admits: impl FnOnce(&DecodedFieldTrait) -> bool,
         bare_default: impl FnOnce() -> String,
     ) -> Option<String> {
         // The first trait of the family owns the result; a malformed spelling
         // fails closed instead of falling through to a later duplicate.
-        let decoded = field_trait::first_trait_of_kind(traits, kind)?;
-        if !admits(&decoded) {
+        let decoded = field_trait::first_trait_of_kind(decoded_traits, kind)?;
+        if !admits(decoded) {
             return None;
         }
         match &decoded.argument {
@@ -1507,44 +1504,44 @@ impl ClassModelBuilder {
         }
     }
 
-    fn object_pad_reader_name(field_name: &str, traits: &[String]) -> Option<String> {
+    fn object_pad_reader_name(field_name: &str, decoded: &[DecodedFieldTrait]) -> Option<String> {
         Self::generated_member_name(
-            traits,
+            decoded,
             FieldTraitKind::Reader,
             |_| true,
-            || Self::object_pad_public_name(field_name).to_string(),
+            || object_pad_public_name(field_name).to_string(),
         )
     }
 
     fn object_pad_writer_name(
         field_name: &str,
-        traits: &[String],
+        decoded: &[DecodedFieldTrait],
         allow_named_writer: bool,
         allow_bare_writer: bool,
     ) -> Option<String> {
         Self::generated_member_name(
-            traits,
+            decoded,
             FieldTraitKind::Writer,
             |decoded| if decoded.is_bare() { allow_bare_writer } else { allow_named_writer },
-            || format!("set_{}", Self::object_pad_public_name(field_name)),
+            || format!("set_{}", object_pad_public_name(field_name)),
         )
     }
 
-    fn object_pad_accessor_name(field_name: &str, traits: &[String]) -> Option<String> {
+    fn object_pad_accessor_name(field_name: &str, decoded: &[DecodedFieldTrait]) -> Option<String> {
         Self::generated_member_name(
-            traits,
+            decoded,
             FieldTraitKind::Accessor,
             |_| true,
-            || Self::object_pad_public_name(field_name).to_string(),
+            || object_pad_public_name(field_name).to_string(),
         )
     }
 
-    fn object_pad_mutator_name(field_name: &str, traits: &[String]) -> Option<String> {
+    fn object_pad_mutator_name(field_name: &str, decoded: &[DecodedFieldTrait]) -> Option<String> {
         Self::generated_member_name(
-            traits,
+            decoded,
             FieldTraitKind::Mutator,
             |_| true,
-            || Self::object_pad_public_name(field_name).to_string(),
+            || object_pad_public_name(field_name).to_string(),
         )
     }
 
@@ -1554,8 +1551,9 @@ impl ClassModelBuilder {
     /// under the field's own name; `:param(external)` participates under
     /// `external`; empty, malformed, and dynamic arguments participate under
     /// no name at all rather than silently falling back to the field name.
-    fn object_pad_param_identity(traits: &[String]) -> (bool, Option<String>) {
-        let Some(decoded) = field_trait::first_trait_of_kind(traits, FieldTraitKind::Param) else {
+    fn object_pad_param_identity(decoded_traits: &[DecodedFieldTrait]) -> (bool, Option<String>) {
+        let Some(decoded) = field_trait::first_trait_of_kind(decoded_traits, FieldTraitKind::Param)
+        else {
             return (false, None);
         };
         match &decoded.argument {
@@ -1563,10 +1561,6 @@ impl ClassModelBuilder {
             FieldTraitArgument::StaticName(name) => (true, Some(name.clone())),
             FieldTraitArgument::Empty | FieldTraitArgument::MalformedOrDynamic => (false, None),
         }
-    }
-
-    fn object_pad_public_name(field_name: &str) -> &str {
-        field_name.strip_prefix('_').unwrap_or(field_name)
     }
 
     fn native_named_writers_allowed(&self, offset: usize) -> bool {
@@ -1709,6 +1703,18 @@ impl ClassModelBuilder {
 }
 
 // ---- Helper functions (parallel to SymbolExtractor's private helpers) ----
+
+/// Strip the single leading `_` Object::Pad removes when deriving a default
+/// public name from a field.
+///
+/// Per Object::Pad: "If no name is given, the name of the field is used. A
+/// single prefix character `_` will be removed if present." This governs the
+/// default `:reader`/`:writer`/`:accessor`/`:mutator` method name *and* the
+/// default `:param` constructor key. It never applies to an explicitly spelled
+/// name, which is used exactly as written.
+fn object_pad_public_name(field_name: &str) -> &str {
+    field_name.strip_prefix('_').unwrap_or(field_name)
+}
 
 fn class_tiny_default_hash_pairs(statement: &Node) -> Option<(&[(Node, Node)], SourceLocation)> {
     let expression = match &statement.kind {

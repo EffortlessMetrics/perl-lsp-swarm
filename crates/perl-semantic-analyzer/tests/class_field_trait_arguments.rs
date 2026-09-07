@@ -259,6 +259,30 @@ fn a_named_param_is_the_constructor_keyword_the_field_name_is_not() {
     assert_eq!(fields, vec!["value", "plain"], "field identity remains separately available");
 }
 
+/// Object::Pad: "If no name is given, the name of the field is used. A single
+/// prefix character `_` will be removed if present." That rule governs the
+/// default `:param` constructor key exactly as it governs the default accessor
+/// method name, so `field $_secret :param` is constructed with `secret`.
+#[test]
+fn a_bare_param_on_an_underscore_field_uses_the_public_constructor_key() {
+    let source = "use Object::Pad;\nclass Private {\n    field $_secret :param;\n    field $_explicit :param(_kept);\n}\n";
+    let model = model_for(source, "Private");
+
+    let constructor: Vec<&str> = model.object_pad_constructor_param_names().collect();
+    assert_eq!(
+        constructor,
+        vec!["secret", "_kept"],
+        "a bare :param strips the single leading underscore; an explicit name is used exactly"
+    );
+
+    let fields: Vec<&str> = model.object_pad_param_field_names().collect();
+    assert_eq!(
+        fields,
+        vec!["_secret", "_explicit"],
+        "field identity keeps the underscore the source actually wrote"
+    );
+}
+
 #[test]
 fn a_named_param_is_not_admitted_by_decoding_a_non_param_trait() {
     // Negative control: decoding an argument must not turn a non-`:param`
