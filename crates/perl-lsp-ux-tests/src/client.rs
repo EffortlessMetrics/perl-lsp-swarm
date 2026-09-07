@@ -538,20 +538,35 @@ impl Drop for UxClient {
                 let _ = stdin.flush();
             }
         }
-        // Wait for the server's own end-of-stream rather than polling
-        // `try_wait` on a timer: the stdout reader records the stream end the
-        // moment it happens, so an orderly exit is observed immediately and a
-        // wedged server still costs only the bound below.
-        // The predicate never matches, so the wait can only end by the stream
-        // ending or by the grace bound expiring — exactly the two cases below.
-        let closed =
-            matches!(self.inbox.wait_for(SHUTDOWN_GRACE, |_| None::<()>), Err(WaitEnd::Ended(_)));
-        if closed && let Ok(mut child) = self.child.lock() {
-            // The stream ended; reap without forcing.
-            let _ = child.wait();
-            return;
-        }
+        // Give the server its grace period by waiting for its own end-of-stream
+        // rather than polling `try_wait` on a timer: the reader records the
+        // stream end the moment it happens, so an orderly exit is observed
+        // immediately instead of on the next poll tick. The predicate never
+        // matches, so this can only end at the stream end or the bound.
+        let _ = self.inbox.wait_for(SHUTDOWN_GRACE, |_| None::<()>);
+
+        // End of stream is NOT proof the child exited. A server can close its
+        // stdout, or corrupt its framing, and keep running — and after a
+        // `TransportFailure` the reader has stopped draining stdout entirely.
+        // So the exit decision stays bounded and always terminates.
         if let Ok(mut child) = self.child.lock() {
+            reap_or_kill(&mut child);
+        }
+    }
+}
+
+/// Finish with the child process without ever blocking indefinitely.
+///
+/// `wait()` is only called on a process already known to have exited, or after
+/// `kill()` — which sends an uncatchable signal, so the subsequent reap
+/// returns promptly. A server that closed its output but is still running is
+/// killed rather than waited on forever.
+fn reap_or_kill(child: &mut Child) {
+    match child.try_wait() {
+        // Already exited: just collect it.
+        Ok(Some(_)) => {}
+        // Still running, or its status could not be determined — force it.
+        Ok(None) | Err(_) => {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -674,4 +689,66 @@ fn build_command(binary_path: &str, config: &ScenarioConfig) -> Result<Command> 
     }
 
     Ok(cmd)
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::reap_or_kill;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    /// Regression control for the hazard that end-of-stream is not process
+    /// exit: a server may close (or corrupt) its stdout and keep running.
+    ///
+    /// Waiting unconditionally on such a child hangs the whole test run, so
+    /// this asserts the bounded path — the child is force-killed and reaped
+    /// well inside its own sleep.
+    #[test]
+    fn a_child_that_closes_stdout_but_keeps_running_is_not_waited_on_forever() {
+        // Closes stdout immediately, then stays alive far longer than any
+        // shutdown bound this harness uses.
+        let Ok(mut child) = Command::new("/bin/sh")
+            .args(["-c", "exec 1>&-; sleep 300"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            // No POSIX shell available; nothing to prove here.
+            return;
+        };
+
+        let started = Instant::now();
+        reap_or_kill(&mut child);
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "cleanup must not block on a live child that closed its output; took {elapsed:?}"
+        );
+        // The child is reaped: a second wait resolves immediately rather than
+        // leaving a zombie behind.
+        assert!(child.try_wait().is_ok(), "child must have been reaped");
+    }
+
+    /// The ordinary path: a child that already exited is collected without
+    /// being killed.
+    #[test]
+    fn an_already_exited_child_is_reaped_without_forcing() {
+        let Ok(mut child) =
+            Command::new("/bin/sh").args(["-c", "exit 0"]).stdout(Stdio::null()).spawn()
+        else {
+            return;
+        };
+        // Let it finish on its own terms before deciding.
+        let _ = child.wait();
+
+        let started = Instant::now();
+        reap_or_kill(&mut child);
+
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "reaping an exited child must be immediate"
+        );
+    }
 }
