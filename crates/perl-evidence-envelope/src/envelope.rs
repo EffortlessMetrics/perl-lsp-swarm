@@ -82,6 +82,23 @@ impl std::fmt::Display for EvidenceEnvelopeSchemaVersion {
 
 /// The `evidence_envelope.v1` outer evidence record.
 ///
+/// # Field coherence is the producer's responsibility
+///
+/// `receipt_id`, `producer`, and `subject.run` are independent fields, so this
+/// type accepts an envelope whose `receipt_id` was minted from a *different*
+/// producer or run than the ones it stores. That is not checkable after the
+/// fact: [`ReceiptId`] is a one-way digest that does not retain its derivation
+/// inputs, and the `canonical_key` is not carried on the envelope, so a
+/// consumer cannot re-derive the ID to verify it. Rejecting the mismatch would
+/// require either private fields with a single checked constructor or storing
+/// the derivation inputs — neither of which this slice takes on.
+///
+/// Producers should mint `receipt_id` from the same [`ProducerIdentity`] and
+/// [`RunIdentity`] the envelope carries, as the test fixtures in this module
+/// do. This mirrors `perl-source-identity`, whose envelope likewise "makes
+/// provenance fields explicit but does not validate their semantic
+/// relationships".
+///
 /// # Completeness is always explicit
 ///
 /// `completeness` and `inputs` are both required fields with no `serde`
@@ -151,31 +168,29 @@ mod tests {
     use perl_source_identity::{ContentDigest, ProjectId};
 
     fn sample_envelope() -> EvidenceEnvelope {
+        // The receipt id is minted from the producer and run this envelope
+        // actually stores, so the fixture models a coherent envelope rather
+        // than demonstrating the mismatch the type permits.
+        let producer =
+            ProducerIdentity::new("perl-lsp-test-runner", "0.17.0", "abc123", "ci-build-1");
+        let run = RunIdentity::new(RunSource::Workflow, "run-1", 1);
+
         EvidenceEnvelope {
             schema_version: EvidenceEnvelopeSchemaVersion::V1,
-            receipt_id: ReceiptId::from_producer_run_and_key(
-                &crate::producer::test_producer(),
-                &crate::subject::test_run(),
-                "receipt-1",
-            ),
+            receipt_id: ReceiptId::from_producer_run_and_key(&producer, &run, "receipt-1"),
             payload: PayloadIdentity::new(
                 "test-receipt",
                 1,
                 ContentDigest::of_bytes(b"payload bytes"),
             ),
-            producer: ProducerIdentity::new(
-                "perl-lsp-test-runner",
-                "0.17.0",
-                "abc123",
-                "ci-build-1",
-            ),
+            producer,
             subject: EvidenceSubject::new(
                 ProjectId::from_canonical_name("acme/widget"),
                 Some("base-sha".to_string()),
                 Some("head-sha".to_string()),
                 Some("candidate-sha".to_string()),
                 None,
-                RunIdentity::new(RunSource::Workflow, "run-1", 1),
+                run,
             ),
             completeness: Completeness::Complete,
             redaction_class: RedactionClass::Public,

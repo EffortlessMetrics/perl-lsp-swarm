@@ -346,26 +346,27 @@ mod tests {
         use crate::subject::{EvidenceSubject, RunIdentity, RunSource};
         use perl_source_identity::ProjectId;
 
+        // Minted from the producer and run this envelope stores, so the golden
+        // vector pins a coherent envelope.
+        let producer = ProducerIdentity::new("golden-producer", "1.2.3", "deadbeef", "build-9");
+        let run = RunIdentity::new(RunSource::Workflow, "run-42", 2);
+
         EvidenceEnvelope {
             schema_version: EvidenceEnvelopeSchemaVersion::V1,
-            receipt_id: ReceiptId::from_producer_run_and_key(
-                &crate::producer::test_producer(),
-                &crate::subject::test_run(),
-                "golden-receipt",
-            ),
+            receipt_id: ReceiptId::from_producer_run_and_key(&producer, &run, "golden-receipt"),
             payload: PayloadIdentity::new(
                 "golden-kind",
                 7,
                 ContentDigest::of_bytes(b"golden payload bytes"),
             ),
-            producer: ProducerIdentity::new("golden-producer", "1.2.3", "deadbeef", "build-9"),
+            producer,
             subject: EvidenceSubject::new(
                 ProjectId::from_canonical_name("acme/golden"),
                 Some("base-ref".to_string()),
                 Some("head-ref".to_string()),
                 Some("candidate-ref".to_string()),
                 Some("artifact-ref".to_string()),
-                RunIdentity::new(RunSource::Workflow, "run-42", 2),
+                run,
             ),
             completeness: Completeness::Partial,
             redaction_class: RedactionClass::Redacted,
@@ -418,7 +419,7 @@ mod tests {
     fn fingerprint_is_stable_for_a_known_envelope() {
         assert_eq!(
             golden_envelope().fingerprint().as_wire(),
-            "envfp:sha256:ccdc5e831f337a95f8a3aba71cc4454343cf46d7d7b422d894f066f482921635",
+            "envfp:sha256:8a1c8844c8794bc164fb94d65f9c5753b113f6be98d556bbae26275ddf5e5552",
             "envelope fingerprint changed; see this test's doc comment before updating it"
         );
     }
