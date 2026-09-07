@@ -1434,6 +1434,13 @@ jobs:
         env:
           PERL_LSP_BIN: ${{ github.workspace }}/target/debug/perllsp
           RUST_TEST_THREADS: "1"
+          # #9616: golden-manifest error waivers carry calendar expiry dates, so
+          # enforcing a lapse on every branch makes the verdict depend on
+          # merge-base age rather than on the diff under test. A branch reports
+          # a lapse as a warning; a push to the default branch fails, which is
+          # where the waiver can actually be refreshed. Waiver *shape* stays
+          # enforced everywhere.
+          PERL_LSP_UX_WAIVER_EXPIRY: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) && 'enforce' || 'warn' }}
         run: |
           set -o pipefail
           mkdir -p target/receipts

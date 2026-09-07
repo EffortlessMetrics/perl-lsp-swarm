@@ -5,7 +5,7 @@
 //! journey without promoting a support tier or turning a fallback into an
 //! exactness claim.
 
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use perl_lsp_ux_tests::{
     ProjectFixtureFile, ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available,
     fixture_content, fixture_scenario_config, load_catalyst_fixture_files,
@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Deserializer, Value, json};
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use url::Url;
@@ -51,25 +52,17 @@ fn golden_manifest_has_exact_after_ready_shape() -> Result<()> {
     validate_manifest(&manifest)
 }
 
-#[test]
-fn waiver_expiry_rejects_malformed_and_expired_dates() -> Result<()> {
-    ensure!(validate_waiver_expiry("9999-12-31").is_ok());
-    ensure!(validate_waiver_expiry("2026-02-30").is_err());
-    ensure!(validate_waiver_expiry("2020-01-01").is_err());
-    Ok(())
-}
-
-#[test]
-fn expired_waiver_error_preserves_debt_identity() -> Result<()> {
-    let error = validate_error_waiver(&ErrorWaiver {
+fn test_waiver(expires_after: &str) -> ErrorWaiver {
+    ErrorWaiver {
         project: "mojolicious".to_owned(),
         journey: "edit_burst_completion".to_owned(),
         expected_error_class: "request_superseded".to_owned(),
         issue: 5779,
-        expires_after: "2020-01-01".to_owned(),
-    })
-    .expect_err("expired waiver must remain a validation error");
-    let message = format!("{error:#}");
+        expires_after: expires_after.to_owned(),
+    }
+}
+
+fn ensure_waiver_identity(message: &str) -> Result<()> {
     ensure!(message.contains("project=mojolicious"), "missing project identity: {message}");
     ensure!(
         message.contains("journey=edit_burst_completion"),
@@ -80,6 +73,99 @@ fn expired_waiver_error_preserves_debt_identity() -> Result<()> {
         "missing error-class identity: {message}"
     );
     ensure!(message.contains("tracking_issue=#5779"), "missing issue identity: {message}");
+    Ok(())
+}
+
+/// Waiver shape is a property of the manifest text, so it is enforced
+/// identically on a feature branch and on the default branch.
+#[test]
+fn waiver_expiry_shape_is_rejected_under_every_policy() -> Result<()> {
+    let today = days_from_civil(2026, 1, 1);
+    for policy in [WaiverExpiryPolicy::Warn, WaiverExpiryPolicy::Enforce] {
+        for malformed in
+            ["2026-02-30", "2026-13-01", "2026-00-10", "2026-1-01", "2026-01", "not-a-date"]
+        {
+            ensure!(
+                validate_error_waiver_at(&test_waiver(malformed), today, policy).is_err(),
+                "malformed expiry {malformed} must be rejected under {policy:?}"
+            );
+        }
+        ensure!(
+            validate_error_waiver_at(&test_waiver("9999-12-31"), today, policy)?.is_none(),
+            "a well-formed future expiry must be accepted silently under {policy:?}"
+        );
+        ensure!(
+            validate_error_waiver_at(
+                &ErrorWaiver { issue: 0, ..test_waiver("9999-12-31") },
+                today,
+                policy
+            )
+            .is_err(),
+            "a waiver without a tracking issue must be rejected under {policy:?}"
+        );
+    }
+    Ok(())
+}
+
+/// A waiver remains current *through* its expiry date; the boundary is the
+/// following day. Pinning both sides keeps an off-by-one from silently
+/// widening or shortening every waiver by a day.
+#[test]
+fn waiver_remains_current_through_its_expiry_date() -> Result<()> {
+    let expiry = days_from_civil(2026, 8, 11);
+    ensure!(waiver_lapse(expiry, expiry - 1) == WaiverLapse::Current, "before expiry is current");
+    ensure!(waiver_lapse(expiry, expiry) == WaiverLapse::Current, "the expiry day is current");
+    ensure!(waiver_lapse(expiry, expiry + 1) == WaiverLapse::Lapsed, "the day after has lapsed");
+    Ok(())
+}
+
+/// #9616: a lapsed waiver must not fail a branch whose diff never touched the
+/// manifest, but it must still fail on the default branch, where the
+/// maintainer who can refresh the waiver will see it.
+#[test]
+fn lapsed_waiver_fails_under_enforcement_and_warns_otherwise() -> Result<()> {
+    let waiver = test_waiver("2026-08-11");
+    let today = days_from_civil(2026, 8, 12);
+
+    let error = match validate_error_waiver_at(&waiver, today, WaiverExpiryPolicy::Enforce) {
+        Err(error) => error,
+        Ok(_) => bail!("a lapsed waiver must fail under the enforcing policy"),
+    };
+    let message = format!("{error:#}");
+    ensure!(message.contains("expired on 2026-08-11"), "missing lapse detail: {message}");
+    ensure_waiver_identity(&message)?;
+
+    let warning = validate_error_waiver_at(&waiver, today, WaiverExpiryPolicy::Warn)?
+        .context("a lapsed waiver must still be reported when the policy only warns")?;
+    ensure!(warning.contains("expired on 2026-08-11"), "missing lapse detail: {warning}");
+    ensure_waiver_identity(&warning)?;
+    Ok(())
+}
+
+/// Negative control against trading a noisy gate for a silent one: warnings
+/// are emitted only for waivers that have actually lapsed.
+#[test]
+fn current_waiver_is_silent_under_the_warning_policy() -> Result<()> {
+    let expiry = days_from_civil(2026, 8, 11);
+    ensure!(
+        validate_error_waiver_at(&test_waiver("2026-08-11"), expiry, WaiverExpiryPolicy::Warn)?
+            .is_none(),
+        "a current waiver must not warn, or the lapse signal degrades into noise"
+    );
+    Ok(())
+}
+
+/// An unrecognized policy value must fail rather than fall back to `warn`:
+/// a typo in CI would otherwise silently disable the default-branch failure
+/// that this split exists to preserve.
+#[test]
+fn waiver_policy_defaults_to_warn_and_rejects_unknown_values() -> Result<()> {
+    ensure!(WaiverExpiryPolicy::parse("")? == WaiverExpiryPolicy::Warn);
+    ensure!(WaiverExpiryPolicy::parse("warn")? == WaiverExpiryPolicy::Warn);
+    ensure!(WaiverExpiryPolicy::parse("enforce")? == WaiverExpiryPolicy::Enforce);
+    ensure!(WaiverExpiryPolicy::parse("enfroce").is_err(), "a typo must not degrade to warn");
+    ensure!(WaiverExpiryPolicy::parse("Enforce").is_err(), "policy values are exact");
+    ensure!(WaiverExpiryPolicy::parse("1").is_err(), "policy values are not booleans");
     Ok(())
 }
 
@@ -448,24 +534,143 @@ fn validate_manifest(manifest: &WorkloadManifest) -> Result<()> {
             "manifest is missing zero-budget metric {metric}"
         );
     }
+    // Resolve the policy and the evaluation day once, before the loop and
+    // regardless of how many waivers exist. An unreadable policy value is then
+    // caught even when `error_waivers` is empty — otherwise a typo in CI would
+    // lie dormant until the next waiver was added, which is precisely when the
+    // enforcement it disables would have been needed.
+    let policy = WaiverExpiryPolicy::from_env()?;
+    let today_days = today_utc_days()?;
     for waiver in &manifest.error_waivers {
-        validate_error_waiver(waiver)?;
+        if let Some(warning) = validate_error_waiver_at(waiver, today_days, policy)? {
+            report_waiver_warning(&warning);
+        }
     }
     Ok(())
 }
 
-fn validate_error_waiver(waiver: &ErrorWaiver) -> Result<()> {
-    ensure!(waiver.issue > 0, "error waiver must name a tracking issue");
-    validate_waiver_expiry(&waiver.expires_after).with_context(|| {
-        format!(
-            "Scenario 67 waiver identity: project={} journey={} expected_error_class={} tracking_issue=#{}",
-            waiver.project, waiver.journey, waiver.expected_error_class, waiver.issue
-        )
-    })?;
-    Ok(())
+/// Environment variable selecting how a lapsed waiver is reported (#9616).
+const WAIVER_EXPIRY_ENV: &str = "PERL_LSP_UX_WAIVER_EXPIRY";
+
+/// How a wall-clock waiver lapse is reported.
+///
+/// A waiver's *shape* is a property of the manifest and is always enforced. A
+/// waiver's *lapse* is a property of when the suite runs, so enforcing it on
+/// every branch makes the verdict a function of merge-base age rather than of
+/// the diff under test: two identical diffs get different results, and a PR
+/// author is asked to refresh a fixture they never touched. The lapse is
+/// therefore routed to the default branch, where it can actually be acted on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaiverExpiryPolicy {
+    /// A lapsed waiver fails the run. Selected for pushes to the default branch.
+    Enforce,
+    /// A lapsed waiver is reported but does not fail the run.
+    Warn,
 }
 
-fn validate_waiver_expiry(expires_after: &str) -> Result<()> {
+impl WaiverExpiryPolicy {
+    /// Read the policy from the environment, defaulting to [`Self::Warn`].
+    fn from_env() -> Result<Self> {
+        match std::env::var(WAIVER_EXPIRY_ENV) {
+            Ok(raw) => Self::parse(&raw),
+            Err(std::env::VarError::NotPresent) => Ok(Self::Warn),
+            Err(err) => Err(anyhow!("{WAIVER_EXPIRY_ENV} is not readable: {err}")),
+        }
+    }
+
+    /// Parse a policy value.
+    ///
+    /// An unrecognized value is an error rather than a fallback to
+    /// [`Self::Warn`], so a typo in CI cannot quietly disable the
+    /// default-branch failure.
+    fn parse(raw: &str) -> Result<Self> {
+        match raw.trim() {
+            "" | "warn" => Ok(Self::Warn),
+            "enforce" => Ok(Self::Enforce),
+            other => Err(anyhow!("{WAIVER_EXPIRY_ENV} must be `enforce` or `warn`, got `{other}`")),
+        }
+    }
+}
+
+/// Whether a waiver is still current on a given day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaiverLapse {
+    Current,
+    Lapsed,
+}
+
+/// Compare an expiry day against the evaluation day.
+///
+/// A waiver is current *through* its expiry date, so equality is current.
+fn waiver_lapse(expiry_days: i64, today_days: i64) -> WaiverLapse {
+    if expiry_days >= today_days { WaiverLapse::Current } else { WaiverLapse::Lapsed }
+}
+
+/// Days since 1970-01-01 (UTC) for the current instant.
+fn today_utc_days() -> Result<i64> {
+    Ok(i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() / 86_400)?)
+}
+
+/// The debt identity carried by every waiver report, so a lapse names the
+/// project, journey, error class, and tracking issue on either channel.
+fn waiver_debt_identity(waiver: &ErrorWaiver) -> String {
+    format!(
+        "Scenario 67 waiver identity: project={} journey={} expected_error_class={} tracking_issue=#{}",
+        waiver.project, waiver.journey, waiver.expected_error_class, waiver.issue
+    )
+}
+
+/// Validate one waiver against an explicit day under an explicit policy.
+///
+/// Returns the report text when the waiver has lapsed but the policy only
+/// warns, so a lapse is never silent even when it does not fail the run.
+/// Taking the day as a parameter keeps the decision testable without
+/// depending on the wall clock.
+fn validate_error_waiver_at(
+    waiver: &ErrorWaiver,
+    today_days: i64,
+    policy: WaiverExpiryPolicy,
+) -> Result<Option<String>> {
+    let identity = waiver_debt_identity(waiver);
+    ensure!(waiver.issue > 0, "error waiver must name a tracking issue: {identity}");
+    let expiry_days =
+        parse_waiver_expiry(&waiver.expires_after).with_context(|| identity.clone())?;
+
+    if waiver_lapse(expiry_days, today_days) == WaiverLapse::Current {
+        return Ok(None);
+    }
+
+    let lapse =
+        format!("error waiver expired on {}; refresh or remove the waiver", waiver.expires_after);
+    match policy {
+        WaiverExpiryPolicy::Enforce => Err(anyhow!(lapse).context(identity)),
+        WaiverExpiryPolicy::Warn => Ok(Some(format!("{lapse} ({identity})"))),
+    }
+}
+
+/// Surface a lapsed-waiver report where a maintainer will see it.
+///
+/// Written straight to the process stderr rather than through `eprintln!`:
+/// libtest captures the print macros and discards the capture for a test that
+/// passes, which is exactly the case this report exists for. A direct
+/// descriptor write survives, so the warning reaches the job log. Delivery is
+/// best-effort — failing to report a warning must not fail the run, since the
+/// actionable signal is the default-branch enforcement.
+fn report_waiver_warning(warning: &str) {
+    let line = if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        format!("::warning title=Scenario 67 waiver lapsed::{warning}\n")
+    } else {
+        format!("warning: {warning}\n")
+    };
+    let mut stderr = std::io::stderr();
+    let _ = stderr.write_all(line.as_bytes());
+    let _ = stderr.flush();
+}
+
+/// Validate the `YYYY-MM-DD` shape of a waiver expiry and return its day
+/// number. This is a pure function of the manifest text, so a malformed date
+/// is a defect in the branch's own content and always fails.
+fn parse_waiver_expiry(expires_after: &str) -> Result<i64> {
     let mut parts = expires_after.split('-');
     let year = parts.next().context("waiver expiry is missing a year")?.parse::<i64>()?;
     let month = parts.next().context("waiver expiry is missing a month")?.parse::<u32>()?;
@@ -480,15 +685,7 @@ fn validate_waiver_expiry(expires_after: &str) -> Result<()> {
         _ => 31,
     };
     ensure!((1..=days_in_month).contains(&day), "waiver expiry day is invalid: {expires_after}");
-
-    let expiry_days = days_from_civil(year, month, day);
-    let today_days =
-        i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() / 86_400)?;
-    ensure!(
-        expiry_days >= today_days,
-        "error waiver expired on {expires_after}; refresh or remove the waiver"
-    );
-    Ok(())
+    Ok(days_from_civil(year, month, day))
 }
 
 fn is_leap_year(year: i64) -> bool {
