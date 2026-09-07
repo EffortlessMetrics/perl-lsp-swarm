@@ -4,8 +4,18 @@
 //! after the entire statement. Traversal order alone cannot encode this boundary.
 //!
 //! Perl compile-only checks reject both `print $x if my $x=1` and
-//! `my $x=1 if $x` under strict; `state` behaves likewise, while `our` remains
-//! immediately visible. Nested blocks finish their own statements independently.
+//! `my $x=1 if $x` under strict; `state` behaves likewise. Nested blocks finish
+//! their own statements independently.
+//!
+//! Visibility is deferred, but the two children are still visited in *runtime*
+//! order (condition, then statement), because capture state and initialization
+//! genuinely depend on evaluation order — see
+//! `modifier_children_are_analyzed_in_runtime_order`. `our` is not deferred and
+//! is therefore reported by its own condition; that pre-existing source-order
+//! alias gap is #15048 and is pinned by
+//! `our_in_a_modifier_statement_is_a_known_source_order_gap` rather than being
+//! papered over by inverting the four runtime facts.
+//!
 //! The current mirror and boundary controls were checked with Perl 5.42.0;
 //! the older forward-use controls below retain their recorded 5.38.2 oracle.
 
@@ -187,7 +197,7 @@ fn both_modifier_children_wait_for_lexical_visibility() -> TestResult {
 }
 
 #[test]
-fn completed_modifier_installs_lexicals_and_preserves_our_visibility() -> TestResult {
+fn completed_modifier_installs_lexicals() -> TestResult {
     for declarator in ["my", "state"] {
         check_visibility(
             &format!("use strict; use feature 'state'; {declarator} $x = 1 if 1; print $x;"),
@@ -200,8 +210,84 @@ fn completed_modifier_installs_lexicals_and_preserves_our_visibility() -> TestRe
             false,
         )?;
     }
-    check_visibility("use strict; our $x = 1 if $x;", "$x", false)?;
     check_visibility("my $x = 1 if $x;", "$x", false)?;
+    Ok(())
+}
+
+/// Known gap, pinned so it is visible rather than silent: `our` is not deferred (it aliases a
+/// package variable), but the condition is analyzed before the statement, so the alias is not
+/// yet in hand when the condition is checked.
+///
+/// Oracle, perl 5.38.2: `use strict; our $x = 1 if $x;` → `-e syntax OK`, so this diagnostic
+/// is a false positive.
+///
+/// This is a pre-existing source-order alias gap that `origin/main` shares — it is not
+/// introduced here, and it is tracked as #15048. It is deliberately NOT fixed by visiting the
+/// statement first: doing that inverts four runtime-order facts (both capture-state
+/// directions and both initialization directions), which the rows below pin. Trading four
+/// regressions for one false positive is the wrong direction.
+///
+/// When #15048 lands, this row flips to `false` and moves back into the test above.
+#[test]
+fn our_in_a_modifier_statement_is_a_known_source_order_gap() -> TestResult {
+    check_visibility("use strict; our $x = 1 if $x;", "$x", true)?;
+    Ok(())
+}
+
+/// Runtime-order facts. A modifier's condition really does run before the statement it
+/// guards, so these four must follow evaluation order, not source order. Statement-first
+/// traversal inverts all four; they are the reason this arm keeps the condition first.
+///
+/// Oracle, perl 5.38.2 (runtime, `perl -we`):
+/// ```text
+/// $_="ax"; print "[$1]" if /a(.)/;   -> [x]        the match sets $1 for the statement
+/// $_="ax"; /a(.)/ if $1;             -> "Use of uninitialized value $1"
+/// ```
+#[test]
+fn modifier_children_are_analyzed_in_runtime_order() -> TestResult {
+    // Capture state, both directions.
+    let sets = scope_issues("use strict;\nprint $1 if /a(.)/;\n")?;
+    if sets.iter().any(|i| i.kind == IssueKind::CaptureVarWithoutRegexMatch) {
+        return Err(format!("a match in the condition sets $1 for the statement: {sets:?}").into());
+    }
+    let unset = scope_issues("use strict;\n/a(.)/ if $1;\n")?;
+    if !unset.iter().any(|i| i.kind == IssueKind::CaptureVarWithoutRegexMatch) {
+        return Err(
+            format!("the statement's match cannot set $1 for the condition: {unset:?}").into()
+        );
+    }
+
+    // Initialization, both directions.
+    let reads_uninit = scope_issues("use strict;\nmy $x;\n$x = 1 if $x;\n")?;
+    if !reads_uninit.iter().any(|i| i.kind == IssueKind::UninitializedVariable) {
+        return Err(format!(
+            "the condition reads $x before the statement assigns it: {reads_uninit:?}"
+        )
+        .into());
+    }
+    let cond_initializes = scope_issues("use strict;\nmy $x;\nprint $x if ($x = 1);\n")?;
+    if cond_initializes.iter().any(|i| i.kind == IssueKind::UninitializedVariable) {
+        return Err(format!(
+            "the condition initializes $x before the statement reads it: {cond_initializes:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// A regex inside an uninvoked `sub` in the condition does not run, so it cannot set `$1`.
+///
+/// Oracle, perl 5.38.2 (runtime): `$_="ax"; print "[$1]" if sub { /a(.)/ };` warns
+/// `Use of uninitialized value $1` — the sub body is never called.
+///
+/// Ordinary (non-modifier) analysis already gets this right because a sub body owns its own
+/// scope; this row pins that the modifier arm does not bypass that boundary.
+#[test]
+fn an_uninvoked_sub_body_in_the_condition_does_not_set_capture_state() -> TestResult {
+    let issues = scope_issues("use strict;\nprint $1 if sub { /a(.)/ };\n")?;
+    if !issues.iter().any(|i| i.kind == IssueKind::CaptureVarWithoutRegexMatch) {
+        return Err(format!("an uninvoked sub body must not set $1: {issues:?}").into());
+    }
     Ok(())
 }
 
@@ -336,6 +422,54 @@ fn a_regex_match_in_the_condition_sets_capture_state_for_the_statement() -> Test
                  so $1 must not be reported without a match: {issues:?}"
             )
             .into());
+        }
+    }
+    Ok(())
+}
+
+/// When both halves of one modifier declare the same lexical, the binding that survives must
+/// be the one Perl resolves — the **textually later** declaration.
+///
+/// In `EXPR if COND` the condition is always textually after the statement, so analyzing the
+/// condition first (see `modifier_children_are_analyzed_in_runtime_order`) makes the
+/// first-traversed declaration the textually-later one, and the redeclaration guard keeps it.
+/// Statement-first traversal keeps the earlier one instead and attaches later reads to its
+/// initialization state, which is the defect reported on this PR.
+///
+/// Perl leaves the *runtime value* of a conditional `my` undefined, so the pinned property is
+/// the static binding identity, observed through the initialization state that follows it.
+#[test]
+fn a_duplicate_modifier_declaration_keeps_the_textually_later_binding() -> TestResult {
+    // Later declaration (the condition) is initialized -> the following read is initialized.
+    let later_initialized =
+        scope_issues("use strict; use warnings;\nmy $x if my $x = 2;\nprint $x;\n")?;
+    if later_initialized.iter().any(|i| i.kind == IssueKind::UninitializedVariable) {
+        return Err(format!(
+            "the later declaration `my $x = 2` is initialized, so the read is too: \
+             {later_initialized:?}"
+        )
+        .into());
+    }
+
+    // Later declaration (the condition) is uninitialized -> the following read is not.
+    let later_uninitialized =
+        scope_issues("use strict; use warnings;\nmy $x = 1 if my $x;\nprint $x;\n")?;
+    if !later_uninitialized.iter().any(|i| i.kind == IssueKind::UninitializedVariable) {
+        return Err(format!(
+            "the later declaration `my $x` is uninitialized, so the read must be reported: \
+             {later_uninitialized:?}"
+        )
+        .into());
+    }
+
+    // The redeclaration itself stays diagnosed in both orderings.
+    for code in [
+        "use strict; use warnings;\nmy $x if my $x = 2;\n",
+        "use strict; use warnings;\nmy $x = 1 if my $x;\n",
+    ] {
+        let issues = scope_issues(code)?;
+        if !issues.iter().any(|i| i.kind == IssueKind::VariableRedeclaration) {
+            return Err(format!("redeclaration must stay diagnosed in {code:?}: {issues:?}").into());
         }
     }
     Ok(())
