@@ -895,13 +895,15 @@ const COMPLETION_PHRASES: [&str; 7] = [
 ];
 
 fn positive_completion_phrase(line: &str) -> bool {
-    line.split(';').any(clause_claims_postfix_completion)
-}
-
-fn clause_claims_postfix_completion(clause: &str) -> bool {
-    if !line_mentions_postfix(clause) {
+    // Subject is line-scoped so a continuation after ';' still counts.
+    // Negation stays clause-scoped so unrelated polarity cannot cancel a claim.
+    if !line_mentions_postfix(line) {
         return false;
     }
+    line.split(';').any(clause_has_unnegated_completion_phrase)
+}
+
+fn clause_has_unnegated_completion_phrase(clause: &str) -> bool {
     let lower = clause.to_ascii_lowercase();
     COMPLETION_PHRASES.iter().copied().any(|phrase| {
         let Some(idx) = lower.find(phrase) else {
@@ -1402,6 +1404,24 @@ mod tests {
         assert!(message.contains("semantic"), "narrowest reason missing: {message}");
         assert!(message.contains("missing"), "{message}");
         assert!(message.contains("fully supported"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn same_line_continuation_is_a_completion_claim() -> Result<()> {
+        let (ledger, mut matrix) = committed()?;
+        apply_full_looking_hir(postfix_req(&mut matrix)?);
+        let view = derive_postfix_capability(&ledger, &matrix)?;
+        let docs = [(
+            "docs/project/status/perl_compiler_concepts.md",
+            "Postfix statement modifiers: syntax and semantics; umbrella is complete.\n",
+        )];
+        let error = evaluate_closure_gate(&view, &ledger, &matrix, &docs).expect_err(
+            "same-line postfix subject plus continuation must remain a completion claim",
+        );
+        let message = error.to_string();
+        assert!(message.contains("semantic"), "narrowest reason missing: {message}");
+        assert!(message.contains("umbrella is complete"), "{message}");
         Ok(())
     }
 
