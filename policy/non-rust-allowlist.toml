@@ -954,7 +954,6 @@ covered_by = [
   "cargo xtask check-file-policy",
   "cargo xtask check-executable-files",
   "cargo xtask check-process-policy",
-  "cargo xtask check-network-policy",
 ]
 broad_glob_reason = "scripts/ contains legacy and compatibility helpers being progressively migrated to xtask. The executable, process, and network companion policies constrain risky behavior."
 created = "2026-05-07"
