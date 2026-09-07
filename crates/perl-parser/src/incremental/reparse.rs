@@ -171,6 +171,7 @@ pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult
     Ok(ReparseResult {
         changed_ranges: vec![0..source_len],
         snapshot: state.snapshot().clone(),
+        #[cfg(feature = "lsp-compat")]
         diagnostics: vec![],
         lex_restart,
         reparsed_bytes: source_len,

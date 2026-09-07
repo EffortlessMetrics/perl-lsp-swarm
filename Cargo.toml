@@ -421,9 +421,11 @@ await_holding_refcell_ref = "deny"
 # This row covers non-std guards only — borrowed `parking_lot` mutex and
 # read/write guards. Standard-library guards are owned by the
 # `rust::let_underscore_lock` row below; the two identities partition the
-# surface and do not overlap. Both rows match only `let _ = <borrowed guard>`;
-# owned arc guards, `drop(m.lock())`, and mapped guards are outside what either
-# lint sees. That measured gap is #14579.
+# surface and do not overlap. Both rows match only `let _ = <borrowed guard>`.
+# #14579 ruled on the rest: owned arc guards and mapped guards are `#[must_use]`
+# and belong to `clippy::let_underscore_must_use` (tracked; activated by
+# #11240), while `drop(m.lock())` is seen by no Clippy lint at any level and
+# stays with the #11236 deliberate-discard contract.
 let_underscore_lock = "deny"
 # mutex_atomic: prefer proper Mutex over atomic-loaded Mutex guards (#2899).
 mutex_atomic = "warn"

@@ -1,9 +1,9 @@
 use color_eyre::eyre::{Context, Result};
 use std::env;
 use std::ffi::OsStr;
-use std::io::Write;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
 
 /// PATH components a parent-process preflight can resolve coherently with a
@@ -154,6 +154,40 @@ fn is_bare_name(command: &str) -> bool {
     }
 }
 
+/// Outcome of a scoped stdout/stderr collector thread.
+enum StreamJoin {
+    Bytes(Vec<u8>),
+    Io(io::Error),
+    Panic,
+}
+
+fn join_stream(handle: std::thread::ScopedJoinHandle<'_, io::Result<Vec<u8>>>) -> StreamJoin {
+    match handle.join() {
+        Ok(Ok(bytes)) => StreamJoin::Bytes(bytes),
+        Ok(Err(error)) => StreamJoin::Io(error),
+        Err(_) => StreamJoin::Panic,
+    }
+}
+
+fn stream_join_bytes(stream: &str, joined: StreamJoin) -> Result<Vec<u8>> {
+    match joined {
+        StreamJoin::Bytes(bytes) => Ok(bytes),
+        StreamJoin::Io(error) => Err(error).wrap_err_with(|| format!("collecting {stream}")),
+        StreamJoin::Panic => Err(color_eyre::eyre::eyre!("{stream} collector thread panicked")),
+    }
+}
+
+fn take_stdio<T>(pipe: Option<T>, child: &mut Child, command: &str, what: &str) -> Result<T> {
+    match pipe {
+        Some(pipe) => Ok(pipe),
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(color_eyre::eyre::eyre!("failed to open {what} for command {command}"))
+        }
+    }
+}
+
 /// Spawn a child with piped stdout and stderr and collect both after exit.
 ///
 /// Stream draining is left to `std::process::Command::output`. This is the
@@ -167,6 +201,68 @@ fn run_captured(
     let mut child = configure_child(command, repo_root, args, env_vars)?;
     child.stdout(Stdio::piped()).stderr(Stdio::piped());
     child.output().wrap_err_with(|| format!("running {command}"))
+}
+
+/// Spawn a child, deliver stdin while draining stdout/stderr, then wait.
+///
+/// Stdin is written on the calling thread. Scoped threads drain stdout and
+/// stderr so a child that writes before reading cannot fill the pipes and
+/// deadlock the parent. Stdin is closed after the write so the child observes
+/// EOF. If the stdin write fails, the immediate child is killed so collectors
+/// cannot block on a still-open output pipe. Threads are joined before return
+/// on both success and failure.
+fn run_captured_with_stdin(
+    repo_root: &Path,
+    command: &str,
+    args: &[&str],
+    env_vars: &[(&str, &str)],
+    stdin_payload: &str,
+) -> Result<Output> {
+    let mut spawned = configure_child(command, repo_root, args, env_vars)?;
+    spawned.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = spawned.spawn().wrap_err_with(|| format!("running {command}"))?;
+
+    let mut stdin = take_stdio(child.stdin.take(), &mut child, command, "stdin")?;
+    let mut stdout = take_stdio(child.stdout.take(), &mut child, command, "stdout")?;
+    let mut stderr = take_stdio(child.stderr.take(), &mut child, command, "stderr")?;
+    let stdin_bytes = stdin_payload.as_bytes();
+
+    let (write_result, stdout_join, stderr_join) = std::thread::scope(|scope| {
+        let stdout_thread = scope.spawn(|| {
+            let mut buffer = Vec::new();
+            stdout.read_to_end(&mut buffer).map(|_| buffer)
+        });
+        let stderr_thread = scope.spawn(|| {
+            let mut buffer = Vec::new();
+            stderr.read_to_end(&mut buffer).map(|_| buffer)
+        });
+        let write_result = stdin.write_all(stdin_bytes).and_then(|()| stdin.flush());
+        drop(stdin);
+        if write_result.is_err() {
+            // A child that closed stdin but is still alive would otherwise
+            // leave the collectors blocked on output EOF. Kill the immediate
+            // child so pipes close, joins finish, and wait can reap.
+            let _ = child.kill();
+        }
+        (write_result, join_stream(stdout_thread), join_stream(stderr_thread))
+    });
+
+    let status = child.wait().wrap_err_with(|| format!("running {command}"))?;
+
+    if matches!(stdout_join, StreamJoin::Panic) {
+        return Err(color_eyre::eyre::eyre!("stdout collector thread panicked"));
+    }
+    if matches!(stderr_join, StreamJoin::Panic) {
+        return Err(color_eyre::eyre::eyre!("stderr collector thread panicked"));
+    }
+    write_result.wrap_err_with(|| {
+        format!("writing to stdin for {command} (child exit {})", child_exit_code(status))
+    })?;
+    Ok(Output {
+        status,
+        stdout: stream_join_bytes("stdout", stdout_join)?,
+        stderr: stream_join_bytes("stderr", stderr_join)?,
+    })
 }
 
 /// Numeric status as these wrappers report it.
@@ -233,12 +329,14 @@ pub(crate) fn command_with_output_all(
     Ok(combined)
 }
 
-/// Deliver stdin, then return the child status and post-process stdout+stderr.
+/// Deliver stdin concurrently with stdout/stderr draining, then return status
+/// and post-process stdout+stderr.
 ///
-/// Stdin is written to completion and closed before `wait_with_output`.
-/// Concurrent drain-while-write for large pipes is owned by #14131, not here.
-/// Combined output uses the same stdout-then-stderr concatenation as
-/// [`command_with_output_all`].
+/// Stdin is written on the calling thread while scoped threads drain stdout
+/// and stderr, so a cooperating child that writes before reading cannot fill
+/// the pipes and deadlock. Stdin is closed after the write so the child
+/// observes EOF. Combined output uses the same stdout-then-stderr
+/// concatenation as [`command_with_output_all`].
 pub(crate) fn command_with_input_with_status(
     repo_root: &Path,
     command: &str,
@@ -246,20 +344,7 @@ pub(crate) fn command_with_input_with_status(
     env_vars: &[(&str, &str)],
     stdin_payload: &str,
 ) -> Result<(i32, String)> {
-    let mut child = configure_child(command, repo_root, args, env_vars)?;
-    child.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-
-    let mut child = child.spawn().wrap_err_with(|| format!("running {command}"))?;
-    {
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| color_eyre::eyre::eyre!("failed to open stdin for command {command}"))?;
-        stdin
-            .write_all(stdin_payload.as_bytes())
-            .wrap_err_with(|| format!("writing to stdin for {command}"))?;
-    }
-    let output = child.wait_with_output().wrap_err_with(|| format!("running {command}"))?;
+    let output = run_captured_with_stdin(repo_root, command, args, env_vars, stdin_payload)?;
     Ok((child_exit_code(output.status), combined_lossy_output(&output)))
 }
 

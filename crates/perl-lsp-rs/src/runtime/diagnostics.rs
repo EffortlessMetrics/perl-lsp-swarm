@@ -1896,13 +1896,16 @@ impl LspServer {
             return Err(crate::protocol::method_not_advertised());
         }
 
-        let previous_result_ids = if let Some(params) = &params {
+        // Incoming client URIs are normalized to the same canonical keys the
+        // handler emits, so an unchanged folder keeps its cached report valid
+        // regardless of drive-letter/legacy spelling in the echo (#14862).
+        let previous_result_ids: Vec<(String, String)> = if let Some(params) = &params {
             if let Some(ids) = params["previousResultIds"].as_array() {
                 ids.iter()
                     .filter_map(|item| {
                         let uri = item["uri"].as_str()?;
                         let id = item["value"].as_str()?;
-                        Some((uri.to_string(), id.to_string()))
+                        Some((self.normalize_uri_key(uri), id.to_string()))
                     })
                     .collect()
             } else {
