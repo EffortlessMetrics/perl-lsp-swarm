@@ -86,14 +86,14 @@ cutover, which owns FND-10's allowlist), and any doc rewrite (FND-11 belongs to
 
 ## 1. What the inventory says the classifier must honor
 
-The candidate's own inventory effect is exactly one added documentation row for
-`plans/install-route-classification/implementation-plan.md`: `+1` total,
-`+1` non-Rust, `+1` allowlisted, `+1` documentation, and `+0` Rust-family,
-measured against a freshly regenerated current-`main` baseline at this refresh.
-Any other row or count difference visible in the diff is the regeneration
-correcting a stale checked-in report on `main`, not scope added by this PR.
-The comparison is bounded to that current-`main` baseline, and the report is
-regenerated with `cargo xtask non-rust inventory --write`.
+The candidate adds one tracked documentation path,
+`plans/install-route-classification/implementation-plan.md`, through the existing
+plan allowlist. Under the current inventory contract,
+`cargo xtask non-rust inventory --check` validates the tracked tree and emits
+evidence under `target/policy/`; it does not rewrite a tracked report.
+`docs/policy/NON_RUST_INVENTORY.md` is the generated default-branch reader
+reference, not gate input. This candidate does not refresh that reference;
+publication through `--write` remains separate from the candidate check.
 
 Derived from `docs/distribution/INSTALL_CLAIM_SURFACES.md`
 (`git show origin/main:docs/distribution/INSTALL_CLAIM_SURFACES.md`):
@@ -1219,27 +1219,25 @@ are never one receipt or one selectable route),
 `platform_capabilities` includes Windows ARM emulation capability/version, and
 `risk_posture` is either `strict` or `permissive`.
 
-`strict` has `selected_count=1` only when exactly one `proven_current` route
-survives the hard filter. Zero candidates returns `no_route` with sorted reasons,
-and more than one exact eligible row is an ambiguity refusal; strict never chooses
-by input order. `permissive` first uses the same hard filter and partitions the
-eligible routes into `P` (all dimensions `proven_current`) and `Q` (all dimensions
+`selected_count` counts preferred ordinary-user routes only. Both `strict` and
+`permissive` require every preferred-route hard dimension to be `proven_current`;
+risk posture cannot relax that requirement. Partition the returned routes into
+`P` (all dimensions `proven_current`) and `Q` (all dimensions
 either `proven_current` or `receipt_bound_partial`, with at least one
 `receipt_bound_partial` dimension and the required explicit integrity/provenance,
 product-unit/lifecycle, and freshness/channel/publication receipts). `P` and `Q`
-are disjoint by construction; equivalently, `Q` is the eligible-route complement
-of `P`.
+are disjoint by construction. Only `P` is preferred-eligible. `Q` contains
+annotated advanced/partial alternatives, never preferred candidates.
 
-The permissive result has closed cardinality. If `|P| > 0`, the candidate set is
-exactly all `|P|` proven-current routes, each returned once; every `Q` route is
-returned exactly once as a partial diagnostic but is not selectable. If `|P| = 0` and
-`|Q| > 0`, the candidate set is exactly all `|Q|` partial routes, each returned
-once and labeled `partial`. If both are empty, the result is `no_route`. In either
-non-empty case, `selected_count=1` exactly when the candidate set has cardinality
-one; when its cardinality is greater than one, `selected_count=0` and the result
-uses `selection=deferred_human_order`. A partial route is never selected while a
-proven-current route exists, and no route with `pending_gate`, `unproven`, or
-`contradicted` is in either candidate set.
+The preferred candidate set is exactly all `|P|` proven-current routes, each
+returned once. `permissive` additionally returns every `Q` route exactly once,
+labeled `partial` and non-preferred; `strict` omits these alternatives with
+reasons. If `|P| = 0`, both modes return `no_preferred_route` and
+`selected_count=0`, including when `|Q| = 1`. After H1–H7 are ruled, the applicable
+explicit context policy may select at most one member of `P`. If it cannot
+uniquely distinguish eligible routes, return ambiguity with `selected_count=0`;
+never break a preference tie by input order or route ID. No route with
+`pending_gate`, `unproven`, or `contradicted` enters `P` or `Q`.
 
 Every returned candidate uses this ascending total-order key:
 `(candidate_class, integrity, lifecycle, publication, identity_topology,
@@ -1251,8 +1249,9 @@ the UTF-8 bytes of the opaque route ID and exact projection context. The catalog
 rejects duplicate route-ID/context pairs, so this key is total and cannot depend
 on catalog or input order. This is mechanical candidate ordering, not preferred
 product authority; while H1–H7 remain pending, even a sole candidate is
-`provisional(human-pending)` and the ordered set is not a recommendation. Once
-H1–H7 are ruled, the applicable human-authored policy may choose from this set.
+`provisional(human-pending)` with `selected_count=0`, and the ordered set is not a
+recommendation. Once H1–H7 are ruled, the applicable human-authored policy may
+choose only from `P`; partial alternatives never become preferred selections.
 Duplicate exact route/context rows are a catalog error and return `NOT_PROVEN`
 with the duplicate IDs. Unknown context or registry fields return `no_route`
 with a sorted reason; they never fall back to another registry, `latest`, or an
@@ -1263,8 +1262,12 @@ not-selectable-until-verified diagnostic for deferred channels.
 
 This section defines the selection contract but does not claim executable
 route-classification proof in this planning PR. The future classifier harness must
-bind the cardinality cases (`|P|`/`|Q|` equal to zero, one, and multiple), shuffle
-candidate input, include Unicode route IDs and projection contexts, and include
+bind the cardinality cases (`|P|`/`|Q|` equal to zero, one, and multiple), including
+`P=∅, |Q|=1` yielding `no_preferred_route` and `selected_count=0`. It must prove
+that partial alternatives remain non-preferred after human rulings, that pending
+rulings keep selection at zero, and that only an explicit policy can distinguish
+multiple preferred-eligible routes. Shuffle candidate input, include Unicode
+route IDs and projection contexts, and include
 duplicate route-ID/context controls before claiming the UTF-8 order or cardinality
 rules are proven. Until that harness runs against the validated #10334 catalog
 under #10333's contract,
@@ -1472,15 +1475,16 @@ assuming the former prose-row denominator.
 20. **Selection-context and risk isolation.** Identical requests differing only
     in editor family, target registry, target/libc, observed Windows emulation
     capability, or `strict` versus `permissive` must produce the corresponding
-    observable result: strict selects only one proven-current projection (or
-    `no_route` with reasons); permissive returns exactly `|P|` proven-current
-    candidates when `|P| > 0`, otherwise exactly `|Q|` explicitly annotated
-    receipt-bound partial candidates when `|Q| > 0`, otherwise `no_route`, using
-    the closed total order in §3. It selects exactly one only when the applicable
-    candidate set has cardinality one; multiple candidates return
-    `selection=deferred_human_order` with `selected_count=0`. A route that ignores
-    any supplied field fails; permissive must not turn a contradiction, unproven
-    route, or H7 verify-first diagnostic into a selection.
+    observable result: both modes return exactly `|P|` proven-current preferred
+    candidates; permissive additionally returns exactly `|Q|` annotated partial
+    alternatives, never preferred candidates, using the closed total order in §3.
+    Empty `P` returns `no_preferred_route` with `selected_count=0`, even for a sole
+    partial alternative. Pending H1–H7 rulings also require `selected_count=0`.
+    After the rulings, only explicit context policy may choose at most one member
+    of `P`; unresolved policy ties return ambiguity with `selected_count=0`.
+    A route that ignores any supplied field fails; permissive must not turn a
+    partial alternative, contradiction, unproven route, or H7 verify-first
+    diagnostic into a preferred selection.
 21. **Managed-client registry-family isolation.** A VS Code managed-client
    request that supplies `target_registry` must return exactly the matching
    registry-specific route and never the registry-unspecified family row. The
