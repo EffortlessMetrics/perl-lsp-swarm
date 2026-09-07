@@ -183,6 +183,17 @@ pub enum MetadataSourceRead {
 /// [`MetadataSourceRead::Absent`] source contributes nothing, which is how a
 /// genuine delete drops its declarations.
 ///
+/// `reads` need not be complete. A source it does not mention is *unknown*,
+/// not absent, and retains its previous entries exactly as an unreadable one
+/// does. Every current caller resolves all of
+/// [`DeclaredDependencySource::ALL`], so this decides nothing today; it is
+/// defined this way because the alternative is that a partial slice silently
+/// erases facts about sources it makes no claim about, and `Absent` — the
+/// variant that drops declarations — should only ever come from a caller that
+/// actually looked. Staleness is the caller's to record: omission says nothing
+/// was observed, so an omitting caller that wants the folder marked stale must
+/// say so itself.
+///
 /// # Retention limit for shadowed declarations
 ///
 /// `previous` is the deduplicated view, so a module declared by two sources is
@@ -211,6 +222,8 @@ pub fn declared_dependencies_from_reads(
     // depending on who built the slice.
     for source in DeclaredDependencySource::ALL {
         let Some((_, read)) = reads.iter().find(|(candidate, _)| *candidate == source) else {
+            // Unknown, not absent — see the contract above.
+            retain_previous(&mut dependencies, previous, source);
             continue;
         };
         match read {
@@ -221,13 +234,22 @@ pub fn declared_dependencies_from_reads(
             }
             MetadataSourceRead::Absent => {}
             MetadataSourceRead::Unreadable => {
-                for dependency in previous.iter().filter(|entry| entry.source == source) {
-                    push_unique(&mut dependencies, dependency.clone());
-                }
+                retain_previous(&mut dependencies, previous, source);
             }
         }
     }
     dependencies
+}
+
+/// Carry `source`'s entries from the previous snapshot into `dependencies`.
+fn retain_previous(
+    dependencies: &mut Vec<DeclaredDependency>,
+    previous: &[DeclaredDependency],
+    source: DeclaredDependencySource,
+) {
+    for dependency in previous.iter().filter(|entry| entry.source == source) {
+        push_unique(dependencies, dependency.clone());
+    }
 }
 
 /// Detect declared dependencies from common workspace-root metadata files.
@@ -1598,5 +1620,60 @@ requires 'Kept#Tag'; # drop
             "composition follows DeclaredDependencySource::ALL, not the reads slice"
         );
         Ok(())
+    }
+
+    #[test]
+    fn a_source_missing_from_the_reads_slice_is_unknown_rather_than_absent() {
+        // Only `cpanfile` was resolved. The other five sources are unknown, so
+        // a partial slice must not erase what they previously declared —
+        // `Absent`, the variant that drops declarations, has to come from a
+        // caller that actually looked.
+        let previous = vec![
+            DeclaredDependency::new(
+                "From::MetaYml",
+                Some("2.0"),
+                "requires",
+                DeclaredDependencySource::MetaYml,
+            ),
+            DeclaredDependency::new(
+                "From::DistIni",
+                None,
+                "requires",
+                DeclaredDependencySource::DistIni,
+            ),
+        ];
+        let reads = [(
+            DeclaredDependencySource::Cpanfile,
+            MetadataSourceRead::Text("requires 'Fresh::Module', '1.0';\n".to_string()),
+        )];
+
+        let composed = declared_dependencies_from_reads(&reads, &previous);
+        let modules: Vec<&str> = composed.iter().map(|entry| entry.module.as_str()).collect();
+        assert_eq!(
+            modules,
+            vec!["Fresh::Module", "From::DistIni", "From::MetaYml"],
+            "unmentioned sources retain, in DeclaredDependencySource::ALL order"
+        );
+
+        // The contrast that makes the choice meaningful: an explicit `Absent`
+        // for the same source really does drop it.
+        let explicit_absence = declared_dependencies_from_reads(
+            &[
+                (
+                    DeclaredDependencySource::Cpanfile,
+                    MetadataSourceRead::Text("requires 'Fresh::Module', '1.0';\n".to_string()),
+                ),
+                (DeclaredDependencySource::MetaYml, MetadataSourceRead::Absent),
+                (DeclaredDependencySource::DistIni, MetadataSourceRead::Absent),
+            ],
+            &previous,
+        );
+        let dropped: Vec<&str> =
+            explicit_absence.iter().map(|entry| entry.module.as_str()).collect();
+        assert_eq!(
+            dropped,
+            vec!["Fresh::Module"],
+            "an observed absence still downgrades, which is how a real delete works"
+        );
     }
 }

@@ -421,6 +421,15 @@ impl LspServer {
     /// not, and is reported as [`MetadataSourceRead::Unreadable`] so the
     /// caller retains that source's prior facts rather than recording "this
     /// project declares nothing".
+    ///
+    /// The existence probe holds that line too, which is why it is
+    /// `fs::metadata` and not `Path::is_file`: the latter collapses *every*
+    /// `stat` error into "not a file", so a disconnected network mount, an
+    /// `EIO`, or a permission change on a parent directory would be reported
+    /// as [`MetadataSourceRead::Absent`] — the one variant that drops
+    /// declarations. Only `NotFound` is a definite absence. A non-file that
+    /// does exist, such as a directory named `cpanfile`, is also a definite
+    /// answer: it declares nothing.
     fn capture_metadata_reads(
         root: &Path,
         open_document_text: &BTreeMap<PathBuf, String>,
@@ -432,8 +441,13 @@ impl LspServer {
                 if let Some(text) = Self::staged_metadata_text(open_document_text, &path) {
                     return (source, MetadataSourceRead::Text(text.clone()));
                 }
-                if !path.is_file() {
-                    return (source, MetadataSourceRead::Absent);
+                match std::fs::metadata(&path) {
+                    Ok(metadata) if metadata.is_file() => {}
+                    Ok(_) => return (source, MetadataSourceRead::Absent),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return (source, MetadataSourceRead::Absent);
+                    }
+                    Err(_) => return (source, MetadataSourceRead::Unreadable),
                 }
                 match std::fs::read_to_string(&path) {
                     Ok(text) => (source, MetadataSourceRead::Text(text)),
@@ -627,6 +641,59 @@ mod tests {
             vec!["After::Readd".to_string()],
             "the replacement keeps its own facts; URI and root alone would have \
              let the pre-removal snapshot overwrite them"
+        );
+    }
+
+    /// A `stat` failure that is not `NotFound` is unknown, not absence.
+    ///
+    /// Unix-only because it needs a deterministic non-`NotFound` error and
+    /// uses `ENOTDIR` — a path whose parent component is a regular file — to
+    /// get one. Windows reports that case as `ERROR_PATH_NOT_FOUND`, which
+    /// `std` maps to `NotFound`, so the same construction would prove the
+    /// opposite there. The alternative, a permission-denied directory, does
+    /// not constrain a `root` test runner.
+    #[cfg(unix)]
+    #[test]
+    fn a_stat_failure_that_is_not_not_found_is_unreadable_rather_than_absent() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let not_a_directory = temp.path().join("regular-file");
+        std::fs::write(&not_a_directory, "").expect("write regular file");
+
+        // `not_a_directory/cpanfile` cannot be stat'ed: ENOTDIR, not ENOENT.
+        let reads = LspServer::capture_metadata_reads(&not_a_directory, &BTreeMap::new());
+
+        assert_eq!(
+            read_for(&reads, DeclaredDependencySource::Cpanfile),
+            MetadataSourceRead::Unreadable,
+            "a filesystem that cannot answer must not be reported as 'declares nothing'"
+        );
+
+        // Control: a directory that genuinely holds no metadata is `Absent`,
+        // so the change did not simply make every probe unreadable.
+        let empty = tempfile::tempdir().expect("second temp dir");
+        assert_eq!(
+            read_for(
+                &LspServer::capture_metadata_reads(empty.path(), &BTreeMap::new()),
+                DeclaredDependencySource::Cpanfile,
+            ),
+            MetadataSourceRead::Absent,
+            "a definite NotFound is still a definite absence"
+        );
+    }
+
+    /// A directory standing where a metadata file would go declares nothing,
+    /// which is a real answer rather than an unknown one.
+    #[test]
+    fn a_directory_in_place_of_a_metadata_file_is_absent() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir(temp.path().join("cpanfile")).expect("create directory");
+
+        let reads = LspServer::capture_metadata_reads(temp.path(), &BTreeMap::new());
+
+        assert_eq!(
+            read_for(&reads, DeclaredDependencySource::Cpanfile),
+            MetadataSourceRead::Absent,
+            "the path exists and is not a readable declaration file"
         );
     }
 
