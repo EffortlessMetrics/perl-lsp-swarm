@@ -13,13 +13,13 @@ Produce one coherent candidate that satisfies the current claim, is protected by
 
 This flow may begin from reviewed proof, an existing branch, an existing candidate, or a candidate discovered midstream. Do not replay completed work merely to manufacture chronology.
 
-Before creating another branch, check whether an equivalent current candidate already implements the same claim. Do not inspect sibling lanes, touched-file overlap, or nearby symbols as a routine ownership check.
+Before creating another branch, check whether an equivalent current candidate already implements the same claim. Do not inspect sibling claim frames, touched-file overlap, or nearby symbols as a routine ownership check.
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains:
+The accountable root retains:
 
 - the material claim, non-goals, and semantic owner;
 - which implementation latitude remains inside the accepted plan;

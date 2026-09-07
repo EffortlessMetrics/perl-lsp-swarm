@@ -31,6 +31,50 @@
 //!   problems, not policy findings, and are never silently downgraded to a
 //!   passing exit.
 //!
+//! ## Malformed fragments never reach the renderer (issue #13484)
+//!
+//! A fragment that fails schema validation (including a missing, empty, or
+//! non-RFC-3339 `time:` — the #12549/#12648 incident class) is a *policy
+//! finding* naming the fragment. When any fragment that would reach the
+//! renderer is malformed — whether added by this PR or pre-existing on disk —
+//! the `changie batch --dry-run` render is skipped with an explicit line
+//! naming the fragment(s): the renderer would crash on them repo-wide, which
+//! would bury the named findings under an exit-2 instrument failure that names
+//! nothing. "Fragment X is malformed" (above) and "render crashed" (exit 2)
+//! therefore never appear for the same run. The repo-wide half of that guard
+//! is scoped to *renderer-fatal* defects — an unparseable fragment or a
+//! `time:` the renderer's timestamp decode rejects — not to every schema
+//! finding: another PR's policy-conformance defect renders perfectly well and
+//! must not switch the render oracle off for the whole repository. Fragments absent from the tree
+//! under check are excluded from the disposition itself before classification
+//! — an absent path cannot crash the renderer, owes no release note, and must
+//! not lend its Fragment disposition to unrelated changes in the same PR.
+//! Absence is read from the tree rather than from a `git diff` range, so the
+//! verdict does not depend on the changed-file list and `--base` having been
+//! produced from the same range. Deletions of non-fragment files are NOT
+//! excluded: they remain disposition-bearing changes, so a deletion-only PR
+//! still owes a release note or exemption.
+//!
+//! A malformed fragment is a *verdict-bearing* finding, symmetric with a
+//! missing disposition: past the blocking boundary it is a
+//! [`CheckOutcome::BlockingViolation`]; during the armed advisory soak it is
+//! an [`CheckOutcome::AdvisoryFinding`]; before any boundary it stays
+//! non-fatal (WARN only). Fragments absent from the tree never escalate.
+//! `--self-test` sample defects (unreadable, unparseable, or schema-invalid
+//! files under `.changes/samples/`) take that same [`boundary_state`] path
+//! (issue #14846). A missing samples directory, or a directory with no
+//! `*.yaml` files, is absence rather than a sample defect and stays a
+//! non-fatal WARN.
+//!
+//! Note on equivalence: this schema validation *approximates* renderer
+//! acceptance, it does not guarantee it. chrono's RFC 3339 parser (used here)
+//! and Changie's Go `yaml.v3` timestamp layout disagree on edge inputs (e.g.
+//! leap seconds, or a space separator with a `Z` offset), so an RFC-3339-valid
+//! `time:` can still be rejected by the real renderer. The staged/commit-tier
+//! gate (`commit_checks_changie`) runs the real renderer and remains the
+//! authority: it turns a render rejection into a Blocked verdict with named
+//! affected paths.
+//!
 //! ## The three-clock cutoff model
 //!
 //! See the comment block in `policy/changelog.toml` for the full rationale.
@@ -171,6 +215,13 @@ impl ChangelogPolicy {
 }
 
 /// A parsed Changie fragment (the fields this check cares about).
+///
+/// `time` is deliberately deserialized as a raw YAML [`Value`], not a `String`:
+/// the #13484 incident class (`product-12549`, `product-12648`) hand-authored
+/// `time:` with an empty value and the HH:MM:SS orphaned as bare YAML, which
+/// must surface as a *named fragment finding* here rather than as a type error
+/// on the whole document (or, worse, as a repo-wide `changie batch` render
+/// crash).
 #[derive(Debug, Deserialize)]
 pub(crate) struct Fragment {
     #[serde(default)]
@@ -181,6 +232,8 @@ pub(crate) struct Fragment {
     kind: String,
     #[serde(default)]
     body: String,
+    #[serde(default)]
+    time: serde_yaml_ng::Value,
     #[serde(default)]
     custom: BTreeMap<String, String>,
 }
@@ -236,7 +289,39 @@ pub(crate) fn validate_fragment(frag: &Fragment, cfg: &ChangieConfig) -> Vec<Str
         findings.push(format!("custom `Breaking` must be `no` or `yes`, got {breaking:?}"));
     }
 
+    validate_time_field(&frag.time, &mut findings);
+
     findings
+}
+
+/// Validate the `time:` field shape (issue #13484).
+///
+/// Changie's renderer unmarshals `time` as a timestamp and crashes repo-wide
+/// when it is missing, empty, or not RFC 3339 — and that crash used to surface
+/// as an instrument failure (exit 2) that named no fragment. Validating the
+/// shape here turns the crash into a finding that names the defect and the
+/// fragment.
+fn validate_time_field(time: &serde_yaml_ng::Value, findings: &mut Vec<String>) {
+    let missing = "missing or empty `time:` field — `changie batch` crashes repo-wide on it; \
+                   use an RFC 3339 timestamp such as `2026-08-30T12:34:56Z`";
+    match time {
+        serde_yaml_ng::Value::Null => findings.push(missing.to_string()),
+        serde_yaml_ng::Value::String(s) if s.trim().is_empty() => {
+            findings.push(missing.to_string());
+        }
+        serde_yaml_ng::Value::String(s) => {
+            if chrono::DateTime::parse_from_rfc3339(s).is_err() {
+                findings.push(format!(
+                    "`time:` value {s:?} is not RFC 3339 — changie's renderer would crash on it; \
+                     expected e.g. `2026-08-30T12:34:56Z`"
+                ));
+            }
+        }
+        other => findings.push(format!(
+            "`time:` must be an RFC 3339 timestamp string, got {other:?} — \
+             an orphaned/bare time line crashes `changie batch` repo-wide"
+        )),
+    }
 }
 
 /// A PR's changelog disposition.
@@ -257,13 +342,16 @@ enum Disposition {
 /// instrument worked and produced a verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckOutcome {
-    /// A disposition was found, or none was expected yet (boundary not armed).
+    /// A disposition was found, none was expected yet (boundary not armed),
+    /// or `--self-test` found no sample defects (including a missing samples
+    /// directory).
     PolicySatisfied,
-    /// A disposition was expected (advisory boundary armed) and missing.
-    /// Reported as a finding; still exits 0.
+    /// A reported finding during the armed advisory soak: missing
+    /// disposition, malformed unreleased fragment, or malformed `--self-test`
+    /// sample. Still exits 0.
     AdvisoryFinding,
-    /// A disposition was required (blocking boundary reached) and missing.
-    /// The only outcome that should map to a non-zero (1) exit code.
+    /// A reported finding past the blocking boundary. The only outcome that
+    /// should map to a non-zero (1) exit code.
     BlockingViolation,
 }
 
@@ -390,7 +478,26 @@ fn exempt_category_for_path(path: &str, changelog_paths: &[&str]) -> Option<&'st
 }
 
 /// Detect the PR's disposition from its changed files and PR body.
-fn detect_disposition(changed: &[String], pr_body: &str, policy: &ChangelogPolicy) -> Disposition {
+///
+/// `absent` carries the changed paths that are not present in the tree under
+/// check (see [`absent_paths`]). An absent disposition artifact must never
+/// *supply* the disposition it is removed by: a deleted
+/// `.changes/exemptions/*.md` cannot exempt the PR that deletes it, and
+/// deleted `.changes/` artifacts cannot satisfy the release-prep heuristic.
+/// Absent paths still count as disposition-bearing changes (they stay in
+/// `changed`); only present files classify the PR (issue #13484 review
+/// round 3).
+///
+/// Every lookup below keys `absent` by the caller's own path string, never by
+/// a re-spelled one, so a supplied list using foreign separators cannot miss
+/// the set and slip an absent artifact past as a live disposition (issue
+/// #13484 review round 4).
+fn detect_disposition(
+    changed: &[String],
+    absent: &std::collections::HashSet<String>,
+    pr_body: &str,
+    policy: &ChangelogPolicy,
+) -> Disposition {
     let frags = fragment_files(changed);
     if !frags.is_empty() {
         return Disposition::Fragment(frags);
@@ -401,13 +508,23 @@ fn detect_disposition(changed: &[String], pr_body: &str, policy: &ChangelogPolic
         return Disposition::Exemption(format!("{cat}: {reason}"));
     }
     if changed.iter().any(|f| {
+        if absent.contains(f) {
+            return false;
+        }
         let n = f.replace('\\', "/");
         n.starts_with(".changes/exemptions/") && n.ends_with(".md")
     }) {
         return Disposition::Exemption("file-based (.changes/exemptions/)".to_string());
     }
     let changelog_paths = policy.changelog_paths();
-    if is_release_prep(changed, &changelog_paths) {
+    // Release-prep shape is judged over *every* changed path, deleted ones
+    // included: a release prep does not delete production code, and filtering
+    // the absent paths out first let a deleted source file ride the surviving
+    // allowlisted files into a ReleasePrep pass (#13484 review round 4).
+    // At least one path must still survive, since an all-deleted change set
+    // is not a release prep either (round 3).
+    let surviving_count = changed.iter().filter(|f| !absent.contains(*f)).count();
+    if surviving_count > 0 && is_release_prep(changed, &changelog_paths) {
         return Disposition::ReleasePrep;
     }
     Disposition::Missing
@@ -495,6 +612,12 @@ fn read_changed_files(
     base: &str,
 ) -> std::result::Result<Vec<String>, String> {
     if let Some(list) = changed_files {
+        // Caller-supplied lists (e.g. the changelog-advisory workflow) carry
+        // bare paths with no status, and need not have been produced from the
+        // same base as `--base`. Deleted fragments are tolerated by the
+        // Fragment disposition: [`absent_paths`] reads the tree under check,
+        // so an absent path is never treated as a malformed fragment
+        // regardless of which range produced the list.
         return std::fs::read_to_string(list)
             .map(|content| {
                 content
@@ -508,6 +631,13 @@ fn read_changed_files(
     }
     let out = Command::new("git")
         .current_dir(root)
+        // Deletions are deliberately included: a deleted fragment is filtered
+        // downstream by the `absent_paths` tree read in `check_inner`
+        // (an absent path cannot crash the renderer), while a deleted
+        // non-fragment file must stay a disposition-bearing change rather
+        // than silently vanish from the gate — the default git-discovery
+        // path must enforce the same deletion-only semantics as the
+        // caller-supplied path (issue #13484 review round 3).
         .args(["diff", "--name-only", &format!("{base}...HEAD")])
         .output()
         .map_err(|e| format!("failed to spawn `git diff`: {e}"))?;
@@ -551,31 +681,133 @@ fn load_policy(root: &Path) -> Result<ChangelogPolicy> {
     toml::from_str(&content).map_err(|e| eyre!("failed to parse {}: {e}", path.display()))
 }
 
-/// Load a fragment from disk and validate it; append findings to `report`.
+/// Read a fragment from disk and validate it; append findings to `report`.
 /// A malformed fragment is a POLICY finding (the author's input is invalid),
 /// not an instrument failure — the checker itself works fine.
-fn check_fragment_file(root: &Path, rel: &str, cfg: &ChangieConfig, report: &mut Report) {
+///
+/// Returns `true` when the fragment is malformed (unreadable, unparseable, or
+/// schema-invalid) so the caller can distinguish "fragment X is malformed"
+/// from "the render instrument crashed" (issue #13484).
+fn check_fragment_file(root: &Path, rel: &str, cfg: &ChangieConfig, report: &mut Report) -> bool {
     let path = root.join(rel);
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) => {
-            report.warn(format!("could not read fragment {rel}: {e}"));
-            return;
-        }
-    };
-    match serde_yaml_ng::from_str::<Fragment>(&content) {
-        Ok(frag) => {
-            let findings = validate_fragment(&frag, cfg);
+    match std::fs::read_to_string(&path) {
+        Ok(content) => {
+            let findings = fragment_content_findings(&content, cfg);
             if findings.is_empty() {
                 report.ok(format!("fragment {rel} is schema-valid"));
+                false
             } else {
                 for f in findings {
                     report.warn(format!("{rel}: {f}"));
                 }
+                true
             }
         }
-        Err(e) => report.warn(format!("fragment {rel} does not parse as YAML: {e}")),
+        Err(e) => {
+            report.warn(format!("could not read fragment {rel}: {e}"));
+            true
+        }
     }
+}
+
+/// Schema findings for one fragment's file content: empty when the fragment
+/// parses and is schema-valid; one finding for a YAML parse failure; the
+/// validation findings otherwise. Shared by the per-PR reporter
+/// ([`check_fragment_file`]) and the repo-wide render guard
+/// ([`on_disk_malformed_fragments`]) so both name defects identically.
+fn fragment_content_findings(content: &str, cfg: &ChangieConfig) -> Vec<String> {
+    match parsed_fragment_or_findings(content, cfg) {
+        Ok(_) => Vec::new(),
+        Err(findings) => findings,
+    }
+}
+
+/// Parse and schema-validate one fragment in a single pass. `Ok` is a
+/// schema-valid fragment (usable for render grouping); `Err` is the same
+/// finding list [`fragment_content_findings`] returns. `--self-test` uses
+/// this so sample defects and unreleased-fragment defects name the same
+/// schema authority (issue #14846).
+fn parsed_fragment_or_findings(
+    content: &str,
+    cfg: &ChangieConfig,
+) -> std::result::Result<Fragment, Vec<String>> {
+    match serde_yaml_ng::from_str::<Fragment>(content) {
+        Ok(frag) => {
+            let findings = validate_fragment(&frag, cfg);
+            if findings.is_empty() { Ok(frag) } else { Err(findings) }
+        }
+        Err(e) => Err(vec![format!("does not parse as YAML: {e}")]),
+    }
+}
+
+/// Findings that make the *renderer itself* fail, as opposed to findings that
+/// violate repository policy while rendering perfectly well.
+///
+/// Only two shapes are known to crash `changie batch`: content that does not
+/// deserialize as a fragment at all, and a `time:` Go's yaml/time decoding
+/// rejects (#12549, #12648, #13484). Everything else [`validate_fragment`]
+/// reports — an unknown component, kind, or project, a short body, a
+/// non-numeric PR — is a conformance defect the renderer tolerates. That is
+/// not an assumption: 47 fragments with an unknown `component` were live on
+/// `main` while releases rendered, and the two incidents that motivated this
+/// module were both `time:`.
+///
+/// The distinction is load-bearing only for the repo-wide guard below, which
+/// suppresses the render for the *whole repository*. Keyed on every schema
+/// finding, it matched those 47 and turned the render off for every PR —
+/// silently retiring the checker's one external oracle, and doing it for
+/// defects that were never going to crash anything (#13484 review round 4).
+fn render_fatal_findings(content: &str) -> Vec<String> {
+    let frag: Fragment = match serde_yaml_ng::from_str(content) {
+        Ok(f) => f,
+        Err(e) => return vec![format!("does not parse as YAML: {e}")],
+    };
+    let mut findings = Vec::new();
+    validate_time_field(&frag.time, &mut findings);
+    findings
+}
+
+/// Validate every on-disk unreleased fragment (not just this PR's) and return
+/// the paths that would crash the renderer, reporting a WARN per finding.
+/// This is the repo-wide half of the #13484 guard: `render_disposition_
+/// projects` renders every project with unreleased fragments, so a
+/// pre-existing renderer-fatal fragment — not authored by this PR — would
+/// still crash `changie batch` and bury the findings under an unnamed exit-2
+/// failure.
+///
+/// Scoped to [`render_fatal_findings`] rather than the full schema: another
+/// PR's policy-conformance defect is not this run's business and must not
+/// suppress the render. Renderable fragments are silent here (the PR's own
+/// were already reported by [`check_fragment_file`]).
+fn on_disk_malformed_fragments(root: &Path, report: &mut Report) -> Vec<String> {
+    let unreleased = root.join(UNRELEASED_DIR);
+    let Ok(entries) = std::fs::read_dir(&unreleased) else {
+        return Vec::new();
+    };
+    let mut unrenderable = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+            continue;
+        }
+        let Some(rel) = path.strip_prefix(root).ok().and_then(|p| p.to_str()).map(str::to_string)
+        else {
+            continue;
+        };
+        let findings = std::fs::read_to_string(&path).map_or_else(
+            |_| vec!["could not read fragment".to_string()],
+            |content| render_fatal_findings(&content),
+        );
+        if findings.is_empty() {
+            continue;
+        }
+        for f in findings {
+            report.warn(format!("{rel}: {f}"));
+        }
+        unrenderable.push(rel);
+    }
+    unrenderable.sort();
+    unrenderable
 }
 
 /// Accumulates advisory findings for a single run.
@@ -614,6 +846,21 @@ pub fn check(
     self_test: bool,
     root: Option<PathBuf>,
 ) -> Result<CheckOutcome> {
+    let (outcome, report) = check_inner(base, changed_files, pr_body_file, self_test, root)?;
+    report.emit();
+    Ok(outcome)
+}
+
+/// [`check`] plus the accumulated [`Report`], so tests can assert report
+/// contents (named fragment findings, skip lines, render results) instead of
+/// scraping stdout. The CLI path uses [`check`], which emits the report.
+fn check_inner(
+    base: Option<String>,
+    changed_files: Option<PathBuf>,
+    pr_body_file: Option<PathBuf>,
+    self_test: bool,
+    root: Option<PathBuf>,
+) -> Result<(CheckOutcome, Report)> {
     let root = match root {
         Some(r) => r,
         None => crate::utils::project_root()?,
@@ -626,14 +873,22 @@ pub fn check(
     report_policy(&policy);
 
     let mut report = Report::default();
+    let base = base.unwrap_or_else(|| "origin/main".to_string());
 
     if self_test {
-        run_self_test(&root, &cfg, &mut report).map_err(|e| eyre!(e))?;
-        report.emit();
-        return Ok(CheckOutcome::PolicySatisfied);
+        let findings = run_self_test(&root, &cfg, &mut report).map_err(|e| eyre!(e))?;
+        let outcome = outcome_for_findings(
+            !findings.is_empty(),
+            &root,
+            &policy,
+            &base,
+            &mut report,
+            "BLOCKING: malformed sample fragment(s) reported above and the \
+             enforcement boundary (`blocking_enforced_from`) has been reached \
+             for this tree. Repair the sample(s) under `.changes/samples/`.",
+        );
+        return Ok((outcome, report));
     }
-
-    let base = base.unwrap_or_else(|| "origin/main".to_string());
     let changed =
         read_changed_files(&root, changed_files.as_deref(), &base).map_err(|e| eyre!(e))?;
     let pr_body = match pr_body_file {
@@ -643,21 +898,106 @@ pub fn check(
 
     if changed.is_empty() {
         report.info("no changed files resolved (nothing to check)");
-        report.emit();
-        return Ok(CheckOutcome::PolicySatisfied);
+        return Ok((CheckOutcome::PolicySatisfied, report));
     }
 
     let changelog_paths = policy.changelog_paths();
-    let disposition = detect_disposition(&changed, &pr_body, &policy);
+    // Deletion status is derived BEFORE disposition detection: `detect_
+    // disposition` classifies every changed unreleased fragment path as a
+    // Fragment disposition, so a deleted fragment must be removed from that
+    // set first — a PR mixing a feature change with the deletion of a stale
+    // fragment would otherwise inherit the deletion's Fragment disposition
+    // and pass even blocking enforcement without a release note (issue
+    // #13484 review). Only deleted *fragments* are excluded: any other
+    // deleted file (production code, docs, tooling) stays a
+    // disposition-bearing change, so a deletion-only PR cannot bypass the
+    // policy. Deleted fragment paths stay in `changed` for category hints
+    // and direct-edit handling. [`absent_paths`] reads the tree under check,
+    // so the answer does not depend on the changed-file list and `--base`
+    // having been produced from the same diff range.
+    let absent = absent_paths(&root, &changed);
+    let deleted_fragments: Vec<String> = changed
+        .iter()
+        .filter(|f| {
+            let norm = f.replace('\\', "/");
+            absent.contains(*f)
+                && norm.starts_with(&format!("{UNRELEASED_DIR}/"))
+                && norm.ends_with(".yaml")
+        })
+        .cloned()
+        .collect();
+    if !deleted_fragments.is_empty() {
+        report.info(format!(
+            "ignoring deleted fragment(s) for the changelog disposition: {} — an absent \
+             fragment cannot crash the renderer and owes no release note",
+            deleted_fragments.join(", ")
+        ));
+    }
+    let active: Vec<String> =
+        changed.iter().filter(|f| !deleted_fragments.contains(f)).cloned().collect();
+    if active.is_empty() {
+        report.info(
+            "every changed file is a deleted fragment — no fragment to validate, no \
+                     disposition owed",
+        );
+        return Ok((CheckOutcome::PolicySatisfied, report));
+    }
+    let disposition = detect_disposition(&active, &absent, &pr_body, &policy);
     let outcome = match &disposition {
         Disposition::Fragment(frags) => {
             report.ok(format!("disposition: {} Changie fragment(s) added", frags.len()));
+            let mut malformed = Vec::new();
             for rel in frags {
-                check_fragment_file(&root, rel, &cfg, &mut report);
+                if check_fragment_file(&root, rel, &cfg, &mut report) {
+                    malformed.push(rel.clone());
+                }
             }
-            // Render each project that has unreleased fragments.
-            render_disposition_projects(&root, &mut report).map_err(|e| eyre!(e))?;
-            CheckOutcome::PolicySatisfied
+            // Repo-wide guard: the render walks every project with unreleased
+            // fragments, so a pre-existing malformed fragment (not authored by
+            // this PR) would crash `changie batch` and bury the named
+            // findings under an exit-2 instrument failure that names nothing.
+            let mut unrenderable = malformed.clone();
+            if unrenderable.is_empty() {
+                unrenderable = on_disk_malformed_fragments(&root, &mut report);
+                if !unrenderable.is_empty() {
+                    report.info(format!(
+                        "skipping `changie batch --dry-run`: {} pre-existing renderer-fatal \
+                         fragment(s) on disk ({}) would crash the renderer — repair or \
+                         recreate them with `changie new` (or `cargo change`); this PR's own \
+                         fragments are valid.",
+                        unrenderable.len(),
+                        unrenderable.join(", ")
+                    ));
+                }
+            }
+            if unrenderable.is_empty() {
+                // Render each project that has unreleased fragments.
+                render_disposition_projects(&root, &mut report).map_err(|e| eyre!(e))?;
+            } else if !malformed.is_empty() {
+                report.info(format!(
+                    "skipping `changie batch --dry-run`: {} malformed fragment(s) reported \
+                     above ({}) — the renderer would crash on them. This is a \
+                     fragment-authoring defect, not an instrument failure; repair or recreate \
+                     the fragment(s) with `changie new` (or `cargo change`) and rerun.",
+                    malformed.len(),
+                    malformed.join(", ")
+                ));
+            }
+            // This PR's fragments are schema-valid when `malformed` is empty
+            // (a pre-existing on-disk fragment may still have forced the
+            // render skip, but it is not this PR's defect to escalate).
+            // Otherwise: same three-clock verdict as `--self-test` samples.
+            outcome_for_findings(
+                !malformed.is_empty(),
+                &root,
+                &policy,
+                &base,
+                &mut report,
+                "BLOCKING: malformed Changie fragment(s) reported above and the \
+                 enforcement boundary (`blocking_enforced_from`) has been reached \
+                 for this PR's base. Repair or recreate the fragment(s) with \
+                 `changie new` (or `cargo change`).",
+            )
         }
         Disposition::Exemption(reason) => {
             report.ok(format!("disposition: exemption — {reason}"));
@@ -710,8 +1050,7 @@ pub fn check(
         report.warn(warning);
     }
 
-    report.emit();
-    Ok(outcome)
+    Ok((outcome, report))
 }
 
 /// Print the policy's enforcement mode and the three cutoff clocks.
@@ -761,6 +1100,100 @@ fn is_ancestor(root: &Path, sha: &str, base: &str) -> Option<bool> {
         Some(0) => Some(true),
         Some(1) => Some(false),
         _ => None,
+    }
+}
+
+/// The subset of `changed` that is not present in `root`'s working tree.
+///
+/// Absence is the operative property for every consumer, and it is a stronger
+/// predicate than a base-bound `git diff --diff-filter=D`: an absent fragment
+/// cannot crash the renderer and cannot be validated, and an absent
+/// disposition artifact cannot supply the disposition it is removed by.
+/// Reading it from the tree under check keeps the answer correct when a
+/// caller-supplied `--changed-files` list was produced against a different
+/// base than `--base` — the list's own base no longer has to be trusted,
+/// because the tree, not the diff range, decides what can be read (issue
+/// #13484 review round 4).
+///
+/// Keying the set by the caller's own path strings makes a separator mismatch
+/// between git output and a supplied list structurally impossible: every
+/// lookup uses the identical `String` that produced the entry. A path that
+/// cannot be resolved in the tree — including a foreign-separator spelling on
+/// this platform — is treated as absent, which is the fail-closed direction:
+/// it may not supply an exemption, a release-prep, or a Fragment disposition.
+fn absent_paths(root: &Path, changed: &[String]) -> std::collections::HashSet<String> {
+    let tracked = head_tree_paths(root);
+    changed
+        .iter()
+        .filter(|f| {
+            // `symlink_metadata`, not `exists`: `exists` follows a symlink, so
+            // a dangling one reads as absent and would skip validation
+            // entirely. A symlink is a repository entry either way and must
+            // reach the checker, which reports the failed read.
+            let on_disk = root.join(f.as_str()).symlink_metadata().is_ok();
+            // Absent from the working tree is not the same as absent from the
+            // candidate: a fragment committed at HEAD but deleted locally is
+            // still the fragment this PR carries. CI checks out clean, so this
+            // only diverges on a dirty local run — where skipping validation
+            // would be the wrong direction.
+            !on_disk && !tracked.contains(&f.replace('\\', "/"))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Paths tracked at `HEAD` in `root`'s git history. Empty on any git failure
+/// (unspawnable git, non-repo root, no commit yet) — a soft degrade leaving
+/// [`absent_paths`] to decide from the working tree alone.
+///
+/// `HEAD` is the candidate, not a base, so consulting it costs none of the
+/// base-coherence the round-4 change removed: there is still no diff range for
+/// a caller-supplied changed-file list to disagree with. `-z` keeps non-ASCII
+/// paths unquoted.
+fn head_tree_paths(root: &Path) -> std::collections::HashSet<String> {
+    let Ok(out) = Command::new("git")
+        .current_dir(root)
+        .args(["ls-tree", "-r", "--name-only", "-z", "HEAD"])
+        .output()
+    else {
+        return Default::default();
+    };
+    if !out.status.success() {
+        return Default::default();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Map reported findings onto the three-clock verdict already used by
+/// malformed `Disposition::Fragment` entries: [`CheckOutcome::BlockingViolation`]
+/// past the blocking boundary, [`CheckOutcome::AdvisoryFinding`] during the
+/// armed soak, [`CheckOutcome::PolicySatisfied`] (WARN-only) before either.
+/// Callers write the per-item WARN lines first; this only adds the blocking
+/// summary and chooses the outcome. Shared by the fragment arm and
+/// `--self-test` (issue #14846) so sample defects cannot flatten to a pass
+/// while unreleased fragments escalate.
+fn outcome_for_findings(
+    findings_present: bool,
+    root: &Path,
+    policy: &ChangelogPolicy,
+    base: &str,
+    report: &mut Report,
+    blocking_warn: &str,
+) -> CheckOutcome {
+    if !findings_present {
+        return CheckOutcome::PolicySatisfied;
+    }
+    match boundary_state(root, policy, base) {
+        Boundary::Blocking => {
+            report.warn(blocking_warn);
+            CheckOutcome::BlockingViolation
+        }
+        Boundary::Advisory => CheckOutcome::AdvisoryFinding,
+        Boundary::NotArmed => CheckOutcome::PolicySatisfied,
     }
 }
 
@@ -847,15 +1280,28 @@ fn report_category_hint(changed: &[String], changelog_paths: &[&str], report: &m
 
 /// `--self-test`: validate sample fragments and (if changie is present) render
 /// them in a throwaway workspace to prove the config + render pipeline.
+///
+/// Returns the sample defect lines (unreadable, unparseable, or
+/// schema-invalid). An empty vec is not a pass-by-flatten: it means no sample
+/// failed. A missing samples directory (`NotFound`) is a non-fatal WARN and
+/// returns an empty vec so the caller stays [`CheckOutcome::PolicySatisfied`].
+/// Any other `read_dir` failure (not a directory, permission denied) is an
+/// instrument error. Instrument failures remain `Err`.
 fn run_self_test(
     root: &Path,
     cfg: &ChangieConfig,
     report: &mut Report,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<Vec<String>, String> {
     let samples = root.join(SAMPLES_DIR);
-    let Ok(entries) = std::fs::read_dir(&samples) else {
-        report.warn(format!("no samples directory at {}", samples.display()));
-        return Ok(());
+    let entries = match std::fs::read_dir(&samples) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            report.warn(format!("no samples directory at {}", samples.display()));
+            return Ok(Vec::new());
+        }
+        Err(e) => {
+            return Err(format!("failed to read samples directory {}: {e}", samples.display()));
+        }
     };
     let mut sample_files: Vec<PathBuf> = entries
         .flatten()
@@ -866,39 +1312,41 @@ fn run_self_test(
 
     if sample_files.is_empty() {
         report.warn("no sample fragments found");
-        return Ok(());
+        return Ok(Vec::new());
     }
 
+    let mut sample_findings: Vec<String> = Vec::new();
     let mut valid_by_project: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     for path in &sample_files {
         let rel = path.strip_prefix(root).unwrap_or(path).display().to_string();
         match std::fs::read_to_string(path) {
-            Ok(content) => match serde_yaml_ng::from_str::<Fragment>(&content) {
+            Ok(content) => match parsed_fragment_or_findings(&content, cfg) {
                 Ok(frag) => {
-                    let findings = validate_fragment(&frag, cfg);
-                    if findings.is_empty() {
-                        report.ok(format!("sample {rel} is schema-valid"));
-                        valid_by_project
-                            .entry(frag.project.clone())
-                            .or_default()
-                            .push(path.clone());
-                    } else {
-                        for f in findings {
-                            report.warn(format!("{rel}: {f}"));
-                        }
+                    report.ok(format!("sample {rel} is schema-valid"));
+                    valid_by_project.entry(frag.project.clone()).or_default().push(path.clone());
+                }
+                Err(findings) => {
+                    for f in findings {
+                        let line = format!("{rel}: {f}");
+                        report.warn(line.clone());
+                        sample_findings.push(line);
                     }
                 }
-                Err(e) => report.warn(format!("sample {rel} does not parse: {e}")),
             },
-            Err(e) => report.warn(format!("could not read sample {rel}: {e}")),
+            Err(e) => {
+                let line = format!("could not read sample {rel}: {e}");
+                report.warn(line.clone());
+                sample_findings.push(line);
+            }
         }
     }
 
     if !changie_available() {
         report.info("changie not on PATH; skipping sample render (advisory)");
-        return Ok(());
+        return Ok(sample_findings);
     }
-    render_samples_in_tempdir(root, &valid_by_project, report)
+    render_samples_in_tempdir(root, &valid_by_project, report)?;
+    Ok(sample_findings)
 }
 
 /// Copy the config + samples into a temp workspace and render each project.
@@ -1027,6 +1475,7 @@ project: product
 component: Developer experience
 kind: Added
 body: A sufficiently long changelog body line.
+time: 2026-08-30T00:00:00Z
 custom:
   PR: "3768"
   Breaking: "no"
@@ -1103,6 +1552,142 @@ custom:
         assert!(findings.iter().any(|f| f.contains("unknown component")), "{findings:?}");
     }
 
+    // --- time: field validation (issue #13484; #12549/#12648 incident class) ---
+
+    /// The exact #12549/#12648 hand-authoring signature: `time:` with an empty
+    /// value and the HH:MM:SS orphaned as bare YAML. This must be a named
+    /// fragment finding, not a whole-document type error or a render crash.
+    #[test]
+    fn empty_or_orphaned_time_is_flagged() {
+        let cfg = test_config();
+        let empty = r#"
+project: product
+component: Developer experience
+kind: Added
+body: A sufficiently long changelog body line.
+time:
+custom:
+  PR: "1"
+  Breaking: "no"
+"#;
+        let frag: Fragment = serde_yaml_ng::from_str(empty).expect("empty time parses");
+        let findings = validate_fragment(&frag, &cfg);
+        assert!(
+            findings.iter().any(|f| f.contains("`time:`") && f.contains("crashes repo-wide")),
+            "empty `time:` must produce a named finding: {findings:?}"
+        );
+
+        let orphaned = r#"
+project: product
+component: Developer experience
+kind: Added
+body: A sufficiently long changelog body line.
+time:
+  13:55:13
+custom:
+  PR: "1"
+  Breaking: "no"
+"#;
+        let frag: Fragment = serde_yaml_ng::from_str(orphaned).expect("orphaned time parses");
+        let findings = validate_fragment(&frag, &cfg);
+        // YAML folds the orphaned line into a plain scalar, so this shape
+        // reaches the not-RFC-3339 branch rather than the non-scalar one.
+        // Assert the branch that actually fires: every finding message
+        // contains "`time:`", so matching only that cannot tell them apart
+        // and would pass whichever arm ran (#13484 review round 4).
+        assert!(
+            findings.iter().any(|f| f.contains("is not RFC 3339") && f.contains("13:55:13")),
+            "orphaned bare time must be named as a non-RFC-3339 value: {findings:?}"
+        );
+    }
+
+    /// The non-scalar arm. YAML admits shapes that are neither null nor a
+    /// string — `time: 20260830` is a number, `time:` with nested keys is a
+    /// mapping — and both reach the renderer's timestamp decode. Without
+    /// these, deleting the arm entirely leaves every other test green while a
+    /// number or mapping `time:` is reported schema-valid and handed to
+    /// `changie batch` (#13484 review round 4).
+    #[test]
+    fn non_scalar_time_is_flagged() {
+        let cfg = test_config();
+        for (label, time_yaml) in [
+            ("number", "time: 20260830\n"),
+            ("float", "time: 2026.0830\n"),
+            ("bool", "time: true\n"),
+            ("mapping", "time:\n  hour: 13\n  minute: 55\n"),
+            ("sequence", "time:\n  - 2026-08-30T13:55:13Z\n"),
+        ] {
+            let yaml = format!(
+                "project: product\ncomponent: Developer experience\nkind: Added\nbody: A \
+                 sufficiently long changelog body line.\n{time_yaml}custom:\n  PR: \"1\"\n  \
+                 Breaking: \"no\"\n"
+            );
+            let frag: Fragment =
+                serde_yaml_ng::from_str(&yaml).unwrap_or_else(|e| panic!("{label} parses: {e}"));
+            let findings = validate_fragment(&frag, &cfg);
+            assert!(
+                findings.iter().any(|f| f.contains("must be an RFC 3339 timestamp string")),
+                "{label} `time:` must be flagged as non-scalar: {findings:?}"
+            );
+        }
+    }
+
+    /// A whitespace-only `time:` is empty in every sense that matters and must
+    /// report as missing rather than as a malformed timestamp.
+    #[test]
+    fn whitespace_only_time_is_flagged_as_empty() {
+        let cfg = test_config();
+        let yaml = "project: product\ncomponent: Developer experience\nkind: Added\nbody: A \
+                    sufficiently long changelog body line.\ntime: \"   \"\ncustom:\n  PR: \
+                    \"1\"\n  Breaking: \"no\"\n";
+        let frag: Fragment = serde_yaml_ng::from_str(yaml).expect("whitespace time parses");
+        let findings = validate_fragment(&frag, &cfg);
+        assert!(
+            findings.iter().any(|f| f.contains("missing or empty `time:`")),
+            "a whitespace-only `time:` must report as empty: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn missing_time_field_is_flagged() {
+        let cfg = test_config();
+        let yaml = r#"
+project: product
+component: Developer experience
+kind: Added
+body: A sufficiently long changelog body line.
+custom:
+  PR: "1"
+  Breaking: "no"
+"#;
+        let frag: Fragment = serde_yaml_ng::from_str(yaml).expect("missing time parses");
+        let findings = validate_fragment(&frag, &cfg);
+        assert!(
+            findings.iter().any(|f| f.contains("missing or empty `time:`")),
+            "a fragment without `time:` must be flagged: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn non_rfc3339_time_is_flagged() {
+        let cfg = test_config();
+        let mut frag = good_fragment();
+        frag.time = serde_yaml_ng::Value::String("2026-08-30 13:55:13".to_string());
+        let findings = validate_fragment(&frag, &cfg);
+        assert!(
+            findings.iter().any(|f| f.contains("not RFC 3339")),
+            "a space-separated timestamp must be flagged: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn valid_rfc3339_time_is_accepted() {
+        let cfg = test_config();
+        let mut frag = good_fragment();
+        frag.time = serde_yaml_ng::Value::String("2026-08-30T13:55:13Z".to_string());
+        assert!(validate_fragment(&frag, &cfg).is_empty());
+    }
+
     #[test]
     fn kind_matches_case_insensitively() {
         let cfg = test_config();
@@ -1127,15 +1712,20 @@ custom:
     fn disposition_prefers_fragment() {
         let policy = test_policy("", "");
         let changed = vec![".changes/unreleased/product-1-Added-101010.yaml".to_string()];
-        assert!(matches!(detect_disposition(&changed, "", &policy), Disposition::Fragment(_)));
+        let deleted = std::collections::HashSet::new();
+        assert!(matches!(
+            detect_disposition(&changed, &deleted, "", &policy),
+            Disposition::Fragment(_)
+        ));
     }
 
     #[test]
     fn disposition_reads_pr_body_marker() {
         let policy = test_policy("", "");
         let changed = vec!["src/lib.rs".to_string()];
+        let deleted = std::collections::HashSet::new();
         let body = "This PR does X.\nchangelog-exempt: refactor — internal cleanup only\n";
-        match detect_disposition(&changed, body, &policy) {
+        match detect_disposition(&changed, &deleted, body, &policy) {
             Disposition::Exemption(reason) => {
                 assert!(reason.starts_with("refactor:"), "{reason}");
                 assert!(reason.contains("internal cleanup"), "{reason}");
@@ -1148,21 +1738,57 @@ custom:
     fn disposition_recognizes_release_prep() {
         let policy = test_policy("", "");
         let changed = vec!["CHANGELOG.md".to_string(), "Cargo.toml".to_string()];
-        assert_eq!(detect_disposition(&changed, "", &policy), Disposition::ReleasePrep);
+        let deleted = std::collections::HashSet::new();
+        assert_eq!(detect_disposition(&changed, &deleted, "", &policy), Disposition::ReleasePrep);
     }
 
     #[test]
     fn disposition_recognizes_exemption_file() {
         let policy = test_policy("", "");
         let changed = vec![".changes/exemptions/my-note.md".to_string()];
-        assert!(matches!(detect_disposition(&changed, "", &policy), Disposition::Exemption(_)));
+        let deleted = std::collections::HashSet::new();
+        assert!(matches!(
+            detect_disposition(&changed, &deleted, "", &policy),
+            Disposition::Exemption(_)
+        ));
     }
 
     #[test]
     fn disposition_missing_when_nothing_declared() {
         let policy = test_policy("", "");
         let changed = vec!["crates/perl-parser/src/lib.rs".to_string()];
-        assert_eq!(detect_disposition(&changed, "", &policy), Disposition::Missing);
+        let deleted = std::collections::HashSet::new();
+        assert_eq!(detect_disposition(&changed, &deleted, "", &policy), Disposition::Missing);
+    }
+
+    /// A DELETED exemption file cannot exempt the PR that deletes it: with a
+    /// production change in the set, the deleted `.changes/exemptions/*.md`
+    /// artifact must not satisfy the file-based exemption check, so the
+    /// disposition falls through to Missing (issue #13484 review round 3).
+    #[test]
+    fn deleted_exemption_file_cannot_supply_exemption() {
+        let policy = test_policy("", "");
+        let changed = vec![".changes/exemptions/old-note.md".to_string(), "src/lib.rs".to_string()];
+        let mut deleted = std::collections::HashSet::new();
+        deleted.insert(".changes/exemptions/old-note.md".to_string());
+        assert_eq!(detect_disposition(&changed, &deleted, "", &policy), Disposition::Missing);
+    }
+
+    /// Deleted `.changes/` artifacts cannot satisfy the release-prep
+    /// heuristic either: a deletion-only set of them is Missing, while a
+    /// surviving changelog edit still classifies as release prep (issue
+    /// #13484 review round 3: release-prep path audited for the same
+    /// status-blind behavior).
+    #[test]
+    fn deleted_artifacts_cannot_supply_release_prep() {
+        let policy = test_policy("", "");
+        let changed = vec![".changes/exemptions/old-note.md".to_string()];
+        let mut deleted = std::collections::HashSet::new();
+        deleted.insert(".changes/exemptions/old-note.md".to_string());
+        assert_eq!(detect_disposition(&changed, &deleted, "", &policy), Disposition::Missing);
+        let changed =
+            vec![".changes/exemptions/old-note.md".to_string(), "CHANGELOG.md".to_string()];
+        assert_eq!(detect_disposition(&changed, &deleted, "", &policy), Disposition::ReleasePrep);
     }
 
     #[test]
@@ -1361,6 +1987,91 @@ body:
         let list = dir.join("changed-files.txt");
         std::fs::write(&list, files.join("\n")).map_err(|e| e.to_string())?;
         Ok(list)
+    }
+
+    /// [`write_policy`] with explicit enforcement mode and clock values, so a
+    /// test can arm the advisory soak and/or the blocking boundary at a real
+    /// commit SHA (pass `base = Some("HEAD")` to `check_inner` to reach them).
+    fn write_policy_with_clocks(
+        dir: &Path,
+        enforcement: &str,
+        advisory_expected_from: Option<&str>,
+        blocking_enforced_from: Option<&str>,
+    ) -> std::result::Result<(), String> {
+        let advisory = advisory_expected_from.unwrap_or("");
+        let blocking = blocking_enforced_from.unwrap_or("");
+        std::fs::create_dir_all(dir.join("policy")).map_err(|e| e.to_string())?;
+        std::fs::write(
+            dir.join(POLICY_FILE),
+            format!(
+                r#"
+schema_version = 1
+enforcement = "{enforcement}"
+retrospective_covered_through = "da86c123a"
+advisory_expected_from = "{advisory}"
+blocking_enforced_from = "{blocking}"
+exemption_categories = ["tests", "ci", "refactor", "generated-status", "docs-no-contract-change", "deps", "release-prep", "changelog-tooling"]
+
+[[projects]]
+key = "product"
+label = "Product"
+changelog = "CHANGELOG.md"
+
+[[projects]]
+key = "vscode"
+label = "VS Code extension"
+changelog = "vscode-extension/CHANGELOG.md"
+"#
+            ),
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn seed_git_head(dir: &Path) -> std::result::Result<String, String> {
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "seed.txt"])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        run_git_output(dir, &["rev-parse", "HEAD"])
+    }
+
+    fn write_sample(dir: &Path, name: &str, body: &str) -> std::result::Result<(), String> {
+        let samples = dir.join(SAMPLES_DIR);
+        std::fs::create_dir_all(&samples).map_err(|e| e.to_string())?;
+        std::fs::write(samples.join(name), body).map_err(|e| e.to_string())
+    }
+
+    const VALID_SAMPLE: &str = r#"
+project: product
+component: Developer experience
+kind: Added
+body: A sufficiently long changelog sample body.
+time: 2026-08-30T00:00:00Z
+custom:
+  PR: "3768"
+  Breaking: "no"
+"#;
+
+    /// Parses as YAML but fails schema validation (empty `time:`).
+    const SCHEMA_INVALID_SAMPLE: &str = r#"
+project: product
+component: Developer experience
+kind: Added
+body: A sufficiently long changelog sample body.
+time:
+custom:
+  PR: "3768"
+  Breaking: "no"
+"#;
+
+    fn self_test_inner(
+        dir: &Path,
+        base: &str,
+    ) -> std::result::Result<(CheckOutcome, Report), String> {
+        check_inner(Some(base.to_string()), None, None, true, Some(dir.to_path_buf()))
+            .map_err(|e| e.to_string())
     }
 
     /// Regression test for a real bug this PR's Correction 2 surfaced: TOML
@@ -1565,7 +2276,7 @@ changelog = "vscode-extension/CHANGELOG.md"
         std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
         std::fs::write(
             unreleased.join("product-1-Added-101010.yaml"),
-            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ncustom:\n  PR: \"1\"\n",
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"1\"\n",
         )
         .map_err(|e| e.to_string())?;
         let list = write_changed_files(dir, &[".changes/unreleased/product-1-Added-101010.yaml"])?;
@@ -1578,6 +2289,1138 @@ changelog = "vscode-extension/CHANGELOG.md"
             Err(e) => return Err(e.to_string()),
         };
         assert_eq!(outcome, CheckOutcome::PolicySatisfied);
+        Ok(())
+    }
+
+    /// Issue #13484 regression: a hand-authored fragment with an empty `time:`
+    /// (the #12549/#12648 signature) must be a *named policy finding* and a
+    /// policy verdict — never a repo-wide `changie batch` render crash surfacing
+    /// as an exit-2 instrument failure that names no fragment. The render is
+    /// skipped with an explicit INFO line instead, deterministically (regardless
+    /// of whether changie is installed). Asserts the report contents, not just
+    /// the verdict: the fragment path, the `time:` defect finding, and the
+    /// render skip must all be present (render-skip is observable even without
+    /// changie installed, because the skip happens before the render call).
+    #[test]
+    fn check_malformed_time_fragment_names_fragment_and_never_crashes_renderer()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        write_policy(dir)?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-12549-Added-135513.yaml";
+        std::fs::write(
+            dir.join(fragment_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime:\n  13:55:13\ncustom:\n  PR: \"12549\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[fragment_path])?;
+        let (outcome, report) = check_inner(None, Some(list), None, false, Some(dir.to_path_buf()))
+            .map_err(|e| format!("malformed fragment must not be an instrument failure: {e}"))?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "an advisory malformed-fragment finding must stay a policy verdict (exit 0/1), not exit 2"
+        );
+        let rendered = report.lines.join("\n");
+        assert!(
+            rendered.contains(fragment_path),
+            "report must name the malformed fragment path; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("time:"),
+            "report must carry the `time:` defect finding; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("skipping `changie batch --dry-run`"),
+            "report must record the renderer skip; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("rendered OK"),
+            "no project may render when a PR fragment is malformed; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A malformed fragment past the blocking boundary escalates to a
+    /// BlockingViolation, symmetric with a missing disposition (issue #13484
+    /// review: schema-invalid fragments must not bypass blocking enforcement).
+    #[test]
+    fn check_malformed_fragment_after_blocking_boundary_is_blocking_violation()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "seed.txt"])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let sha = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "blocking", Some(&sha), Some(&sha))?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-12549-Added-135513.yaml";
+        std::fs::write(
+            dir.join(fragment_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime:\n  13:55:13\ncustom:\n  PR: \"12549\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[fragment_path])?;
+        let (outcome, report) =
+            check_inner(Some("HEAD".to_string()), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::BlockingViolation,
+            "malformed fragment past a reached blocking boundary must be a BlockingViolation, exit 1"
+        );
+        let rendered = report.lines.join("\n");
+        assert!(
+            rendered.contains("BLOCKING: malformed Changie fragment(s)"),
+            "blocking escalation must be reported; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A malformed fragment during the armed advisory soak is a reported
+    /// finding (AdvisoryFinding, exit 0) — non-blocking but verdict-bearing.
+    #[test]
+    fn check_malformed_fragment_during_soak_is_advisory_finding() -> std::result::Result<(), String>
+    {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "seed.txt"])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let sha = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-12549-Added-135513.yaml";
+        std::fs::write(
+            dir.join(fragment_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime:\n  13:55:13\ncustom:\n  PR: \"12549\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[fragment_path])?;
+        let (outcome, _) =
+            check_inner(Some("HEAD".to_string()), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "malformed fragment during the armed advisory soak must be an AdvisoryFinding, exit 0"
+        );
+        Ok(())
+    }
+
+    /// A PR that deletes a stale unreleased fragment must not count the
+    /// deletion as a malformed fragment: an absent path cannot crash the
+    /// renderer, so the check passes without a render-skip finding (issue
+    /// #13484 review).
+    #[test]
+    fn check_deleted_fragment_is_not_flagged_malformed() -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        write_policy(dir)?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-stale-Added-111111.yaml";
+        std::fs::write(
+            dir.join(fragment_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"1\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "add stale fragment"])?;
+        std::fs::remove_file(dir.join(fragment_path)).map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "delete stale fragment"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        let (outcome, report) = check_inner(Some(base), None, None, false, Some(dir.to_path_buf()))
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "a PR whose only change is a fragment deletion must pass"
+        );
+        let rendered = report.lines.join("\n");
+        assert!(
+            !rendered.contains("malformed"),
+            "a deleted fragment must not be classified malformed; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A PR mixing a real change with the deletion of a stale unreleased
+    /// fragment must NOT inherit the deleted path's Fragment disposition:
+    /// deletions are excluded before disposition detection, so the remaining
+    /// change still owes a release note or exemption (issue #13484 review:
+    /// deleted fragments must not bypass changelog enforcement). The
+    /// changed-file list is supplied explicitly to exercise the caller-
+    /// supplied path the changelog-advisory workflow takes; the default
+    /// git-discovery path is pinned by
+    /// `check_deleted_fragment_is_not_flagged_malformed` and
+    /// `check_deletion_only_production_change_owes_disposition_default_
+    /// discovery`.
+    #[test]
+    fn check_feature_change_plus_deleted_fragment_still_owes_a_disposition()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "advisory", Some(&armed), None)?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-stale-Added-111111.yaml";
+        std::fs::write(
+            dir.join(fragment_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"1\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "add stale fragment"])?;
+        std::fs::remove_file(dir.join(fragment_path)).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("feature.txt"), "unrelated feature change")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "delete fragment, land feature"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        let list = write_changed_files(dir, &[fragment_path, "feature.txt"])?;
+        let (outcome, report) =
+            check_inner(Some(base), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "the surviving feature change must still owe a disposition (advisory armed), \
+             not ride the deleted fragment's Fragment disposition"
+        );
+        let rendered = report.lines.join("\n");
+        assert!(
+            rendered.contains("ignoring deleted fragment(s)"),
+            "the deletion must be reported as excluded from the disposition; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("malformed"),
+            "the deleted fragment must not be classified malformed; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A deletion-only PR (a production file removed, no fragment involved)
+    /// is NOT a free pass: the remaining disposition-bearing deletion still
+    /// owes a release note or exemption, so with the advisory soak armed the
+    /// outcome is AdvisoryFinding (issue #13484 review round 2: the deleted-
+    /// fragment exclusion must not swallow non-fragment deletions).
+    #[test]
+    fn check_deletion_only_production_change_still_owes_disposition_advisory()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "advisory", Some(&armed), None)?;
+        write_valid_changie(dir)?;
+        std::fs::remove_file(dir.join("seed.txt")).map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "remove production file"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        let list = write_changed_files(dir, &["seed.txt"])?;
+        let (outcome, _) =
+            check_inner(Some(base), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "a deletion-only production change must still owe a disposition (advisory armed)"
+        );
+        Ok(())
+    }
+
+    /// Same shape at the blocking boundary: a deletion-only production change
+    /// is a BlockingViolation, never a pass.
+    #[test]
+    fn check_deletion_only_production_change_is_blocking_violation()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "blocking", Some(&armed), Some(&armed))?;
+        write_valid_changie(dir)?;
+        std::fs::remove_file(dir.join("seed.txt")).map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "remove production file"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        let list = write_changed_files(dir, &["seed.txt"])?;
+        let (outcome, _) =
+            check_inner(Some(base), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::BlockingViolation,
+            "a deletion-only production change past the blocking boundary must be a \
+             BlockingViolation"
+        );
+        Ok(())
+    }
+
+    /// A production change combined with the DELETION of an existing
+    /// exemption file must not ride the deleted file's file-based Exemption
+    /// disposition: deleted disposition artifacts cannot supply the
+    /// disposition they are removed by, so the surviving production change
+    /// still owes a release note or exemption and the armed advisory soak
+    /// yields AdvisoryFinding (issue #13484 review round 3).
+    #[test]
+    fn check_production_change_plus_deleted_exemption_file_owes_disposition_advisory()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "advisory", Some(&armed), None)?;
+        write_valid_changie(dir)?;
+        let exemption_path = ".changes/exemptions/old-note.md";
+        std::fs::create_dir_all(dir.join(".changes/exemptions")).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(exemption_path), "stale exemption note")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "add exemption file"])?;
+        std::fs::remove_file(dir.join(exemption_path)).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("feature.txt"), "unrelated feature change")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "delete exemption, land feature"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        let list = write_changed_files(dir, &[exemption_path, "feature.txt"])?;
+        let (outcome, _) =
+            check_inner(Some(base), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "the production change must still owe a disposition; the deleted exemption \
+             file cannot supply it (advisory armed)"
+        );
+        Ok(())
+    }
+
+    /// Same shape at the blocking boundary: a production change plus the
+    /// deletion of an existing exemption file is a BlockingViolation, never a
+    /// pass (issue #13484 review round 3).
+    #[test]
+    fn check_production_change_plus_deleted_exemption_file_is_blocking_violation()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "blocking", Some(&armed), Some(&armed))?;
+        write_valid_changie(dir)?;
+        let exemption_path = ".changes/exemptions/old-note.md";
+        std::fs::create_dir_all(dir.join(".changes/exemptions")).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(exemption_path), "stale exemption note")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "add exemption file"])?;
+        std::fs::remove_file(dir.join(exemption_path)).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("feature.txt"), "unrelated feature change")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "delete exemption, land feature"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        let list = write_changed_files(dir, &[exemption_path, "feature.txt"])?;
+        let (outcome, _) =
+            check_inner(Some(base), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::BlockingViolation,
+            "a production change plus a deleted exemption file past the blocking boundary \
+             must be a BlockingViolation"
+        );
+        Ok(())
+    }
+
+    /// A caller-supplied changed-file list that spells an absent exemption
+    /// file with foreign (Windows) separators must not slip that file past
+    /// as a live file-based exemption. The deletion set is keyed by the
+    /// caller's own path strings and read from the tree, so the spelling
+    /// that produced the entry is the spelling the lookup uses — a
+    /// git-derived, forward-slash-only set missed this and granted the
+    /// exemption (issue #13484 review round 4).
+    #[test]
+    fn check_foreign_separator_deleted_exemption_cannot_supply_exemption()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "advisory", Some(&armed), None)?;
+        write_valid_changie(dir)?;
+        let exemption_path = ".changes/exemptions/old-note.md";
+        std::fs::create_dir_all(dir.join(".changes/exemptions")).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(exemption_path), "stale exemption note")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "add exemption file"])?;
+        std::fs::remove_file(dir.join(exemption_path)).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("feature.txt"), "unrelated feature change")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "delete exemption, land feature"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        // The same deleted file, spelled the way a Windows-produced list
+        // spells it. Git reports `.changes/exemptions/old-note.md`.
+        let list = write_changed_files(dir, &[r".changes\exemptions\old-note.md", "feature.txt"])?;
+        let (outcome, _) =
+            check_inner(Some(base), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "an absent exemption file spelled with foreign separators must not supply the \
+             file-based exemption; the production change still owes a disposition"
+        );
+        Ok(())
+    }
+
+    /// A caller-supplied changed-file list produced against a different base
+    /// than `--base` must not yield a false malformed-fragment finding. Here
+    /// the fragment is deleted in `HEAD~1...HEAD` but `--base` names `HEAD`,
+    /// so no diff range reports the deletion; only the tree does. Deriving
+    /// absence from the tree makes the checker independent of the list's
+    /// provenance (issue #13484 review round 4).
+    #[test]
+    fn check_changed_file_list_from_a_foreign_base_yields_no_false_malformed_fragment()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        write_policy(dir)?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-stale-Added-111111.yaml";
+        std::fs::write(
+            dir.join(fragment_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"1\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("feature.txt"), "unrelated feature change")
+            .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "add stale fragment"])?;
+        std::fs::remove_file(dir.join(fragment_path)).map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "delete stale fragment"])?;
+        // `--base HEAD` describes an empty range: no `git diff --diff-filter=D`
+        // against it can see the deletion the supplied list carries.
+        let foreign_base = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        let list = write_changed_files(dir, &[fragment_path, "feature.txt"])?;
+        let (outcome, report) =
+            check_inner(Some(foreign_base), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        let rendered = report.lines.join("\n");
+        assert!(
+            !rendered.contains("malformed"),
+            "a fragment absent from the tree must never be reported malformed, whatever \
+             range produced the changed-file list; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("ignoring deleted fragment(s)"),
+            "the absent fragment must be named as excluded from the disposition; got:\n{rendered}"
+        );
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "no boundary is armed, so the surviving change is a non-fatal WARN"
+        );
+        Ok(())
+    }
+
+    /// Deletion-only enforcement through the DEFAULT git-discovery path (no
+    /// `--changed-files`): `read_changed_files` includes deletions, so a
+    /// deleted production file stays a disposition-bearing change and the
+    /// armed advisory soak still demands a note (issue #13484 review round
+    /// 3: the deletion-only semantics must not rely on caller-supplied lists
+    /// alone).
+    #[test]
+    fn check_deletion_only_production_change_owes_disposition_default_discovery()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "advisory", Some(&armed), None)?;
+        write_valid_changie(dir)?;
+        std::fs::remove_file(dir.join("seed.txt")).map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "remove production file"])?;
+        let base = run_git_output(dir, &["rev-parse", "HEAD~1"])?;
+        let (outcome, report) = check_inner(Some(base), None, None, false, Some(dir.to_path_buf()))
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "default git discovery must surface the deletion as a disposition-bearing change"
+        );
+        let rendered = report.lines.join("\n");
+        assert!(
+            !rendered.contains("no changed files resolved"),
+            "the deletion must be visible to default git discovery, not silently filtered \
+             into a vacuous pass; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A pre-existing renderer-fatal fragment on disk (not authored by this
+    /// PR) must skip the render with a named finding instead of crashing
+    /// `changie batch` repo-wide as an unnamed exit-2 failure (issue #13484
+    /// review: repo-wide half of the render guard).
+    ///
+    /// The boundary is armed to **blocking** on purpose. Under an unarmed
+    /// policy every path through this arm returns `PolicySatisfied`, so the
+    /// "not this PR's escalation to bear" assertion below would hold no
+    /// matter what the code did — including a version that blamed this PR for
+    /// someone else's stale fragment. Arming it makes the assertion
+    /// discriminating (#13484 review round 4).
+    #[test]
+    fn check_preexisting_on_disk_malformed_fragment_skips_render_with_named_finding()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "blocking", Some(&armed), Some(&armed))?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        let stale_path = ".changes/unreleased/product-stale-Added-111111.yaml";
+        std::fs::write(
+            dir.join(stale_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime:\n  13:55:13\ncustom:\n  PR: \"1\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let own_path = ".changes/unreleased/product-12549-Added-135514.yaml";
+        std::fs::write(
+            dir.join(own_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"12549\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[own_path])?;
+        let (outcome, report) =
+            check_inner(Some(armed), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "a pre-existing on-disk defect is not this PR's escalation to bear, even past \
+             the blocking boundary"
+        );
+        let rendered = report.lines.join("\n");
+        assert!(
+            rendered.contains("product-stale-Added-111111.yaml"),
+            "report must name the pre-existing renderer-fatal fragment; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("pre-existing renderer-fatal fragment(s) on disk"),
+            "report must record the repo-wide render skip; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("rendered OK"),
+            "no project may render when a pre-existing fragment would crash it; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// The other direction, and the one that matters most: on a tree whose
+    /// on-disk fragments are all renderable, the guard must stay silent and
+    /// the render must actually be attempted.
+    ///
+    /// Every other assertion about this guard is in the firing direction, so
+    /// a guard that suppressed the render unconditionally passed the whole
+    /// suite — and that is not hypothetical. Keyed on the full fragment
+    /// schema, the repo-wide guard matched 47 on-disk fragments carrying an
+    /// unknown `component`, a policy defect the renderer has always tolerated,
+    /// and switched `changie batch --dry-run` off for every PR in the
+    /// repository. The checker's one external oracle went quiet while every
+    /// run still reported success (#13484 review round 4).
+    ///
+    /// Environment-independent: `changie` need not be installed, since the
+    /// claim is that the render step is *reached*, and its own "not on PATH"
+    /// line proves that as well as a real render does.
+    #[test]
+    fn check_renderable_on_disk_fragments_do_not_suppress_the_render()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        write_policy(dir)?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        // Pre-existing, policy-invalid, and perfectly renderable: an unknown
+        // component is a conformance defect, not a timestamp decode failure.
+        std::fs::write(
+            dir.join(".changes/unreleased/product-stale-Added-111111.yaml"),
+            "project: product\ncomponent: Nonexistent area\nkind: Added\nbody: A long enough body.\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"1\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let own_path = ".changes/unreleased/product-12549-Added-135514.yaml";
+        std::fs::write(
+            dir.join(own_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"12549\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[own_path])?;
+        let (outcome, report) = check_inner(None, Some(list), None, false, Some(dir.to_path_buf()))
+            .map_err(|e| e.to_string())?;
+        assert_eq!(outcome, CheckOutcome::PolicySatisfied, "a valid fragment PR passes");
+        let rendered = report.lines.join("\n");
+        assert!(
+            !rendered.contains("renderer-fatal fragment(s) on disk"),
+            "a renderable on-disk fragment must not suppress the repo-wide render; \
+             got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("rendered OK") || rendered.contains("changie not on PATH"),
+            "the render step must be reached, not skipped; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// Present-but-unreadable is not the same as absent, and the distinction
+    /// is exactly the boundary of `absent_paths`: `Path::exists()` is true for
+    /// a path that cannot be read, so such a fragment must still reach
+    /// `check_fragment_file` and escalate — never be silently excluded the way
+    /// a deleted one is, and never be handed to the renderer as valid.
+    ///
+    /// A directory named `*.yaml` is the cheapest portable way to make a path
+    /// that exists and fails to read (#13484 review round 4).
+    #[test]
+    fn check_present_but_unreadable_fragment_still_escalates() -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "blocking", Some(&armed), Some(&armed))?;
+        write_valid_changie(dir)?;
+        let unreadable = ".changes/unreleased/product-1-Added-000003.yaml";
+        std::fs::create_dir_all(dir.join(unreadable)).map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[unreadable])?;
+        let (outcome, report) =
+            check_inner(Some(armed), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::BlockingViolation,
+            "an unreadable fragment is malformed, not absent, and must escalate past the \
+             blocking boundary; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("could not read fragment") && rendered.contains(unreadable),
+            "the report must name the unreadable fragment; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("ignoring deleted fragment(s)"),
+            "a present-but-unreadable fragment must not be treated as deleted; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("rendered OK"),
+            "an unreadable fragment must not be handed to the renderer; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A deleted production file must not ride surviving allowlisted files
+    /// into a ReleasePrep pass. Judging the shape over the surviving paths
+    /// only made the deletion invisible: `Cargo.toml` alone looks like a
+    /// release prep, so the removed source file owed nothing (#13484 review
+    /// round 4).
+    #[test]
+    fn deleted_production_file_cannot_ride_release_prep() {
+        let policy = test_policy("", "");
+        let changed = vec!["crates/perl-parser/src/lib.rs".to_string(), "Cargo.toml".to_string()];
+        let mut absent = std::collections::HashSet::new();
+        absent.insert("crates/perl-parser/src/lib.rs".to_string());
+        assert_eq!(
+            detect_disposition(&changed, &absent, "", &policy),
+            Disposition::Missing,
+            "a deleted production file still owes a disposition; only its absence from the \
+             surviving set made the rest look like a release prep"
+        );
+    }
+
+    /// A fragment committed at HEAD but deleted in a dirty working tree is
+    /// still the fragment the candidate carries, and must be validated rather
+    /// than excluded as deleted. CI checks out clean, so this only diverges
+    /// locally — where silently skipping validation is the wrong direction
+    /// (#13484 review round 4).
+    #[test]
+    fn uncommitted_local_deletion_does_not_excuse_a_committed_fragment()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "blocking", Some(&armed), Some(&armed))?;
+        write_valid_changie(dir)?;
+        std::fs::create_dir_all(dir.join(".changes/unreleased")).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-1-Added-000000.yaml";
+        // Committed with the #12549 shape, so validation must flag it.
+        std::fs::write(
+            dir.join(fragment_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime:\ncustom:\n  PR: \"1\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "add fragment"])?;
+        // Deleted locally only — never committed.
+        std::fs::remove_file(dir.join(fragment_path)).map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[fragment_path])?;
+        let (outcome, report) =
+            check_inner(Some(armed), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        let rendered = report.lines.join("\n");
+        assert!(
+            !rendered.contains("ignoring deleted fragment(s)"),
+            "a fragment still tracked at HEAD is not a deleted fragment; got:\n{rendered}"
+        );
+        assert_eq!(
+            outcome,
+            CheckOutcome::BlockingViolation,
+            "the committed fragment is malformed and must escalate, not be excused by an \
+             uncommitted local deletion; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A dangling symlink is a repository entry, and `Path::exists()` follows
+    /// the link — so it reads as absent and would skip validation entirely.
+    /// It must reach the checker, which reports the failed read (#13484
+    /// review round 4).
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_fragment_is_not_treated_as_absent() -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "blocking", Some(&armed), Some(&armed))?;
+        write_valid_changie(dir)?;
+        std::fs::create_dir_all(dir.join(".changes/unreleased")).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-1-Added-000000.yaml";
+        std::os::unix::fs::symlink("nowhere.yaml", dir.join(fragment_path))
+            .map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[fragment_path])?;
+        let (outcome, report) =
+            check_inner(Some(armed), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        let rendered = report.lines.join("\n");
+        assert!(
+            !rendered.contains("ignoring deleted fragment(s)"),
+            "a dangling symlink is present as an entry, not deleted; got:\n{rendered}"
+        );
+        assert_eq!(
+            outcome,
+            CheckOutcome::BlockingViolation,
+            "an unresolvable fragment must escalate rather than pass unvalidated; \
+             got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    // --- --self-test: sample findings must not flatten to PolicySatisfied (#14846) ---
+
+    /// Discriminator: a schema-invalid sample under an armed advisory policy
+    /// must be `AdvisoryFinding`, not the pre-#14846 flatten to
+    /// `PolicySatisfied`. This is the test that fails against current
+    /// `origin/main` while the self-test arm still returns
+    /// `PolicySatisfied` after writing WARNs.
+    #[test]
+    fn check_self_test_schema_invalid_sample_during_soak_is_advisory_finding()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        write_sample(dir, "bad.yaml", SCHEMA_INVALID_SAMPLE)?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "schema-invalid --self-test sample during the armed soak must be \
+             AdvisoryFinding, not PolicySatisfied (the pre-#14846 flatten); \
+             got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("bad.yaml") && rendered.contains("`time:`"),
+            "the report must name the sample and the schema defect; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn check_self_test_schema_invalid_sample_after_blocking_is_blocking_violation()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "blocking", Some(&sha), Some(&sha))?;
+        write_valid_changie(dir)?;
+        write_sample(dir, "bad.yaml", SCHEMA_INVALID_SAMPLE)?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::BlockingViolation,
+            "schema-invalid --self-test sample past a reached blocking boundary \
+             must be a BlockingViolation; got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("BLOCKING:") && rendered.contains("sample"),
+            "blocking escalation must name sample findings; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// Opposite clock: before any boundary, sample defects stay WARN-only
+    /// `PolicySatisfied` — the same NotArmed treatment Fragment uses. The
+    /// WARNs must still fire so this is not a silent pass.
+    #[test]
+    fn check_self_test_schema_invalid_sample_not_armed_is_policy_satisfied()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        write_policy(dir)?;
+        write_valid_changie(dir)?;
+        write_sample(dir, "bad.yaml", SCHEMA_INVALID_SAMPLE)?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "NotArmed self-test sample defects stay PolicySatisfied; got \
+             {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("bad.yaml"),
+            "NotArmed must still report the sample as WARN; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// Missing `.changes/samples` is absence, not a sample defect: WARN and
+    /// `PolicySatisfied` even under an armed policy.
+    #[test]
+    fn check_self_test_missing_samples_directory_stays_policy_satisfied_when_armed()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "a missing samples directory must not escalate; got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("no samples directory"),
+            "missing samples directory must be a WARN; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn check_self_test_empty_samples_directory_stays_policy_satisfied_when_armed()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        std::fs::create_dir_all(dir.join(SAMPLES_DIR)).map_err(|e| e.to_string())?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "an empty samples directory is absence, not a defect; got \
+             {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("no sample fragments found"),
+            "empty samples directory must be a WARN; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// Non-yaml files in the samples directory are not fragments: same
+    /// absence WARN as an empty directory, not a finding about those files.
+    #[test]
+    fn check_self_test_non_yaml_only_samples_dir_stays_policy_satisfied()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        let samples = dir.join(SAMPLES_DIR);
+        std::fs::create_dir_all(&samples).map_err(|e| e.to_string())?;
+        std::fs::write(samples.join("README.md"), "not a fragment").map_err(|e| e.to_string())?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "non-yaml files must not count as sample findings; got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("no sample fragments found"),
+            "non-yaml-only samples dir must report absence; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// Quiet-direction control: a schema-valid sample under an armed policy
+    /// stays `PolicySatisfied`. Without this, an implementation that always
+    /// returns `AdvisoryFinding` from `--self-test` would still pass the
+    /// invalid-sample discriminator.
+    #[test]
+    fn check_self_test_valid_sample_is_policy_satisfied_when_armed()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        write_sample(dir, "good.yaml", VALID_SAMPLE)?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "a schema-valid sample must not escalate; got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("good.yaml") && rendered.contains("schema-valid"),
+            "valid sample must be reported OK; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn check_self_test_unparseable_sample_during_soak_is_advisory_finding()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        write_sample(dir, "broken.yaml", ": this is not a fragment\n")?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "unparseable --self-test sample during soak must escalate like a \
+             schema finding; got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("broken.yaml") && rendered.to_ascii_lowercase().contains("parse"),
+            "the report must name the unparseable sample; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A directory named `*.yaml` exists and fails to read — the portable
+    /// unreadable-path trick used by the fragment tests (#13484 round 4).
+    #[test]
+    fn check_self_test_unreadable_sample_during_soak_is_advisory_finding()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        let unreadable = dir.join(SAMPLES_DIR).join("unreadable.yaml");
+        std::fs::create_dir_all(&unreadable).map_err(|e| e.to_string())?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "an unreadable sample is a finding, not absence; got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("could not read sample") && rendered.contains("unreadable.yaml"),
+            "the report must name the unreadable sample; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// One valid sample cannot wash out an invalid sibling: findings are
+    /// present, so the armed soak still escalates.
+    #[test]
+    fn check_self_test_valid_plus_invalid_sample_escalates() -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        write_sample(dir, "good.yaml", VALID_SAMPLE)?;
+        write_sample(dir, "bad.yaml", SCHEMA_INVALID_SAMPLE)?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "a valid sibling must not flatten invalid sample findings; got \
+             {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("good.yaml") && rendered.contains("bad.yaml"),
+            "both samples must appear in the report; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// Default `--base origin/main` must take the same unresolvable-ancestry
+    /// NotArmed path Fragment uses. A self-test that internally substituted
+    /// `HEAD` would escalate this fixture; Fragment would not.
+    #[test]
+    fn check_self_test_unresolvable_default_base_does_not_escalate()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        write_sample(dir, "bad.yaml", SCHEMA_INVALID_SAMPLE)?;
+        let (outcome, report) = check_inner(None, None, None, true, Some(dir.to_path_buf()))
+            .map_err(|e| e.to_string())?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "default --base origin/main must NotArm when that ref is unresolvable, \
+             same as Fragment; got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("bad.yaml"),
+            "the sample defect must still be WARNed; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A path that exists at `.changes/samples` but is not a directory is not
+    /// "missing": `read_dir` fails with something other than `NotFound`, and
+    /// that must be an instrument failure (exit 2), not the missing-directory
+    /// WARN that would flatten to `PolicySatisfied` on origin/main.
+    #[test]
+    fn check_self_test_samples_path_that_is_not_a_directory_is_instrument_failure()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        std::fs::create_dir_all(dir.join(".changes")).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(SAMPLES_DIR), "not a directory").map_err(|e| e.to_string())?;
+        let result =
+            check_inner(Some("HEAD".to_string()), None, None, true, Some(dir.to_path_buf()));
+        let err = match result {
+            Ok((outcome, report)) => {
+                return Err(format!(
+                    "a samples path that exists but is not a directory must be an \
+                     instrument failure, not {outcome:?}:\n{}",
+                    report.lines.join("\n")
+                ));
+            }
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("samples"),
+            "instrument failure must name the samples path; got {err}"
+        );
         Ok(())
     }
 

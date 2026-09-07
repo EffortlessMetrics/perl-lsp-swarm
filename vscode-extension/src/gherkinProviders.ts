@@ -1,5 +1,10 @@
 import * as vscode from 'vscode';
-import { isPotentiallyExpensiveRegex } from './gherkinRedosGuard';
+import {
+  createGherkinMatchBudget,
+  isSafeGherkinStepMatch,
+  normalizeGherkinRegexFlags,
+  type GherkinMatchBudget,
+} from './gherkinRedosGuard';
 
 type OutlineKind = 'feature' | 'rule' | 'background' | 'scenario' | 'examples' | 'step';
 type StepKeyword = 'Given' | 'When' | 'Then' | 'And' | 'But' | '*';
@@ -60,8 +65,6 @@ const STEP_DEFINITION_FILE_GLOBS = [
 ] as const;
 const STEP_DEFINITION_EXCLUDE_GLOB = '{**/node_modules/**,**/blib/**,**/.git/**}';
 const STEP_DEFINITION_FILE_LIMIT = 1000;
-const MAX_MATCH_REGEX_LENGTH = 256;
-const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // Catastrophic backtracking (ReDoS) requires a *quantified group that itself
 // contains a quantifier, a backreference, a lookaround, or alternation. A
 // single character class followed by one quantifier
@@ -102,6 +105,12 @@ export function registerGherkinProviders(): vscode.Disposable[] {
       }
 
       const links = provideGherkinStepDefinitionLinks(document.getText(), position, candidates);
+      if (links === null) {
+        void vscode.window.showWarningMessage(
+          'Gherkin step matching stopped after reaching its safety budget; no definition result is available.',
+        );
+        return undefined;
+      }
       return links.length > 0 ? links : undefined;
     },
   };
@@ -140,15 +149,20 @@ export function provideGherkinStepDefinitionLinks(
   featureText: string,
   position: vscode.Position,
   documents: readonly StepDefinitionDocument[],
-): vscode.LocationLink[] {
+): vscode.LocationLink[] | null {
   const step = extractStepReference(featureText, position);
   if (!step) {
     return [];
   }
 
   const matches: ParsedStepDefinition[] = [];
+  const budget = createGherkinMatchBudget();
   for (const document of documents) {
-    matches.push(...findMatchingStepDefinitions(step, document));
+    const documentMatches = findMatchingStepDefinitions(step, document, budget);
+    if (documentMatches === null) {
+      return null;
+    }
+    matches.push(...documentMatches);
   }
 
   matches.sort((left, right) => {
@@ -348,10 +362,18 @@ function resolveEffectiveKeyword(
 function findMatchingStepDefinitions(
   step: GherkinStepReference,
   document: StepDefinitionDocument,
-): ParsedStepDefinition[] {
+  budget: GherkinMatchBudget,
+): ParsedStepDefinition[] | null {
   const matches: ParsedStepDefinition[] = [];
 
   for (const definition of parseStepDefinitions(document)) {
+    // Every parsed definition consumes the shared population budget. Moving
+    // this below filtering would let incompatible or unsafe definitions make
+    // the operation's cost depend on which consumer reached them.
+    if (!budget.tryConsume()) {
+      return null;
+    }
+
     if (!keywordsAreCompatible(step, definition.keyword)) {
       continue;
     }
@@ -555,33 +577,16 @@ function stepTextMatches(stepText: string, matcher: StepMatcher): boolean {
     return matcher.text === stepText;
   }
 
-  if (!isSafeRegexForStepMatching(matcher.source, stepText)) {
+  const flags = normalizeGherkinRegexFlags(matcher.flags);
+  if (flags === null || !isSafeGherkinStepMatch(matcher.source, stepText, flags)) {
     return false;
   }
 
   try {
-    return new RegExp(matcher.source, normalizeRegexFlags(matcher.flags)).test(stepText);
+    return new RegExp(matcher.source, flags).test(stepText);
   } catch {
     return false;
   }
-}
-
-function isSafeRegexForStepMatching(source: string, stepText: string): boolean {
-  if (source.length > MAX_MATCH_REGEX_LENGTH || stepText.length > MAX_MATCH_STEP_TEXT_LENGTH) {
-    return false;
-  }
-
-  return !isPotentiallyExpensiveRegex(source);
-}
-
-function normalizeRegexFlags(flags: string): string {
-  let normalized = '';
-  for (const flag of flags.toLowerCase()) {
-    if ((flag === 'i' || flag === 'm' || flag === 's') && !normalized.includes(flag)) {
-      normalized += flag;
-    }
-  }
-  return normalized;
 }
 
 function definitionScore(uri: vscode.Uri, keyword: StepDefinitionKeyword): number {

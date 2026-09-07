@@ -12,7 +12,11 @@ use std::time::{Duration, Instant};
 const INDEX_READY_WAIT_MS: u64 = 2_000;
 const INDEX_READY_POLL_MS: u64 = 1;
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
-const INDEXING_START_GATE_WAIT_MS: u64 = 5_000;
+// 30s: the timeout only bites when a test stalls before releasing the
+// gate; a dropped release sender disconnects immediately. The long leash
+// keeps gate-based race tests stable under fully parallel test loads
+// (#13308).
+const INDEXING_START_GATE_WAIT_MS: u64 = 30_000;
 
 /// LSP-level milestones used to measure when startup indexing becomes useful.
 #[allow(dead_code)] // Provider readiness hooks land in the follow-up workload slice.
@@ -605,6 +609,37 @@ pub(crate) fn notify_workspace_indexing_started(
     }
 }
 
+#[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+pub(crate) fn set_indexing_commit_gate(
+    gate: &std::sync::Mutex<Option<WorkspaceIndexingStartGate>>,
+    started: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+) {
+    if let Ok(mut gate) = gate.lock() {
+        *gate = Some(WorkspaceIndexingStartGate { started, release });
+    }
+}
+
+/// Test-only gate fired inside the startup scan's per-file commit critical
+/// section, after `indexing_transition_lock` is acquired (#13308). It lets a
+/// regression test pause the background indexer at exactly the point where
+/// didOpen's insertion must wait for it.
+#[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+pub(crate) fn notify_indexing_commit_gate(
+    gate: &std::sync::Mutex<Option<WorkspaceIndexingStartGate>>,
+) {
+    let gate = gate.lock().ok().and_then(|mut gate| gate.take());
+    if let Some(gate) = gate {
+        let _ = gate.started.send(());
+        if gate.release.recv_timeout(Duration::from_millis(INDEXING_START_GATE_WAIT_MS)).is_err() {
+            tracing::warn!(
+                timeout_ms = INDEXING_START_GATE_WAIT_MS,
+                "indexing commit gate was not released before timeout"
+            );
+        }
+    }
+}
+
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 fn notify_workspace_readiness_receipt(receipt: Value, observer_id: Option<u64>) {
     let senders = WORKSPACE_READINESS_RECEIPT_OBSERVERS
@@ -948,6 +983,11 @@ mod tests {
 
     #[test]
     fn readiness_contract_waitbriefly_degraded_after_building_records_wait() -> Result<()> {
+        // Budgets are wide on purpose: the contract under test is "a wait
+        // that observes a degrade resolves as Waited", not "the wake-up
+        // beats a one-second budget". A tight budget failed on loaded
+        // 4-core CI runners where the post-transition wake-up exceeded the
+        // remaining budget and resolved as TimedOut (#15016).
         let coordinator = Arc::new(IndexCoordinator::new());
         let indexing = AtomicBool::new(true);
         let (wait_entered_tx, wait_entered_rx) = std::sync::mpsc::channel();
@@ -955,7 +995,7 @@ mod tests {
         let worker_coordinator = Arc::clone(&coordinator);
 
         let worker = std::thread::spawn(move || -> Result<()> {
-            wait_entered_rx.recv_timeout(Duration::from_secs(1))?;
+            wait_entered_rx.recv_timeout(Duration::from_secs(30))?;
             worker_coordinator
                 .transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 456 });
             Ok(())
@@ -965,7 +1005,7 @@ mod tests {
             Some(&coordinator),
             &indexing,
             IndexReadinessPolicy::WaitBriefly,
-            Duration::from_secs(1),
+            Duration::from_secs(30),
         );
 
         worker.join().map_err(|_| anyhow::anyhow!("readiness observer thread panicked"))??;

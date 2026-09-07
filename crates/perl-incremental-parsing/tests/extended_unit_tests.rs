@@ -10,7 +10,7 @@
 //! - SimpleIncrementalParser: initial, incremental, structural, default
 //! - CheckpointedIncrementalParser: parse, edit, stats, cache clear
 //! - IncrementalParserV2: value edits, whitespace, advanced reuse, metrics
-//! - IncrementalTree: node-map lookup, find_containing_node
+//! - IncrementalTree: canonical containment lookup, find_containing_node
 //! - IncrementalMetrics: efficiency, performance category
 //! - AdvancedReuseAnalyzer: reuse analysis, ReuseConfig, ReuseAnalysisResult
 //! - Integration: lsp_pos_to_byte, byte_to_lsp_pos, DocumentParser, IncrementalConfig
@@ -758,7 +758,7 @@ fn v2_parser_multiple_value_edits() {
 // =========================================================================
 
 #[test]
-fn incremental_tree_new_builds_node_map() {
+fn incremental_tree_new_performs_no_hidden_indexing() {
     let root = parse_ok("my $x = 1;");
     if let Ok(r) = root {
         let tree = IncrementalTree::new(r, "my $x = 1;".to_string());

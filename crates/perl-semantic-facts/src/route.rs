@@ -513,16 +513,64 @@ impl RouteParameterFact {
     }
 }
 
-/// Canonical route-handler context fact: the exact inline-handler source
-/// interval of one exact route (#8921).
+/// Which framework declaration owns a handler-context interval.
 ///
-/// The interval marks where route-handler-only DSL keywords of the reviewed
-/// DSL contract are semantically available: it is route/application scoped,
-/// current-generation, and identical to the route's inline `sub { ... }`
-/// tokens. Nested lexical scopes inside the handler stay inside the interval
-/// (the request context is preserved through nested blocks/subs); adjacent
-/// subs and blocks stay outside it. No handler-context fact exists when the
-/// route is malformed or its handler relation is a typed boundary.
+/// The interval semantics are identical for both kinds — an exact inline
+/// handler body of an exactly activated application — so one fact family
+/// answers both. The kind names the owning declaration so a consumer can
+/// explain *why* the context exists without rediscovering the syntax.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum HandlerContextKind {
+    /// The interval is the inline handler of a route declaration.
+    ///
+    /// Default for wire compatibility: payloads minted before the hook
+    /// handler-context producer existed are route contexts.
+    #[default]
+    Route,
+    /// The interval is the inline handler of a hook declaration.
+    Hook,
+}
+
+/// Whether the reviewed contract establishes framework request context
+/// inside a handler interval.
+///
+/// This is deliberately separate from the envelope's exactness. The envelope
+/// answers "is this interval an exact source fact"; this answers "does the
+/// reviewed framework contract prove that request-scoped DSL keywords are
+/// meaningful inside it". A handler position can have a perfectly exact
+/// interval whose request context the reviewed contract does not establish.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum RequestContextAdmission {
+    /// The reviewed contract establishes request context in this interval.
+    ///
+    /// Default for wire compatibility: the pre-existing producer minted
+    /// contexts only for route handlers, which the reviewed contract admits.
+    #[default]
+    Established,
+    /// The interval is exact, but the reviewed contract does not establish
+    /// request context for this handler position.
+    ///
+    /// Absence of proof is not proof of absence: a consumer must not offer
+    /// request-scoped keywords here, and must equally not claim that using
+    /// one here is wrong.
+    NotEstablished,
+}
+
+/// Canonical handler-context fact: the exact inline-handler source interval
+/// of one exact route (#8921) or hook (#13604) declaration.
+///
+/// The interval marks where request-scoped DSL keywords of the reviewed DSL
+/// contract may be available: it is application scoped, current-generation,
+/// and identical to the declaration's inline `sub { ... }` tokens. Nested
+/// lexical scopes inside the handler stay inside the interval (the request
+/// context is preserved through nested blocks/subs); adjacent subs and blocks
+/// stay outside it. No handler-context fact exists when the declaration is
+/// malformed or its handler relation is a typed boundary.
+///
+/// [`Self::request_context`] carries whether availability is actually
+/// established; [`Self::handler_kind`] names the owning declaration kind.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RouteHandlerContextFact {
@@ -537,11 +585,21 @@ pub struct RouteHandlerContextFact {
     pub framework_version: String,
     /// Owning application identity from the activating import.
     pub application_name: String,
-    /// Owning route declaration (source-order identity within the file).
+    /// Owning declaration's source-order identity within the file.
+    ///
+    /// The index is scoped by [`Self::handler_kind`]: it is a route
+    /// declaration index for [`HandlerContextKind::Route`] and a hook
+    /// declaration index for [`HandlerContextKind::Hook`]. The field keeps
+    /// its original name because this payload travels on a versioned wire
+    /// contract where a rename is not an additive change.
     pub route_declaration_index: u32,
-    /// Versioned identity of the reviewed DSL contract whose
-    /// route-handler-only keyword vocabulary applies inside the interval.
+    /// Versioned identity of the reviewed DSL contract whose request-scoped
+    /// keyword vocabulary applies inside the interval.
     pub dsl_contract_version: String,
+    /// Which declaration kind owns this interval.
+    pub handler_kind: HandlerContextKind,
+    /// Whether the reviewed contract establishes request context here.
+    pub request_context: RequestContextAdmission,
 }
 
 #[derive(Deserialize)]
@@ -553,6 +611,12 @@ struct RouteHandlerContextFactWire {
     application_name: String,
     route_declaration_index: u32,
     dsl_contract_version: String,
+    // Additive fields: a payload minted before the hook producer existed
+    // decodes as an established route context, which is exactly what it was.
+    #[serde(default)]
+    handler_kind: HandlerContextKind,
+    #[serde(default)]
+    request_context: RequestContextAdmission,
 }
 
 impl<'de> Deserialize<'de> for RouteHandlerContextFact {
@@ -569,7 +633,9 @@ impl<'de> Deserialize<'de> for RouteHandlerContextFact {
             wire.application_name,
             wire.route_declaration_index,
             wire.dsl_contract_version,
-        ))
+        )
+        .with_handler_kind(wire.handler_kind)
+        .with_request_context(wire.request_context))
     }
 }
 
@@ -596,7 +662,36 @@ impl RouteHandlerContextFact {
             application_name: application_name.into(),
             route_declaration_index,
             dsl_contract_version: dsl_contract_version.into(),
+            handler_kind: HandlerContextKind::Route,
+            request_context: RequestContextAdmission::Established,
         }
+    }
+
+    /// Set the owning declaration kind.
+    ///
+    /// [`Self::new`] mints the route-shaped default, so only the hook
+    /// producer needs this.
+    #[must_use]
+    pub fn with_handler_kind(mut self, handler_kind: HandlerContextKind) -> Self {
+        self.handler_kind = handler_kind;
+        self
+    }
+
+    /// Set whether the reviewed contract establishes request context here.
+    #[must_use]
+    pub fn with_request_context(mut self, request_context: RequestContextAdmission) -> Self {
+        self.request_context = request_context;
+        self
+    }
+
+    /// Whether the reviewed contract establishes request context inside this
+    /// interval.
+    ///
+    /// This is the predicate a provider gates request-scoped keyword
+    /// availability on; an exact interval alone is not enough.
+    #[must_use]
+    pub fn establishes_request_context(&self) -> bool {
+        self.request_context == RequestContextAdmission::Established
     }
 
     /// Classify the handler-context fact for a provider decision.

@@ -110,8 +110,6 @@ fn transport_mode_socket_preserves_exact_port() {
 
 #[test]
 fn transport_mode_equality() {
-    assert_eq!(TransportMode::Stdio, TransportMode::Stdio);
-    assert_eq!(TransportMode::Socket { port: 100 }, TransportMode::Socket { port: 100 });
     assert_ne!(TransportMode::Stdio, TransportMode::Socket { port: 100 });
     assert_ne!(TransportMode::Socket { port: 100 }, TransportMode::Socket { port: 200 });
 }

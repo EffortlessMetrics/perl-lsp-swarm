@@ -148,6 +148,10 @@ impl LspServer {
                     &normalized_uri,
                     &guard_state.generation,
                     guard_state.current_generation(),
+                    self.workspace_identity_generation.load(Ordering::SeqCst),
+                )
+                .with_folder_config_generation(
+                    self.project_config_generation_for_uri(&normalized_uri),
                 );
                 {
                     #[cfg(feature = "workspace")]
@@ -198,6 +202,10 @@ impl LspServer {
                     &normalized_uri,
                     &guard_state.generation,
                     guard_state.current_generation(),
+                    self.workspace_identity_generation.load(Ordering::SeqCst),
+                )
+                .with_folder_config_generation(
+                    self.project_config_generation_for_uri(&normalized_uri),
                 );
                 {
                     #[cfg(feature = "workspace")]
@@ -244,6 +252,10 @@ impl LspServer {
                     &normalized_uri,
                     &guard_state.generation,
                     guard_state.current_generation(),
+                    self.workspace_identity_generation.load(Ordering::SeqCst),
+                )
+                .with_folder_config_generation(
+                    self.project_config_generation_for_uri(&normalized_uri),
                 );
                 {
                     #[cfg(feature = "workspace")]
@@ -412,6 +424,14 @@ impl LspServer {
                 acceptance_class,
                 None,
             );
+
+            // Single-file mode: this cold didOpen path is the only production
+            // moment that can populate the retained single-file project
+            // authority (the initialize-time pass runs before any document
+            // exists). Refresh it before the first publish so the documented
+            // `[perl].version` PL900 fallback reaches the opened document
+            // (#13195 review).
+            self.refresh_single_file_project_config_if_unowned();
 
             if let Some(ref ast) = ast_arc {
                 self.commit_document_symbols_from_ast(&symbol_identity, ast, text);
@@ -621,7 +641,7 @@ impl LspServer {
             // still replacing the buffer. In that case every stream for the URI
             // captured stale text, including same-version sessions, and must be
             // cancelled. Ordinary versioned changes retain the older-only policy.
-            for key in self.uri_key_variants(uri) {
+            for key in Self::uri_key_variants(uri) {
                 if let Some(version) = incoming_version_i64 {
                     if allow_same_version {
                         self.stream_sessions().cancel_for_uri(&key);
@@ -785,6 +805,10 @@ impl LspServer {
                         &normalized_uri,
                         &doc_state.generation,
                         doc_state.current_generation(),
+                        self.workspace_identity_generation.load(Ordering::SeqCst),
+                    )
+                    .with_folder_config_generation(
+                        self.project_config_generation_for_uri(&normalized_uri),
                     );
                     documents.insert(normalized_uri.clone(), doc_state);
                     // Guarded no-parse document: terminal readiness state (#11675).
@@ -837,6 +861,10 @@ impl LspServer {
                         &normalized_uri,
                         &doc_state.generation,
                         doc_state.current_generation(),
+                        self.workspace_identity_generation.load(Ordering::SeqCst),
+                    )
+                    .with_folder_config_generation(
+                        self.project_config_generation_for_uri(&normalized_uri),
                     );
                     documents.insert(normalized_uri.clone(), doc_state);
                     // Guarded no-parse document: terminal readiness state (#11675).
@@ -885,6 +913,10 @@ impl LspServer {
                         &normalized_uri,
                         &doc_state.generation,
                         doc_state.current_generation(),
+                        self.workspace_identity_generation.load(Ordering::SeqCst),
+                    )
+                    .with_folder_config_generation(
+                        self.project_config_generation_for_uri(&normalized_uri),
                     );
                     documents.insert(normalized_uri.clone(), doc_state);
                     // Guarded no-parse document: terminal readiness state (#11675).
@@ -950,54 +982,56 @@ impl LspServer {
                         doc_state.incremental_state = None;
                     }
                     let generation_handle = doc_state.generation.clone();
-                    documents.insert(normalized_uri.clone(), doc_state);
-                    drop(documents);
-
-                    if timing_on {
-                        use crate::runtime::timing::{TimingSpan, elapsed_ms, emit};
-                        let tail = uri_tail(uri);
-                        let bytes = text.len();
-                        let edits = changes.len();
-                        let ver = i64::from(version);
-                        let total_ms = elapsed_ms(t_did_change_start);
-                        for (name, ms) in [
-                            ("didChange.total", total_ms),
-                            ("didChange.lock_wait", lock_wait_ms),
-                            ("didChange.apply_changes", apply_changes_ms),
-                            ("didChange.rope_to_string", rope_to_string_ms),
-                        ] {
-                            emit(TimingSpan::document(name, ms, tail.clone(), ver, bytes, edits));
-                        }
-                    }
-
                     // Coordinator notification for a NEW pending-parse
-                    // lifecycle (tracks parse storm) is fired from
-                    // INSIDE `enqueue` itself (`Coordinator::on_activated`,
-                    // wired in `install_default_parse_worker`), not from
-                    // here after `enqueue` returns -- calling it from
-                    // this caller left a window where an unusually fast
-                    // worker could dequeue, process, and settle (its
-                    // decrement) before this call ever ran, permanently
-                    // stranding the pending-parse counter (#3618 settle-
-                    // before-increment race). `enqueue`'s return value
-                    // is no longer needed by this caller.
-                    // Pending readiness for the exact target generation,
-                    // installed before the parse job begins (#11675).
-                    self.install_active_document_pending(
-                        &normalized_uri,
-                        uri,
-                        &generation_handle,
-                        next_gen,
-                    );
-                    worker.enqueue(
+                    // lifecycle (tracks parse storm) is fired from INSIDE
+                    // `enqueue` itself. Admission is checked under the
+                    // coordinator state lock, so shutdown cannot win between
+                    // worker selection and queue insertion. If it already
+                    // won, retain `doc_state` and continue through the
+                    // synchronous fallback below rather than stranding the
+                    // text-only mutation.
+                    let enqueue_result = worker.try_enqueue(
                         uri.to_string(),
-                        normalized_uri,
+                        normalized_uri.clone(),
                         next_gen,
-                        generation_handle,
+                        Arc::clone(&generation_handle),
                         Arc::clone(&text_arc),
                     );
+                    if enqueue_result.is_ok() {
+                        documents.insert(normalized_uri.clone(), doc_state);
+                        drop(documents);
 
-                    return Ok(());
+                        if timing_on {
+                            use crate::runtime::timing::{TimingSpan, elapsed_ms, emit};
+                            let tail = uri_tail(uri);
+                            let bytes = text.len();
+                            let edits = changes.len();
+                            let ver = i64::from(version);
+                            let total_ms = elapsed_ms(t_did_change_start);
+                            for (name, ms) in [
+                                ("didChange.total", total_ms),
+                                ("didChange.lock_wait", lock_wait_ms),
+                                ("didChange.apply_changes", apply_changes_ms),
+                                ("didChange.rope_to_string", rope_to_string_ms),
+                            ] {
+                                emit(TimingSpan::document(
+                                    name,
+                                    ms,
+                                    tail.clone(),
+                                    ver,
+                                    bytes,
+                                    edits,
+                                ));
+                            }
+                        }
+
+                        return Ok(());
+                    }
+
+                    tracing::debug!(
+                        "parse worker stopped during didChange admission for {}; using synchronous fallback",
+                        uri
+                    );
                 }
 
                 // ---- Synchronous fallback path (unchanged behavior) ----

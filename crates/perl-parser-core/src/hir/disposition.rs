@@ -148,6 +148,7 @@ pub fn hir_kinds_for(ast_kind: &str) -> &'static [&'static str] {
     match ast_kind {
         "ArrayLiteral" => &["LiteralExpr"],
         "Block" => &["BlockShell"],
+        "DataSection" => &["DataSectionDecl"],
         "Do" => &["DynamicBoundary"],
         "Eval" => &["DynamicBoundary"],
         "Assignment" => &["DynamicBoundary"],
@@ -497,6 +498,18 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
             true,
             "Lowered as defer-block marker shell; deferred block is traversed."
         ),
+        // DataSection: emits a DataSectionDecl shell with exact marker and
+        // payload source ranges. There are no children to traverse — the
+        // payload is an opaque source region and is never parsed as Perl.
+        "DataSection" => disp!(
+            true,
+            false,
+            false,
+            false,
+            true,
+            "Explicitly handled: emits a DataSectionDecl shell with exact marker and payload \
+             ranges; payload is an opaque source region and is never lowered as Perl."
+        ),
 
         // ── Conditional dynamic-boundary only (no non-boundary HIR item emitted) ──
         //
@@ -743,7 +756,6 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
         "Default" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "Tie" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "Untie" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
-        "DataSection" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "VString" => disp!(
             false,
             false,

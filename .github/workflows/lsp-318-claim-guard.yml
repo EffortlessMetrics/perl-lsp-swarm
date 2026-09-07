@@ -15,12 +15,14 @@ on:
       - 'crates/perl-lsp-rs/tests/snapshots/**'
       - 'docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md'
       - 'docs/specs/lsp-318-conformance-matrix.md'
+      - 'docs/specs/lsp-318-closure-ownership.md'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
       - 'xtask/src/tasks/lsp_318_claims.rs'
       - 'xtask/src/tasks/lsp_318_matrix.rs'
       - 'xtask/tests/list_commands_cli.rs'
       - 'xtask/tests/lsp_318_changelog_totality.rs'
+      - 'xtask/tests/lsp_318_closure_ownership.rs'
       - 'xtask/tests/fixtures/lsp-318-changelog/**'
   push:
     branches: [main, master]
@@ -37,12 +39,14 @@ on:
       - 'crates/perl-lsp-rs/tests/snapshots/**'
       - 'docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md'
       - 'docs/specs/lsp-318-conformance-matrix.md'
+      - 'docs/specs/lsp-318-closure-ownership.md'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
       - 'xtask/src/tasks/lsp_318_claims.rs'
       - 'xtask/src/tasks/lsp_318_matrix.rs'
       - 'xtask/tests/list_commands_cli.rs'
       - 'xtask/tests/lsp_318_changelog_totality.rs'
+      - 'xtask/tests/lsp_318_closure_ownership.rs'
       - 'xtask/tests/fixtures/lsp-318-changelog/**'
   workflow_dispatch: {}
 
@@ -74,6 +78,9 @@ jobs:
 
       - name: Check official LSP 3.18 changelog totality
         run: cargo test -p xtask --test lsp_318_changelog_totality --locked
+
+      - name: Check unresolved LSP 3.18 closure ownership
+        run: cargo test -p xtask --test lsp_318_closure_ownership --locked
 
       - name: Check generated LSP 3.18 matrix
         run: cargo xtask generate-lsp-318-matrix --check

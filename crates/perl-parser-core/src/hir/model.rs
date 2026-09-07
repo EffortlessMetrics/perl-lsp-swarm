@@ -172,8 +172,10 @@ impl HirFile {
 
     /// Project framework-adapter facts using the default registry.
     ///
-    /// This is a compiler-substrate proof surface only. It does not change LSP
-    /// provider behavior.
+    /// This remains a compiler-substrate proof surface only:
+    /// `FrameworkAdapterRegistry::project_file` has no production caller, so
+    /// this method does not change LSP provider behavior. Distinct from
+    /// [`StashGraph`], whose export sets are consumed by the workspace indexer.
     #[must_use]
     pub fn framework_facts(&self) -> FrameworkFactGraph {
         FrameworkAdapterRegistry::default().project_file(self)
@@ -1013,10 +1015,12 @@ pub struct BindingReference {
     pub resolved_binding: Option<HirBindingId>,
 }
 
-/// HIR-local package stash graph for compiler-substrate proof.
+/// HIR package stash graph owned by parser-core.
 ///
-/// This graph is intentionally parser-core-local. It records package/stash
-/// facts with provenance and confidence, but no LSP provider consumes it yet.
+/// Records package/stash facts with provenance and confidence. This is not a
+/// receipt-only substrate: workspace indexing consumes [`Self::export_sets`]
+/// into `ImportExportIndex` on every indexed file, and those facts reach live
+/// completion, hover, go-to-definition, and scope-diagnostic suppression.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct StashGraph {
@@ -1033,8 +1037,9 @@ pub struct StashGraph {
 impl StashGraph {
     /// Project static HIR/stash export declarations into canonical export facts.
     ///
-    /// This is a compiler-substrate projection only. It does not execute Perl,
-    /// inspect the filesystem, or change workspace/LSP provider behavior.
+    /// This projection does not execute Perl or inspect the filesystem.
+    /// Workspace indexing consumes the result into `ImportExportIndex`, so
+    /// these facts do reach live LSP provider behavior.
     #[must_use]
     pub fn export_sets(&self) -> Vec<ExportSet> {
         let mut builders = BTreeMap::<String, ExportSetBuilder>::new();
@@ -2767,6 +2772,8 @@ pub enum HirKind {
     LoopShell(LoopShell),
     /// Control-transfer shell (`return`, `next`/`last`/`redo`, `goto`).
     ControlTransfer(ControlTransfer),
+    /// `__DATA__`/`__END__` data-section marker shell.
+    DataSectionDecl(DataSectionDecl),
     /// Statement-modifier shell (postfix `if`/`unless`/`while`/`until`/`for`).
     StatementModifierShell(StatementModifierShell),
     /// Unsupported or intentionally dynamic Perl boundary.
@@ -2805,6 +2812,7 @@ impl HirKind {
         "CallExpr",
         "ClassDecl",
         "ControlTransfer",
+        "DataSectionDecl",
         "DeferExpr",
         "DerefExpr",
         "DynamicBoundary",
@@ -2840,6 +2848,48 @@ pub struct PackageDecl {
     pub name_range: SourceLocation,
     /// Whether this declaration owns an inline block.
     pub has_block: bool,
+}
+
+/// `__DATA__`/`__END__` marker HIR payload.
+///
+/// The payload text following the marker is an opaque source region and is
+/// never lowered as Perl; only the marker identity and the exact marker and
+/// payload source ranges are modeled.
+///
+/// # Range coverage
+///
+/// [`marker_range`] and [`payload_range`] are each exact, but they are not
+/// contiguous and their union is not the whole construct.  The separator
+/// between them — any trailing horizontal whitespace on the marker line plus
+/// the line terminator — is deliberately covered by neither, because it is
+/// layout that belongs to neither the marker word nor the payload bytes.
+///
+/// Use the enclosing [`HirItem::range`] when full coverage of the construct is
+/// required; it spans the marker through the end of the payload.
+///
+/// [`marker_range`]: DataSectionDecl::marker_range
+/// [`payload_range`]: DataSectionDecl::payload_range
+/// [`HirItem::range`]: crate::hir::HirItem::range
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DataSectionDecl {
+    /// Which marker introduced the data section.
+    pub marker: DataSectionMarker,
+    /// Precise source range of the marker token itself.
+    pub marker_range: SourceLocation,
+    /// Precise source range of the opaque payload text, absent when the
+    /// marker has no trailing payload.
+    pub payload_range: Option<SourceLocation>,
+}
+
+/// Marker that introduces a [`DataSectionDecl`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DataSectionMarker {
+    /// `__DATA__`.
+    Data,
+    /// `__END__`.
+    End,
 }
 
 /// Subroutine declaration HIR payload.

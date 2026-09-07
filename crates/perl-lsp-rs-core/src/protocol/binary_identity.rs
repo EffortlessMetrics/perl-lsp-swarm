@@ -52,10 +52,34 @@ pub enum BinaryCompatibilityState {
     NotProven,
 }
 
-/// Stable machine reasons contributing to a compatibility verdict.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BinaryCompatibilityReason {
+/// Declare [`BinaryCompatibilityReason`] and its complete inventory from one list.
+///
+/// The macro body is the only place a reason is named: each row emits both the
+/// enum variant and its entry in [`BinaryCompatibilityReason::ALL`]. A reason
+/// therefore cannot reach the wire while the contract proofs that iterate `ALL`
+/// walk a shorter, separately maintained copy of the variant list.
+macro_rules! binary_compatibility_reasons {
+    ($($(#[$reason_doc:meta])* $reason:ident),+ $(,)?) => {
+        /// Stable machine reasons contributing to a compatibility verdict.
+        #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum BinaryCompatibilityReason {
+            $($(#[$reason_doc])* $reason,)+
+        }
+
+        impl BinaryCompatibilityReason {
+            /// Every reason this contract can emit, in declaration order.
+            ///
+            /// Generated from the same list that declares the variants, so it
+            /// cannot fall behind the enum: adding a reason adds it here, and the
+            /// projection and schema proofs that iterate this slice see it at once.
+            pub const ALL: &'static [BinaryCompatibilityReason] =
+                &[$(BinaryCompatibilityReason::$reason),+];
+        }
+    };
+}
+
+binary_compatibility_reasons! {
     /// Server product, executable, package, or role is not canonical.
     ServerProductMismatch,
     /// Packet repository identity is not canonical.

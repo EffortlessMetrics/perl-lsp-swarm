@@ -13,8 +13,6 @@
 //! embed the creating pid (`perl-lsp-dap-debuggee-probe-<pid>-…`), so the
 //! scan cannot confuse artifacts from concurrently running suites.
 
-#![allow(unsafe_code)] // required for std::env::set_var/remove_var in Rust 2024 (unsafe fn)
-
 mod common;
 
 #[cfg(unix)]
@@ -23,6 +21,7 @@ use common::{reset_sigkill_escalation_observation, sigkill_escalation_was_observ
 use common::{
     DEBUGGEE_PERL_OVERRIDE_ENV, ProbeThreadSpawnFailure,
     probe_debuggee_perl_for_test_with_descendant_pid,
+    probe_debuggee_perl_for_test_with_descendant_pid_publication_barrier,
     probe_debuggee_perl_for_test_with_thread_spawn_failure, resolve_debuggee_perl,
 };
 use std::fs;
@@ -32,6 +31,7 @@ use std::process::Command;
 use std::time::Duration;
 
 const PROBE_PREFIX: &str = "perl-lsp-dap-debuggee-probe-";
+const INVALID_PIN_CHILD_MODE: &str = "PERL_LSP_DAP_INVALID_PIN_CHILD";
 
 /// Temp entries whose name starts with our prefix AND carries this process's
 /// pid token — i.e., workspaces materialized by THIS binary. Matches both
@@ -91,6 +91,17 @@ fn probe_workspace_cleanup_covers_each_child_exit_path() -> io::Result<()> {
         };
     }
 
+    // Keep the invalid-pin resolver control isolated from this test process.
+    // `std::env::set_var`/`remove_var` are unsound in a multithreaded Unix
+    // test binary; the child receives the pin at process creation instead.
+    if std::env::var_os(INVALID_PIN_CHILD_MODE).is_some() {
+        require!(
+            resolve_debuggee_perl().is_none(),
+            "a nonexistent pinned interpreter must fail resolution outright"
+        );
+        return Ok(());
+    }
+
     let controls = tempfile::tempdir()?;
     let success = compile_probe_control(
         controls.path(),
@@ -98,6 +109,41 @@ fn probe_workspace_cleanup_covers_each_child_exit_path() -> io::Result<()> {
         "fn main() { println!(\"15\"); }\n",
     )?;
     let no_banner = compile_probe_control(controls.path(), "probe_no_banner", "fn main() {}\n")?;
+    let descendant = compile_probe_control(
+        controls.path(),
+        "probe_descendant",
+        r#"
+use std::{env, fs, thread, time::Duration};
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn signal(signal: i32, handler: usize) -> usize;
+}
+
+#[cfg(unix)]
+fn ignore_sigterm() {
+    // SAFETY: installing SIG_IGN for this dedicated test fixture is process
+    // local and intentionally makes escalation to SIGKILL observable.
+    unsafe {
+        let _ = signal(15, 1);
+    }
+}
+
+#[cfg(not(unix))]
+fn ignore_sigterm() {}
+
+fn main() {
+    ignore_sigterm();
+    let Some(ready_file) = env::args_os().nth(1) else {
+        return;
+    };
+    if fs::write(ready_file, "ready").is_err() {
+        return;
+    }
+    thread::sleep(Duration::from_secs(60));
+}
+"#,
+    )?;
     let timeout = compile_probe_control(
         controls.path(),
         "probe_timeout",
@@ -116,19 +162,23 @@ fn main() {
         let _ = fs::write(ready_file, "ready");
     }
     if let Some(pid_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE") {
-        #[cfg(unix)]
-        let descendant = Command::new("sh")
-            .args(["-c", "trap '' TERM; while :; do sleep 1; done"])
-            .spawn();
-        #[cfg(windows)]
-        let descendant = {
-            Command::new("ping").args(["127.0.0.1", "-n", "61"]).spawn()
+        // Keep a separate receipt for the direct child so the PID-publication
+        // failure control can prove that cleanup reaps both process levels.
+        let child_pid_file = format!("{}.child", pid_file.to_string_lossy());
+        let _ = fs::write(child_pid_file, std::process::id().to_string());
+        let descendant_binary = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_BINARY");
+        let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE") else {
+            thread::sleep(Duration::from_secs(60));
+            return;
         };
-        let Ok(descendant) = descendant else { return };
-        if let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE") {
-            let _ = fs::write(ready_file, "ready");
+        if let Some(descendant_binary) = descendant_binary {
+            let descendant = Command::new(descendant_binary).arg(ready_file).spawn();
+            let Ok(descendant) = descendant else {
+                thread::sleep(Duration::from_secs(60));
+                return;
+            };
+            let _ = fs::write(pid_file, descendant.id().to_string());
         }
-        let _ = fs::write(pid_file, descendant.id().to_string());
     }
     thread::sleep(Duration::from_secs(60));
 }
@@ -147,22 +197,23 @@ fn main() {
         let _ = fs::write(ready_file, "ready");
     }
     if let Some(pid_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE") {
-        #[cfg(unix)]
-        let descendant = Command::new("sh")
-            .args([
-                "-c",
-                "printf ready > \"$PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE\"; trap '' TERM; while :; do sleep 1; done",
-            ])
-            .spawn();
-        #[cfg(windows)]
-        let descendant = {
-            Command::new("ping").args(["127.0.0.1", "-n", "61"]).spawn()
+        let descendant_binary = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_BINARY");
+        let Some(descendant_binary) = descendant_binary else { return };
+        let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE") else {
+            return;
         };
+        let descendant = Command::new(descendant_binary).arg(ready_file).spawn();
         let Ok(descendant) = descendant else { return };
-        if let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE") {
-            let _ = fs::write(ready_file, "ready");
-        }
         let _ = fs::write(pid_file, descendant.id().to_string());
+        let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE") else {
+            return;
+        };
+        for _ in 0..500 {
+            if fs::metadata(&ready_file).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         println!("15");
         return;
     }
@@ -218,12 +269,14 @@ fn main() {
         let pid_file = controls.path().join(format!("{label}.pid"));
         let binary = hanging.clone();
         let pid_file_for_probe = pid_file.clone();
+        let descendant_for_probe = descendant.clone();
         let probe = std::thread::spawn(move || {
             probe_debuggee_perl_for_test_with_descendant_pid(
                 &binary,
                 budget,
                 simulate_wait_error,
                 &pid_file_for_probe,
+                &descendant_for_probe,
             )
         });
         let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(5))?;
@@ -252,6 +305,57 @@ fn main() {
         );
     }
 
+    // The PID receipt itself is deliberately made unwritable. The probe child
+    // has already spawned, so returning directly from fs::write would leak a
+    // live parent (and potentially its descendant) unless the publication
+    // failure uses the same process-tree cleanup boundary as later failures.
+    {
+        let before = current_process_probe_artifacts()?;
+        let pid_file = controls.path().join("pid-receipt-write-failure.pid");
+        let receipt_path = common::probe_pid_file_for_test(&pid_file);
+        fs::create_dir(&receipt_path)?;
+        let child_pid_path = PathBuf::from(format!("{}.child", pid_file.display()));
+        let binary = hanging.clone();
+        let descendant_binary = descendant.clone();
+        let pid_file_for_probe = pid_file.clone();
+        let probe = std::thread::spawn(move || {
+            probe_debuggee_perl_for_test_with_descendant_pid_publication_barrier(
+                &binary,
+                Duration::from_secs(10),
+                &pid_file_for_probe,
+                &descendant_binary,
+            )
+        });
+        let child_pid = wait_for_pid_file(&child_pid_path, Duration::from_secs(5))?;
+        let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(5))?;
+        wait_for_marker_file(&pid_file.with_extension("pid.ready"), Duration::from_secs(5))?;
+        let result =
+            probe.join().map_err(|_| io::Error::other("PID receipt failure probe panicked"))?;
+        let error = result
+            .err()
+            .ok_or_else(|| io::Error::other("PID receipt publication failure must be reported"))?;
+        require!(
+            error.contains("cannot publish probe child PID"),
+            "receipt failure must remain the primary error, got: {error}"
+        );
+        wait_for_process_exit("PID receipt failure child", child_pid, Duration::from_secs(5))?;
+        wait_for_process_exit(
+            "PID receipt failure descendant",
+            descendant_pid,
+            Duration::from_secs(5),
+        )?;
+        require!(
+            common::active_probe_reader_count() == 0,
+            "PID receipt failure probe left an active reader thread"
+        );
+        let after = current_process_probe_artifacts()?;
+        let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
+        require!(
+            new_artifacts.is_empty(),
+            "PID receipt failure probe left newly created workspaces: {new_artifacts:?}"
+        );
+    }
+
     {
         let before = current_process_probe_artifacts()?;
         #[cfg(unix)]
@@ -260,12 +364,14 @@ fn main() {
         let probe = std::thread::spawn({
             let binary = success_with_descendant.clone();
             let pid_file = pid_file.clone();
+            let descendant = descendant.clone();
             move || {
                 common::probe_debuggee_perl_for_test_with_descendant_pid(
                     &binary,
                     Duration::from_secs(2),
                     false,
                     &pid_file,
+                    &descendant,
                 )
             }
         });
@@ -302,11 +408,13 @@ fn main() {
     let termination_pid_file = controls.path().join("termination-failure.pid");
     let termination_pid_for_probe = termination_pid_file.clone();
     let termination_binary = hanging.clone();
+    let termination_descendant_binary = descendant.clone();
     let termination_probe = std::thread::spawn(move || {
         common::probe_debuggee_perl_for_test_with_termination_failure(
             &termination_binary,
             Duration::from_millis(100),
             &termination_pid_for_probe,
+            &termination_descendant_binary,
         )
     });
     let termination_descendant_pid =
@@ -315,10 +423,15 @@ fn main() {
         &termination_pid_file.with_extension("pid.ready"),
         Duration::from_secs(5),
     )?;
-    wait_for_process_start(termination_descendant_pid, Duration::from_secs(5))?;
-    let termination_probe_pid = common::last_probe_pid_for_test().ok_or_else(|| {
-        io::Error::other("termination-failure probe did not record its child PID")
-    })?;
+    // The injected termination failure can begin tearing down the descendant
+    // immediately after it publishes its ready marker.  Requiring tasklist to
+    // observe a live descendant here races that intentional cleanup; the PID
+    // plus ready marker establish startup, while the later exit check proves
+    // the descendant was reaped.
+    let termination_probe_pid = wait_for_pid_file(
+        &common::probe_pid_file_for_test(&termination_pid_file),
+        Duration::from_secs(5),
+    )?;
     require!(
         process_exists(termination_probe_pid)?,
         "termination-failure probe child must be live before the injected cleanup failure"
@@ -402,14 +515,20 @@ fn main() {
         let before = current_process_probe_artifacts()?;
         let descendant_pid_file = controls.path().join("assignment-failure.pid");
         let assignment_binary = hanging.clone();
+        let assignment_descendant_binary = descendant.clone();
+        let assignment_pid_file = descendant_pid_file.clone();
         let probe = std::thread::spawn(move || {
             common::probe_debuggee_perl_for_test_with_job_assignment_failure(
                 &assignment_binary,
                 Duration::from_secs(2),
-                &descendant_pid_file,
+                &assignment_pid_file,
+                &assignment_descendant_binary,
             )
         });
-        let child_pid = wait_for_probe_pid(Duration::from_secs(5))?;
+        let child_pid = wait_for_pid_file(
+            &common::probe_pid_file_for_test(&descendant_pid_file),
+            Duration::from_secs(5),
+        )?;
         let assignment_failure =
             probe.join().map_err(|_| io::Error::other("job assignment probe thread panicked"))?;
         let assignment_error = match assignment_failure {
@@ -446,11 +565,13 @@ fn main() {
         let descendant_pid_file = controls.path().join(format!("{label}.pid"));
         let failure_binary = hanging.clone();
         let failure_pid_file = descendant_pid_file.clone();
+        let descendant_for_probe = descendant.clone();
         let probe = std::thread::spawn(move || {
             probe_debuggee_perl_for_test_with_thread_spawn_failure(
                 &failure_binary,
                 Duration::from_secs(2),
                 &failure_pid_file,
+                &descendant_for_probe,
                 stage,
             )
         });
@@ -459,7 +580,10 @@ fn main() {
             &descendant_pid_file.with_extension("pid.ready"),
             Duration::from_secs(5),
         )?;
-        wait_for_process_start(descendant_pid, Duration::from_secs(5))?;
+        // Injected reader/writer-spawn failures can begin cleanup immediately
+        // after the descendant publishes its ready marker.  The PID file plus
+        // marker prove that the descendant started; the exit check below proves
+        // that failure cleanup reaped it without a tasklist race.
         let failure =
             probe.join().map_err(|_| io::Error::other(format!("{label} probe thread panicked")))?;
         let error = match failure {
@@ -485,23 +609,24 @@ fn main() {
     }
 
     {
-        struct Guard(Option<std::ffi::OsString>);
-        impl Drop for Guard {
-            fn drop(&mut self) {
-                match self.0.take() {
-                    Some(value) => unsafe { std::env::set_var(DEBUGGEE_PERL_OVERRIDE_ENV, value) },
-                    None => unsafe { std::env::remove_var(DEBUGGEE_PERL_OVERRIDE_ENV) },
-                }
-            }
-        }
-        let _guard = Guard(std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV));
-        unsafe { std::env::set_var(DEBUGGEE_PERL_OVERRIDE_ENV, "/definitely/not/a/real/perl") };
-
         // Drive RESOLUTION directly (not the availability gate): candidates
         // collapse to the bogus pin alone and resolution must report none.
+        // The parent environment remains untouched, including any caller pin.
+        let parent_pin = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV);
+        let child = Command::new(std::env::current_exe()?)
+            .args(["--exact", "probe_workspace_cleanup_covers_each_child_exit_path", "--nocapture"])
+            .env(INVALID_PIN_CHILD_MODE, "1")
+            .env(DEBUGGEE_PERL_OVERRIDE_ENV, "/definitely/not/a/real/perl")
+            .output()?;
         require!(
-            resolve_debuggee_perl().is_none(),
-            "a nonexistent pinned interpreter must fail resolution outright"
+            child.status.success(),
+            "invalid pinned interpreter child failed: status={:?}, stderr={}",
+            child.status,
+            String::from_utf8_lossy(&child.stderr)
+        );
+        require!(
+            std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV) == parent_pin,
+            "parent resolver-pin environment changed while testing child override"
         );
     }
     Ok(())
@@ -534,25 +659,6 @@ fn cleanup_command_wait_error_kills_and_reaps_helper() -> io::Result<()> {
         )));
     }
     wait_for_process_exit("cleanup-command-wait-error", pid, Duration::from_secs(5))
-}
-
-#[cfg(windows)]
-fn wait_for_probe_pid(timeout: Duration) -> io::Result<u32> {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if let Some(pid) = common::last_probe_pid_for_test()
-            && process_exists(pid)?
-        {
-            return Ok(pid);
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "probe child PID was not observable",
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
 }
 
 fn process_exists(pid: u32) -> io::Result<bool> {
