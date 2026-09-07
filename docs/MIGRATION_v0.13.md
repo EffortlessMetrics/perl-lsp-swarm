@@ -166,12 +166,19 @@ deferred from Wave 4 and absorbed in Wave Final instead. Merged as PRs #4493, #4
 | `perl-position-tracking` | `perl-parser` | `use perl_position_tracking::` | `use perl_parser::` |
 | `perl-qualified-name` | `perl-parser` | `use perl_qualified_name::` | `use perl_parser::` |
 | `perl-source-file` | `perl-parser` | `use perl_source_file::` | `use perl_parser::` |
-| `perl-percentile` | `perl-parser` | `use perl_percentile::` | `use perl_parser::` |
+| `perl-percentile` | `perl-parser` | `use perl_percentile::` | *(retired — see note)* |
 | `perl-text-line` | `perl-parser` | `use perl_text_line::` | `use perl_parser::` |
 | `perl-edit` | `perl-parser` | `use perl_edit::` | `use perl_parser::` |
 | `perl-path-normalize` | `perl-parser` | `use perl_path_normalize::` | `use perl_parser::` |
 | `perl-path-security` | `perl-parser` | `use perl_path_security::` | `use perl_parser::` |
 | `perl-uri-classify` | `perl-uri` | `use perl_uri_classify::` | `use perl_uri::` |
+
+> **`perl-percentile` note (#7595).** The absorbed nearest-rank percentile helper was
+> measurement/SLO arithmetic, not parser semantics, and had no parser consumer. It is no
+> longer published by `perl-parser` or `perl-parser-core`; the math now lives privately
+> with the code that reports it (`perl-workspace` SLO statistics and the crate-local bench
+> scorecards). Callers that reached for `perl_parser::percentile` should own an equivalent
+> nearest-rank helper in their own measurement layer.
 
 **Cargo.toml change:**
 

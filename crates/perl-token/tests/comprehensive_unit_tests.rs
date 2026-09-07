@@ -10,7 +10,6 @@
 //! - Edge cases: empty text, zero-length spans, unicode, large offsets
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
-use perl_parser_core::percentile::nearest_rank_percentile;
 use perl_token::{Token, TokenKind};
 use std::sync::Arc;
 
@@ -862,12 +861,6 @@ fn token_kind_category_predicates_match_expected_groups() {
 }
 
 #[test]
-fn nearest_rank_p95_uses_corrected_formula() {
-    let sorted: Vec<u64> = (1..=20).collect();
-    assert_eq!(nearest_rank_percentile(&sorted, 95), 19);
-}
-
-#[test]
 fn token_kind_delimiters_and_specials_return_false_for_all_predicates() {
     // Delimiter tokens are not keywords, operators, or literals.
     for kind in [
@@ -913,25 +906,4 @@ fn token_kind_error_sentinel_variants_classified_as_literals() {
     assert!(TokenKind::HeredocDepthLimit.is_literal());
     assert!(!TokenKind::HeredocDepthLimit.is_keyword());
     assert!(!TokenKind::HeredocDepthLimit.is_operator());
-}
-
-#[test]
-fn nearest_rank_percentile_single_element_returns_that_element() {
-    assert_eq!(nearest_rank_percentile(&[42], 0), 42);
-    assert_eq!(nearest_rank_percentile(&[42], 50), 42);
-    assert_eq!(nearest_rank_percentile(&[42], 95), 42);
-    assert_eq!(nearest_rank_percentile(&[42], 100), 42);
-}
-
-#[test]
-fn nearest_rank_percentile_p100_returns_max() {
-    let sorted = vec![10u64, 20, 30];
-    assert_eq!(nearest_rank_percentile(&sorted, 100), 30);
-}
-
-#[test]
-fn nearest_rank_percentile_pct_above_100_is_clamped_to_max() {
-    let sorted = vec![10u64, 20, 30];
-    assert_eq!(nearest_rank_percentile(&sorted, 200), 30);
-    assert_eq!(nearest_rank_percentile(&sorted, u64::MAX), 30);
 }
