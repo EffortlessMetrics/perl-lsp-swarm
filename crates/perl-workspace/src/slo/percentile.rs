@@ -32,18 +32,58 @@ pub(crate) fn nearest_rank_percentile(sorted_values: &[u64], pct: u64) -> u64 {
         return 0;
     }
 
-    // `pct` is clamped to 0..=100 before the conversion, so the fallback is
-    // unreachable; it exists so the helper stays total without a panic path.
-    let pct_clamped = usize::try_from(pct.min(100)).unwrap_or(100);
-    let len = sorted_values.len();
-    let rank = len.saturating_mul(pct_clamped).div_ceil(100).min(len);
+    sorted_values[nearest_rank(sorted_values.len(), pct).saturating_sub(1)]
+}
 
-    sorted_values[rank.saturating_sub(1)]
+/// The 1-based nearest rank for a window of `len` samples at percentile `pct`.
+///
+/// Returns `0` only for an empty window or `pct == 0`; otherwise the result is
+/// in `1..=len`.
+fn nearest_rank(len: usize, pct: u64) -> usize {
+    let pct_clamped = u128::from(pct.min(100));
+    // Widen before multiplying. `len * pct` overflows a `usize` once the window
+    // passes `usize::MAX / 100` — roughly 45 million samples on a 32-bit target
+    // — and a saturated product would clamp the rank far below the true one,
+    // silently understating every reported percentile instead of failing.
+    //
+    // Both fallbacks below are unreachable: a `usize` always fits a `u128`, and
+    // `pct` is clamped to 100 first, so the rank never exceeds `len`. They exist
+    // so the helper stays total without a panic path.
+    let width = u128::try_from(len).unwrap_or(u128::MAX);
+    let rank = (width * pct_clamped).div_ceil(100);
+
+    usize::try_from(rank).unwrap_or(len).min(len)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::nearest_rank_percentile;
+    use super::{nearest_rank, nearest_rank_percentile};
+
+    #[test]
+    fn ranks_stay_exact_for_windows_whose_product_overflows_a_usize() {
+        // `len * pct` in `usize` overflows once `len` passes `usize::MAX / 100`
+        // — about 45 million on a 32-bit target, and reachable on 64-bit too. A
+        // saturating product answers a rank far below the true one, so the
+        // reported percentile silently drifts toward the median. The rank is a
+        // function of the window width alone, so these cases cost no allocation.
+
+        // 32-bit overflow width: 200_000_000 * 95 is 1.9e10, past u32 range.
+        assert_eq!(nearest_rank(200_000_000, 95), 190_000_000);
+
+        // 64-bit overflow width: usize::MAX * 100 overflows on every target.
+        assert_eq!(nearest_rank(usize::MAX, 100), usize::MAX);
+        assert_eq!(nearest_rank(usize::MAX, 50), usize::MAX / 2 + 1);
+        assert_eq!(nearest_rank(usize::MAX, 0), 0);
+    }
+
+    #[test]
+    fn ranks_are_one_based_and_bounded_by_the_window() {
+        assert_eq!(nearest_rank(0, 95), 0);
+        assert_eq!(nearest_rank(10, 0), 0);
+        assert_eq!(nearest_rank(10, 1), 1);
+        assert_eq!(nearest_rank(10, 100), 10);
+        assert_eq!(nearest_rank(10, u64::MAX), 10);
+    }
 
     #[test]
     fn empty_samples_return_zero() {
