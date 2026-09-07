@@ -179,7 +179,7 @@ impl EnvelopeFingerprint {
         let mut established: Vec<&str> =
             envelope.claim_boundary.established.iter().map(String::as_str).collect();
         established.sort_unstable();
-        h.push_field((established.len() as u32).to_be_bytes().as_slice());
+        h.push_field(&(established.len() as u64).to_be_bytes());
         for item in established {
             h.push_field(item.as_bytes());
         }
@@ -187,7 +187,7 @@ impl EnvelopeFingerprint {
         let mut not_established: Vec<&str> =
             envelope.claim_boundary.not_established.iter().map(String::as_str).collect();
         not_established.sort_unstable();
-        h.push_field((not_established.len() as u32).to_be_bytes().as_slice());
+        h.push_field(&(not_established.len() as u64).to_be_bytes());
         for item in not_established {
             h.push_field(item.as_bytes());
         }
@@ -198,7 +198,7 @@ impl EnvelopeFingerprint {
         //    resulting order — and therefore the fingerprint — is unchanged.
         let mut limitations: Vec<&crate::claim::Limitation> = envelope.limitations.iter().collect();
         limitations.sort();
-        h.push_field(&(limitations.len() as u32).to_be_bytes());
+        h.push_field(&(limitations.len() as u64).to_be_bytes());
         for limitation in limitations {
             h.push_field(limitation.detail.as_bytes());
             h.push_optional(limitation.affected_claim.as_deref());
@@ -207,7 +207,7 @@ impl EnvelopeFingerprint {
         // 9. Inputs — canonically sorted lineage edges (order-independent).
         let mut inputs: Vec<_> = envelope.inputs.iter().map(|i| i.canonical_key()).collect();
         inputs.sort_unstable();
-        h.push_field((inputs.len() as u32).to_be_bytes().as_slice());
+        h.push_field(&(inputs.len() as u64).to_be_bytes());
         for (receipt, digest) in inputs {
             h.push_field(receipt.as_bytes());
             h.push_field(digest.as_bytes());
@@ -348,8 +348,9 @@ mod tests {
 
         EvidenceEnvelope {
             schema_version: EvidenceEnvelopeSchemaVersion::V1,
-            receipt_id: ReceiptId::from_producer_and_key(
+            receipt_id: ReceiptId::from_producer_run_and_key(
                 &crate::producer::test_producer(),
+                &crate::subject::test_run(),
                 "golden-receipt",
             ),
             payload: PayloadIdentity::new(
@@ -379,11 +380,19 @@ mod tests {
             ],
             inputs: vec![
                 InputReference::new(
-                    ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "input-1"),
+                    ReceiptId::from_producer_run_and_key(
+                        &crate::producer::test_producer(),
+                        &crate::subject::test_run(),
+                        "input-1",
+                    ),
                     ContentDigest::of_bytes(b"input one"),
                 ),
                 InputReference::new(
-                    ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "input-2"),
+                    ReceiptId::from_producer_run_and_key(
+                        &crate::producer::test_producer(),
+                        &crate::subject::test_run(),
+                        "input-2",
+                    ),
                     ContentDigest::of_bytes(b"input two"),
                 ),
             ],
@@ -409,7 +418,7 @@ mod tests {
     fn fingerprint_is_stable_for_a_known_envelope() {
         assert_eq!(
             golden_envelope().fingerprint().as_wire(),
-            "envfp:sha256:9bb88c81a2d44667a7b1096235cfb12a7788ee7f90ab106ad4f997de6869dcc7",
+            "envfp:sha256:ccdc5e831f337a95f8a3aba71cc4454343cf46d7d7b422d894f066f482921635",
             "envelope fingerprint changed; see this test's doc comment before updating it"
         );
     }

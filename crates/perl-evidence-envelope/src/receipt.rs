@@ -23,6 +23,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::producer::ProducerIdentity;
+use crate::subject::RunIdentity;
 use crate::wire::{bytes_to_wire_hex, is_sha256_hex_body, length_prefixed};
 
 /// Domain separator for [`ReceiptId`] derivation.
@@ -43,37 +44,54 @@ const RECEIPT_ID_PREFIX: &str = "receipt:sha256:";
 pub struct ReceiptId(String);
 
 impl ReceiptId {
-    /// Derive a receipt ID from the minting producer and a producer-local key.
+    /// Derive a receipt ID from the minting producer, the run that minted it,
+    /// and a run-local key.
     ///
     /// The `canonical_key` must be a stable identifier for this specific
-    /// receipt-minting event, but it only has to be unique **within** the
-    /// given producer: a monotonic producer-local counter or a per-run
-    /// sequence number is a valid key. It must not encode host paths or other
-    /// non-portable state.
+    /// receipt-minting event, but it only has to be unique **within one run of
+    /// one producer**: a monotonic counter or a per-run sequence number is a
+    /// valid key. It must not encode host paths or other non-portable state.
     ///
-    /// # Why the producer is part of the derivation
+    /// # Why producer *and* run are both in the derivation
     ///
-    /// Hashing the key alone would make producer-local keys collide across
-    /// producers: two independent producers that each mint their first receipt
-    /// as `"1"` would derive one durable ID, and a registry or lineage graph
-    /// would silently conflate two unrelated receipts. Because a
-    /// producer-local counter is exactly the kind of key this constructor
-    /// invites, the namespace has to come from the derivation rather than from
-    /// producer discipline.
+    /// Hashing the key alone makes local keys collide across producers: two
+    /// producers each minting their first receipt as `"1"` derive one durable
+    /// ID, and a registry or lineage graph silently conflates two unrelated
+    /// receipts.
     ///
-    /// All four producer fields participate, each length-prefixed, so
-    /// producers differing only in version or build identity still mint
-    /// distinct IDs. This mirrors `perl-source-identity`, where
-    /// `WorkspaceRootId` is derived from its `ProjectId` plus a root key
-    /// rather than from the root key alone.
+    /// Adding the producer alone is not enough either.
+    /// [`ProducerIdentity`] identifies a **build** — name, version, source
+    /// SHA, build identity — not one execution of it. Two parallel or repeated
+    /// invocations of the *same* build each starting their counter at `"1"`
+    /// would still collide. [`RunIdentity`] is the invocation namespace, and it
+    /// is what closes that gap: `run_id` distinguishes executions and `attempt`
+    /// distinguishes re-runs of one execution.
+    ///
+    /// Every field of both identities participates, each length-prefixed. The
+    /// resulting hierarchy mirrors `perl-source-identity`, where each identity
+    /// is derived from its parent plus a locally-unique key rather than from
+    /// the key alone:
+    ///
+    /// ```text
+    /// ProducerIdentity   — which build produced this
+    ///   └── RunIdentity    — which execution of that build
+    ///         └── canonical_key — which receipt within that execution
+    /// ```
     #[must_use]
-    pub fn from_producer_and_key(producer: &ProducerIdentity, canonical_key: &str) -> Self {
+    pub fn from_producer_run_and_key(
+        producer: &ProducerIdentity,
+        run: &RunIdentity,
+        canonical_key: &str,
+    ) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(RECEIPT_ID_DOMAIN);
         hasher.update(length_prefixed(producer.name.as_bytes()));
         hasher.update(length_prefixed(producer.version.as_bytes()));
         hasher.update(length_prefixed(producer.source_sha.as_bytes()));
         hasher.update(length_prefixed(producer.build_identity.as_bytes()));
+        hasher.update(length_prefixed(run.source.fingerprint_tag().as_bytes()));
+        hasher.update(length_prefixed(run.run_id.as_bytes()));
+        hasher.update(length_prefixed(&run.attempt.to_be_bytes()));
         hasher.update(length_prefixed(canonical_key.as_bytes()));
         let raw: [u8; 32] = hasher.finalize().into();
         Self(format!("{RECEIPT_ID_PREFIX}{}", bytes_to_wire_hex(&raw)))
@@ -120,18 +138,35 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use crate::subject::RunSource;
 
     #[test]
     fn receipt_id_is_deterministic() {
-        let a = ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "run-42");
-        let b = ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "run-42");
+        let a = ReceiptId::from_producer_run_and_key(
+            &crate::producer::test_producer(),
+            &crate::subject::test_run(),
+            "run-42",
+        );
+        let b = ReceiptId::from_producer_run_and_key(
+            &crate::producer::test_producer(),
+            &crate::subject::test_run(),
+            "run-42",
+        );
         assert_eq!(a, b);
     }
 
     #[test]
     fn different_keys_produce_different_ids() {
-        let a = ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "run-42");
-        let b = ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "run-43");
+        let a = ReceiptId::from_producer_run_and_key(
+            &crate::producer::test_producer(),
+            &crate::subject::test_run(),
+            "run-42",
+        );
+        let b = ReceiptId::from_producer_run_and_key(
+            &crate::producer::test_producer(),
+            &crate::subject::test_run(),
+            "run-43",
+        );
         assert_ne!(a, b);
     }
 
@@ -144,8 +179,8 @@ mod tests {
         let a = ProducerIdentity::new("producer-a", "1.0.0", "sha-a", "build-a");
         let b = ProducerIdentity::new("producer-b", "1.0.0", "sha-b", "build-b");
         assert_ne!(
-            ReceiptId::from_producer_and_key(&a, "1"),
-            ReceiptId::from_producer_and_key(&b, "1"),
+            ReceiptId::from_producer_run_and_key(&a, &crate::subject::test_run(), "1"),
+            ReceiptId::from_producer_run_and_key(&b, &crate::subject::test_run(), "1"),
             "producer-local keys must be namespaced by their producer"
         );
     }
@@ -155,7 +190,7 @@ mod tests {
     #[test]
     fn each_producer_field_changes_the_receipt_id() {
         let base = ProducerIdentity::new("p", "1.0.0", "sha", "build");
-        let id = ReceiptId::from_producer_and_key(&base, "k");
+        let id = ReceiptId::from_producer_run_and_key(&base, &crate::subject::test_run(), "k");
         for other in [
             ProducerIdentity::new("p2", "1.0.0", "sha", "build"),
             ProducerIdentity::new("p", "1.0.1", "sha", "build"),
@@ -164,7 +199,7 @@ mod tests {
         ] {
             assert_ne!(
                 id,
-                ReceiptId::from_producer_and_key(&other, "k"),
+                ReceiptId::from_producer_run_and_key(&other, &crate::subject::test_run(), "k"),
                 "a changed producer field must change the receipt ID"
             );
         }
@@ -177,27 +212,39 @@ mod tests {
         let p1 = ProducerIdentity::new("ab", "", "", "");
         let p2 = ProducerIdentity::new("a", "", "", "");
         assert_ne!(
-            ReceiptId::from_producer_and_key(&p1, "c"),
-            ReceiptId::from_producer_and_key(&p2, "bc"),
+            ReceiptId::from_producer_run_and_key(&p1, &crate::subject::test_run(), "c"),
+            ReceiptId::from_producer_run_and_key(&p2, &crate::subject::test_run(), "bc"),
             "field boundaries must not be ambiguous"
         );
     }
 
     #[test]
     fn receipt_id_wire_has_prefix() {
-        let id = ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "run-42");
+        let id = ReceiptId::from_producer_run_and_key(
+            &crate::producer::test_producer(),
+            &crate::subject::test_run(),
+            "run-42",
+        );
         assert!(id.as_wire().starts_with("receipt:sha256:"));
     }
 
     #[test]
     fn receipt_id_display_matches_wire() {
-        let id = ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "run-42");
+        let id = ReceiptId::from_producer_run_and_key(
+            &crate::producer::test_producer(),
+            &crate::subject::test_run(),
+            "run-42",
+        );
         assert_eq!(format!("{id}"), id.as_wire());
     }
 
     #[test]
     fn receipt_id_wire_round_trips() {
-        let id = ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "run-42");
+        let id = ReceiptId::from_producer_run_and_key(
+            &crate::producer::test_producer(),
+            &crate::subject::test_run(),
+            "run-42",
+        );
         assert_eq!(ReceiptId::from_wire(id.as_wire()).as_ref(), Some(&id));
     }
 
@@ -213,7 +260,11 @@ mod tests {
 
     #[test]
     fn receipt_id_deserialization_is_validating() {
-        let good = ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "run-42");
+        let good = ReceiptId::from_producer_run_and_key(
+            &crate::producer::test_producer(),
+            &crate::subject::test_run(),
+            "run-42",
+        );
         let json = serde_json::to_string(&good).expect("serialize");
         let back: ReceiptId = serde_json::from_str(&json).expect("valid wire must parse");
         assert_eq!(good, back);
@@ -222,6 +273,43 @@ mod tests {
             assert!(
                 serde_json::from_str::<ReceiptId>(bad).is_err(),
                 "deserialization must reject {bad}"
+            );
+        }
+    }
+
+    /// The gap that producer-namespacing alone left open: `ProducerIdentity`
+    /// identifies a *build*, not one execution of it, so two parallel or
+    /// repeated invocations of the same build each starting their counter at
+    /// `"1"` would derive one durable ID. A derivation without `RunIdentity`
+    /// fails this.
+    #[test]
+    fn equal_keys_from_different_runs_of_one_producer_do_not_collide() {
+        let producer = crate::producer::test_producer();
+        let first = RunIdentity::new(RunSource::Workflow, "run-1", 1);
+        let second = RunIdentity::new(RunSource::Workflow, "run-2", 1);
+        assert_ne!(
+            ReceiptId::from_producer_run_and_key(&producer, &first, "1"),
+            ReceiptId::from_producer_run_and_key(&producer, &second, "1"),
+            "one build's parallel invocations must not share receipt identity"
+        );
+    }
+
+    /// Every field of the run identity participates, including `attempt` —
+    /// a re-run of one execution is a distinct invocation.
+    #[test]
+    fn each_run_field_changes_the_receipt_id() {
+        let producer = crate::producer::test_producer();
+        let base = RunIdentity::new(RunSource::Workflow, "run-1", 1);
+        let id = ReceiptId::from_producer_run_and_key(&producer, &base, "k");
+        for other in [
+            RunIdentity::new(RunSource::Local, "run-1", 1),
+            RunIdentity::new(RunSource::Workflow, "run-2", 1),
+            RunIdentity::new(RunSource::Workflow, "run-1", 2),
+        ] {
+            assert_ne!(
+                id,
+                ReceiptId::from_producer_run_and_key(&producer, &other, "k"),
+                "a changed run field must change the receipt ID"
             );
         }
     }

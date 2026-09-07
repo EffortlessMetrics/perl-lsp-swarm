@@ -153,8 +153,9 @@ mod tests {
     fn sample_envelope() -> EvidenceEnvelope {
         EvidenceEnvelope {
             schema_version: EvidenceEnvelopeSchemaVersion::V1,
-            receipt_id: ReceiptId::from_producer_and_key(
+            receipt_id: ReceiptId::from_producer_run_and_key(
                 &crate::producer::test_producer(),
+                &crate::subject::test_run(),
                 "receipt-1",
             ),
             payload: PayloadIdentity::new(
@@ -185,7 +186,11 @@ mod tests {
             ),
             limitations: vec![Limitation::general("sample limitation")],
             inputs: vec![InputReference::new(
-                ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-1"),
+                ReceiptId::from_producer_run_and_key(
+                    &crate::producer::test_producer(),
+                    &crate::subject::test_run(),
+                    "upstream-1",
+                ),
                 ContentDigest::of_bytes(b"upstream bytes"),
             )],
         }
@@ -345,11 +350,19 @@ mod tests {
         let mut forward = sample_envelope();
         forward.inputs = vec![
             InputReference::new(
-                ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-a"),
+                ReceiptId::from_producer_run_and_key(
+                    &crate::producer::test_producer(),
+                    &crate::subject::test_run(),
+                    "upstream-a",
+                ),
                 ContentDigest::of_bytes(b"a"),
             ),
             InputReference::new(
-                ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-b"),
+                ReceiptId::from_producer_run_and_key(
+                    &crate::producer::test_producer(),
+                    &crate::subject::test_run(),
+                    "upstream-b",
+                ),
                 ContentDigest::of_bytes(b"b"),
             ),
         ];
@@ -404,12 +417,20 @@ mod tests {
     fn fingerprint_distinguishes_different_input_sets() {
         let mut a = sample_envelope();
         a.inputs = vec![InputReference::new(
-            ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-a"),
+            ReceiptId::from_producer_run_and_key(
+                &crate::producer::test_producer(),
+                &crate::subject::test_run(),
+                "upstream-a",
+            ),
             ContentDigest::of_bytes(b"a"),
         )];
         let mut b = sample_envelope();
         b.inputs = vec![InputReference::new(
-            ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-a"),
+            ReceiptId::from_producer_run_and_key(
+                &crate::producer::test_producer(),
+                &crate::subject::test_run(),
+                "upstream-a",
+            ),
             ContentDigest::of_bytes(b"different"),
         )];
         assert_ne!(a.fingerprint(), b.fingerprint());

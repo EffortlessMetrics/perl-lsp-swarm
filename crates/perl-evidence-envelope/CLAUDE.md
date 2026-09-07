@@ -18,12 +18,19 @@ types existed anywhere in the repository before this crate.
   `EvidenceEnvelopeSchemaVersion` with fail-closed serde (mirrors
   `perl-source-identity`'s `SourceIdentitySchemaVersion` exactly).
 - `ReceiptId` — durable identity for one receipt instance, domain-separated
-  SHA-256 over the **minting producer plus** a producer-local key
-  (`receipt:sha256:...`). The producer is part of the derivation, not a
-  caller responsibility: the constructor explicitly invites producer-local
-  keys such as a monotonic counter, and hashing the key alone would let two
-  producers' first receipts both mint `"1"` into one durable ID that a
-  registry or lineage graph would conflate.
+  SHA-256 over the **minting producer, the run that minted it, and** a
+  run-local key (`receipt:sha256:...`). Both namespaces are in the
+  derivation, not a caller responsibility, because the constructor
+  deliberately invites a locally-unique key such as a monotonic counter:
+  - hashing the key alone lets two *producers* both mint `"1"` into one ID;
+  - adding the producer alone is still not enough, because
+    `ProducerIdentity` identifies a **build**, not one execution of it — two
+    parallel or repeated invocations of the same build each starting at
+    `"1"` would still collide. `RunIdentity` closes that.
+
+  The hierarchy mirrors `perl-source-identity`, where each identity derives
+  from its parent plus a locally-unique key:
+  `ProducerIdentity → RunIdentity → canonical_key`.
 - `PayloadIdentity` — payload kind (opaque string), the payload's own schema
   version (independent of the envelope's schema version), and a
   `perl_source_identity::ContentDigest` over the exact payload bytes.

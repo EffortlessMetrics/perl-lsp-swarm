@@ -106,6 +106,12 @@ impl EvidenceSubject {
     }
 }
 
+/// A fixed run identity for tests that need one to mint a [`crate::ReceiptId`].
+#[cfg(test)]
+pub(crate) fn test_run() -> RunIdentity {
+    RunIdentity::new(RunSource::Local, "test-run", 1)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

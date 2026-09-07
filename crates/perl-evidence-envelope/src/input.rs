@@ -52,7 +52,11 @@ mod tests {
 
     fn sample() -> InputReference {
         InputReference::new(
-            ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-run-1"),
+            ReceiptId::from_producer_run_and_key(
+                &crate::producer::test_producer(),
+                &crate::subject::test_run(),
+                "upstream-run-1",
+            ),
             ContentDigest::of_bytes(b"upstream bytes"),
         )
     }
@@ -69,7 +73,11 @@ mod tests {
     fn different_receipt_ids_produce_different_references() {
         let a = sample();
         let b = InputReference::new(
-            ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-run-2"),
+            ReceiptId::from_producer_run_and_key(
+                &crate::producer::test_producer(),
+                &crate::subject::test_run(),
+                "upstream-run-2",
+            ),
             ContentDigest::of_bytes(b"upstream bytes"),
         );
         assert_ne!(a, b);
@@ -79,7 +87,11 @@ mod tests {
     fn different_digests_produce_different_references() {
         let a = sample();
         let b = InputReference::new(
-            ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-run-1"),
+            ReceiptId::from_producer_run_and_key(
+                &crate::producer::test_producer(),
+                &crate::subject::test_run(),
+                "upstream-run-1",
+            ),
             ContentDigest::of_bytes(b"different bytes"),
         );
         assert_ne!(a, b);
