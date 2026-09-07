@@ -1471,3 +1471,77 @@ fn emitted_record_matches_schema_at_every_nested_level() -> Result<()> {
     compare(&schema, &value, "$")?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Bot round 4 falsifiers (#14739 review)
+// ---------------------------------------------------------------------------
+
+/// Falsifier: the operation token must sit in the SUBCOMMAND position.
+/// `cargo test --x check` mentions check but is not a check invocation.
+#[test]
+fn operation_token_outside_subcommand_position_is_refused() -> Result<()> {
+    let mut record = admitted_shared_cache_record()?;
+    // Simulate a Check cell whose command line merely mentions check in a
+    // non-subcommand position.
+    record.command.args = vec!["--verbose".to_string(), "check".to_string()];
+    let reasons = reasons_of(&record);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| matches!(reason, NotProvenReason::OperationCommandMismatch { .. })),
+        "a check token outside the subcommand position must be refused: {reasons:?}"
+    );
+    Ok(())
+}
+
+/// The barrier latch: release fires exactly once even across duplicate
+/// arrivals (complements the barrier test with an extra participant).
+#[test]
+fn barrier_latch_holds_after_release_with_new_participants() {
+    let barrier = DeterministicBarrier::new(3);
+    assert!(!barrier.arrive("a"));
+    assert!(!barrier.arrive("b"));
+    assert!(barrier.arrive("c"));
+    assert!(!barrier.arrive("d"));
+    assert!(!barrier.arrive("a"));
+}
+
+/// The WorkObservation serialized shape carries the exact schema field
+/// names, so a wrong serde rename cannot silently emit an invalid shape.
+#[test]
+fn work_observation_serialized_shape_matches_schema_names() -> Result<()> {
+    let work = WorkObservation {
+        expected_selected: Some(3),
+        observed_selected: Some(2),
+        exit_code: Some(101),
+    };
+    let value = serde_json::to_value(&work)?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| eyre!("work observation did not serialize to an object"))?;
+    assert_eq!(
+        object.keys().cloned().collect::<std::collections::BTreeSet<_>>(),
+        ["expected_selected", "observed_selected", "exit_code"]
+            .into_iter()
+            .map(String::from)
+            .collect()
+    );
+    Ok(())
+}
+
+/// The raw digest binds the raw facts to the declared cell: the same facts
+/// under a different cell identity produce a different digest.
+#[test]
+fn raw_digest_binds_the_declared_cell_identity() -> Result<()> {
+    let record = admitted_shared_cache_record()?;
+    let digest = raw_facts_digest(&record)?;
+    assert_eq!(digest, record.raw_digest);
+    let mut other = record.clone();
+    other.cell.subject.package = "other-pkg".to_string();
+    assert_ne!(
+        raw_facts_digest(&other)?,
+        record.raw_digest,
+        "the same raw facts under a different cell must digest differently"
+    );
+    Ok(())
+}

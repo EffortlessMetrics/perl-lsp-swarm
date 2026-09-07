@@ -288,6 +288,7 @@ impl MeasurementHarness {
 /// consumer can verify a record's raw digest by recomputation.
 pub fn raw_facts_digest(record: &MeasurementRecord) -> Result<String> {
     let bytes = serde_json::to_vec(&json!({
+    "cell_id": record.cell.canonical_id(),
     "command": record.command,
     "environment": record.environment,
     "timings": record.timings,
@@ -368,6 +369,11 @@ fn attribute_cache(
         }
     } else {
         match (&baseline_identity, &delta_identity, &baseline, &delta, &foreign_users_observed) {
+            // The cache instrument as a whole was unavailable - every
+            // observation absent. That is the distinct Unobserved state the
+            // schema and renderers define, not a precondition failure
+            // (#14739 review).
+            (None, None, None, None, None) => CacheAttribution::Unobserved,
             (None, _, _, _, _) | (_, None, _, _, _) => CacheAttribution::Unattributed {
                 reason: "cache server identity unresolved".to_string(),
             },

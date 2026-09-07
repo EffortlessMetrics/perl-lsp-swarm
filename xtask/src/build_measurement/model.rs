@@ -1018,13 +1018,15 @@ impl MeasurementRecord {
         }
 
         // The executed command must carry the declared operation's expected
-        // subcommand (#14739 review).
+        // subcommand IN THE SUBCOMMAND POSITION (first argument), not merely
+        // somewhere in the command line - `cargo test --x check` cannot
+        // admit a Check cell (#14739 review).
         if let Some(expected) = self.cell.expected_command_token() {
-            let haystack = format!("{} {}", self.command.program, self.command.args.join(" "));
-            if !haystack.split_whitespace().any(|token| token == expected) {
+            let subcommand_ok = self.command.args.first().is_some_and(|first| first == expected);
+            if !subcommand_ok {
                 reasons.push(NotProvenReason::OperationCommandMismatch {
                     operation: format!("{:?}", self.cell.operation),
-                    command: haystack.trim().to_string(),
+                    command: format!("{} {}", self.command.program, self.command.args.join(" ")),
                 });
             }
         }
