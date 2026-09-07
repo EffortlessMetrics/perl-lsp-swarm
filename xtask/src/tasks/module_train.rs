@@ -15,9 +15,15 @@
 //!
 //! Boundaries honored (C02 claim ceiling): no network, no GitHub state, no
 //! scheduling, no agent launch, no product mutation, no support inference.
-//! Per-node semantic implementation probes beyond the C01 manifest probe and
-//! the `explain`/`graph` static packet projections are recorded residuals of
-//! this slice, never guessed (`not_proven` by law).
+//!
+//! Semantic current-tree probes exist for the train interface itself — C01's
+//! manifest bundle, C02, and C03 (`PROBED_NODES`). Each asserts both the
+//! implementing surface and the production consumer that dispatches to it, so
+//! an orphaned module cannot read as landed. Probes for the E00/M/L09/P11
+//! product and proof families, and C02's own `explain`/`graph` static packet
+//! projection, remain recorded residuals of this slice: an unprobed node is
+//! `not_proven` by law, never guessed from a filename, a merge, or an issue
+//! state.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -438,7 +444,7 @@ impl LoadedManifest {
     /// deterministic projection the `status`/`next` commands render).
     /// Additive seam for the #11627 live join; no semantic change to C02.
     pub fn node_statuses(&self) -> Result<Vec<NodeStatus>> {
-        project_states(&self.manifest)
+        project_states(&self.manifest, &RepoTreeSource::from_project_root()?)
     }
 
     /// Bounded static facts for the #11627 live explain addendum.
@@ -974,10 +980,9 @@ pub enum CurrentTreeState {
     BlockedHard,
     BlockedEvidence,
     BlockedExternalOrAuthorization,
-    /// Part of the #11626 state vocabulary: a partial implementation whose
-    /// retirement/negative selectors are unmet. Not derivable until per-node
-    /// semantic probes exist (recorded residual of this slice).
-    #[allow(dead_code)] // vocabulary completeness; no probe can produce it yet
+    /// A partial implementation: some declared components of the node's
+    /// positive surface are present on this tree and others are not.
+    /// Produced by the semantic probes in `PROBED_NODES`.
     IncompleteCurrentTree,
     /// Part of the #11626 state vocabulary: supersession is manifest data;
     /// this slice defines no projection and fails closed on a populated list.
@@ -1007,23 +1012,257 @@ impl CurrentTreeState {
 /// proven, and landed work may still carry unproven evidence obligations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeOutcome {
-    /// The node's declared positive surface is verified on this tree.
+    /// Every declared component of the node's positive surface is verified on
+    /// this tree.
     Pass,
+    /// A semantic probe is defined and some — but not all — declared
+    /// components are present. The node is partially implemented on this tree;
+    /// its unmet components are recorded as typed reasons.
+    Partial,
+    /// A semantic probe is defined and no declared component is present. The
+    /// node is genuinely unbuilt on this tree, so dependency readiness still
+    /// decides whether it may be started.
+    NotPresent,
     /// No semantic probe is defined for this node in this slice; presence is
     /// `not_proven` by law, never guessed from names or file existence.
     Absent,
 }
 
-/// Slice-one probe registry: exactly one real probe exists. C01's declared
-/// implementation IS the validated `module_train.v1` data bundle, so the
-/// loaded manifest at the pinned digest is its positive surface. Every other
-/// node's semantic probe is a recorded residual of this slice.
-fn slice_probe(node: &TrainNode) -> ProbeOutcome {
-    if node.node_id == "C01" && node.issue == 11625 {
-        ProbeOutcome::Pass
-    } else {
-        ProbeOutcome::Absent
+impl ProbeOutcome {
+    /// Stable label and the single authority for rendering a probe outcome
+    /// (consumed by the `status` projection and the #11627 live join alike, so
+    /// the two cannot drift apart). Kept short so the status column stays
+    /// aligned.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProbeOutcome::Pass => "probe:pass",
+            ProbeOutcome::Partial => "probe:partial",
+            ProbeOutcome::NotPresent => "probe:absent",
+            ProbeOutcome::Absent => "not_proven",
+        }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Semantic current-tree implementation probes (#11626 residual 1).
+//
+// A probe must not be satisfiable by source-file presence alone: that is this
+// issue's falsifier 2 ("source/type/generated file exists while the production
+// consumer still uses a legacy route"). Every component therefore asserts both
+// the implementing surface AND the production consumer that dispatches to it,
+// so an orphaned module or an unwired command cannot read as landed.
+//
+// Selectors are read through a `TreeSource` rather than the compiler so the
+// negative direction stays testable: a tree missing the consumer must be able
+// to fail the probe.
+// ---------------------------------------------------------------------------
+
+/// Read-only access to the inspected tree's text files.
+pub trait TreeSource {
+    /// Read a repository-relative text file. `Ok(None)` means the path is
+    /// absent; an `Err` is an instrument failure and never a silent absence.
+    fn read_text(&self, relative: &str) -> Result<Option<String>>;
+}
+
+/// The real tree source: files under the repository root the manifest was
+/// loaded from, never the ambient process working directory.
+pub struct RepoTreeSource {
+    root: PathBuf,
+}
+
+impl RepoTreeSource {
+    pub fn from_project_root() -> Result<Self> {
+        Ok(Self { root: crate::utils::project_root()? })
+    }
+}
+
+impl TreeSource for RepoTreeSource {
+    fn read_text(&self, relative: &str) -> Result<Option<String>> {
+        let path = self.root.join(relative);
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let text = String::from_utf8(bytes).with_context(|| {
+                    format!("probe selector target {relative} is not valid UTF-8")
+                })?;
+                Ok(Some(text))
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => {
+                Err(err).with_context(|| format!("failed to read probe selector target {relative}"))
+            }
+        }
+    }
+}
+
+/// One file that must carry every listed anchor for its component to be met.
+struct ComponentSelector {
+    path: &'static str,
+    anchors: &'static [&'static str],
+}
+
+/// One declared component of a node's positive surface.
+struct ComponentProbe {
+    component: &'static str,
+    selectors: &'static [ComponentSelector],
+}
+
+/// The semantic probe contract for one train node.
+struct NodeProbeContract {
+    node_id: &'static str,
+    issue: u64,
+    components: &'static [ComponentProbe],
+}
+
+/// Nodes carrying a semantic current-tree probe.
+///
+/// C01 is not listed: its declared implementation IS the validated
+/// `module_train.v1` data bundle, so the loaded manifest at the pinned digest
+/// is its positive surface and it is decided before this registry.
+///
+/// Every other train node remains deliberately unlisted and therefore
+/// `not_proven` — a probe is written when its node's surface is established,
+/// never inferred from a merge, an issue state, or a filename.
+const PROBED_NODES: &[NodeProbeContract] = &[
+    NodeProbeContract {
+        node_id: "C02",
+        issue: 11626,
+        components: &[
+            ComponentProbe {
+                component: "current_tree_probes",
+                selectors: &[
+                    ComponentSelector {
+                        path: "xtask/src/tasks/module_train.rs",
+                        anchors: &["fn node_probe", "PROBED_NODES", "fn project_states"],
+                    },
+                    ComponentSelector {
+                        path: "xtask/src/main.rs",
+                        anchors: &["ModuleTrainCommand::Status", "module_train::run_status"],
+                    },
+                ],
+            },
+            ComponentProbe {
+                component: "offline_frontier",
+                selectors: &[
+                    ComponentSelector {
+                        path: "xtask/src/tasks/module_train.rs",
+                        anchors: &["fn render_next"],
+                    },
+                    ComponentSelector {
+                        path: "xtask/src/main.rs",
+                        anchors: &["ModuleTrainCommand::Next", "module_train::run_next"],
+                    },
+                ],
+            },
+            // Recorded residual of #11626: the offline static agent packet and
+            // graph projection. The live `explain` under C03 composes a live
+            // addendum and is a different subject; it must not satisfy this
+            // component, so the anchors name the offline command explicitly.
+            ComponentProbe {
+                component: "static_packet_projection",
+                selectors: &[ComponentSelector {
+                    path: "xtask/src/main.rs",
+                    anchors: &["ModuleTrainCommand::Explain", "module_train::run_explain"],
+                }],
+            },
+        ],
+    },
+    NodeProbeContract {
+        node_id: "C03",
+        issue: 11627,
+        components: &[
+            ComponentProbe {
+                component: "live_snapshot_normalization",
+                selectors: &[
+                    ComponentSelector {
+                        path: "xtask/src/tasks/module_train_live.rs",
+                        anchors: &[
+                            "pub struct LiveSnapshot",
+                            "pub fn run_refresh",
+                            "pub fn run_check",
+                        ],
+                    },
+                    ComponentSelector {
+                        path: "xtask/src/main.rs",
+                        anchors: &[
+                            "ModuleTrainLiveCommand::Refresh",
+                            "module_train_live::run_refresh",
+                            "ModuleTrainLiveCommand::Check",
+                            "module_train_live::run_check",
+                        ],
+                    },
+                ],
+            },
+            ComponentProbe {
+                component: "action_classification",
+                selectors: &[
+                    ComponentSelector {
+                        path: "xtask/src/tasks/module_train_live.rs",
+                        anchors: &["pub enum Action", "pub fn classify"],
+                    },
+                    ComponentSelector {
+                        path: "xtask/src/main.rs",
+                        anchors: &[
+                            "ModuleTrainLiveCommand::Next",
+                            "module_train_live::run_next",
+                            "ModuleTrainLiveCommand::Explain",
+                            "module_train_live::run_explain",
+                        ],
+                    },
+                ],
+            },
+        ],
+    },
+];
+
+/// Probe one node's implementation presence against the inspected tree.
+///
+/// Returns the outcome plus the sorted names of any declared components that
+/// are not present, so a partial implementation reports exactly what is
+/// missing instead of collapsing into a bare `not_proven`.
+fn node_probe(node: &TrainNode, tree: &dyn TreeSource) -> Result<(ProbeOutcome, Vec<String>)> {
+    // C01's declared implementation is the validated manifest bundle itself,
+    // which the loader already verified at the pinned canonical digest.
+    if node.node_id == "C01" && node.issue == 11625 {
+        return Ok((ProbeOutcome::Pass, Vec::new()));
+    }
+
+    let Some(contract) = PROBED_NODES
+        .iter()
+        .find(|contract| contract.node_id == node.node_id && contract.issue == node.issue)
+    else {
+        return Ok((ProbeOutcome::Absent, Vec::new()));
+    };
+
+    let mut met = 0usize;
+    let mut unmet: Vec<String> = Vec::new();
+    for component in contract.components {
+        let mut satisfied = true;
+        for selector in component.selectors {
+            let Some(text) = tree.read_text(selector.path)? else {
+                satisfied = false;
+                break;
+            };
+            if !selector.anchors.iter().all(|anchor| text.contains(anchor)) {
+                satisfied = false;
+                break;
+            }
+        }
+        if satisfied {
+            met += 1;
+        } else {
+            unmet.push(component.component.to_string());
+        }
+    }
+
+    unmet.sort();
+    let outcome = if unmet.is_empty() {
+        ProbeOutcome::Pass
+    } else if met == 0 {
+        ProbeOutcome::NotPresent
+    } else {
+        ProbeOutcome::Partial
+    };
+    Ok((outcome, unmet))
 }
 
 #[derive(Debug, Clone)]
@@ -1043,7 +1282,7 @@ pub struct NodeStatus {
 }
 
 /// Project every stable node into its typed current-tree state.
-fn project_states(manifest: &Manifest) -> Result<Vec<NodeStatus>> {
+fn project_states(manifest: &Manifest, tree: &dyn TreeSource) -> Result<Vec<NodeStatus>> {
     // Supersession projection is intentionally undefined in this slice; an
     // unexercised vocabulary must fail closed rather than guess.
     if !manifest.supersessions.is_empty() {
@@ -1055,21 +1294,41 @@ fn project_states(manifest: &Manifest) -> Result<Vec<NodeStatus>> {
     let by_id: BTreeMap<&str, &TrainNode> =
         manifest.nodes.iter().map(|node| (node.node_id.as_str(), node)).collect();
 
-    let landed: BTreeSet<&str> = manifest
-        .nodes
+    // One probe evaluation per node, reused for both the landed set and each
+    // node's own state: the tree is read once and cannot disagree with itself.
+    let mut probes: BTreeMap<&str, (ProbeOutcome, Vec<String>)> = BTreeMap::new();
+    for node in &manifest.nodes {
+        probes.insert(node.node_id.as_str(), node_probe(node, tree)?);
+    }
+
+    // Only a fully met positive surface satisfies a hard dependency. A
+    // partially implemented node is deliberately not landed for its dependents.
+    let landed: BTreeSet<&str> = probes
         .iter()
-        .filter(|node| slice_probe(node) == ProbeOutcome::Pass)
-        .map(|node| node.node_id.as_str())
+        .filter(|(_, (outcome, _))| *outcome == ProbeOutcome::Pass)
+        .map(|(id, _)| *id)
         .collect();
 
     let mut statuses: Vec<NodeStatus> = Vec::with_capacity(manifest.nodes.len());
     for node in &manifest.nodes {
         let id = node.node_id.as_str();
         let mut reasons: BTreeSet<String> = BTreeSet::new();
-        let probe = slice_probe(node);
+        let (probe, unmet) = probes
+            .get(id)
+            .ok_or_else(|| color_eyre::eyre::eyre!("probe result missing for node {id}"))?;
+        let probe = *probe;
+        for component in unmet {
+            reasons.insert(format!("implementation_component_absent:{component}"));
+        }
 
         let state = if probe == ProbeOutcome::Pass {
             CurrentTreeState::LandedCurrentTree
+        } else if probe == ProbeOutcome::Partial {
+            // The node's own implementation is partly on this tree, so it is
+            // neither landed nor an available start. Dependency readiness is
+            // not consulted: presence outranks it, exactly as it does for a
+            // fully landed node.
+            CurrentTreeState::IncompleteCurrentTree
         } else {
             let frontier_eligible =
                 node.buildable && !ROLE_NEVER_FRONTIER.contains(&node.train_role.as_str());
@@ -1288,18 +1547,23 @@ fn render_binding(binding: &TreeBinding, loaded: &LoadedManifest) -> String {
 }
 
 /// Render the full current-tree status projection.
-pub fn render_status(loaded: &LoadedManifest, binding: &TreeBinding) -> Result<String> {
-    let statuses = project_states(&loaded.manifest)?;
+pub fn render_status(
+    loaded: &LoadedManifest,
+    binding: &TreeBinding,
+    tree: &dyn TreeSource,
+) -> Result<String> {
+    let statuses = project_states(&loaded.manifest, tree)?;
     let mut out = String::new();
     out.push_str("module-train status (offline projection; no network, no GitHub state)\n");
     out.push_str(&render_binding(binding, loaded));
     let ready_count = statuses.iter().filter(|s| s.state == CurrentTreeState::Ready).count();
     let _ = writeln!(
         out,
-        "nodes: {} (ready:{}, landed:{}, blocked:{}, not_proven:{})",
+        "nodes: {} (ready:{}, landed:{}, incomplete:{}, blocked:{}, not_proven:{})",
         statuses.len(),
         ready_count,
         statuses.iter().filter(|s| s.state == CurrentTreeState::LandedCurrentTree).count(),
+        statuses.iter().filter(|s| s.state == CurrentTreeState::IncompleteCurrentTree).count(),
         statuses
             .iter()
             .filter(|s| matches!(
@@ -1321,10 +1585,7 @@ pub fn render_status(loaded: &LoadedManifest, binding: &TreeBinding) -> Result<S
             status.role,
             status.lane,
             status.state.as_str(),
-            match status.implementation_presence {
-                ProbeOutcome::Pass => "probe:pass",
-                ProbeOutcome::Absent => "not_proven",
-            },
+            status.implementation_presence.as_str(),
             status.reasons.join(","),
         );
     }
@@ -1333,8 +1594,12 @@ pub fn render_status(loaded: &LoadedManifest, binding: &TreeBinding) -> Result<S
 
 /// Render the safe offline parallel frontier: all and only hard-ready,
 /// role-valid leaves, with writer ceilings recorded (never filled as quotas).
-pub fn render_next(loaded: &LoadedManifest, binding: &TreeBinding) -> Result<String> {
-    let statuses = project_states(&loaded.manifest)?;
+pub fn render_next(
+    loaded: &LoadedManifest,
+    binding: &TreeBinding,
+    tree: &dyn TreeSource,
+) -> Result<String> {
+    let statuses = project_states(&loaded.manifest, tree)?;
     let mut out = String::new();
     out.push_str("module-train next (safe offline parallel frontier)\n");
     out.push_str(&render_binding(binding, loaded));
@@ -1375,13 +1640,15 @@ pub fn render_next(loaded: &LoadedManifest, binding: &TreeBinding) -> Result<Str
 pub fn run_status(tree: &str) -> Result<()> {
     let loaded = load_manifest()?;
     let binding = tree_binding(tree)?;
-    print!("{}", render_status(&loaded, &binding)?);
+    let source = RepoTreeSource::from_project_root()?;
+    print!("{}", render_status(&loaded, &binding, &source)?);
     Ok(())
 }
 
 pub fn run_next(tree: &str) -> Result<()> {
     let loaded = load_manifest()?;
     let binding = tree_binding(tree)?;
-    print!("{}", render_next(&loaded, &binding)?);
+    let source = RepoTreeSource::from_project_root()?;
+    print!("{}", render_next(&loaded, &binding, &source)?);
     Ok(())
 }

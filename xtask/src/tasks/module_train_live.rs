@@ -39,9 +39,7 @@ use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::module_train::{
-    LoadedManifest, NodeStaticFact, ProbeOutcome, canonical_digest, load_manifest,
-};
+use super::module_train::{LoadedManifest, NodeStaticFact, canonical_digest, load_manifest};
 
 #[cfg(test)]
 #[path = "module_train_live_tests.rs"]
@@ -2235,10 +2233,10 @@ pub fn normalize(raw: &RawObservation, loaded: &LoadedManifest) -> Result<LiveSn
                         status.node_id.clone(),
                         C02NodeSummary {
                             state: status.state.as_str().to_string(),
-                            implementation_presence: match status.implementation_presence {
-                                ProbeOutcome::Pass => "probe:pass".to_string(),
-                                ProbeOutcome::Absent => "not_proven".to_string(),
-                            },
+                            implementation_presence: status
+                                .implementation_presence
+                                .as_str()
+                                .to_string(),
                             reasons: status.reasons.clone(),
                         },
                     )

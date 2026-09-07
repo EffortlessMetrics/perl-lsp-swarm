@@ -1,4 +1,11 @@
-# Acceptance: #11626 slice one — offline status + safe frontier from module_train.v1
+# Acceptance: #11626 — offline status + safe frontier from module_train.v1
+
+Slice one landed the fail-closed loader, `status`, and `next`. The current
+slice adds residual 1's first step: semantic current-tree implementation
+probes for the train interface itself (C02, then C03), so the train stops
+being blind to its own landed work. Probes for the E00/M/L09/P11 families,
+the `explain`/`graph` static packet, arbitrary-tree/JSON binding, and the
+supersession projection remain open residuals.
 
 ## §Behavior
 
@@ -30,9 +37,19 @@
 
 - States: `landed_current_tree | ready | blocked_hard | blocked_evidence |
   blocked_external_or_authorization | incomplete_current_tree | superseded |
-  not_proven` (`incomplete_current_tree` and `superseded` unreachable in
-  this slice; `not_proven` is reachable for role-rejected non-buildable
-  nodes; populated supersessions fail closed).
+  not_proven` (`superseded` remains unreachable — populated supersessions
+  fail closed; `incomplete_current_tree` is produced by a semantic probe
+  whose declared components are partly met; `not_proven` is reachable for
+  role-rejected non-buildable nodes and for every unprobed node).
+- Probe outcomes: `probe:pass | probe:partial | probe:absent | not_proven`.
+  `probe:absent` means a probe ran and found no declared component, so the
+  node still falls through to dependency typing and may be `ready`.
+  `not_proven` means no probe is defined for that node at all.
+- A probe component is met only when its implementing surface **and** its
+  production consumer are both present, so an orphaned module or an unwired
+  command can never read as landed (#11626 falsifier 2).
+- Only `probe:pass` satisfies a dependent's hard edge: a partially
+  implemented node is deliberately not landed for its dependents.
 - Hard-dep satisfaction: landed node, controller (topology-satisfied per
   manifest `limitations[1]`), or — for cross-programme authorities — honestly
   unestablishable offline (typed reason, still a hard block).
@@ -71,6 +88,12 @@ CLI enum: `ModuleTrainCommand` in `xtask/src/main.rs`. No library surface.
 | 12 | two runs differ | byte-identical `status`/`next` renders (tests + live CLI) |
 | 13 | non-HEAD tree accepted | `--tree origin/main` fails closed |
 | 14 | supersession guessed | populated supersessions list bails |
+| 15 | an implementation present but never dispatched reads as landed | `an_implementation_without_its_production_consumer_is_not_landed` (C03 stays `probe:partial` when its CLI dispatch is removed) |
+| 16 | a consumer whose implementation is gone reads as landed | `a_consumer_without_its_implementation_is_not_landed` (`probe:absent`) |
+| 17 | a neighbouring node's surface satisfies this node's component | `the_live_explain_cannot_satisfy_the_offline_static_packet` (C03's live `explain` must not close C02's offline packet residual) |
+| 18 | a partial implementation counts as landed | `landing_the_residual_component_lands_c02` + `a_partial_node_does_not_satisfy_a_hard_dependent` |
+| 19 | adding a probe turns an unbuilt node into a blocked one | `a_wholly_absent_probed_node_still_reports_through_dependencies` |
+| 20 | a negative fixture silently stops falsifying | `a_fixture_that_cannot_falsify_is_rejected` (removing an absent anchor is an error) |
 
 ## §Blast-Radius
 

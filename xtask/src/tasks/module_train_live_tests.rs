@@ -451,7 +451,9 @@ fn corpus_classifies_every_expected_action() -> Result<()> {
     let expect = [
         ("C01", "WAIT", "landed_current_tree_no_writer_action"),
         ("C02", "WAIT", "landed_current_tree_no_writer_action"),
-        ("C03", "BLOCKED", "hard_dep_not_landed:C02"),
+        // C03's implementation is on the tree and its semantic probe (#11626)
+        // now sees it, so it is landed rather than statically blocked on C02.
+        ("C03", "WAIT", "landed_current_tree_no_writer_action"),
         ("CTRL", "STOP", "controller_selected_as_implementation"),
         ("E00A", "REPAIR", "review_changes_requested"),
         ("E00C", "RECONCILE", "multiple_bound_candidates_need_bounded_ownership_decision"),
@@ -482,11 +484,12 @@ fn corpus_classifies_every_expected_action() -> Result<()> {
         "merged-but-absent commit must stay pending-probe"
     );
     assert!(node(&snapshot, "C02")?.candidate_flags.contains(&"merged_current_tree".to_string()));
-    // Falsifier 7: stray issue closure/labels changed nothing (M01 still
-    // classified from the train + candidate facts; C03 still BLOCKED).
+    // Falsifier 7: stray issue closure/labels changed nothing — M01 and C03
+    // are still classified from the train + candidate facts alone. C03's
+    // action follows its #11626 current-tree probe, never its issue state.
     let m01 = node(&snapshot, "M01")?;
     assert_eq!(m01.action, "REVIEW");
-    assert!(node(&snapshot, "C03")?.action == "BLOCKED");
+    assert!(node(&snapshot, "C03")?.action == "WAIT");
     // Surfaces are diagnostics that never outvote the candidate: M01 keeps its
     // remote surface while its action stays REVIEW.
     assert!(m01.surfaces.iter().any(|surface| surface.kind == "remote_branch"));
@@ -902,13 +905,13 @@ fn written_snapshot_round_trips_through_check_next_explain() -> Result<()> {
     let clean = normalize_text(CLEAN_SURFACE_FIXTURE)?;
     let clean_next = render_next(&clean);
     assert!(
-        clean_next.contains("START (3)"),
+        clean_next.contains("START (2)"),
         "clean frontier must START its ready leaves: {clean_next}"
     );
 
     let explain = render_explain(&reloaded, &loaded()?, "C03")?;
     assert!(explain.contains("module-train live explain C03"));
-    assert!(explain.contains("action: BLOCKED"));
+    assert!(explain.contains("action: WAIT"));
     assert!(explain.contains("closeout route"));
     assert!(render_explain(&reloaded, &loaded()?, "NOPE").is_err());
     Ok(())
