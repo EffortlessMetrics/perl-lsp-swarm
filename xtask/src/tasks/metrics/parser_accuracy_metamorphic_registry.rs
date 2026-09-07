@@ -1649,7 +1649,7 @@ mod tests {
             ),
         ];
         for (case_id, state, reason) in expected_reasons {
-            let case = declared_case(registry, case_id, "dispositioned case must stay authored");
+            let case = declared_case(&registry, case_id, "dispositioned case must stay authored");
             assert_eq!(case.applicability.state, *state, "state drift for {case_id}");
             assert_eq!(case.applicability.reason, *reason, "reason drift for {case_id}");
         }
