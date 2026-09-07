@@ -125,7 +125,7 @@ fn local_ast_facts(source: &str, ast: &Node) -> String {
     let mut out = String::new();
     for (node, parent) in pairs {
         let kind = node.kind.kind_name();
-        if matches!(kind, "Program" | "ExpressionStatement" | "Identifier") {
+        if matches!(kind, "Program" | "Identifier") {
             continue;
         }
         let payload = node_payload(node).unwrap_or("-");
@@ -912,11 +912,14 @@ const NE_CAPTURE_GROUP: NamedIdiom = NamedIdiom {
             child_exact: r#"/^(\w+)/"#,
         },
     ],
-    hir: &[HirFact::Modifier {
-        verb: StatementModifierKind::If,
-        exact: r#"print "$1\n" if /^(\w+)/"#,
-        condition: r#"/^(\w+)/"#,
-    }],
+    hir: &[
+        HirFact::Modifier {
+            verb: StatementModifierKind::If,
+            exact: r#"print "$1\n" if /^(\w+)/"#,
+            condition: r#"/^(\w+)/"#,
+        },
+        HirFact::Item { kind: "RegexExpr", anchor: "Regex", exact: r#"/^(\w+)/"# },
+    ],
 };
 
 const PE_TRIM_WHITESPACE: NamedIdiom = NamedIdiom {
@@ -1031,6 +1034,7 @@ const NE_BARE_CAPTURE_VARIABLE: NamedIdiom = NamedIdiom {
             exact: r#"print($1) if /^(\w+)/"#,
             condition: r#"/^(\w+)/"#,
         },
+        HirFact::Item { kind: "RegexExpr", anchor: "Regex", exact: r#"/^(\w+)/"# },
     ],
 };
 
@@ -1241,6 +1245,29 @@ fn grep_list_neighbor_does_not_satisfy_diamond_input() -> TestResult {
         &ast,
         &hir,
         AstFact { kind: "FunctionCall", exact: "grep /needle/, @lines", payload: Some("grep") },
+    )?;
+    Ok(())
+}
+
+#[test]
+fn y_transliteration_neighbor_does_not_satisfy_tr_exact_span() -> TestResult {
+    let neighbor = r#"y/a-z/A-Z/;"#;
+    assert_clean_parse(neighbor);
+    let (ast, hir) = parse_clean_with_hir(neighbor)?;
+    prove_must_fail(
+        prove_ast_node(
+            neighbor,
+            &ast,
+            &hir,
+            AstFact { kind: "Transliteration", exact: "tr/a-z/A-Z/", payload: None },
+        ),
+        "y/// must not satisfy the exact tr/// span",
+    )?;
+    prove_ast_node(
+        neighbor,
+        &ast,
+        &hir,
+        AstFact { kind: "Transliteration", exact: "y/a-z/A-Z/", payload: None },
     )?;
     Ok(())
 }
