@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14718,
-  "reason": "Corrects a stale size-only row. rolldown 1.2.6 (#14702) emits out/extension.js at 1636669 bytes where 1.2.5 emitted 1636125; the baseline landed in #14680 was measured against 1.2.5 and the two changes crossed. Measured twice from a clean npm ci at the current main. The 29-file package is unchanged: no file additions, removals, or permission loosening.",
-  "base_baseline_file_sha256": "ead549f99a68d55a78f83a3b94d6e95cfc860be529d79813b6bc6ff13e070a75",
-  "candidate_baseline_file_sha256": "a966dac61b30ed8f950dc9910b5dfaf354ff131cf797dcd7ea24f6b1fa756c2a",
-  "base_inventory_sha256": "a526f424818662c8ec573c84cd9360eccfff0e3ee7a56d7123c4df047fdc02df",
-  "candidate_inventory_sha256": "71c92a4b4282c160e4db6417312fa3622a9ba9a8266bce7fbe6172b9ad5004f1"
+  "owner_issue": 14155,
+  "reason": "Accept the #14857 lifecycle repair requiring captured process exit after every settled stop, with conservative PID-probe error handling. The actual VSIX retains 29 payload files; out/extension.js changes from 1675187 to 1678515 bytes, with 1856473 total payload bytes. Generated from the archive; installed recovery is a separate proof surface.",
+  "base_baseline_file_sha256": "9b80146ec2f0f4a7ef38522b127429dfc612aa01d1c8e6d4e33e37c768e6de26",
+  "candidate_baseline_file_sha256": "a0ff6132d090487820a562be18de96e17a9e0b6f1c22c5304386519490aac8c5",
+  "base_inventory_sha256": "1a42390c7e64fd313065bd959fdcd1db6885894b838ac35be42996652edf4aeb",
+  "candidate_inventory_sha256": "58b0b7699290c02ba693c03393cc5fc7771c687386499ebd1d426ac3850b1b02"
 }

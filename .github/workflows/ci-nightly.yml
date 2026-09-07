@@ -119,6 +119,7 @@ jobs:
         with:
           cache-on-failure: true
           key: ${{ runner.os }}-mutation-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
       - run: cargo install cargo-mutants --locked || true
       - run: cargo mutants --timeout 60 --no-shuffle || true
       - name: Upload mutation results
@@ -154,9 +155,10 @@ jobs:
       with:
         key: ${{ runner.os }}-bench-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
+        save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
     - name: Install just
-      uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+      uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
       with:
         tool: just
 
@@ -445,6 +447,7 @@ jobs:
       with:
         key: ${{ runner.os }}-real-repo-latency-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
+        save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
     - name: Run all ignored real-project latency tests
       env:
@@ -488,6 +491,7 @@ jobs:
       with:
         key: ${{ runner.os }}-corpus-differential-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
+        save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
     - name: Run full corpus differential suite
       run: |
@@ -530,6 +534,7 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: nightly-lsp-memory-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Build perllsp release binary
         run: cargo build --release -p perllsp --bin perllsp --locked
@@ -716,7 +721,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
         with:
           tool: just
 
@@ -825,6 +830,7 @@ jobs:
         with:
           key: tautology-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Check for tautological assertions
         run: |
@@ -857,6 +863,7 @@ jobs:
         with:
           key: semver-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-semver-checks
         run: cargo install cargo-semver-checks --version 0.47.0 --locked
@@ -960,12 +967,13 @@ jobs:
         with:
           key: public-api-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-public-api
         run: cargo install cargo-public-api --locked --version 0.50.1
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
         with:
           tool: just
 
@@ -1000,9 +1008,10 @@ jobs:
         with:
           key: scorecard-ratchet-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install just
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
         with:
           tool: just
 
@@ -1035,6 +1044,7 @@ jobs:
         with:
           key: ${{ runner.os }}-clippy-strict-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Run clippy (strict mode)
         run: |
@@ -1069,8 +1079,9 @@ jobs:
         with:
           key: ${{ runner.os }}-kwalitee-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
-      # The `perl-kwalitee` crate is pure — it never spawns a subprocess and
+      # The `perl-release-readiness` crate is pure — it never spawns a subprocess and
       # reads its evidence only from pre-generated JSON receipts. Without these
       # upstream receipts every nightly receipt-backed indicator resolves as
       # `unverified`. Generate them first (all native Rust, no perltidy/

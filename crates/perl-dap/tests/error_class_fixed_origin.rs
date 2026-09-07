@@ -12,8 +12,13 @@ use perl_lsp_rs_core::transport::framing::{FramingError, MAX_FRAME_SIZE};
 use perl_parser_core::path_security::WorkspacePathError;
 use perl_parser_core::{ErrorCategory, ErrorClass};
 use perl_tdd_support::must_err;
+use perl_test_must::must_some_with;
 use std::error::Error as StdError;
 
+#[expect(
+    clippy::invalid_regex,
+    reason = "fixture constructs a regex::Error so ErrorClass mapping can be asserted"
+)]
 fn sample_regex_error() -> regex::Error {
     must_err(regex::Regex::new("("))
 }
@@ -150,10 +155,14 @@ fn internal_constant_regex_failure_is_adapter_bug() {
     let stack = StackParseError::RegexError(regex_error.clone());
     let variables = VariableParseError::RegexError(regex_error);
 
-    let stack_origin =
-        stack.as_fixed_origin().expect("regex compile failure is a fixed-origin adapter bug");
-    let variable_origin =
-        variables.as_fixed_origin().expect("regex compile failure is a fixed-origin adapter bug");
+    let stack_origin = must_some_with(
+        stack.as_fixed_origin(),
+        "regex compile failure is a fixed-origin adapter bug",
+    );
+    let variable_origin = must_some_with(
+        variables.as_fixed_origin(),
+        "regex compile failure is a fixed-origin adapter bug",
+    );
 
     assert_eq!(stack_origin.error_class(), ErrorCategory::Bug);
     assert_eq!(variable_origin.error_class(), ErrorCategory::Bug);
@@ -167,7 +176,8 @@ fn internal_constant_regex_failure_is_adapter_bug() {
 #[test]
 fn variable_max_depth_is_resource_limit() {
     let error = VariableParseError::MaxDepthExceeded(50);
-    let origin = error.as_fixed_origin().expect("max depth is a fixed-origin resource bound");
+    let origin =
+        must_some_with(error.as_fixed_origin(), "max depth is a fixed-origin resource bound");
     assert_eq!(origin.error_class(), ErrorCategory::ResourceLimit);
     assert_eq!(origin.error_class(), expected_fixed_origin_variable_class(&origin));
 }
@@ -221,7 +231,8 @@ fn classification_does_not_inspect_rendered_text() {
 fn typed_sources_remain_available() {
     let framing = FramingError::FrameTooLarge { len: MAX_FRAME_SIZE + 1 };
     let peer = PeerFrameError::Framing(framing);
-    let peer_source = StdError::source(&peer).expect("PeerFrameError::Framing keeps FramingError");
+    let peer_source =
+        must_some_with(StdError::source(&peer), "PeerFrameError::Framing keeps FramingError");
     assert!(peer_source.downcast_ref::<FramingError>().is_some());
 
     let mapped = SecurityError::from(WorkspacePathError::InvalidPathCharacters);
@@ -231,12 +242,14 @@ fn typed_sources_remain_available() {
     let regex_error = sample_regex_error();
     let stack = StackParseError::RegexError(regex_error.clone());
     let stack_source =
-        StdError::source(&stack).expect("StackParseError::RegexError keeps regex::Error");
+        must_some_with(StdError::source(&stack), "StackParseError::RegexError keeps regex::Error");
     assert!(stack_source.downcast_ref::<regex::Error>().is_some());
 
     let variables = VariableParseError::RegexError(regex_error);
-    let variable_source =
-        StdError::source(&variables).expect("VariableParseError::RegexError keeps regex::Error");
+    let variable_source = must_some_with(
+        StdError::source(&variables),
+        "VariableParseError::RegexError keeps regex::Error",
+    );
     assert!(variable_source.downcast_ref::<regex::Error>().is_some());
 }
 

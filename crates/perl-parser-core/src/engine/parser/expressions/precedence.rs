@@ -108,31 +108,9 @@ impl<'a> Parser<'a> {
     /// an `Identifier("x")` followed by `Assign`. Exact source adjacency is required:
     /// Perl accepts `$value x= 3` but not `$value x = 3`.
     fn consume_assignment_operator(&mut self) -> ParseResult<Option<(&'static str, usize)>> {
-        if let Some(kind) = self.peek_kind() {
-            let op = match kind {
-                TokenKind::Assign => Some("="),
-                TokenKind::PlusAssign => Some("+="),
-                TokenKind::MinusAssign => Some("-="),
-                TokenKind::StarAssign => Some("*="),
-                TokenKind::SlashAssign => Some("/="),
-                TokenKind::PercentAssign => Some("%="),
-                TokenKind::DotAssign => Some(".="),
-                TokenKind::AndAssign => Some("&="),
-                TokenKind::OrAssign => Some("|="),
-                TokenKind::XorAssign => Some("^="),
-                TokenKind::PowerAssign => Some("**="),
-                TokenKind::LeftShiftAssign => Some("<<="),
-                TokenKind::RightShiftAssign => Some(">>="),
-                TokenKind::LogicalAndAssign => Some("&&="),
-                TokenKind::LogicalOrAssign => Some("||="),
-                TokenKind::DefinedOrAssign => Some("//="),
-                _ => None,
-            };
-
-            if let Some(op) = op {
-                let token = self.tokens.next()?;
-                return Ok(Some((op, token.start())));
-            }
+        if let Some(op) = self.peek_kind().and_then(Self::assignment_operator_text) {
+            let token = self.tokens.next()?;
+            return Ok(Some((op, token.start())));
         }
 
         if self.peek_kind() == Some(TokenKind::Identifier) {
@@ -994,6 +972,75 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    /// Whether `kind`/`text` may start the RHS of ordinary binary string repetition.
+    ///
+    /// Kept local to this seam: filehandle, block, list, and recovery contexts have
+    /// different legal starts. Do not reuse this as a global expression-starter
+    /// predicate. Angle-bracket terms, word `not`, magic constants, and yada-yada
+    /// `...` are intentionally omitted.
+    fn ordinary_binary_repetition_rhs_starts(kind: TokenKind, text: &str) -> bool {
+        match kind {
+            TokenKind::Number
+            | TokenKind::ScalarSigil
+            | TokenKind::ArraySigil
+            | TokenKind::HashSigil
+            | TokenKind::LeftParen
+            | TokenKind::LeftBracket
+            | TokenKind::LeftBrace
+            | TokenKind::String
+            | TokenKind::QuoteSingle
+            | TokenKind::QuoteDouble
+            | TokenKind::Undef
+            | TokenKind::Do
+            | TokenKind::Sub
+            | TokenKind::Not
+            | TokenKind::Minus
+            | TokenKind::Plus
+            | TokenKind::Increment
+            | TokenKind::Decrement
+            | TokenKind::Backslash
+            | TokenKind::BitwiseNot
+            | TokenKind::VString
+            | TokenKind::QuoteWords
+            | TokenKind::QuoteCommand
+            | TokenKind::Regex
+            | TokenKind::Substitution
+            | TokenKind::Transliteration
+            | TokenKind::Eval
+            | TokenKind::HeredocStart
+            // `/` after binary `x` is a term, not division. Unary reclassifies it
+            // to `Regex` so `"x" x /3/` reaches `parse_primary`.
+            | TokenKind::Slash => true,
+            TokenKind::Identifier => {
+                // Sigil-prefixed pseudo-identifiers count as operand starts.
+                if text.starts_with('$') || text.starts_with('@') || text.starts_with('%') {
+                    true
+                } else {
+                    // A plain identifier (e.g. an imported function like `width`)
+                    // can also be the start of the x-repetition RHS, provided it
+                    // is not a binary operator keyword (or, and, not, eq, ne, …).
+                    // This allows `'-' x width $n` inside parentheses.
+                    !matches!(
+                        text,
+                        "or" | "and"
+                            | "not"
+                            | "xor"
+                            | "eq"
+                            | "ne"
+                            | "lt"
+                            | "le"
+                            | "gt"
+                            | "ge"
+                            | "cmp"
+                            | "x"
+                            | "isa"
+                    )
+                }
+            }
+            _ => false,
+        }
+    }
+
     fn parse_multiplicative_with(&mut self, mut expr: Node) -> ParseResult<Node> {
         while let Some(kind) = self.peek_kind() {
             match kind {
@@ -1053,60 +1100,16 @@ impl<'a> Parser<'a> {
                     if peeked_text != "x" {
                         break;
                     }
-                    let is_operand_start = if let Ok(next) = self.tokens.peek_second() {
-                        match next.kind() {
-                            TokenKind::Number
-                            | TokenKind::ScalarSigil
-                            | TokenKind::ArraySigil
-                            | TokenKind::HashSigil
-                            | TokenKind::LeftParen
-                            | TokenKind::LeftBracket
-                            | TokenKind::LeftBrace
-                            | TokenKind::String
-                            | TokenKind::QuoteSingle
-                            | TokenKind::QuoteDouble
-                            | TokenKind::Undef
-                            | TokenKind::Do
-                            | TokenKind::Sub
-                            | TokenKind::Not
-                            | TokenKind::Minus
-                            | TokenKind::Plus
-                            | TokenKind::Increment
-                            | TokenKind::Decrement
-                            | TokenKind::Backslash
-                            | TokenKind::BitwiseNot => true,
-                            TokenKind::Identifier => {
-                                let t = next.text.as_ref();
-                                // Sigil-prefixed pseudo-identifiers count as operand starts
-                                if t.starts_with('$') || t.starts_with('@') || t.starts_with('%') {
-                                    true
-                                } else {
-                                    // A plain identifier (e.g. an imported function like `width`)
-                                    // can also be the start of the x-repetition RHS, provided it
-                                    // is not a binary operator keyword (or, and, not, eq, ne, …).
-                                    // This allows `'-' x width $n` inside parentheses.
-                                    !matches!(
-                                        t,
-                                        "or" | "and"
-                                            | "not"
-                                            | "xor"
-                                            | "eq"
-                                            | "ne"
-                                            | "lt"
-                                            | "le"
-                                            | "gt"
-                                            | "ge"
-                                            | "cmp"
-                                            | "x"
-                                            | "isa"
-                                    )
-                                }
-                            }
-                            _ => false,
-                        }
-                    } else {
-                        false
-                    };
+                    let is_operand_start = self
+                        .tokens
+                        .peek_second()
+                        .ok()
+                        .is_some_and(|next| {
+                            Self::ordinary_binary_repetition_rhs_starts(
+                                next.kind(),
+                                next.text.as_ref(),
+                            )
+                        });
                     if !is_operand_start {
                         break;
                     }
