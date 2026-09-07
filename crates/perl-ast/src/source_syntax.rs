@@ -411,8 +411,8 @@ pub enum PayloadContradiction {
         /// Index of the offending segment in recorded order.
         index: usize,
     },
-    /// A proven payload value that the payload's own proven segments do not
-    /// assemble into.
+    /// A proven payload value that disagrees with its ordered known fragments,
+    /// including the prefix and, for exact segmentation, the suffix.
     CookedValueDisagreesWithSegments,
     /// A heredoc label range that is not inside its declaration's opener.
     LabelRangeOutsideOpener,
@@ -445,11 +445,13 @@ pub enum PayloadContradiction {
     /// `Complete` is defined as proven delimiters with non-empty content; a
     /// provably empty payload is [`PayloadTerminal::Empty`].
     CompleteTerminalWithEmptyContent,
-    /// A proven payload value over an exact segmentation that contains a
+    /// A proven payload value over a recorded segmentation that contains a
     /// runtime-dependent run.
     ///
     /// If any segment's contribution is [`CookedValue::Dynamic`], the payload's
     /// value depends on runtime state and cannot have been statically proven.
+    /// A partial prefix suffices to establish that dependence even when the
+    /// remaining source has not been segmented.
     /// A merely *unavailable* fragment is different: the value may have been
     /// proven by other means, so that combination is left alone.
     ProvenValueOverDynamicSegments,
@@ -667,17 +669,12 @@ fn payload_contradictions(
         found.push(PayloadContradiction::ExactSegmentationLeavesContentUncovered);
     }
 
-    if cooked.is_proven()
-        && segmentation.is_exact()
-        && segments.iter().any(|segment| segment.cooked_fragment.is_dynamic())
-    {
+    if cooked.is_proven() && segments.iter().any(|segment| segment.cooked_fragment.is_dynamic()) {
         found.push(PayloadContradiction::ProvenValueOverDynamicSegments);
     }
 
     if let Some(payload_text) = cooked.proven_text()
-        && segmentation.is_exact()
-        && let Some(assembled) = assemble_proven_fragments(segments)
-        && assembled != payload_text
+        && !proven_fragments_agree_with_value(segments, payload_text, segmentation.is_exact())
     {
         found.push(PayloadContradiction::CookedValueDisagreesWithSegments);
     }
@@ -693,17 +690,41 @@ const fn is_malformed(range: SourceLocation) -> bool {
     range.start > range.end
 }
 
-/// Concatenate segment cooked fragments when every one of them is proven.
-///
-/// `None` as soon as any fragment is partial, dynamic, or unavailable: the
-/// payload's value then cannot be reconstructed from its segments, so there is
-/// nothing to compare against.
-fn assemble_proven_fragments(segments: &[SourceSegment]) -> Option<String> {
-    let mut assembled = String::new();
-    for segment in segments {
-        assembled.push_str(segment.cooked_fragment.proven_text()?);
+/// Match contiguous known runs in order, letting unknown fragments fill the gaps.
+/// The first run anchors the prefix; exact segmentation also anchors the final
+/// run at the suffix. Earliest interior matches leave maximal room for later runs.
+fn proven_fragments_agree_with_value(
+    segments: &[SourceSegment],
+    mut remaining: &str,
+    exact: bool,
+) -> bool {
+    let mut runs = segments.split(|segment| !segment.cooked_fragment.is_proven()).peekable();
+    let mut first = true;
+    while let Some(segments) = runs.next() {
+        let run: String =
+            segments.iter().filter_map(|segment| segment.cooked_fragment.proven_text()).collect();
+        let last = runs.peek().is_none();
+        if first && last && exact {
+            return remaining == run;
+        }
+        if !first && last && exact {
+            return remaining.ends_with(&run);
+        }
+        let suffix = if first {
+            remaining.strip_prefix(&run)
+        } else {
+            remaining
+                .find(&run)
+                .and_then(|start| remaining.get(start..))
+                .and_then(|text| text.strip_prefix(&run))
+        };
+        let Some(suffix) = suffix else {
+            return false;
+        };
+        remaining = suffix;
+        first = false;
     }
-    Some(assembled)
+    true
 }
 
 /// Check a heredoc's declaration, body, and terminator geometry.
@@ -993,15 +1014,16 @@ impl StringSyntax {
         }
         // `raw_range` spans the quote operator and both delimiters. Malformed
         // bounds are reported by the shared check above and compare
-        // meaninglessly, so skip them here.
+        // meaninglessly, so skip them here. Overflow also means the required
+        // delimiter bytes cannot fit; saturation would hide that contradiction.
         let opening = self.form.operator_len() + self.delimiter.opening_len();
         let closing = self.delimiter.closing_len();
         if self.terminal.is_terminated()
             && !is_malformed(self.raw_range)
             && let Some(content) = self.content_range
             && !is_malformed(content)
-            && (content.start < self.raw_range.start.saturating_add(opening)
-                || content.end.saturating_add(closing) > self.raw_range.end)
+            && (self.raw_range.start.checked_add(opening).is_none_or(|start| content.start < start)
+                || content.end.checked_add(closing).is_none_or(|end| end > self.raw_range.end))
         {
             found.push(PayloadContradiction::TerminatedStringWithoutDelimiterBytes);
         }
@@ -2423,10 +2445,10 @@ mod tests {
         assert!(doc.is_coherent(), "{:?}", doc.contradictions());
         assert_eq!(doc.compat_content(), Some("text\n"));
 
-        // A fragment that is not proven withdraws the comparison rather than
-        // failing it: an interpolated payload cannot be assembled at all.
+        // An unknown fragment stops comparison after the known leading text.
+        // Match that prefix so this fixture isolates the dynamic-value rule.
         let mut interpolated = interpolated_string();
-        interpolated.cooked = CookedValue::Proven("anything".to_string());
+        interpolated.cooked = CookedValue::Proven("a\nbanything".to_string());
         assert!(
             !interpolated
                 .contradictions()
@@ -2802,6 +2824,180 @@ mod tests {
     }
 
     // --- checks added after the fourth review round -----------------------
+
+    #[test]
+    fn a_proven_segment_prefix_must_agree_with_the_whole_value() -> Result<(), String> {
+        for exact in [false, true] {
+            for (prefix, agrees) in [("z", false), ("abcd", false), ("a", true), ("", true)] {
+                let mut string = plain_double_quoted_string();
+                let mut segments = vec![literal_segment(1, 2, prefix)];
+                if exact {
+                    segments.push(SourceSegment {
+                        raw_range: span(2, 4),
+                        cooked_fragment: CookedValue::Unavailable,
+                        payload: SourceSegmentPayload::Literal,
+                    });
+                    string.segmentation = SourceSegmentation::Exact(segments);
+                } else {
+                    string.segmentation = SourceSegmentation::Partial(segments);
+                }
+                if string.compat_value().is_some() != agrees
+                    || string.proven_literal_value().is_some() != agrees
+                    || string
+                        .contradictions()
+                        .contains(&PayloadContradiction::CookedValueDisagreesWithSegments)
+                        == agrees
+                {
+                    return Err(format!(
+                        "incorrect prefix agreement for {prefix:?}, exact={exact}"
+                    ));
+                }
+            }
+        }
+
+        // Unknown output length prevents treating later text as the prefix,
+        // but the final run of exact segmentation still anchors the suffix.
+        let mut unknown_first = plain_double_quoted_string();
+        unknown_first.segmentation = SourceSegmentation::Exact(vec![
+            SourceSegment {
+                raw_range: span(1, 2),
+                cooked_fragment: CookedValue::Unavailable,
+                payload: SourceSegmentPayload::Literal,
+            },
+            literal_segment(2, 4, "bc"),
+        ]);
+        if unknown_first.compat_value() != Some("abc") {
+            return Err("a matching suffix after unknown text must remain valid".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn known_runs_around_unknown_fragments_preserve_order_and_exact_suffix() -> Result<(), String> {
+        let cases: &[(bool, &[Option<&str>], &str, bool)] = &[
+            (true, &[None, Some("z")], "abc", false),
+            (true, &[None, Some("bc")], "abc", true),
+            (false, &[None, Some("b")], "abc", true),
+            (true, &[None, Some("b")], "abc", false),
+            (true, &[None, Some("b"), None, Some("a"), None], "abc", false),
+            (true, &[None, Some("a"), None, Some("b"), None], "abc", true),
+            (false, &[None, Some("a"), Some("c")], "abc", false),
+            (true, &[Some("a"), None, Some("c")], "abc", true),
+            (true, &[Some("a"), None, Some("a")], "a", false),
+            (true, &[None, Some("é"), None, Some("終")], "déjà終", true),
+        ];
+        for (exact, fragments, value, agrees) in cases {
+            let mut string = plain_double_quoted_string();
+            string.raw_range = span(0, fragments.len() + 2);
+            string.content_range = Some(span(1, fragments.len() + 1));
+            string.cooked = CookedValue::Proven((*value).to_string());
+            let segments = fragments
+                .iter()
+                .enumerate()
+                .map(|(index, fragment)| SourceSegment {
+                    raw_range: span(index + 1, index + 2),
+                    cooked_fragment: fragment.map_or(CookedValue::Unavailable, |text| {
+                        CookedValue::Proven(text.to_string())
+                    }),
+                    payload: SourceSegmentPayload::Literal,
+                })
+                .collect();
+            string.segmentation = if *exact {
+                SourceSegmentation::Exact(segments)
+            } else {
+                string.raw_range.end += 1;
+                if let Some(content) = &mut string.content_range {
+                    content.end += 1;
+                }
+                SourceSegmentation::Partial(segments)
+            };
+            if string.compat_value().is_some() != *agrees
+                || string.proven_literal_value().is_some() != *agrees
+            {
+                return Err(format!("incorrect known-run agreement: {fragments:?}, exact={exact}"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn delimiter_geometry_rejects_overflow_but_accepts_the_last_valid_byte() -> Result<(), String> {
+        let mut string = plain_double_quoted_string();
+        string.raw_range = span(usize::MAX - 3, usize::MAX);
+        string.content_range = Some(span(usize::MAX - 2, usize::MAX - 1));
+        string.segmentation = SourceSegmentation::Unavailable;
+        string.cooked = CookedValue::Proven("a".to_string());
+        if !string.is_coherent() || string.proven_literal_value() != Some("a") {
+            return Err("the final representable closing delimiter must remain valid".to_string());
+        }
+
+        string.content_range = Some(span(usize::MAX - 2, usize::MAX));
+        if !string
+            .contradictions()
+            .contains(&PayloadContradiction::TerminatedStringWithoutDelimiterBytes)
+            || string.proven_literal_value().is_some()
+        {
+            return Err("a closing delimiter beyond usize::MAX must be refused".to_string());
+        }
+
+        let mut empty = empty_single_quoted_string();
+        empty.raw_range = span(usize::MAX, usize::MAX);
+        empty.content_range = Some(span(usize::MAX, usize::MAX));
+        if !empty
+            .contradictions()
+            .contains(&PayloadContradiction::TerminatedStringWithoutDelimiterBytes)
+            || empty.proven_segments().is_some()
+            || empty.proven_literal_value().is_some()
+        {
+            return Err("overflow cannot invent either delimiter around empty content".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_dynamic_partial_prefix_refuses_a_proven_payload_value() -> Result<(), String> {
+        let mut string = interpolated_string();
+        string.raw_range = span(0, 13);
+        string.content_range = Some(span(1, 12));
+        string.segmentation =
+            SourceSegmentation::Partial(string.segmentation.observed_segments().to_vec());
+        let mut doc = heredoc(HeredocForm::Bare, PayloadTerminal::Complete);
+        doc.segmentation = SourceSegmentation::Partial(vec![interpolation_segment(8, 10)]);
+        doc.cooked = CookedValue::Dynamic;
+
+        if !string.is_coherent() || !doc.is_coherent() {
+            return Err("dynamic partial prefixes must remain representable".to_string());
+        }
+        string.cooked = CookedValue::Proven("invented".to_string());
+        doc.cooked = CookedValue::Proven("invented".to_string());
+        for contradictions in [string.contradictions(), doc.contradictions()] {
+            if !contradictions.contains(&PayloadContradiction::ProvenValueOverDynamicSegments) {
+                return Err("a known dynamic prefix contradicts a proven whole value".to_string());
+            }
+        }
+        if string.compat_value().is_some()
+            || string.proven_literal_value().is_some()
+            || doc.compat_content().is_some()
+            || doc.proven_literal_value().is_some()
+        {
+            return Err("a dynamic prefix published invented static text".to_string());
+        }
+
+        // Partial segmentation alone does not disprove an independently known
+        // value: known and unavailable static fragments remain allowed controls.
+        for cooked_fragment in [CookedValue::Proven("a".to_string()), CookedValue::Unavailable] {
+            let mut static_prefix = plain_double_quoted_string();
+            static_prefix.segmentation = SourceSegmentation::Partial(vec![SourceSegment {
+                raw_range: span(1, 2),
+                cooked_fragment,
+                payload: SourceSegmentPayload::Literal,
+            }]);
+            if static_prefix.compat_value() != Some("abc") {
+                return Err("a static prefix must not invalidate external proof".to_string());
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn a_dynamic_segment_means_the_payload_value_was_never_proven() {
