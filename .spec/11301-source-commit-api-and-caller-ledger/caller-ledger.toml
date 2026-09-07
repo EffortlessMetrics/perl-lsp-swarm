@@ -103,6 +103,7 @@ caller_paths = [
   "crates/perl-parser/src/refactor/scoped_rename_tests.rs",
   "crates/perl-parser/src/refactor/workspace_refactor.rs",
   "crates/perl-parser/src/refactor/workspace_rename.rs",
+  "crates/perl-parser/tests/dead_code_api_compat.rs",
   "crates/perl-parser/tests/dead_code_detector.rs",
   "crates/perl-parser/tests/index_lifecycle_tests.rs",
   "crates/perl-parser/tests/lsp_cancellation_mutation_hardening.rs",

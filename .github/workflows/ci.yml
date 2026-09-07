@@ -1773,8 +1773,14 @@ jobs:
       # is the exact guard-with-no-way-to-fail this ledger exists to prevent.
       # Filtered to this module rather than the whole bin suite on purpose: that
       # suite also carries inventory ratchets red on main today.
+      # The ledger check proves the *record* matches the source. It does not run
+      # the behavioral fixtures, so an analyzer change could contradict a
+      # `never_produced`, `inert` or constant-confidence disposition while the
+      # ledger stayed green. Both halves are required for the claim to hold.
       - name: Dead-code API ledger contract (required merge surface)
-        run: cargo test -p xtask --bin xtask --locked -- --nocapture dead_code_api_ledger
+        run: |
+          cargo test -p xtask --bin xtask --locked -- --nocapture dead_code_api_ledger
+          cargo test -p perl-parser --test dead_code_api_compat --locked -- --nocapture
 
   lsp-memory-smoke:
     name: LSP Memory Smoke

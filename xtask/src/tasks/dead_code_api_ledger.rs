@@ -44,7 +44,9 @@ const DERIVED_METHODS: &[&str] = &[
 const CONSUMER_NEEDLES: &[&str] = &[
     "perl_parser::dead_code",
     "dead_code_detector",
-    "crate::dead_code",
+    // `crate::dead_code` is deliberately NOT a flat needle: outside `perl-parser`
+    // it names that crate's own module. Rooting is decided by `classify_import_path`,
+    // which knows whether the file sits inside the owning crate.
     "DeadCodeDetector",
     "DeadCodeAnalysis",
     "DeadCodeStats",
@@ -102,6 +104,7 @@ struct Ledger {
     defect_representations: Vec<String>,
     consumer_classes: Vec<String>,
     governance_paths: Vec<String>,
+    unparseable_paths: Vec<String>,
     #[serde(default)]
     export_path: Vec<ExportPath>,
     #[serde(default)]
@@ -934,13 +937,28 @@ fn validate_consumers(root: &Path, ledger: &Ledger, violations: &mut Vec<String>
     }
 
     let mut found = BTreeSet::new();
+    let mut declared_unparseable_seen = BTreeSet::new();
     for scan_root in CONSUMER_SCAN_ROOTS {
         let dir = root.join(scan_root);
         if !dir.exists() {
             violations.push(format!("L7: consumer scan root {scan_root} is missing"));
             continue;
         }
-        for entry in WalkDir::new(&dir).into_iter().filter_map(std::result::Result::ok) {
+        // Traversal, read and parse failures are recorded as violations rather
+        // than skipped: a scan that cannot see a file has not established that
+        // the file is not a consumer. Missing or instrument-failed evidence is
+        // NOT_PROVEN, never a pass.
+        for entry in WalkDir::new(&dir) {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    violations.push(format!(
+                        "L7: cannot traverse under {scan_root}: {error}; the consumer inventory \
+                         would be evidence of nothing"
+                    ));
+                    continue;
+                }
+            };
             let path = entry.path();
             if !path.is_file() || path.extension().is_none_or(|ext| ext != "rs") {
                 continue;
@@ -949,14 +967,33 @@ fn validate_consumers(root: &Path, ledger: &Ledger, violations: &mut Vec<String>
             if path.components().any(|c| c.as_os_str() == "target") {
                 continue;
             }
-            let Ok(text) = fs::read_to_string(path) else {
-                continue;
-            };
-            if references_surface(&text) {
-                let Ok(rel) = path.strip_prefix(root) else {
+            let display = path.strip_prefix(root).unwrap_or(path).to_string_lossy().to_string();
+            let text = match fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(error) => {
+                    violations.push(format!("L7: cannot read {display}: {error}"));
                     continue;
-                };
-                found.insert(rel.to_string_lossy().replace('\\', "/"));
+                }
+            };
+            if ledger.unparseable_paths.contains(&display) {
+                // Declared unparseable: still text-scanned for direct references,
+                // so declaring a file is not a way to stop looking at it.
+                if CONSUMER_NEEDLES.iter().any(|needle| contains_word(&text, needle)) {
+                    found.insert(display.replace('\\', "/"));
+                }
+                declared_unparseable_seen.insert(display.clone());
+                continue;
+            }
+            let inside_owning_crate = display.starts_with("crates/perl-parser/");
+            match references_surface(&text, inside_owning_crate) {
+                Ok(true) => {
+                    found.insert(display.replace('\\', "/"));
+                }
+                Ok(false) => {}
+                Err(error) => violations.push(format!(
+                    "L7: cannot analyse {display}: {error}; a file the scan cannot parse is not \
+                     evidence that it is not a consumer"
+                )),
             }
         }
     }
@@ -975,6 +1012,15 @@ fn validate_consumers(root: &Path, ledger: &Ledger, violations: &mut Vec<String>
             ));
         }
     }
+    for declared in &ledger.unparseable_paths {
+        if !declared_unparseable_seen.contains(declared) {
+            violations.push(format!(
+                "L7: {declared} is declared unparseable but the scan did not reach it or it now \
+                 parses; a stale exemption can hide a real consumer"
+            ));
+        }
+    }
+
     for governance in &ledger.governance_paths {
         if !root.join(governance).exists() {
             violations.push(format!("L7: governance path {governance} does not exist"));
@@ -1013,29 +1059,119 @@ fn validate_consumers(root: &Path, ledger: &Ledger, violations: &mut Vec<String>
     }
 }
 
+/// The surface type names, used to recognise an import that names a type
+/// directly rather than the module.
+const SURFACE_TYPES: &[&str] =
+    &["DeadCode", "DeadCodeType", "DeadCodeAnalysis", "DeadCodeStats", "DeadCodeDetector"];
+
+/// Import-structure facts about one candidate file.
+#[derive(Debug, Default)]
+struct ImportFacts {
+    /// A `use` tree reaches the module by any spelling, grouping or alias.
+    reaches_module: bool,
+    /// A `use` tree names one of the surface types directly.
+    names_surface_type: bool,
+    /// A `use` tree reaches `perl_parser::prelude` (or `crate::prelude`).
+    reaches_prelude: bool,
+}
+
 /// Whether a file consumes the dead-code surface.
 ///
-/// Two routes. A direct needle is conclusive. The second route closes the
-/// wildcard-prelude hole: `use perl_parser::prelude::*;` imports `DeadCode`
-/// without ever naming it in a path, so a file that pulls in the prelude and
-/// then mentions the bare `DeadCode` identifier is a consumer too. The bare
-/// identifier alone is deliberately NOT sufficient — `perl-tdd-support` has an
-/// unrelated `CodeSmell::DeadCode` variant, and it imports no prelude.
-fn references_surface(text: &str) -> bool {
+/// Import *structure* is the primary signal, parsed with `syn`, so grouped and
+/// aliased spellings — `use perl_parser::{dead_code as dc};`,
+/// `use perl_parser::{prelude as p};` — are recognised even though they contain
+/// none of the flat text needles.
+///
+/// The raw-text needles remain as a second route, because a fully-qualified
+/// inline reference (`perl_parser::dead_code::DeadCode`) has no `use` item at
+/// all.
+///
+/// The bare identifier `DeadCode` is never sufficient on its own: `perl-tdd-support`
+/// has an unrelated `CodeSmell::DeadCode` variant. It counts only alongside a
+/// prelude import, which is the wildcard case.
+///
+/// Returns `Err` when the file cannot be parsed, so a scan that cannot see a
+/// file is recorded as instrument failure rather than silently reading as
+/// "not a consumer".
+fn references_surface(text: &str, inside_owning_crate: bool) -> std::result::Result<bool, String> {
     if CONSUMER_NEEDLES.iter().any(|needle| contains_word(text, needle)) {
-        return true;
+        return Ok(true);
     }
-    imports_perl_parser_prelude(text) && contains_word(text, "DeadCode")
+    let file: syn::File =
+        syn::parse_str(text).map_err(|error| format!("unparseable Rust: {error}"))?;
+    let facts = import_facts(&file, inside_owning_crate);
+    Ok(facts.reaches_module
+        || facts.names_surface_type
+        || (facts.reaches_prelude && contains_word(text, "DeadCode")))
 }
 
-/// Whether the file imports `perl_parser::prelude` in any form (glob, group or
-/// single name), including through the `crate::prelude` spelling used inside
-/// `perl-parser` itself.
-fn imports_perl_parser_prelude(text: &str) -> bool {
-    text.contains("perl_parser::prelude") || text.contains("crate::prelude")
+fn import_facts(file: &syn::File, inside_owning_crate: bool) -> ImportFacts {
+    let mut facts = ImportFacts::default();
+    for item in &file.items {
+        if let syn::Item::Use(node) = item {
+            for path in flatten_use_tree(&node.tree, &mut Vec::new()) {
+                classify_import_path(&path, inside_owning_crate, &mut facts);
+            }
+        }
+    }
+    facts
 }
 
-/// Substring search with identifier boundaries, so `DeadCodeType` does not match
+/// Classify one import path.
+///
+/// Rooting matters. `perl_parser::…::dead_code` is this surface from anywhere;
+/// `crate::dead_code` is it only from inside `perl-parser` itself. A bare
+/// `dead_code::…` is some *other* crate's local module — `perl-lsp-rs-core` has
+/// exactly that, an independent dead-code implementation whose `mod dead_code;`
+/// must not be read as consuming this surface.
+fn classify_import_path(path: &[String], inside_owning_crate: bool, facts: &mut ImportFacts) {
+    let rooted_at_surface_crate = match path.first().map(String::as_str) {
+        Some("perl_parser") => true,
+        Some("crate") | Some("self") | Some("super") => inside_owning_crate,
+        _ => false,
+    };
+    if rooted_at_surface_crate
+        && path.iter().any(|seg| seg == "dead_code" || seg == "dead_code_detector")
+    {
+        facts.reaches_module = true;
+    }
+    if rooted_at_surface_crate && path.iter().any(|seg| seg == "prelude") {
+        facts.reaches_prelude = true;
+    }
+    if path.last().is_some_and(|last| SURFACE_TYPES.contains(&last.as_str())) {
+        facts.names_surface_type = true;
+    }
+}
+
+/// Flatten a `use` tree into full segment paths, descending through groups and
+/// keeping the *original* name of a renamed leaf (the alias is a local label;
+/// the path is what identifies the surface).
+fn flatten_use_tree(tree: &syn::UseTree, prefix: &mut Vec<String>) -> Vec<Vec<String>> {
+    match tree {
+        syn::UseTree::Path(node) => {
+            prefix.push(node.ident.to_string());
+            let out = flatten_use_tree(&node.tree, prefix);
+            prefix.pop();
+            out
+        }
+        syn::UseTree::Name(node) => {
+            let mut path = prefix.clone();
+            path.push(node.ident.to_string());
+            vec![path]
+        }
+        syn::UseTree::Rename(node) => {
+            let mut path = prefix.clone();
+            path.push(node.ident.to_string());
+            vec![path]
+        }
+        syn::UseTree::Glob(_) => vec![prefix.clone()],
+        syn::UseTree::Group(node) => {
+            node.items.iter().flat_map(|item| flatten_use_tree(item, prefix)).collect()
+        }
+    }
+}
+
+/// Substring search with identifier boundaries/// Substring search with identifier boundaries, so `DeadCodeType` does not match
 /// inside a longer identifier and `crate::dead_code` does not match
 /// `crate::dead_code_detector`.
 fn contains_word(haystack: &str, needle: &str) -> bool {
@@ -1395,7 +1531,7 @@ mod tests {
         let unrelated = "    /// Unreachable or unused code\n    DeadCode,\n";
         assert!(
             !CONSUMER_NEEDLES.iter().any(|needle| contains_word(unrelated, needle)),
-            "an unrelated `DeadCode` enum variant must not register as a consumer"
+            "an unrelated `DeadCode` enum variant must not register as a needle match"
         );
         // The prelude route still registers.
         let prelude_use = "use perl_parser::prelude::DeadCode;";
@@ -1524,19 +1660,78 @@ mod tests {
 
     /// Devin review, PR #15086: `use perl_parser::prelude::*;` followed by a bare
     /// `DeadCode` bypassed the needle scan entirely.
+    fn is_consumer(text: &str) -> bool {
+        references_surface(text, false).expect("sample parses")
+    }
+
     #[test]
     fn wildcard_prelude_consumers_are_detected() {
-        let wildcard = "use perl_parser::prelude::*;\nfn f(d: DeadCode) {}\n";
         assert!(
-            references_surface(wildcard),
+            is_consumer("use perl_parser::prelude::*;\nfn f(d: DeadCode) {}\n"),
             "a wildcard prelude import plus a bare DeadCode is a consumer"
         );
-        // The unrelated identifier still must not register: no prelude import.
-        let unrelated = "    /// Unreachable or unused code\n    DeadCode,\n";
-        assert!(!references_surface(unrelated));
+        // The unrelated identifier must not register: no prelude import.
+        assert!(!is_consumer("enum CodeSmell { DeadCode, Other }\n"));
         // Nor does a prelude import on its own.
-        let prelude_only = "use perl_parser::prelude::*;\nfn f(p: Parser) {}\n";
-        assert!(!references_surface(prelude_only));
+        assert!(!is_consumer("use perl_parser::prelude::*;\nfn f(p: Parser) {}\n"));
+    }
+
+    /// Devin review, PR #15086: grouped and aliased imports carry none of the
+    /// flat text needles, so import *structure* has to be parsed.
+    #[test]
+    fn grouped_and_aliased_imports_are_detected() {
+        assert!(
+            is_consumer(
+                "use perl_parser::{dead_code as dc};\nfn f() -> dc::DeadCodeStats { todo!() }\n"
+            ),
+            "grouped alias of the canonical module"
+        );
+        assert!(
+            is_consumer("use perl_parser::{prelude as p};\nfn f(x: p::DeadCode) {}\n"),
+            "grouped alias of the prelude plus a DeadCode mention"
+        );
+        assert!(
+            is_consumer(
+                "use perl_parser::{dead_code_detector as legacy};\nfn f(x: legacy::DeadCodeType) {}\n"
+            ),
+            "grouped alias of the compatibility alias"
+        );
+        assert!(
+            !is_consumer("use other_crate::{dead_code as dc};\nfn f() {}\n"),
+            "another crate's module of the same name is not this surface"
+        );
+    }
+
+    /// `perl-lsp-rs-core` declares its own `mod dead_code;` — an independent
+    /// implementation. Matching bare `dead_code` segments reported it as a
+    /// consumer; rooting the match fixes that.
+    #[test]
+    fn a_foreign_local_dead_code_module_is_not_this_surface() {
+        let foreign = "mod dead_code;\npub use dead_code::detect_dead_code;\n";
+        assert!(!is_consumer(foreign), "a local module of the same name is not this surface");
+        // From inside perl-parser, `crate::dead_code` IS this surface.
+        let owning = "use crate::dead_code::DeadCodeStats;\n";
+        assert!(
+            references_surface(owning, true).expect("parses"),
+            "crate::dead_code inside perl-parser is the surface"
+        );
+        assert!(
+            !references_surface("use crate::dead_code::Thing;\n", false).expect("parses"),
+            "crate::dead_code from another crate is that crate's own module"
+        );
+    }
+
+    /// Devin review, PR #15086: the scan discarded traversal and read failures,
+    /// so incomplete evidence read as a pass. Repository policy makes missing or
+    /// instrument-failed evidence NOT_PROVEN.
+    #[test]
+    fn an_unparseable_file_is_instrument_failure_not_a_pass() {
+        let broken = "fn f( {{{ this is not rust";
+        let outcome = references_surface(broken, false);
+        assert!(
+            outcome.is_err(),
+            "a file the scan cannot parse must not silently report `not a consumer`"
+        );
     }
 
     // ---- Falsifiers: each mutates a valid ledger and asserts the named law bites ----
