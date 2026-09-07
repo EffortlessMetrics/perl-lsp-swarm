@@ -217,6 +217,16 @@ this ledger exists to record. No source scan supplies it. Reviewers adding a
 code-action behavior must add its row; the checks narrow how much can drift
 unnoticed, they do not remove the obligation.
 
+The fixture binding has a narrower limit of the same kind. Identities are taken
+from a `syn` parse, so a comment or a constant referenced only from a helper no
+longer counts — but a reference reached from inside a `#[test]` body counts
+whether or not it participates in an assertion. Emptying a fixture's body while
+leaving its constant in a surviving `assert!` message would keep the row
+looking covered. What the check guarantees is that the id is bound to a test
+that still exists and still compiles; that the test still discriminates is the
+reviewer's judgment, which is why the vacuity section below is stated as a
+standing obligation rather than a rule the checker enforces.
+
 ## Parity corpus
 
 `crates/perl-lsp-rs/tests/code_action_generation_parity_corpus.rs` drives the
@@ -244,7 +254,7 @@ The corpus covers the outcome classes #9188 requires:
 | malformed | `cac-parity-parse-error-recovery-keeps-ast-path` |
 | legitimate empty | `cac-parity-legitimate-empty-out-of-range-source-action`, `cac-parity-kind-filter-excludes-other-families`, `cac-parity-unknown-document-is-empty-not-error` |
 | identity without edit | `cac-parity-explain-diagnostic-command-only`, `cac-parity-test-generation-command-only`, `cac-parity-v2-attaches-originating-diagnostic` |
-| recorded gap (`NOT_PROVEN`) | `text_fallback` (both rows), `legacy_critic`, `refactor.extract:subroutine` and `refactor.extract:basic_fallback` carry a `proof_gap` instead of a fixture |
+| recorded gap (`NOT_PROVEN`) | `text_fallback` (both rows), `legacy_critic`, `refactor.extract:subroutine` on both the enhanced and the original generation, and `refactor.extract:basic_fallback` carry a `proof_gap` instead of a fixture — six rows |
 
 Every `cac-parity-*` id named anywhere on this page is checked against the
 ledger's routes. This table previously named a fixture that had been renamed,
