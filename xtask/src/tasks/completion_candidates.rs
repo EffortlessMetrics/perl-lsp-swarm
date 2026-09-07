@@ -849,8 +849,11 @@ fn discover_provider_references(
             syn::Item::Use(item) => Some(item),
             _ => None,
         }));
-        let mut visitor =
-            ProviderReferenceVisitor { modules: &mut modules, scopes: vec![file_scope] };
+        let mut visitor = ProviderReferenceVisitor {
+            modules: &mut modules,
+            scopes: vec![file_scope],
+            module: module_path_for(file),
+        };
         visitor.visit_file(&parsed);
         for module in modules {
             references.entry(module).or_default().insert(file.clone());
@@ -881,11 +884,44 @@ struct ProviderReferenceVisitor<'a> {
     /// treating it as file-wide would report an unrelated `p::something`
     /// elsewhere in the same file as an undeclared delegation on correct code.
     scopes: Vec<BTreeSet<String>>,
+    /// The scanned file's own module path, for resolving `super::` chains.
+    module: String,
 }
 
 impl ProviderReferenceVisitor<'_> {
     fn names_providers(&self, segment: &str) -> bool {
         segment == "providers" || self.scopes.iter().any(|scope| scope.contains(segment))
+    }
+
+    /// Resolve a `super::`-rooted path against this file's module path.
+    ///
+    /// `super::super::hover::x()` from `providers::completion::completion` is
+    /// `providers::hover::x` — a delegation out of the scanned tree that names
+    /// `providers` nowhere, so a scan matching the literal segment records
+    /// nothing and the module needs no row.
+    ///
+    /// Resolved exactly rather than guarded by a sentinel: the scanned tree has
+    /// 77 `super::` paths, all of them ordinary, and refusing on the spelling
+    /// would fire on every one. Exact resolution adds no false-alarm surface —
+    /// a `super` chain either lands directly under `providers` or it does not.
+    fn resolved_provider_module(&self, segments: &[String]) -> Option<String> {
+        let supers = segments.iter().take_while(|segment| *segment == "super").count();
+        if supers == 0 {
+            return None;
+        }
+        let mut path: Vec<&str> = self.module.split("::").collect();
+        // One `super` leaves the current module; the file's own module path is
+        // where the walk starts.
+        if supers > path.len() {
+            return None;
+        }
+        path.truncate(path.len() - supers);
+        let rest = &segments[supers..];
+        let mut full: Vec<&str> = path;
+        full.extend(rest.iter().map(String::as_str));
+        // `<crate>::providers::<module>` is the shape a delegation takes.
+        let index = full.iter().position(|segment| *segment == "providers")?;
+        full.get(index + 1).map(|module| (*module).to_string())
     }
 
     /// Walk a use tree, noting every module named directly under `providers`.
@@ -949,6 +985,9 @@ impl<'ast> Visit<'ast> for ProviderReferenceVisitor<'_> {
             if self.names_providers(&window[0]) {
                 self.modules.insert(window[1].clone());
             }
+        }
+        if let Some(module) = self.resolved_provider_module(&segments) {
+            self.modules.insert(module);
         }
         syn::visit::visit_path(self, node);
     }
@@ -3419,8 +3458,11 @@ mod tests {
             }
         };
         let mut modules = BTreeSet::new();
-        let mut visitor =
-            ProviderReferenceVisitor { modules: &mut modules, scopes: vec![BTreeSet::new()] };
+        let mut visitor = ProviderReferenceVisitor {
+            modules: &mut modules,
+            scopes: vec![BTreeSet::new()],
+            module: String::new(),
+        };
         visitor.visit_file(&file);
         for expected in ["file_completion", "htmx", "dancer2", "testing", "inline_completion"] {
             assert!(
@@ -3581,8 +3623,11 @@ mod tests {
             use crate::providers::*;
         };
         let mut modules = BTreeSet::new();
-        let mut visitor =
-            ProviderReferenceVisitor { modules: &mut modules, scopes: vec![BTreeSet::new()] };
+        let mut visitor = ProviderReferenceVisitor {
+            modules: &mut modules,
+            scopes: vec![BTreeSet::new()],
+            module: String::new(),
+        };
         visitor.visit_file(&file);
         assert!(
             modules.contains(GLOB_PROVIDER_IMPORT),
@@ -4037,8 +4082,11 @@ mod tests {
                 syn::Item::Use(item) => Some(item),
                 _ => None,
             }));
-            let mut visitor =
-                ProviderReferenceVisitor { modules: &mut modules, scopes: vec![aliases.clone()] };
+            let mut visitor = ProviderReferenceVisitor {
+                modules: &mut modules,
+                scopes: vec![aliases.clone()],
+                module: String::new(),
+            };
             visitor.visit_file(&file);
             assert!(
                 modules.contains("hover") || modules.contains("symbols"),
@@ -4060,8 +4108,11 @@ mod tests {
             syn::Item::Use(item) => Some(item),
             _ => None,
         }));
-        let mut visitor =
-            ProviderReferenceVisitor { modules: &mut modules, scopes: vec![aliases.clone()] };
+        let mut visitor = ProviderReferenceVisitor {
+            modules: &mut modules,
+            scopes: vec![aliases.clone()],
+            module: String::new(),
+        };
         visitor.visit_file(&late);
         assert!(modules.contains("hover"), "the alias pass must not depend on item order");
 
@@ -4075,8 +4126,11 @@ mod tests {
             syn::Item::Use(item) => Some(item),
             _ => None,
         }));
-        let mut visitor =
-            ProviderReferenceVisitor { modules: &mut modules, scopes: vec![aliases.clone()] };
+        let mut visitor = ProviderReferenceVisitor {
+            modules: &mut modules,
+            scopes: vec![aliases.clone()],
+            module: String::new(),
+        };
         visitor.visit_file(&unrelated);
         assert!(modules.is_empty(), "an unrelated alias must not widen the plane, got {modules:?}");
     }
@@ -4097,8 +4151,11 @@ mod tests {
             syn::Item::Use(item) => Some(item),
             _ => None,
         }));
-        let mut visitor =
-            ProviderReferenceVisitor { modules: &mut modules, scopes: vec![aliases.clone()] };
+        let mut visitor = ProviderReferenceVisitor {
+            modules: &mut modules,
+            scopes: vec![aliases.clone()],
+            module: String::new(),
+        };
         visitor.visit_file(&file);
         assert!(
             !modules.contains("self"),
@@ -4198,8 +4255,11 @@ mod tests {
             _ => None,
         }));
         let mut modules = BTreeSet::new();
-        let mut visitor =
-            ProviderReferenceVisitor { modules: &mut modules, scopes: vec![file_scope] };
+        let mut visitor = ProviderReferenceVisitor {
+            modules: &mut modules,
+            scopes: vec![file_scope],
+            module: String::new(),
+        };
         visitor.visit_file(&file);
 
         assert!(
@@ -4216,6 +4276,65 @@ mod tests {
     /// Helper: the body of a parsed function, for entry-body fixtures.
     fn quote_body(item: syn::ItemFn) -> syn::Block {
         *item.block
+    }
+
+    /// A `super::` chain can reach a provider sibling without naming
+    /// `providers`, so it is resolved against the file's own module path.
+    ///
+    /// The depth matters and is easy to get wrong: `PROBE_FILE` sits at
+    /// `providers::completion::completion::probe`, so it takes *three* `super`s
+    /// to stand in `providers` and name a sibling. Two land inside
+    /// `providers::completion`, which is a scanned module and not a delegation
+    /// out of the tree.
+    #[test]
+    fn a_relative_path_into_a_provider_sibling_is_recorded() {
+        let module = module_path_for(PROBE_FILE);
+        assert_eq!(
+            module, "perl_lsp_rs_core::providers::completion::completion::probe",
+            "the fixture's arithmetic depends on this module path"
+        );
+
+        let record = |file: &syn::File| {
+            let mut modules = BTreeSet::new();
+            let mut visitor = ProviderReferenceVisitor {
+                modules: &mut modules,
+                scopes: vec![BTreeSet::new()],
+                module: module.clone(),
+            };
+            visitor.visit_file(file);
+            modules
+        };
+
+        // Three `super`s stand in `providers`; `hover` is an unscanned sibling.
+        let escapes = record(&syn::parse_quote! {
+            fn call() { let _ = super::super::super::hover::something(); }
+        });
+        assert!(
+            escapes.contains("hover"),
+            "a relative path out to a provider sibling must be recorded, got {escapes:?}"
+        );
+
+        // One `super` stays inside `providers::completion`, which is scanned —
+        // recorded accurately, and never a refusal.
+        let internal = record(&syn::parse_quote! {
+            fn call() { let _ = super::items::CompletionItemKind::Snippet; }
+        });
+        assert_eq!(
+            internal,
+            BTreeSet::from([String::from("completion")]),
+            "an ordinary `super::` resolves to the scanned module it is inside"
+        );
+        assert!(
+            module_is_fully_scanned("completion"),
+            "so it cannot become a false delegation failure"
+        );
+
+        // Popping past the crate root resolves to nothing rather than
+        // panicking or inventing a module.
+        let overshoot = record(&syn::parse_quote! {
+            fn call() { let _ = super::super::super::super::super::super::x(); }
+        });
+        assert!(overshoot.is_empty(), "an over-long super chain resolves to nothing");
     }
 
     /// A cyclic alias pair terminates instead of resolving forever.

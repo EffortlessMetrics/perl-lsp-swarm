@@ -101,7 +101,7 @@ ship). The reviewer's clean results are also recorded: no `HashMap` anywhere,
 byte-identical second generation, self-consistent digest, and no Mermaid node-id
 collision.
 
-Forty-eight ledger falsifiers, each corrupting the reconciled checked-in ledger
+Forty-nine ledger falsifiers, each corrupting the reconciled checked-in ledger
 along one axis and asserting the refusal names that axis:
 
 | Axis | Refused because |
@@ -154,6 +154,7 @@ along one axis and asserting the refusal names that axis:
 | a `.gitignore`d producer under a scan root | ignored source is as unscanned as unadded source |
 | a finalizer inside an uncalled closure | a deferred body runs when called, not where written |
 | a block-scoped provider alias leaking to a sibling | `use` is lexically scoped, so an alias is not file-wide |
+| a `super::` path reaching a provider sibling | a relative path names `providers` nowhere |
 
 Plus positive controls: the checked-in ledger reconciles, the checked-in
 projection is current, generation is byte-identical on a second run, discovery

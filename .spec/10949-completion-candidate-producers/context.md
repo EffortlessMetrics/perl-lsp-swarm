@@ -106,6 +106,13 @@ behavior, so neither is fixed here.
   alias that resolves to a candidate vector — is matched on its last path
   segment. Both would need type resolution to decide precisely, and both err
   toward a false alarm rather than a miss.
+- Relative paths are resolved exactly against each file's module path, so a
+  `super::` chain that lands under `providers` records the module it names.
+  Generic aliases are not: `type Page<T> = Vec<T>` with `Page<CompletionItem>`
+  at the use site needs type-argument substitution to decide, no such alias
+  exists in the crate, and the cheap approximation — treating any generic whose
+  arguments mention a candidate as a carrier — would match `Option<CompletionItem>`
+  and add false-alarm surface for a shape nothing uses.
 - The construction plane recognizes struct literals of either candidate shape.
   A candidate built by a constructor, a `From` conversion, or a macro does not
   place its file in that plane; the channel and delegation planes still bound
