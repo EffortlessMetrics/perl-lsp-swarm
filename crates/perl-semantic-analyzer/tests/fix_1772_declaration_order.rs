@@ -308,3 +308,35 @@ fn package_declaration_targets_do_not_consume_pending_lexicals() -> TestResult {
     }
     Ok(())
 }
+
+/// Capture state is a *runtime* effect and survives the deferral change, so it still depends
+/// on the order the two halves are visited: the condition runs first, and a match in it sets
+/// `$1` for the statement it guards.
+///
+/// Oracle, perl 5.38.2 — both compile cleanly:
+/// ```text
+/// $ perl -c -e 'use strict; print $1 if /(foo)/;'                   -e syntax OK
+/// $ perl -c -e 'use strict; my $s="a"; print $1 if $s =~ /(foo)/;'  -e syntax OK
+/// ```
+///
+/// Deferring declarations makes *declaration* visibility order-independent, which is what
+/// lets the halves be visited in runtime order. Visiting the statement first instead
+/// reports a false `CaptureVarWithoutRegexMatch` on a thoroughly ordinary Perl idiom — the
+/// regression this row exists to catch.
+#[test]
+fn a_regex_match_in_the_condition_sets_capture_state_for_the_statement() -> TestResult {
+    for code in [
+        "use strict;\nprint $1 if /(foo)/;\n",
+        "use strict;\nmy $s = 'a';\nprint $1 if $s =~ /(foo)/;\n",
+    ] {
+        let issues = scope_issues(code)?;
+        if issues.iter().any(|i| i.kind == IssueKind::CaptureVarWithoutRegexMatch) {
+            return Err(format!(
+                "real Perl compiles {code:?}, and the condition runs before the statement, \
+                 so $1 must not be reported without a match: {issues:?}"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}

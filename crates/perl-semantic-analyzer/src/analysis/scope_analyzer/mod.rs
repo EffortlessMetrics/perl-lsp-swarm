@@ -179,6 +179,22 @@ fn index_to_sigil(index: usize) -> &'static str {
 
 type VariableMaps = [Option<FxHashMap<String, Rc<Variable>>>; 6];
 
+/// Whether `node`'s subtree performs a regex match, i.e. sets the capture variables.
+///
+/// Mirrors the three `NodeKind`s that set `Scope::has_regex_match` during traversal
+/// (`Match`, `Substitution`, and a standalone `Regex`). Used by the statement-modifier arm
+/// to establish a condition's capture effect before the statement is analyzed, since that
+/// arm must visit the statement first for `our` visibility.
+fn subtree_sets_capture_state(node: &Node) -> bool {
+    if matches!(
+        node.kind,
+        NodeKind::Match { .. } | NodeKind::Substitution { .. } | NodeKind::Regex { .. }
+    ) {
+        return true;
+    }
+    node.children().into_iter().any(subtree_sets_capture_state)
+}
+
 #[derive(Debug)]
 pub(super) struct Scope {
     // Outer key: sigil index, Inner key: name
@@ -1045,8 +1061,23 @@ impl ScopeAnalyzer {
                 // so neither child can see declarations in the other (#1772).
                 // Deferral belongs to this Scope: a nested block owns independent
                 // declarations; a nested modifier in this same scope cannot flush us.
+                //
+                // Capture state is the one effect deferral does NOT cover: it is a runtime
+                // effect, the condition runs first, and a match in it sets `$1` for the
+                // statement — `print $1 if /(foo)/` compiles cleanly under perl 5.38.2 and
+                // must not report CaptureVarWithoutRegexMatch.
+                //
+                // It cannot be fixed by visiting the condition first, because the statement
+                // must be visited first for a different Perl rule: `our` is NOT deferred
+                // (it aliases a package variable and is immediately visible), so
+                // `our $x = 1 if $x;` — also accepted by perl — needs the declaration in
+                // hand before the condition is analyzed. The two orders each satisfy one
+                // rule, so the capture effect is established up front instead of by order.
                 let already_deferred = scope.deferring_declarations.replace(true);
                 ancestors.push(node);
+                if subtree_sets_capture_state(condition) {
+                    scope.has_regex_match.set(true);
+                }
                 self.analyze_node(statement, scope, ancestors, issues, context);
                 self.analyze_node(condition, scope, ancestors, issues, context);
                 ancestors.pop();
