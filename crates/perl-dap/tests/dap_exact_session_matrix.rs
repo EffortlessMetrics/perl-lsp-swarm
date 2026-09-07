@@ -41,6 +41,10 @@ const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// One bounded wait budget shared by every deterministic row.
 const ROW_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Bounded teardown budget: a child that survives this long after kill is a
+/// cleanup failure (#7565 review).
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+
 // ---------------------------------------------------------------------------
 // Subject identity
 // ---------------------------------------------------------------------------
@@ -395,7 +399,12 @@ impl ExactSession {
     /// Send one request and wait for ITS response by seq correlation; events
     /// observed on the way are retained in the transcript, never dropped and
     /// never mistaken for the response.
-    fn request(&mut self, command: &str, arguments: Option<Value>) -> Result<perl_dap::Response> {
+    fn request(
+        &mut self,
+        command: &str,
+        arguments: Option<Value>,
+        budget: Duration,
+    ) -> Result<perl_dap::Response> {
         self.seq += 1;
         let request_seq = self.seq;
         let request =
@@ -409,7 +418,9 @@ impl ExactSession {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(anyhow!("timed out waiting for the {command} response"));
+                return Err(anyhow!(
+                    "timed out waiting for the {command} response within {budget:?}"
+                ));
             }
             match self.rx.recv_timeout(remaining) {
                 Ok(Ok(DapMessage::Response {
@@ -456,7 +467,9 @@ impl ExactSession {
                     return Err(anyhow!("framing error while waiting for {command}: {error}"));
                 }
                 Err(RecvTimeoutError::Timeout) => {
-                    return Err(anyhow!("timed out waiting for the {command} response"));
+                    return Err(anyhow!(
+                        "timed out waiting for the {command} response within {budget:?}"
+                    ));
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     return Err(anyhow!("adapter stdout closed while waiting for {command}"));
@@ -519,14 +532,30 @@ impl ExactSession {
         }
     }
 
-    /// Teardown obligation: the adapter process must not outlive the session.
-    fn teardown(mut self) -> Result<()> {
-        let _ = self.child.kill();
-        // wait() returning IS the proof of exit: a live debuggee/adapter
-        // surviving teardown would be the cleanup failure this obligation
-        // exists to catch.
-        self.child.wait().context("waiting for the exact binary to exit")?;
-        Ok(())
+    /// Teardown obligation: the adapter process must not outlive the
+    /// session, and the wait is BOUNDED — a kill that fails to reap within
+    /// the cleanup deadline is a cleanup failure, never an indefinite block
+    /// that exceeds every row timeout (#7565 review).
+    fn teardown(&mut self) -> Result<()> {
+        if let Err(error) = self.child.kill() {
+            // Already-exited children surface as invalid-input kills; only
+            // re-raise when the child still reports running.
+            if !matches!(self.child.try_wait(), Ok(Some(_))) {
+                return Err(anyhow!("killing the exact binary failed: {error}"));
+            }
+        }
+        let deadline = Instant::now() + CLEANUP_TIMEOUT;
+        loop {
+            match self.child.try_wait().context("polling the exact binary exit")? {
+                Some(_status) => return Ok(()),
+                None if Instant::now() >= deadline => {
+                    return Err(anyhow!(
+                        "the exact binary survived the cleanup deadline; teardown is unbounded"
+                    ));
+                }
+                None => thread::sleep(Duration::from_millis(25)),
+            }
+        }
     }
 
     fn evidence_digest(&self) -> String {
@@ -579,20 +608,21 @@ fn read_framed_message<R: Read>(reader: &mut R) -> Result<DapMessage> {
 // Rows
 // ---------------------------------------------------------------------------
 
-fn run_initialize_handshake(session: &mut ExactSession) -> Result<()> {
+fn run_initialize_handshake(session: &mut ExactSession, budget: Duration) -> Result<()> {
     let response = session.request(
         "initialize",
         Some(json!({ "adapterID": "perl-dap-matrix", "clientID": "exact-session-matrix" })),
+        budget,
     )?;
     if !response.success {
         return Err(anyhow!("initialize failed: {:?}", response.message));
     }
-    session.wait_for_event("initialized", ROW_TIMEOUT)?;
+    session.wait_for_event("initialized", budget)?;
     Ok(())
 }
 
-fn run_threads_shape(session: &mut ExactSession) -> Result<()> {
-    let response = session.request("threads", None)?;
+fn run_threads_shape(session: &mut ExactSession, budget: Duration) -> Result<()> {
+    let response = session.request("threads", None, budget)?;
     if !response.success {
         return Err(anyhow!("threads failed: {:?}", response.message));
     }
@@ -605,8 +635,9 @@ fn run_threads_shape(session: &mut ExactSession) -> Result<()> {
     Ok(())
 }
 
-fn run_disconnect_lifecycle(session: &mut ExactSession) -> Result<()> {
-    let response = session.request("disconnect", Some(json!({ "terminateDebuggee": true })))?;
+fn run_disconnect_lifecycle(session: &mut ExactSession, budget: Duration) -> Result<()> {
+    let response =
+        session.request("disconnect", Some(json!({ "terminateDebuggee": true })), budget)?;
     if !response.success {
         return Err(anyhow!("disconnect failed: {:?}", response.message));
     }
@@ -615,44 +646,65 @@ fn run_disconnect_lifecycle(session: &mut ExactSession) -> Result<()> {
     Ok(())
 }
 
+/// Fold a row's protocol outcome AND its teardown into one verdict: failed
+/// process cleanup can never produce a passing row (#7565 review).
+fn classify_with_cleanup(
+    outcome: Result<()>,
+    teardown: Result<()>,
+    failure_class: FailureClass,
+) -> RowVerdict {
+    match (outcome, teardown) {
+        (Ok(()), Ok(())) => RowVerdict::Pass,
+        (Err(error), _) => classify(Err(error), failure_class),
+        (Ok(()), Err(cleanup)) => RowVerdict::Failed {
+            failure_class: FailureClass::CleanupFailure,
+            detail: format!("{cleanup:#}"),
+        },
+    }
+}
+
 /// The deterministic transport/handshake/lifecycle rows over the exact
-/// binary, plus the wrong-subject negative control.
+/// binary, plus the wrong-subject negative control. The negative control
+/// uses git — a binary that speaks no DAP framing — and distinguishes HOW
+/// the fake fails: a lookalike answering initialize is a broken control, an
+/// unobservable run (timeout) is an instrument failure, and only an
+/// honestly observed non-answer passes (#7565 review).
 fn run_deterministic_rows(binary: &Path, rows: &mut [MatrixRow]) -> Result<()> {
     // Row: initialize handshake.
     {
         let mut session = ExactSession::spawn(binary)?;
-        let outcome = run_initialize_handshake(&mut session);
+        let outcome = run_initialize_handshake(&mut session, rows[0].timeout);
         rows[0].evidence_digest = session.evidence_digest();
-        rows[0].verdict = classify(outcome, FailureClass::ProtocolShapeFailure);
-        session.teardown()?;
+        let teardown = session.teardown();
+        rows[0].verdict =
+            classify_with_cleanup(outcome, teardown, FailureClass::ProtocolShapeFailure);
     }
     // Row: threads shape (fresh session keeps rows independent).
     {
         let mut session = ExactSession::spawn(binary)?;
-        let mut outcome = run_initialize_handshake(&mut session);
+        let mut outcome = run_initialize_handshake(&mut session, rows[1].timeout);
         if outcome.is_ok() {
-            outcome = run_threads_shape(&mut session);
+            outcome = run_threads_shape(&mut session, rows[1].timeout);
         }
         rows[1].evidence_digest = session.evidence_digest();
-        rows[1].verdict = classify(outcome, FailureClass::ProtocolShapeFailure);
-        session.teardown()?;
+        let teardown = session.teardown();
+        rows[1].verdict =
+            classify_with_cleanup(outcome, teardown, FailureClass::ProtocolShapeFailure);
     }
     // Row: disconnect lifecycle (terminated event + bounded cleanup).
     {
         let mut session = ExactSession::spawn(binary)?;
-        let mut outcome = run_initialize_handshake(&mut session);
+        let mut outcome = run_initialize_handshake(&mut session, rows[2].timeout);
         if outcome.is_ok() {
-            outcome = run_disconnect_lifecycle(&mut session);
+            outcome = run_disconnect_lifecycle(&mut session, rows[2].timeout);
         }
         rows[2].evidence_digest = session.evidence_digest();
-        rows[2].verdict = classify(outcome, FailureClass::EventOrderFailure);
-        session.teardown()?;
+        let teardown = session.teardown();
+        rows[2].verdict = classify_with_cleanup(outcome, teardown, FailureClass::EventOrderFailure);
     }
-    // Negative control: a fake backend (a binary that does not speak DAP
-    // framing) must classify as wrong-subject/instrument failure — the
-    // harness can never be talked into pass by a lookalike.
+    // Row: wrong-subject negative control.
     {
-        let fake = std::env::current_exe().context("resolving a non-DAP fake backend")?;
+        let fake = PathBuf::from("git");
         let mut session = match ExactSession::spawn(&fake) {
             Ok(session) => session,
             Err(error) => {
@@ -661,13 +713,27 @@ fn run_deterministic_rows(binary: &Path, rows: &mut [MatrixRow]) -> Result<()> {
                 return Ok(());
             }
         };
-        let outcome = run_initialize_handshake(&mut session);
+        let outcome = run_initialize_handshake(&mut session, rows[4].timeout);
         rows[4].evidence_digest = session.evidence_digest();
-        session.teardown()?;
+        let teardown = session.teardown();
         rows[4].verdict = match outcome {
-            // A lookalike answering initialize would be the harness lying;
-            // only honest non-answers are the expected negative result.
-            Err(_) => RowVerdict::Pass,
+            Err(error) if error.to_string().contains("timed out") => {
+                RowVerdict::InstrumentFailure {
+                    detail: format!("the negative control could not observe the fake: {error:#}"),
+                }
+            }
+            Err(_) => {
+                if let Err(cleanup) = teardown {
+                    RowVerdict::Failed {
+                        failure_class: FailureClass::CleanupFailure,
+                        detail: format!(
+                            "the fake failed the handshake but cleanup broke: {cleanup:#}"
+                        ),
+                    }
+                } else {
+                    RowVerdict::Pass
+                }
+            }
             Ok(()) => RowVerdict::Failed {
                 failure_class: FailureClass::WrongSubject,
                 detail: "the fake backend answered the DAP handshake; the negative control \
@@ -744,15 +810,18 @@ fn exact_session_matrix_conforms_and_fails_closed() -> Result<()> {
 
     // The launch row executes only where a debuggee runtime resolved; it is
     // an honest not_proven environment boundary otherwise, never a silent
-    // skip recorded as pass.
+    // skip recorded as pass. The fixture path stays alive for the receipt.
+    let mut fixture_path: Option<PathBuf> = None;
     match runtime {
         Some(perl) => {
             let fixture = write_fixture()?;
             let mut session = ExactSession::spawn(&binary)?;
-            let outcome = run_launch_row(&mut session, perl, &fixture);
+            let outcome = run_launch_row(&mut session, perl, &fixture, rows[3].timeout);
             rows[3].evidence_digest = session.evidence_digest();
-            let _ = session.teardown();
-            rows[3].verdict = classify(outcome, FailureClass::FixtureFailure);
+            let teardown = session.teardown();
+            rows[3].verdict =
+                classify_with_cleanup(outcome, teardown, FailureClass::FixtureFailure);
+            fixture_path = Some(fixture);
         }
         None => {
             rows[3].verdict = RowVerdict::NotProven {
@@ -763,10 +832,18 @@ fn exact_session_matrix_conforms_and_fails_closed() -> Result<()> {
         }
     }
 
+    // The typed receipt is written BEFORE the aggregation asserts, so a
+    // failing row is still receipted with its typed verdict — the scorecard
+    // must see failures too, not only successes (#7565 review).
+    let fixtures: Vec<(String, PathBuf)> = fixture_path
+        .clone()
+        .map(|path| vec![("matrix-fixture-plain".to_string(), path)])
+        .unwrap_or_default();
+    write_receipt_if_configured(&binary, runtime, &rows, &fixtures)?;
+
     // Fail-closed aggregation: deterministic rows must pass, the negative
     // control must hold, and nothing may end in instrument failure.
     for row in &rows {
-        let row_json = row.to_value();
         match &row.verdict {
             RowVerdict::Pass | RowVerdict::NotProven { .. } => {}
             RowVerdict::Failed { failure_class, detail } => {
@@ -787,24 +864,29 @@ fn exact_session_matrix_conforms_and_fails_closed() -> Result<()> {
                 return Err(anyhow!("matrix row {} instrument failure: {detail}", row.id));
             }
         }
-        let _ = row_json;
     }
-
-    write_receipt_if_configured(&binary, runtime, &rows)?;
     Ok(())
 }
 
 /// The launch row: real `perl -d` over the exact binary, fixture identity
-/// bound by digest, stop-on-entry reached before any conformance claim.
-fn run_launch_row(session: &mut ExactSession, perl: &DebuggeePerl, fixture: &Path) -> Result<()> {
+/// bound by digest, and an ENTRY-reason stop observed before any
+/// conformance claim — the first stopped event alone does not prove the
+/// debuggee reached entry (#7565 review).
+fn run_launch_row(
+    session: &mut ExactSession,
+    perl: &DebuggeePerl,
+    fixture: &Path,
+    budget: Duration,
+) -> Result<()> {
     let response = session.request(
         "initialize",
         Some(json!({ "adapterID": "perl-dap-matrix", "clientID": "exact-session-matrix" })),
+        budget,
     )?;
     if !response.success {
         return Err(anyhow!("initialize failed: {:?}", response.message));
     }
-    session.wait_for_event("initialized", ROW_TIMEOUT)?;
+    session.wait_for_event("initialized", budget)?;
     let response = session.request(
         "launch",
         Some(json!({
@@ -812,16 +894,25 @@ fn run_launch_row(session: &mut ExactSession, perl: &DebuggeePerl, fixture: &Pat
             "perlPath": perl.binary.display().to_string(),
             "stopOnEntry": true,
         })),
+        budget,
     )?;
     if !response.success {
         return Err(anyhow!("launch failed: {:?}", response.message));
     }
-    session.wait_for_event("stopped", LAUNCH_TIMEOUT)?;
-    let response = session.request("disconnect", Some(json!({ "terminateDebuggee": true })))?;
+    let stopped = session.wait_for_event("stopped", budget)?;
+    let reason = stopped.body.as_ref().and_then(|body| body.get("reason")).and_then(Value::as_str);
+    if reason != Some("entry") {
+        return Err(anyhow!(
+            "the stop event does not prove stop-on-entry (reason {reason:?}); the launch row \
+             cannot claim the fixture was reached"
+        ));
+    }
+    let response =
+        session.request("disconnect", Some(json!({ "terminateDebuggee": true })), budget)?;
     if !response.success {
         return Err(anyhow!("disconnect failed: {:?}", response.message));
     }
-    session.wait_for_event("terminated", LAUNCH_TIMEOUT)?;
+    session.wait_for_event("terminated", budget)?;
     Ok(())
 }
 
@@ -842,23 +933,18 @@ fn write_receipt_if_configured(
     binary: &Path,
     runtime: Option<&DebuggeePerl>,
     rows: &[MatrixRow],
+    fixtures: &[(String, PathBuf)],
 ) -> Result<()> {
     let Some(output) = std::env::var_os(MATRIX_RECEIPT_ENV) else {
         return Ok(());
     };
-    let fixtures = vec![("matrix-fixture-plain".to_string(), PathBuf::from("matrix_fixture.pl"))];
-    // Fixtures are content-bound at execution time; for the receipt we bind
-    // the deterministic fixture content digest directly.
-    let mut subject = SubjectIdentity::resolve(binary, runtime, &[])?;
-    subject.fixtures = vec![(
-        "matrix-fixture-plain".to_string(),
-        sha256_text("# matrix fixture (fixed content)\nmy $anchor = 1;\nprint \"ok\\n\";\n"),
-    )];
+    let subject = SubjectIdentity::resolve(binary, runtime, fixtures)?;
     let receipt = MatrixReceipt { subject, rows: rows.to_vec() };
-    // Self-check before writing: the receipt must verify against itself.
-    let rebuilt = SubjectIdentity::resolve(binary, runtime, &fixtures)?;
-    let _ = rebuilt;
-    receipt.verify_against(&receipt.subject)?;
+    // The verification subject is rebuilt independently from the same
+    // inputs; a digest over the ACTUAL fixture files (not a hard-coded
+    // constant) must match what the receipt embedded (#7565 review).
+    let rebuilt = SubjectIdentity::resolve(binary, runtime, fixtures)?;
+    receipt.verify_against(&rebuilt)?;
     receipt.write(Path::new(&output))
 }
 
