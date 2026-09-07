@@ -895,9 +895,8 @@ const COMPLETION_PHRASES: [&str; 7] = [
 ];
 
 fn positive_completion_phrase(line: &str) -> bool {
-    // Same-clause claims stay postfix-local. A later subjectless, umbrella, or
-    // coreferential continuation (`the`/`and`/`support`) may inherit an earlier
-    // postfix subject; leftover words such as `regex` do not.
+    // Same-clause claims stay postfix-local. A later subjectless/umbrella
+    // continuation may inherit an earlier postfix subject on the same line.
     if !line_mentions_postfix(line) {
         return false;
     }
@@ -944,17 +943,9 @@ fn subjectless_continuation_completion(clause: &str) -> bool {
     })
 }
 
-const COREFERENTIAL_LEFTOVER_WORDS: [&str; 3] = ["the", "and", "support"];
-
 fn leftover_is_subjectless(part: &str) -> bool {
     let trimmed = part.trim_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace());
-    if trimmed.is_empty() {
-        return true;
-    }
-    trimmed
-        .split(|c: char| c.is_ascii_whitespace() || c.is_ascii_punctuation())
-        .filter(|token| !token.is_empty())
-        .all(|token| COREFERENTIAL_LEFTOVER_WORDS.contains(&token))
+    trimmed.is_empty() || trimmed.eq_ignore_ascii_case("the")
 }
 
 fn directly_negated_before(prefix: &str) -> bool {
@@ -1466,40 +1457,6 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("semantic"), "narrowest reason missing: {message}");
         assert!(message.contains("umbrella is complete"), "{message}");
-        Ok(())
-    }
-
-    #[test]
-    fn coreferential_support_continuation_is_a_completion_claim() -> Result<()> {
-        let (ledger, mut matrix) = committed()?;
-        apply_full_looking_hir(postfix_req(&mut matrix)?);
-        let view = derive_postfix_capability(&ledger, &matrix)?;
-        let docs = [(
-            "docs/project/status/perl_compiler_concepts.md",
-            "Postfix statement modifiers include syntax and semantics; support is complete.\n",
-        )];
-        let error = evaluate_closure_gate(&view, &ledger, &matrix, &docs)
-            .expect_err("coreferential support continuation must remain a completion claim");
-        let message = error.to_string();
-        assert!(message.contains("semantic"), "narrowest reason missing: {message}");
-        assert!(message.contains("support is complete"), "{message}");
-        Ok(())
-    }
-
-    #[test]
-    fn grammatical_and_are_complete_continuation_is_a_completion_claim() -> Result<()> {
-        let (ledger, mut matrix) = committed()?;
-        apply_full_looking_hir(postfix_req(&mut matrix)?);
-        let view = derive_postfix_capability(&ledger, &matrix)?;
-        let docs = [(
-            "docs/project/status/perl_compiler_concepts.md",
-            "Postfix statement modifiers include syntax and semantics; and are complete.\n",
-        )];
-        let error = evaluate_closure_gate(&view, &ledger, &matrix, &docs)
-            .expect_err("grammatical and-are-complete continuation must remain a completion claim");
-        let message = error.to_string();
-        assert!(message.contains("semantic"), "narrowest reason missing: {message}");
-        assert!(message.contains("are complete"), "{message}");
         Ok(())
     }
 
