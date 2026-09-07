@@ -599,7 +599,7 @@ jobs:
 
       - name: Install just
         if: needs.draft-pr-check.outputs.api_scope == 'true'
-        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
 
@@ -750,7 +750,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
 
@@ -1014,7 +1014,7 @@ jobs:
             # The cheapest control remains first for fast diagnosis, but the
             # shard runner now records every independent member before it
             # returns the aggregate failure verdict.
-            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof release_trust_invariants docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check version_sync
+            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check version_sync
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
@@ -1024,10 +1024,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           # Release-history verification compares every fetched release tag.
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Bind inventory source
+        id: inventory-source
+        if: matrix.name == 'policy'
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse 'HEAD^{commit}')"
+          test "$source_sha" = "$EXPECTED_SOURCE_SHA"
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
 
       - name: Reject unsupported PR attributions in reference docs
         if: matrix.name == 'meta'
@@ -1050,7 +1062,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
 
@@ -1061,6 +1073,16 @@ jobs:
           cache-all-crates: true
           shared-key: ci-gate-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+
+      - name: Clear restored inventory evidence
+        id: inventory-clean
+        if: matrix.name == 'policy'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f target/policy/non-rust-inventory.md \
+            target/policy/non-rust-inventory.json \
+            target/policy/non-rust-inventory-subject.json
 
       - name: Warm xtask
         run: cargo build -p xtask --locked
@@ -1166,15 +1188,43 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Bind produced inventory evidence
+        id: inventory-evidence
+        if: always() && matrix.name == 'policy' && steps.inventory-source.outcome == 'success' && steps.inventory-clean.outcome == 'success'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.inventory-source.outputs.sha }}
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          source = subprocess.check_output(["git", "rev-parse", "HEAD^{commit}"], text=True).strip()
+          if source != os.environ["SOURCE_SHA"]:
+              raise SystemExit("inventory source changed during the shard")
+          paths = [Path("target/policy/non-rust-inventory." + ext) for ext in ("md", "json")]
+          if not any(path.exists() for path in paths):
+              raise SystemExit(0)  # The producer never emitted evidence.
+          files = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+          receipt = {"schema_version": 1, "source_sha": source, "sha256": files}
+          Path("target/policy/non-rust-inventory-subject.json").write_text(json.dumps(receipt) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("ready=true\n")
+          PYTHON
+
       - name: Upload non-Rust inventory evidence
-        if: always() && matrix.name == 'policy'
+        if: always() && matrix.name == 'policy' && steps.inventory-evidence.outputs.ready == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: non-rust-inventory-${{ github.sha }}
+          name: non-rust-inventory-${{ steps.inventory-source.outputs.sha }}
           path: |
             target/policy/non-rust-inventory.md
             target/policy/non-rust-inventory.json
-          if-no-files-found: warn
+            target/policy/non-rust-inventory-subject.json
+          if-no-files-found: error
           retention-days: 7
 
       - name: Upload parser integration receipt
@@ -1363,7 +1413,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
 
@@ -1384,6 +1434,21 @@ jobs:
         env:
           PERL_LSP_BIN: ${{ github.workspace }}/target/debug/perllsp
           RUST_TEST_THREADS: "1"
+          # #9616: golden-manifest error waivers carry calendar expiry dates, so
+          # enforcing a lapse on every branch makes the verdict depend on
+          # merge-base age rather than on the diff under test. A branch reports
+          # a lapse as a warning; a push to the default branch fails, which is
+          # where the waiver can actually be refreshed. Waiver *shape* stays
+          # enforced everywhere.
+          #
+          # merge_group stays on `warn` deliberately. A lapsed waiver is a
+          # property of the repository, not of the candidate being queued: it
+          # is equally true whether or not this candidate lands, so failing the
+          # candidate's queue run would attribute a repository problem to a
+          # change that did not cause it — the same misattribution this issue
+          # removes from branches. The push-to-main run below catches the lapse
+          # within one merge, and reports it against the commit that can fix it.
+          PERL_LSP_UX_WAIVER_EXPIRY: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) && 'enforce' || 'warn' }}
         run: |
           set -o pipefail
           mkdir -p target/receipts
@@ -1573,7 +1638,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
 

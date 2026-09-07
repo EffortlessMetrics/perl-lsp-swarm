@@ -259,6 +259,38 @@ only duplicate claims, same-candidate writers, explicit prerequisites, destructi
 shared runtime state, actual conflicts, or demonstrated combined-tree interactions.
 Behind-only movement requires no action.
 
+### The exclusive role is writer, not reader
+
+Mutation is exclusive; reading is not. Arriving at an existing candidate to research,
+review, challenge, or comment requires no claim, no check for a current writer, and no
+wait. Duplicate review is cheap and buys a second detection surface from
+changed attention, which is what substantive review asks for and cannot get from
+identity alone. A session that finds another writer already on a candidate may review
+it and contribute evidence; it does not push or need to wait to review.
+
+Independent reviewing roots publish useful findings to the durable GitHub surface.
+Bounded review workers return findings to their accountable root, which joins the
+evidence and publishes the useful result. Evidence left only in a reviewing session
+cannot inform the next reviewer; publication follows the existing root/worker authority.
+
+Do not gate reading. A claim ceremony, reservation, or persistent writer-liveness
+signal ahead of research or review serializes the cheap half of the work and goes stale.
+Mutation is different: immediately before a write, establish the exact candidate,
+head, and mutation ownership from live evidence, using typed checks applicable to the
+operation. `cargo xtask writer-admission` checks new-candidate creation; its open-PR
+collision result is not evidence of another current writer during repair of an
+existing candidate. For resume/reuse, consume the applicable guidance and verify the
+live head and writer. Missing, stale, or contradictory writer evidence is `NOT_PROVEN`;
+an established second writer is a hard stop. This is a just-in-time write check, not
+durable coordination state.
+
+If a collision is discovered only after commits from multiple contexts have reached the
+branch, first establish one writer. That writer preserves the commits by merging
+rather than rewriting history, subject to applicable user and repository authorization.
+A second writer does not gain permission to perform recovery mutation merely because
+merge is safer than force-push. Writer ownership alone grants no rebase or force-push
+authorization.
+
 ## Proof ladder
 
 ```text
@@ -299,6 +331,14 @@ Review is semantic and cumulative. Refresh only findings/proof/dimensions materi
 changed by repair, claim/authority/risk changes, or actual conflict/combined-tree
 repair. Unrelated `main` movement and formatting/editorial/generated-only changes do
 not force broad replay.
+
+Generated projections are never repaired by hand: follow their owning writer and
+publication policy, and validate any permitted regeneration. In particular, feature
+branches do not regenerate or stage `docs/policy/NON_RUST_INVENTORY.md`, the default-branch
+publication. [File policy](../FILE_POLICY.md) and
+[non-Rust policy](../policy/NON_RUST_POLICY.md) define its current-tree evidence path.
+Temporary workflows that execute or push on a branch's behalf are not an acceptable
+repair route; the edit is made locally by the candidate writer.
 
 ## Hard stops
 

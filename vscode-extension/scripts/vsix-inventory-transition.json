@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 15095,
-  "reason": "PR #14849 updates Rolldown 1.2.6 to 1.2.7. Hosted run 34105401036 measured out/extension.js at 1675185 bytes, down two bytes from the base 1675187; all other 28 file sizes and paths are unchanged. The archived transition receipt binds package.json, package-lock.json, the bundler configuration and measured VSIX. This declaration records that measured inventory; fresh hosted validation must still measure the repaired candidate archive. No policy threshold or installed-behavior requirement changes.",
-  "base_baseline_file_sha256": "9b80146ec2f0f4a7ef38522b127429dfc612aa01d1c8e6d4e33e37c768e6de26",
-  "candidate_baseline_file_sha256": "8bd34cf31d541eba561a384f4764d25c992d28565a955f25ad12052eb927e819",
-  "base_inventory_sha256": "1a42390c7e64fd313065bd959fdcd1db6885894b838ac35be42996652edf4aeb",
-  "candidate_inventory_sha256": "0165c58d0a2409d31685e7824faccd445b4a0767acb86c432bf44a3929d80753"
+  "reason": "PR #14849 updates Rolldown 1.2.6 to 1.2.7. After resolving the inventory conflict with main at bbc820e86c398e46a466b766313028abf3b777d6, the normal VSIX package command measured out/extension.js at 1679643 bytes, down two bytes from 1679645. All other 28 packaged paths and sizes match main. The normal prepublish doctor, typechecks and bundle completed with Node 26.5.0 and npm 11.18.0. This is a measured development package inventory, not installed behavior or a release receipt; fresh hosted installed-smoke validation remains required. No validator, threshold or package admission rule changes.",
+  "base_baseline_file_sha256": "71482686ee9c9e65c120c19a814034fd537dc61e826306b406d5b137cb1b2a5b",
+  "candidate_baseline_file_sha256": "043e9c99fbe2ad917624b248a50ec498c808480445e219f2589178c2c0dd694e",
+  "base_inventory_sha256": "0b5940446ee784e69435a7bf1f2f44f7ea49e17832178a82a559012a25c22584",
+  "candidate_inventory_sha256": "689fa5b8485cd88e79dc906275a51883b3d574dccff965435faffe678beb5ec7"
 }
