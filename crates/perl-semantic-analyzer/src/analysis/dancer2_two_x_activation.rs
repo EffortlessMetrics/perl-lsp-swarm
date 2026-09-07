@@ -24,6 +24,7 @@
 use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::framework_adapters::dancer2_two_x::{
     Dancer2TwoXImportEvidence, parse_dancer2_two_x_import_args,
+    parse_parenthesized_dancer2_two_x_import_args,
 };
 use perl_semantic_facts::{AnchorId, FileId, SourceGeneration};
 
@@ -117,6 +118,13 @@ fn occupies_package_glob(declarator: Option<&String>) -> bool {
     }
 }
 
+/// Core modules that alter compilation or the environment without
+/// installing functions into the caller's package, so their arguments never
+/// shadow a same-named import (`use lib qw(get)` takes a library path, not
+/// a function list; #14408 review).
+const NON_IMPORTING_CORE_MODULES: [&str; 7] =
+    ["lib", "strict", "warnings", "utf8", "feature", "experimental", "mro"];
+
 fn collect_package_subs(
     node: &Node,
     current_package: &mut Option<String>,
@@ -148,7 +156,10 @@ fn collect_package_subs(
                 package_subs.push((package.to_string(), name.clone()));
             }
         }
-        NodeKind::Use { module, args, .. } if !is_exact_dancer2_two_x_import(module) => {
+        NodeKind::Use { module, args, .. }
+            if !is_exact_dancer2_two_x_import(module)
+                && !NON_IMPORTING_CORE_MODULES.contains(&module.as_str()) =>
+        {
             // Functions imported from other modules occupy this package's
             // globs before Dancer2 runs: its un-overwrite rule preserves
             // them, so the same-named DSL keyword is never installed
@@ -175,14 +186,12 @@ fn collect_package_subs(
                 }
             }
         }
-        NodeKind::Typeglob { name } => {
-            // `*get = ...` installs the glob directly: the leaf name occupies
-            // this package's glob and must shadow a same-named import.
-            let leaf = name.rsplit("::").next().unwrap_or(name);
-            if !leaf.is_empty() {
-                if let Some(package) = current_package.as_deref() {
-                    package_subs.push((package.to_string(), leaf.to_string()));
-                }
+        NodeKind::Assignment { lhs, .. } => {
+            // Only a typeglob ASSIGNMENT installs a glob entry: a bare
+            // `*get{CODE}` read or `\*get` reference defines no function and
+            // must not shadow a same-named import (#14408 review).
+            if let NodeKind::Typeglob { name } = &lhs.kind {
+                record_glob_shadow(name, current_package, package_subs);
             }
         }
         NodeKind::Package { name, block: Some(block), .. } => {
@@ -219,6 +228,51 @@ fn collect_package_subs(
     for child in node.children() {
         collect_package_subs(child, current_package, package_subs);
     }
+}
+
+/// Record a typeglob assignment (`*get = ...`) as occupying a glob: a bare
+/// leaf lands in the running package; a qualified name (`*App::get`,
+/// `*::get`) belongs to its declared package, however the running scope is
+/// spelled (#14408 review).
+fn record_glob_shadow(
+    name: &str,
+    current_package: &Option<String>,
+    package_subs: &mut Vec<(String, String)>,
+) {
+    if name.contains("::") {
+        if let Some((owner, leaf)) = split_qualified_sub(name) {
+            package_subs.push((owner, leaf));
+        }
+    } else if !name.is_empty() {
+        if let Some(package) = current_package.as_deref() {
+            package_subs.push((package.to_string(), name.to_string()));
+        }
+    }
+}
+
+/// True when the import arguments are spelled as a parenthesized list
+/// (`use Dancer2 (...)`). Perl consumes a bare `use MODULE VERSION`
+/// requirement only outside parentheses: a v-string inside the list is an
+/// import argument and must not claim the version slot (#14408 review).
+fn has_parenthesized_import_list(source: &str, span_start: u32, span_end: u32) -> bool {
+    let start = span_start as usize;
+    let end = (span_end as usize).min(source.len());
+    let Some(statement) = source.get(start..end) else {
+        return false;
+    };
+    let Some(after_use) = skip_layout(statement).strip_prefix("use") else {
+        return false;
+    };
+    let module = skip_layout(after_use);
+    // Scan past the module spelling (letters, `::`, underscores, and any
+    // version components the parser folded into the module name); a folded
+    // bare version already claimed the requirement, so only a bare form can
+    // be followed by a parenthesized list.
+    let after_module = match module.find(|c: char| !(c.is_alphanumeric() || c == ':' || c == '_')) {
+        Some(index) => &module[index..],
+        None => return false,
+    };
+    skip_layout(after_module).starts_with('(')
 }
 
 /// Split a fully-qualified subroutine name into its owning package and the
@@ -384,7 +438,15 @@ fn walk_activation_sites(
                     }
                 }
             }
-            let mut evidence = parse_dancer2_two_x_import_args(&node_args);
+            // A parenthesized argument list delivers its contents as plain
+            // import arguments: a leading v-string there never claims the
+            // `use MODULE VERSION` slot (#14408 review).
+            let parenthesized = has_parenthesized_import_list(source, span_start, span_end);
+            let mut evidence = if parenthesized {
+                parse_parenthesized_dancer2_two_x_import_args(&node_args)
+            } else {
+                parse_dancer2_two_x_import_args(&node_args)
+            };
             evidence.import_suppressed = has_explicit_empty_import(source, span_start, span_end);
             if let Some(requirement) = spelled {
                 evidence.version_slot_spellings = vec![requirement];
@@ -819,5 +881,82 @@ get '/x' => sub { 1 };
             !found[0].shadowed_keywords.iter().any(|k| k == "get"),
             "::get belongs to main, not to App's shadow list"
         );
+    }
+
+    #[test]
+    fn non_importing_core_module_arguments_do_not_shadow() {
+        // `use lib qw(get)` takes a library path, not a function list: its
+        // argument defines no function and must not hide the `get` keyword
+        // (#14408 review).
+        let found = sites("package App;\nuse lib qw(get);\nuse Dancer2;\n");
+        assert_eq!(found.len(), 1);
+        assert!(
+            !found[0].shadowed_keywords.iter().any(|k| k == "get"),
+            "a `use lib` path never occupies a glob: {:?}",
+            found[0].shadowed_keywords
+        );
+        // A genuine function-importing module keeps the shadow.
+        let found = sites("package App;\nuse Scalar::Util qw(get);\nuse Dancer2;\n");
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0].shadowed_keywords.iter().any(|k| k == "get"),
+            "a same-named import from another module still shadows"
+        );
+    }
+
+    #[test]
+    fn typeglob_read_does_not_shadow() {
+        // Reading a glob (`*get{CODE}`) defines no function; only a typeglob
+        // assignment installs a glob entry (#14408 review).
+        let found = sites("package App;\nmy $old = *get{CODE};\nuse Dancer2;\n");
+        assert_eq!(found.len(), 1);
+        assert!(
+            !found[0].shadowed_keywords.iter().any(|k| k == "get"),
+            "a glob read defines no function: {:?}",
+            found[0].shadowed_keywords
+        );
+        // The assignment form keeps the shadow.
+        let found = sites("package App;\n*get = \\&impl;\nuse Dancer2;\n");
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0].shadowed_keywords.iter().any(|k| k == "get"),
+            "a typeglob assignment installs the glob and shadows the import"
+        );
+    }
+
+    #[test]
+    fn qualified_typeglob_assignment_lands_on_its_declared_package() {
+        // `*App::get = ...` inside package Main installs App::get: Main's
+        // own keyword set is untouched (#14408 review).
+        let found = sites("package Main;\n*App::get = \\&impl;\nuse Dancer2;\n");
+        assert_eq!(found.len(), 1);
+        assert!(
+            !found[0].shadowed_keywords.iter().any(|k| k == "get"),
+            "the qualified glob belongs to App, not Main: {:?}",
+            found[0].shadowed_keywords
+        );
+    }
+
+    #[test]
+    fn parenthesized_v_string_is_an_import_argument() {
+        // `use Dancer2 (v2.01)` passes the v-string to `import`, where the
+        // odd arity dies: the parenthesized list never claims the bare
+        // VERSION slot (#14408 review).
+        let found = sites("package App;\nuse Dancer2 (v2.01);\n");
+        assert_eq!(found.len(), 1);
+        assert!(found[0].evidence.version_slot_spellings.is_empty());
+        assert!(
+            found[0].evidence.odd_argument_count,
+            "the unmodeled lone argument keeps the pinned odd-arity die"
+        );
+        // The bare form keeps the version slot and stays clean.
+        let found = sites("package App;\nuse Dancer2 v2.01;\n");
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].evidence.version_slot_spellings,
+            vec!["v2.01".to_string()],
+            "the bare requirement claims the VERSION slot"
+        );
+        assert!(!found[0].evidence.odd_argument_count);
     }
 }

@@ -53,6 +53,7 @@ use crate::framework::{
 };
 use crate::framework_adapters::dancer2::{AppNameSelection, DslKeywordScope, DslSelection};
 use crate::{Confidence, SourceGeneration};
+use std::cmp::Ordering;
 
 /// Framework name handled by this adapter.
 pub const DANCER2_TWO_X_FRAMEWORK_NAME: &str = "Dancer2";
@@ -291,8 +292,11 @@ pub fn dancer2_two_x_descriptor() -> AdapterDescriptor {
 /// rather than silently picking one.
 #[must_use]
 pub fn detect_dancer2_two_x(input: &AdapterDetectionInput) -> AdapterDetectionResult {
-    let descriptor = &input.descriptor;
-    if descriptor.adapter_id != DANCER2_TWO_X_ADAPTER_ID {
+    // A malformed selector list, version policy, or disposition must not
+    // drive this detector: only the complete canonical descriptor passes,
+    // mirroring the peer adapters (#14408 review).
+    if input.descriptor != dancer2_two_x_descriptor() {
+        let descriptor = &input.descriptor;
         return AdapterDetectionResult::for_input(
             input,
             DetectionOutcome::Unsupported {
@@ -306,6 +310,7 @@ pub fn detect_dancer2_two_x(input: &AdapterDetectionInput) -> AdapterDetectionRe
     if input.cancellation.is_cancelled {
         return AdapterDetectionResult::for_input(input, DetectionOutcome::Cancelled);
     }
+    let descriptor = &input.descriptor;
     let matching: Vec<&ModuleSelectorEvaluation> = input
         .module_observation
         .evaluations
@@ -373,6 +378,34 @@ pub fn detect_dancer2_two_x(input: &AdapterDetectionInput) -> AdapterDetectionRe
             },
         ),
         ModuleSelectorOutcome::Matched { activation, evidence_class } => {
+            // Stale resolver evidence must not activate the profile: every
+            // load-bearing generation — the observation receipt, the matched
+            // activation row, and the observed version — must be known and
+            // equal before anything detects (#14408 review).
+            let observation_generation = &input.module_observation.generation;
+            if !observation_generation.is_known() {
+                return AdapterDetectionResult::for_input(
+                    input,
+                    DetectionOutcome::Unsupported {
+                        reason: "observation receipt generation is unknown; detection cannot \
+                                 be reconciled with the current project state"
+                            .to_string(),
+                    },
+                );
+            }
+            if !activation.generation.is_known() || &activation.generation != observation_generation
+            {
+                return AdapterDetectionResult::for_input(
+                    input,
+                    DetectionOutcome::Unsupported {
+                        reason: format!(
+                            "matched Dancer2 activation generation {:?} does not reconcile \
+                             with the observation generation {:?}",
+                            activation.generation, observation_generation
+                        ),
+                    },
+                );
+            }
             let identity_confidence = evidence_class.confidence_ceiling();
             if identity_confidence != Confidence::High {
                 // A module named Dancer2 without resolved supported identity
@@ -397,6 +430,20 @@ pub fn detect_dancer2_two_x(input: &AdapterDetectionInput) -> AdapterDetectionRe
                     },
                 ),
                 Some(version) => {
+                    if !version.generation.is_known()
+                        || &version.generation != observation_generation
+                    {
+                        return AdapterDetectionResult::for_input(
+                            input,
+                            DetectionOutcome::Unsupported {
+                                reason: format!(
+                                    "observed Dancer2 version generation {:?} does not \
+                                     reconcile with the observation generation {:?}",
+                                    version.generation, observation_generation
+                                ),
+                            },
+                        );
+                    }
                     match crate::framework::version_constraint_matches(
                         DANCER2_TWO_X_VERSION_CONSTRAINT,
                         &version.version,
@@ -515,6 +562,15 @@ pub struct Dancer2TwoXImportEvidence {
 #[must_use]
 pub fn parse_dancer2_two_x_import_args(args: &[String]) -> Dancer2TwoXImportEvidence {
     parse_dancer2_two_x_import_args_inner(args, true)
+}
+
+/// Parse the argument list of a parenthesized import (`use Dancer2 (...);`).
+/// The parentheses are consumed by the parser, so a leading v-string there is
+/// an import argument — Perl only honors the bare `use MODULE VERSION` slot
+/// outside a list (#14408 review).
+#[must_use]
+pub fn parse_parenthesized_dancer2_two_x_import_args(args: &[String]) -> Dancer2TwoXImportEvidence {
+    parse_dancer2_two_x_import_args_inner(args, false)
 }
 
 /// `version_slot` marks whether the first positional token may still be the
@@ -641,11 +697,15 @@ fn option_value(token: &str, quoting: TokenQuoting) -> OptionValue {
         // Double quotes interpolate sigils anywhere in the text.
         token.contains('$') || token.contains('@') || token.contains('%') || token.contains('\\')
     } else {
+        // An unquoted value computes when it sigil-expands, calls code
+        // (`&handler`, `func(...)`), or dispatches a method (`->`).
         token.starts_with('$')
             || token.starts_with('@')
             || token.starts_with('%')
+            || token.starts_with('&')
             || token.starts_with('\\')
             || token.contains('(')
+            || token.contains("->")
     };
     if dynamic {
         return OptionValue::Dynamic;
@@ -694,14 +754,70 @@ fn split_delimited_quote_like<'a>(token: &'a str, kind: &str) -> Option<(String,
         }
         if character == close {
             if depth == 0 {
-                let inner = &after_open[..index];
+                let inner = unescape_delimited_body(&after_open[..index], open, close);
                 let rest = &after_open[index + close.len_utf8()..];
-                return Some((inner.to_string(), open, rest));
+                return Some((inner, open, rest));
             }
             depth -= 1;
         }
     }
     None
+}
+
+/// Fold the two escapes Perl honors inside a quote-like body (`\` before a
+/// delimiter or before another backslash) into their literal characters.
+/// Any other backslash stays part of the text, exactly like single-quote
+/// semantics (#14408 review).
+fn unescape_delimited_body(inner: &str, open: char, close: char) -> String {
+    if !inner.contains('\\') {
+        return inner.to_string();
+    }
+    let mut out = String::with_capacity(inner.len());
+    let mut characters = inner.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\\' {
+            match characters.peek() {
+                Some(next) if *next == open || *next == close || *next == '\\' => {
+                    out.push(*next);
+                    characters.next();
+                }
+                _ => out.push(character),
+            }
+        } else {
+            out.push(character);
+        }
+    }
+    out
+}
+
+/// The words of a `qw` body. `\ ` (backslash before whitespace) keeps one
+/// literal whitespace character inside the current word instead of splitting
+/// it (#14408 review).
+fn split_qw_words(inner: &str) -> Vec<String> {
+    let mut words: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut characters = inner.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\\' {
+            match characters.peek() {
+                Some(next) if next.is_whitespace() => {
+                    current.push(*next);
+                    characters.next();
+                }
+                _ => current.push(character),
+            }
+        } else if character.is_whitespace() {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(character);
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
 }
 
 /// How a token reached the import list, which decides interpolation.
@@ -734,7 +850,7 @@ impl ImportToken {
 /// qw construct. Exposed for the analyzer's import-shadow analysis.
 pub fn qw_words(token: &str) -> Option<Vec<String>> {
     let (inner, _open, _rest) = split_delimited_quote_like(token, "qw")?;
-    Some(inner.split_whitespace().map(ToString::to_string).collect())
+    Some(split_qw_words(&inner))
 }
 
 fn normalize_import_tokens(arg: &str) -> Vec<ImportToken> {
@@ -747,9 +863,9 @@ fn normalize_import_tokens(arg: &str) -> Vec<ImportToken> {
     // symmetric punctuation) is honored — qw words never interpolate and can
     // never occupy the VERSION slot.
     if let Some((inner, _open, _rest)) = split_delimited_quote_like(token, "qw") {
-        return inner
-            .split_whitespace()
-            .map(|word| ImportToken { text: word.to_string(), quoting: TokenQuoting::Qw })
+        return split_qw_words(&inner)
+            .into_iter()
+            .map(|word| ImportToken { text: word, quoting: TokenQuoting::Qw })
             .collect();
     }
     // Quote-like `q{}`/`qq()` forms: `q` never interpolates, `qq` does. A
@@ -775,8 +891,40 @@ fn normalize_import_tokens(arg: &str) -> Vec<ImportToken> {
         });
     match unquoted {
         Some((inner, quoting)) => vec![ImportToken { text: inner.to_string(), quoting }],
-        None => vec![ImportToken::unquoted(token.to_string())],
+        // One parser token can carry several source tokens — a computed
+        // option (`appname => $var`), a paren-list fragment
+        // (`('appname', $var)`), or trailing commas. Splitting on `,` and
+        // `=>` keeps each import argument one token so the arity and pairing
+        // model see exactly what upstream `import` receives (#14408 review).
+        None => split_unquoted_token(token),
     }
+}
+
+fn split_unquoted_token(token: &str) -> Vec<ImportToken> {
+    let mut pieces: Vec<&str> = Vec::new();
+    for piece in token.split(',') {
+        for part in piece.split("=>") {
+            pieces.push(part);
+        }
+    }
+    let separated = pieces.len() > 1 || pieces.iter().any(|piece| piece.trim().is_empty());
+    let trimmed: Vec<&str> =
+        pieces.iter().map(|piece| piece.trim()).filter(|piece| !piece.is_empty()).collect();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    if !separated {
+        // No comma or fat comma in the token: it is one plain argument.
+        return vec![ImportToken::unquoted(trimmed[0].to_string())];
+    }
+    let mut tokens = Vec::new();
+    for piece in trimmed {
+        // A separated piece carries no `,`/`=>` any more, so each
+        // re-normalization terminates after unwrapping nested quote-like
+        // forms (`q{...}`).
+        tokens.extend(normalize_import_tokens(piece));
+    }
+    tokens
 }
 
 /// Final activation state of one Dancer2 2.x activation site.
@@ -875,10 +1023,13 @@ pub fn dancer2_two_x_application_identity(
 /// 1. an explicit empty import list never calls `import` — nothing activates;
 /// 2. the detection outcome gates everything: only a resolved, supported 2.x
 ///    identity can carry facts;
-/// 3. the pinned odd-argument die dominates any other import effect;
-/// 4. dynamic boundaries (computed appname/DSL, unmodeled options) refuse
+/// 3. a source version requirement the installed release does not satisfy
+///    dies in `MODULE->VERSION` before `import` runs, and an incomparable
+///    requirement is an explicit dynamic boundary;
+/// 4. the pinned odd-argument die dominates any other import effect;
+/// 5. dynamic boundaries (computed appname/DSL, unmodeled options) refuse
 ///    exactness explicitly;
-/// 5. exact activation mints the pinned keyword contract last.
+/// 6. exact activation mints the pinned keyword contract last.
 #[must_use]
 pub fn dancer2_two_x_activation_facts(
     detection: &AdapterDetectionResult,
@@ -924,6 +1075,40 @@ pub fn dancer2_two_x_activation_facts(
         }
     };
 
+    // Step 2.5: Perl checks `use MODULE VERSION` (`MODULE->VERSION(REQUIRED)`)
+    // before `import` runs, so a source requirement the installed release
+    // does not satisfy dies at compile time and never reaches the keyword
+    // contract; a requirement that cannot be compared is an honest dynamic
+    // boundary, not exactness (#14408 review).
+    if let Some(requirement) = evidence.version_slot_spellings.first() {
+        match compare_version_requirement(requirement, &framework_version) {
+            Some(Ordering::Less) | Some(Ordering::Equal) => {}
+            Some(Ordering::Greater) => {
+                return base(
+                    Dancer2TwoXActivationState::NotActivated {
+                        reason: format!(
+                            "source requires Dancer2 {requirement}; installed release \
+                             {framework_version} does not satisfy it, so Perl dies in \
+                             MODULE->VERSION before import runs"
+                        ),
+                    },
+                    Vec::new(),
+                );
+            }
+            None => {
+                return base(
+                    Dancer2TwoXActivationState::DynamicBoundary {
+                        reason: format!(
+                            "source version requirement `{requirement}` cannot be compared \
+                             against installed release `{framework_version}`"
+                        ),
+                    },
+                    Vec::new(),
+                );
+            }
+        }
+    }
+
     // Step 3: the pinned arity die precedes every effectful import step.
     if evidence.odd_argument_count {
         return base(
@@ -954,6 +1139,74 @@ pub fn dancer2_two_x_activation_facts(
         },
         keywords,
     )
+}
+
+/// Compare a spelled source version requirement against an installed
+/// release under Perl version semantics. A leading `v` (or two or more
+/// dots) makes the spelling dotted-decimal: components split on `.`/`_`.
+/// A single-dot decimal (`2.01`) groups its fraction in three-digit runs
+/// padded on the right (`2.01` == v2.10.0, `2.1` == v2.100.0). Missing
+/// components compare as zero, so `v2.0` satisfies `2.0.1`. `None` means
+/// either side is not a comparable numeric version (an underscore dev
+/// spelling, junk text).
+fn compare_version_requirement(requirement: &str, installed: &str) -> Option<Ordering> {
+    let required = perl_version_components(requirement)?;
+    let current = perl_version_components(installed)?;
+    let length = required.len().max(current.len());
+    for index in 0..length {
+        let left = required.get(index).copied().unwrap_or(0);
+        let right = current.get(index).copied().unwrap_or(0);
+        if left != right {
+            return Some(left.cmp(&right));
+        }
+    }
+    Some(Ordering::Equal)
+}
+
+/// Decompose one Perl version spelling into numeric components (see
+/// [`compare_version_requirement`]).
+fn perl_version_components(version: &str) -> Option<Vec<u64>> {
+    let trimmed = version.trim();
+    let dotted = trimmed.starts_with('v');
+    let body = trimmed.strip_prefix('v').unwrap_or(trimmed);
+    if body.is_empty() {
+        return None;
+    }
+    let (major_text, fraction) = match body.split_once('.') {
+        Some((major, rest)) => (major, Some(rest)),
+        None => (body, None),
+    };
+    let mut components = vec![major_text.parse::<u64>().ok()?];
+    match fraction {
+        None => {}
+        Some(fraction) if dotted || fraction.contains('.') => {
+            for component in fraction.split(['.', '_']) {
+                components.push(component.parse::<u64>().ok()?);
+            }
+        }
+        Some(fraction) => {
+            // Decimal fraction: exactly three-digit groups after padding on
+            // the right; an underscore dev spelling stays incomparable.
+            if fraction.is_empty() || fraction.contains('_') || fraction.contains('v') {
+                return None;
+            }
+            let mut digits = String::with_capacity(fraction.len() + 2);
+            for character in fraction.chars() {
+                if character.is_ascii_digit() {
+                    digits.push(character);
+                } else {
+                    return None;
+                }
+            }
+            while !digits.len().is_multiple_of(3) {
+                digits.push('0');
+            }
+            for index in (0..digits.len()).step_by(3) {
+                components.push(digits[index..index + 3].parse::<u64>().ok()?);
+            }
+        }
+    }
+    Some(components)
 }
 
 fn dynamic_boundary_reason(
@@ -1242,6 +1495,171 @@ mod tests {
     }
 
     #[test]
+    fn parenthesized_v_string_is_an_import_argument_not_a_version_slot() {
+        // `use Dancer2 ('v2.01')` delivers its contents to `import`: a
+        // v-string inside the parenthesized list can never claim the bare
+        // VERSION slot (#14408 review).
+        let evidence = parse_parenthesized_dancer2_two_x_import_args(&["v2.01".to_string()]);
+        assert!(evidence.version_slot_spellings.is_empty());
+        assert!(
+            evidence.odd_argument_count,
+            "the unmodeled lone argument keeps the pinned odd-arity die"
+        );
+        // The same spelling outside parens still claims the slot.
+        let bare = parse_dancer2_two_x_import_args(&["v2.01".to_string()]);
+        assert_eq!(bare.version_slot_spellings, vec!["v2.01".to_string()]);
+        assert!(!bare.odd_argument_count);
+    }
+
+    #[test]
+    fn computed_option_tokens_stay_one_argument_each() {
+        // `appname => $var` may arrive as ONE parser token: splitting on the
+        // fat comma keeps the pairing and the dynamic boundary instead of a
+        // false odd-arity death or a mis-keyed unmodeled option (#14408
+        // review).
+        let evidence = parse_dancer2_two_x_import_args(&["appname => $var".to_string()]);
+        assert!(!evidence.odd_argument_count);
+        assert!(matches!(evidence.appname, Some(AppNameSelection::Dynamic { .. })));
+        assert!(evidence.unmodeled_options.is_empty());
+    }
+
+    #[test]
+    fn amper_and_method_call_appname_values_are_dynamic() {
+        // `&handler` and `Self->name` compute at runtime: neither is a
+        // literal application identity (#14408 review).
+        let evidence = parse_dancer2_two_x_import_args(&["appname => &handler".to_string()]);
+        assert!(matches!(evidence.appname, Some(AppNameSelection::Dynamic { .. })));
+        let evidence = parse_dancer2_two_x_import_args(&["appname => Self->name".to_string()]);
+        assert!(matches!(evidence.appname, Some(AppNameSelection::Dynamic { .. })));
+    }
+
+    #[test]
+    fn escaped_qw_space_keeps_one_import_argument() {
+        // `qw(!get\ post)` is ONE word `!get post` in Perl: a backslash
+        // before whitespace stays inside the word, so the modeled arity never
+        // falsely dies (#14408 review).
+        let evidence = parse_dancer2_two_x_import_args(&["qw(!get\\ post)".to_string()]);
+        assert!(!evidence.odd_argument_count);
+        assert!(evidence.excluded_keywords.contains(&"get post".to_string()));
+    }
+
+    #[test]
+    fn escaped_close_folds_inside_a_delimited_value() {
+        // `q{My\}App}` is the string `My}App` in Perl: the folded escape must
+        // reach the appname literal, not the raw backslash text (#14408
+        // review).
+        let evidence = parse_dancer2_two_x_import_args(&["appname => q{My\\}App}".to_string()]);
+        assert_eq!(evidence.appname, Some(AppNameSelection::Literal("My}App".to_string())));
+    }
+
+    #[test]
+    fn version_comparison_follows_perl_decimal_grouping() {
+        // Decimal fractions group in threes: `2.01` == v2.10.0, `2.1` ==
+        // v2.100.0 — so every ordering below is the Perl-true one, however
+        // the float spellings look.
+        assert_eq!(compare_version_requirement("2.01", "2.0.1"), Some(Ordering::Greater));
+        assert_eq!(compare_version_requirement("2.1", "2.01"), Some(Ordering::Greater));
+        assert_eq!(compare_version_requirement("2.01", "2.1.0"), Some(Ordering::Greater));
+        assert_eq!(compare_version_requirement("2.01", "2.10.0"), Some(Ordering::Equal));
+        // Missing dotted components compare as zero: `v2.0` (v2.0.0) is
+        // below `2.0.1` but still satisfied by it (requirement != Greater).
+        assert_eq!(compare_version_requirement("v2.0", "2.0.1"), Some(Ordering::Less));
+        // Junk and underscore dev spellings stay incomparable (fail closed).
+        assert_eq!(compare_version_requirement("2.a", "2.0.1"), None);
+        assert_eq!(compare_version_requirement("2.01_01", "2.1.0"), None);
+    }
+
+    #[test]
+    fn unsatisfied_source_version_requirement_blocks_exact_activation() {
+        // Perl runs MODULE->VERSION(REQUIRED) before import: a requirement
+        // the installed release does not satisfy dies at compile time, so no
+        // keyword contract may be minted (#14408 review).
+        let mut evidence = parse_dancer2_two_x_import_args(&[]);
+        evidence.version_slot_spellings = vec!["2.1.0".to_string()];
+        let facts = dancer2_two_x_activation_facts(&detected(), Some("MyApp"), &evidence, &[]);
+        assert!(matches!(facts.state, Dancer2TwoXActivationState::NotActivated { .. }));
+    }
+
+    #[test]
+    fn satisfied_and_unparseable_version_requirements() {
+        // A satisfied requirement keeps the exact path reachable...
+        let mut evidence = parse_dancer2_two_x_import_args(&[]);
+        evidence.version_slot_spellings = vec!["v2.0".to_string()];
+        let facts = dancer2_two_x_activation_facts(&detected(), Some("MyApp"), &evidence, &[]);
+        assert!(matches!(facts.state, Dancer2TwoXActivationState::Exact { .. }));
+        // ...while an incomparable requirement fails closed as a dynamic
+        // boundary instead of minting exact facts.
+        let mut evidence = parse_dancer2_two_x_import_args(&[]);
+        evidence.version_slot_spellings = vec!["2.a".to_string()];
+        let facts = dancer2_two_x_activation_facts(&detected(), Some("MyApp"), &evidence, &[]);
+        assert!(matches!(facts.state, Dancer2TwoXActivationState::DynamicBoundary { .. }));
+    }
+
+    #[test]
+    fn stale_activation_generation_fails_closed() {
+        use crate::framework::DetectionEvidenceClass;
+        // The matched activation row was observed at an earlier generation
+        // than the receipt: stale resolver evidence cannot activate the
+        // profile (#14408 review).
+        let stale = detect_dancer2_two_x(&detection_input(
+            vec![matched_two_x(Some("2.0.1"), "gen-0", DetectionEvidenceClass::ResolvedModule)],
+            "gen-1",
+        ));
+        assert!(matches!(stale.outcome, DetectionOutcome::Unsupported { .. }));
+    }
+
+    #[test]
+    fn stale_version_generation_fails_closed() {
+        use crate::framework::{
+            DetectionEvidenceClass, ModuleActivationIdentity, ModuleSelectorEvaluation,
+            ModuleSelectorOutcome, ModuleVersionEvidence,
+        };
+        // Activation current, but its version evidence observed earlier: the
+        // mismatch must fail closed before the constraint is even checked.
+        let activation = ModuleActivationIdentity::new(
+            "Dancer2",
+            Some(crate::FileId(7)),
+            SourceGeneration::known("gen-1"),
+        )
+        .with_observed_version(ModuleVersionEvidence::new(
+            "2.0.1",
+            SourceGeneration::known("gen-0"),
+        ));
+        let input = detection_input(
+            vec![ModuleSelectorEvaluation::new(
+                "Dancer2",
+                ModuleSelectorOutcome::Matched {
+                    activation,
+                    evidence_class: DetectionEvidenceClass::ResolvedModule,
+                },
+            )],
+            "gen-1",
+        );
+        let result = detect_dancer2_two_x(&input);
+        assert!(matches!(result.outcome, DetectionOutcome::Unsupported { .. }));
+    }
+
+    #[test]
+    fn malformed_descriptor_with_matching_id_fails_closed() {
+        use crate::framework::{AdapterDescriptor, AdapterDisposition};
+        // Only the complete canonical descriptor may drive the detector: a
+        // lookalike with a different name fails closed like any foreign
+        // descriptor (#14408 review).
+        let lookalike = AdapterDescriptor::new(
+            DANCER2_TWO_X_ADAPTER_ID,
+            "dancer2-2x-lookalike",
+            DANCER2_TWO_X_FRAMEWORK_NAME,
+            Some(DANCER2_TWO_X_VERSION_CONSTRAINT.to_string()),
+            DANCER2_TWO_X_DESCRIPTOR_REVISION,
+            AdapterDisposition::Shadow,
+        );
+        let mut input = detection_input(vec![absent_selector("Dancer2", "gen-1")], "gen-1");
+        input.descriptor = lookalike;
+        let result = detect_dancer2_two_x(&input);
+        assert!(matches!(result.outcome, DetectionOutcome::Unsupported { .. }));
+    }
+
+    #[test]
     fn suppressed_import_is_detectable_on_evidence() {
         let mut evidence = parse_dancer2_two_x_import_args(&[]);
         assert!(!evidence.import_suppressed);
@@ -1480,13 +1898,14 @@ mod tests {
     #[test]
     fn escaped_delimiter_does_not_truncate_a_q_string_argument() {
         // `q{...}` is ONE string argument: word-splitting never applies. The
-        // escaped close stays literal text, so the exclusion is the whole
-        // inner string minus the leading `!` — not a truncation at `\\}`.
+        // escaped close folds to a literal `}` in Perl (`q{\} is `}`), so the
+        // exclusion is the whole inner string minus the leading `!` with the
+        // escape folded — not a truncation at the delimiter (#14408 review).
         let evidence = parse_dancer2_two_x_import_args(&["q{!get \\} !post}".to_string()]);
         assert_eq!(
             evidence.excluded_keywords,
-            vec!["get \\} !post".to_string()],
-            "the escaped close must stay literal text inside the single string argument"
+            vec!["get } !post".to_string()],
+            "the escaped close folds to a literal delimiter inside the single string argument"
         );
         // The single-word form remains an exclusion.
         let evidence = parse_dancer2_two_x_import_args(&["q{!get}".to_string()]);
@@ -1532,7 +1951,7 @@ mod tests {
                 vec!["get".to_string(), "put".to_string()],
                 "{spelling}: delimiter must yield the exact words"
             );
-            assert_eq!(evidence.odd_argument_count, false, "{spelling}: word count");
+            assert!(!evidence.odd_argument_count, "{spelling}: word count");
         }
         // The slash delimiter yields the exact words in order (strongest
         // check: same words, exotic delimiter).
@@ -1593,9 +2012,10 @@ mod tests {
 
     #[test]
     fn double_quoted_option_values_are_dynamic_single_quoted_are_literal() {
-        let evidence = parse_dancer2_two_x_import_args(
-            &["appname".to_string(), "\"prefix-$app\"".to_string()].to_vec(),
-        );
+        let evidence = parse_dancer2_two_x_import_args(&[
+            "appname".to_string(),
+            "\"prefix-$app\"".to_string(),
+        ]);
         assert!(
             matches!(evidence.appname, Some(AppNameSelection::Dynamic { .. })),
             "a double-quoted interpolated value must be dynamic: {:?}",

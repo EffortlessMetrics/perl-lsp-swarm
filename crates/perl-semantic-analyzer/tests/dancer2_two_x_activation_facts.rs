@@ -221,6 +221,27 @@ fn explicit_empty_import_activates_nothing() {
     assert!(facts.keywords.is_empty());
 }
 
+// The numeric version spelling `use Dancer2 2.01;` carries its requirement
+// through the full facts path. Perl reads decimal versions in three-digit
+// groups (`2.01` == v2.10.0, `2.0` == v2.0.0), so requirement comparisons
+// are exact where the float spellings mislead (#14408 review, coverage
+// hardening).
+#[test]
+fn numeric_version_requirement_flows_through_the_facts_path() {
+    // `2.0` == v2.0.0, satisfied by the installed v2.0.1: the activation
+    // stays exact.
+    let facts = facts_for_code("package App;\nuse Dancer2 2.0;\n", &detected_two_x("2.0.1"));
+    assert!(facts.is_exact(), "2.0 (v2.0.0) <= 2.0.1 stays exact: {:?}", facts.state);
+    // `2.01` == v2.10.0 > the installed v2.0.1: Perl dies before import,
+    // even though the float reading would suggest otherwise.
+    let facts = facts_for_code("package App;\nuse Dancer2 2.01;\n", &detected_two_x("2.0.1"));
+    assert!(
+        matches!(facts.state, Dancer2TwoXActivationState::NotActivated { .. }),
+        "2.01 (v2.10.0) > 2.0.1: Perl dies in MODULE->VERSION: {:?}",
+        facts.state
+    );
+}
+
 // Version gating: 1.x identities fail the 2.x constraint explicitly; the
 // whole pinned range activates; the upper bound forces re-review.
 #[test]
