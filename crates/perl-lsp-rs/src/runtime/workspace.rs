@@ -2477,11 +2477,6 @@ impl LspServer {
 
                 // Retain only folders that are not in the removed list
                 workspace_folders.retain(|f| !removed_uris.contains(&f.uri));
-
-                // Drop metadata staleness for folders that no longer exist so
-                // the set cannot grow across add/remove cycles and cannot
-                // report a removed folder as stale (#13640).
-                self.stale_dependency_facts.lock().retain(|uri| !removed_uris.contains(uri));
             }
 
             // Workspace folder membership changed, so any in-flight reverse

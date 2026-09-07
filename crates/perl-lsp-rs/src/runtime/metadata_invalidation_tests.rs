@@ -88,6 +88,22 @@ fn declared_modules(server: &LspServer) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn folder_modules(server: &LspServer, folder_uri: &str) -> Vec<String> {
+    server
+        .all_workspace_folders()
+        .iter()
+        .find(|folder| folder.uri == folder_uri)
+        .map(|folder| {
+            folder
+                .effective_workspace_config
+                .declared_dependencies
+                .iter()
+                .map(|dependency| dependency.module.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn include_paths(server: &LspServer) -> Vec<String> {
     server
         .all_workspace_folders()
@@ -175,14 +191,28 @@ fn watched_makefile_pl_refreshes_dependencies_and_stays_perl_source() {
 }
 
 /// One coalesced batch is one observable refresh, not one per event.
+///
+/// Asserting only the counter would pass for an implementation that advanced
+/// the generation without refreshing anything, so this also pins the resulting
+/// facts and proves the refresh is scoped to the folder the events name: a
+/// second registered folder with its own metadata must be untouched.
 #[test]
 fn metadata_burst_advances_the_fact_generation_once() {
     let dir = TempDir::new().expect("tempdir");
+    let other = TempDir::new().expect("other tempdir");
     write_file(&dir, "cpanfile", "requires 'JSON::PP';\n");
     write_file(&dir, "META.json", "{}\n");
     write_file(&dir, "dist.ini", "name = Demo\n");
+    write_file(&other, "cpanfile", "requires 'Other::Folder';\n");
+
     let server = workspace_server(&dir);
+    let mut other_folder =
+        WorkspaceFolderState::new(dir_uri(&other)).with_path(other.path().to_path_buf());
+    other_folder.refresh_workspace_metadata();
+    server.workspace_folders.lock().push(other_folder);
+
     let before = server.dependency_facts_generation();
+    write_file(&dir, "cpanfile", "requires 'YAML::XS';\n");
 
     watched(
         &server,
@@ -197,6 +227,16 @@ fn metadata_burst_advances_the_fact_generation_once() {
         server.dependency_facts_generation(),
         before + 1,
         "a coalesced metadata burst must advance the generation exactly once"
+    );
+    assert_eq!(
+        declared_modules(&server),
+        vec!["YAML::XS".to_string()],
+        "the burst must actually refresh the named folder's facts"
+    );
+    assert_eq!(
+        folder_modules(&server, &dir_uri(&other)),
+        vec!["Other::Folder".to_string()],
+        "a folder the events do not name must be untouched"
     );
 }
 
@@ -312,25 +352,47 @@ fn deleting_a_directory_containing_metadata_refreshes_facts() {
     );
 }
 
-/// A removed workspace folder must not keep a staleness entry.
+/// A removed workspace folder must not keep a staleness entry, and a folder
+/// re-added under the same URI must not inherit the previous incarnation's
+/// stale flag once its disk state is readable again.
 #[test]
-fn removing_a_workspace_folder_prunes_its_stale_marker() {
+fn a_folder_readded_under_the_same_uri_does_not_inherit_stale_state() {
     let dir = TempDir::new().expect("tempdir");
     write_file(&dir, "cpanfile", "requires 'JSON::PP';\n");
     let server = workspace_server(&dir);
+    let uri = dir_uri(&dir);
+
     write_unreadable_cpanfile(&dir);
     watched(&server, &[(&file_uri(&dir, "cpanfile"), CHANGED)]);
-    assert!(server.dependency_facts_are_stale(&dir_uri(&dir)), "folder is stale first");
+    assert!(server.dependency_facts_are_stale(&uri), "folder is stale first");
 
     server
         .handle_did_change_workspace_folders(Some(json!({
-            "event": { "added": [], "removed": [{ "uri": dir_uri(&dir), "name": "ws" }] }
+            "event": { "added": [], "removed": [{ "uri": uri, "name": "ws" }] }
         })))
         .expect("didChangeWorkspaceFolders params are valid");
+    assert!(
+        !server.dependency_facts_are_stale(&uri),
+        "a removed folder must not remain marked stale"
+    );
+
+    // Re-add the same URI with readable disk state.
+    write_file(&dir, "cpanfile", "requires 'YAML::XS';\n");
+    server
+        .handle_did_change_workspace_folders(Some(json!({
+            "event": { "added": [{ "uri": uri, "name": "ws" }], "removed": [] }
+        })))
+        .expect("didChangeWorkspaceFolders params are valid");
+    watched(&server, &[(&file_uri(&dir, "cpanfile"), CHANGED)]);
 
     assert!(
-        !server.dependency_facts_are_stale(&dir_uri(&dir)),
-        "a removed folder must not remain marked stale"
+        !server.dependency_facts_are_stale(&uri),
+        "a re-added folder must not inherit the previous incarnation's stale flag"
+    );
+    assert_eq!(
+        folder_modules(&server, &uri),
+        vec!["YAML::XS".to_string()],
+        "the re-added folder observes its current disk state"
     );
 }
 

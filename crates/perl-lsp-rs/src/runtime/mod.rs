@@ -1036,6 +1036,14 @@ impl LspServer {
 
     /// Evict open-document state and workspace index state for a removed folder.
     pub(crate) fn evict_workspace_folder_state(&self, folder_uri: &str) {
+        // Metadata staleness is folder-scoped, so it is evicted here rather
+        // than at the one current call site: this is the single place that
+        // owns folder eviction, so a future remover cannot miss it (#13640).
+        // Without this the set grows across add/remove cycles and a folder
+        // re-added under the same URI inherits the previous incarnation's
+        // stale flag even when its disk state is fresh.
+        self.stale_dependency_facts.lock().remove(folder_uri);
+
         let folder_keys = Self::uri_key_variants(folder_uri);
         let docs_to_evict = {
             let documents = self.documents.lock();
