@@ -73,6 +73,16 @@ defect_representations = [
 
 consumer_classes = ["production", "test", "reexport", "dormant", "independent_implementation"]
 
+# Tracked `.rs` files the consumer scan cannot parse as Rust. Declaring them is
+# not a way to skip evidence: each is still text-scanned for direct references,
+# each must still actually fail to parse (a stale entry is a violation), and an
+# undeclared unparseable file fails the check. Missing evidence is NOT_PROVEN,
+# never a pass.
+unparseable_paths = [
+  # Perl source samples embedded for executeCommand fixtures; not valid Rust.
+  "crates/perl-lsp-rs/tests/fixtures/parser/comprehensive_syntax_fixtures.rs",
+]
+
 # Paths that name the surface because they *govern* it rather than consume it:
 # the subject module itself and this ledger's own tooling. They are listed here,
 # in the ledger, rather than hidden in the checker, so the exemption is

@@ -34,12 +34,18 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// The constant every current producer stamps on `DeadCode::confidence`.
 const CONSTANT_CONFIDENCE: f32 = 0.9;
 
-fn index_file_str(index: &WorkspaceIndex, uri: &str, code: &str) -> Result<(), String> {
+/// Index one initial source commit.
+///
+/// Uses the canonical `index_initial_file_str` entry point rather than the
+/// `index_file_str` compatibility surface: the #11301 caller ledger caps
+/// compatibility-API growth, and a new test has no reason to add to that
+/// baseline.
+fn index_initial(index: &WorkspaceIndex, uri: &str, code: &str) -> Result<(), String> {
     let indexed_uri = match uri.strip_prefix("file://") {
         Some(path) => perl_uri::fs_path_to_uri(PathBuf::from(path)),
         None => Ok(uri.to_string()),
     }?;
-    index.index_file_str(&indexed_uri, code)
+    index.index_initial_file_str(&indexed_uri, code)
 }
 
 /// A workspace that exercises every construct a reader would expect to produce
@@ -49,7 +55,7 @@ fn import_and_export_workspace() -> Result<WorkspaceIndex, String> {
     let index = WorkspaceIndex::new();
     // `POSIX` and `List::Util::first` are imported and never used; `Exporter`
     // machinery declares exports that nothing outside the package calls.
-    index_file_str(
+    index_initial(
         &index,
         "file:///Imports.pm",
         "package Imports;\n\
@@ -65,7 +71,7 @@ fn import_and_export_workspace() -> Result<WorkspaceIndex, String> {
          }\n\
          1;\n",
     )?;
-    index_file_str(&index, "file:///main.pl", "use Imports;\nreturn 1;\nprint 'x';\n")?;
+    index_initial(&index, "file:///main.pl", "use Imports;\nreturn 1;\nprint 'x';\n")?;
     Ok(index)
 }
 
