@@ -94,6 +94,16 @@ CLI enum: `ModuleTrainCommand` in `xtask/src/main.rs`. No library surface.
 | 18 | a partial implementation counts as landed | `landing_the_residual_component_lands_c02` + `a_partial_node_does_not_satisfy_a_hard_dependent` |
 | 19 | adding a probe turns an unbuilt node into a blocked one | `a_wholly_absent_probed_node_still_reports_through_dependencies` |
 | 20 | a negative fixture silently stops falsifying | `a_fixture_that_cannot_falsify_is_rejected` (removing an absent anchor is an error) |
+| 21 | a selector is satisfied by its own declaration | `no_selector_targets_the_registry_that_declares_it` — `PROBED_NODES` lives in `module_train_probes.rs` and no selector may target that file, so anchor literals can never be the text a selector matches |
+| 22 | a rename silently demotes a landed node to partial | `only_the_recorded_residual_anchors_are_missing_on_the_real_tree` (only C02's recorded residual anchors may be absent) |
+| 23 | a partial node hides its remaining edges | `a_partial_node_still_records_its_dependency_reasons` (dependency typing runs for every non-landed node; presence decides only the state) |
+
+Per-component negative controls exist for all five components:
+`c02_current_tree_probes_component_fails_without_its_projection`,
+`c02_offline_frontier_component_fails_without_its_renderer`,
+`the_live_explain_cannot_satisfy_the_offline_static_packet`,
+`an_implementation_without_its_production_consumer_is_not_landed`, and
+`a_consumer_without_its_implementation_is_not_landed`.
 
 ## §Blast-Radius
 

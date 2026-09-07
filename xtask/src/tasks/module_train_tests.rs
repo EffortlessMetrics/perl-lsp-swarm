@@ -698,7 +698,7 @@ fn unprobed_nodes_stay_not_proven_never_guessed() -> Result<()> {
         if matches!(status.node_id.as_str(), "C01" | "C02" | "C03") {
             continue;
         }
-        if status.implementation_presence != ProbeOutcome::Absent {
+        if status.implementation_presence != ProbeOutcome::Unprobed {
             bail!("node {} has a probe outcome this slice cannot have", status.node_id);
         }
     }
@@ -718,7 +718,7 @@ fn probe_for(node_id: &str, tree: &dyn TreeSource) -> Result<(ProbeOutcome, Vec<
         .iter()
         .find(|node| node.node_id == node_id)
         .ok_or_else(|| color_eyre::eyre::eyre!("node {node_id} not found"))?;
-    node_probe(node, tree)
+    probes::node_probe(node, tree)
 }
 
 /// Falsifier 2 of #11626: a module present on the tree while the production
@@ -822,6 +822,96 @@ fn a_partial_node_does_not_satisfy_a_hard_dependent() -> Result<()> {
     let c03 = status_for(&statuses, "C03")?;
     if !c03.reasons.iter().any(|reason| reason == "hard_dep_not_landed:C02") {
         bail!("a partial C02 must not satisfy C03's hard edge: {:?}", c03.reasons);
+    }
+    Ok(())
+}
+
+/// Anti-vacuity, structural: no selector may target the module that declares
+/// `PROBED_NODES`. If it did, the anchor string literals would live in the very
+/// file being searched, so a component could be satisfied by its own
+/// declaration and would keep passing after its implementation was deleted.
+#[test]
+fn no_selector_targets_the_registry_that_declares_it() -> Result<()> {
+    for path in probes::selector_paths() {
+        if path == probes::REGISTRY_RELATIVE_PATH {
+            bail!(
+                "selector targets {path}, the file holding the anchor literals; \
+                 it could be satisfied by its own declaration"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Negative direction for C02's `current_tree_probes` component. This is only
+/// falsifiable because the anchor literals live in the probe registry module
+/// while the anchors target `module_train.rs`: stripping the real code here
+/// does not also strip the selector that names it.
+#[test]
+fn c02_current_tree_probes_component_fails_without_its_projection() -> Result<()> {
+    let tree = FakeTree::from_real()?
+        .without_anchor("xtask/src/tasks/module_train.rs", "fn project_states")?;
+    let (outcome, unmet) = probe_for("C02", &tree)?;
+    if !unmet.iter().any(|c| c == "current_tree_probes") {
+        bail!("removing project_states must unmeet current_tree_probes: {outcome:?} {unmet:?}");
+    }
+    Ok(())
+}
+
+/// Negative direction for C02's `offline_frontier` component.
+#[test]
+fn c02_offline_frontier_component_fails_without_its_renderer() -> Result<()> {
+    let tree = FakeTree::from_real()?
+        .without_anchor("xtask/src/tasks/module_train.rs", "fn render_next")?;
+    let (outcome, unmet) = probe_for("C02", &tree)?;
+    if !unmet.iter().any(|c| c == "offline_frontier") {
+        bail!("removing render_next must unmeet offline_frontier: {outcome:?} {unmet:?}");
+    }
+    Ok(())
+}
+
+/// A partially implemented node still records what its edges would block on,
+/// rather than reporting only its missing component.
+#[test]
+fn a_partial_node_still_records_its_dependency_reasons() -> Result<()> {
+    let mut value = real_value()?;
+    // Give C02 an unmet hard edge on an unlanded node.
+    add_dep(&mut value, "C02", "E00A", "hard")?;
+    let manifest = parse_manifest(&value)?;
+    let statuses = project_states(&manifest, &real_tree()?)?;
+    let c02 = status_for(&statuses, "C02")?;
+    if c02.state != CurrentTreeState::IncompleteCurrentTree {
+        bail!("presence must still outrank the edge for the state: {:?}", c02.state);
+    }
+    if !c02.reasons.iter().any(|reason| reason == "hard_dep_not_landed:E00A") {
+        bail!("a partial node must still show its unmet edge: {:?}", c02.reasons);
+    }
+    Ok(())
+}
+
+/// Anchor currency: on the real tree, exactly the anchors of C02's recorded
+/// residual component may be missing. Any other missing anchor means a rename
+/// silently drifted the registry away from the code — which would quietly
+/// demote a landed node to `partial` rather than fail loudly.
+#[test]
+fn only_the_recorded_residual_anchors_are_missing_on_the_real_tree() -> Result<()> {
+    let tree = real_tree()?;
+    let residual = ["ModuleTrainCommand::Explain", "module_train::run_explain"];
+    let mut missing: Vec<&str> = Vec::new();
+    for (path, anchor) in probes::selector_anchors() {
+        let present = tree.read_text(path)?.is_some_and(|text| text.contains(anchor));
+        if !present {
+            missing.push(anchor);
+        }
+    }
+    missing.sort_unstable();
+    let mut expected = residual;
+    expected.sort_unstable();
+    if missing != expected {
+        bail!(
+            "registry anchors drifted from the code: missing={missing:?}, \
+             expected only the recorded residual {expected:?}"
+        );
     }
     Ok(())
 }
