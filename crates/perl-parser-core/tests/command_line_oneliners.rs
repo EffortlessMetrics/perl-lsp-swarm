@@ -26,6 +26,8 @@ type TestResult = Result<(), Box<dyn Error>>;
 #[derive(Debug, Clone, Copy)]
 struct AstFact {
     kind: &'static str,
+    /// Compact node text, or empty to match kind and payload only.
+    /// Empty is for leaky parser ranges that must not become the contract.
     exact: &'static str,
     payload: Option<&'static str>,
 }
@@ -36,6 +38,7 @@ struct AnchorFact {
     parent_exact: &'static str,
     parent_payload: Option<&'static str>,
     child_kind: &'static str,
+    /// Compact child text, or empty to match child kind under the parent only.
     child_exact: &'static str,
 }
 
@@ -104,7 +107,7 @@ fn node_payload(node: &Node) -> Option<&str> {
 
 fn node_matches(source: &str, node: &Node, kind: &str, exact: &str, payload: Option<&str>) -> bool {
     node.kind.kind_name() == kind
-        && node_text(source, node) == exact
+        && (exact.is_empty() || node_text(source, node) == exact)
         && payload.is_none_or(|expected| node_payload(node) == Some(expected))
 }
 
@@ -283,7 +286,7 @@ fn prove_anchor(source: &str, ast: &Node, hir: &HirFile, fact: AnchorFact) -> Re
         node_matches(source, node, fact.parent_kind, fact.parent_exact, fact.parent_payload)
             && node.children().into_iter().any(|child| {
                 child.kind.kind_name() == fact.child_kind
-                    && node_text(source, child) == fact.child_exact
+                    && (fact.child_exact.is_empty() || node_text(source, child) == fact.child_exact)
             })
     });
     if found {
@@ -853,8 +856,9 @@ const E_PARENTHESIZED_SPLIT_SLICE: NamedIdiom = NamedIdiom {
     source: r#"print +(split)[0];"#,
     nodes: &[
         AstFact { kind: "Unary", exact: "+(split)[0]", payload: Some("+") },
-        // Binary range starts at `split`; the opening paren belongs to the unary `+`.
-        AstFact { kind: "Binary", exact: "split)[0]", payload: Some("[]") },
+        // Binary `[]` currently spans the leaky `split)[0]`. Empty exact keeps
+        // kind+payload as the contract so a later balanced range still passes.
+        AstFact { kind: "Binary", exact: "", payload: Some("[]") },
         AstFact { kind: "FunctionCall", exact: "split", payload: Some("split") },
         AstFact { kind: "Number", exact: "0", payload: None },
     ],
@@ -864,18 +868,18 @@ const E_PARENTHESIZED_SPLIT_SLICE: NamedIdiom = NamedIdiom {
             parent_exact: "+(split)[0]",
             parent_payload: Some("+"),
             child_kind: "Binary",
-            child_exact: "split)[0]",
+            child_exact: "",
         },
         AnchorFact {
             parent_kind: "Binary",
-            parent_exact: "split)[0]",
+            parent_exact: "",
             parent_payload: Some("[]"),
             child_kind: "FunctionCall",
             child_exact: "split",
         },
         AnchorFact {
             parent_kind: "Binary",
-            parent_exact: "split)[0]",
+            parent_exact: "",
             parent_payload: Some("[]"),
             child_kind: "Number",
             child_exact: "0",
@@ -1102,6 +1106,40 @@ command_line_oneliner!(ne_bare_capture_variable, "-ne", NE_BARE_CAPTURE_VARIABLE
 fn named_idioms_share_one_structural_table() -> TestResult {
     for idiom in NAMED_IDIOMS {
         prove_idiom(*idiom).map_err(|error| format!("{}: {error}", idiom.switches))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn parenthesized_split_index_keeps_kind_payload_and_children_not_leaky_span() -> TestResult {
+    let binary = E_PARENTHESIZED_SPLIT_SLICE
+        .nodes
+        .iter()
+        .find(|node| node.kind == "Binary")
+        .ok_or("split-index idiom must name a Binary node")?;
+    if !binary.exact.is_empty() {
+        return Err(format!(
+            "Binary [] must not freeze a leaky span such as split)[0]; exact={:?}",
+            binary.exact
+        )
+        .into());
+    }
+    if binary.payload != Some("[]") {
+        return Err(format!("Binary payload must be []; got {:?}", binary.payload).into());
+    }
+    if !E_PARENTHESIZED_SPLIT_SLICE.anchors.iter().any(|anchor| {
+        anchor.parent_kind == "Unary"
+            && anchor.child_kind == "Binary"
+            && anchor.child_exact.is_empty()
+    }) {
+        return Err("Unary must anchor a Binary child without pinning leaky child text".into());
+    }
+    if !E_PARENTHESIZED_SPLIT_SLICE
+        .hir
+        .iter()
+        .any(|fact| matches!(fact, HirFact::IndexBinary { lhs: "split", rhs: "0" }))
+    {
+        return Err("split-index idiom must keep IndexBinary lhs=split rhs=0".into());
     }
     Ok(())
 }
