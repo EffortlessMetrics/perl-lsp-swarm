@@ -41,20 +41,30 @@
 //!
 //! [`crate::PureRustPerlParser::parse`] rewrites the caller-supplied source
 //! before Pest ever sees it (for example `$$name` becomes `${$name}`, and
-//! `= ~expr` becomes `= bitnot(expr)`). Pest parses that *normalized* string,
-//! not the caller's original source, so every [`crate::StrictParseError`]
-//! produced by `parse()` carries a [`crate::SourceRange`] into the normalized
-//! text. That range coincides with an offset into the caller's original
-//! source only when normalization was a no-op for the affected region. Do not
-//! treat a `Rejected` range from `parse()` as a caller-source byte offset
-//! without first confirming normalization did not shift it.
+//! `= ~expr` becomes `= bitnot(expr)`), which shifts every byte after a
+//! rewrite. Pest's offsets therefore index the rewritten buffer, and are
+//! translated back through that rewrite before they reach
+//! [`ParseError::Rejected`]. A rejection's [`crate::SourceRange`] is an offset
+//! into the source the caller passed in — which is what
+//! [`crate::StrictParseError`] documents, and what a consumer highlighting or
+//! slicing the caller's own text needs.
+//!
+//! One boundary is worth naming: when the reported offset falls *inside* a
+//! rewritten region, it resolves to the start of the span that region was
+//! rewritten from. Those bytes have no finer-grained original to point at, and
+//! the span start is the token the caller actually wrote.
+//!
+//! Pest's own rendering is retained verbatim in
+//! [`crate::StrictParseError::pest_context`] and still describes the rewritten
+//! buffer. It is diagnostic context, never the range authority.
 
 use crate::outcome::{ParserFailure, StrictParseError};
 use serde::{Deserialize, Serialize};
 
-/// Single fallible-return error type for this crate's public parsing API.
+/// Error type returned by this crate's public parsing API.
 ///
-/// See the [module docs](self) for the normalization/range caveat that
+/// See the [module docs](self) for how this relates to
+/// [`crate::OutcomeError`], and for the normalization/range handling that
 /// applies to `Rejected` values produced by
 /// [`crate::PureRustPerlParser::parse`].
 #[non_exhaustive]
@@ -62,8 +72,8 @@ use serde::{Deserialize, Serialize};
 pub enum ParseError {
     /// Parser-domain rejection. Not an instrument failure.
     ///
-    /// When produced by [`crate::PureRustPerlParser::parse`], the carried
-    /// range refers to the *normalized* source Pest actually parsed; see the
+    /// The carried range is an offset into the source the caller supplied,
+    /// even when `parse()` rewrote that source before Pest saw it; see the
     /// [module docs](self).
     #[error(transparent)]
     Rejected(StrictParseError),

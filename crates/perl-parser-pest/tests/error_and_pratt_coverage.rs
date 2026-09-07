@@ -249,56 +249,89 @@ fn unknown_schema_and_legacy_shaped_payloads_fail_loudly() -> Result<(), Box<dyn
 }
 
 // ---------------------------------------------------------------------------
-// Normalization/range caveat: `parse()` rewrites `source` before Pest ever
-// sees it, so a `Rejected` range from `parse()` is an offset into that
-// rewritten text, not necessarily into the caller's original `source`. This
-// pins one concrete normalization-triggering case.
+// Normalization and ranges: `parse()` rewrites `source` before Pest ever sees
+// it, so Pest's offsets index the rewritten buffer. They are translated back
+// before they reach `Rejected`, because `StrictParseError` documents its range
+// as an offset into the caller's own source.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn rejected_range_from_parse_refers_to_normalized_source_not_caller_source()
--> Result<(), Box<dyn Error>> {
+fn rejected_range_from_parse_is_translated_back_to_the_caller_source() -> Result<(), Box<dyn Error>>
+{
     let mut parser = PureRustPerlParser::new();
-    // `$$name` is rewritten to `${$name}` by `normalize_source` before Pest
-    // parses it, which is 2 bytes longer than the caller's original text.
+    // `$$name` (6 bytes) is rewritten to `${$name}` (8 bytes) before Pest
+    // parses it, shifting everything after it by two. Pest reports the failure
+    // inside `???` of the normalized `${$name} ???\n`; untranslated, that
+    // offset would land on the trailing newline of the caller's 11-byte source
+    // and silently contradict `StrictParseError`'s caller-source contract.
     let source = "$$name ???\n";
-    assert_eq!(source.len(), 11);
-    // The malformed `???` tokens the parser actually chokes on start at byte
-    // 7 in the caller's *original* source.
-    if &source[7..10] != "???" {
-        return Err(format!("fixture assumption broke: {:?}", &source[7..10]).into());
+    let question_marks = 7..10;
+    if source.len() != 11 || &source[question_marks.clone()] != "???" {
+        return Err(format!("fixture assumption broke: {source:?}").into());
     }
 
     let rejection = expect_rejected(&mut parser, source)?;
+    let (start, end) = (rejection.range().start(), rejection.range().end());
 
-    // Pinned: the range `parse()` reports is [10, 10), an offset into the
-    // *normalized* `${$name} ???\n` text (where byte 10 sits between the
-    // second and third `?`), not into the caller's original source (where
-    // byte 10 is the trailing newline, three bytes past where `???` starts).
-    assert_eq!((rejection.range().start(), rejection.range().end()), (10, 10));
-    if source.as_bytes()[rejection.range().end()] != b'\n' {
+    // The translated offset must land on the `???` the caller actually wrote.
+    // Untranslated it would be 10 — the trailing newline — so this assertion
+    // fails if the translation is removed.
+    if !question_marks.contains(&start) {
         return Err(format!(
-            "expected byte {} of the caller's original source to be the trailing newline \
-             (demonstrating the range is not a caller-source offset), got {:?}",
-            rejection.range().end(),
-            source.as_bytes()[rejection.range().end()] as char
+            "expected the rejection range inside the caller's `???` at {question_marks:?}, \
+             got [{start}, {end}); byte 10 (the untranslated normalized offset) is the \
+             trailing newline"
         )
         .into());
     }
-    // The range is nonetheless valid over the caller's source purely by
-    // coincidence of length (11 bytes is long enough to contain byte 10);
-    // that does not make it a correct caller-source offset. Demonstrate the
-    // *meaning* mismatch instead: at the reported offset the caller's source
-    // holds `\n`, three bytes after where `???` actually starts (byte 7),
-    // while pest's own `pest_context` display places the caret over `???`
-    // in the *normalized* text it parsed.
+    if source.as_bytes()[start] != b'?' {
+        return Err(format!(
+            "caller-source byte {start} should be a `?`, got {:?}",
+            source.as_bytes()[start] as char
+        )
+        .into());
+    }
+    // Pest's own rendering still describes the normalized buffer it parsed;
+    // that is retained verbatim as context and is not the range authority.
     if !rejection.pest_context().contains("???") {
         return Err(format!(
-            "pest_context should show the normalized text pest actually parsed, got {:?}",
+            "pest_context should retain pest's own rendering, got {:?}",
             rejection.pest_context()
         )
         .into());
     }
+    Ok(())
+}
+
+/// When normalization changes nothing, translation must be the identity: the
+/// reported offset has to equal the offset Pest independently reports for the
+/// very same text. This is the control that keeps the mapping from drifting on
+/// the overwhelmingly common un-rewritten path.
+#[test]
+fn rejected_range_is_exact_when_normalization_is_a_no_op() -> Result<(), Box<dyn Error>> {
+    let mut parser = PureRustPerlParser::new();
+    // Contains no `$$name` or `= ~expr` trigger, so `parse()` hands Pest this
+    // exact text.
+    let source = "my = ; ???\n";
+
+    // Independently ask Pest where it fails, without going through `parse()`.
+    let pest_offset = match <PerlParser as pest::Parser<Rule>>::parse(Rule::program, source) {
+        Ok(_) => return Err("fixture must be rejected by pest".into()),
+        Err(error) => match error.location {
+            pest::error::InputLocation::Pos(pos) => pos,
+            pest::error::InputLocation::Span((start, _)) => start,
+        },
+    };
+
+    let rejection = expect_rejected(&mut parser, source)?;
+    let (start, end) = (rejection.range().start(), rejection.range().end());
+    if start != pest_offset {
+        return Err(format!(
+            "un-rewritten source must report pest's own offset {pest_offset}, got [{start}, {end})"
+        )
+        .into());
+    }
+    rejection.range().check_over_source(source)?;
     Ok(())
 }
 
