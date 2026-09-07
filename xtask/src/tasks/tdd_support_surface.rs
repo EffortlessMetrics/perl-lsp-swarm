@@ -1251,21 +1251,28 @@ fn enabled_features(
     workspace_spec: Option<&toml::Value>,
 ) -> BTreeSet<String> {
     let mut enabled = BTreeSet::new();
-    let mut default_on = true;
+    // Cargo unifies features across declarations: `default` survives if any one
+    // declaration keeps it. Latching a single `default-features = false` to the
+    // whole crate would record a false non-consumer when, say, `[dependencies]`
+    // keeps defaults and `[dev-dependencies]` opts out.
+    let mut default_on = false;
+    let mut saw_spec = false;
     for spec in dependency_specs(manifest) {
+        saw_spec = true;
+        let mut spec_disables = spec_disables_default(spec);
         if spec.get("workspace").and_then(toml::Value::as_bool) == Some(true)
             && let Some(root_spec) = workspace_spec
         {
             spec_features(root_spec, &mut enabled);
-            if spec_disables_default(root_spec) {
-                default_on = false;
-            }
+            spec_disables = spec_disables || spec_disables_default(root_spec);
         }
         spec_features(spec, &mut enabled);
-        if spec_disables_default(spec) {
-            default_on = false;
+        if !spec_disables {
+            default_on = true;
         }
     }
+    // No declaration at all is not an activation of `default`.
+    default_on = default_on && saw_spec;
     if let Some(features) = manifest.get("features").and_then(toml::Value::as_table) {
         for value in features.values() {
             let Some(list) = value.as_array() else { continue };

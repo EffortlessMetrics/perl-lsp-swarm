@@ -1080,6 +1080,64 @@ features = ["extra"]"#,
     Ok(())
 }
 
+/// Cargo unifies features across declarations, so one `default-features =
+/// false` cannot switch `default` off for the crate while another declaration
+/// still enables it. Latching the flag to `false` recorded a false
+/// non-consumer of `default`.
+#[test]
+fn one_declaration_disabling_defaults_does_not_deactivate_them_for_the_crate() -> Result<()> {
+    let mixed: toml::Value = toml::from_str(
+        r#"
+[package]
+name = "consumer"
+
+[dependencies]
+perl-tdd-support = { path = "../perl-tdd-support" }
+
+[dev-dependencies]
+perl-tdd-support = { path = "../perl-tdd-support", default-features = false }
+"#,
+    )?;
+    if !enabled_features(&mixed, None).contains("default") {
+        bail!("`[dependencies]` keeps defaults, so `default` stays activated");
+    }
+
+    // Order must not decide the answer.
+    let reversed: toml::Value = toml::from_str(
+        r#"
+[package]
+name = "consumer"
+
+[dev-dependencies]
+perl-tdd-support = { path = "../perl-tdd-support", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+perl-tdd-support = { path = "../perl-tdd-support" }
+"#,
+    )?;
+    if !enabled_features(&reversed, None).contains("default") {
+        bail!("a target-specific declaration keeping defaults still activates `default`");
+    }
+
+    // The negative control: when every declaration opts out, `default` is off.
+    let all_off: toml::Value = toml::from_str(
+        r#"
+[package]
+name = "consumer"
+
+[dependencies]
+perl-tdd-support = { path = "../perl-tdd-support", default-features = false }
+
+[dev-dependencies]
+perl-tdd-support = { path = "../perl-tdd-support", default-features = false }
+"#,
+    )?;
+    if enabled_features(&all_off, None).contains("default") {
+        bail!("every declaration opts out, so `default` must not be activated");
+    }
+    Ok(())
+}
+
 #[test]
 fn real_feature_rows_reflect_manifest_activation() -> Result<()> {
     let root = repo_root()?;
