@@ -511,7 +511,7 @@ impl<'a> Parser<'a> {
                 NodeKind::Unary { op, .. } if op == "${}"
             ));
         if self.peek_kind() == Some(TokenKind::FatArrow) || comma_after_double_sigil_object {
-            self.tokens.next()?; // consume , or =>
+            self.advance_token()?; // consume , or =>
         }
 
         // Continue parsing arguments until we hit a statement terminator
@@ -552,7 +552,7 @@ impl<'a> Parser<'a> {
 
             // Check if we should continue (comma or fat arrow as separator in indirect syntax)
             if matches!(self.peek_kind(), Some(TokenKind::Comma | TokenKind::FatArrow)) {
-                self.tokens.next()?; // consume , or =>
+                self.advance_token()?; // consume , or =>
             } else if Self::is_statement_terminator(self.peek_kind())
                 || self.is_statement_modifier_keyword()
             {
@@ -689,7 +689,7 @@ impl<'a> Parser<'a> {
             self.expect_closing_delimiter(TokenKind::RightParen)?;
 
             let initializer = if self.peek_kind() == Some(TokenKind::Assign) {
-                let op_token = self.tokens.next()?; // consume =
+                let op_token = self.advance_token()?; // consume =
                 let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                     missing
                 } else {
@@ -741,7 +741,7 @@ impl<'a> Parser<'a> {
             self.expect_closing_delimiter(TokenKind::RightParen)?; // consume )
 
             let initializer = if self.peek_kind() == Some(TokenKind::Assign) {
-                let op_token = self.tokens.next()?; // consume =
+                let op_token = self.advance_token()?; // consume =
                 let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                     missing
                 } else {
@@ -771,7 +771,7 @@ impl<'a> Parser<'a> {
             };
 
             let initializer = if self.peek_kind() == Some(TokenKind::Assign) {
-                let op_token = self.tokens.next()?; // consume =
+                let op_token = self.advance_token()?; // consume =
                 let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                     missing
                 } else {

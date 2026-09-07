@@ -6,7 +6,9 @@
 //! diagnostic charging remain #8786 (B02). [`crate::parser_context::ParserContext`]
 //! is a parallel AST-v2 helper, not this authority (#8700 B04 / #7105).
 
-use crate::error::{BudgetTracker, ParseBudget, ParseError, ParseResult, ParseStopCause};
+use crate::error::{
+    BudgetTracker, ParseBudget, ParseCoreDimension, ParseError, ParseResult, ParseStopCause,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -233,6 +235,47 @@ impl ParserOperationContext {
     /// Charge source bytes traversed by heredoc collection (after-work half).
     pub(crate) fn record_heredoc_scan(&mut self, bytes: usize) {
         self.tracker.record_heredoc_scan(bytes);
+    }
+
+    /// Authorize consuming one non-EOF token, charging it before the token
+    /// leaves the stream (#8786).
+    ///
+    /// The single production caller is [`super::Parser::advance_token`]; every
+    /// parser token advance reaches the stream through it.
+    pub(crate) fn authorize_token_consume(&mut self) -> ParseResult<()> {
+        self.authorize_core(ParseCoreDimension::TokensConsumed)
+    }
+
+    /// Authorize constructing one AST node, charging it before construction
+    /// (#8786).
+    ///
+    /// The single production caller is [`super::Parser::charge_node`].
+    pub(crate) fn authorize_node_construct(&mut self) -> ParseResult<()> {
+        self.authorize_core(ParseCoreDimension::NodesConstructed)
+    }
+
+    /// Authorize retaining one parser diagnostic, charging it before retention
+    /// (#8786).
+    ///
+    /// The single production caller is [`super::Parser::record_error`]. A
+    /// refusal means the configured [`crate::ParseBudget::max_errors`] is
+    /// spent: the diagnostic is dropped rather than retained, and the charged
+    /// count — not `diagnostics.len()` — is the authority for that decision.
+    pub(crate) fn authorize_diagnostic_emit(&mut self) -> ParseResult<()> {
+        self.authorize_core(ParseCoreDimension::DiagnosticsEmitted)
+    }
+
+    /// One charge-before-work entry point shared by the admitted core
+    /// dimensions, so every dimension uses the same limit comparison,
+    /// saturating arithmetic, and typed refusal.
+    fn authorize_core(&mut self, dimension: ParseCoreDimension) -> ParseResult<()> {
+        self.tracker.authorize_core(&self.config.budget(), dimension)
+    }
+
+    /// Charged usage for one core dimension, for tests and typed reporting.
+    #[cfg(test)]
+    pub(crate) fn core_usage(&self, dimension: ParseCoreDimension) -> usize {
+        self.tracker.core_usage(dimension)
     }
 }
 

@@ -43,7 +43,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_hash_or_block_contents(&mut self, _expect_block: bool) -> ParseResult<Node> {
-        let start_token = self.tokens.next()?; // consume {
+        let start_token = self.advance_token()?; // consume {
         let start = start_token.start();
 
         // Peek ahead to determine if it's a hash or block
@@ -51,9 +51,9 @@ impl<'a> Parser<'a> {
         if self.peek_kind() == Some(TokenKind::RightBrace) {
             // Use the closing brace token's own end position to avoid returning a
             // stale `previous_position()` that predates the `{` (reversed span bug).
-            // `self.tokens.next()` does NOT update `last_end_position`, so we must
+            // `self.advance_token()` does NOT update `last_end_position`, so we must
             // read the token's `.end` field directly.  See #3357.
-            let close_brace = self.tokens.next()?; // consume }
+            let close_brace = self.advance_token()?; // consume }
             let end = close_brace.end();
 
             // For empty braces, default to hash (correct for most functions)
@@ -132,7 +132,7 @@ impl<'a> Parser<'a> {
             // Capture close brace token directly so the span includes `}`.
             // Using `previous_position()` here would give the end of the last
             // *inner* token (before `}`), making the node span exclude the brace.
-            let close_brace = self.tokens.next()?; // consume }
+            let close_brace = self.advance_token()?; // consume }
             let end = close_brace.end();
 
             // Decompose first_expr to consume its kind by move, avoiding clones
@@ -190,7 +190,7 @@ impl<'a> Parser<'a> {
 
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 // key => value pattern
-                self.tokens.next()?; // consume =>
+                self.advance_token()?; // consume =>
                 let value = self.parse_expression()?;
                 pairs.push((first_expr, value));
             } else if self.peek_kind() == Some(TokenKind::Comma) {
@@ -231,7 +231,7 @@ impl<'a> Parser<'a> {
 
                 // Check for => or comma after key
                 if self.peek_kind() == Some(TokenKind::FatArrow) {
-                    self.tokens.next()?; // consume =>
+                    self.advance_token()?; // consume =>
                     let value = self.parse_expression()?;
                     pairs.push((key, value));
                 } else if self.peek_kind() == Some(TokenKind::Comma) {
@@ -279,7 +279,7 @@ impl<'a> Parser<'a> {
             // Not a hash - parse as block
             if self.peek_kind() == Some(TokenKind::RightBrace) {
                 // Single expression block
-                self.tokens.next()?; // consume }
+                self.advance_token()?; // consume }
                 let end = self.previous_position();
 
                 return Ok(Node::new(
@@ -324,7 +324,7 @@ impl<'a> Parser<'a> {
 
             // Might need a semicolon
             if self.peek_kind() == Some(TokenKind::Semicolon) {
-                self.tokens.next()?;
+                self.advance_token()?;
             }
 
             while self.peek_kind() != Some(TokenKind::RightBrace) && !self.tokens.is_eof() {

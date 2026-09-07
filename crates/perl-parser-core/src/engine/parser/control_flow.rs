@@ -38,7 +38,7 @@ impl<'a> Parser<'a> {
     /// Parse if statement
     fn parse_if_statement(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'if'
+        self.advance_token()?; // consume 'if'
 
         self.expect(TokenKind::LeftParen)?;
 
@@ -67,7 +67,7 @@ impl<'a> Parser<'a> {
 
         // Handle elsif chains
         while self.peek_kind() == Some(TokenKind::Elsif) {
-            self.tokens.next()?; // consume 'elsif'
+            self.advance_token()?; // consume 'elsif'
             self.expect(TokenKind::LeftParen)?;
 
             // Check if this is a variable declaration in the condition.
@@ -92,7 +92,7 @@ impl<'a> Parser<'a> {
 
         // Handle else
         if self.peek_kind() == Some(TokenKind::Else) {
-            self.tokens.next()?; // consume 'else'
+            self.advance_token()?; // consume 'else'
             else_branch = Some(Box::new(self.parse_block()?));
         }
 
@@ -115,7 +115,7 @@ impl<'a> Parser<'a> {
     /// identical to if/elsif/else except the initial condition is negated.
     fn parse_unless_statement(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'unless'
+        self.advance_token()?; // consume 'unless'
 
         self.expect(TokenKind::LeftParen)?;
         self.mark_not_stmt_start();
@@ -135,7 +135,7 @@ impl<'a> Parser<'a> {
 
         // Handle elsif chains (valid Perl: unless ... elsif ... else ...)
         while self.peek_kind() == Some(TokenKind::Elsif) {
-            self.tokens.next()?; // consume 'elsif'
+            self.advance_token()?; // consume 'elsif'
             self.expect(TokenKind::LeftParen)?;
 
             let elsif_cond = if matches!(
@@ -158,7 +158,7 @@ impl<'a> Parser<'a> {
 
         // Handle else
         if self.peek_kind() == Some(TokenKind::Else) {
-            self.tokens.next()?; // consume 'else'
+            self.advance_token()?; // consume 'else'
             else_branch = Some(Box::new(self.parse_block()?));
         }
 
@@ -179,7 +179,7 @@ impl<'a> Parser<'a> {
     /// Parse while loop
     fn parse_while_statement(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'while'
+        self.advance_token()?; // consume 'while'
 
         self.expect(TokenKind::LeftParen)?;
 
@@ -210,7 +210,7 @@ impl<'a> Parser<'a> {
 
         // Handle continue block
         let continue_block = if self.peek_kind() == Some(TokenKind::Continue) {
-            self.tokens.next()?; // consume 'continue'
+            self.advance_token()?; // consume 'continue'
             Some(Box::new(self.parse_block()?))
         } else {
             None
@@ -231,7 +231,7 @@ impl<'a> Parser<'a> {
     /// Parse until loop (while not)
     fn parse_until_statement(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'until'
+        self.advance_token()?; // consume 'until'
 
         self.expect(TokenKind::LeftParen)?;
         self.mark_not_stmt_start();
@@ -248,7 +248,7 @@ impl<'a> Parser<'a> {
 
         // Handle continue block
         let continue_block = if self.peek_kind() == Some(TokenKind::Continue) {
-            self.tokens.next()?; // consume 'continue'
+            self.advance_token()?; // consume 'continue'
             Some(Box::new(self.parse_block()?))
         } else {
             None
@@ -270,7 +270,7 @@ impl<'a> Parser<'a> {
     /// Parse for loop
     fn parse_for_statement(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'for'
+        self.advance_token()?; // consume 'for'
 
         // Check if it's a foreach-style for loop
         if matches!(
@@ -330,7 +330,7 @@ impl<'a> Parser<'a> {
 
             // If followed by ), it's a foreach loop
             if self.peek_kind() == Some(TokenKind::RightParen) {
-                self.tokens.next()?; // consume )
+                self.advance_token()?; // consume )
                 let body = self.parse_block()?;
 
                 let end = self.previous_position();
@@ -403,7 +403,7 @@ impl<'a> Parser<'a> {
 
         // Handle continue block
         let continue_block = if self.peek_kind() == Some(TokenKind::Continue) {
-            self.tokens.next()?; // consume 'continue'
+            self.advance_token()?; // consume 'continue'
             Some(Box::new(self.parse_block()?))
         } else {
             None
@@ -419,7 +419,7 @@ impl<'a> Parser<'a> {
     /// Parse foreach loop
     fn parse_foreach_statement(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'foreach'
+        self.advance_token()?; // consume 'foreach'
 
         // In Perl, `for` and `foreach` are fully interchangeable. When the
         // next token is `(`, it could be either:
@@ -455,7 +455,7 @@ impl<'a> Parser<'a> {
 
         // Handle continue block
         let continue_block = if self.peek_kind() == Some(TokenKind::Continue) {
-            self.tokens.next()?; // consume 'continue'
+            self.advance_token()?; // consume 'continue'
             Some(Box::new(self.parse_block()?))
         } else {
             None
@@ -500,7 +500,7 @@ impl<'a> Parser<'a> {
 
         // Handle continue block
         let continue_block = if self.peek_kind() == Some(TokenKind::Continue) {
-            self.tokens.next()?; // consume 'continue'
+            self.advance_token()?; // consume 'continue'
             Some(Box::new(self.parse_block()?))
         } else {
             None
@@ -975,7 +975,7 @@ impl<'a> Parser<'a> {
         let mut else_branch = None;
 
         while self.peek_kind() == Some(TokenKind::Elsif) {
-            self.tokens.next()?; // consume 'elsif'
+            self.advance_token()?; // consume 'elsif'
             self.expect(TokenKind::LeftParen)?;
 
             let elsif_cond = if matches!(
@@ -997,7 +997,7 @@ impl<'a> Parser<'a> {
         }
 
         if self.peek_kind() == Some(TokenKind::Else) {
-            self.tokens.next()?; // consume 'else'
+            self.advance_token()?; // consume 'else'
             else_branch = Some(Box::new(self.parse_block()?));
         }
 

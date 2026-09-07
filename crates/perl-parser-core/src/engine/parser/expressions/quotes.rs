@@ -175,7 +175,7 @@ impl<'a> Parser<'a> {
                         && matches!(ch, 'i' | 'm' | 's' | 'x' | 'p' | 'n' | 'o' | 'a' | 'd' | 'l' | 'u')
                     {
                         modifiers.push(ch);
-                        self.tokens.next()?;
+                        self.advance_token()?;
                     } else {
                         break;
                     }
@@ -259,7 +259,7 @@ impl<'a> Parser<'a> {
                             )
                         {
                             modifiers.push(ch);
-                            self.tokens.next()?;
+                            self.advance_token()?;
                         } else {
                             break;
                         }
@@ -368,7 +368,7 @@ impl<'a> Parser<'a> {
             }
 
             modifiers.push(ch);
-            self.tokens.next()?;
+            self.advance_token()?;
         }
 
         Ok(modifiers)
@@ -378,7 +378,7 @@ impl<'a> Parser<'a> {
     fn parse_qw_words(&mut self) -> ParseResult<Vec<String>> {
         // Grab the opening delimiter as a single *token* (whatever it is).
         // This could be (, [, {, <, or any single character like |, !, #, etc.
-        let open = self.tokens.next()?; // e.g., '(', '{', '|', '#', '!'
+        let open = self.advance_token()?; // e.g., '(', '{', '|', '#', '!'
         let open_txt = &open.text;
 
         // Special case for # - it causes lexer issues as it starts comments
@@ -421,12 +421,12 @@ impl<'a> Parser<'a> {
                             // Don't consume it, just stop here
                             break;
                         }
-                        let t = self.tokens.next()?;
+                        let t = self.advance_token()?;
                         words.push(t.text.to_string());
                     }
                     _ => {
                         // Skip other tokens
-                        self.tokens.next()?;
+                        self.advance_token()?;
                     }
                 }
             }
@@ -448,17 +448,17 @@ impl<'a> Parser<'a> {
         while !self.tokens.is_eof() {
             let peek = self.tokens.peek()?;
             if &*peek.text == close_txt.as_str() {
-                self.tokens.next()?; // consume closer
+                self.advance_token()?; // consume closer
                 break;
             }
 
             match self.peek_kind() {
                 Some(TokenKind::Identifier) | Some(TokenKind::Number) => {
-                    let t = self.tokens.next()?;
+                    let t = self.advance_token()?;
                     words.push(t.text.to_string());
                 }
                 Some(TokenKind::String) => {
-                    let t = self.tokens.next()?;
+                    let t = self.advance_token()?;
                     // normalize quotes → word (qw() is non-interpolating as list of words)
                     let w = t.text.trim_matches(|c| c == '"' || c == '\'').to_string();
                     if !w.is_empty() {
@@ -467,7 +467,7 @@ impl<'a> Parser<'a> {
                 }
                 // Skip whitespace, newlines, and any other tokens
                 _ => {
-                    self.tokens.next()?;
+                    self.advance_token()?;
                 }
             }
         }
@@ -509,7 +509,7 @@ impl<'a> Parser<'a> {
         // Parse space-separated words until closing delimiter
         while self.peek_kind() != Some(close_delim) && !self.tokens.is_eof() {
             if let Some(TokenKind::Identifier) = self.peek_kind() {
-                let token = self.tokens.next()?;
+                let token = self.advance_token()?;
                 words.push(Node::new(
                     NodeKind::String {
                         value: format!("'{}'", token.text), // qw produces single-quoted strings
@@ -519,7 +519,7 @@ impl<'a> Parser<'a> {
                 ));
             } else if self.peek_kind() == Some(TokenKind::String) {
                 // Also allow string tokens in qw lists
-                let token = self.tokens.next()?;
+                let token = self.advance_token()?;
                 words.push(Node::new(
                     NodeKind::String {
                         value: format!("'{}'", token.text.trim_matches(|c| c == '"' || c == '\'')),
@@ -529,7 +529,7 @@ impl<'a> Parser<'a> {
                 ));
             } else {
                 // Skip other tokens (might be separators or special chars)
-                self.tokens.next()?;
+                self.advance_token()?;
             }
         }
 

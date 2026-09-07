@@ -71,7 +71,7 @@ impl<'a> Parser<'a> {
                     || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "%{}");
 
                 if is_at_slice || is_pct_slice {
-                    self.tokens.next()?; // consume {
+                    self.advance_token()?; // consume {
                     let key = self.parse_hash_subscript_key()?;
                     self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -129,13 +129,13 @@ impl<'a> Parser<'a> {
                 }
 
                 Some(TokenKind::Arrow) => {
-                    self.tokens.next()?; // consume ->
+                    self.advance_token()?; // consume ->
 
                     // Check for postfix dereference operators
                     match self.peek_kind() {
                         Some(TokenKind::ArraySigil) => {
                             // ->@*, ->@[...], or ->@{...}
-                            self.tokens.next()?; // consume @
+                            self.advance_token()?; // consume @
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->@*
@@ -143,7 +143,7 @@ impl<'a> Parser<'a> {
                                 record_postfix_layer()?;
                             } else if self.peek_kind() == Some(TokenKind::LeftBracket) {
                                 // ->@[...] array slice
-                                self.tokens.next()?; // consume [
+                                self.advance_token()?; // consume [
                                 let index = self.parse_expression()?;
                                 self.expect_closing_delimiter(TokenKind::RightBracket)?;
 
@@ -162,7 +162,7 @@ impl<'a> Parser<'a> {
                                 );
                             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // ->@{...} postfix hash slice
-                                self.tokens.next()?; // consume {
+                                self.advance_token()?; // consume {
                                 let keys = self.parse_hash_subscript_key()?;
                                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -182,7 +182,7 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::HashSigil) => {
                             // ->%* or ->%{...}
-                            self.tokens.next()?; // consume %
+                            self.advance_token()?; // consume %
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->%*
@@ -190,7 +190,7 @@ impl<'a> Parser<'a> {
                                 record_postfix_layer()?;
                             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // ->%{...} hash slice
-                                self.tokens.next()?; // consume {
+                                self.advance_token()?; // consume {
                                 let key = self.parse_hash_subscript_key()?;
                                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -212,7 +212,7 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::ScalarSigil) => {
                             // ->$*
-                            self.tokens.next()?; // consume $
+                            self.advance_token()?; // consume $
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 expr = self.consume_arrow_star_deref(expr, "->$*")?;
@@ -222,7 +222,7 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::SubSigil | TokenKind::BitwiseAnd) => {
                             // ->&* (code dereference)
-                            self.tokens.next()?; // consume &
+                            self.advance_token()?; // consume &
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 expr = self.consume_arrow_star_deref(expr, "->&*")?;
@@ -232,7 +232,7 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::Star) => {
                             // ->** (glob dereference)
-                            self.tokens.next()?; // consume first *
+                            self.advance_token()?; // consume first *
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 expr = self.consume_arrow_star_deref(expr, "->**")?;
@@ -250,7 +250,7 @@ impl<'a> Parser<'a> {
                                     .peek_second()
                                     .is_ok_and(|t| t.kind() == TokenKind::Star)
                             {
-                                self.tokens.next()?; // consume $#
+                                self.advance_token()?; // consume $#
                                 expr = self.consume_arrow_star_deref(expr, "->$#*")?;
                                 record_postfix_layer()?;
                                 continue;
@@ -293,7 +293,7 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::LeftBracket) => {
                             // Arrow array dereference: $ref->[index]
-                            self.tokens.next()?; // consume [
+                            self.advance_token()?; // consume [
                             let index = self.parse_expression()?;
                             self.expect_closing_delimiter(TokenKind::RightBracket)?;
 
@@ -313,7 +313,7 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::LeftBrace) => {
                             // Arrow hash dereference: $ref->{key}
-                            self.tokens.next()?; // consume {
+                            self.advance_token()?; // consume {
                             let key = self.parse_hash_subscript_key()?;
                             self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -393,7 +393,7 @@ impl<'a> Parser<'a> {
                         || matches!(&expr.kind, NodeKind::Unary { op, .. } if op == "@{}");
 
                     // Array indexing - can be a single index or slice with multiple indices
-                    self.tokens.next()?; // consume [
+                    self.advance_token()?; // consume [
 
                     // Check if this might be a slice (multiple indices)
                     let mut indices = vec![self.parse_expression()?];
@@ -617,7 +617,7 @@ impl<'a> Parser<'a> {
                     }
 
                     // Hash element access
-                    self.tokens.next()?; // consume {
+                    self.advance_token()?; // consume {
                     let key = self.parse_hash_subscript_key()?;
                     self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -1450,7 +1450,7 @@ impl<'a> Parser<'a> {
     /// Consume the next token as a bareword string node (for quote-op names used
     /// as hash keys, e.g. the `m` in `$h{m}` or `@h{m, s}`).
     fn consume_as_bareword_string(&mut self) -> ParseResult<Node> {
-        let token = self.tokens.next()?;
+        let token = self.advance_token()?;
         Ok(Node::new(
             NodeKind::String { value: token.text.to_string(), interpolated: false },
             SourceLocation { start: token.start(), end: token.end() },
@@ -1565,7 +1565,7 @@ impl<'a> Parser<'a> {
     }
 
     fn consume_as_bareword_identifier(&mut self) -> ParseResult<Node> {
-        let token = self.tokens.next()?;
+        let token = self.advance_token()?;
         Ok(Node::new(
             NodeKind::Identifier { name: token.text.to_string() },
             SourceLocation { start: token.start(), end: token.end() },

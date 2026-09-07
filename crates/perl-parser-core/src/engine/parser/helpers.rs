@@ -561,7 +561,7 @@ impl<'a> Parser<'a> {
 
     /// Expect a specific token kind
     fn expect(&mut self, kind: TokenKind) -> ParseResult<Token> {
-        let token = self.tokens.next()?;
+        let token = self.advance_token()?;
         if token.kind() != kind {
             return Err(ParseError::unexpected(
                 kind.display_name(),
@@ -588,7 +588,7 @@ impl<'a> Parser<'a> {
 
     /// Consume next token and track position
     fn consume_token(&mut self) -> ParseResult<Token> {
-        let token = self.tokens.next()?;
+        let token = self.advance_token()?;
         self.last_end_position = token.end();
         Ok(token)
     }
@@ -744,15 +744,53 @@ impl<'a> Parser<'a> {
         Ok(Self::build_list_or_hash(expressions, saw_fat_arrow, start, end))
     }
 
-    /// Record a parse error for later retrieval
+    /// Record a parse error for later retrieval.
+    ///
+    /// This is the single production diagnostic-retention seam (#8786). The
+    /// decision to retain is made by the live tracker's charge-before-work
+    /// authority against the operation's configured
+    /// [`crate::ParseBudget::max_errors`], so:
+    ///
+    /// * the limit is the one this operation was configured with, not a
+    ///   hard-coded constant that silently ignored an explicit budget; and
+    /// * the authority is *charged usage*, not `self.errors.len()`, so the
+    ///   retained vector is a consequence of charging rather than its source.
+    ///
+    /// A refusal drops the diagnostic; it is never charged and never retained.
+    /// Diagnostic exhaustion does not by itself terminate the parse — the
+    /// complete recovery terminal behavior remains #7074 — so this seam
+    /// deliberately returns `()` rather than propagating the typed refusal.
     fn record_error(&mut self, error: ParseError) {
-        // Respect max_errors to prevent diagnostic flooding on pathological input.
-        // The default limit matches ParseBudget::default().max_errors.
-        const MAX_ERRORS: usize = 100;
-        if self.errors.len() >= MAX_ERRORS {
+        if self.operation.authorize_diagnostic_emit().is_err() {
             return;
         }
         self.errors.push(error);
+    }
+
+    /// Consume the next token: the single production token-advance seam
+    /// (#8786).
+    ///
+    /// Every parser advance reaches [`crate::TokenStream::next`] through here,
+    /// so token consumption is charged exactly once, before the token leaves
+    /// the stream. A refused advance consumes nothing and charges nothing.
+    ///
+    /// Lookahead (`peek`, `peek_second`, `peek_third`) is not consumption and
+    /// is never charged. A repeated read of the sticky `Eof` terminator takes
+    /// no input from the stream and is likewise not charged; the first, fresh
+    /// `Eof` is charged once like any other token.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::CoreBudgetExhausted`] when the configured
+    /// `max_tokens_consumed` is spent, or the stream's own error otherwise.
+    fn advance_token(&mut self) -> ParseResult<Token> {
+        if !self.tokens.peeked_is_sticky_eof() {
+            self.operation.authorize_token_consume()?;
+        }
+        // The one permitted direct use of the raw stream advance: this method
+        // is the seam. The `token_advance_seam_is_unique` recurrence test
+        // fails if a second direct use appears.
+        self.tokens.next()
     }
 
     /// Get all recorded errors
@@ -916,7 +954,7 @@ impl<'a> Parser<'a> {
     /// before calling the RHS parse function:
     ///
     /// ```ignore
-    /// let op_token = self.tokens.next()?;
+    /// let op_token = self.advance_token()?;
     /// if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
     ///     // wrap (left_expr op missing) and continue
     /// }
