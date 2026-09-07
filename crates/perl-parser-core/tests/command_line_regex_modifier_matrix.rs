@@ -235,10 +235,12 @@ fn collect_hir_operator_facts(
 /// Parse `source`, require it to be clean, and return every regex-family
 /// operator in source order.
 fn operator_facts(source: &str) -> Result<Vec<OperatorFact>, Box<dyn Error>> {
-    assert!(
-        !source.contains('\n') && !source.contains('\r'),
-        "one-liner modifier fixture must not contain a line boundary: {source:?}"
-    );
+    if source.contains('\n') || source.contains('\r') {
+        return Err(format!(
+            "one-liner modifier fixture must not contain a line boundary: {source:?}"
+        )
+        .into());
+    }
 
     let mut parser = Parser::new(source);
     let ast =
@@ -246,17 +248,24 @@ fn operator_facts(source: &str) -> Result<Vec<OperatorFact>, Box<dyn Error>> {
 
     let blocking: Vec<_> =
         parser.get_errors().iter().filter(|error| error.blocks_clean_parse()).collect();
-    assert!(
-        blocking.is_empty(),
-        "expected no blocking diagnostics for {source:?}, got {blocking:#?}"
-    );
+    if !blocking.is_empty() {
+        return Err(
+            format!("expected no blocking diagnostics for {source:?}, got {blocking:#?}").into()
+        );
+    }
 
     let mut facts = Vec::new();
     collect_operator_facts(&ast, source, &mut facts)?;
 
     let mut hir_facts = Vec::new();
     collect_hir_operator_facts(&lower_ast(&ast), source, &mut hir_facts)?;
-    assert_eq!(hir_facts, facts, "lowered HIR operators disagree with the AST for {source:?}");
+    if hir_facts != facts {
+        return Err(format!(
+            "lowered HIR operators disagree with the AST for {source:?}: \
+             HIR {hir_facts:#?}, AST {facts:#?}"
+        )
+        .into());
+    }
 
     Ok(facts)
 }
@@ -265,7 +274,12 @@ fn operator_facts(source: &str) -> Result<Vec<OperatorFact>, Box<dyn Error>> {
 /// the AST and HIR layers.
 fn assert_operators(source: &str, expected: &[OperatorFact]) -> TestResult {
     let actual = operator_facts(source)?;
-    assert_eq!(actual.as_slice(), expected, "operator facts mismatch for {source:?}");
+    if actual.as_slice() != expected {
+        return Err(format!(
+            "operator facts mismatch for {source:?}: actual {actual:#?}, expected {expected:#?}"
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -402,7 +416,7 @@ fn substitution_modifier_matrix_retains_ordered_payload_and_operator_range() -> 
                 false,
             ),
         ),
-        // Every modifier the parser accepts for `s///`, in one compact operator.
+        // A representative combination of matching and substitution modifiers.
         (
             r#"s/foo/bar/gimsxor;"#,
             OperatorFact::new(
@@ -444,6 +458,45 @@ fn substitution_modifier_matrix_retains_ordered_payload_and_operator_range() -> 
     ];
 
     for (source, expected) in cases {
+        assert_operators(source, &[expected])?;
+    }
+    Ok(())
+}
+
+#[test]
+fn substitution_c_modifier_retains_noop_modifier_and_author_order() -> TestResult {
+    // Perl accepts /c on substitution, although it has no effect and may warn.
+    // This is payload/range evidence only, not replacement evaluation.
+    for (source, expected) in [
+        (
+            r#"s/foo/bar/c;"#,
+            OperatorFact::new(Family::Substitution, "s/foo/bar/c", "c", "foo", "bar", false, false),
+        ),
+        (
+            r#"s{foo}{bar}gc;"#,
+            OperatorFact::new(
+                Family::Substitution,
+                "s{foo}{bar}gc",
+                "gc",
+                "foo",
+                "bar",
+                false,
+                false,
+            ),
+        ),
+        (
+            r#"$line =~ s/foo/bar/cg;"#,
+            OperatorFact::new(
+                Family::Substitution,
+                "$line =~ s/foo/bar/cg",
+                "cg",
+                "foo",
+                "bar",
+                false,
+                false,
+            ),
+        ),
+    ] {
         assert_operators(source, &[expected])?;
     }
     Ok(())
@@ -619,22 +672,28 @@ fn assert_invalid_modifier_is_diagnosed_within_operator(
     let operator_start =
         source.find(operator).ok_or_else(|| format!("fixture {operator:?} not in {source:?}"))?;
     let operator_end = operator_start + operator.len();
-    assert!(operator_start > 0, "negative control must not place the operator at offset 0");
+    if operator_start == 0 {
+        return Err("negative control must not place the operator at offset 0".into());
+    }
 
     let mut parser = Parser::new(source);
     let _ast = parser.parse().map_err(|error| format!("parse of {source:?} failed: {error:?}"))?;
 
     let errors = parser.get_errors();
-    assert!(
-        errors.iter().any(|error| error.blocks_clean_parse()),
-        "invalid modifier in {source:?} must block a clean parse; got {errors:#?}"
-    );
+    if !errors.iter().any(|error| error.blocks_clean_parse()) {
+        return Err(format!(
+            "invalid modifier in {source:?} must block a clean parse; got {errors:#?}"
+        )
+        .into());
+    }
 
     let rendered = format!("{errors:?}");
-    assert!(
-        rendered.contains(needle),
-        "expected a diagnostic naming {needle:?} for {source:?}; got {errors:#?}"
-    );
+    if !rendered.contains(needle) {
+        return Err(format!(
+            "expected a diagnostic naming {needle:?} for {source:?}; got {errors:#?}"
+        )
+        .into());
+    }
 
     // Read the offset through the typed accessor rather than scraping the
     // `Debug` rendering, so a field reorder or a message that happens to
@@ -645,11 +704,13 @@ fn assert_invalid_modifier_is_diagnosed_within_operator(
                 .location()
                 .is_some_and(|location| (operator_start..operator_end).contains(&location))
     });
-    assert!(
-        located,
-        "diagnostic for {needle:?} must fall inside the operator range \
-         {operator_start}..{operator_end} of {source:?}; got {errors:#?}"
-    );
+    if !located {
+        return Err(format!(
+            "diagnostic for {needle:?} must fall inside the operator range \
+             {operator_start}..{operator_end} of {source:?}; got {errors:#?}"
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -723,7 +784,9 @@ fn valid_modifiers_are_not_diagnosed_as_invalid() -> TestResult {
             parser.parse().map_err(|error| format!("parse of {source:?} failed: {error:?}"))?;
         let blocking: Vec<_> =
             parser.get_errors().iter().filter(|error| error.blocks_clean_parse()).collect();
-        assert!(blocking.is_empty(), "{source:?} must parse cleanly; got {blocking:#?}");
+        if !blocking.is_empty() {
+            return Err(format!("{source:?} must parse cleanly; got {blocking:#?}").into());
+        }
     }
     Ok(())
 }
