@@ -209,7 +209,7 @@ burn-down closes.
 
 ## Toolchain
 
-`rust-toolchain.toml` pins `1.95.0`. The workflow installs `ripr` `0.9.0` as
+`rust-toolchain.toml` pins `1.95.0`. The workflow installs `ripr` `0.10.0` as
 the current advisory version for this lane.
 
 ---

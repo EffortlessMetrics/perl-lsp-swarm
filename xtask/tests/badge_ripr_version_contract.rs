@@ -272,6 +272,23 @@ fn documented_ripr_install_instructions_name_the_reviewed_release()
          lanes run {reviewed_version:?}"
     );
 
+    // The same document states the version in prose as well as in the copyable
+    // command. Guarding only the command is what let these two disagree: the
+    // prose still read 0.9.0 after the command moved to 0.10.0 (Devin Review on
+    // PR #14996), so a contributor reading the section and a contributor copying
+    // the block below it were told different things.
+    let documented_toolchain = sole_pinned_version(
+        &ci_doc,
+        "The workflow installs `ripr` `",
+        "`",
+        "docs/ci/ripr.md (Toolchain prose)",
+    )?;
+    assert_eq!(
+        documented_toolchain, reviewed_version,
+        "docs/ci/ripr.md's Toolchain section names RIPR {documented_toolchain:?} while the \
+         routed lanes run {reviewed_version:?}"
+    );
+
     let checklist = fs::read_to_string(root.join("docs/agents/SPEC_UPDATE_CHECKLIST.md"))?;
     let documented_pin = sole_pinned_version(
         &checklist,
