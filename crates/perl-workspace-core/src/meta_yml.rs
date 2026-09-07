@@ -451,20 +451,17 @@ impl QuoteState {
     }
 }
 
-/// Detect unquoted indicators at whitespace and flow-token boundaries.
+/// Detect unquoted indicators only where the shared scanner admits a scalar.
 fn token_present(line: &str, marker: &str) -> bool {
     let mut quotes = QuoteState::default();
-    let mut previous = None;
     for (i, c) in line.char_indices() {
-        let boundary =
-            previous.is_none_or(|p: char| p.is_whitespace() || matches!(p, '[' | '{' | ','));
+        let scalar_start = !quotes.plain && !quotes.single && !quotes.double;
         if quotes.outside(c, line[i + c.len_utf8()..].chars().next())
-            && boundary
+            && scalar_start
             && line[i..].starts_with(marker)
         {
             return true;
         }
-        previous = Some(c);
     }
     false
 }
@@ -787,7 +784,7 @@ impl<'a> Parser<'a> {
         }
         let mut items = Vec::new();
         let result = (|| {
-            for part in split_flow(inner) {
+            for part in split_flow(inner, line)? {
                 let part = part.trim();
                 if part.is_empty() {
                     continue;
@@ -831,7 +828,7 @@ impl<'a> Parser<'a> {
         let mut entries = Vec::new();
         let mut seen_keys: HashSet<String> = HashSet::new();
         let result = (|| {
-            for part in split_flow(inner) {
+            for part in split_flow(inner, line)? {
                 let part = part.trim();
                 if part.is_empty() {
                     continue;
@@ -1004,9 +1001,16 @@ impl Yaml {
 }
 
 /// Split a flow collection body on top-level commas.
-fn split_flow(text: &str) -> Vec<String> {
+fn split_flow(text: &str, line: usize) -> Result<Vec<String>, MetaYmlFinding> {
+    let malformed = || {
+        MetaYmlFinding::new(
+            MetaYmlFindingKind::MalformedSyntax,
+            Some(line),
+            "flow collection has an empty entry or unbalanced delimiters",
+        )
+    };
     let mut parts = Vec::new();
-    let mut depth = 0usize;
+    let mut delimiters = Vec::new();
     // The supplied text is already inside a flow collection.
     let mut quotes = QuoteState { flow_depth: 1, ..QuoteState::default() };
     let mut start = 0;
@@ -1015,19 +1019,41 @@ fn split_flow(text: &str) -> Vec<String> {
             continue;
         }
         match c {
-            '[' | '{' => depth += 1,
-            ']' | '}' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
+            '[' | '{' => {
+                if delimiters.len() >= MAX_DEPTH {
+                    return Err(MetaYmlFinding::new(
+                        MetaYmlFindingKind::ResourceLimit,
+                        Some(line),
+                        "flow delimiters exceed the nesting budget",
+                    ));
+                }
+                delimiters.push(c);
+            }
+            ']' | '}' => {
+                let expected = if c == ']' { '[' } else { '{' };
+                if delimiters.pop() != Some(expected) {
+                    return Err(malformed());
+                }
+            }
+            ',' if delimiters.is_empty() => {
+                if text[start..i].trim().is_empty() {
+                    return Err(malformed());
+                }
                 parts.push(text[start..i].to_string());
                 start = i + 1;
             }
             _ => {}
         }
     }
+    if !delimiters.is_empty() {
+        return Err(malformed());
+    }
+    // Empty collections and one trailing comma are valid; a leading or
+    // repeated comma already failed while scanning the separator.
     if !text[start..].trim().is_empty() {
         parts.push(text[start..].to_string());
     }
-    parts
+    Ok(parts)
 }
 
 // ── Fact normalization (mirrors dist::parse_meta_json) ──────────────────────
@@ -1172,6 +1198,65 @@ mod tests {
         assert!(matches!(&result, Ok(Yaml::Map(root)) if matches!(&root[0].1,
             Yaml::Seq(items) if matches!(&items[0], Yaml::Map(entries)
                 if matches!(&entries[0].1, Yaml::Seq(values) if values.len() == 2)))));
+    }
+
+    #[test]
+    fn flow_collection_separators_and_delimiters_fail_closed() {
+        for input in [
+            "license: [perl_5,,mit]",
+            "requires: {strict: 0,,warnings: 0}",
+            "license: [perl_5}]",
+            "license: [,perl_5]",
+            "requires: {,strict: 0}",
+            "license: [[perl_5},mit]",
+            "license: [[perl_5]",
+            "requires: {strict: 0]]}",
+        ] {
+            let parsed = parse_meta_yml(fid(), input);
+            assert_eq!(
+                parsed.state,
+                MetaYmlParseState::Malformed,
+                "{input}: {:?}",
+                parsed.findings
+            );
+            assert_non_success(&parsed, MetaYmlFindingKind::MalformedSyntax, input);
+        }
+        for input in [
+            "license: []",
+            "requires: {}",
+            "license: [perl_5,]",
+            "requires: {strict: 0,}",
+            "prereqs: {runtime: {requires: {strict: 0,},},}",
+            "license: ['a,b', 'a]b', 'a}b']",
+        ] {
+            let parsed = parse_meta_yml(fid(), input);
+            assert_eq!(parsed.state, MetaYmlParseState::Parsed, "{input}: {:?}", parsed.findings);
+            assert!(parsed.facts.is_some());
+        }
+    }
+
+    #[test]
+    fn plain_scalar_markers_are_content_not_yaml_features() {
+        for value in ["Bread & butter", "Bread * butter", "Bread ! butter", "a,&b", "a,*b", "a,!b"]
+        {
+            let parsed = parse_meta_yml(fid(), &format!("abstract: {value}"));
+            assert_eq!(parsed.state, MetaYmlParseState::Parsed, "{value}: {:?}", parsed.findings);
+            assert_eq!(parsed.facts.and_then(|f| f.summary), Some(value.to_string()));
+        }
+        for input in [
+            "name: &anchor X",
+            "name: *alias",
+            "name: !tag X",
+            "license: [*alias]",
+            "license: [!tag X]",
+            "license: [&anchor X]",
+            "requires: {*alias: 0}",
+            "license:\n  - *alias",
+            "license: [ok, !tag X]",
+        ] {
+            let parsed = parse_meta_yml(fid(), input);
+            assert_non_success(&parsed, MetaYmlFindingKind::AnchorAliasOrTag, input);
+        }
     }
 
     #[test]
