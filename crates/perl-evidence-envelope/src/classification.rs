@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 /// Whether, and how, an envelope's payload has been redacted.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum RedactionClass {
     /// No redaction was necessary or performed; the payload is safe to share
     /// as-is.
@@ -61,6 +62,7 @@ impl std::fmt::Display for RedactionClass {
 /// How long an envelope's evidence should be retained.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum RetentionClass {
     /// May be discarded as soon as it has been consumed once.
     Ephemeral,
@@ -179,5 +181,17 @@ mod tests {
         assert_eq!(format!("{}", RetentionClass::Extended), "extended");
         assert_eq!(format!("{}", RetentionClass::Permanent), "permanent");
         assert_eq!(format!("{}", RetentionClass::Unknown), "unknown");
+    }
+
+    #[test]
+    fn wire_names_equal_fingerprint_tags() {
+        for v in ALL_REDACTION {
+            let json = serde_json::to_string(&v).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", v.fingerprint_tag()), "redaction {v}");
+        }
+        for v in ALL_RETENTION {
+            let json = serde_json::to_string(&v).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", v.fingerprint_tag()), "retention {v}");
+        }
     }
 }

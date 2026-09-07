@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 /// belongs to the domain-specific sibling crate that owns the payload schema
 /// (deliberately excluded from this issue's scope).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PayloadIdentity {
     /// The domain-specific payload kind, e.g. `"test-receipt"` or
     /// `"coverage-receipt"`. An opaque, producer-defined string: this crate

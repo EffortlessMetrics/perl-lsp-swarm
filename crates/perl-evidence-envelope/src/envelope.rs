@@ -91,6 +91,7 @@ impl std::fmt::Display for EvidenceEnvelopeSchemaVersion {
 /// zero recorded inputs be silently read as fully complete evidence, which is
 /// exactly the failure mode this type exists to prevent.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvidenceEnvelope {
     /// The schema version that produced this envelope.
     pub schema_version: EvidenceEnvelopeSchemaVersion,
@@ -152,7 +153,10 @@ mod tests {
     fn sample_envelope() -> EvidenceEnvelope {
         EvidenceEnvelope {
             schema_version: EvidenceEnvelopeSchemaVersion::V1,
-            receipt_id: ReceiptId::from_canonical_key("receipt-1"),
+            receipt_id: ReceiptId::from_producer_and_key(
+                &crate::producer::test_producer(),
+                "receipt-1",
+            ),
             payload: PayloadIdentity::new(
                 "test-receipt",
                 1,
@@ -181,7 +185,7 @@ mod tests {
             ),
             limitations: vec![Limitation::general("sample limitation")],
             inputs: vec![InputReference::new(
-                ReceiptId::from_canonical_key("upstream-1"),
+                ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-1"),
                 ContentDigest::of_bytes(b"upstream bytes"),
             )],
         }
@@ -341,11 +345,11 @@ mod tests {
         let mut forward = sample_envelope();
         forward.inputs = vec![
             InputReference::new(
-                ReceiptId::from_canonical_key("upstream-a"),
+                ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-a"),
                 ContentDigest::of_bytes(b"a"),
             ),
             InputReference::new(
-                ReceiptId::from_canonical_key("upstream-b"),
+                ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-b"),
                 ContentDigest::of_bytes(b"b"),
             ),
         ];
@@ -400,12 +404,12 @@ mod tests {
     fn fingerprint_distinguishes_different_input_sets() {
         let mut a = sample_envelope();
         a.inputs = vec![InputReference::new(
-            ReceiptId::from_canonical_key("upstream-a"),
+            ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-a"),
             ContentDigest::of_bytes(b"a"),
         )];
         let mut b = sample_envelope();
         b.inputs = vec![InputReference::new(
-            ReceiptId::from_canonical_key("upstream-a"),
+            ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-a"),
             ContentDigest::of_bytes(b"different"),
         )];
         assert_ne!(a.fingerprint(), b.fingerprint());

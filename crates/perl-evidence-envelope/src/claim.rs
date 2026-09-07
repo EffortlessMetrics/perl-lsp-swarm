@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 /// describe the same boundary (see [`crate::EnvelopeFingerprint`], which
 /// canonicalizes both lists before hashing).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClaimBoundary {
     /// Statements of what this evidence establishes.
     pub established: Vec<String>,
@@ -46,6 +47,7 @@ impl ClaimBoundary {
 /// A limitation records a known gap or caveat that a consumer must weigh
 /// before treating the envelope's evidence as sufficient for a decision.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Limitation {
     /// Human-readable description of the limitation.
     pub detail: String,

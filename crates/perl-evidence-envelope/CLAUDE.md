@@ -18,7 +18,12 @@ types existed anywhere in the repository before this crate.
   `EvidenceEnvelopeSchemaVersion` with fail-closed serde (mirrors
   `perl-source-identity`'s `SourceIdentitySchemaVersion` exactly).
 - `ReceiptId` — durable identity for one receipt instance, domain-separated
-  SHA-256 of a caller-supplied canonical key (`receipt:sha256:...`).
+  SHA-256 over the **minting producer plus** a producer-local key
+  (`receipt:sha256:...`). The producer is part of the derivation, not a
+  caller responsibility: the constructor explicitly invites producer-local
+  keys such as a monotonic counter, and hashing the key alone would let two
+  producers' first receipts both mint `"1"` into one durable ID that a
+  registry or lineage graph would conflate.
 - `PayloadIdentity` — payload kind (opaque string), the payload's own schema
   version (independent of the envelope's schema version), and a
   `perl_source_identity::ContentDigest` over the exact payload bytes.
@@ -78,6 +83,20 @@ LSP/DAP/editor types, async runtimes, or Git/release tooling. Asserted in
   hashed under the two domains never produce the same digest.
 - `RedactionClass` and `RetentionClass` do not implement `Default` and carry
   no variant marked as an automatic fallback; a producer must state a value.
+- One value, one spelling. Every enum serializes under
+  `#[serde(rename_all = "kebab-case")]`, which makes the JSON wire name
+  byte-identical to the value's `fingerprint_tag()`. Without that the crate
+  carried two vocabularies for one value (`"SensitiveUnredacted"` on the wire,
+  `sensitive-unredacted` in the hash) and no rule saying which the eventual
+  JSON schema projection should adopt. Pinned per variant by
+  `wire_name_equals_fingerprint_tag`.
+- Unknown fields are rejected, not ignored. Every record carries
+  `#[serde(deny_unknown_fields)]`, so a misspelled or unrecognized key is a
+  decode error. Serde's default of silently dropping unknown fields would
+  contradict the fail-closed framing above: schema evolution is expressed by
+  `schema_version`, which is itself fail-closed, so an unknown field inside a
+  v1 envelope is a typo or a producer that should have bumped the version —
+  never something to discard quietly.
 - `ReceiptId` is independent of `EnvelopeFingerprint`: re-minting a receipt
   for byte-identical evidence is valid and expected (e.g. a reproducible
   re-run), so the two identities intentionally answer different questions.

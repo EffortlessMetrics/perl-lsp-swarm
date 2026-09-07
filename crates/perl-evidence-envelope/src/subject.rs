@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 /// Which automation surface produced the run this envelope is about.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum RunSource {
     /// A hosted CI workflow run (e.g. a GitHub Actions workflow run).
     Workflow,
@@ -41,6 +42,7 @@ impl std::fmt::Display for RunSource {
 /// Actions re-run, or a local retry) that share `run_id` but represent
 /// distinct executions.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunIdentity {
     /// Which kind of automation surface this run happened on.
     pub source: RunSource,
@@ -70,6 +72,7 @@ impl RunIdentity {
 /// registry), and re-hashing them here would create a second, redundant
 /// spelling of the same reference rather than new identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvidenceSubject {
     /// Durable identity of the project this evidence is about.
     pub project_id: ProjectId,
@@ -169,5 +172,20 @@ mod tests {
         let json = serde_json::to_string(&original).expect("serialize");
         let back: EvidenceSubject = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(original, back);
+    }
+
+    #[test]
+    fn run_source_wire_name_equals_fingerprint_tag() {
+        for v in [RunSource::Workflow, RunSource::Local] {
+            let json = serde_json::to_string(&v).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", v.fingerprint_tag()), "{v}");
+        }
+    }
+
+    /// A misspelled or unexpected field must not be silently ignored.
+    #[test]
+    fn run_identity_rejects_unknown_field() {
+        let json = r#"{"source":"workflow","run_id":"r","attempt":1,"typo":true}"#;
+        assert!(serde_json::from_str::<RunIdentity>(json).is_err());
     }
 }

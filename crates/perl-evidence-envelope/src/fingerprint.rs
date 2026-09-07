@@ -272,7 +272,10 @@ mod tests {
 
         EvidenceEnvelope {
             schema_version: EvidenceEnvelopeSchemaVersion::V1,
-            receipt_id: ReceiptId::from_canonical_key("golden-receipt"),
+            receipt_id: ReceiptId::from_producer_and_key(
+                &crate::producer::test_producer(),
+                "golden-receipt",
+            ),
             payload: PayloadIdentity::new(
                 "golden-kind",
                 7,
@@ -300,11 +303,11 @@ mod tests {
             ],
             inputs: vec![
                 InputReference::new(
-                    ReceiptId::from_canonical_key("input-1"),
+                    ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "input-1"),
                     ContentDigest::of_bytes(b"input one"),
                 ),
                 InputReference::new(
-                    ReceiptId::from_canonical_key("input-2"),
+                    ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "input-2"),
                     ContentDigest::of_bytes(b"input two"),
                 ),
             ],
@@ -330,7 +333,7 @@ mod tests {
     fn fingerprint_is_stable_for_a_known_envelope() {
         assert_eq!(
             golden_envelope().fingerprint().as_wire(),
-            "envfp:sha256:170b7ffc54da9618aa4a1a2436bcdf58c471e7fc6b76286bd8ad785873780acb",
+            "envfp:sha256:9bb88c81a2d44667a7b1096235cfb12a7788ee7f90ab106ad4f997de6869dcc7",
             "envelope fingerprint changed; see this test's doc comment before updating it"
         );
     }

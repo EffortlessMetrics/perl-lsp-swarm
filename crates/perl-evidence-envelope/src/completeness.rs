@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 /// applicable) or `Partial` with a hundred inputs (more were expected).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Completeness {
     /// Every input the producer expected to record is present.
     Complete,
@@ -127,5 +128,22 @@ mod tests {
         );
         assert_eq!(format!("{}", Completeness::Stale), "stale");
         assert_eq!(format!("{}", Completeness::Invalid), "invalid");
+    }
+
+    /// One value, one spelling: the JSON wire name and the fingerprint tag
+    /// must be the same string. Before this was pinned, serde emitted
+    /// `"StructurallyUnavailable"` while the fingerprint hashed
+    /// `structurally-unavailable`, leaving the crate with two vocabularies
+    /// for one value and no rule for which the schema projection should use.
+    #[test]
+    fn wire_name_equals_fingerprint_tag() {
+        for v in ALL_VARIANTS {
+            let json = serde_json::to_string(&v).expect("serialize");
+            assert_eq!(
+                json,
+                format!("\"{}\"", v.fingerprint_tag()),
+                "wire vocabulary must match the fingerprint tag for {v}"
+            );
+        }
     }
 }

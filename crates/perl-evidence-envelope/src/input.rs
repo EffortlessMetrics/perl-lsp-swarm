@@ -20,6 +20,7 @@ use crate::receipt::ReceiptId;
 /// should distinguish "same receipt, same content" from "same receipt,
 /// different content" (e.g. a corrected re-run).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InputReference {
     /// Identity of the upstream receipt consumed as an input.
     pub input_receipt_id: ReceiptId,
@@ -51,7 +52,7 @@ mod tests {
 
     fn sample() -> InputReference {
         InputReference::new(
-            ReceiptId::from_canonical_key("upstream-run-1"),
+            ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-run-1"),
             ContentDigest::of_bytes(b"upstream bytes"),
         )
     }
@@ -68,7 +69,7 @@ mod tests {
     fn different_receipt_ids_produce_different_references() {
         let a = sample();
         let b = InputReference::new(
-            ReceiptId::from_canonical_key("upstream-run-2"),
+            ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-run-2"),
             ContentDigest::of_bytes(b"upstream bytes"),
         );
         assert_ne!(a, b);
@@ -78,7 +79,7 @@ mod tests {
     fn different_digests_produce_different_references() {
         let a = sample();
         let b = InputReference::new(
-            ReceiptId::from_canonical_key("upstream-run-1"),
+            ReceiptId::from_producer_and_key(&crate::producer::test_producer(), "upstream-run-1"),
             ContentDigest::of_bytes(b"different bytes"),
         );
         assert_ne!(a, b);

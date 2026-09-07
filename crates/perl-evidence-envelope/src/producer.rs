@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 /// `source_sha` is a real commit) — it only carries them as identity material
 /// for the deterministic [`crate::EnvelopeFingerprint`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProducerIdentity {
     /// Producer name, e.g. `"perl-lsp-test-runner"`.
     pub name: String,
@@ -39,6 +40,12 @@ impl ProducerIdentity {
             build_identity: build_identity.into(),
         }
     }
+}
+
+/// A fixed producer identity for tests that need one to mint a [`crate::ReceiptId`].
+#[cfg(test)]
+pub(crate) fn test_producer() -> ProducerIdentity {
+    ProducerIdentity::new("test-producer", "0.0.0", "0000000", "test-build")
 }
 
 #[cfg(test)]
