@@ -5,7 +5,7 @@ use super::{
     builtin_declaration_arg_positions, feature_for_keyword, is_topic_defaulting_builtin,
     is_topic_modifying_builtin,
 };
-use crate::ast::Node;
+use crate::ast::{Node, NodeKind};
 use crate::pragma_tracker::PragmaState;
 use std::rc::Rc;
 
@@ -88,13 +88,39 @@ pub(super) fn handle_function_call<'a>(
     }
     ancestors.push(node);
     let declaration_arg_positions = builtin_declaration_arg_positions(name);
-    for (arg_index, arg) in args.iter().enumerate() {
+    for arg in args {
         analyzer.analyze_node(arg, scope, ancestors, issues, context);
-        if declaration_arg_positions.contains(&arg_index) {
-            analyzer.mark_builtin_declaration_arg_consumed(arg, scope, context);
+    }
+    // Parenthesized builtins such as `open(my $fh, '<', 'x')` parse the comma
+    // list as one ArrayLiteral argument. Consume by the inner argument index so
+    // position 0 still names the declared handle (#15051). Walk the original
+    // `args` above so the wrapper itself is analyzed exactly once.
+    if !declaration_arg_positions.is_empty() {
+        for (arg_index, arg) in parenthesized_list_args(args, context.code).iter().enumerate() {
+            if declaration_arg_positions.contains(&arg_index) {
+                analyzer.mark_builtin_declaration_arg_consumed(arg, scope, context);
+            }
         }
     }
     ancestors.pop();
+}
+
+/// Argument list used for builtin declaration-slot consumption.
+///
+/// Bare calls already store one node per argument. A parenthesized call whose
+/// only argument is a `(`-opened [`NodeKind::ArrayLiteral`] is the same list
+/// wrapped by the parser; bracket constructors stay unwrapped.
+fn parenthesized_list_args<'a>(args: &'a [Node], source: &str) -> &'a [Node] {
+    let [arg] = args else {
+        return args;
+    };
+    let NodeKind::ArrayLiteral { elements } = &arg.kind else {
+        return args;
+    };
+    match source.as_bytes().get(arg.location.start) {
+        Some(&b'(') => elements.as_slice(),
+        _ => args,
+    }
 }
 
 /// Handle `NodeKind::AmperCall`.
