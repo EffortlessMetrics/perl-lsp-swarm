@@ -6,8 +6,8 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12828 |
-| Rust-family files | 4041 |
+| Total tracked files | 12825 |
+| Rust-family files | 4038 |
 | Non-Rust files | 8787 |
 | Allowlisted | 6550 |
 | Unclassified | 2237 |
@@ -16,11 +16,11 @@
 
 | Category | Count |
 |---|---|
-| config | 517 |
-| documentation | 2871 |
+| config | 516 |
+| documentation | 2868 |
 | generated | 2 |
 | production | 357 |
-| test | 2114 |
+| test | 2118 |
 | tooling | 689 |
 | unclassified | 2237 |
 
@@ -2759,7 +2759,6 @@
 | `.ci/receipts/schemas/agent-receipt.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/agent-task.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/aggregator-receipt.schema.json` | config | `non-rust-ci-config` | release/ci |
-| `.ci/receipts/schemas/build-executor-measurement.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/common-gate-receipt.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/droid-live-run.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/failure-classifier.schema.json` | config | `non-rust-ci-config` | release/ci |
@@ -3250,9 +3249,6 @@
 | `.spec/11627-module-train-live/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11627-module-train-live/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11627-module-train-live/context.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `.spec/11639-build-executor-measurement/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `.spec/11639-build-executor-measurement/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `.spec/11639-build-executor-measurement/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11649-clippy-repair-falsifier-corpus/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -4309,6 +4305,7 @@
 | `crates/perl-semantic-analyzer/docs/dependency-boundary-audit.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-semantic-facts/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-semantic-facts/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-semantic-facts/tests/data/dancer2_two_x_dsl_registry_oracle.tsv` | test | `non-rust-semantic-facts-dancer2-dsl-oracle-tsv` | semantic-facts/framework-adapters |
 | `crates/perl-source-identity/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-source-identity/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-subprocess-runtime/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
@@ -7192,6 +7189,9 @@
 | `test_corpus/real_projects/catalyst_skeleton/lib/Catalyst/Response.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `test_corpus/real_projects/catalyst_skeleton/lib/Catalyst/Utils.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `test_corpus/real_projects/catalyst_skeleton/t/basic.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `test_corpus/real_projects/dancer2_2x_skeleton/lib/Dancer2.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `test_corpus/real_projects/dancer2_2x_skeleton/lib/Dancer2/Core/DSL.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `test_corpus/real_projects/dancer2_2x_skeleton/t/basic.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
 | `test_corpus/real_projects/dancer2_skeleton/lib/Dancer2.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `test_corpus/real_projects/dancer2_skeleton/lib/Dancer2/Core/App.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `test_corpus/real_projects/dancer2_skeleton/lib/Dancer2/Core/DSL.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |

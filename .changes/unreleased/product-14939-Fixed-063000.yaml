@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: EnvironmentFingerprint now hashes each published path's redacted public_id alongside the internal normalized half, so a different redaction map cannot share a fingerprint.
+time: 2026-09-06T06:30:00Z
+custom:
+  PR: 14939
+  Slug: environment-fingerprint-public-id
+  Breaking: "no"

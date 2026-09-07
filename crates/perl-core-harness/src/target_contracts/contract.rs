@@ -1,6 +1,7 @@
 //! Target-contract shape validation.
 
 use crate::model::{
+    CONTROLLING_TERMINAL_CAPABILITY, HARNESS_DISPLAY_NO_TTY_ENV, RUNTESTS_NO_TTY_ENV,
     TARGET_SELECTION_SCHEMA_VERSION, TargetAuthorityKind, TargetKind, TargetSelectionContract,
     TargetSelector, TargetTerminalPolicy,
 };
@@ -70,6 +71,8 @@ impl TargetSelectionContract {
             validate_nonempty(&exclusion.claim_impact, "exclusion claim impact")?;
         }
 
+        self.validate_terminal_policy()?;
+
         match self.target_kind {
             TargetKind::PhysicalSeries => self.validate_physical(),
             TargetKind::SelectorVariant => self.validate_selector_variant(),
@@ -78,6 +81,99 @@ impl TargetSelectionContract {
             TargetKind::GeneratedComposite => self.validate_composite(),
             TargetKind::InstrumentationOnly => self.validate_instrumentation(),
         }
+    }
+
+    /// Require the declared terminal policy, capability, and mechanism to agree.
+    ///
+    /// A row states its terminal behavior three times: the policy, the
+    /// capability predicate that decides whether a host may run it, and the
+    /// environment variable that actually suppresses the terminal path. Nothing
+    /// previously compared them, so a row could claim `tty` while declaring no
+    /// terminal requirement — which admits it on a terminal-less CI host and
+    /// reports the terminal variant as an ordinary pass. This keeps the three
+    /// statements one fact.
+    fn validate_terminal_policy(&self) -> Result<(), String> {
+        // Presence is not selection: `runtests` and `minitest_notty` set this
+        // for truth, and Perl's only false strings are "" and "0" (empty is
+        // already rejected as an empty environment value). A row setting
+        // `PERL_SKIP_TTY_TEST=0` has named the no-terminal path while leaving
+        // terminal behavior switched on.
+        if self.environment.get(RUNTESTS_NO_TTY_ENV).is_some_and(|value| value == "0") {
+            return Err(format!(
+                "target {} sets {RUNTESTS_NO_TTY_ENV} to a false value, which does not select the no-TTY path",
+                self.target_id
+            ));
+        }
+
+        let selects_no_tty = self.environment.contains_key(RUNTESTS_NO_TTY_ENV);
+        let declares_harness_display = self.environment.contains_key(HARNESS_DISPLAY_NO_TTY_ENV);
+        let requires_terminal = self
+            .capability_predicates
+            .iter()
+            .any(|predicate| predicate == CONTROLLING_TERMINAL_CAPABILITY);
+
+        match self.terminal_policy {
+            TargetTerminalPolicy::Tty => {
+                if !requires_terminal {
+                    return Err(format!(
+                        "forced-TTY target {} must declare the {CONTROLLING_TERMINAL_CAPABILITY} capability predicate",
+                        self.target_id
+                    ));
+                }
+                if selects_no_tty {
+                    return Err(format!(
+                        "forced-TTY target {} cannot declare {RUNTESTS_NO_TTY_ENV}",
+                        self.target_id
+                    ));
+                }
+            }
+            TargetTerminalPolicy::NoTty => {
+                if !selects_no_tty {
+                    // Name the conflation directly when the row reaches for the
+                    // harness display variable instead: upstream
+                    // `test_harness_notty` sets it and still runs `runtests
+                    // choose`, so it never resolves the terminal.
+                    if declares_harness_display {
+                        return Err(format!(
+                            "no-TTY target {} declares only {HARNESS_DISPLAY_NO_TTY_ENV}, which formats harness output and does not select the no-TTY path",
+                            self.target_id
+                        ));
+                    }
+                    return Err(format!(
+                        "no-TTY target {} must declare {RUNTESTS_NO_TTY_ENV}",
+                        self.target_id
+                    ));
+                }
+                if requires_terminal {
+                    return Err(format!(
+                        "no-TTY target {} cannot require a controlling terminal",
+                        self.target_id
+                    ));
+                }
+            }
+            TargetTerminalPolicy::Choose
+            | TargetTerminalPolicy::Inherited
+            | TargetTerminalPolicy::NotApplicable => {
+                // A row carrying the mechanism has already resolved the
+                // terminal; leaving it under `choose`/`inherited` would let a
+                // forced no-TTY run report as the auto-detecting target. The
+                // harness display variable stays allowed here, because that is
+                // exactly what upstream `test_harness_notty` does.
+                if selects_no_tty {
+                    return Err(format!(
+                        "target {} declares {RUNTESTS_NO_TTY_ENV} without the no_tty terminal policy",
+                        self.target_id
+                    ));
+                }
+                if requires_terminal {
+                    return Err(format!(
+                        "target {} requires a controlling terminal without the tty terminal policy",
+                        self.target_id
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn validate_physical(&self) -> Result<(), String> {
