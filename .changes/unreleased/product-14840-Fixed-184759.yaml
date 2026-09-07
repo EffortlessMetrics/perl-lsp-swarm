@@ -1,7 +1,7 @@
 project: product
 component: Language intelligence
 kind: Fixed
-body: "Scope diagnostics no longer treat a `my` declared in a statement modifier as visible to the statement it modifies. `print $x if my $x = 1;`, `die $err unless my $err = compute();` and `print $x until my $x = 0;` are rejected by the Perl compiler under `use strict`, and now report `UndeclaredVariable` instead of passing silently. A modifier declaration the statement does not use (`foo() while my $x = bar();`) stays undiagnosed."
+body: "Scope diagnostics defer new `my` and `state` bindings until the whole modified statement ends. Both `print $x if my $x = 1;` and `my $x = 1 if $x;` now report `UndeclaredVariable` under `use strict`, matching Perl. Existing and outer bindings remain visible, `our` retains immediate visibility, and completed nested blocks expose only their own declarations. The deferred bindings become available to following statements while retaining redeclaration, shadowing, and unused-variable diagnostics."
 time: 2026-09-05T00:00:00Z
 custom:
   PR: "14840"
