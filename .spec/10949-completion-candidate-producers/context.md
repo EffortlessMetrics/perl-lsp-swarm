@@ -110,6 +110,13 @@ behavior, so neither is fixed here.
   A candidate built by a constructor, a `From` conversion, or a macro does not
   place its file in that plane; the channel and delegation planes still bound
   it, and the row limitations say so.
+- The post-finalizer control reads the entry body only. A closure, `async`
+  block, or nested `fn` runs when it is called, not where it is written, so
+  those bodies are skipped: descending into one made an uncalled closure that
+  merely mentions the finalizer arm the control at its definition, refusing
+  correct code. An append made inside a deferred body is therefore not seen
+  either. Neither shipped entry point has that shape, and the non-vacuity
+  assertion still requires each to call the finalizer directly.
 - The post-finalizer control is source-order, not control-flow aware. It can
   raise a false alarm on a body that finalizes inside one branch and
   contributes on another; it cannot miss an append on that axis. Neither

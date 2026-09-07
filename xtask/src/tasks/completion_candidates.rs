@@ -843,10 +843,14 @@ fn discover_provider_references(
         let parsed = syn::parse_file(&source)
             .wrap_err_with(|| format!("failed to parse {file} with syn"))?;
         let mut modules = BTreeSet::new();
-        // Aliases first: a `use` may sit below the code that uses it.
-        let mut aliases = BTreeSet::new();
-        ProviderAliasVisitor { aliases: &mut aliases }.visit_file(&parsed);
-        let mut visitor = ProviderReferenceVisitor { modules: &mut modules, aliases: &mut aliases };
+        // The file's own scope first: a `use` may sit below the code that uses
+        // it, so the frame is complete before any path is read.
+        let file_scope = scope_aliases(parsed.items.iter().filter_map(|item| match item {
+            syn::Item::Use(item) => Some(item),
+            _ => None,
+        }));
+        let mut visitor =
+            ProviderReferenceVisitor { modules: &mut modules, scopes: vec![file_scope] };
         visitor.visit_file(&parsed);
         for module in modules {
             references.entry(module).or_default().insert(file.clone());
@@ -871,12 +875,17 @@ struct ProviderReferenceVisitor<'a> {
     /// producer reached through the alias would then pass with no delegation
     /// row. The alias is collected in a first pass and then treated exactly as
     /// `providers` in both places.
-    aliases: &'a mut BTreeSet<String>,
+    ///
+    /// A stack rather than one flat set, because `use` is scoped: an alias
+    /// declared inside one function is not in scope in the next one, and
+    /// treating it as file-wide would report an unrelated `p::something`
+    /// elsewhere in the same file as an undeclared delegation on correct code.
+    scopes: Vec<BTreeSet<String>>,
 }
 
 impl ProviderReferenceVisitor<'_> {
     fn names_providers(&self, segment: &str) -> bool {
-        segment == "providers" || self.aliases.contains(segment)
+        segment == "providers" || self.scopes.iter().any(|scope| scope.contains(segment))
     }
 
     /// Walk a use tree, noting every module named directly under `providers`.
@@ -943,6 +952,36 @@ impl<'ast> Visit<'ast> for ProviderReferenceVisitor<'_> {
         }
         syn::visit::visit_path(self, node);
     }
+
+    /// A block opens a scope. Its own `use` items are collected before its
+    /// statements are walked, so a `use` written below the code that uses it
+    /// still applies, and popped after, so it does not leak to a sibling.
+    fn visit_block(&mut self, node: &'ast syn::Block) {
+        self.scopes.push(scope_aliases(node.stmts.iter().filter_map(|stmt| match stmt {
+            syn::Stmt::Item(syn::Item::Use(item)) => Some(item),
+            _ => None,
+        })));
+        syn::visit::visit_block(self, node);
+        self.scopes.pop();
+    }
+
+    /// An inline module is its own scope for the same reason.
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        let declared = node.content.as_ref().map(|(_, items)| {
+            scope_aliases(items.iter().filter_map(|item| match item {
+                syn::Item::Use(item) => Some(item),
+                _ => None,
+            }))
+        });
+        let opened = declared.is_some();
+        if let Some(aliases) = declared {
+            self.scopes.push(aliases);
+        }
+        syn::visit::visit_item_mod(self, node);
+        if opened {
+            self.scopes.pop();
+        }
+    }
 }
 
 /// Collect local names bound to the `providers` namespace itself.
@@ -950,6 +989,11 @@ impl<'ast> Visit<'ast> for ProviderReferenceVisitor<'_> {
 /// A separate pass because `use` is not required to precede the code that uses
 /// it — it is legal anywhere in a module or block — so a single ordered walk
 /// could scan a path before learning that its first segment is an alias.
+///
+/// Collected per lexical scope rather than per file: `use crate::providers as
+/// p;` inside one function must not make `p` a provider namespace in the next
+/// one, or an unrelated `p::something` elsewhere in the file would be reported
+/// as an undeclared delegation on correct code.
 struct ProviderAliasVisitor<'a> {
     aliases: &'a mut BTreeSet<String>,
 }
@@ -981,11 +1025,15 @@ impl ProviderAliasVisitor<'_> {
     }
 }
 
-impl<'ast> Visit<'ast> for ProviderAliasVisitor<'_> {
-    fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
-        self.walk_use_tree(&node.tree, false);
-        syn::visit::visit_item_use(self, node);
+/// Namespace aliases declared directly by these items, without descending into
+/// nested bodies — those own their own scope.
+fn scope_aliases<'a>(items: impl Iterator<Item = &'a syn::ItemUse>) -> BTreeSet<String> {
+    let mut aliases = BTreeSet::new();
+    let mut visitor = ProviderAliasVisitor { aliases: &mut aliases };
+    for item in items {
+        visitor.walk_use_tree(&item.tree, false);
     }
+    aliases
 }
 
 /// Is every file of this `providers::` module inside the scan roots?
@@ -1779,6 +1827,28 @@ fn pattern_idents(pat: &syn::Pat, out: &mut Vec<String>) {
 }
 
 impl<'ast> Visit<'ast> for EntryBodyVisitor<'_> {
+    /// A deferred body is not executed where it is written.
+    ///
+    /// This control models one straight-line pass through the entry point, and
+    /// a closure, `async` block, or nested `fn` runs when it is *called* —
+    /// possibly never, possibly before the line above it. Descending into one
+    /// made `let finalize_later = |page, cap| sort_and_cap_completions(page,
+    /// cap);` arm the finalizer flag at the point of *definition*, so every
+    /// ordinary contribution after it was reported as a post-finalizer append
+    /// on correct code.
+    ///
+    /// Skipping them is the honest boundary rather than a weakening: a
+    /// deferred body was never inside the model, and a control that refuses
+    /// valid source teaches the next reader to stop believing it. An append
+    /// made inside a deferred body is therefore not seen either — recorded in
+    /// the module ceiling, and bounded by the same non-vacuity assertion that
+    /// requires each entry point to call the finalizer directly.
+    fn visit_expr_closure(&mut self, _node: &'ast syn::ExprClosure) {}
+
+    fn visit_expr_async(&mut self, _node: &'ast syn::ExprAsync) {}
+
+    fn visit_item_fn(&mut self, _node: &'ast syn::ItemFn) {}
+
     fn visit_local(&mut self, node: &'ast syn::Local) {
         if let Some(init) = &node.init {
             // Visit the initializer first: it is evaluated before the new name
@@ -3350,7 +3420,7 @@ mod tests {
         };
         let mut modules = BTreeSet::new();
         let mut visitor =
-            ProviderReferenceVisitor { modules: &mut modules, aliases: &mut BTreeSet::new() };
+            ProviderReferenceVisitor { modules: &mut modules, scopes: vec![BTreeSet::new()] };
         visitor.visit_file(&file);
         for expected in ["file_completion", "htmx", "dancer2", "testing", "inline_completion"] {
             assert!(
@@ -3512,7 +3582,7 @@ mod tests {
         };
         let mut modules = BTreeSet::new();
         let mut visitor =
-            ProviderReferenceVisitor { modules: &mut modules, aliases: &mut BTreeSet::new() };
+            ProviderReferenceVisitor { modules: &mut modules, scopes: vec![BTreeSet::new()] };
         visitor.visit_file(&file);
         assert!(
             modules.contains(GLOB_PROVIDER_IMPORT),
@@ -3963,10 +4033,12 @@ mod tests {
         ] {
             let file: syn::File = file;
             let mut modules = BTreeSet::new();
-            let mut aliases = BTreeSet::new();
-            ProviderAliasVisitor { aliases: &mut aliases }.visit_file(&file);
+            let aliases = scope_aliases(file.items.iter().filter_map(|item| match item {
+                syn::Item::Use(item) => Some(item),
+                _ => None,
+            }));
             let mut visitor =
-                ProviderReferenceVisitor { modules: &mut modules, aliases: &mut aliases };
+                ProviderReferenceVisitor { modules: &mut modules, scopes: vec![aliases.clone()] };
             visitor.visit_file(&file);
             assert!(
                 modules.contains("hover") || modules.contains("symbols"),
@@ -3984,9 +4056,12 @@ mod tests {
             use crate::providers as p;
         };
         let mut modules = BTreeSet::new();
-        let mut aliases = BTreeSet::new();
-        ProviderAliasVisitor { aliases: &mut aliases }.visit_file(&late);
-        let mut visitor = ProviderReferenceVisitor { modules: &mut modules, aliases: &mut aliases };
+        let aliases = scope_aliases(late.items.iter().filter_map(|item| match item {
+            syn::Item::Use(item) => Some(item),
+            _ => None,
+        }));
+        let mut visitor =
+            ProviderReferenceVisitor { modules: &mut modules, scopes: vec![aliases.clone()] };
         visitor.visit_file(&late);
         assert!(modules.contains("hover"), "the alias pass must not depend on item order");
 
@@ -3996,9 +4071,12 @@ mod tests {
             fn call() { let _ = p::hover::something(); }
         };
         let mut modules = BTreeSet::new();
-        let mut aliases = BTreeSet::new();
-        ProviderAliasVisitor { aliases: &mut aliases }.visit_file(&unrelated);
-        let mut visitor = ProviderReferenceVisitor { modules: &mut modules, aliases: &mut aliases };
+        let aliases = scope_aliases(unrelated.items.iter().filter_map(|item| match item {
+            syn::Item::Use(item) => Some(item),
+            _ => None,
+        }));
+        let mut visitor =
+            ProviderReferenceVisitor { modules: &mut modules, scopes: vec![aliases.clone()] };
         visitor.visit_file(&unrelated);
         assert!(modules.is_empty(), "an unrelated alias must not widen the plane, got {modules:?}");
     }
@@ -4015,9 +4093,12 @@ mod tests {
             use crate::providers::{self as p, htmx};
         };
         let mut modules = BTreeSet::new();
-        let mut aliases = BTreeSet::new();
-        ProviderAliasVisitor { aliases: &mut aliases }.visit_file(&file);
-        let mut visitor = ProviderReferenceVisitor { modules: &mut modules, aliases: &mut aliases };
+        let aliases = scope_aliases(file.items.iter().filter_map(|item| match item {
+            syn::Item::Use(item) => Some(item),
+            _ => None,
+        }));
+        let mut visitor =
+            ProviderReferenceVisitor { modules: &mut modules, scopes: vec![aliases.clone()] };
         visitor.visit_file(&file);
         assert!(
             !modules.contains("self"),
@@ -4042,6 +4123,99 @@ mod tests {
         row.reached_by.push(only.clone());
         refuses(&ledger, &discovered, "lists `");
         refuses(&ledger, &discovered, "twice in `reached_by`");
+    }
+
+    /// A deferred body runs when it is called, not where it is written.
+    ///
+    /// Descending into one made an uncalled closure that merely *mentions* the
+    /// finalizer arm the flag at its definition, so every ordinary
+    /// contribution after that line was reported as a post-finalizer append on
+    /// correct code.
+    #[test]
+    fn a_deferred_body_does_not_advance_finalization() {
+        let no_producers = BTreeSet::new();
+
+        for body in [
+            quote_body(syn::parse_quote! {
+                fn entry() {
+                    let finalize_later = |page, cap| sort_and_cap_completions(page, cap);
+                    completions.push(candidate());
+                    let _ = finalize_later;
+                }
+            }),
+            quote_body(syn::parse_quote! {
+                fn entry() {
+                    let deferred = async { sort_and_cap_completions(page, cap) };
+                    completions.push(candidate());
+                    let _ = deferred;
+                }
+            }),
+            quote_body(syn::parse_quote! {
+                fn entry() {
+                    fn helper() { sort_and_cap_completions(page, cap); }
+                    completions.push(candidate());
+                }
+            }),
+        ] {
+            let mut visitor = EntryBodyVisitor::new(&no_producers);
+            visitor.visit_block(&body);
+            assert!(
+                !visitor.appended_after_finalizer,
+                "a finalizer inside a deferred body must not arm the control at its definition"
+            );
+        }
+
+        // The control still fires on a finalizer that actually runs here.
+        let direct: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
+                completions.push(sneaky());
+            }
+        };
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
+        visitor.visit_block(&direct.block);
+        assert!(
+            visitor.appended_after_finalizer,
+            "skipping deferred bodies must not disarm the control it protects"
+        );
+    }
+
+    /// A `use` inside one function is not in scope in the next one.
+    #[test]
+    fn a_block_scoped_provider_alias_does_not_leak() {
+        let file: syn::File = syn::parse_quote! {
+            fn scoped() {
+                use crate::providers as p;
+                let _ = p::color::detect_colors(text);
+            }
+            fn unrelated() {
+                let p = local_helper();
+                let _ = p::hover::something();
+            }
+        };
+        let file_scope = scope_aliases(file.items.iter().filter_map(|item| match item {
+            syn::Item::Use(item) => Some(item),
+            _ => None,
+        }));
+        let mut modules = BTreeSet::new();
+        let mut visitor =
+            ProviderReferenceVisitor { modules: &mut modules, scopes: vec![file_scope] };
+        visitor.visit_file(&file);
+
+        assert!(
+            modules.contains("color"),
+            "the alias applies inside the block that declares it, got {modules:?}"
+        );
+        assert!(
+            !modules.contains("hover"),
+            "a block-scoped alias must not make an unrelated `p::` path a delegation, got \
+             {modules:?}"
+        );
+    }
+
+    /// Helper: the body of a parsed function, for entry-body fixtures.
+    fn quote_body(item: syn::ItemFn) -> syn::Block {
+        *item.block
     }
 
     /// A cyclic alias pair terminates instead of resolving forever.
