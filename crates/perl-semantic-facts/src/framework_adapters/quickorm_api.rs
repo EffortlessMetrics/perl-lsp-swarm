@@ -951,20 +951,39 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         notes: "Config clone; returns self when already set.",
     },
     QuickOrmApiCase {
-        api_case_id: "handle.by_id",
+        api_case_id: "handle.by_id.copy",
         package: PKG_HANDLE,
         method: "by_id",
         receiver: R::Handle,
         receiver_constraints: &["no where clause", "no associated row", "source has a primary key"],
-        arguments: A::Required,
+        arguments: A::NoSourceArgument,
         return_class: C::SingleOptionalRow,
         multiplicity: N::ZeroOrOne,
         type_params: T::PreservedFromReceiver,
         mode: M::SyncWithAsyncRowResult,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
-        evidence: QuickOrmEvidence { file: HANDLE, line: 1898 },
-        notes: "May answer from the row cache, returns raw_fields under data_only, and otherwise falls through to one(), which may be undef. There is no synchronous-handle gate.",
+        evidence: QuickOrmEvidence { file: HANDLE, line: 1899 },
+        notes: "Called with only the trailing id, `shift->handle()` receives an empty list and copies the receiver, so the row keeps the receiver's source. May answer from the row cache, returns raw_fields under data_only, and otherwise falls through to one(), which may be undef. There is no synchronous-handle gate.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "handle.by_id.rebind",
+        package: PKG_HANDLE,
+        method: "by_id",
+        receiver: R::Handle,
+        receiver_constraints: &[
+            "trailing id argument is always required",
+            "rebound source has a primary key",
+        ],
+        arguments: A::SourceOrRowRebinding,
+        return_class: C::SingleOptionalRow,
+        multiplicity: N::ZeroOrOne,
+        type_params: T::DerivedFromArgumentSource,
+        mode: M::SyncWithAsyncRowResult,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: HANDLE, line: 1900 },
+        notes: "`my $id = pop; my $self = shift->handle(@_)` forwards every leading argument into `Handle::handle`, which can replace SOURCE. The source, primary key and cache lookup then all read the rebound handle (Handle.pm:1905-1906,1933), so the row comes from the rebound source, not the receiver's. The where/row croaks are likewise checked against the rebound handle (Handle.pm:1902-1903).",
     },
     QuickOrmApiCase {
         api_case_id: "handle.by_ids",
@@ -1996,20 +2015,36 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         notes: "Config predicate.",
     },
     QuickOrmApiCase {
-        api_case_id: "handle.vivify",
+        api_case_id: "handle.vivify.copy",
         package: PKG_HANDLE,
         method: "vivify",
         receiver: R::Handle,
-        receiver_constraints: NO_CONSTRAINTS,
-        arguments: A::TrailingDataHashref,
+        receiver_constraints: &["trailing data hashref is always required"],
+        arguments: A::NoSourceArgument,
         return_class: C::SingleOptionalRow,
         multiplicity: N::One,
         type_params: T::PreservedFromReceiver,
         mode: M::SyncAsyncAsideForked,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
-        evidence: QuickOrmEvidence { file: HANDLE, line: 1945 },
-        notes: "Croaks without a trailing data hashref, then returns an in-memory row from `state_vivify_row` (Handle.pm:1954). There is no synchronous-handle gate.",
+        evidence: QuickOrmEvidence { file: HANDLE, line: 1946 },
+        notes: "Croaks with fewer than two arguments and without a trailing data hashref (Handle.pm:1946-1948). Called with only that hashref, `shift->handle()` receives an empty list and copies the receiver, so the vivified row keeps the receiver's source. There is no synchronous-handle gate.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "handle.vivify.rebind",
+        package: PKG_HANDLE,
+        method: "vivify",
+        receiver: R::Handle,
+        receiver_constraints: &["trailing data hashref is always required"],
+        arguments: A::SourceOrRowRebinding,
+        return_class: C::SingleOptionalRow,
+        multiplicity: N::One,
+        type_params: T::DerivedFromArgumentSource,
+        mode: M::SyncAsyncAsideForked,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: HANDLE, line: 1950 },
+        notes: "`my $data = pop; ... my $self = shift->handle(@_)` forwards every leading argument into `Handle::handle`, which can replace SOURCE. `state_vivify_row` is then passed `source => $self->{+SOURCE}` (Handle.pm:1954-1955), so the in-memory row is bound to the rebound source, not the receiver's.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.where.get",
@@ -3869,10 +3904,28 @@ mod tests {
     /// one unconditional effect.
     #[test]
     fn handle_forwarding_methods_carry_both_cohorts() {
+        // Derived, not guessed. At the pinned commit the complete set of methods
+        // that forward a caller-supplied argument list into `Handle::handle` is
+        // enumerated by, from the upstream tree:
+        //
+        //     grep -rn -- '->handle(@_)' lib/DBIx/QuickORM/
+        //
+        // On a Handle receiver that yields exactly Handle.pm:761 (`new`), 763
+        // (`clone`), 1900 (`by_id`) and 1950 (`vivify`), plus Role/Row.pm:123
+        // (`handle`) on a Row; `Handle::handle` itself is the forwardee. The
+        // Connection.pm forwarders are excluded deliberately: a Connection has
+        // no bound source to preserve, so those rows are unconditionally
+        // `DerivedFromArgumentSource` rather than split.
+        //
+        // `by_ids` is *not* a forwarder: it does `my $self = shift` and maps
+        // `by_id($_)` over the remaining arguments (Handle.pm:1938-1943), so
+        // each inner call forwards an empty list and cannot rebind.
         for (pkg, method) in [
+            (PKG_HANDLE, "by_id"),
             (PKG_HANDLE, "clone"),
             (PKG_HANDLE, "handle"),
             (PKG_HANDLE, "new"),
+            (PKG_HANDLE, "vivify"),
             (PKG_ROW, "handle"),
         ] {
             let cohorts: BTreeSet<QuickOrmArgumentCohort> =
@@ -3883,10 +3936,40 @@ mod tests {
                 "`{pkg}::{method}` forwards into Handle::handle and needs both forms"
             );
         }
-        assert_eq!(
-            case_by_id("row.handle.rebind").type_params,
-            QuickOrmTypeParamEffect::DerivedFromArgumentSource
-        );
+
+        // The rebinding half of every split must actually say the type comes
+        // from the argument; carrying the cohort while still claiming to
+        // preserve the receiver is the exact defect this seam exists to catch.
+        for id in [
+            "handle.by_id.rebind",
+            "handle.clone.rebind",
+            "handle.handle.rebind",
+            "handle.new.rebind",
+            "handle.vivify.rebind",
+            "row.handle.rebind",
+        ] {
+            assert_eq!(
+                case_by_id(id).type_params,
+                QuickOrmTypeParamEffect::DerivedFromArgumentSource,
+                "`{id}` rebinds the source, so it cannot preserve the receiver's type"
+            );
+        }
+
+        // ...and the preserving half must not claim to derive from an argument.
+        for id in [
+            "handle.by_id.copy",
+            "handle.clone.copy",
+            "handle.handle.copy",
+            "handle.new.copy",
+            "handle.vivify.copy",
+            "row.handle.copy",
+        ] {
+            assert_eq!(
+                case_by_id(id).type_params,
+                QuickOrmTypeParamEffect::PreservedFromReceiver,
+                "`{id}` forwards an empty list, so it copies the receiver's type"
+            );
+        }
     }
 
     /// A `Row` never carries a handle execution mode. It builds its own handle
@@ -3932,7 +4015,8 @@ mod tests {
             "handle.insert_and_refresh",
             "handle.upsert",
             "handle.upsert_and_refresh",
-            "handle.vivify",
+            "handle.vivify.copy",
+            "handle.vivify.rebind",
             "conn.insert",
             "conn.vivify",
             "conn.update_or_insert",
