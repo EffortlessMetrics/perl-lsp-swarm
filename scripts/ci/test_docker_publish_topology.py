@@ -404,7 +404,13 @@ class RustBuilderIsNotAProduct(unittest.TestCase):
         cls.publish_text = WORKFLOW.read_text(encoding="utf-8")
         cls.jobs = _job_blocks(cls.publish_text)
         cls.steps = {job_id: _steps(body) for job_id, body in cls.jobs.items()}
-        cls.workflows = sorted(WORKFLOW.parent.glob("*.yml"))
+        # GitHub Actions accepts both extensions, so a control that scanned
+        # only *.yml could be evaded by a workflow named *.yaml.
+        cls.workflows = sorted(
+            path
+            for pattern in ("*.yml", "*.yaml")
+            for path in WORKFLOW.parent.glob(pattern)
+        )
         if not cls.workflows:
             raise AssertionError(f"no workflows found under {WORKFLOW.parent}")
 

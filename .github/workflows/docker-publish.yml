@@ -615,7 +615,12 @@ jobs:
             echo ""
             printf -- '- **Version**: %s\n' "$VERSION"
             if [ "$IS_STABLE" = "true" ]; then
-              echo "- **Channel**: stable (latest, major, and major.minor aliases updated)"
+              # The two registries carry different alias sets: GHCR uses plain
+              # tags on the `-perl` repository, Docker Hub uses `-perl`
+              # suffixed tags and has no major-only alias. Naming them
+              # separately keeps the receipt from claiming a tag that was
+              # never created (#8980).
+              echo "- **Channel**: stable (GHCR: latest, major, major.minor; Docker Hub: latest-perl, major.minor-perl)"
             else
               echo "- **Channel**: prerelease (exact tag only; stable aliases unchanged)"
             fi
