@@ -61,7 +61,7 @@ KNOWN_CONTRADICTIONS = {
 }
 
 STRUCT_RE = re.compile(r"#\[serde\(([^)]*)\)\]\s*pub struct (\w+)\s*\{(.*?)\n\}", re.S)
-FIELD_RE = re.compile(r"((?:#\[serde\(([^)]*)\)\]\s*)+)pub (\w+):\s*([^,\n]+),")
+FIELD_RE = re.compile(r"((?:#\[serde\(([^)]*)\)\]\s*)*)pub (\w+):\s*([^;\n]+)[;,]")
 
 
 def load_pinned_schema() -> dict:
