@@ -1,7 +1,53 @@
-//! Dead code detection for Perl codebases (stub implementation)
+//! Bounded dead-code compatibility surface for Perl codebases.
 //!
-//! This module identifies unused code including unreachable code and unused symbols.
-//! Currently a stub implementation to demonstrate the architecture.
+//! # Current compatibility behavior
+//!
+//! This module reports two kinds of finding, by two different and equally
+//! bounded means:
+//!
+//! * **Unreachable statements and dead branches** come from a line-oriented text
+//!   scan. It does not parse: it counts braces and matches leading keywords, so
+//!   strings, heredocs, POD and regex bodies are scanned as if they were code,
+//!   and per file it reports at most one unreachable statement.
+//! * **Unused subroutines, variables, constants and packages** come from
+//!   [`perl_workspace::workspace_index::WorkspaceIndex::find_unused_symbols`],
+//!   i.e. from the absence of an indexed reference.
+//!
+//! # What it does not establish
+//!
+//! *No indexed reference* is not *unreachable*, and neither is *proven safe to
+//! remove*. Dynamic dispatch, string `eval`, `require` at runtime, exporter
+//! machinery and open-world callers are all invisible here. Nothing in this
+//! module authorizes an edit: [`DeadCode::suggestion`] is advisory prose with no
+//! range and no replacement text, and [`DeadCode::confidence`] is a constant.
+//!
+//! The result types cannot express a partial, cancelled, stale or failed
+//! analysis. In particular [`DeadCodeDetector::analyze_workspace`] discards
+//! per-file errors, so a file that failed to analyse contributes exactly what a
+//! clean file contributes.
+//!
+//! # Replacement targets
+//!
+//! This surface is compatibility, configuration and presentation only. Local
+//! reachability is being replaced by the typed local flow summaries under
+//! [#8118]; workspace liveness by bounded root-based queries under [#10935];
+//! and the finding vocabulary by the neutral diagnostic contract under [#8142].
+//! Those are replacement *targets*, not behavior available today.
+//!
+//! Note that the LSP's user-visible dead-code diagnostics do **not** flow
+//! through this module; `perl-lsp-rs-core` implements them independently.
+//!
+//! # Governing record
+//!
+//! Every public item here carries an explicit disposition — including which
+//! items no producer ever constructs and which configuration is never read — in
+//! `policy/dead-code-api-ledger.toml` (#9777), projected to
+//! `docs/project/status/dead_code_api_ledger.md`. `cargo xtask
+//! check-dead-code-api-ledger` fails if this module and that record drift apart.
+//!
+//! [#8118]: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8118
+//! [#8142]: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8142
+//! [#10935]: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10935
 
 use perl_workspace::workspace_index::{SymbolKind, WorkspaceIndex, fs_path_to_uri, uri_to_fs_path};
 use serde::{Deserialize, Serialize};
@@ -23,9 +69,18 @@ pub enum DeadCodeType {
     UnreachableCode,
     /// Conditional branch that is never taken
     DeadBranch,
-    /// Module imported but never used
+    /// Module imported but never used.
+    ///
+    /// **No current producer constructs this variant.** It is part of the enum
+    /// and of the serde representation, `DeadCodeStats` has no counter for it,
+    /// and [`generate_report`] cannot render it. Import findings belong to the
+    /// import-cleanup programme, not to this surface.
     UnusedImport,
-    /// Function exported but never used externally
+    /// Function exported but never used externally.
+    ///
+    /// **No current producer constructs this variant**, exactly as
+    /// [`DeadCodeType::UnusedImport`]. Interface exposure is a separate
+    /// proposition and this variant cannot stand in for it.
     UnusedExport,
 }
 
@@ -44,9 +99,17 @@ pub struct DeadCode {
     pub end_line: usize,
     /// Human-readable explanation of why this is considered dead code
     pub reason: String,
-    /// Confidence level (0.0-1.0) in the detection accuracy
+    /// Confidence level (0.0-1.0) in the detection accuracy.
+    ///
+    /// **Every current producer stamps the same constant `0.9`**, including
+    /// producers on the two different proof classes, so this value distinguishes
+    /// nothing. Do not read it as proof strength, and do not threshold on it to
+    /// authorize an edit.
     pub confidence: f32,
-    /// Optional suggestion for fixing the dead code
+    /// Optional suggestion for fixing the dead code.
+    ///
+    /// Advisory prose only. It carries no range, no replacement text and no
+    /// applicability, so it is not an edit and confers no deletion authority.
     pub suggestion: Option<String>,
 }
 
@@ -57,7 +120,11 @@ pub struct DeadCodeAnalysis {
     pub dead_code: Vec<DeadCode>,
     /// Statistical summary of dead code analysis
     pub stats: DeadCodeStats,
-    /// Number of files analyzed in the workspace
+    /// Number of files visited in the workspace.
+    ///
+    /// This counts documents *visited*, not documents successfully analysed:
+    /// [`DeadCodeDetector::analyze_workspace`] discards per-file errors, so a
+    /// file that failed to analyse still increments this counter.
     pub files_analyzed: usize,
     /// Total lines of code analyzed
     pub total_lines: usize,
@@ -97,12 +164,32 @@ impl DeadCodeDetector {
         Self { workspace_index, entry_points: HashSet::new() }
     }
 
-    /// Add an entry point (main script)
+    /// Add an entry point (main script).
+    ///
+    /// **The stored set is never read.** Declaring entry points cannot change
+    /// any finding, and no validation is performed: a path in no root, or a
+    /// relative path that cannot identify a root at all, is accepted silently.
+    /// A path is a configuration candidate, not canonical root identity.
+    ///
+    /// Retained for backwards compatibility only; see the disposition ledger.
     pub fn add_entry_point(&mut self, path: PathBuf) {
         self.entry_points.insert(path);
     }
 
-    /// Analyze a single file for dead code
+    /// Analyze a single file for dead code.
+    ///
+    /// Scans the indexed document text line by line; it never parses. Reports at
+    /// most one unreachable statement per file, plus any single-line
+    /// constant-condition dead branches.
+    ///
+    /// # Errors
+    ///
+    /// Returns an untyped `String` when the file is not indexed or its URI
+    /// cannot be converted, so a missing document, an instrument failure and a
+    /// product failure are indistinguishable to the caller.
+    ///
+    /// A successful return is silently local-only: nothing in the value records
+    /// that no workspace tier was consulted.
     pub fn analyze_file(&self, file_path: &Path) -> Result<Vec<DeadCode>, String> {
         let uri = fs_path_to_uri(file_path).map_err(|e| e.to_string())?;
         let text = self
@@ -163,7 +250,14 @@ impl DeadCodeDetector {
         Ok(dead)
     }
 
-    /// Analyze entire workspace for dead code
+    /// Analyze the entire workspace for dead code.
+    ///
+    /// Walks every indexed document with no limit, deadline or cancellation, and
+    /// **discards every per-file error**: a workspace in which some files failed
+    /// to analyse returns the same shape as one in which they were all clean.
+    /// The returned value cannot report a partial, stale or terminal outcome.
+    ///
+    /// The unused-symbol half is an index reference count, not reachability.
     pub fn analyze_workspace(&self) -> DeadCodeAnalysis {
         let docs = self.workspace_index.document_store().all_documents();
         let mut dead_code = Vec::new();
@@ -541,7 +635,16 @@ fn find_block_end(lines: &[&str], open_line: usize) -> usize {
     lines.len() // fallback: end of file
 }
 
-/// Generate a report from dead code analysis
+/// Generate a plain-text report from a dead code analysis.
+///
+/// Renders the seven [`DeadCodeStats`] counters and three totals. Because
+/// `DeadCodeStats` has no counter for [`DeadCodeType::UnusedImport`] or
+/// [`DeadCodeType::UnusedExport`], items of those variants are invisible in the
+/// report body and survive only inside the untyped item total.
+///
+/// The report has no truncation, no terminal-outcome rendering and no
+/// unsupported-family notice, and it must never gain wording asserting that a
+/// finding is safe to remove.
 pub fn generate_report(analysis: &DeadCodeAnalysis) -> String {
     let mut report = String::new();
 

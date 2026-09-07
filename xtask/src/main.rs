@@ -42,15 +42,15 @@ use tasks::{
     ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure,
     code_action_generation_ledger, command_evidence, compare, compat_inventory,
     compiler_lexical_cutline, corpus_audit, count_ratchet, cpan_corpus, critic_rule_proof,
-    dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc,
-    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
-    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
-    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
-    native_format, native_neovim_train, native_product_surface, native_tooling,
+    dead_code, dead_code_api_ledger, debt_report, dependency_hygiene, dev, devex_docs,
+    devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context,
+    emacs_train_specs, features, finalize_check, fix_forward, fmt, forbid_fatal_constructs,
+    forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
+    goals, hardening, hook_checks, ignored_tests, incremental_proof, inject_sha_assets,
+    inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
+    intent_diff_gate, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
+    native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
     oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
     parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
     perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
@@ -145,6 +145,11 @@ enum Commands {
     /// Validate the code-action provider-generation disposition ledger and its
     /// parity corpus against current source (#9188).
     CheckCodeActionGenerationLedger,
+
+    /// Validate the `perl_parser::dead_code` API disposition ledger against
+    /// current module source, the public-API baseline, its compatibility
+    /// corpus, the consumer inventory and the generated projection (#9777).
+    CheckDeadCodeApiLedger,
 
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
@@ -4973,6 +4978,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckActiveGoalManifest => active_goal_manifest::run(),
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckCodeActionGenerationLedger => code_action_generation_ledger::run(),
+        Commands::CheckDeadCodeApiLedger => dead_code_api_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),

@@ -60,6 +60,7 @@ pub mod count_ratchet;
 pub mod cpan_corpus;
 pub mod critic_rule_proof;
 pub mod dead_code;
+pub mod dead_code_api_ledger;
 pub mod debt_report;
 pub mod dependency_hygiene;
 pub mod dev;
