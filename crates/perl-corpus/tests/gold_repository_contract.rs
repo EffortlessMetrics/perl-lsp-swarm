@@ -545,8 +545,11 @@ fn validate_fixture_directory(
 /// per-directory `.gitattributes` files, are deliberately not reimplemented
 /// here: a member whose exact bytes matter must be named literally at the root,
 /// which is what the repository already does for the parser-accuracy span
-/// fixtures. Any other spelling reads as unprotected, so the contract errs
-/// toward rejecting a deviation rather than trusting one.
+/// fixtures. Any other spelling — git's `binary` macro, which resolves to
+/// `-diff -merge -text`, an `[attr]` macro, or `!text` — reads as unprotected
+/// here. That direction is deliberate: `protected_paths` only ever gates
+/// admission of an already-declared deviation, so under-recognising protection
+/// can reject a legitimate declaration but can never admit an unprotected one.
 fn git_text_normalization_disabled(
     workspace_root: &Path,
 ) -> Result<BTreeSet<String>, Box<dyn Error>> {

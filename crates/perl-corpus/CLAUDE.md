@@ -26,6 +26,7 @@ cargo test -p perl-corpus
 cargo test -p perl-corpus --features ci-fast
 cargo test -p perl-corpus --test root_path_authority
 cargo test -p perl-corpus --test distribution_contract
+cargo test -p perl-corpus --test gold_repository_contract
 cargo clippy -p perl-corpus --all-targets -- -D warnings -A missing_docs
 cargo package -p perl-corpus --allow-dirty --list
 cargo run -p perl-corpus -- --help
@@ -106,4 +107,26 @@ different contracts.
   exists.
 - Packaging the complete repository corpus, or making a consumer distribution
   self-contained, requires a separate explicit and reviewed contract.
+
+### Gold member byte fidelity
+
+`test_corpus/gold` assertions are `(line, character)` positions, so member bytes are
+part of the contract, not an implementation detail.
+
+- `byte_fidelity::ByteFidelity::classify` reads raw bytes only. It never decodes,
+  normalizes, or replaces; invalid UTF-8 is reported with the offset of the first
+  undecodable byte.
+- `tests/gold_repository_contract.rs` classifies every gold member and requires the
+  default class: LF terminators, a final newline, no BOM, valid UTF-8. That check runs
+  before any decoded (`String`) view, so an undecodable member is named by path and
+  offset instead of surfacing as an anonymous decode error downstream.
+- A member that intentionally carries other bytes needs both halves or it is rejected:
+  an entry in `BYTE_EXACT_DEVIATIONS` declaring its exact expected class, and a literal
+  `-text` line for that path in the repository-root `.gitattributes`. The declaration
+  without the git protection is not enough — the repository default is `* text eol=lf`,
+  so unprotected bytes are git's to rewrite.
+- Only literal root-`.gitattributes` `-text` entries count as protection. Git's wider
+  pattern language, `[attr]` macros, `binary`, and per-directory attribute files read as
+  unprotected here. That direction is deliberate: it can reject a real declaration, but
+  it can never admit an unprotected one.
 - The `gen` module is written as `r#gen` in Rust source.

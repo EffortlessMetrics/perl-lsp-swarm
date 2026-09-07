@@ -300,9 +300,28 @@ mod tests {
         assert!(!lf_utf8(b""), "an empty member must not satisfy the default class");
     }
 
+    /// Each style must be reachable and land on its own variant. A classifier
+    /// that collapses two representations — bare CR read as LF, or `Mixed`
+    /// never returned — still satisfies every single-style test above, but
+    /// fails this partition.
     #[test]
-    fn classification_is_a_pure_function_of_the_bytes() {
-        let bytes = b"my $x = 1;\r\n";
-        assert_eq!(ByteFidelity::classify(bytes), ByteFidelity::classify(bytes));
+    fn every_newline_style_is_reachable_and_pairwise_distinct() {
+        let representatives: [(&[u8], NewlineStyle); 5] = [
+            (b"no terminator", NewlineStyle::None),
+            (b"a\nb\n", NewlineStyle::Lf),
+            (b"a\r\nb\r\n", NewlineStyle::Crlf),
+            (b"a\rb\r", NewlineStyle::Cr),
+            (b"a\nb\r\n", NewlineStyle::Mixed),
+        ];
+
+        let mut observed = Vec::new();
+        for (bytes, expected) in representatives {
+            let style = ByteFidelity::classify(bytes).newline_style;
+            assert_eq!(style, expected, "{bytes:?} must classify as {expected}");
+            assert!(!observed.contains(&style), "{style} was produced by two different inputs");
+            observed.push(style);
+        }
+
+        assert_eq!(observed.len(), 5, "every newline style must be reachable");
     }
 }
