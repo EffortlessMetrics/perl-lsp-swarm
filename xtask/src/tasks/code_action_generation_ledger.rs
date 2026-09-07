@@ -280,12 +280,10 @@ fn validate_generations(
                     }
                 }
             }
-            "unreachable_stub" => {
-                if generation.production_anchor.is_some() {
-                    violations.push(format!(
-                        "{POLICY_PATH}: generation {id} is an unreachable stub but declares a production_anchor"
-                    ));
-                }
+            "unreachable_stub" if generation.production_anchor.is_some() => {
+                violations.push(format!(
+                    "{POLICY_PATH}: generation {id} is an unreachable stub but declares a production_anchor"
+                ));
             }
             _ => {}
         }
