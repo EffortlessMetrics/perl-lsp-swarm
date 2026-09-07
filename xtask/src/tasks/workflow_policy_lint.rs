@@ -1264,6 +1264,25 @@ fn matrix_values(job: &Mapping, key: &str) -> Option<Vec<String>> {
         }
     }
 
+    // `exclude:` removes scheduled combinations. An entry naming only this key
+    // removes that value from every combination, so it can be subtracted. An
+    // entry that also constrains another axis removes only some combinations,
+    // leaving the value reachable through the others — subtracting it there
+    // would turn a real obligation into a silent pass, so it is kept.
+    if let Some(exclude) = matrix.get(Value::String("exclude".to_string())) {
+        for row in exclude.as_sequence()? {
+            let row = row.as_mapping()?;
+            let Some(excluded) = row.get(Value::String(key.to_string())) else {
+                continue;
+            };
+            if row.len() != 1 {
+                continue;
+            }
+            let excluded = excluded.as_str()?;
+            values.retain(|value| value != excluded);
+        }
+    }
+
     if values.is_empty() { None } else { Some(values) }
 }
 
@@ -2858,6 +2877,37 @@ review_after = "2099-01-01"
             let issues = evaluate_workflow(&workflow)?;
             assert!(issues.is_empty(), "matrix `{matrix}` is GitHub-hosted: {issues:?}");
         }
+        Ok(())
+    }
+
+    /// A value `exclude:` removes from every scheduled combination is not a
+    /// runner the job can select, so it carries no obligation.
+    #[test]
+    fn fully_excluded_matrix_value_is_not_covered() -> Result<()> {
+        let workflow = matrix_workflow(
+            "os: [ubuntu-24.04, self-hosted]\n        \
+             exclude:\n          - os: self-hosted",
+        )?;
+        let issues = evaluate_workflow(&workflow)?;
+        assert!(issues.is_empty(), "the self-hosted row is never scheduled: {issues:?}");
+        Ok(())
+    }
+
+    /// A multi-axis `exclude` removes only some combinations, so the value stays
+    /// reachable through the others and the obligation stands. Subtracting it
+    /// here would convert a real obligation into a silent pass.
+    #[test]
+    fn partially_excluded_matrix_value_still_requires_a_profile() -> Result<()> {
+        let workflow = matrix_workflow(
+            "os: [ubuntu-24.04, self-hosted]\n        \
+             arch: [x64, arm64]\n        \
+             exclude:\n          - os: self-hosted\n            arch: arm64",
+        )?;
+        assert_eq!(
+            codes(&evaluate_workflow(&workflow)?),
+            vec!["SELF_HOSTED_ISOLATION_UNDECLARED"],
+            "self-hosted still runs on x64"
+        );
         Ok(())
     }
 
