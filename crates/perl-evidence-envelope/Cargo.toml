@@ -15,7 +15,11 @@ publish = false
 include = ["src/**", "tests/**", "Cargo.toml", "README.md"]
 
 [lib]
-doctest = false
+# Doctests stay ON for this crate. The README quick start is compiled as a
+# doctest via the `ReadmeDoctests` harness in src/lib.rs; disabling doctests
+# would leave that consumer-facing example unchecked, which is exactly how it
+# went stale when `ReceiptId`'s constructor changed.
+doctest = true
 
 [dependencies]
 # serde: stable serialization for all envelope/identity/classification types.

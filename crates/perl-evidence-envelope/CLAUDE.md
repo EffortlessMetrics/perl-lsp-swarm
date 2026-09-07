@@ -128,9 +128,17 @@ LSP/DAP/editor types, async runtimes, or Git/release tooling. Asserted in
 
 ## Focused validation
 
-`cargo test -p perl-evidence-envelope --all-targets --locked`. The dependency
-contract shells out to `cargo tree` and fails closed when the instrument
-cannot run. Unit tests cover fingerprint determinism (with a negative
+`cargo test -p perl-evidence-envelope --all-targets --locked` **and**
+`cargo test -p perl-evidence-envelope --doc`. Both are needed: `--all-targets`
+does not run doctests, and the doctests are what compile the `README.md`
+quick start (via the `ReadmeDoctests` harness in `src/lib.rs`) plus the
+crate-level example. `doctest = false` was removed for exactly this reason —
+with doctests off, an API change silently left the consumer-facing README
+example uncompilable, which is how it went stale when `ReceiptId`'s
+constructor gained its producer namespace.
+
+The dependency contract shells out to `cargo tree` and fails closed when the
+instrument cannot run. Unit tests cover fingerprint determinism (with a negative
 control), fingerprint independence from `Vec` insertion order, domain
 separation from `ContentDigest`, fail-closed schema-version and
 completeness/inputs decoding, and serde round-trips for every enum variant.

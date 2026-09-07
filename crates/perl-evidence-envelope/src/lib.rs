@@ -104,6 +104,16 @@
 //! ```
 #![deny(clippy::map_err_ignore)]
 
+/// Compiles the `README.md` quick start as a doctest.
+///
+/// The README is a consumer's first read and is not otherwise checked by any
+/// build. Including it here means an API change that invalidates the example
+/// fails `cargo test -p perl-evidence-envelope --doc` instead of shipping a
+/// snippet that does not compile.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 mod claim;
 mod classification;
 mod completeness;

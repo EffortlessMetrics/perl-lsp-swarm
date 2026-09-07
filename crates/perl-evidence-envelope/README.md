@@ -117,11 +117,15 @@ use perl_evidence_envelope::{
 };
 use perl_source_identity::{ContentDigest, ProjectId};
 
+// The receipt ID is namespaced by its producer, so a producer-local key such
+// as "run-42" cannot collide with another producer's.
+let producer = ProducerIdentity::new("perl-lsp-test-runner", "0.17.0", "abc123", "ci-42");
+
 let envelope = EvidenceEnvelope {
     schema_version: EvidenceEnvelopeSchemaVersion::V1,
-    receipt_id: ReceiptId::from_canonical_key("run-42"),
+    receipt_id: ReceiptId::from_producer_and_key(&producer, "run-42"),
     payload: PayloadIdentity::new("test-receipt", 1, ContentDigest::of_bytes(b"payload bytes")),
-    producer: ProducerIdentity::new("perl-lsp-test-runner", "0.17.0", "abc123", "ci-42"),
+    producer,
     subject: EvidenceSubject::new(
         ProjectId::from_canonical_name("acme/widget"),
         Some("base-sha".to_string()),
