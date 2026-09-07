@@ -424,9 +424,11 @@ impl ExactSession {
             }
             match self.rx.recv_timeout(remaining) {
                 Ok(Ok(DapMessage::Response {
+                    seq,
                     request_seq: response_seq,
                     success,
                     command,
+                    message,
                     body,
                     ..
                 })) => {
@@ -436,12 +438,12 @@ impl ExactSession {
                     });
                     if response_seq == request_seq {
                         return Ok(perl_dap::Response {
-                            seq: response_seq,
+                            seq,
                             msg_type: "response".to_string(),
                             request_seq: response_seq,
                             success,
                             command,
-                            message: None,
+                            message,
                             body,
                         });
                     }
@@ -707,8 +709,11 @@ fn run_deterministic_rows(binary: &Path, rows: &mut [MatrixRow]) -> Result<()> {
         let fake = PathBuf::from("git");
         let mut session = match ExactSession::spawn(&fake) {
             Ok(session) => session,
+            // A control that could not run proved nothing: never a pass.
             Err(error) => {
-                rows[4].verdict = RowVerdict::Pass;
+                rows[4].verdict = RowVerdict::InstrumentFailure {
+                    detail: format!("the negative control could not spawn its fake: {error:#}"),
+                };
                 rows[4].evidence_digest = sha256_text(&format!("spawn-refused: {error:#}"));
                 return Ok(());
             }
@@ -748,6 +753,13 @@ fn run_deterministic_rows(binary: &Path, rows: &mut [MatrixRow]) -> Result<()> {
 fn classify(outcome: Result<()>, failure_class: FailureClass) -> RowVerdict {
     match outcome {
         Ok(()) => RowVerdict::Pass,
+        Err(error) if error.to_string().contains("timed out") => RowVerdict::Failed {
+            // A timeout is recorded as a TIMEOUT, never as a debugger
+            // behavior class: it does not prove conformance and does not
+            // accuse the adapter (#7565 taxonomy).
+            failure_class: FailureClass::Timeout,
+            detail: format!("{error:#}"),
+        },
         Err(error) => RowVerdict::Failed { failure_class, detail: format!("{error:#}") },
     }
 }
@@ -811,17 +823,17 @@ fn exact_session_matrix_conforms_and_fails_closed() -> Result<()> {
     // The launch row executes only where a debuggee runtime resolved; it is
     // an honest not_proven environment boundary otherwise, never a silent
     // skip recorded as pass. The fixture path stays alive for the receipt.
-    let mut fixture_path: Option<PathBuf> = None;
+    let mut fixture: Option<(tempfile::TempDir, PathBuf)> = None;
     match runtime {
         Some(perl) => {
-            let fixture = write_fixture()?;
+            let (guard, fixture_file) = write_fixture()?;
             let mut session = ExactSession::spawn(&binary)?;
-            let outcome = run_launch_row(&mut session, perl, &fixture, rows[3].timeout);
+            let outcome = run_launch_row(&mut session, perl, &fixture_file, rows[3].timeout);
             rows[3].evidence_digest = session.evidence_digest();
             let teardown = session.teardown();
             rows[3].verdict =
                 classify_with_cleanup(outcome, teardown, FailureClass::FixtureFailure);
-            fixture_path = Some(fixture);
+            fixture = Some((guard, fixture_file));
         }
         None => {
             rows[3].verdict = RowVerdict::NotProven {
@@ -835,9 +847,9 @@ fn exact_session_matrix_conforms_and_fails_closed() -> Result<()> {
     // The typed receipt is written BEFORE the aggregation asserts, so a
     // failing row is still receipted with its typed verdict — the scorecard
     // must see failures too, not only successes (#7565 review).
-    let fixtures: Vec<(String, PathBuf)> = fixture_path
-        .clone()
-        .map(|path| vec![("matrix-fixture-plain".to_string(), path)])
+    let fixtures: Vec<(String, PathBuf)> = fixture
+        .as_ref()
+        .map(|(_, path)| vec![("matrix-fixture-plain".to_string(), path.clone())])
         .unwrap_or_default();
     write_receipt_if_configured(&binary, runtime, &rows, &fixtures)?;
 
@@ -918,15 +930,14 @@ fn run_launch_row(
 
 /// Deterministic fixture content with a fixed line anchor, written to a
 /// per-run tempdir; the digest lands in the subject identity.
-fn write_fixture() -> Result<PathBuf> {
+fn write_fixture() -> Result<(tempfile::TempDir, PathBuf)> {
+    // The guard is returned to the caller: the fixture lives exactly as long
+    // as the test, and nothing is leaked past teardown (#7565 review).
     let dir = tempfile::tempdir().context("creating the fixture tempdir")?;
     let path = dir.path().join("matrix_fixture.pl");
     fs::write(&path, "# matrix fixture (fixed content)\nmy $anchor = 1;\nprint \"ok\\n\";\n")
         .context("writing the fixture")?;
-    // The tempdir deletes on drop; keep the file by leaking the guard for
-    // the test's lifetime — the harness owns a bounded, single-file fixture.
-    std::mem::forget(dir);
-    Ok(path)
+    Ok((dir, path))
 }
 
 fn write_receipt_if_configured(
