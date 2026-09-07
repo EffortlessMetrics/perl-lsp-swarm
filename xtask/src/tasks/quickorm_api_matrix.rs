@@ -62,12 +62,14 @@ fn render_matrix() -> String {
          means different things on different receivers, and a large family of handle methods \
          return stored state with no arguments but a refined clone with arguments.\n\n",
     );
-    output.push_str("| Case | Package | Method | Receiver | Arguments | Return class | Multiplicity | Type params | Mode | Void | Boundary | Evidence |\n");
-    output.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    output.push_str("| Case | Package | Method | Receiver | Arguments | Return class | Multiplicity | Type params | Mode | Void | Boundary | Receiver constraints | Evidence |\n");
+    output.push_str(
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
+    );
 
     for case in QUICKORM_API_CASES {
         output.push_str(&format!(
-            "| `{}` | `{}` | `{}` | {} | {} | {} | {} | {} | {} | {} | {} | `{}:{}` |\n",
+            "| `{}` | `{}` | `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | `{}:{}` |\n",
             case.api_case_id,
             case.package,
             case.method,
@@ -79,6 +81,7 @@ fn render_matrix() -> String {
             case.mode.as_str(),
             case.void_context.as_str(),
             case.boundary.as_str(),
+            render_constraints(case.receiver_constraints),
             case.evidence.file,
             case.evidence.line,
         ));
@@ -90,6 +93,15 @@ fn render_matrix() -> String {
     }
 
     output
+}
+
+/// Render the preconditions upstream enforces, so the projection does not make a
+/// conditional call boundary look unconditional.
+fn render_constraints(constraints: &[&str]) -> String {
+    if constraints.is_empty() {
+        return "—".to_string();
+    }
+    constraints.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join("; ")
 }
 
 fn normalize_newlines(value: &str) -> String {

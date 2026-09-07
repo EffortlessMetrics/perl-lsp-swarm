@@ -212,9 +212,17 @@ impl QuickOrmReturnClass {
         }
     }
 
-    /// True when this class carries row identity that type propagation must
-    /// keep parameterized by a source.
-    pub const fn carries_row_identity(self) -> bool {
+    /// True when this class *can* carry row identity that type propagation
+    /// keeps parameterized by a source.
+    ///
+    /// This is a property of the class alone, so it is a necessary and not a
+    /// sufficient condition. A terminal reached through a `data_only` handle
+    /// yields plain hashes rather than blessed rows even though its class is
+    /// row-carrying — see the `handle.data_only` row, whose
+    /// [`QuickOrmTypeParamEffect::ErasedToPlainData`] records that erasure.
+    /// A consumer must therefore combine this with the handle's `data_only`
+    /// state; it must not be read as an unconditional promise of a row.
+    pub const fn may_carry_row_identity(self) -> bool {
         matches!(
             self,
             Self::PreserveHandleSourceRow
@@ -3097,7 +3105,7 @@ mod tests {
     fn qorm_table_is_metadata_not_a_row() {
         let case = case_by_id("dsl.qorm_table");
         assert_eq!(case.return_class, QuickOrmReturnClass::MetadataOrScalar);
-        assert!(!case.return_class.carries_row_identity());
+        assert!(!case.return_class.may_carry_row_identity());
         assert_eq!(case.receiver, QuickOrmReceiver::GeneratedTablePackage);
     }
 
@@ -3282,7 +3290,7 @@ mod tests {
 
     #[test]
     fn mutations_never_carry_row_identity_as_a_handle() {
-        // `carries_row_identity` partitions the vocabulary; a row-bearing class
+        // `may_carry_row_identity` partitions the vocabulary; a row-bearing class
         // must never be answered as plain data, metadata, a count, or a write.
         for case in QUICKORM_API_CASES {
             let expected = matches!(
@@ -3294,9 +3302,9 @@ mod tests {
                     | QuickOrmReturnClass::IteratorOfRows
             );
             assert_eq!(
-                case.return_class.carries_row_identity(),
+                case.return_class.may_carry_row_identity(),
                 expected,
-                "`{}` is misclassified by carries_row_identity",
+                "`{}` is misclassified by may_carry_row_identity",
                 case.api_case_id
             );
         }
@@ -3308,7 +3316,7 @@ mod tests {
             .filter(|c| c.return_class == QuickOrmReturnClass::MutationOrSideEffectResult)
         {
             assert!(
-                !case.return_class.carries_row_identity(),
+                !case.return_class.may_carry_row_identity(),
                 "`{}` cannot be both a write and a queryable handle",
                 case.api_case_id
             );
@@ -3355,7 +3363,7 @@ mod tests {
         ] {
             let case = case_by_id(id);
             assert!(
-                case.return_class.carries_row_identity(),
+                case.return_class.may_carry_row_identity(),
                 "`{id}` returns a row upstream and must not be modeled as a bare write"
             );
             assert_ne!(
@@ -3382,7 +3390,7 @@ mod tests {
         ] {
             let case = case_by_id(id);
             assert!(
-                !case.return_class.carries_row_identity(),
+                !case.return_class.may_carry_row_identity(),
                 "`{id}` does not return a row upstream"
             );
         }
@@ -3434,7 +3442,7 @@ mod tests {
         for id in ["row.check_sync", "row.force_sync", "row.discard", "row.update", "row.refresh"] {
             let case = case_by_id(id);
             assert!(
-                case.return_class.carries_row_identity(),
+                case.return_class.may_carry_row_identity(),
                 "`{id}` returns the receiving row upstream"
             );
             assert_eq!(
@@ -3476,7 +3484,7 @@ mod tests {
         for case in QUICKORM_API_CASES {
             let id = case.api_case_id;
 
-            if case.return_class.carries_row_identity() {
+            if case.return_class.may_carry_row_identity() {
                 assert_ne!(
                     case.type_params,
                     QuickOrmTypeParamEffect::NotApplicable,
