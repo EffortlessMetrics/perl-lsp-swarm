@@ -616,4 +616,3 @@ mod modifier_tests {
         );
     }
 }
-
