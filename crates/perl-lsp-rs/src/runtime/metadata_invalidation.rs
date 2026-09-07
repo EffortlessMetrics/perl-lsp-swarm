@@ -215,14 +215,19 @@ impl LspServer {
             if respelled == name {
                 continue;
             }
-            return match (
-                std::fs::canonicalize(dir.join(name)),
-                std::fs::canonicalize(dir.join(respelled)),
-            ) {
-                (Ok(original), Ok(respelled)) => original == respelled,
-                // The re-spelled name does not resolve at all, so this
-                // directory distinguishes the two spellings.
-                _ => false,
+            // A child that does not resolve — a dangling symlink is the usual
+            // way — says nothing about case behavior, and `read_dir` order is
+            // unspecified, so one broken entry must not decide the answer for
+            // the whole directory. Ask a different child instead.
+            let Ok(original) = std::fs::canonicalize(dir.join(name)) else {
+                continue;
+            };
+            return match std::fs::canonicalize(dir.join(respelled)) {
+                Ok(respelled) => original == respelled,
+                // The child resolves but its re-spelling does not, so this
+                // directory genuinely distinguishes the two spellings. That is
+                // a decisive answer, not a failed probe.
+                Err(_) => false,
             };
         }
         false
@@ -787,6 +792,31 @@ mod tests {
             LspServer::directory_folds_case(&empty),
             filesystem_is_case_insensitive(temp.path()),
             "a directory with a re-spellable child reports its real behavior"
+        );
+    }
+
+    /// A child that does not resolve must not decide the answer for the whole
+    /// directory. `read_dir` order is unspecified, so a dangling symlink that
+    /// happens to come first would otherwise short-circuit the probe and
+    /// discard differently-cased staged metadata after a delete.
+    ///
+    /// Not mutation-discriminable on a case-sensitive filesystem: the correct
+    /// answer here is `false` either way, so this guards the behavior on a
+    /// case-folding volume rather than proving it on this one.
+    #[cfg(unix)]
+    #[test]
+    fn a_broken_child_does_not_decide_the_case_fold_answer() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let workspace = temp.path().join("Workspace");
+        std::fs::create_dir(&workspace).expect("create dir");
+        std::os::unix::fs::symlink(workspace.join("nowhere"), workspace.join("Dangling"))
+            .expect("create dangling symlink");
+        std::fs::write(workspace.join("cpanfile"), "requires 'X';\n").expect("write child");
+
+        assert_eq!(
+            LspServer::directory_folds_case(&workspace),
+            filesystem_is_case_insensitive(temp.path()),
+            "a dangling symlink must be skipped, not treated as a verdict"
         );
     }
 
