@@ -1,12 +1,12 @@
 ---
 name: verify-live-ci
-description: Evaluate one substantively reviewed PR's live checks, threads, draft state, mergeability, and policy without treating CI as review or creating exact-head churn.
+description: Evaluate one substantively reviewed PR's live checks, threads, draft state, mergeability, and policy, and produce missing required status without treating CI as review or creating exact-head churn.
 ---
 
 # Verify live CI
 
-This is Codex's live-integration fact skill. It does not perform, infer, or replace the
-substantive review owned by `$review-pr`.
+This is Codex's live-integration fact and status-production skill. It does not perform,
+infer, or replace the substantive review owned by `$review-pr`.
 
 Read one current GitHub snapshot for the selected PR:
 
@@ -104,6 +104,65 @@ NOT_PROVEN
 - `NOT_PROVEN` means API/check/policy/instrument identity is missing or unreliable.
 
 Pending checks leave substantive review current while integration is `PR_IN_FLIGHT`.
+
+A `$ci-failure-triage` field such as
+`status_production_gap=fresh_integration_subject` is not terminal `NOT_PROVEN`; it is an
+input to the ordered decision below.
+
+## Required-status production order
+
+This skill is the single status-production action owner. It selects, performs, or routes
+one admissible action from one current snapshot. When an action requires branch mutation,
+the established candidate writer alone performs it.
+
+1. **A current-subject run is queued or active.** Read it back against the expected
+   context and subject, then wait for that run. Do not duplicate it. The run counts only
+   when its workflow and reporting identity can publish the missing required context;
+   a queued or active advisory-only run does not satisfy this action.
+2. **The current run is `action_required` or needs trusted approval/identity.** Use the
+   actual trusted approval path before dispatch, rerun, or branch mutation. Re-read the
+   run and return `PR_IN_FLIGHT` only when GitHub confirms the approval/identity
+   transition on the expected subject.
+3. **No current-subject run exists and exact-subject dispatch is admissible.** Dispatch
+   only when the workflow accepts the exact inputs and can publish the missing required
+   context or a trusted receipt live policy admits. Re-read the created run, its inputs,
+   evaluated subject, and reporting identity before waiting. An exact advisory-only run
+   is not a substitute.
+4. **A completed transient or instrument failure can be rerun against the same relevant
+   subject.** Rerun only a run whose workflow and reporting identity can publish the
+   missing required context; a transient failure of an advisory-only run falls through
+   to action 3 or 5. Request one bounded rerun, then re-read a new attempt for that run
+   and subject. A command exit or API success without a new attempt is not
+   `PR_IN_FLIGHT`.
+5. **Material base movement changed a merge-tree subject and the old attempt cannot
+   answer it.** Prefer an admissible exact-subject dispatch that can satisfy the missing
+   required context, with the same read-back as action 3.
+6. **No admissible exact-subject route can evaluate the required changed merge tree and
+   the currentness contract's narrow fresh-trigger exception applies.** Authorize one
+   verified-clean empty commit through the established candidate writer. The writer
+   proves no file or mode change, pushes the expected branch, and returns the new head.
+   Re-read the PR head before waiting for the resulting required run. This is not a
+   retry-to-green mechanism and this skill does not mutate the branch directly.
+7. **No action can be proven admissible or persisted.** Return terminal `NOT_PROVEN`
+   with the missing policy, subject, capability, reporting identity, or read-back. Do not
+   guess by pushing or call an unobserved action in flight.
+
+### Remote-action persistence law
+
+A command invocation, API 2xx, or requested transition is not itself evidence that the
+transition exists. Return `PR_IN_FLIGHT` after approval, dispatch, rerun, or writer
+handoff only when a fresh GitHub read confirms:
+
+```text
+expected PR/head or merge subject
++ expected context/workflow/run identity
++ expected new state or attempt
++ exact terminal wake event
+```
+
+If read-back fails, is contradictory, or names another subject, preserve the action
+failure or return `NOT_PROVEN`. Do not take a second status-production action from the
+same snapshot; re-read only after the named wake event.
 
 ## Live evidence classification
 
