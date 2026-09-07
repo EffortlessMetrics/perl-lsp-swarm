@@ -533,6 +533,43 @@ fn an_unreadable_source_does_not_freeze_the_readable_ones() {
     );
 }
 
+/// Pins the documented retention limit for shadowed declarations: `previous`
+/// is the deduplicated view, so a module declared by two sources is attributed
+/// to the earlier one. When the earlier source drops it while the later source
+/// is unreadable, it disappears — the later source has no retained entry to
+/// contribute. Recovering it would need per-source memory before dedupe, and
+/// the cheap alternative would resurrect modules the readable source
+/// deliberately removed. The folder is reported stale so the uncertainty is
+/// visible.
+#[test]
+fn a_shadowed_declaration_is_not_retained_but_the_folder_is_stale() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "cpanfile", "requires 'Shared::Mod';\n");
+    write_file(&dir, "META.yml", "requires:\n  Shared::Mod: 0\n");
+    let server = workspace_server(&dir);
+    assert_eq!(
+        declared_modules(&server),
+        vec!["Shared::Mod".to_string()],
+        "the module is recorded once, attributed to cpanfile"
+    );
+
+    // cpanfile drops it; META.yml (which also declares it) becomes unreadable.
+    write_file(&dir, "cpanfile", "requires 'Only::Now';\n");
+    std::fs::write(dir.path().join("META.yml"), [0xff_u8, 0xfe, 0xfd])
+        .expect("write invalid UTF-8 META.yml");
+    watched(&server, &[(&file_uri(&dir, "cpanfile"), CHANGED)]);
+
+    assert_eq!(
+        declared_modules(&server),
+        vec!["Only::Now".to_string()],
+        "the shadowed declaration is not recoverable from the deduplicated view"
+    );
+    assert!(
+        server.dependency_facts_are_stale(&dir_uri(&dir)),
+        "the unreadable source makes the retained snapshot explicitly stale"
+    );
+}
+
 /// An unreadable declaration source must not block dependency-manager
 /// include-root reconciliation, which is driven by existence probes alone.
 #[test]

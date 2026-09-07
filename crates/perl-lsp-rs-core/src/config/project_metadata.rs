@@ -17,15 +17,13 @@
 //!
 //! # Claim boundary
 //!
-//! Classification mirrors the detectors' `workspace_root.join(..)` exactly:
-//! only workspace-root-relative paths at the precise spelling below match, so
-//! a nested `t/cpanfile` is not project metadata, and comparison is
-//! byte-exact. On a case-insensitive filesystem the detector and this
-//! classifier agree only where the client reports the on-disk spelling; no
-//! case folding is performed here, because folding would classify paths the
-//! detector would not read.
+//! Classification mirrors the detectors' `workspace_root.join(..)`: only
+//! workspace-root-relative paths match, so a nested `t/cpanfile` is not
+//! project metadata. Comparison is ASCII case-insensitive because the
+//! detectors' `join` resolves differently-cased names on a case-insensitive
+//! filesystem; see `relative_matches` for why matching too eagerly is the
+//! safe direction and missing an event is not.
 
-use std::ffi::OsStr;
 use std::path::{Component, Path};
 
 use super::metadata_dependencies::DeclaredDependencySource;
@@ -130,15 +128,31 @@ pub fn classify_project_metadata_path(
 
 /// Compare a workspace-relative path against a `/`-separated literal.
 ///
-/// Component-wise so the literal stays platform-neutral, and byte-exact so a
-/// match implies the detector's `join` would address the same file.
+/// Component-wise, so the literal stays platform-neutral.
+///
+/// ASCII case-insensitive, deliberately. The detectors address metadata by
+/// `workspace_root.join("cpanfile")`, and on a case-insensitive filesystem
+/// (Windows, and macOS by default) that call resolves `CPANFILE` too. A
+/// byte-exact classifier would therefore refuse to classify a watcher event
+/// the detector *would* read, leaving facts stale until an unrelated metadata
+/// event arrived.
+///
+/// The asymmetry favors matching: on a case-sensitive filesystem a `CPANFILE`
+/// event that is genuinely a different file triggers one extra refresh, which
+/// recomputes from actual disk state and is therefore correct and idempotent —
+/// wasted work at worst. Missing an event is a real staleness bug. Matching
+/// only ASCII case keeps the comparison locale-independent, since all governed
+/// literals are ASCII.
 fn relative_matches(relative: &Path, expected: &str) -> bool {
     let mut expected_components = expected.split('/');
     let mut actual_components = relative.components();
     loop {
         match (expected_components.next(), actual_components.next()) {
             (Some(expected), Some(Component::Normal(actual))) => {
-                if actual != OsStr::new(expected) {
+                let Some(actual) = actual.to_str() else {
+                    return false;
+                };
+                if !actual.eq_ignore_ascii_case(expected) {
                     return false;
                 }
             }
@@ -234,11 +248,22 @@ mod tests {
         }
     }
 
-    /// Byte-exact comparison: a differently-cased spelling is not silently
-    /// folded into a metadata classification the detector would not read.
+    /// A differently-cased spelling classifies, because the detectors' `join`
+    /// resolves it on a case-insensitive filesystem and a missed event leaves
+    /// facts stale. The extra refresh this can cause on a case-sensitive
+    /// filesystem recomputes from disk and is harmless.
     #[test]
-    fn classification_is_byte_exact() {
-        assert_eq!(classify("CPANFILE"), None);
-        assert_eq!(classify("makefile.pl"), None);
+    fn classification_is_ascii_case_insensitive() {
+        assert_eq!(classify("CPANFILE"), Some(ProjectMetadataKind::Both));
+        assert_eq!(classify("makefile.pl"), Some(ProjectMetadataKind::DeclaredDependencies));
+        assert_eq!(classify("Local/.Carmel"), Some(ProjectMetadataKind::EnvironmentRoots));
+    }
+
+    /// Case-insensitivity must not widen *which* names count.
+    #[test]
+    fn case_insensitivity_does_not_admit_unrelated_names() {
+        for name in ["cpanfile2", "cpan", "META.jsonx", "distx.ini"] {
+            assert_eq!(classify(name), None, "{name} must not classify");
+        }
     }
 }

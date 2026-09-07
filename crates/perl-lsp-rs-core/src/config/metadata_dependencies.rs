@@ -182,6 +182,21 @@ pub enum MetadataSourceRead {
 /// never silently downgraded to "declares nothing". An
 /// [`MetadataSourceRead::Absent`] source contributes nothing, which is how a
 /// genuine delete drops its declarations.
+///
+/// # Retention limit for shadowed declarations
+///
+/// `previous` is the deduplicated view, so a module declared by two sources is
+/// recorded once, attributed to the earlier one. If the earlier source is
+/// readable and drops that module while the later source becomes unreadable,
+/// the later source has no retained entry to contribute and the module
+/// disappears, even though the unreadable file may still declare it.
+///
+/// This is a deliberate limit rather than an oversight: recovering it would
+/// require retaining per-source declarations before deduplication, and the
+/// alternative — keeping any module no resolved source declares — would
+/// resurrect modules the readable source deliberately removed, which is a
+/// worse error. The folder is reported stale whenever any source is
+/// unreadable, so the uncertainty is visible rather than silent.
 #[must_use]
 pub fn declared_dependencies_from_reads(
     reads: &[(DeclaredDependencySource, MetadataSourceRead)],
