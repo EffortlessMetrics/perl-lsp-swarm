@@ -424,8 +424,25 @@ fn resolve_local_origin(source: &str, reexport_path: &str) -> String {
         return format!("{SUBJECT_ROOT_PATH}::{rest}");
     }
     let module = reexport_path.rsplit_once("::").map(|(m, _)| m).unwrap_or(SUBJECT_ROOT_PATH);
-    let rest = source.strip_prefix("self::").unwrap_or(source);
-    format!("{module}::{rest}")
+    let mut rest = source.strip_prefix("self::").unwrap_or(source);
+    // `pub use super::Type;` names the parent of the module holding the
+    // `pub use`, and `super::super::` walks further up. Without this the origin
+    // resolved to a path containing a literal `super` segment, which matches no
+    // discovered type, so the re-exported type's members were silently dropped.
+    // Popping mirrors the rule `walk_impl` already applies to a qualified
+    // `impl` self type.
+    let mut parts: Vec<&str> = module.split("::").collect();
+    while let Some(after) = rest.strip_prefix("super::") {
+        // Never climb above the crate root: the first segment is the crate
+        // itself, so a `super` that would pop it is not a path this crate can
+        // express. Leave the origin unresolved rather than inventing one.
+        if parts.len() <= 1 {
+            return format!("{module}::{rest}");
+        }
+        parts.pop();
+        rest = after;
+    }
+    format!("{}::{rest}", parts.join("::"))
 }
 
 fn walk_module_file(
@@ -1014,6 +1031,36 @@ fn validate_entry(entry: &LedgerEntry, shown: &str) -> Result<()> {
 
 /// Reconcile the ledger against the surface discovered from source.
 pub(crate) fn reconcile(discovered: &[Discovered], ledger: &Ledger) -> Result<()> {
+    // Two definitions of one name under mutually exclusive gates (`#[cfg(unix)]`
+    // and `#[cfg(windows)]`, say) share an id but not a cfg. Collecting them
+    // into a map would keep whichever sorted last and silently govern one
+    // platform's availability while claiming to govern the symbol. Refuse
+    // instead: identity is `kind:path`, so a colliding id means the identity
+    // scheme cannot express this surface, which is a fact the ledger must not
+    // paper over.
+    let mut collisions: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for item in discovered {
+        collisions.entry(item.id.as_str()).or_default().push(item.cfg.as_str());
+    }
+    let colliding: Vec<String> = collisions
+        .iter()
+        .filter(|(_, cfgs)| cfgs.len() > 1)
+        .map(|(id, cfgs)| {
+            let spelled: Vec<String> = cfgs
+                .iter()
+                .map(|cfg| if cfg.is_empty() { "<none>".to_string() } else { format!("`{cfg}`") })
+                .collect();
+            format!("`{id}` is defined {} times under cfg {}", cfgs.len(), spelled.join(" and "))
+        })
+        .collect();
+    if !colliding.is_empty() {
+        bail!(
+            "{SUBJECT_CRATE} surface has {} colliding identit(ies); one row cannot govern two \
+             definitions with different cfg gates:\n  - {}",
+            colliding.len(),
+            colliding.join("\n  - ")
+        );
+    }
     let discovered_by_id: BTreeMap<&str, &Discovered> =
         discovered.iter().map(|item| (item.id.as_str(), item)).collect();
     let ledger_by_id: BTreeMap<&str, &LedgerEntry> =

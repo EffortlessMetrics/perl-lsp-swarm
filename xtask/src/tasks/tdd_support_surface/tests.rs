@@ -905,6 +905,75 @@ fn governed_ids(root: &Path) -> Result<Vec<String>> {
     Ok(discover_surface(root)?.into_iter().map(|item| item.id).collect())
 }
 
+/// `pub use super::Type;` names the parent of the module holding it. Resolving
+/// it to a path with a literal `super` segment matched no discovered type, so
+/// the re-exported type's members were dropped without any diagnostic.
+#[test]
+fn parent_relative_reexports_resolve_to_the_defining_module() -> Result<()> {
+    let root = SUBJECT_ROOT_PATH;
+    // `pub use super::Widget;` inside `a::b` names `a::Widget`.
+    assert_eq!(
+        resolve_local_origin("super::Widget", &format!("{root}::a::b::Widget")),
+        format!("{root}::a::Widget"),
+    );
+    // Repeated `super` walks further up.
+    assert_eq!(
+        resolve_local_origin("super::super::Widget", &format!("{root}::a::b::c::Widget")),
+        format!("{root}::a::Widget"),
+    );
+    // `super::<module>::Type` keeps the intermediate segment.
+    assert_eq!(
+        resolve_local_origin("super::inner::Widget", &format!("{root}::a::b::Widget")),
+        format!("{root}::a::inner::Widget"),
+    );
+    // The already-supported spellings are unchanged.
+    assert_eq!(
+        resolve_local_origin("crate::a::Widget", &format!("{root}::Widget")),
+        format!("{root}::a::Widget"),
+    );
+    assert_eq!(
+        resolve_local_origin("self::Widget", &format!("{root}::a::Widget")),
+        format!("{root}::a::Widget"),
+    );
+    // A `super` that would climb above the crate root is not expressible, and
+    // must not silently produce a path that looks resolved.
+    let above_root = resolve_local_origin("super::Widget", &format!("{root}::Widget"));
+    if !above_root.contains("super") {
+        bail!("climbing above the crate root must stay unresolved, got {above_root}");
+    }
+    Ok(())
+}
+
+/// Two definitions of one name under mutually exclusive cfg gates share an id.
+/// Collecting them into a map keeps one and silently governs a single
+/// platform's availability, so the checker must refuse rather than choose.
+#[test]
+fn alternate_cfg_definitions_of_one_name_are_refused() -> Result<()> {
+    const FIXTURE: &str = "\
+#[cfg(unix)]\npub fn open_native() -> u8 { 0 }\n\
+#[cfg(windows)]\npub fn open_native() -> u8 { 1 }\n";
+    let dir = fixture_root(FIXTURE, MINIMAL_MANIFEST)?;
+    let discovered = discover_surface(dir.path())?;
+    let ledger = load_ledger(&dir.path().join(LEDGER_PATH)).unwrap_or_else(|_| Ledger {
+        schema_version: SCHEMA_VERSION,
+        policy: POLICY_NAME.to_string(),
+        subject_crate: SUBJECT_CRATE.to_string(),
+        entry: Vec::new(),
+    });
+    let Err(error) = reconcile(&discovered, &ledger) else {
+        bail!("two cfg-alternate definitions of one name must not reconcile silently");
+    };
+    let rendered = format!("{error:?}");
+    if !rendered.contains("colliding") || !rendered.contains("open_native") {
+        bail!("the refusal must name the colliding identity, got: {rendered}");
+    }
+    // Both gates are reported, so the reader can see what collided.
+    if !rendered.contains("unix") || !rendered.contains("windows") {
+        bail!("the refusal must name both cfg gates, got: {rendered}");
+    }
+    Ok(())
+}
+
 /// Authored prose reaches a Markdown cell, so a `|` or a newline in an
 /// `exit_condition` would silently reshape the generated table instead of
 /// failing — and the projection would still pass its own currentness check
