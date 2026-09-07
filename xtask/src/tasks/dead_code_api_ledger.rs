@@ -228,6 +228,7 @@ fn validate(root: &Path) -> Result<Stats> {
         .with_context(|| format!("failed to parse {}", ledger.module_source))?;
     validate_source_coverage(&ledger, &source_items, &mut violations);
     validate_baseline_coverage(&ledger, &baseline_text, &mut violations);
+    validate_export_paths(&ledger, &baseline_text, &mut violations);
     validate_item_laws(&ledger, &mut violations);
     validate_result_states(&ledger, &mut violations);
     validate_fixtures(&ledger, &corpus_text, &mut violations);
@@ -351,22 +352,40 @@ fn parse_module_surface(text: &str) -> Result<BTreeSet<SourceItem>> {
     let mut items = BTreeSet::new();
     // The module itself is always dispositioned.
     items.insert(SourceItem { id: "dead_code".to_string(), kind: "module".to_string() });
+    collect_public_items(&file.items, "", &mut items)?;
+    Ok(items)
+}
 
-    for item in &file.items {
+/// Record every public item in `source`.
+///
+/// `prefix` qualifies the ids so an item reached through an inline `pub mod`
+/// keeps a ledger identity distinct from a same-named item at module level.
+/// Recording only the enclosing module would let the governed public surface
+/// grow without any row describing the items it gained.
+fn collect_public_items(
+    source: &[syn::Item],
+    prefix: &str,
+    items: &mut BTreeSet<SourceItem>,
+) -> Result<()> {
+    for item in source {
         match item {
             syn::Item::Enum(node) if is_public(&node.vis) => {
                 let name = node.ident.to_string();
-                items.insert(SourceItem { id: name.clone(), kind: "enum".to_string() });
+                items
+                    .insert(SourceItem { id: format!("{prefix}{name}"), kind: "enum".to_string() });
                 for variant in &node.variants {
                     items.insert(SourceItem {
-                        id: format!("{name}::{}", variant.ident),
+                        id: format!("{prefix}{name}::{}", variant.ident),
                         kind: "variant".to_string(),
                     });
                 }
             }
             syn::Item::Struct(node) if is_public(&node.vis) => {
                 let name = node.ident.to_string();
-                items.insert(SourceItem { id: name.clone(), kind: "struct".to_string() });
+                items.insert(SourceItem {
+                    id: format!("{prefix}{name}"),
+                    kind: "struct".to_string(),
+                });
                 for (index, field) in node.fields.iter().enumerate() {
                     if !is_public(&field.vis) {
                         continue;
@@ -377,21 +396,24 @@ fn parse_module_surface(text: &str) -> Result<BTreeSet<SourceItem>> {
                         None => index.to_string(),
                     };
                     items.insert(SourceItem {
-                        id: format!("{name}::{field_id}"),
+                        id: format!("{prefix}{name}::{field_id}"),
                         kind: "field".to_string(),
                     });
                 }
             }
             syn::Item::Union(node) if is_public(&node.vis) => {
                 let name = node.ident.to_string();
-                items.insert(SourceItem { id: name.clone(), kind: "union".to_string() });
+                items.insert(SourceItem {
+                    id: format!("{prefix}{name}"),
+                    kind: "union".to_string(),
+                });
                 for field in &node.fields.named {
                     if !is_public(&field.vis) {
                         continue;
                     }
                     if let Some(ident) = field.ident.as_ref() {
                         items.insert(SourceItem {
-                            id: format!("{name}::{ident}"),
+                            id: format!("{prefix}{name}::{ident}"),
                             kind: "field".to_string(),
                         });
                     }
@@ -399,28 +421,34 @@ fn parse_module_surface(text: &str) -> Result<BTreeSet<SourceItem>> {
             }
             syn::Item::Fn(node) if is_public(&node.vis) => {
                 items.insert(SourceItem {
-                    id: node.sig.ident.to_string(),
+                    id: format!("{prefix}{}", node.sig.ident),
                     kind: "function".to_string(),
                 });
             }
             syn::Item::Type(node) if is_public(&node.vis) => {
                 items.insert(SourceItem {
-                    id: node.ident.to_string(),
+                    id: format!("{prefix}{}", node.ident),
                     kind: "type_alias".to_string(),
                 });
             }
             syn::Item::Const(node) if is_public(&node.vis) => {
                 items.insert(SourceItem {
-                    id: node.ident.to_string(),
+                    id: format!("{prefix}{}", node.ident),
                     kind: "constant".to_string(),
                 });
             }
             syn::Item::Static(node) if is_public(&node.vis) => {
-                items.insert(SourceItem { id: node.ident.to_string(), kind: "static".to_string() });
+                items.insert(SourceItem {
+                    id: format!("{prefix}{}", node.ident),
+                    kind: "static".to_string(),
+                });
             }
             syn::Item::Trait(node) if is_public(&node.vis) => {
                 let name = node.ident.to_string();
-                items.insert(SourceItem { id: name.clone(), kind: "trait".to_string() });
+                items.insert(SourceItem {
+                    id: format!("{prefix}{name}"),
+                    kind: "trait".to_string(),
+                });
                 for inner in &node.items {
                     let member = match inner {
                         syn::TraitItem::Fn(method) => Some(method.sig.ident.to_string()),
@@ -430,27 +458,41 @@ fn parse_module_surface(text: &str) -> Result<BTreeSet<SourceItem>> {
                     };
                     if let Some(member) = member {
                         items.insert(SourceItem {
-                            id: format!("{name}::{member}"),
+                            id: format!("{prefix}{name}::{member}"),
                             kind: "trait_member".to_string(),
                         });
                     }
                 }
             }
             syn::Item::Mod(node) if is_public(&node.vis) => {
-                items.insert(SourceItem {
-                    id: node.ident.to_string(),
-                    kind: "submodule".to_string(),
-                });
+                let name = format!("{prefix}{}", node.ident);
+                items.insert(SourceItem { id: name.clone(), kind: "submodule".to_string() });
+                match node.content.as_ref() {
+                    Some((_, inner)) => {
+                        collect_public_items(inner, &format!("{name}::"), items)?;
+                    }
+                    // An out-of-line public submodule puts public API in a file
+                    // this ledger does not govern, so L1 could not see it at
+                    // all. Refuse rather than report a surface known to be
+                    // partial.
+                    None => bail!(
+                        "public submodule `{name}` is declared out-of-line; this ledger governs \
+                         a single file, so the items it exports cannot be inventoried"
+                    ),
+                }
             }
             syn::Item::Use(node) if is_public(&node.vis) => {
                 for name in use_tree_names(&node.tree) {
-                    items.insert(SourceItem { id: name, kind: "reexport".to_string() });
+                    items.insert(SourceItem {
+                        id: format!("{prefix}{name}"),
+                        kind: "reexport".to_string(),
+                    });
                 }
             }
             syn::Item::Macro(node) if node.attrs.iter().any(is_macro_export) => {
                 if let Some(ident) = node.ident.as_ref() {
                     items.insert(SourceItem {
-                        id: ident.to_string(),
+                        id: format!("{prefix}{}", ident),
                         kind: "exported_macro".to_string(),
                     });
                 }
@@ -474,7 +516,7 @@ fn parse_module_surface(text: &str) -> Result<BTreeSet<SourceItem>> {
                     };
                     if let Some((member, kind)) = member {
                         items.insert(SourceItem {
-                            id: format!("{self_name}::{member}"),
+                            id: format!("{prefix}{self_name}::{member}"),
                             kind: kind.to_string(),
                         });
                     }
@@ -488,7 +530,7 @@ fn parse_module_surface(text: &str) -> Result<BTreeSet<SourceItem>> {
             // inspect, so it cannot be ruled out as public API.
             syn::Item::Verbatim(_) => {
                 items.insert(SourceItem {
-                    id: format!("<uninterpreted item #{}>", items.len()),
+                    id: format!("{prefix}<uninterpreted item #{}>", items.len()),
                     kind: "unsupported_public_form".to_string(),
                 });
             }
@@ -503,7 +545,7 @@ fn parse_module_surface(text: &str) -> Result<BTreeSet<SourceItem>> {
                 });
                 if has_public_item {
                     items.insert(SourceItem {
-                        id: format!("<public foreign item #{}>", items.len()),
+                        id: format!("{prefix}<public foreign item #{}>", items.len()),
                         kind: "unsupported_public_form".to_string(),
                     });
                 }
@@ -513,14 +555,14 @@ fn parse_module_surface(text: &str) -> Result<BTreeSet<SourceItem>> {
                     && is_public(vis)
                 {
                     items.insert(SourceItem {
-                        id: format!("<unmodelled public item #{}>", items.len()),
+                        id: format!("{prefix}<unmodelled public item #{}>", items.len()),
                         kind: "unsupported_public_form".to_string(),
                     });
                 }
             }
         }
     }
-    Ok(items)
+    Ok(())
 }
 
 /// Every name a `pub use` tree introduces into the module's public surface.
@@ -684,6 +726,106 @@ fn validate_baseline_coverage(ledger: &Ledger, baseline_text: &str, violations: 
             "L2: `{id}` is exported per {} but has no ledger disposition",
             ledger.public_api_baseline
         ));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// L11 — export-path completeness
+// ---------------------------------------------------------------------------
+
+/// Every path prefix under which the public-API baseline exposes this surface.
+///
+/// Two shapes reach it and both are routes a caller can depend on:
+///
+/// * a module route — `perl_parser::dead_code`, and any alias of it such as
+///   `perl_parser::compat::dead_code_detector`;
+/// * a type-re-export namespace — `perl_parser::prelude`, which republishes the
+///   types without republishing the module.
+///
+/// A path is reduced at its leftmost surface segment, so
+/// `perl_parser::dead_code::DeadCodeType::clone` and
+/// `perl_parser::prelude::DeadCode` both collapse to the route that carries
+/// them. Deriving the set from the baseline rather than from the ledger is the
+/// point: a newly added alias appears here on its own and has to be declared.
+fn baseline_export_paths(ledger: &Ledger, baseline_text: &str) -> BTreeSet<String> {
+    const MODULE_TAILS: [&str; 2] = ["dead_code", "dead_code_detector"];
+    // Type names come from the ledger's own rows, so a type added to the
+    // surface widens this derivation automatically.
+    let type_names: BTreeSet<&str> = ledger
+        .item
+        .iter()
+        .filter(|item| {
+            matches!(item.kind.as_str(), "enum" | "struct" | "union" | "trait" | "type_alias")
+        })
+        .map(|item| item.id.as_str())
+        .collect();
+
+    let mut paths = BTreeSet::new();
+    for line in baseline_text.lines() {
+        let tokens = line.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'));
+        for token in tokens {
+            let segments: Vec<&str> = token.split("::").filter(|s| !s.is_empty()).collect();
+            if segments.first() != Some(&"perl_parser") {
+                continue;
+            }
+            for (index, segment) in segments.iter().enumerate().skip(1) {
+                // A module route includes its own tail; a type route stops
+                // before the type, because the namespace is what is exported.
+                let route = if MODULE_TAILS.contains(segment) {
+                    Some(&segments[..=index])
+                } else if type_names.contains(segment) {
+                    Some(&segments[..index])
+                } else {
+                    None
+                };
+                if let Some(route) = route {
+                    if route.len() > 1 {
+                        paths.insert(route.join("::"));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    paths
+}
+
+/// L11 — every route the public-API baseline exposes has an `export_path` row,
+/// and no declared route has stopped existing.
+///
+/// Without this, `export_path` was a hand-kept list: adding a public alias in
+/// the facade left the ledger green while the reachable surface grew.
+fn validate_export_paths(ledger: &Ledger, baseline_text: &str, violations: &mut Vec<String>) {
+    let derived = baseline_export_paths(ledger, baseline_text);
+    // Vacuity guard: the canonical route is always exported. If it is not in
+    // the derived set the baseline format has moved and this law is checking
+    // nothing, which must fail rather than pass.
+    if !derived.contains(&ledger.canonical_path) {
+        violations.push(format!(
+            "L11: the canonical route {} is not derivable from {}; the baseline format changed \
+             and this law is no longer checking anything",
+            ledger.canonical_path, ledger.public_api_baseline
+        ));
+        return;
+    }
+
+    let declared: BTreeSet<&str> =
+        ledger.export_path.iter().map(|export| export.path.as_str()).collect();
+    for route in &derived {
+        if !declared.contains(route.as_str()) {
+            violations.push(format!(
+                "L11: {} exposes `{route}`, which no export_path row declares",
+                ledger.public_api_baseline
+            ));
+        }
+    }
+    for route in &declared {
+        if !derived.contains(*route) {
+            violations.push(format!(
+                "L11: export_path `{route}` is not exposed by {}; the row is stale",
+                ledger.public_api_baseline
+            ));
+        }
     }
 }
 
@@ -1193,21 +1335,45 @@ fn import_facts(file: &syn::File, inside_owning_crate: bool) -> ImportFacts {
     if inside_owning_crate {
         roots.extend(["crate", "self", "super"].iter().map(|s| (*s).to_string()));
     }
-    for item in &file.items {
-        if let syn::Item::Use(node) = item {
-            collect_crate_aliases(&node.tree, 0, &mut roots);
-        }
+    let uses = collect_use_items(file);
+    for node in &uses {
+        collect_crate_aliases(&node.tree, 0, &mut roots);
     }
 
     let mut facts = ImportFacts::default();
-    for item in &file.items {
-        if let syn::Item::Use(node) = item {
-            for path in flatten_use_tree(&node.tree, &mut Vec::new()) {
-                classify_import_path(&path, &roots, &mut facts);
-            }
+    for node in &uses {
+        for path in flatten_use_tree(&node.tree, &mut Vec::new()) {
+            classify_import_path(&path, &roots, &mut facts);
         }
     }
     facts
+}
+
+/// Every `use` declaration in a file, wherever it sits.
+///
+/// Scanning only top-level items missed the ones that matter most: an import
+/// inside an inline module, an impl block, or a function body is just as much a
+/// consumption of this surface, and those are exactly the shapes a prelude glob
+/// or a crate alias hides in.
+///
+/// Lexical scope is deliberately flattened — an alias introduced in one inner
+/// scope roots a path in another. That over-approximates consumption, which is
+/// the fail-closed direction: it can only require an inventory row that was not
+/// strictly needed, never let a real consumer through unrecorded.
+fn collect_use_items(file: &syn::File) -> Vec<&syn::ItemUse> {
+    struct Collector<'ast> {
+        uses: Vec<&'ast syn::ItemUse>,
+    }
+    impl<'ast> syn::visit::Visit<'ast> for Collector<'ast> {
+        fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
+            self.uses.push(node);
+            syn::visit::visit_item_use(self, node);
+        }
+    }
+
+    let mut collector = Collector { uses: Vec::new() };
+    syn::visit::Visit::visit_file(&mut collector, file);
+    collector.uses
 }
 
 /// Classify one import path.
@@ -2147,6 +2313,168 @@ mod tests {
         assert!(
             violations.iter().any(|v| v.starts_with("L1:") && v.contains("UnusedLabel")),
             "a new public item must fail until it is dispositioned: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    /// L1 — a public item nested in an inline module is still public API and
+    /// must receive its own row under a qualified id. Recording only the
+    /// enclosing module would let the governed surface grow undispositioned.
+    fn falsifier_l1_a_public_item_inside_an_inline_module_is_recorded() -> Result<()> {
+        let surface = parse_module_surface(
+            "pub mod nested { pub fn exposed() {} pub struct Held { pub field: u8 } }",
+        )?;
+        for (id, kind) in [
+            ("nested", "submodule"),
+            ("nested::exposed", "function"),
+            ("nested::Held", "struct"),
+            ("nested::Held::field", "field"),
+        ] {
+            assert!(
+                surface.iter().any(|item| item.id == id && item.kind == kind),
+                "nested public item {id} ({kind}) must be recorded: {surface:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    /// L1 — an out-of-line public submodule puts public API in a file this
+    /// ledger does not govern. It is rejected rather than silently uncovered.
+    fn falsifier_l1_an_out_of_line_public_submodule_is_rejected() -> Result<()> {
+        let error = parse_module_surface("pub mod elsewhere;")
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(
+            error.contains("elsewhere") && error.contains("out-of-line"),
+            "an out-of-line public submodule must be rejected, got: {error:?}"
+        );
+        // A private out-of-line module exposes nothing and stays acceptable.
+        assert!(parse_module_surface("mod helper;").is_ok(), "a private submodule is fine");
+        Ok(())
+    }
+
+    #[test]
+    /// L7 — consumers whose only import sits inside a nested module or a
+    /// function body are still consumers. Scanning top-level items alone let
+    /// prelude and crate-alias consumers merge without an inventory row.
+    fn falsifier_l7_a_nested_import_still_marks_a_consumer() -> Result<()> {
+        let cases = [
+            (
+                "prelude glob inside an inline module",
+                "mod inner { use perl_parser::prelude::*; pub fn f() -> Option<DeadCode> { None } }",
+            ),
+            (
+                "crate alias inside an inline module",
+                "mod inner { use perl_parser as pf; use pf::dead_code::DeadCodeDetector; \
+                 pub fn f() -> DeadCodeDetector { DeadCodeDetector::new() } }",
+            ),
+            (
+                "block-scoped import inside a function",
+                "fn f() { use perl_parser::prelude::*; let _: Option<DeadCode> = None; }",
+            ),
+        ];
+        for (label, text) in cases {
+            let seen = references_surface(text, false)
+                .map_err(|error| color_eyre::eyre::eyre!("{label}: {error}"))?;
+            assert!(seen, "{label} must be detected as a consumer");
+        }
+        // Negative control: the same shapes without a rooted import must stay
+        // invisible, so the recursion has not simply made everything a consumer.
+        let unrooted = "mod inner { use dead_code::DeadCodeDetector; pub fn f() {} }";
+        assert!(
+            !references_surface(unrooted, false).map_err(color_eyre::eyre::Report::msg)?,
+            "another crate's own `dead_code` module must not be read as this surface"
+        );
+        Ok(())
+    }
+
+    #[test]
+    /// L11 — a route the baseline exposes must be declared, and a declared
+    /// route the baseline no longer exposes must be reported as stale. Before
+    /// this law `export_path` was a hand-kept list: a new public alias in the
+    /// facade left the ledger green while the reachable surface grew.
+    fn falsifier_l11_export_paths_track_the_baseline_in_both_directions() -> Result<()> {
+        let root = project_root()?;
+        let ledger = read_ledger(&root, POLICY_PATH)?;
+        let baseline = read_text(&root, &ledger.public_api_baseline)?;
+
+        // A fourth alias appears in the facade; the ledger is unchanged.
+        let widened = format!(
+            "{baseline}\npub mod perl_parser::legacy::dead_code_detector\npub enum \
+             perl_parser::legacy::dead_code_detector::DeadCodeType\n"
+        );
+        let mut violations = Vec::new();
+        validate_export_paths(&ledger, &widened, &mut violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.starts_with("L11:")
+                    && v.contains("perl_parser::legacy::dead_code_detector")),
+            "an undeclared route must fail: {violations:?}"
+        );
+
+        // A declared route that the baseline stops exposing is stale.
+        let mut narrowed = ledger;
+        narrowed.export_path.push(ExportPath {
+            path: "perl_parser::retired::dead_code".to_string(),
+            role: "compatibility_alias".to_string(),
+            declared_at: "crates/perl-parser/src/lib.rs".to_string(),
+            note: "Removed route.".to_string(),
+        });
+        let mut violations = Vec::new();
+        validate_export_paths(&narrowed, &baseline, &mut violations);
+        assert!(
+            violations.iter().any(|v| v.starts_with("L11:")
+                && v.contains("perl_parser::retired::dead_code")
+                && v.contains("stale")),
+            "a route the baseline does not expose must be reported stale: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    /// L11 — a baseline whose format has moved must fail rather than pass by
+    /// deriving nothing.
+    fn falsifier_l11_a_baseline_that_derives_nothing_is_not_a_pass() -> Result<()> {
+        let root = project_root()?;
+        let ledger = read_ledger(&root, POLICY_PATH)?;
+        let mut violations = Vec::new();
+        validate_export_paths(&ledger, "# baseline format moved\n", &mut violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.starts_with("L11:") && v.contains("no longer checking anything")),
+            "an underivable baseline is instrument failure, not a pass: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    /// The consumer scan is deliberately mixed, and the ledger's NOT_PROVEN row
+    /// must describe it accurately: the two rooted needles are a text match, so
+    /// a comment or string naming them *does* force an inventory row, while
+    /// every other spelling (prelude globs, crate aliases) is import-structural
+    /// and a comment naming it does not.
+    fn comment_and_string_references_are_matched_only_by_the_rooted_needles() -> Result<()> {
+        let needle_in_a_comment = "// see perl_parser::dead_code for the legacy shape\n";
+        assert!(
+            references_surface(needle_in_a_comment, false)
+                .map_err(color_eyre::eyre::Report::msg)?,
+            "a rooted needle inside a comment is matched as text; the ledger says so"
+        );
+        let needle_in_a_string = "fn f() { let _ = \"perl_parser::dead_code_detector\"; }";
+        assert!(
+            references_surface(needle_in_a_string, false).map_err(color_eyre::eyre::Report::msg)?,
+            "a rooted needle inside a string literal is matched as text"
+        );
+        let prelude_in_a_comment = "// the prelude re-exports DeadCode\nfn f() {}\n";
+        assert!(
+            !references_surface(prelude_in_a_comment, false)
+                .map_err(color_eyre::eyre::Report::msg)?,
+            "a non-needle spelling in a comment stays structural and is not inventoried"
         );
         Ok(())
     }
