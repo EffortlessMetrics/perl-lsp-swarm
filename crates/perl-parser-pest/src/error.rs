@@ -9,9 +9,8 @@
 //!   parser-domain rejection. Pest declined the input; this is not an
 //!   instrument failure.
 //! - [`ParseError::Failed`] wraps [`crate::ParserFailure`] — an
-//!   operational/instrument failure. Never a parser-domain rejection, and
-//!   never produced by malformed-but-otherwise-well-formed Perl source on
-//!   its own.
+//!   operational/instrument failure: this crate could not do its job. Never a
+//!   parser-domain rejection, and never the verdict "your Perl is wrong".
 //!
 //! It is deliberately not the crate's *only* error type. Vocabulary
 //! construction — [`crate::SourceRange`], [`crate::ParseOutcome`], and
@@ -28,9 +27,34 @@
 //! panic in the parser unwinds past this type rather than becoming a
 //! `Failed` value, and callers that need to contain one (such as
 //! `perl-parser-comparison`'s harness) still wrap the call in
-//! [`std::panic::catch_unwind`] themselves. In practice every `Failed` that
-//! `parse()` returns carries [`crate::ParserFailureKind::Instrument`],
-//! reporting an internal AST-builder invariant violation.
+//! [`std::panic::catch_unwind`] themselves. Every `Failed` that `parse()`
+//! returns therefore carries [`crate::ParserFailureKind::Instrument`].
+//!
+//! # What `Instrument` does and does not say about the source
+//!
+//! `Instrument` means the AST builder could not construct a node for input
+//! Pest had already accepted. That covers two situations, and the type does
+//! not currently distinguish them:
+//!
+//! - a genuine internal invariant violation, and
+//! - **a builder gap on syntax the grammar supports** — this parser has such
+//!   gaps today. `if (!$x)` and every other `if`/`elsif` condition beginning
+//!   with a unary prefix operator is grammar-valid Perl that Pest accepts and
+//!   the builder then fails to lower, so it reaches callers as `Instrument`.
+//!   Real files in this repository's own `test_corpus/` hit it.
+//!
+//! That classification is deliberate rather than a shrug: the caller's Perl is
+//! valid, so reporting [`ParseError::Rejected`] would be a false statement
+//! about their source, and `Instrument` correctly says the failure belongs to
+//! this instrument. It is not a claim that every `Instrument` is an internal
+//! invariant violation.
+//!
+//! Expressing "grammar-supported but not lowered" as a distinct parser-domain
+//! state needs [`crate::ParseCompleteness::Unsupported`], which lives on the
+//! success side and is not wired into `parse()`. Until then this remains a
+//! stated limit; the builder gap itself is tracked separately and is not
+//! repaired here, because changing which constructs lower is a parser-behavior
+//! change with its own proof obligation.
 //!
 //! Both wrapped types are schema-versioned (`#[serde(deny_unknown_fields)]`
 //! plus an explicit schema-string check on deserialize), so an old or

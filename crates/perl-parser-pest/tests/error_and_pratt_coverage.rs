@@ -2,13 +2,17 @@
 //! Discriminating tests for the canonical `ParseError` union (`src/error.rs`)
 //! and the Pratt operator table.
 //!
-//! `ParseError` is the crate's single fallible-return error type: `Rejected`
-//! (parser-domain rejection, wraps `StrictParseError`) and `Failed`
-//! (operational/instrument failure, wraps `ParserFailure`). These tests pin
-//! that the two arms are populated correctly by `PureRustPerlParser::parse`,
-//! are not interconvertible by type, round-trip through serde, reject stale
-//! schema payloads loudly, and that every public fallible API on this crate
-//! returns `ParseError` rather than `Box<dyn std::error::Error>`.
+//! `ParseError` is the error type returned by the crate's parsing APIs:
+//! `Rejected` (parser-domain rejection, wraps `StrictParseError`) and `Failed`
+//! (operational/instrument failure, wraps `ParserFailure`). Vocabulary
+//! construction keeps its own `OutcomeError` and is deliberately not folded in.
+//!
+//! These tests pin that the two arms are populated correctly by
+//! `PureRustPerlParser::parse`, are not interconvertible by type, round-trip
+//! through serde, reject stale schema payloads loudly, report rejection ranges
+//! as caller-source offsets even when `parse()` rewrote the source, and that
+//! every public fallible API returns `ParseError` rather than
+//! `Box<dyn std::error::Error>`.
 
 use std::error::Error;
 
@@ -142,6 +146,49 @@ fn malformed_perl_never_yields_operational_failure() -> Result<(), Box<dyn Error
                 return Err(format!(
                     "malformed source {source:?} must not be classified as an operational \
                      failure, got {failure:?}"
+                )
+                .into());
+            }
+            Err(other) => {
+                return Err(format!("unexpected ParseError arm for {source:?}: {other:?}").into());
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The converse of the control above: grammar-valid Perl that the AST builder
+// cannot lower reaches the caller as `Failed`, not `Rejected`. Pinning the
+// real behaviour rather than asserting a guarantee this parser cannot back.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn builder_gap_on_grammar_valid_perl_is_instrument_not_rejection() -> Result<(), Box<dyn Error>> {
+    // `if` / `elsif` conditions starting with a unary prefix operator are
+    // ordinary Perl that Pest accepts and the builder then fails to lower.
+    // This predates the typed-error work (the same inputs fail on the base
+    // commit with an untyped "Failed to build condition node"); the value
+    // added here is that the failure is now *classified*.
+    let grammar_valid_but_unlowered =
+        ["if (!1) { 1; }\n", "if (!defined $x) { 1; }\n", "if (-1) { 1; }\n"];
+
+    for source in grammar_valid_but_unlowered {
+        let mut parser = PureRustPerlParser::new();
+        match parser.parse(source) {
+            // `Ok` would mean the builder gap was fixed — a real improvement,
+            // and this test should then be revisited rather than kept green
+            // by accident. It is not a failure of the error contract.
+            Ok(_) => {}
+            // The load-bearing assertion: the caller's Perl is valid, so
+            // calling it a parser-domain rejection would be a false statement
+            // about their source.
+            Err(ParseError::Failed(_)) => {}
+            Err(ParseError::Rejected(rejection)) => {
+                return Err(format!(
+                    "grammar-valid source {source:?} must never be reported as a \
+                     parser-domain rejection; got Rejected({:?})",
+                    rejection.message()
                 )
                 .into());
             }
