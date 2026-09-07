@@ -775,11 +775,6 @@ class = "test"
 note = "Absorption tests that assert the canonical path, the `dead_code_detector` alias and the alias identity. They pin the export surface itself, so retiring an export path breaks them deliberately."
 
 [[consumer]]
-path = "crates/perl-parser/examples/workspace_refactor_demo.rs"
-class = "dormant"
-note = "References `dead_code_detector` only inside a block comment; the example's `main` is a disabled stub. Not a live consumer and not evidence of demand."
-
-[[consumer]]
 path = "crates/perl-lsp-rs-core/src/providers/diagnostics/dead_code.rs"
 class = "independent_implementation"
 note = "The LSP's user-visible dead-code diagnostics do NOT flow through this API. `detect_dead_code` reaches `WorkspaceIndex::find_unused_symbols` directly and shares no type with this module, so retiring this surface does not by itself change any diagnostic a user sees — and improving this surface does not improve that one."
@@ -797,6 +792,11 @@ reason = "The check inventories this workspace only. `perl-parser` is published,
 id = "file-path-non-path-fallback"
 claim = "`DeadCode::file_path` can hold a raw URI string rather than a filesystem path."
 reason = "Read from source: `uri_to_fs_path(&sym.uri).unwrap_or_else(|| PathBuf::from(&sym.uri))`. No portable fixture drives the fallback branch, so the row is recorded as a source-read limitation rather than an executable control."
+
+[[not_proven]]
+id = "commented-and-string-references"
+claim = "Whether any comment, doc comment, string literal or disabled example still names this surface."
+reason = "Consumer detection is import-structure-based, so a reference inside a comment or a string is deliberately not inventoried — that is what keeps an unrelated `CodeSmell::DeadCode` or a prelude mention inside a test fixture's string literal from forcing a false row. The cost is that a documentation dependency (for example the disabled `examples/workspace_refactor_demo.rs`, whose block comment names `dead_code_detector`) will not be found by this check and must be caught by grep at retirement time."
 
 [[not_proven]]
 id = "serialized-payloads-in-circulation"

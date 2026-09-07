@@ -152,7 +152,6 @@ row here, so it cannot be wired into a new path silently.
 | `crates/perl-parser/tests/dead_code_detector.rs` | test |
 | `crates/perl-parser/tests/dead_code_api_compat.rs` | test |
 | `crates/perl-parser/tests/wave4_completion_absorption_tests.rs` | test |
-| `crates/perl-parser/examples/workspace_refactor_demo.rs` | dormant |
 | `crates/perl-lsp-rs-core/src/providers/diagnostics/dead_code.rs` | independent_implementation |
 
 - `crates/perl-parser/src/lib.rs` — Declares `pub mod dead_code` and the `dead_code_detector` alias, both gated off wasm32.
@@ -161,7 +160,6 @@ row here, so it cannot be wired into a new path silently.
 - `crates/perl-parser/tests/dead_code_detector.rs` — Pre-existing behavioral tests reached through the compatibility alias.
 - `crates/perl-parser/tests/dead_code_api_compat.rs` — The compatibility corpus that binds this ledger's claims to executable proof.
 - `crates/perl-parser/tests/wave4_completion_absorption_tests.rs` — Absorption tests that assert the canonical path, the `dead_code_detector` alias and the alias identity. They pin the export surface itself, so retiring an export path breaks them deliberately.
-- `crates/perl-parser/examples/workspace_refactor_demo.rs` — References `dead_code_detector` only inside a block comment; the example's `main` is a disabled stub. Not a live consumer and not evidence of demand.
 - `crates/perl-lsp-rs-core/src/providers/diagnostics/dead_code.rs` — The LSP's user-visible dead-code diagnostics do NOT flow through this API. `detect_dead_code` reaches `WorkspaceIndex::find_unused_symbols` directly and shares no type with this module, so retiring this surface does not by itself change any diagnostic a user sees — and improving this surface does not improve that one.
 
 Production consumers: **0**.
@@ -178,6 +176,7 @@ checked for staleness:
 
 - **downstream-external-consumers** — *claim:* No consumer outside this repository depends on the surface. *Why NOT_PROVEN:* The check inventories this workspace only. `perl-parser` is published, so an external dependant cannot be excluded from repository evidence alone; semver policy, not this ledger, decides whether that permits removal.
 - **file-path-non-path-fallback** — *claim:* `DeadCode::file_path` can hold a raw URI string rather than a filesystem path. *Why NOT_PROVEN:* Read from source: `uri_to_fs_path(&sym.uri).unwrap_or_else(|| PathBuf::from(&sym.uri))`. No portable fixture drives the fallback branch, so the row is recorded as a source-read limitation rather than an executable control.
+- **commented-and-string-references** — *claim:* Whether any comment, doc comment, string literal or disabled example still names this surface. *Why NOT_PROVEN:* Consumer detection is import-structure-based, so a reference inside a comment or a string is deliberately not inventoried — that is what keeps an unrelated `CodeSmell::DeadCode` or a prelude mention inside a test fixture's string literal from forcing a false row. The cost is that a documentation dependency (for example the disabled `examples/workspace_refactor_demo.rs`, whose block comment names `dead_code_detector`) will not be found by this check and must be caught by grep at retirement time.
 - **serialized-payloads-in-circulation** — *claim:* Whether any stored or transmitted payload carries `UnusedImport` / `UnusedExport`. *Why NOT_PROVEN:* Both variants derive `Serialize`/`Deserialize`, so a payload could exist outside the tree. Removal conditions for the two variants depend on this and it is not established here.
 
 ## Verification
