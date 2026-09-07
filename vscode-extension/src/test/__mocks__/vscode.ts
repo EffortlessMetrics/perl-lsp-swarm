@@ -17,6 +17,32 @@ export class ThemeColor {
   constructor(public id: string) {}
 }
 
+export class Position {
+  constructor(
+    public readonly line: number,
+    public readonly character: number,
+  ) {}
+}
+
+/**
+ * Records the insertions staged on it.
+ *
+ * `workspace.applyEdit` is a stub that reports success without inspecting its
+ * argument, so the edit object is the only place a test can observe which URIs
+ * a code path actually decided to write to.
+ */
+export class WorkspaceEdit {
+  public readonly inserts: Array<{
+    uri: { fsPath: string };
+    position: Position;
+    newText: string;
+  }> = [];
+
+  insert(uri: { fsPath: string }, position: Position, newText: string): void {
+    this.inserts.push({ uri, position, newText });
+  }
+}
+
 export enum StatusBarAlignment {
   Left = 1,
   Right = 2,

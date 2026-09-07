@@ -983,6 +983,11 @@ mod tests {
 
     #[test]
     fn readiness_contract_waitbriefly_degraded_after_building_records_wait() -> Result<()> {
+        // Budgets are wide on purpose: the contract under test is "a wait
+        // that observes a degrade resolves as Waited", not "the wake-up
+        // beats a one-second budget". A tight budget failed on loaded
+        // 4-core CI runners where the post-transition wake-up exceeded the
+        // remaining budget and resolved as TimedOut (#15016).
         let coordinator = Arc::new(IndexCoordinator::new());
         let indexing = AtomicBool::new(true);
         let (wait_entered_tx, wait_entered_rx) = std::sync::mpsc::channel();
@@ -990,7 +995,7 @@ mod tests {
         let worker_coordinator = Arc::clone(&coordinator);
 
         let worker = std::thread::spawn(move || -> Result<()> {
-            wait_entered_rx.recv_timeout(Duration::from_secs(1))?;
+            wait_entered_rx.recv_timeout(Duration::from_secs(30))?;
             worker_coordinator
                 .transition_to_degraded(DegradationReason::ScanTimeout { elapsed_ms: 456 });
             Ok(())
@@ -1000,7 +1005,7 @@ mod tests {
             Some(&coordinator),
             &indexing,
             IndexReadinessPolicy::WaitBriefly,
-            Duration::from_secs(1),
+            Duration::from_secs(30),
         );
 
         worker.join().map_err(|_| anyhow::anyhow!("readiness observer thread panicked"))??;

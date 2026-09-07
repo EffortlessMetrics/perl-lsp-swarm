@@ -221,6 +221,7 @@
 #![cfg_attr(test, allow(clippy::print_stderr, clippy::print_stdout))]
 
 pub mod api;
+pub mod byte_fidelity;
 pub mod cases;
 pub mod codegen;
 pub mod concepts;

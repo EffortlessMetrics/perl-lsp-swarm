@@ -300,6 +300,14 @@ changed by repair, claim/authority/risk changes, or actual conflict/combined-tre
 repair. Unrelated `main` movement and formatting/editorial/generated-only changes do
 not force broad replay.
 
+Generated projections are never repaired by hand: follow their owning writer and
+publication policy, and validate any permitted regeneration. In particular, feature
+branches do not regenerate or stage `docs/policy/NON_RUST_INVENTORY.md`, the default-branch
+publication. [File policy](../FILE_POLICY.md) and
+[non-Rust policy](../policy/NON_RUST_POLICY.md) define its current-tree evidence path.
+Temporary workflows that execute or push on a branch's behalf are not an acceptable
+repair route; the edit is made locally by the candidate writer.
+
 ## Hard stops
 
 Stop only for concrete hazards: same-candidate writer collision, destructive loss,
