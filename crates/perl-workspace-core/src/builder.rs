@@ -115,7 +115,8 @@ pub fn build_project_model(
         // license/prereqs.
         if role == FileRole::DistMetadata
             && request.fact_classes.contains(FactClasses::DIST)
-            && let Some(facts) = extract_dist_metadata(&file_id, &relative_path, &content)
+            && let Some(facts) =
+                extract_dist_metadata(&file_id, &relative_path, &content, &mut model.limitations)
         {
             model.dist_metadata.push(facts);
         }
@@ -143,21 +144,33 @@ pub fn build_project_model(
 ///
 /// A `META.yml` input that fails its bounded parse yields no facts: a
 /// malformed or unsupported stream can never become an empty successful fact
-/// set (#8458). The typed outcome surface lives on
-/// [`crate::meta_yml::parse_meta_yml`] for consumers that need the findings.
+/// set (#8458). Findings are retained as model limitations with file identity.
 fn extract_dist_metadata(
     file_id: &FileId,
     relative_path: &str,
     content: &str,
+    limitations: &mut Vec<ModelLimitation>,
 ) -> Option<crate::dist::DistMetadataFacts> {
     let name = relative_path.rsplit('/').next().unwrap_or(relative_path);
     match name {
         "META.json" => crate::dist::parse_meta_json(file_id.clone(), content),
-        "META.yml" | "META.yaml" => {
+        "META.yml" => {
             let outcome = crate::meta_yml::parse_meta_yml(file_id.clone(), content);
             match outcome.state {
                 crate::meta_yml::MetaYmlParseState::Parsed => outcome.facts,
-                _ => None,
+                state => {
+                    for (index, finding) in outcome.findings.iter().enumerate() {
+                        limitations.push(ModelLimitation {
+                            id: format!("meta-yml:{relative_path}:{index}"),
+                            kind: format!("meta_yml_{state:?}").to_lowercase(),
+                            message: format!(
+                                "`{relative_path}`: {:?} at line {:?}: {}",
+                                finding.kind, finding.line, finding.detail
+                            ),
+                        });
+                    }
+                    None
+                }
             }
         }
         "cpanfile" => Some(crate::dist::parse_cpanfile(file_id.clone(), content)),
@@ -550,6 +563,33 @@ mod tests {
     }
 
     #[test]
+    fn meta_yml_failures_reach_model_limitations() {
+        for (content, kind) in
+            [("name: \"Broken", "meta_yml_malformed"), ("name: X\nname: Y", "meta_yml_unsupported")]
+        {
+            let model = model_for(
+                "meta-yml-wave",
+                &[("META.yml", content)],
+                FactClasses::FILES | FactClasses::DIST,
+            );
+            assert!(model.dist_metadata.is_empty());
+            assert_eq!(model.files.len(), 1);
+            assert!(
+                model.limitations.iter().any(|l| l.kind == kind && l.message.contains("META.yml"))
+            );
+            let again = model_for(
+                "meta-yml-wave",
+                &[("META.yml", content)],
+                FactClasses::FILES | FactClasses::DIST,
+            );
+            assert_eq!(model.limitations, again.limitations);
+            let files_only =
+                model_for("meta-yml-wave", &[("META.yml", content)], FactClasses::FILES);
+            assert!(files_only.limitations.is_empty());
+        }
+    }
+
+    #[test]
     fn meta_yml_facts_land_in_the_model_when_dist_is_requested() {
         let model = model_for(
             "meta-yml-facts",
@@ -562,13 +602,13 @@ mod tests {
             ],
             FactClasses::FILES | FactClasses::DIST,
         );
-        let facts = model
-            .dist_metadata
-            .iter()
-            .find(|f| f.source == crate::dist::DistMetadataSource::MetaYml)
-            .unwrap_or_else(|| {
-                panic!("META.yml facts must reach the model: {:?}", model.dist_metadata)
-            });
+        let facts = perl_test_must::must_some_with(
+            model
+                .dist_metadata
+                .iter()
+                .find(|f| f.source == crate::dist::DistMetadataSource::MetaYml),
+            format!("META.yml facts must reach the model: {:?}", model.dist_metadata),
+        );
         assert_eq!(facts.name.as_deref(), Some("App-Dist"));
         assert_eq!(facts.version.as_deref(), Some("1.5"));
         assert_eq!(facts.licenses, vec!["perl_5"]);

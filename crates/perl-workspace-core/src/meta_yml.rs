@@ -15,7 +15,8 @@
 //!
 //! * block mappings and block sequences (indentation-based);
 //! * flow collections (`[a, b]`, `{k: v}`);
-//! * plain, single-quoted, and double-quoted scalars;
+//! * plain, single-quoted, and double-quoted scalars (double-quoted escapes
+//!   support newline, tab, carriage return, quote and backslash; others refuse);
 //! * `#` comments, `---` / `...` document markers (single document only).
 //!
 //! Everything outside the subset is an **explicit non-success state**, never a
@@ -102,6 +103,8 @@ pub enum MetaYmlFindingKind {
     /// Anything else that makes the YAML unparseable (including an empty
     /// document).
     MalformedSyntax,
+    /// An escape outside the supported double-quoted subset.
+    UnsupportedEscape,
 }
 
 /// One bounded diagnostic. Line numbers are 1-based where known; they are
@@ -148,6 +151,7 @@ pub struct MetaYmlOutcome {
 pub const META_YML_LIMITATIONS: &[&str] = &[
     "anchors, aliases, merge keys, explicit tags, block scalars, and multi-document streams are refused, not resolved",
     "scalar values keep their source spelling; no YAML type resolution is performed",
+    "double-quoted escapes outside newline, tab, carriage return, quote and backslash are refused",
     "no META spec-conformance verdict is produced (#7176 owns spec validation)",
 ];
 
@@ -177,24 +181,28 @@ pub fn parse_meta_yml(file_id: FileId, content: &str) -> MetaYmlOutcome {
         return outcome(MetaYmlParseState::Malformed, None, None, findings, source_digest);
     }
 
+    for (index, line) in content.lines().enumerate() {
+        if has_forbidden_control(line) {
+            findings.push(MetaYmlFinding::new(
+                MetaYmlFindingKind::MalformedEncoding,
+                Some(index + 1),
+                "raw line contains a forbidden control character",
+            ));
+            return outcome(MetaYmlParseState::Malformed, None, None, findings, source_digest);
+        }
+    }
     let mut doc = Doc::new(content);
     if let Err(finding) = scan_stream_safety(&mut doc) {
+        let state = failure_state(&finding);
         findings.push(finding);
-        return outcome(MetaYmlParseState::Unsupported, None, None, findings, source_digest);
+        return outcome(state, None, None, findings, source_digest);
     }
 
     let mut parser = Parser { lines: doc.body, pos: 0, nodes: 0, depth: 0 };
     let value = match parser.parse_block(0) {
         Ok(value) => value,
         Err(finding) => {
-            let state = match finding.kind {
-                MetaYmlFindingKind::ResourceLimit
-                | MetaYmlFindingKind::DuplicateKey
-                | MetaYmlFindingKind::AnchorAliasOrTag
-                | MetaYmlFindingKind::BlockScalar
-                | MetaYmlFindingKind::MultipleDocuments => MetaYmlParseState::Unsupported,
-                _ => MetaYmlParseState::Malformed,
-            };
+            let state = failure_state(&finding);
             findings.push(finding);
             return outcome(state, None, None, findings, source_digest);
         }
@@ -240,6 +248,18 @@ pub fn parse_meta_yml(file_id: FileId, content: &str) -> MetaYmlOutcome {
         ));
     }
     outcome(MetaYmlParseState::Parsed, spec_version, Some(facts), findings, source_digest)
+}
+
+fn failure_state(finding: &MetaYmlFinding) -> MetaYmlParseState {
+    match finding.kind {
+        MetaYmlFindingKind::ResourceLimit
+        | MetaYmlFindingKind::DuplicateKey
+        | MetaYmlFindingKind::AnchorAliasOrTag
+        | MetaYmlFindingKind::BlockScalar
+        | MetaYmlFindingKind::UnsupportedEscape
+        | MetaYmlFindingKind::MultipleDocuments => MetaYmlParseState::Unsupported,
+        _ => MetaYmlParseState::Malformed,
+    }
 }
 
 fn outcome(
@@ -331,7 +351,7 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
         // A block-scalar indicator is either the whole line or the value of a
         // `key: |` / `key: >` mapping entry (or a bare `- |` sequence item).
         let scalar_or_map = trimmed.strip_prefix('-').map(str::trim_start).unwrap_or(trimmed);
-        let value_part = split_key(scalar_or_map)
+        let value_part = split_key(scalar_or_map, line.number)?
             .map(|(_, rest)| rest)
             .unwrap_or_else(|| scalar_or_map.to_string());
         let value_trimmed = value_part.trim_start();
@@ -355,27 +375,76 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
     Ok(())
 }
 
-/// Whether a token starting with `marker` appears outside quoted regions and
-/// at a token boundary (line start or after whitespace) — a mid-word `!` in a
-/// plain scalar is not a tag.
-fn token_present(line: &str, marker: &str) -> bool {
-    let mut in_single = false;
-    let mut in_double = false;
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\'' if !in_double => in_single = !in_single,
-            b'"' if !in_single => in_double = !in_double,
-            _ if in_single || in_double => {}
+/// Shared quote and escape state for punctuation scanners.
+#[derive(Default)]
+struct QuoteState {
+    single: bool,
+    double: bool,
+    escaped: bool,
+    single_end: bool,
+    plain: bool,
+}
+
+impl QuoteState {
+    /// Consume one character; true means it is unquoted punctuation/content.
+    fn outside(&mut self, c: char) -> bool {
+        if self.double {
+            if self.escaped {
+                self.escaped = false;
+            } else if c == '\\' {
+                self.escaped = true;
+            } else if c == '"' {
+                self.double = false;
+            }
+            return false;
+        }
+        if self.single {
+            if c == '\'' {
+                self.single_end = !self.single_end;
+                return false;
+            }
+            if !self.single_end {
+                return false;
+            }
+            self.single = false;
+            self.single_end = false;
+        }
+        match c {
+            '\'' if !self.plain => {
+                self.single = true;
+                self.plain = true;
+                false
+            }
+            '"' if !self.plain => {
+                self.double = true;
+                self.plain = true;
+                false
+            }
+            ':' | '[' | '{' | ',' => {
+                self.plain = false;
+                true
+            }
+            '-' if !self.plain => true,
+            c if c.is_whitespace() => true,
             _ => {
-                let at_start = i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b'\t';
-                if at_start && line[i..].starts_with(marker) {
-                    return true;
-                }
+                self.plain = true;
+                true
             }
         }
-        i += 1;
+    }
+}
+
+/// Detect unquoted indicators at whitespace and flow-token boundaries.
+fn token_present(line: &str, marker: &str) -> bool {
+    let mut quotes = QuoteState::default();
+    let mut previous = None;
+    for (i, c) in line.char_indices() {
+        let boundary =
+            previous.is_none_or(|p: char| p.is_whitespace() || matches!(p, '[' | '{' | ','));
+        if quotes.outside(c) && boundary && line[i..].starts_with(marker) {
+            return true;
+        }
+        previous = Some(c);
     }
     false
 }
@@ -416,28 +485,15 @@ impl<'a> Doc<'a> {
 
 /// Strip a `#` comment that is outside quotes and not part of a scalar.
 fn strip_comment(line: &str) -> std::borrow::Cow<'_, str> {
-    let mut in_single = false;
-    let mut in_double = false;
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\'' if !in_double => in_single = !in_single,
-            b'"' if !in_single => in_double = !in_double,
-            b'#' if !in_single && !in_double => {
-                let at_start = i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b'\t';
-                if at_start {
-                    return std::borrow::Cow::Owned(line[..i].trim_end().to_string());
-                }
-            }
-            _ => {}
+    let mut quotes = QuoteState::default();
+    let mut previous = None;
+    for (i, c) in line.char_indices() {
+        if quotes.outside(c) && c == '#' && previous.is_none_or(|p: char| p.is_whitespace()) {
+            return std::borrow::Cow::Borrowed(line[..i].trim_end());
         }
-        i += 1;
+        previous = Some(c);
     }
-    match line.len() - line.trim_end().len() {
-        0 => std::borrow::Cow::Borrowed(line),
-        _ => std::borrow::Cow::Owned(line.trim_end().to_string()),
-    }
+    std::borrow::Cow::Borrowed(line.trim_end())
 }
 
 // ── Block parser ─────────────────────────────────────────────────────────────
@@ -537,7 +593,7 @@ impl<'a> Parser<'a> {
                 // Nested block owned by this item.
                 let nested = self.parse_block(indent + 1)?;
                 items.push(nested);
-            } else if let Some((key, value)) = try_split_map_entry(&rest)? {
+            } else if let Some((key, value)) = self.try_split_map_entry(&rest, line.number)? {
                 // `- key: value` — an inline mapping item; later `key: value`
                 // lines at the deeper indent belong to the same item.
                 let mut entries = vec![(key, value)];
@@ -601,7 +657,7 @@ impl<'a> Parser<'a> {
             if trimmed.starts_with("- ") || trimmed == "-" {
                 break;
             }
-            let Some((key, rest)) = split_key(&trimmed) else {
+            let Some((key, rest)) = split_key(&trimmed, line.number)? else {
                 return Err(MetaYmlFinding::new(
                     MetaYmlFindingKind::MalformedSyntax,
                     Some(line.number),
@@ -683,7 +739,7 @@ impl<'a> Parser<'a> {
             return self.flow_map(trimmed, line);
         }
         self.charge_node_at(line)?;
-        Ok(Yaml::Scalar(unquote(trimmed)))
+        Ok(Yaml::Scalar(unquote(trimmed, line)?))
     }
 
     /// Parse a flow sequence `[a, b, [c]]` with the same budgets: the
@@ -719,7 +775,7 @@ impl<'a> Parser<'a> {
                 } else if part.starts_with('{') {
                     items.push(self.flow_map(part, line)?);
                 } else {
-                    items.push(Yaml::Scalar(unquote(part)));
+                    items.push(Yaml::Scalar(unquote(part, line)?));
                 }
             }
             Ok(Yaml::Seq(items))
@@ -757,7 +813,7 @@ impl<'a> Parser<'a> {
                 if part.is_empty() {
                     continue;
                 }
-                let Some((raw_key, value)) = part.split_once(':') else {
+                let Some((key, value)) = split_key(part, line)? else {
                     return Err(MetaYmlFinding::new(
                         MetaYmlFindingKind::MalformedSyntax,
                         Some(line),
@@ -765,7 +821,6 @@ impl<'a> Parser<'a> {
                     ));
                 };
                 self.charge_node_at(line)?;
-                let key = unquote(raw_key.trim());
                 if !seen_keys.insert(key.clone()) {
                     return Err(MetaYmlFinding::new(
                         MetaYmlFindingKind::DuplicateKey,
@@ -775,12 +830,23 @@ impl<'a> Parser<'a> {
                         ),
                     ));
                 }
-                entries.push((key, Yaml::Scalar(unquote(value.trim()))));
+                entries.push((key, self.parse_scalar_or_flow(&value, line)?));
             }
             Ok(Yaml::Map(entries))
         })();
         self.depth -= 1;
         result
+    }
+
+    fn try_split_map_entry(
+        &mut self,
+        text: &str,
+        line: usize,
+    ) -> Result<Option<(String, Yaml)>, MetaYmlFinding> {
+        match split_key(text, line)? {
+            Some((key, rest)) => Ok(Some((key, self.parse_scalar_or_flow(&rest, line)?))),
+            None => Ok(None),
+        }
     }
 
     fn peek(&self) -> Option<&Line<'a>> {
@@ -811,50 +877,62 @@ fn indentation(text: &str) -> usize {
 }
 
 /// Split `key: value` at the top level of a line (outside quotes/brackets).
-fn split_key(text: &str) -> Option<(String, String)> {
-    let mut in_single = false;
-    let mut in_double = false;
+fn split_key(text: &str, line: usize) -> Result<Option<(String, String)>, MetaYmlFinding> {
+    let mut quotes = QuoteState::default();
     let mut depth = 0usize;
-    let bytes = text.as_bytes();
-    for (i, &b) in bytes.iter().enumerate() {
-        match b {
-            b'\'' if !in_double => in_single = !in_single,
-            b'"' if !in_single => in_double = !in_double,
-            b'[' | b'{' if !in_single && !in_double => depth += 1,
-            b']' | b'}' if !in_single && !in_double => depth = depth.saturating_sub(1),
-            b':' if !in_single && !in_double && depth == 0 => {
-                let after = text[i + 1..].trim_start();
-                if after.is_empty() || text[i + 1..].starts_with(' ') {
-                    let key = unquote(text[..i].trim());
-                    return Some((key, after.to_string()));
+    for (i, c) in text.char_indices() {
+        if !quotes.outside(c) {
+            continue;
+        }
+        match c {
+            '[' | '{' => depth += 1,
+            ']' | '}' => depth = depth.saturating_sub(1),
+            ':' if depth == 0 => {
+                let after = &text[i + 1..];
+                if after.is_empty() || after.starts_with(' ') || after.starts_with('\t') {
+                    return Ok(Some((
+                        unquote(text[..i].trim(), line)?,
+                        after.trim_start().to_string(),
+                    )));
                 }
             }
             _ => {}
         }
     }
-    None
+    Ok(None)
 }
 
-/// `- key: value` detection returning the split entry.
-fn try_split_map_entry(text: &str) -> Result<Option<(String, Yaml)>, MetaYmlFinding> {
-    match split_key(text) {
-        Some((key, rest)) => Ok(Some((key, Yaml::Scalar(rest)))),
-        None => Ok(None),
-    }
-}
-
-fn unquote(text: &str) -> String {
+fn unquote(text: &str, line: usize) -> Result<String, MetaYmlFinding> {
     let trimmed = text.trim();
-    if trimmed.len() >= 2 && trimmed.starts_with('\'') && trimmed.ends_with('\'') {
-        return trimmed[1..trimmed.len() - 1].replace("''", "'");
+    let malformed = || {
+        MetaYmlFinding::new(
+            MetaYmlFindingKind::MalformedSyntax,
+            Some(line),
+            "unterminated or malformed quoted scalar",
+        )
+    };
+    if trimmed.starts_with('\'') {
+        let inner =
+            trimmed.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')).ok_or_else(malformed)?;
+        let mut chars = inner.chars();
+        let mut out = String::new();
+        while let Some(c) = chars.next() {
+            if c == '\'' && chars.next() != Some('\'') {
+                return Err(malformed());
+            }
+            out.push(c);
+        }
+        return Ok(out);
     }
-    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
-        return decode_double_quoted(&trimmed[1..trimmed.len() - 1]);
+    if trimmed.starts_with('"') {
+        let inner =
+            trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')).ok_or_else(malformed)?;
+        return decode_double_quoted(inner, line);
     }
-    trimmed.to_string()
+    Ok(trimmed.to_string())
 }
 
-fn decode_double_quoted(text: &str) -> String {
+fn decode_double_quoted(text: &str, line: usize) -> Result<String, MetaYmlFinding> {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars();
     while let Some(c) = chars.next() {
@@ -865,17 +943,32 @@ fn decode_double_quoted(text: &str) -> String {
                 Some('r') => out.push('\r'),
                 Some('"') => out.push('"'),
                 Some('\\') => out.push('\\'),
-                Some(other) => {
-                    out.push('\\');
-                    out.push(other);
+                Some(_) => {
+                    return Err(MetaYmlFinding::new(
+                        MetaYmlFindingKind::UnsupportedEscape,
+                        Some(line),
+                        "escape outside the supported double-quoted subset",
+                    ));
                 }
-                None => out.push('\\'),
+                None => {
+                    return Err(MetaYmlFinding::new(
+                        MetaYmlFindingKind::MalformedSyntax,
+                        Some(line),
+                        "trailing escape in quoted scalar",
+                    ));
+                }
             }
+        } else if c == '"' {
+            return Err(MetaYmlFinding::new(
+                MetaYmlFindingKind::MalformedSyntax,
+                Some(line),
+                "unescaped quote inside scalar",
+            ));
         } else {
             out.push(c);
         }
     }
-    out
+    Ok(out)
 }
 
 impl Yaml {
@@ -891,35 +984,24 @@ impl Yaml {
 fn split_flow(text: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut depth = 0usize;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut current = String::new();
-    for c in text.chars() {
+    let mut quotes = QuoteState::default();
+    let mut start = 0;
+    for (i, c) in text.char_indices() {
+        if !quotes.outside(c) {
+            continue;
+        }
         match c {
-            '\'' if !in_double => {
-                in_single = !in_single;
-                current.push(c);
+            '[' | '{' => depth += 1,
+            ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(text[start..i].to_string());
+                start = i + 1;
             }
-            '"' if !in_single => {
-                in_double = !in_double;
-                current.push(c);
-            }
-            '[' | '{' if !in_single && !in_double => {
-                depth += 1;
-                current.push(c);
-            }
-            ']' | '}' if !in_single && !in_double => {
-                depth = depth.saturating_sub(1);
-                current.push(c);
-            }
-            ',' if depth == 0 && !in_single && !in_double => {
-                parts.push(std::mem::take(&mut current));
-            }
-            _ => current.push(c),
+            _ => {}
         }
     }
-    if !current.trim().is_empty() {
-        parts.push(current);
+    if !text[start..].trim().is_empty() {
+        parts.push(text[start..].to_string());
     }
     parts
 }
@@ -1032,6 +1114,7 @@ fn recognized_spec_version(
 mod tests {
     use super::*;
     use crate::id::Digest;
+    use perl_test_must::{must_some, must_some_with};
 
     fn fid() -> FileId {
         FileId::new("META.yml", &Digest::of("x"))
@@ -1045,6 +1128,97 @@ mod tests {
             "{what}: expected a {kind:?} finding, got {:?}",
             outcome.findings
         );
+    }
+
+    #[test]
+    fn flow_values_preserve_structure_and_keys() {
+        let parsed = parse_meta_yml(
+            fid(),
+            "name: X\nprereqs: { runtime: { requires: { Foo::Bar: 1.0 } } }\n",
+        );
+        assert_eq!(parsed.state, MetaYmlParseState::Parsed, "{:?}", parsed.findings);
+        let facts = parsed.facts.as_ref();
+        assert!(facts.is_some_and(|f| {
+            f.prereqs.iter().any(|p| p.module == "Foo::Bar" && p.version.as_deref() == Some("1.0"))
+        }));
+        let mut doc = Doc::new("items:\n  - key: [a, b]\n");
+        assert!(scan_stream_safety(&mut doc).is_ok());
+        let mut parser = Parser { lines: doc.body, pos: 0, nodes: 0, depth: 0 };
+        let result = parser.parse_block(0);
+        assert!(matches!(&result, Ok(Yaml::Map(root)) if matches!(&root[0].1,
+            Yaml::Seq(items) if matches!(&items[0], Yaml::Map(entries)
+                if matches!(&entries[0].1, Yaml::Seq(values) if values.len() == 2)))));
+    }
+
+    #[test]
+    fn quoted_scanners_preserve_escaped_delimiters() {
+        for (input, expected) in [
+            (r#"name: "a\" # literal" # comment"#, "a\" # literal"),
+            (r#"name: "a\" , literal""#, "a\" , literal"),
+            ("name: 'a'' # literal' # comment", "a' # literal"),
+            ("name: O'Reilly # comment", "O'Reilly"),
+            ("name: plain ' quote # comment", "plain ' quote"),
+            ("name: mid\"word # comment", "mid\"word"),
+        ] {
+            let parsed = parse_meta_yml(fid(), input);
+            assert_eq!(parsed.state, MetaYmlParseState::Parsed, "{input}: {:?}", parsed.findings);
+            assert_eq!(parsed.facts.and_then(|f| f.name), Some(expected.to_string()));
+        }
+        let parsed = parse_meta_yml(fid(), r#"license: ["a\" , literal", 'b']"#);
+        assert_eq!(parsed.state, MetaYmlParseState::Parsed, "{:?}", parsed.findings);
+        assert_eq!(
+            parsed.facts.map(|f| f.licenses),
+            Some(vec!["a\" , literal".into(), "b".into()])
+        );
+        let parsed = parse_meta_yml(fid(), r#"requires: { "a\" : b": 1.0 }"#);
+        assert!(parsed.facts.is_some_and(|f| f.prereqs.iter().any(|p| p.module == "a\" : b")));
+        assert!(!token_present(r#"name: "a\" ! literal""#, "!"));
+    }
+
+    #[test]
+    fn quoted_values_fail_closed_in_every_context() {
+        for input in [
+            "name: \"Broken",
+            "name: 'Broken",
+            r#"name: "bad\x41""#,
+            r#"license: ["bad\x41"]"#,
+            r#"requires: { Foo: "bad\x41" }"#,
+            "items:\n  - key: \"bad\\x41\"\n",
+        ] {
+            let parsed = parse_meta_yml(fid(), input);
+            assert_ne!(parsed.state, MetaYmlParseState::Parsed, "{input}");
+            assert!(parsed.facts.is_none(), "{input}");
+        }
+        for (input, state) in [
+            (r#""bad\x41": value"#, MetaYmlParseState::Unsupported),
+            (r#""bad"inner": value"#, MetaYmlParseState::Malformed),
+        ] {
+            let parsed = parse_meta_yml(fid(), input);
+            assert_eq!(parsed.state, state, "{input}: {:?}", parsed.findings);
+            assert!(parsed.facts.is_none());
+        }
+        let good = parse_meta_yml(fid(), r#"name: "a\nb""#);
+        assert_eq!(good.facts.and_then(|f| f.name), Some("a\nb".into()));
+    }
+
+    #[test]
+    fn flow_indicators_are_refused_but_literals_survive() {
+        for value in ["[*alias]", "[&anchor x]", "[!tag x]", "[ok,*alias]", "{*alias: x}"] {
+            let parsed = parse_meta_yml(fid(), &format!("license: {value}"));
+            assert_non_success(&parsed, MetaYmlFindingKind::AnchorAliasOrTag, value);
+        }
+        let good = parse_meta_yml(fid(), "license: ['*literal', 'a!b', '&literal']");
+        assert_eq!(good.state, MetaYmlParseState::Parsed, "{:?}", good.findings);
+    }
+
+    #[test]
+    fn raw_comments_cannot_hide_controls() {
+        for (input, line) in [("name: X\n# hidden \u{1}\n", 2), ("name: X # hidden \u{1}\n", 1)] {
+            let parsed = parse_meta_yml(fid(), input);
+            assert_non_success(&parsed, MetaYmlFindingKind::MalformedEncoding, "raw comment");
+            assert_eq!(parsed.findings[0].line, Some(line));
+        }
+        assert_eq!(parse_meta_yml(fid(), "name: X # valid\r\n").state, MetaYmlParseState::Parsed);
     }
 
     const META_V2: &str = "--- # http://module-build.sourceforge.net/META-spec-v2.html
@@ -1097,7 +1271,7 @@ build_requires:
         let outcome = parse_meta_yml(fid(), META_V2);
         assert_eq!(outcome.state, MetaYmlParseState::Parsed, "{:?}", outcome.findings);
         assert_eq!(outcome.spec_version, Some(MetaSpecVersion::V2));
-        let facts = outcome.facts.as_ref().expect("parsed facts");
+        let facts = must_some_with(outcome.facts.as_ref(), "parsed facts");
         assert_eq!(facts.source, DistMetadataSource::MetaYml);
         assert_eq!(facts.name.as_deref(), Some("App-Dist"));
         // The version keeps its source spelling: no float coercion.
@@ -1105,7 +1279,7 @@ build_requires:
         assert_eq!(facts.summary.as_deref(), Some("Sample distribution"));
         assert_eq!(facts.licenses, vec!["perl_5", "gpl_2"]);
 
-        let find = |module: &str| facts.prereqs.iter().find(|p| p.module == module).unwrap();
+        let find = |module: &str| must_some(facts.prereqs.iter().find(|p| p.module == module));
         assert_eq!(find("perl").version.as_deref(), Some("5.010"));
         assert_eq!(find("perl").phase, "runtime");
         assert_eq!(find("Test::More").phase, "build");
@@ -1121,12 +1295,12 @@ build_requires:
         let outcome = parse_meta_yml(fid(), META_V1);
         assert_eq!(outcome.state, MetaYmlParseState::Parsed, "{:?}", outcome.findings);
         assert_eq!(outcome.spec_version, Some(MetaSpecVersion::V1));
-        let facts = outcome.facts.as_ref().expect("parsed facts");
+        let facts = must_some_with(outcome.facts.as_ref(), "parsed facts");
         assert_eq!(facts.name.as_deref(), Some("Old-Dist"));
         // "0.01" must never become a float.
         assert_eq!(facts.version.as_deref(), Some("0.01"));
         assert_eq!(facts.licenses, vec!["perl_5"]);
-        let find = |module: &str| facts.prereqs.iter().find(|p| p.module == module).unwrap();
+        let find = |module: &str| must_some(facts.prereqs.iter().find(|p| p.module == module));
         assert_eq!(find("strict").phase, "runtime");
         assert_eq!(find("Test::More").phase, "build");
         // `0` means "any" and stays a source string.
@@ -1318,7 +1492,7 @@ build_requires:
         // input never reaches this path.
         let outcome = parse_meta_yml(fid(), "name: X\n");
         assert_eq!(outcome.state, MetaYmlParseState::Parsed);
-        let facts = outcome.facts.expect("facts");
+        let facts = must_some_with(outcome.facts, "facts");
         assert_eq!(facts.name.as_deref(), Some("X"));
         assert_eq!(facts.version, None, "absent version stays absent");
         assert!(facts.licenses.is_empty());
@@ -1363,7 +1537,7 @@ build_requires:
         let outcome =
             parse_meta_yml(fid(), "---\r\nname: X # trailing comment\r\nversion: 2 # keep\r\n");
         assert_eq!(outcome.state, MetaYmlParseState::Parsed, "{:?}", outcome.findings);
-        let facts = outcome.facts.expect("facts");
+        let facts = must_some_with(outcome.facts, "facts");
         assert_eq!(facts.name.as_deref(), Some("X"));
         assert_eq!(facts.version.as_deref(), Some("2"));
     }
@@ -1375,7 +1549,7 @@ build_requires:
             "name: \"Quoted-Name\"\nversion: '0.01'\nabstract: 'it''s quoted'\n",
         );
         assert_eq!(outcome.state, MetaYmlParseState::Parsed, "{:?}", outcome.findings);
-        let facts = outcome.facts.expect("facts");
+        let facts = must_some_with(outcome.facts, "facts");
         assert_eq!(facts.name.as_deref(), Some("Quoted-Name"));
         assert_eq!(facts.version.as_deref(), Some("0.01"));
         assert_eq!(facts.summary.as_deref(), Some("it's quoted"));
