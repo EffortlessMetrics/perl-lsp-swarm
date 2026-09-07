@@ -112,7 +112,7 @@ allow = [
     # Canonical source_identity.v1 owner (PLSP-ADR-0006 "Scope boundary").
     "perl-source-identity",
     # (perl-content-length-framing absorbed into perl-lsp-rs-core::transport::framing — Wave Final PR B)
-    # (perl-percentile absorbed into perl-parser — Wave D)
+    # (perl-percentile absorbed into perl-parser — Wave D; retired from the parser surface in #7595)
     "perl-subprocess-runtime",
     # (perl-lsp-protocol absorbed into perl-lsp-rs-core::protocol — Wave G3 step 2)
     # (perl-lsp-symbol-query absorbed into perl-lsp-rs-core::providers — Wave G1a)
@@ -262,7 +262,8 @@ perl-subprocess-runtime = { path = "crates/perl-subprocess-runtime", version = "
 # (perl-lsp-input-validation absorbed into perl-lsp-rs-core::runtime::input_validation — Wave G2)
 # (perl-lsp-text-utils absorbed into perl-lsp-rs-core::runtime::text_utils — Wave G2)
 perl-uri = { path = "crates/perl-uri", version = "0.17.0" }
-# Wave D absorbed: perl-percentile → perl-parser::percentile
+# Wave D absorbed: perl-percentile → perl-parser::percentile; retired in #7595 —
+# nearest-rank math is now private to perl-workspace SLO and the bench scorecards
 # (perl-lsp-import-management absorbed into perl-lsp-rs-core::providers — Wave G1a)
 # (perl-lsp-critic-parser absorbed into perl-lsp-rs-core::critic_parser — Wave G3 step 7)
 # (perl-lsp-protocol absorbed into perl-lsp-rs-core::protocol — Wave G3 step 2)
