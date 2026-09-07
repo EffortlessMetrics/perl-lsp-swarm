@@ -46,6 +46,29 @@
 //! `auto_retry`, `connected`, `disconnect`, `reconnect`), the `state_*` row
 //! manager interface, schema/table/column builder internals, dialect and plugin
 //! surfaces, and every method reached only through runtime schema fill.
+//!
+//! ## Method-level scope, and what absence means
+//!
+//! Covering a *receiver* does not mean covering every method on it. A method
+//! earns a row when its return participates in source/row type propagation —
+//! it yields a handle, a row, an iterator over rows, or data derived from them.
+//! Plain configuration readers and connection plumbing on a covered receiver
+//! are excluded even though they are public: `Connection::dialect`,
+//! `Connection::dbh` and `ORM::schema` answer objects owned by other
+//! subsystems, and nothing about a handle's source or row type follows from
+//! them.
+//!
+//! So **absence from [`QUICKORM_API_CASES`] means "no reviewed return contract
+//! here", never "unsupported"**. Only an explicit
+//! [`QuickOrmReturnClass::UnsupportedDynamicVariant`] row says a call does not
+//! resolve. A consumer that treats a missing row as a missing method will be
+//! wrong.
+//!
+//! To keep that boundary reviewable rather than implicit,
+//! [`QUICKORM_UNCOVERED_METHODS`] records public methods on covered receivers
+//! that deliberately carry no contract row, each with its reason and the line
+//! it was read at. That list names the excluded classes by example; it is not
+//! claimed to enumerate every such method.
 
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +87,80 @@ pub const QUICKORM_UPSTREAM_COMMIT: &str = "99d7d6155933efd54ce7d66d8bfeb9e1ebda
 
 /// Upstream repository the reviewed commit belongs to.
 pub const QUICKORM_UPSTREAM_REPOSITORY: &str = "https://github.com/exodist/DBIx-QuickORM";
+
+/// A public method on a covered receiver that deliberately carries no return
+/// contract row, with the reason it is excluded.
+///
+/// This exists so that absence from [`QUICKORM_API_CASES`] is a recorded
+/// decision rather than an unexplained gap. It is `Serialize`-only for the same
+/// reason as [`QuickOrmApiCase`]: every field borrows from the compiled-in
+/// table.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct QuickOrmUncoveredMethod {
+    /// Package the method is reachable on.
+    pub package: &'static str,
+    /// Method name as written upstream.
+    pub method: &'static str,
+    /// Why it carries no return contract row.
+    pub reason: &'static str,
+    /// Where it was read at [`QUICKORM_UPSTREAM_COMMIT`].
+    pub evidence: QuickOrmEvidence,
+}
+
+/// Public methods on covered receivers that deliberately carry no contract row.
+///
+/// Named by example, per excluded class; this does not claim to enumerate every
+/// uncovered method. See the module's *Method-level scope* section.
+pub const QUICKORM_UNCOVERED_METHODS: &[QuickOrmUncoveredMethod] = &[
+    QuickOrmUncoveredMethod {
+        package: PKG_CONN,
+        method: "aside_dbh",
+        reason: "Returns a fresh DBI handle from the database object. Raw DBI plumbing carries no source or row type.",
+        evidence: QuickOrmEvidence { file: CONN, line: 435 },
+    },
+    QuickOrmUncoveredMethod {
+        package: PKG_CONN,
+        method: "cas_count_reliable",
+        reason: "Delegates a boolean database capability flag. A capability answer propagates no type.",
+        evidence: QuickOrmEvidence { file: CONN, line: 434 },
+    },
+    QuickOrmUncoveredMethod {
+        package: PKG_CONN,
+        method: "dbh",
+        reason: "Object::HashBase reader for the raw DBI handle; owned by the database subsystem, not the type substrate.",
+        evidence: QuickOrmEvidence { file: CONN, line: 16 },
+    },
+    QuickOrmUncoveredMethod {
+        package: PKG_CONN,
+        method: "dialect",
+        reason: "Object::HashBase reader answering the dialect object. Dialect surfaces are out of scope for this revision.",
+        evidence: QuickOrmEvidence { file: CONN, line: 17 },
+    },
+    QuickOrmUncoveredMethod {
+        package: PKG_CONN,
+        method: "schema",
+        reason: "Object::HashBase reader answering the schema object. Schema internals are out of scope for this revision.",
+        evidence: QuickOrmEvidence { file: CONN, line: 19 },
+    },
+    QuickOrmUncoveredMethod {
+        package: PKG_CONN,
+        method: "volatile_free_tables",
+        reason: "Delegates to the schema and answers table metadata, not rows or a handle over them.",
+        evidence: QuickOrmEvidence { file: CONN, line: 439 },
+    },
+    QuickOrmUncoveredMethod {
+        package: PKG_ORM,
+        method: "schema",
+        reason: "Object::HashBase reader answering the schema object; the same schema boundary as the connection reader.",
+        evidence: QuickOrmEvidence { file: ORM, line: 14 },
+    },
+];
+
+/// Public methods on covered receivers deliberately left without a contract row.
+pub fn quickorm_uncovered_methods() -> &'static [QuickOrmUncoveredMethod] {
+    QUICKORM_UNCOVERED_METHODS
+}
 
 /// Upstream files rows in this registry may cite.
 pub const QUICKORM_EVIDENCE_FILES: &[&str] = &[
@@ -333,6 +430,19 @@ pub enum QuickOrmModeSupport {
     /// Admitted on async handles, but the async form returns a row placeholder
     /// rather than the synchronous result shape.
     SyncWithAsyncRowResult,
+    /// A synchronous handle is always admitted; whether any non-synchronous mode
+    /// is admitted depends on receiver and connection state that this registry
+    /// cannot resolve statically — whether a row is bound, whether the
+    /// connection maintains a row cache, and for one case whether the dialect
+    /// supports `RETURNING` on delete.
+    ///
+    /// The exact conditions are named in the row's `receiver_constraints`, and
+    /// the notes cite the upstream croak. A consumer must not infer that any
+    /// particular non-synchronous mode is available: the honest reading is
+    /// "synchronous is safe, anything else needs the named state checked".
+    /// This exists because collapsing these cases to a fixed mode set would
+    /// assert a support claim upstream does not make.
+    ConditionalNonSync,
     /// Execution mode does not affect this case.
     NotApplicable,
 }
@@ -345,6 +455,7 @@ impl QuickOrmModeSupport {
             Self::SyncAsyncAsideForked => "sync_async_aside_forked",
             Self::SyncAsyncAsideOnly => "sync_async_aside_only",
             Self::SyncWithAsyncRowResult => "sync_with_async_row_result",
+            Self::ConditionalNonSync => "conditional_non_sync",
             Self::NotApplicable => "not_applicable",
         }
     }
@@ -565,16 +676,18 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         package: PKG_CONN,
         method: "by_ids",
         receiver: R::Connection,
-        receiver_constraints: NO_CONSTRAINTS,
+        receiver_constraints: &[
+            "a non-synchronous handle passed in admits at most one id that misses the row cache",
+        ],
         arguments: A::Required,
         return_class: C::MultipleRows,
         multiplicity: N::ArrayRefOfZeroOrMore,
         type_params: T::DerivedFromArgumentSource,
-        mode: M::SyncWithAsyncRowResult,
+        mode: M::ConditionalNonSync,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: CONN, line: 1043 },
-        notes: "Returns an arrayref, not a flat list.",
+        notes: "Returns an arrayref, not a flat list. Delegates to the handle terminal and inherits its conditional mode: a connection builds a synchronous handle, so the plain call is safe, but a non-synchronous handle supplied through the arguments carries `handle.by_ids`'s at-most-one-cache-miss limit.",
     },
     QuickOrmApiCase {
         api_case_id: "conn.count",
@@ -990,16 +1103,20 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         package: PKG_HANDLE,
         method: "by_ids",
         receiver: R::Handle,
-        receiver_constraints: &["no where clause", "no associated row"],
+        receiver_constraints: &[
+            "no where clause",
+            "no associated row",
+            "a non-synchronous handle admits at most one id that misses the row cache",
+        ],
         arguments: A::Required,
         return_class: C::MultipleRows,
         multiplicity: N::ArrayRefOfZeroOrMore,
         type_params: T::PreservedFromReceiver,
-        mode: M::SyncWithAsyncRowResult,
+        mode: M::ConditionalNonSync,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: HANDLE, line: 1938 },
-        notes: "Returns an arrayref of by_id results, not a flat list.",
+        notes: "Returns an arrayref of by_id results, not a flat list. Upstream maps sequential `by_id` calls (Handle.pm:1943), and each cache miss reaches `one()` -> `_do_select` -> `_make_sth`, which calls `pid_and_async_check` (Handle.pm:1615). On a non-synchronous handle the first miss leaves an async query in flight, so the second miss confesses `There is currently an async query running` (Connection.pm:398). Ids answered from the row cache issue no query, so a call whose misses number zero or one still succeeds — the failure depends on cache state, not on the id count alone.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.cas",
@@ -1147,11 +1264,11 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         notes: "A truthy value erases row identity; `data_only(0)` clones with the mode cleared and restores blessed-row terminals (Handle.pm:1102-1105). The effect follows the argument's truthiness, so a consumer must read the value, not just the call.",
     },
     QuickOrmApiCase {
-        api_case_id: "handle.delete",
+        api_case_id: "handle.delete.bound_row",
         package: PKG_HANDLE,
         method: "delete",
         receiver: R::Handle,
-        receiver_constraints: NO_CONSTRAINTS,
+        receiver_constraints: &["handle is bound to a row", "bound row's table has a primary key"],
         arguments: A::Optional,
         return_class: C::MutationOrSideEffectResult,
         multiplicity: N::ZeroOrOne,
@@ -1159,8 +1276,28 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         mode: M::SyncAsyncAsideForked,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
-        evidence: QuickOrmEvidence { file: HANDLE, line: 2430 },
-        notes: "Returns the statement handle on a non-sync handle and undef when synchronous (Handle.pm:2525-2528); never a row. A forked bulk delete requires a bound row.",
+        evidence: QuickOrmEvidence { file: HANDLE, line: 2505 },
+        notes: "With a bound row every mode is admitted, cache maintenance running as `on_finish` for a forked delete and `on_ready` otherwise (Handle.pm:2503-2507). Returns the statement handle on a non-sync handle and undef when synchronous (Handle.pm:2525-2528); never a row.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "handle.delete.bulk",
+        package: PKG_HANDLE,
+        method: "delete",
+        receiver: R::Handle,
+        receiver_constraints: &[
+            "no bound row",
+            "a forked handle is refused whenever no row is bound",
+            "with a row cache and no `RETURNING` on delete, only a synchronous handle is admitted",
+        ],
+        arguments: A::Optional,
+        return_class: C::MutationOrSideEffectResult,
+        multiplicity: N::ZeroOrOne,
+        type_params: T::NotApplicable,
+        mode: M::ConditionalNonSync,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: HANDLE, line: 2510 },
+        notes: "Three-way conditional. With no row cache the delete runs in any mode and returns the statement handle unless synchronous (Handle.pm:2460-2464). With a cache and a dialect supporting `RETURNING` on delete, async and aside run but forked croaks outright (Handle.pm:2500-2501). With a cache and no `RETURNING`, upstream croaks unless synchronous, because the deleted rows must be identified by a synchronous SELECT-then-DELETE in an internal transaction (Handle.pm:2510). Both the cache and the dialect capability are runtime properties.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.dialect",
@@ -1951,11 +2088,11 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         notes: "Argument form clones with a new write target.",
     },
     QuickOrmApiCase {
-        api_case_id: "handle.update",
+        api_case_id: "handle.update.bound_row",
         package: PKG_HANDLE,
         method: "update",
         receiver: R::Handle,
-        receiver_constraints: NO_CONSTRAINTS,
+        receiver_constraints: &["handle is bound to a row", "bound row's table has a primary key"],
         arguments: A::Optional,
         return_class: C::MutationOrSideEffectResult,
         multiplicity: N::ZeroOrOne,
@@ -1963,8 +2100,27 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         mode: M::SyncAsyncAsideForked,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
-        evidence: QuickOrmEvidence { file: HANDLE, line: 2530 },
-        notes: "Returns the statement handle on a non-sync handle and undef when synchronous (Handle.pm:2718-2728); never a row. A bulk update without a bound row croaks unless the handle is synchronous.",
+        evidence: QuickOrmEvidence { file: HANDLE, line: 2700 },
+        notes: "With a bound row every mode is admitted: cache maintenance runs as `on_finish` for a forked write and `on_ready` for sync/async (Handle.pm:2698-2702). Returns the statement handle on a non-sync handle and undef when synchronous (Handle.pm:2718-2728); never a row. Croaks when the bound row's table has no primary key, since no WHERE could be derived (Handle.pm:2551-2552).",
+    },
+    QuickOrmApiCase {
+        api_case_id: "handle.update.bulk",
+        package: PKG_HANDLE,
+        method: "update",
+        receiver: R::Handle,
+        receiver_constraints: &[
+            "no bound row",
+            "a non-synchronous handle requires that the connection maintain no row cache",
+        ],
+        arguments: A::Optional,
+        return_class: C::MutationOrSideEffectResult,
+        multiplicity: N::ZeroOrOne,
+        type_params: T::NotApplicable,
+        mode: M::ConditionalNonSync,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: HANDLE, line: 2705 },
+        notes: "Without a bound row the admitted modes depend on the connection. With no row cache the write runs in any mode and returns the statement handle unless synchronous (Handle.pm:2660-2668). With a cache active, upstream croaks unless the handle is synchronous, because identifying the updated rows needs a synchronous SELECT-then-UPDATE in an internal transaction (Handle.pm:2705). `state_does_cache` is a runtime property, so this cannot be resolved statically.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.upsert",
@@ -4041,8 +4197,10 @@ mod tests {
     #[test]
     fn non_row_writes_do_not_claim_row_identity() {
         for id in [
-            "handle.update",
-            "handle.delete",
+            "handle.update.bound_row",
+            "handle.update.bulk",
+            "handle.delete.bound_row",
+            "handle.delete.bulk",
             "handle.cas",
             "conn.update",
             "conn.delete",
@@ -4053,6 +4211,115 @@ mod tests {
             assert!(
                 !case.return_class.may_carry_row_identity(),
                 "`{id}` does not return a row upstream"
+            );
+        }
+    }
+
+    /// A method is either covered by a contract row or recorded as
+    /// deliberately uncovered — never both, and never silently neither. The
+    /// disjointness is the load-bearing half: a row and an exclusion for the
+    /// same method would let a consumer read absence and presence at once.
+    #[test]
+    fn covered_and_uncovered_methods_are_disjoint_and_reasoned() {
+        let covered: BTreeSet<(&str, &str)> =
+            QUICKORM_API_CASES.iter().map(|c| (c.package, c.method)).collect();
+
+        for entry in QUICKORM_UNCOVERED_METHODS {
+            assert!(
+                !covered.contains(&(entry.package, entry.method)),
+                "`{}::{}` is both covered and recorded as uncovered",
+                entry.package,
+                entry.method
+            );
+            assert!(
+                !entry.reason.is_empty(),
+                "`{}::{}` is excluded without a stated reason",
+                entry.package,
+                entry.method
+            );
+            assert!(
+                QUICKORM_EVIDENCE_FILES.contains(&entry.evidence.file),
+                "`{}::{}` cites `{}`, which is not a reviewed evidence file",
+                entry.package,
+                entry.method,
+                entry.evidence.file
+            );
+        }
+
+        // The exclusions raised in review must stay recorded. Dropping one
+        // would silently restore the ambiguity this list exists to remove.
+        let recorded: BTreeSet<(&str, &str)> =
+            QUICKORM_UNCOVERED_METHODS.iter().map(|e| (e.package, e.method)).collect();
+        for pair in [
+            (PKG_CONN, "aside_dbh"),
+            (PKG_CONN, "cas_count_reliable"),
+            (PKG_CONN, "dialect"),
+            (PKG_CONN, "volatile_free_tables"),
+            (PKG_ORM, "schema"),
+        ] {
+            assert!(
+                recorded.contains(&pair),
+                "`{}::{}` was raised in review and must stay recorded as deliberately uncovered",
+                pair.0,
+                pair.1
+            );
+        }
+    }
+
+    /// `ConditionalNonSync` is the honest answer when upstream admits a
+    /// non-synchronous handle only in some receiver/connection states. It is
+    /// worthless unless each such row names the state that decides it, so the
+    /// set is closed and every member must carry constraints.
+    #[test]
+    fn conditional_non_sync_rows_are_closed_and_name_their_condition() {
+        let conditional: BTreeSet<&str> = QUICKORM_API_CASES
+            .iter()
+            .filter(|c| c.mode == QuickOrmModeSupport::ConditionalNonSync)
+            .map(|c| c.api_case_id)
+            .collect();
+        assert_eq!(
+            conditional,
+            BTreeSet::from([
+                "conn.by_ids",
+                "handle.by_ids",
+                "handle.delete.bulk",
+                "handle.update.bulk",
+            ]),
+            "a new conditional-mode row must be reviewed against upstream, not added silently"
+        );
+        for id in &conditional {
+            assert!(
+                !case_by_id(id).receiver_constraints.is_empty(),
+                "`{id}` claims conditional non-sync support without naming the condition"
+            );
+        }
+    }
+
+    /// The bulk and bound-row halves of a write must not claim the same mode
+    /// support: binding a row is exactly what buys the non-synchronous modes
+    /// (Handle.pm:2698-2702, 2503-2507), and the bulk form is where upstream
+    /// croaks (Handle.pm:2705, 2510). Tying the pair together keeps this
+    /// meaningful if either half is later re-reviewed.
+    #[test]
+    fn bulk_writes_do_not_inherit_the_bound_row_mode() {
+        for (bound, bulk) in [
+            ("handle.update.bound_row", "handle.update.bulk"),
+            ("handle.delete.bound_row", "handle.delete.bulk"),
+        ] {
+            assert_eq!(
+                case_by_id(bound).mode,
+                QuickOrmModeSupport::SyncAsyncAsideForked,
+                "`{bound}` binds a row, so every mode is admitted"
+            );
+            assert_eq!(
+                case_by_id(bulk).mode,
+                QuickOrmModeSupport::ConditionalNonSync,
+                "`{bulk}` has no bound row, so non-sync support depends on connection state"
+            );
+            assert_ne!(
+                case_by_id(bound).mode,
+                case_by_id(bulk).mode,
+                "`{bound}` and `{bulk}` differ precisely in what upstream admits"
             );
         }
     }
