@@ -27,19 +27,21 @@
 //! committed guide. Unrecognised structure fails closed rather than passing on
 //! a section the parser could not find, so a rewrite cannot turn these green by
 //! making them blind.
+//!
+//! The cargo `/` row loader is shared with `dependabot_cargo_commit_message`
+//! (`support/dependabot_yaml.rs`) so both suites fail closed on a missing or
+//! duplicate workspace row.
 
-use std::{collections::BTreeSet, fs, path::PathBuf};
+use std::{collections::BTreeSet, fs};
 
 use anyhow::{Context, Result, anyhow, bail};
 
-const DEPENDABOT_YML: &str = ".github/dependabot.yml";
-const DEPENDENCY_DOC: &str = "docs/how-to/DEPENDENCY_MANAGEMENT.md";
+#[path = "support/dependabot_yaml.rs"]
+mod dependabot_yaml;
 
-fn project_root() -> PathBuf {
-    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    root.pop();
-    root
-}
+use dependabot_yaml::{DEPENDABOT_YML, cargo_update_entry, project_root};
+
+const DEPENDENCY_DOC: &str = "docs/how-to/DEPENDENCY_MANAGEMENT.md";
 
 /// The dependency-table keys Cargo recognises.
 const DEPENDENCY_TABLES: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
@@ -149,28 +151,6 @@ fn insert_dependency_table(deps: &toml::Table, names: &mut BTreeSet<String>) {
             names.insert(renamed.to_owned());
         }
     }
-}
-
-fn cargo_update_entry() -> Result<serde_yaml_ng::Value> {
-    let path = project_root().join(DEPENDABOT_YML);
-    let content =
-        fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let doc: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
-    let updates = doc
-        .get("updates")
-        .and_then(serde_yaml_ng::Value::as_sequence)
-        .ok_or_else(|| anyhow!("{DEPENDABOT_YML} must declare an `updates` sequence"))?;
-    updates
-        .iter()
-        .find(|update| {
-            update.get("package-ecosystem").and_then(|value| value.as_str()) == Some("cargo")
-                && update.get("directory").and_then(|value| value.as_str()) == Some("/")
-        })
-        .cloned()
-        .ok_or_else(|| {
-            anyhow!("{DEPENDABOT_YML} must keep a cargo update entry for the `/` workspace")
-        })
 }
 
 /// A name that makes a definite claim about the current tree.

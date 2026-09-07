@@ -1047,7 +1047,12 @@ impl BodyLowerer {
                 // declaration form — including bare declarations WITHOUT an
                 // initialiser (`my $x;` / `our $x;`), which the previous
                 // init-LHS-or-statement-span fallback mis-anchored at the statement.
-                {
+                if name.as_str() == "<unknown>" {
+                    // A placeholder Let is not a real symbol. Do not emit a
+                    // stash/lexical write of `<unknown>`; lower the initializer
+                    // so the actual target (or a fail-closed marker) remains.
+                    *self.unsupported.entry("PlaceholderDeclarationName").or_insert(0) += 1;
+                } else {
                     let anchor = self.make_body_anchor(*binding_range);
                     let op = match storage {
                         // `our` binds a package/stash symbol; `local` dynamically
@@ -1080,11 +1085,12 @@ impl BodyLowerer {
                 // is a real modification of the slot on top of the localization,
                 // so lower the whole Assign: the RMW arm emits one Modify node for
                 // the place plus the RHS read, never a second plain Write.
-                // A simple initialiser whose target is not a plain variable
-                // (`local $ENV{PATH} = EXPR`) is not covered by the declaration
-                // write above, which only names the declared symbol; lower the
-                // whole Assign so the real target reaches PIR (today as the
-                // fail-closed `Subscript` marker) instead of vanishing.
+                // A simple initialiser whose target is not a plain variable is
+                // not covered by the declaration write above; lower the whole
+                // Assign so the real target reaches PIR (today as the fail-closed
+                // `Subscript` marker) instead of vanishing. Canonical HIR no
+                // longer emits Let { name: "<unknown>" } for those targets
+                // (#14809); this arm remains for any residual non-variable init.
                 if let Some(init_id) = init {
                     match body.expr(*init_id) {
                         Some(HirExpr::Assign { lhs, rhs, mode: AssignMode::Simple })
@@ -1175,8 +1181,13 @@ impl BodyLowerer {
                             // Lower RHS as a Read operand.
                             self.lower_expr(body, *rhs, file);
                         } else {
-                            // Non-variable LHS for compound assign → unsupported (fail-closed).
+                            // Non-variable LHS for compound assign → unsupported
+                            // (fail-closed), but still walk the place and RHS so
+                            // an element target (`local $h{k} .= …`) reaches PIR
+                            // as Subscript rather than vanishing.
                             *self.unsupported.entry("CompoundAssignNonVarLhs").or_insert(0) += 1;
+                            self.lower_expr(body, *lhs, file);
+                            self.lower_expr(body, *rhs, file);
                         }
                     }
                 }

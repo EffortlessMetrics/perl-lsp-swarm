@@ -175,6 +175,12 @@ import {
 } from './activationOwner';
 import type { ClientResourceMeasurement } from './clientMeasurement';
 import { extensionOwnedResourceMeasurements } from './extensionOwnedResourceCensus';
+import type { LegacyMigrationState } from './configurationMigrationLive';
+import {
+  LegacyMigrationSurface,
+  refreshLegacyMigrationOnConfigurationChange,
+  registerLegacyMigrationFolderWatcher,
+} from './configurationMigrationHost';
 
 // Compatibility projections for existing command/provider code. Lifecycle
 // ownership lives in `languageClientLifecycle`; these values are synchronized
@@ -311,6 +317,15 @@ let lastStartupDiagnosis: StartupErrorDiagnosis | undefined;
  * auto-restart via `restartServer(context)`. Set in `activate()`.
  */
 let extensionContext: vscode.ExtensionContext | undefined;
+
+/**
+ * Live compatibility reader for registered legacy settings (#14966, under #7838).
+ *
+ * Set in `runExtensionActivation`; cleared with the other module projections when an
+ * attempt rolls back. Its state is redacted by construction, so it is safe to hand to
+ * the activation API.
+ */
+let legacyMigrationSurface: LegacyMigrationSurface | undefined;
 
 /**
  * Mid-session crash recovery state (#4625, #7845).
@@ -817,6 +832,23 @@ async function runExtensionActivation(
   // (debug/info/warn/error) so the VS Code Output panel level filter works.
   outputChannel = vscode.window.createOutputChannel('Perl Language Server', { log: true });
   activation.own('base', 'support_surface_allowed_after_failure', outputChannel);
+  // Registered legacy settings are read before any feature domain runs, so the reasons a
+  // stale setting is being ignored are already in the output channel when the domain it
+  // used to configure reports itself inert (#14966). The reader interprets configuration
+  // and never writes it.
+  const migrationSurface = new LegacyMigrationSurface(
+    outputChannel,
+    (context.extension.packageJSON.version as string) ?? 'unknown',
+  );
+  legacyMigrationSurface = migrationSurface;
+  try {
+    migrationSurface.refresh();
+  } catch (error: unknown) {
+    // A support surface must not decide whether activation succeeds. The failure is
+    // reported rather than swallowed, and the published state stays empty.
+    const message = error instanceof Error ? error.message : String(error);
+    outputChannel.error(`[configuration-migration] initial read failed: ${message}`);
+  }
   // The generic MCP passthrough is runtime-inert (#7119), so this domain is no
   // longer activation-critical: it registers nothing and returns no disposable.
   const mcpDisposable = featureActivationMetrics.measure('mcp', false, () =>
@@ -1180,6 +1212,14 @@ async function runExtensionActivation(
 
   const configurationWatcher = featureActivationMetrics.measure('configuration', true, () =>
     registerWorkspaceConfigurationEvents({
+      // Registered legacy keys were removed and drive no subsystem, so no
+      // configuration class classifies them; they are observed unclassified
+      // (#14966) instead of through a second host listener.
+      onAnyConfigurationChanged: (event) => {
+        if (legacyMigrationSurface) {
+          refreshLegacyMigrationOnConfigurationChange(legacyMigrationSurface, event);
+        }
+      },
       onLiveConfigurationChanged: async (event) => {
         if (event.affectsConfiguration('perl-lsp.trace.server') && client) {
           const newTrace = getTraceLevel();
@@ -1227,6 +1267,18 @@ async function runExtensionActivation(
     }),
   );
   activation.own('workspace_listeners', 'mandatory_for_activation', configurationWatcher);
+
+  // Registered after the configuration watcher so the existing workspace_listeners
+  // ordinals keep their meaning. The migration surface depends on the folder set as well
+  // as configuration content, and VS Code reports folder changes on their own event.
+  const legacyMigrationFolderWatcher = registerLegacyMigrationFolderWatcher(
+    migrationSurface,
+    (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      outputChannel.error(`[configuration-migration] folder-change read failed: ${message}`);
+    },
+  );
+  activation.own('workspace_listeners', 'optional_degradable', legacyMigrationFolderWatcher);
 
   const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
     try {
@@ -1295,6 +1347,7 @@ async function runExtensionActivation(
       getFeatureActivationMetrics,
       getActiveDocumentReadiness,
       getExtensionOwnedResourceMeasurements,
+      getLegacyConfigurationMigrationState,
       markLanguageClientStartupMilestone,
       waitForActiveDocumentReady,
       stop: stopLanguageClientForActivationApi,
@@ -1345,6 +1398,7 @@ async function runExtensionActivation(
     getFeatureActivationMetrics,
     getActiveDocumentReadiness,
     getExtensionOwnedResourceMeasurements,
+    getLegacyConfigurationMigrationState,
     markLanguageClientStartupMilestone,
     waitForActiveDocumentReady,
     stop: stopLanguageClientForActivationApi,
@@ -1405,6 +1459,18 @@ function clearActivationProjections(): void {
   languageClientLifecycle = undefined;
   lastStartupDiagnosis = undefined;
   extensionContext = undefined;
+  legacyMigrationSurface = undefined;
+}
+
+/**
+ * Redacted legacy-setting migration state for status, doctor, and installed transition
+ * tests (#14966, under #7838).
+ *
+ * Exposed through the activation API so those surfaces observe migration state without
+ * reaching into extension internals, and without any raw configuration value.
+ */
+function getLegacyConfigurationMigrationState(): LegacyMigrationState | undefined {
+  return legacyMigrationSurface?.snapshot();
 }
 
 /**

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 14155,
-  "reason": "Accept the packaged lifecycle process-exit repair in #14857. The actual VSIX retains 29 payload files; out/extension.js grows by 3356 bytes (1640957 to 1644313), bringing total payload bytes to 1822271. Generated from the package archive using the inventory owner; no file additions, removals, or permission changes. Installed watchdog recovery is independently proven by hosted run 33995245145.",
-  "base_baseline_file_sha256": "bc56a9d640213d509add8c24f807a35efdce01fccce5fd9c6f2b0a380f7441fd",
-  "candidate_baseline_file_sha256": "00c995a76bdd70af5da15336d1ee47e341b1cc46001de7b0662401c64c874d42",
-  "base_inventory_sha256": "114b0ad804f9267deabbdc0bcc0a1ba92d7436c207447727c82f287077a45d8d",
-  "candidate_inventory_sha256": "fc2e0cd878444fe5704d6a65f730569305ed16219e08f1f2dde0abb0f933e448"
+  "reason": "Accept the packaged lifecycle process-exit repair in #14857 after integrating main f9c141092dad1cb0718735cbcb6ec3a79350d3d2 to resolve inventory conflicts. The actual VSIX retains 29 payload files; out/extension.js grows by 3356 bytes (1675187 to 1678543), bringing total payload bytes to 1856501. Generated from the package archive using the inventory owner. Installed watchdog behavior remains separately reviewed; this declaration records the combined-tree package.",
+  "base_baseline_file_sha256": "9b80146ec2f0f4a7ef38522b127429dfc612aa01d1c8e6d4e33e37c768e6de26",
+  "candidate_baseline_file_sha256": "7c0c3f85403f4019423a30a47930978c3c2467d3f65d315781821221ce463dc9",
+  "base_inventory_sha256": "1a42390c7e64fd313065bd959fdcd1db6885894b838ac35be42996652edf4aeb",
+  "candidate_inventory_sha256": "8fde2467c3a76fce7a813c79d073767cec1933759fa41fd115ae705c1e7d7d0f"
 }

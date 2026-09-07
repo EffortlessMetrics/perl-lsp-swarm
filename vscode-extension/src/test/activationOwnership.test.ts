@@ -335,14 +335,18 @@ describe('transactional production activation (#7854)', () => {
 
     // Every activation-created disposable reached the host net at commit —
     // the same array content the pre-transaction code produced by pushing at
-    // creation time. Two owned resources are created internally (the health
-    // widget data source and the server-demand dispose wrapper), so the host
-    // net carries every tracked disposable plus those two.
+    // creation time. Three owned resources are not in `tracked`: the health widget data
+    // source and the server-demand dispose wrapper are created internally rather than by
+    // a host factory, and the legacy-migration folder watcher (#14966) comes from
+    // `onDidChangeWorkspaceFolders`, which this harness deliberately does not instrument
+    // — the health widget registers that same event into its own disposables, which never
+    // reach the host net, so tracking the factory would break the containment check
+    // above. So the host net carries every tracked disposable plus those three.
     const hostArray = context.subscriptions as unknown as { dispose: jest.Mock }[];
     for (const entry of tracked) {
       expect(hostArray).toContain(entry.disposable);
     }
-    expect(hostArray).toHaveLength(tracked.length + 2);
+    expect(hostArray).toHaveLength(tracked.length + 3);
 
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
       'setContext',
