@@ -1564,23 +1564,28 @@ mod tests {
 
     /// Discriminating controls for #14268.
     ///
-    /// The Rust reader is thorough about unknown keys and missing fields, so
-    /// the gap the apply step closes is the *value* constraints it never
-    /// looks at: `claim_profile.version` is only checked for being an
-    /// integer (never against `minimum: 1`), and `claim_profile.required` is
-    /// collected into a set, so a duplicate entry is silently deduplicated
-    /// rather than refused. Both documents passed the task before the apply
-    /// step while violating the published contract.
+    /// The Rust reader is deliberately thorough about unknown keys, missing
+    /// fields, empty strings, and duplicate ids -- it already catches those,
+    /// and this test does not claim otherwise. The gap the apply step closes
+    /// is the narrower set of *value* constraints the reader never looks at:
+    /// `claim_profile.version` is only checked for being an integer, never
+    /// against `minimum: 1`; and `allowed_terminal_limitation_states` is only
+    /// checked for reason-class membership, never against `uniqueItems`.
+    /// Both documents passed the task before the apply step while violating
+    /// the published contract.
     #[test]
     fn schema_rejects_values_the_rust_reader_never_constrains() -> TestResult {
         let cases: &[(&str, fn(&mut Value))] = &[
             ("version below the schema minimum", |doc| {
                 doc["claim_profiles"][0]["version"] = Value::from(0);
             }),
-            ("duplicate required proposition", |doc| {
-                let first = doc["claim_profiles"][0]["required"][0].clone();
-                if let Some(required) = doc["claim_profiles"][0]["required"].as_array_mut() {
-                    required.push(first);
+            ("duplicate terminal limitation state", |doc| {
+                let first = doc["claim_profiles"][0]["allowed_terminal_limitation_states"][0]
+                    .clone();
+                if let Some(states) =
+                    doc["claim_profiles"][0]["allowed_terminal_limitation_states"].as_array_mut()
+                {
+                    states.push(first);
                 }
             }),
         ];
