@@ -34,8 +34,8 @@ use perl_semantic_facts::framework_adapters::dancer2::{
     dancer2_activation_facts, dancer2_descriptor, detect_dancer2,
 };
 use perl_semantic_facts::framework_adapters::dancer2_two_x::{
-    Dancer2TwoXActivationFacts, dancer2_two_x_activation_facts, dancer2_two_x_descriptor,
-    detect_dancer2_two_x,
+    Dancer2TwoXActivationFacts, Dancer2TwoXActivationState, dancer2_two_x_activation_facts,
+    dancer2_two_x_descriptor, detect_dancer2_two_x,
 };
 use perl_semantic_facts::{FileId, SourceGeneration};
 use std::collections::HashMap;
@@ -370,11 +370,11 @@ fn two_x_activations(
         AdapterCancellation::active(),
     );
     let detection = detect_dancer2_two_x(&input);
-    // Multiple imports in one package: a later import that actually
-    // activates overrides an earlier inactive record, a suppressed later
-    // import never erases an earlier activation, and equal-strength records
-    // take the later import (source order decides the package's final DSL
-    // evidence) (#15006 review).
+    // Multiple imports in one package fold by pinned import semantics
+    // (#15006 review): an odd-arity site dies compilation and dominates; a
+    // suppressed site contributes nothing; keyword states fold per keyword
+    // (exclusion cannot uninstall a prior install, and a package-sub shadow
+    // beats both); the first exact app identity stands.
     let mut packages: Vec<Dancer2TwoXPackageActivation> = Vec::new();
     for site in &sites {
         let package = site.package.clone().unwrap_or_else(|| "main".to_string());
@@ -385,19 +385,62 @@ fn two_x_activations(
             &site.shadowed_keywords,
         );
         match packages.iter_mut().find(|existing| existing.package == package) {
-            Some(existing) => {
-                let existing_exact = existing.facts.is_exact();
-                let new_exact = facts.is_exact();
-                // Replace unless the new record is inactive while the kept
-                // one activates.
-                if new_exact || !existing_exact {
-                    existing.facts = facts;
-                }
-            }
+            Some(existing) => fold_package_facts(&mut existing.facts, facts),
             None => packages.push(Dancer2TwoXPackageActivation { package, facts }),
         }
     }
     packages
+}
+
+/// Fold one more import's facts into a package's record under the pinned
+/// import semantics.
+fn fold_package_facts(
+    existing: &mut Dancer2TwoXActivationFacts,
+    incoming: Dancer2TwoXActivationFacts,
+) {
+    use perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState;
+
+    // A compile-time die anywhere in the package dominates the record.
+    if matches!(existing.state, Dancer2TwoXActivationState::ImportDied { .. })
+        || matches!(incoming.state, Dancer2TwoXActivationState::ImportDied { .. })
+    {
+        return;
+    }
+    // An exact incoming import folds into an exact record; a non-exact
+    // incoming import never downgrades an exact one; two inactive records
+    // keep the later reason.
+    if !incoming.is_exact() {
+        if !existing.is_exact() {
+            *existing = incoming;
+        }
+        return;
+    }
+    if !existing.is_exact() {
+        *existing = incoming;
+        return;
+    }
+    let mut keywords = std::mem::take(&mut existing.keywords);
+    for keyword in &mut keywords {
+        let incoming_state = incoming
+            .keywords
+            .iter()
+            .find(|candidate| candidate.keyword == keyword.keyword)
+            .map(|candidate| candidate.state);
+        keyword.state = match (keyword.state, incoming_state) {
+            // Exclusion cannot uninstall a prior install.
+            (Dancer2TwoXKeywordState::Imported, Some(Dancer2TwoXKeywordState::Excluded))
+            | (Dancer2TwoXKeywordState::Excluded, Some(Dancer2TwoXKeywordState::Imported)) => {
+                Dancer2TwoXKeywordState::Imported
+            }
+            (Dancer2TwoXKeywordState::Excluded, Some(Dancer2TwoXKeywordState::Excluded)) => {
+                Dancer2TwoXKeywordState::Excluded
+            }
+            (Dancer2TwoXKeywordState::Shadowed, _)
+            | (_, Some(Dancer2TwoXKeywordState::Shadowed)) => Dancer2TwoXKeywordState::Shadowed,
+            (current, _) => current,
+        };
+    }
+    existing.keywords = keywords;
 }
 
 #[cfg(test)]
@@ -560,6 +603,71 @@ use Dancer2 ();
             activations.two_x_packages[0].facts.is_exact(),
             "the suppressed re-import cannot uninstall: got {:?}",
             activations.two_x_packages[0].facts.state
+        );
+    }
+
+    /// Fold semantics: `use Dancer2 '!get';` followed by a bare re-import
+    /// re-installs `get` (the second import's export map has no exclusion
+    /// and the glob was empty).
+    #[test]
+    fn fold_excluded_then_bare_import_installs_the_keyword() {
+        let source = "package App;
+use Dancer2 '!get';
+use Dancer2;
+";
+        let ast = parse(source);
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "2.0.1");
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("gen-test"),
+        );
+        assert_eq!(activations.two_x_packages.len(), 1);
+        let get = must_some_with(
+            activations.two_x_packages[0].facts.keywords.iter().find(|k| k.keyword == "get"),
+            "get fact",
+        );
+        assert!(
+            matches!(
+                get.state,
+                perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState::Imported
+            ),
+            "the later bare import installs get: {:?}",
+            get.state
+        );
+    }
+
+    /// Fold semantics: a bare import followed by an exclusion cannot
+    /// uninstall the already-installed keyword.
+    #[test]
+    fn fold_bare_then_excluded_import_keeps_the_keyword() {
+        let source = "package App;
+use Dancer2;
+use Dancer2 '!get';
+";
+        let ast = parse(source);
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "2.0.1");
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("gen-test"),
+        );
+        assert_eq!(activations.two_x_packages.len(), 1);
+        let get = must_some_with(
+            activations.two_x_packages[0].facts.keywords.iter().find(|k| k.keyword == "get"),
+            "get fact",
+        );
+        assert!(
+            matches!(
+                get.state,
+                perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState::Imported
+            ),
+            "exclusion cannot uninstall an installed keyword: {:?}",
+            get.state
         );
     }
 

@@ -63,6 +63,8 @@ impl CanonicalDancer2FileFacts {
             && self.parameters.is_empty()
             && self.handler_contexts.is_empty()
             && self.hooks.is_empty()
+            && self.two_x.is_empty()
+            && self.two_x_extracted_routes.is_empty()
     }
 
     /// The route fact whose declaration span contains `offset`, excluding

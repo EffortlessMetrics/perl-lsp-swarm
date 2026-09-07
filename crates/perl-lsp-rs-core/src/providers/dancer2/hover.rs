@@ -58,14 +58,12 @@ pub fn hover_projection_at(
     offset: usize,
 ) -> Option<RouteHoverProjection> {
     // A 2.x-resolved module routes the document to the 2.x contract
-    // (#14989): its keyword hovers render from the typed 2.x facts with
-    // route-handler scope named honestly, and its provenance says
-    // comparison-only.
-    if let Some(two_x) = activations.two_x_packages.iter().find(|p| p.package == package) {
-        if !two_x.facts.is_exact() {
-            return None;
-        }
-        return two_x_keyword_hover(two_x, ast, offset, package);
+    // (#14989) — but that adapter is AdapterDisposition::Shadow: its output
+    // permits comparison, not user-facing rendering. The production hover
+    // therefore serves nothing for a 2.x package; comparison consumers use
+    // `two_x_shadow_hover_projection_at` explicitly (#15006 review).
+    if activations.two_x_packages.iter().any(|p| p.package == package) {
+        return None;
     }
     let activation = activations.for_package(package)?;
     if !activation.facts.is_exact() {
@@ -82,11 +80,26 @@ pub fn hover_projection_at(
     keyword_hover(&activation.facts, facts, ast, offset, &version, package)
 }
 
-/// Keyword hover under the 2.x contract (#14989). Route-handler-only
-/// keywords state their scope honestly: the 2.x route-family leaf that
+/// Keyword hover under the 2.x contract, for COMPARISON consumers only
+/// (#14989): the 2.x adapter is `AdapterDisposition::Shadow`, so this
+/// projection is never wired into the production hover path. Route-handler-
+/// only keywords state their scope honestly: the 2.x route-family leaf that
 /// would establish request context at this position is a separate claim,
 /// so hover says so instead of guessing.
-fn two_x_keyword_hover(
+pub fn two_x_shadow_hover_projection_at(
+    activations: &Dancer2FileActivations,
+    ast: &perl_parser_core::Node,
+    package: &str,
+    offset: usize,
+) -> Option<RouteHoverProjection> {
+    let activation = activations.two_x_packages.iter().find(|p| p.package == package)?;
+    if !activation.facts.is_exact() {
+        return None;
+    }
+    two_x_shadow_keyword_hover(activation, ast, offset, package)
+}
+
+fn two_x_shadow_keyword_hover(
     activation: &Dancer2TwoXPackageActivation,
     ast: &perl_parser_core::Node,
     offset: usize,
@@ -704,8 +717,14 @@ dancer_app;
         );
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         let offset = must_some_with(source.find("dancer_app"), "keyword in fixture");
+        // The production path stays silent for shadow 2.x packages; the
+        // explicit comparison entry point renders.
+        assert!(
+            hover_projection_at(&activations, &facts, &ast, "App", offset).is_none(),
+            "shadow 2.x facts must not reach the production hover"
+        );
         let projection = must_some_with(
-            hover_projection_at(&activations, &facts, &ast, "App", offset),
+            two_x_shadow_hover_projection_at(&activations, &ast, "App", offset),
             "a keyword hover for a 2.x global keyword",
         );
         assert!(
@@ -739,7 +758,7 @@ params;
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         let offset = must_some_with(source.find("params"), "keyword in fixture");
         let projection = must_some_with(
-            hover_projection_at(&activations, &facts, &ast, "App", offset),
+            two_x_shadow_hover_projection_at(&activations, &ast, "App", offset),
             "a keyword hover for a 2.x route-handler-only keyword",
         );
         assert!(
@@ -771,7 +790,7 @@ params;
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         let offset = must_some_with(source.rfind("params"), "call in fixture");
         assert!(
-            hover_projection_at(&activations, &facts, &ast, "App", offset).is_none(),
+            two_x_shadow_hover_projection_at(&activations, &ast, "App", offset).is_none(),
             "a locally declared name is not a DSL hover"
         );
     }
