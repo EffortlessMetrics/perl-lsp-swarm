@@ -191,6 +191,8 @@ PROVISIONAL_WORDS = frozenset(
         # the same claim moved one field over.
         "PARTIAL",
         "PARTIALLY",
+        "LIKELY", "PROBABLY", "TENTATIVE", "TENTATIVELY",
+        "PROVISIONAL", "PROVISIONALLY", "MAYBE",
     }
 )
 # Deliberately absent: `BLOCKED`. `AGENTS.md` defines `BLOCKED_BY_PREREQUISITE`
@@ -207,8 +209,8 @@ PROVISIONAL_WORDS = frozenset(
 # a later push can change it. That is not a ruling about whether a lane
 # demonstrated its transition, so it cannot carry a `COVERED` row.
 #
-# Matched whole, not per word: `MERGE` and `BLOCKED` are unobjectionable
-# elsewhere, and `BLOCKED_BY_PREREQUISITE` is a review outcome that stays valid.
+# Match complete underscore-delimited outcome sequences, not isolated words:
+# `MERGE` and `BLOCKED` are unobjectionable elsewhere.
 # `NOT_PROVEN` is deliberately absent here: it is a review outcome, not
 # posture, and `NEGATIVE_RULINGS` owns its rejection.
 INTEGRATION_STATES = frozenset({"INTEGRATION_READY", "MERGE_BLOCKED", "PR_IN_FLIGHT"})
@@ -218,7 +220,8 @@ INTEGRATION_STATES = frozenset({"INTEGRATION_READY", "MERGE_BLOCKED", "PR_IN_FLI
 # demonstrated. `COVERED` asserts the opposite. A lane ruled `NOT_PROVEN`,
 # `BLOCKED_BY_PREREQUISITE`, or `SUPERSEDED_OR_CLOSE` belongs under `ABSENT`
 # with the ruling recorded there, not as a certified example of the category.
-# Matched whole, like the integration states.
+# Match underscore-delimited component sequences, so qualified outcomes such
+# as NOT_PROVEN_FOR_WINDOWS cannot certify coverage.
 NEGATIVE_RULINGS = frozenset({"NOT_PROVEN", "BLOCKED_BY_PREREQUISITE", "SUPERSEDED_OR_CLOSE"})
 
 # The token rule above only sees the backticked word. "proposed `PROMOTE`" or
@@ -226,11 +229,24 @@ NEGATIVE_RULINGS = frozenset({"NOT_PROVEN", "BLOCKED_BY_PREREQUISITE", "SUPERSED
 # open, which is the same soft state moved from the token into the prose around
 # it. Matched per word over the whole ruling, case-insensitively, so it covers
 # the token components too.
-PROSE_PROVISIONAL_WORDS = frozenset(
-    {word.lower() for word in PROVISIONAL_WORDS}
-    | {"likely", "probably", "tentative", "tentatively", "provisional", "provisionally", "maybe"}
-)
+PROSE_PROVISIONAL_WORDS = frozenset(word.lower() for word in PROVISIONAL_WORDS)
 PROSE_WORD = re.compile(r"[A-Za-z]+")
+PROSE_QUALIFIER = "(?:" + "|".join(sorted(PROSE_PROVISIONAL_WORDS)) + ")"
+# Deliberately narrow grammar: an explicitly negated qualifier, or one
+# historical qualifier followed by a comma and "now", does not qualify the
+# current disposition. Other prose remains subject to the conservative floor.
+NONCURRENT_QUALIFIER = re.compile(
+    rf"\b(?:not\s+{PROSE_QUALIFIER}|formerly\s+{PROSE_QUALIFIER}\s*,\s*now)\b",
+    re.IGNORECASE,
+)
+
+
+def qualified_outcomes(tokens: set[str], outcomes: frozenset[str]) -> list[str]:
+    """Match whole outcome component sequences, including scoped suffixes."""
+    return sorted(
+        token for token in tokens
+        if any(f"_{outcome}_" in f"_{token}_" for outcome in outcomes)
+    )
 
 
 def ruling_defect(ruling: str) -> str | None:
@@ -262,10 +278,11 @@ def ruling_defect(ruling: str) -> str | None:
     )
     if provisional:
         return f"is still provisional ({', '.join(provisional)})"
+    operative_prose = NONCURRENT_QUALIFIER.sub(" ", RULING_TOKEN.sub(" ", stripped))
     prose_provisional = sorted(
         {
             word
-            for word in PROSE_WORD.findall(RULING_TOKEN.sub(" ", stripped))
+            for word in PROSE_WORD.findall(operative_prose)
             if word.lower() in PROSE_PROVISIONAL_WORDS
         }
     )
@@ -274,13 +291,13 @@ def ruling_defect(ruling: str) -> str | None:
             f"is qualified as provisional in its prose "
             f"({', '.join(prose_provisional)})"
         )
-    negative = sorted(tokens & NEGATIVE_RULINGS)
+    negative = qualified_outcomes(tokens, NEGATIVE_RULINGS)
     if negative:
         return (
             f"records a negative outcome ({', '.join(negative)}); the lane did "
             f"not demonstrate its transition, so the row belongs under ABSENT"
         )
-    posture = sorted(tokens & INTEGRATION_STATES)
+    posture = qualified_outcomes(tokens, INTEGRATION_STATES)
     if posture:
         return (
             f"records integration posture ({', '.join(posture)}), which a later "
@@ -667,6 +684,32 @@ class WorkedLaneLedgerTests(unittest.TestCase):
                     ruling_defect(ruling),
                     f"{ruling!r} is a findable terminal ruling and must pass",
                 )
+
+    def test_qualified_provisional_tokens_cannot_certify_coverage(self) -> None:
+        for token in ("TENTATIVE_PROMOTE", "PROVISIONAL_PROMOTE", "PROMOTE_LIKELY"):
+            with self.subTest(token=token):
+                self.assertIsNotNone(ruling_defect(f"#4192 `{token}`"))
+        self.assertIsNone(ruling_defect("#4192 `PROMOTE` for independent evidence"))
+
+    def test_prose_qualifiers_distinguish_current_from_explicitly_noncurrent(self) -> None:
+        for ruling in ("formerly proposed, now `PROMOTE`", "`PROMOTE`, not provisional"):
+            with self.subTest(accepted=ruling):
+                self.assertIsNone(ruling_defect(f"#4192 {ruling}"))
+        for ruling in ("proposed `PROMOTE`", "`PROMOTE`, likely",
+                       "formerly proposed, now `PROMOTE`, likely",
+                       "`PROMOTE`, not provisional, pending review"):
+            with self.subTest(rejected=ruling):
+                self.assertIsNotNone(ruling_defect(f"#4192 {ruling}"))
+
+    def test_qualified_negative_outcomes_cannot_certify_coverage(self) -> None:
+        for token in ("NOT_PROVEN_FOR_WINDOWS", "WINDOWS_NOT_PROVEN",
+                      "SUPERSEDED_OR_CLOSE_FOR_WINDOWS", "BLOCKED_BY_PREREQUISITE_FOR_WINDOWS",
+                      "MERGE_BLOCKED_FOR_WINDOWS"):
+            with self.subTest(token=token):
+                self.assertIsNotNone(ruling_defect(f"#4192 `{token}`"))
+        for token in ("NOT_PROVENANCE", "NOT_PROVENANCE_FOR_WINDOWS", "REVIEW_CURRENT"):
+            with self.subTest(accepted=token):
+                self.assertIsNone(ruling_defect(f"#4192 `{token}`"))
 
     def test_covered_rows_state_a_defining_transition_and_a_boundary(self) -> None:
         for category, fields in self.rows:

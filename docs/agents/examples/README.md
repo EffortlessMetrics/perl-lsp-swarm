@@ -171,3 +171,8 @@ Two mechanics that are easy to get wrong:
   *and* ruled on, so a provisional ruling is the soft third status this ledger refuses,
   moved into a field. Unlike a receipt, the ruling need not appear in the lane document;
   deliberation often lives on its own issue, as #4192 does. Findable, not local.
+  The structural check rejects provisional words in disposition components and
+  operative prose. Its narrow prose exceptions are `not <qualifier>` and
+  `formerly <qualifier>, now`; other grammatical interpretations require a
+  clearer ruling rather than general language inference. Scoped negative
+  outcomes such as `NOT_PROVEN_FOR_WINDOWS` still cannot certify `COVERED`.

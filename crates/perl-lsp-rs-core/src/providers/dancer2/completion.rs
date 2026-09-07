@@ -156,8 +156,13 @@ mod tests {
         let mut parser = Parser::new(source);
         let ast = parser.parse().expect("fixture must parse");
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
-        let activations =
-            file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("g1"),
+        );
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         (activations, facts)
     }
@@ -317,7 +322,8 @@ mod tests {
         let source = "hook before => sub { my $r = request; };\n";
         let mut parser = Parser::new(source);
         let ast = parser.parse().expect("fixture must parse");
-        let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
+        let activations =
+            file_activations(&ast, source, FileId(1), None, &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         let inside = source.find("request").expect("body offset");
         assert!(
@@ -427,7 +433,8 @@ mod tests {
         let source = "use Dancer2::Core;\nget '/x' => sub { 1 };\n";
         let mut parser = Parser::new(source);
         let ast = parser.parse().expect("fixture must parse");
-        let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
+        let activations =
+            file_activations(&ast, source, FileId(1), None, &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         assert!(
             keyword_completion_candidates(&activations, &facts, "main", 30, &none_declared)
