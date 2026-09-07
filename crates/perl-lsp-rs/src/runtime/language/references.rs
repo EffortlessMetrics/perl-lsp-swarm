@@ -46,7 +46,7 @@ const REFERENCE_TEXT_FALLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
 /// existing fallback cascade. Flip to `false` to restore the pre-P8 routing
 /// boundary without changing the fallback tiers.
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-const ENABLE_PIR_A_LEXICAL_REFERENCES_LIVE: bool = true;
+const ENABLE_SEMANTIC_SOURCE_BACKED_REFERENCES_LIVE: bool = true;
 
 fn lsp_location_count(value: Option<&Value>) -> usize {
     match value {
@@ -71,7 +71,7 @@ struct ReferencesDecisionTraceContext {
 /// results — a signal that would be lost if collapsed into `WorkspaceExact`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReferencesAnsweringTier {
-    /// Tier 1 — live compiler source-backed references (most precise).
+    /// Tier 1 — live semantic source-backed references (most precise).
     SemanticSourceBacked,
     /// Tiers 2, 4, 5 — workspace index `find_refs`/`find_def`/`find_references` only.
     WorkspaceExact,
@@ -328,7 +328,7 @@ pub(crate) fn classify_combined_tier(
 
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 fn may_use_source_backed_references(symbol_is_variable: bool, include_declaration: bool) -> bool {
-    !symbol_is_variable || (ENABLE_PIR_A_LEXICAL_REFERENCES_LIVE && !include_declaration)
+    !symbol_is_variable || (ENABLE_SEMANTIC_SOURCE_BACKED_REFERENCES_LIVE && !include_declaration)
 }
 
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -880,7 +880,7 @@ impl LspServer {
                                                 tracing::debug!(
                                                     ref_count,
                                                     elapsed = ?elapsed,
-                                                    "References: returned live source-backed compiler facts"
+                                                    "References: returned live semantic source-backed facts"
                                                 );
                                                 let result_count = live_locations.len();
                                                 return Ok((
@@ -1819,7 +1819,7 @@ impl LspServer {
                 "provider": "references",
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
-                "compiler_receipt": null,
+                "source_backed_receipt": null,
                 "no_live_behavior_change": true,
                 "note": "references runtime proof unavailable without workspace semantic queries"
             })))
@@ -1832,7 +1832,7 @@ impl LspServer {
                     "provider": "references",
                     "live_provider_result": live_provider_result,
                     "live_provider_count": live_provider_count,
-                    "compiler_receipt": null,
+                    "source_backed_receipt": null,
                     "no_live_behavior_change": true,
                     "note": "references runtime proof missing request params"
                 })));
@@ -1851,14 +1851,15 @@ impl LspServer {
                     "provider": "references",
                     "live_provider_result": live_provider_result,
                     "live_provider_count": live_provider_count,
-                    "compiler_receipt": null,
+                    "source_backed_receipt": null,
                     "no_live_behavior_change": true,
                     "note": "references runtime proof found no symbol at request position"
                 })));
             };
 
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
-            let compiler_receipt_and_cutover = if self.workspace_index_stale_for_any_open_document()
+            let source_backed_receipt_and_cutover = if self
+                .workspace_index_stale_for_any_open_document()
             {
                 None
             } else {
@@ -1886,7 +1887,7 @@ impl LspServer {
                             let live_cutover =
                                 matches!(outcome.result, ReferencesCutoverResult::Exact(_));
                             let mut receipt = outcome.receipt;
-                            let compiler_result_count = receipt.new_result.match_count;
+                            let source_backed_result_count = receipt.new_result.match_count;
                             let behavior_note = if live_cutover && include_declaration {
                                 "partial live exact/imported references cutover (includeDeclaration=true)"
                             } else if live_cutover {
@@ -1895,8 +1896,8 @@ impl LspServer {
                                 "legacy fallback"
                             };
                             receipt.notes.push(format!(
-                                "references runtime proof: live_provider_results={live_provider_count}; compiler_fact_candidates={}; compiler_result_count={}; {behavior_note}",
-                                compiler_result_count, compiler_result_count,
+                                "references runtime proof: live_provider_results={live_provider_count}; source_backed_candidates={}; source_backed_result_count={}; {behavior_note}",
+                                source_backed_result_count, source_backed_result_count,
                             ));
                             Some((receipt, live_cutover))
                         })
@@ -1905,7 +1906,7 @@ impl LspServer {
                     IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
                 }
             };
-            let (compiler_receipt, live_cutover) = match compiler_receipt_and_cutover {
+            let (source_backed_receipt, live_cutover) = match source_backed_receipt_and_cutover {
                 Some((receipt, live_cutover)) => (Some(receipt), live_cutover),
                 None => (None, false),
             };
@@ -1915,7 +1916,7 @@ impl LspServer {
                 "symbol": symbol,
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
-                "compiler_receipt": compiler_receipt,
+                "source_backed_receipt": source_backed_receipt,
                 "no_live_behavior_change": !live_cutover,
                 "live_cutover": if live_cutover {
                     Some("partial_exact_imported")

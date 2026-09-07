@@ -126,6 +126,34 @@ gates:
             ["merge_gate_shards"], GATE_TO_LANE_MAP["must_context_check"]["lanes"]
         )
 
+    def test_docs_agents_contract_workflows_maps_to_merge_gate_shards(self) -> None:
+        status, output, report = self.run_validator(
+            """
+gates:
+  - name: docs_agents_contract_workflows
+    tier: merge_gate
+    required: true
+""",
+            """
+[lane.merge_gate_shards]
+""",
+            strict=True,
+            json_out=True,
+        )
+
+        self.assertEqual(0, status)
+        self.assertIn("Unmapped gates: 0", output)
+        assert report is not None
+        self.assertEqual([], report["unmapped_gates"])
+        self.assertEqual(
+            [{"gate": "docs_agents_contract_workflows", "lanes": ["merge_gate_shards"]}],
+            report["mapped"],
+        )
+        self.assertEqual(
+            ["merge_gate_shards"],
+            GATE_TO_LANE_MAP["docs_agents_contract_workflows"]["lanes"],
+        )
+
     def test_strict_fails_when_required_gate_has_no_workflow_path(self) -> None:
         status, output, report = self.run_validator(
             """

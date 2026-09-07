@@ -113,12 +113,19 @@ pub fn build_project_model(
         // Distribution-metadata facts: metadata files are not "parsed" as Perl,
         // but when DIST is requested their content is read for name/version/
         // license/prereqs.
-        if role == FileRole::DistMetadata
-            && request.fact_classes.contains(FactClasses::DIST)
-            && let Some(facts) =
+        if role == FileRole::DistMetadata && request.fact_classes.contains(FactClasses::DIST) {
+            if let Some(facts) =
                 extract_dist_metadata(&file_id, &relative_path, &content, &mut model.limitations)
-        {
-            model.dist_metadata.push(facts);
+            {
+                model.dist_metadata.push(facts);
+            }
+            if let Some(facts) = crate::dist_authoring::parse_dist_authoring(
+                file_id.clone(),
+                &relative_path,
+                &content,
+            ) {
+                model.dist_authoring.push(facts);
+            }
         }
 
         // POD facts are read from raw source (independent of code parsing), so a
@@ -138,9 +145,9 @@ pub fn build_project_model(
 }
 
 /// Extract distribution-metadata facts from a metadata file, dispatched by
-/// filename. `META.json`, `META.yml`, and `cpanfile` are read today; other
-/// metadata formats (`Makefile.PL`, `Build.PL`, `dist.ini`) are indexed as
-/// files but not yet content-parsed.
+/// filename. `META.json`, `META.yml`, and `cpanfile` supply final/advisory
+/// metadata. Authoring files (`Makefile.PL`, `Build.PL`, `dist.ini`) are
+/// parsed separately by [`crate::dist_authoring`].
 ///
 /// A `META.yml` input that fails its bounded parse yields no facts: a
 /// malformed or unsupported stream can never become an empty successful fact
@@ -560,6 +567,25 @@ mod tests {
         let cpanfile = model.file_by_path("cpanfile").unwrap();
         assert_eq!(cpanfile.role, FileRole::DistMetadata);
         assert_eq!(cpanfile.parse_status, ParseStatus::NotParsed, "metadata is not parsed");
+    }
+
+    #[test]
+    fn metadata_refusals_and_authoring_facts_coexist() {
+        let model = model_for(
+            "metadata-authoring-integration",
+            &[("META.yml", "name: \"Broken"), ("dist.ini", "name = App-Dist\nversion = 1.0\n")],
+            FactClasses::FILES | FactClasses::DIST,
+        );
+        assert!(model.dist_metadata.is_empty());
+        assert_eq!(model.files.len(), 2);
+        assert_eq!(model.dist_authoring.len(), 1);
+        assert_eq!(model.dist_authoring[0].name.as_deref(), Some("App-Dist"));
+        assert!(
+            model
+                .limitations
+                .iter()
+                .any(|l| l.kind == "meta_yml_malformed" && l.message.contains("META.yml"))
+        );
     }
 
     #[test]
