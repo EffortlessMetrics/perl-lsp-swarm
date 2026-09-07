@@ -1580,8 +1580,8 @@ mod tests {
                 doc["claim_profiles"][0]["version"] = Value::from(0);
             }),
             ("duplicate terminal limitation state", |doc| {
-                let first = doc["claim_profiles"][0]["allowed_terminal_limitation_states"][0]
-                    .clone();
+                let first =
+                    doc["claim_profiles"][0]["allowed_terminal_limitation_states"][0].clone();
                 if let Some(states) =
                     doc["claim_profiles"][0]["allowed_terminal_limitation_states"].as_array_mut()
                 {

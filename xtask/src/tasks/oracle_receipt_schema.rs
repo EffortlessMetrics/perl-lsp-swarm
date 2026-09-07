@@ -542,8 +542,7 @@ mod tests {
     #[test]
     fn rejects_receipt_with_result_class_outside_the_closed_vocabulary() -> TestResult {
         assert_receipt_rejected("result_class outside enum", |receipt| {
-            receipt["comparisons"][0]["result_class"] =
-                Value::String("mostly_agrees".to_string());
+            receipt["comparisons"][0]["result_class"] = Value::String("mostly_agrees".to_string());
         })?;
         Ok(())
     }
