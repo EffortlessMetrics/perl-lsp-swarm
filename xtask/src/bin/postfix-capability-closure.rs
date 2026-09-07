@@ -895,12 +895,25 @@ const COMPLETION_PHRASES: [&str; 7] = [
 ];
 
 fn positive_completion_phrase(line: &str) -> bool {
-    // Subject is line-scoped so a continuation after ';' still counts.
-    // Negation stays clause-scoped so unrelated polarity cannot cancel a claim.
+    // Same-clause claims stay postfix-local. A later subjectless/umbrella
+    // continuation may inherit an earlier postfix subject on the same line.
     if !line_mentions_postfix(line) {
         return false;
     }
-    line.split(';').any(clause_has_unnegated_completion_phrase)
+    let mut seen_postfix_subject = false;
+    for clause in line.split(';') {
+        let mentions_postfix = line_mentions_postfix(clause);
+        if mentions_postfix && clause_has_unnegated_completion_phrase(clause) {
+            return true;
+        }
+        if seen_postfix_subject && subjectless_continuation_completion(clause) {
+            return true;
+        }
+        if mentions_postfix {
+            seen_postfix_subject = true;
+        }
+    }
+    false
 }
 
 fn clause_has_unnegated_completion_phrase(clause: &str) -> bool {
@@ -911,6 +924,28 @@ fn clause_has_unnegated_completion_phrase(clause: &str) -> bool {
         };
         !directly_negated_before(&lower[..idx])
     })
+}
+
+fn subjectless_continuation_completion(clause: &str) -> bool {
+    if line_mentions_postfix(clause) {
+        return false;
+    }
+    let lower = clause.to_ascii_lowercase();
+    COMPLETION_PHRASES.iter().copied().any(|phrase| {
+        let Some(idx) = lower.find(phrase) else {
+            return false;
+        };
+        if directly_negated_before(&lower[..idx]) {
+            return false;
+        }
+        leftover_is_subjectless(&lower[..idx])
+            && leftover_is_subjectless(&lower[idx + phrase.len()..])
+    })
+}
+
+fn leftover_is_subjectless(part: &str) -> bool {
+    let trimmed = part.trim_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace());
+    trimmed.is_empty() || trimmed.eq_ignore_ascii_case("the")
 }
 
 fn directly_negated_before(prefix: &str) -> bool {
@@ -1422,6 +1457,40 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("semantic"), "narrowest reason missing: {message}");
         assert!(message.contains("umbrella is complete"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn unrelated_earlier_completion_is_not_a_postfix_claim() -> Result<()> {
+        let (ledger, mut matrix) = committed()?;
+        apply_full_looking_hir(postfix_req(&mut matrix)?);
+        let view = derive_postfix_capability(&ledger, &matrix)?;
+        let docs = [(
+            "docs/project/status/perl_compiler_concepts.md",
+            "Regex is complete; postfix remains partial.\n",
+        )];
+        let report = evaluate_closure_gate(&view, &ledger, &matrix, &docs)?;
+        assert!(
+            report.contains("no designated surface claims completion"),
+            "an unrelated earlier completion phrase must not become a postfix claim: {report}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unrelated_later_completion_is_not_a_postfix_claim() -> Result<()> {
+        let (ledger, mut matrix) = committed()?;
+        apply_full_looking_hir(postfix_req(&mut matrix)?);
+        let view = derive_postfix_capability(&ledger, &matrix)?;
+        let docs = [(
+            "docs/project/status/perl_compiler_concepts.md",
+            "Postfix remains partial; regex is complete.\n",
+        )];
+        let report = evaluate_closure_gate(&view, &ledger, &matrix, &docs)?;
+        assert!(
+            report.contains("no designated surface claims completion"),
+            "an unrelated later completion phrase must not become a postfix claim: {report}"
+        );
         Ok(())
     }
 
