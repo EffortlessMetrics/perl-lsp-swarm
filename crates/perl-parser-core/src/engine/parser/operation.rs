@@ -12,6 +12,19 @@ use crate::error::{
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+/// Core work a nested sub-parse had already charged to its own tracker at the
+/// moment it failed (#8786).
+///
+/// Carried out of the nested parse so the adopting operation can charge it:
+/// the nested tracker is discarded on the failure path, and dropping its
+/// charges with it would let a failed nested parse cost the parent nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct NestedCoreUsage {
+    pub(crate) tokens: usize,
+    pub(crate) nodes: usize,
+    pub(crate) diagnostics: usize,
+}
+
 /// Immutable identity of the production parser configuration selected for an
 /// operation.
 ///
@@ -336,6 +349,50 @@ impl ParserOperationContext {
     /// usage back to its adopting parent.
     pub(crate) fn charged_nodes(&self) -> usize {
         self.tracker.core_usage(ParseCoreDimension::NodesConstructed)
+    }
+
+    /// Everything this operation has charged across the admitted core
+    /// dimensions, for handing a *failed* nested parse's work to its adopting
+    /// parent (#8786).
+    pub(crate) fn core_usage_snapshot(&self) -> NestedCoreUsage {
+        NestedCoreUsage {
+            tokens: self.tracker.core_usage(ParseCoreDimension::TokensConsumed),
+            nodes: self.tracker.core_usage(ParseCoreDimension::NodesConstructed),
+            diagnostics: self.tracker.core_usage(ParseCoreDimension::DiagnosticsEmitted),
+        }
+    }
+
+    /// Adopt the work a failed nested sub-parse already performed, and restate
+    /// its refusal in this operation's budget coordinates (#8786).
+    ///
+    /// A nested parse runs under [`Self::remaining_core_budget`], so a
+    /// `CoreBudgetExhausted` it raises names the *remainder* it was handed and
+    /// its own local usage. Propagating that verbatim contradicts this
+    /// operation's receipt: the caller reads a limit that is not the configured
+    /// limit and a usage that excludes everything the parent had already
+    /// charged. Because the nested charge is bounded by the remainder, charging
+    /// it here and re-reading the configured limit reproduces exactly the
+    /// refusal the parent would have raised had it done the work itself.
+    ///
+    /// Errors other than core exhaustion carry no budget coordinates and are
+    /// returned unchanged — but the work is adopted either way, so the tracker
+    /// never understates a failed nested parse.
+    pub(crate) fn adopt_nested_failure(
+        &mut self,
+        error: ParseError,
+        nested: NestedCoreUsage,
+    ) -> ParseError {
+        self.tracker.record_core_batch(ParseCoreDimension::TokensConsumed, nested.tokens);
+        self.tracker.record_core_batch(ParseCoreDimension::NodesConstructed, nested.nodes);
+        self.tracker.record_core_batch(ParseCoreDimension::DiagnosticsEmitted, nested.diagnostics);
+        match error {
+            ParseError::CoreBudgetExhausted { dimension, .. } => ParseError::CoreBudgetExhausted {
+                dimension,
+                limit: self.config.budget().core_limit(dimension),
+                usage: self.tracker.core_usage(dimension),
+            },
+            other => other,
+        }
     }
 
     /// Note that the parser detected a diagnostic-worthy condition, whether or

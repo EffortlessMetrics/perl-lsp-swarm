@@ -117,6 +117,14 @@ pub struct ParseBudget {
     /// Maximum number of errors to collect before giving up.
     /// After this limit, parsing stops to avoid flooding diagnostics.
     /// Default: 100
+    ///
+    /// This governs *recoverable* diagnostics. A terminal diagnostic — one that
+    /// reports work the parser refused to perform, such as a heredoc scan
+    /// budget refusal — is retained beyond this limit and is not charged
+    /// against it, because a refusal that cannot be reported is
+    /// indistinguishable from work that succeeded (#8786). A parse can
+    /// therefore return more diagnostics than `max_errors`, and does so only
+    /// when it also reports a [`ParseStopCause`].
     pub max_errors: usize,
 
     /// Maximum nesting depth for recursive constructs (blocks, expressions).
@@ -278,7 +286,14 @@ impl std::fmt::Display for ParseCoreDimension {
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct BudgetTracker {
-    /// Number of errors emitted so far.
+    /// Number of errors charged against [`ParseBudget::max_errors`] so far.
+    ///
+    /// This counts diagnostics the budget *admitted*, not diagnostics the
+    /// parse returned. Terminal diagnostics are exempt from `max_errors` and
+    /// are correspondingly absent from this count, so
+    /// `ParseOutput::diagnostics.len()` may exceed it (#8786). Compare this
+    /// field against `max_errors` to reason about the budget; use the
+    /// diagnostics themselves to reason about what the parse reported.
     pub errors_emitted: usize,
     /// Current nesting depth.
     pub current_depth: usize,
@@ -438,6 +453,19 @@ impl BudgetTracker {
             ParseCoreDimension::DiagnosticsEmitted => &mut self.errors_emitted,
         };
         *slot = slot.saturating_add(count);
+    }
+
+    /// Record `count` units of core work that a nested operation already
+    /// performed, without a limit check (#8786).
+    ///
+    /// Distinct from [`BudgetTracker::authorize_core_batch`]: this is not an
+    /// admission decision. It exists for the one case where the work is a fact
+    /// rather than a request — a nested sub-parse that failed after charging
+    /// its own tracker. Refusing there would be meaningless, since the caller
+    /// is already returning that failure; dropping the units instead would
+    /// leave the receipt understating what the parse actually spent.
+    pub(crate) fn record_core_batch(&mut self, dimension: ParseCoreDimension, count: usize) {
+        self.charge_core_batch(dimension, count);
     }
 
     /// Check-then-charge `count` units of core work in `dimension` (#8786).

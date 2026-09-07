@@ -70,7 +70,7 @@ mod class_grammar;
 use class_grammar::{ClassGrammarContext, ClassGrammarForm};
 
 mod operation;
-use operation::ParserOperationContext;
+use operation::{NestedCoreUsage, ParserOperationContext};
 pub use operation::{ParserConfigIdentity, ParserOperationId};
 
 /// Strip Perl-style line comments from `qw()` content.

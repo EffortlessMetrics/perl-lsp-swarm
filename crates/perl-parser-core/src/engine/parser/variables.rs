@@ -479,7 +479,18 @@ impl<'a> Parser<'a> {
             let nested_config =
                 self.config_identity().with_budget(self.operation.remaining_core_budget());
             let (operand, diagnostics, adopted_nodes, adopted_tokens) =
-                parse_inline_expression(inner_text, token.start() + 2, nested_config)?;
+                match parse_inline_expression(inner_text, token.start() + 2, nested_config) {
+                    Ok(parts) => parts,
+                    // The nested tracker dies with the failed parse, so its
+                    // charges are adopted here and its refusal is restated
+                    // against this operation's configured limit rather than the
+                    // remainder it was handed (#8786).
+                    Err(failure) => {
+                        return Err(
+                            self.operation.adopt_nested_failure(failure.error, failure.usage)
+                        );
+                    }
+                };
             self.operation.authorize_adopted_nodes(adopted_nodes)?;
             self.operation.authorize_adopted_tokens(adopted_tokens)?;
             for diagnostic in diagnostics {
@@ -1682,6 +1693,26 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// A failed nested sub-parse, paired with the core work it had already charged
+/// when it failed (#8786).
+///
+/// Without this pairing a nested failure is unaccountable in two ways at once:
+/// the adopting operation's receipt omits work that genuinely happened, and a
+/// propagated `CoreBudgetExhausted` names the remainder the nested parse was
+/// handed instead of the parent's configured limit. Carrying the usage out with
+/// the error lets [`ParserOperationContext::adopt_nested_failure`] repair both.
+struct NestedParseFailure {
+    error: ParseError,
+    usage: NestedCoreUsage,
+}
+
+impl NestedParseFailure {
+    /// Capture a nested parser's charged core work alongside its error.
+    fn capture(error: ParseError, parser: &Parser<'_>) -> Self {
+        Self { error, usage: parser.operation.core_usage_snapshot() }
+    }
+}
+
 /// Parse an expression captured inside the lexer's single `*{...}` token and
 /// restore its source offsets relative to the containing source file.
 /// Parse an expression captured inside a single `*{...}` token.
@@ -1693,18 +1724,27 @@ impl<'a> Parser<'a> {
 /// `config` is expected to carry the adopting operation's *remaining* core
 /// allowance, not its full configuration, so recursion cannot multiply the
 /// budget.
+///
+/// On failure the charged work is reported alongside the error, because the
+/// nested tracker is discarded and the adopting operation is the only place
+/// that can still account for it (#8786).
 fn parse_inline_expression(
     source: &str,
     offset: usize,
     config: ParserConfigIdentity,
-) -> ParseResult<(Node, Vec<ParseError>, usize, usize)> {
+) -> Result<(Node, Vec<ParseError>, usize, usize), NestedParseFailure> {
     // The nested parse runs under the *adopting* operation's configuration, not
     // the default. Adoption can only charge after the nested parse finishes, so
     // this is what bounds the overshoot: without it a small outer
     // `max_nodes_constructed` would still permit a nested parse to build up to
     // the default limit before the outer parse could refuse it (#8786).
     let mut parser = Parser::with_production_config(source, config);
-    let ast = parser.parse().map_err(|error| offset_parse_error(error, offset))?;
+    let ast = match parser.parse() {
+        Ok(ast) => ast,
+        Err(error) => {
+            return Err(NestedParseFailure::capture(offset_parse_error(error, offset), &parser));
+        }
+    };
     let diagnostics = parser
         .errors()
         .iter()
@@ -1712,7 +1752,10 @@ fn parse_inline_expression(
         .map(|error| offset_parse_error(error, offset))
         .collect();
     let NodeKind::Program { mut statements } = ast.into_parts().0 else {
-        return Err(ParseError::syntax("Expected an expression program", offset));
+        return Err(NestedParseFailure::capture(
+            ParseError::syntax("Expected an expression program", offset),
+            &parser,
+        ));
     };
     let mut expressions = Vec::new();
     for statement in statements.drain(..) {
@@ -1720,9 +1763,12 @@ fn parse_inline_expression(
         let NodeKind::ExpressionStatement { expression: statement_expression } =
             statement.into_parts().0
         else {
-            return Err(ParseError::syntax(
-                "Expected an expression statement",
-                offset.saturating_add(statement_start),
+            return Err(NestedParseFailure::capture(
+                ParseError::syntax(
+                    "Expected an expression statement",
+                    offset.saturating_add(statement_start),
+                ),
+                &parser,
             ));
         };
         // A braced dereference follows Perl block-expression semantics: when
@@ -1735,7 +1781,10 @@ fn parse_inline_expression(
     }
     // Assembly nodes are charged to the nested operation, then reported so the
     // adopting parser charges the whole nested total against its own budget.
-    let body = build_deref_body(&mut parser, expressions, offset)?;
+    let body = match build_deref_body(&mut parser, expressions, offset) {
+        Ok(body) => body,
+        Err(error) => return Err(NestedParseFailure::capture(error, &parser)),
+    };
     let adopted_nodes = parser.operation.charged_nodes();
     let adopted_tokens = parser.operation.charged_tokens();
     Ok((body, diagnostics, adopted_nodes, adopted_tokens))
@@ -1845,7 +1894,7 @@ mod inline_expression_tests {
                     17,
                 ));
             }
-            Err(error) => error,
+            Err(failure) => failure.error,
         };
         if error.location() != Some(17) {
             let location = error.location().unwrap_or(17);
@@ -1861,7 +1910,7 @@ mod inline_expression_tests {
     fn non_expression_after_expression_is_not_discarded() -> Result<(), Box<dyn std::error::Error>> {
         let error = match parse_inline_expression("$tmp; my $name;", 17, ParserConfigIdentity::production_default()) {
             Ok(_) => return Err("expected a non-expression statement to be rejected".into()),
-            Err(error) => error,
+            Err(failure) => failure.error,
         };
         assert_eq!(error.location(), Some(23));
         Ok(())
@@ -1882,7 +1931,7 @@ mod inline_expression_tests {
                     17,
                 ));
             }
-            Err(error) => error,
+            Err(failure) => failure.error,
         };
         let Some(location) = error.location() else {
             return Err(ParseError::syntax("expected a located parse error", 17));
@@ -1898,7 +1947,8 @@ mod inline_expression_tests {
 
     #[test]
     fn multi_statement_inline_expression_preserves_every_expression() -> ParseResult<()> {
-        let (node, _, _, _) = parse_inline_expression("$tmp; 'STDOUT'", 17, ParserConfigIdentity::production_default())?;
+        let (node, _, _, _) = parse_inline_expression("$tmp; 'STDOUT'", 17, ParserConfigIdentity::production_default())
+            .map_err(|failure| failure.error)?;
 
         let NodeKind::Block { statements } = node.into_parts().0 else {
             return Err(ParseError::syntax(
@@ -1913,7 +1963,8 @@ mod inline_expression_tests {
     #[test]
     fn inline_expression_forwards_recoverable_diagnostics() -> ParseResult<()> {
         let source = r#""abab" =~ /(?:[^b]*(?=(b)|(a))ab)*/"#;
-        let (_, diagnostics, _, _) = parse_inline_expression(source, 17, ParserConfigIdentity::production_default())?;
+        let (_, diagnostics, _, _) = parse_inline_expression(source, 17, ParserConfigIdentity::production_default())
+            .map_err(|failure| failure.error)?;
         if !diagnostics.iter().any(|diagnostic| {
             matches!(diagnostic, ParseError::Advisory { message, .. }
                 if message.contains("Nested quantifiers detected"))

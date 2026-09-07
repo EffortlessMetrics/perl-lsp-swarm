@@ -603,10 +603,75 @@ fn recursive_nested_sub_parses_share_one_aggregate_allowance() {
         below.stop_cause()
     );
     assert!(
-        below.budget_usage.nodes_constructed <= required - 1,
+        below.budget_usage.nodes_constructed < required,
         "charged usage must never exceed the configured limit; charged {}",
         below.budget_usage.nodes_constructed
     );
+}
+
+/// A refusal raised *inside* a nested sub-parse must be reported in the
+/// adopting operation's budget coordinates, not the nested parse's own.
+///
+/// The nested parse runs under `remaining_core_budget()`, so its local limit is
+/// the parent's remainder. Propagating that terminal verbatim publishes a limit
+/// that is not the configured limit and a usage that excludes everything the
+/// parent had already charged — and leaves `budget_usage` disagreeing with the
+/// very stop cause that accompanies it. Against the unadopted implementation
+/// this fixture reports `limit: 13, usage: 13` beside a receipt of `1` when the
+/// configured limit is `14`.
+#[test]
+fn a_nested_core_exhaustion_is_reported_in_the_adopting_operations_coordinates() {
+    const NESTED: &str = "my $g = *{ $a; *{ $b; 'STDOUT' } };";
+
+    for dimension in [ParseCoreDimension::NodesConstructed, ParseCoreDimension::TokensConsumed] {
+        let required = usage_unlimited(NESTED).core_usage(dimension);
+        assert!(required > 2, "{dimension} fixture must perform meaningful work");
+
+        // Sweep the whole range rather than naming the limits at which the
+        // nested parse happens to be the refuser: which side refuses is an
+        // implementation detail, but the coordinates must be the parent's
+        // whichever side raises them.
+        for limit in 1..required {
+            let output = parse_with_budget(NESTED, budget_with(dimension, limit));
+            assert!(
+                matches!(output.stop_cause(), Some(ParseStopCause::CoreBudgetExhausted { .. })),
+                "{dimension} at limit {limit} must refuse; got {:?}",
+                output.stop_cause()
+            );
+            // The assertion above already established the shape; `else` is
+            // unreachable and only exists because the crate denies `panic!`.
+            let Some(ParseStopCause::CoreBudgetExhausted {
+                dimension: stopped,
+                limit: reported_limit,
+                usage: reported_usage,
+            }) = output.stop_cause()
+            else {
+                continue;
+            };
+            assert_eq!(stopped, dimension, "the refusal must name the bounded dimension");
+            assert_eq!(
+                reported_limit, limit,
+                "{dimension} at limit {limit}: the terminal must name the operation's configured \
+                 limit, not the remainder handed to a nested parse"
+            );
+            let charged = output.budget_usage.core_usage(dimension);
+            assert_eq!(
+                reported_usage, charged,
+                "{dimension} at limit {limit}: the terminal's usage and the budget receipt \
+                 describe the same operation and must agree"
+            );
+            assert!(
+                charged >= limit,
+                "{dimension} at limit {limit}: a refusal must follow a budget that was actually \
+                 spent; charged {charged}"
+            );
+            assert!(
+                charged <= limit,
+                "{dimension} at limit {limit}: adoption must never charge past the configured \
+                 limit; charged {charged}"
+            );
+        }
+    }
 }
 
 /// Tokens consumed by a nested sub-parse are adopted too, not just its nodes.
