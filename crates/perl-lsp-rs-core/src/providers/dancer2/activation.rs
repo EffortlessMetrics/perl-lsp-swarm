@@ -370,19 +370,32 @@ fn two_x_activations(
         AdapterCancellation::active(),
     );
     let detection = detect_dancer2_two_x(&input);
+    // Multiple imports in one package: a later import that actually
+    // activates overrides an earlier inactive record, a suppressed later
+    // import never erases an earlier activation, and equal-strength records
+    // take the later import (source order decides the package's final DSL
+    // evidence) (#15006 review).
     let mut packages: Vec<Dancer2TwoXPackageActivation> = Vec::new();
     for site in &sites {
         let package = site.package.clone().unwrap_or_else(|| "main".to_string());
-        if packages.iter().any(|existing| existing.package == package) {
-            continue;
-        }
         let facts = dancer2_two_x_activation_facts(
             &detection,
             site.package.as_deref(),
             &site.evidence,
             &site.shadowed_keywords,
         );
-        packages.push(Dancer2TwoXPackageActivation { package, facts });
+        match packages.iter_mut().find(|existing| existing.package == package) {
+            Some(existing) => {
+                let existing_exact = existing.facts.is_exact();
+                let new_exact = facts.is_exact();
+                // Replace unless the new record is inactive while the kept
+                // one activates.
+                if new_exact || !existing_exact {
+                    existing.facts = facts;
+                }
+            }
+            None => packages.push(Dancer2TwoXPackageActivation { package, facts }),
+        }
     }
     packages
 }
@@ -496,6 +509,57 @@ mod tests {
         assert!(
             activations.two_x_packages.is_empty(),
             "a 1.x module can never reach the 2.x contract"
+        );
+    }
+
+    /// A suppressed first import never hides a later activating import in
+    /// the same package: the activating site owns the package's evidence
+    /// (#15006 review).
+    #[test]
+    fn later_activating_import_overrides_an_earlier_suppressed_one() {
+        let source = "package App;
+use Dancer2 ();
+use Dancer2;
+";
+        let ast = parse(source);
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "2.0.1");
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("gen-test"),
+        );
+        assert_eq!(activations.two_x_packages.len(), 1, "one package, one record");
+        assert!(
+            activations.two_x_packages[0].facts.is_exact(),
+            "the later bare import activates: got {:?}",
+            activations.two_x_packages[0].facts.state
+        );
+    }
+
+    /// The reverse order: a suppressed import after an activating one never
+    /// erases the earlier activation (un-overwrite preserves the keywords).
+    #[test]
+    fn later_suppressed_import_never_erases_an_earlier_activation() {
+        let source = "package App;
+use Dancer2;
+use Dancer2 ();
+";
+        let ast = parse(source);
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "2.0.1");
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("gen-test"),
+        );
+        assert_eq!(activations.two_x_packages.len(), 1);
+        assert!(
+            activations.two_x_packages[0].facts.is_exact(),
+            "the suppressed re-import cannot uninstall: got {:?}",
+            activations.two_x_packages[0].facts.state
         );
     }
 
