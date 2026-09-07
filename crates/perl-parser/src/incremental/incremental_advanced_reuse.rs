@@ -965,8 +965,18 @@ impl TreeAnalysis {
 
 /// Feeds rendered S-expression fragments straight into a hasher.
 ///
-/// [`Node::render_debug_sexp`] writes through [`fmt::Write`], so a node's own
-/// payload text can be hashed without ever materializing a `String`.
+/// [`Node::render_debug_sexp`] writes through [`fmt::Write`], so no rendered
+/// text is buffered on this side: fragments are hashed as they arrive and the
+/// node's own payload string is never assembled here.
+///
+/// This is not an allocation-free path, and the sink cannot make it one. The
+/// renderer still allocates internally per node — `grammar_kind_name` returns
+/// an owned `String` even for a static name, `emit_atom` fills a scratch
+/// `String`, and `load_children` builds a `Vec` — so the residue is O(1)
+/// allocations per node. What is gone is the O(subtree) allocation the old
+/// `node.to_sexp()` call made at every visited node. Removing the remainder
+/// needs an allocation-free payload API on `perl-ast`, which is out of scope
+/// here (#15037).
 struct SexpHashSink<'a> {
     hasher: &'a mut DefaultHasher,
 }
