@@ -864,12 +864,42 @@ mod framing_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod shutdown_tests {
+    // Unix-only by construction: these drive a POSIX shell. On other platforms
+    // the module is absent, so the suite reports them as not run rather than
+    // silently green.
     use super::reap_or_kill;
     use crate::observation::{StreamEnd, WaitEnd};
-    use std::process::{Command, Stdio};
+    use std::process::{Child, Command, ExitStatus, Stdio};
     use std::time::{Duration, Instant};
+
+    /// Spawn a POSIX shell running `script`.
+    ///
+    /// This module is `cfg(unix)`, so `/bin/sh` is present by contract and a
+    /// spawn failure is a real failure. Earlier revisions returned quietly when
+    /// the spawn failed, which made these controls *pass* on a platform where
+    /// they had proved nothing — the precise dishonesty this crate's harness
+    /// exists to remove.
+    fn spawn_shell(script: &str) -> Child {
+        match Command::new("/bin/sh")
+            .args(["-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) => panic!("/bin/sh must be spawnable on a unix host: {error}"),
+        }
+    }
+
+    fn exit_status_of(script: &str) -> ExitStatus {
+        match spawn_shell(script).wait() {
+            Ok(status) => status,
+            Err(error) => panic!("the fixture shell must be reapable: {error}"),
+        }
+    }
 
     /// A crashed server must not be described as an orderly shutdown.
     ///
@@ -878,12 +908,7 @@ mod shutdown_tests {
     /// reported reason folds in the real exit status.
     #[test]
     fn a_nonzero_exit_is_not_described_as_an_orderly_shutdown() {
-        let Ok(mut child) =
-            Command::new("/bin/sh").args(["-c", "exit 3"]).stdout(Stdio::null()).spawn()
-        else {
-            return;
-        };
-        let Ok(status) = child.wait() else { return };
+        let status = exit_status_of("exit 3");
         assert!(!status.success(), "fixture must exit nonzero");
 
         let described =
@@ -901,12 +926,7 @@ mod shutdown_tests {
 
     #[test]
     fn a_successful_exit_is_still_described_as_an_orderly_close() {
-        let Ok(mut child) =
-            Command::new("/bin/sh").args(["-c", "exit 0"]).stdout(Stdio::null()).spawn()
-        else {
-            return;
-        };
-        let Ok(status) = child.wait() else { return };
+        let status = exit_status_of("exit 0");
 
         let described =
             super::describe_end_with_exit(&WaitEnd::Ended(StreamEnd::ServerClosed), Some(status));
@@ -938,16 +958,7 @@ mod shutdown_tests {
     fn a_child_that_closes_stdout_but_keeps_running_is_not_waited_on_forever() {
         // Closes stdout immediately, then stays alive far longer than any
         // shutdown bound this harness uses.
-        let Ok(mut child) = Command::new("/bin/sh")
-            .args(["-c", "exec 1>&-; sleep 300"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        else {
-            // No POSIX shell available; nothing to prove here.
-            return;
-        };
+        let mut child = spawn_shell("exec 1>&-; sleep 300");
 
         let started = Instant::now();
         reap_or_kill(&mut child);
@@ -966,11 +977,7 @@ mod shutdown_tests {
     /// being killed.
     #[test]
     fn an_already_exited_child_is_reaped_without_forcing() {
-        let Ok(mut child) =
-            Command::new("/bin/sh").args(["-c", "exit 0"]).stdout(Stdio::null()).spawn()
-        else {
-            return;
-        };
+        let mut child = spawn_shell("exit 0");
         // Let it finish on its own terms before deciding.
         let _ = child.wait();
 

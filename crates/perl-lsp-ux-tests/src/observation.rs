@@ -47,6 +47,26 @@
 //! the arrival time of what it returns. It is not a latency oracle; measuring
 //! server latency is a separate concern with its own authority. The loop is
 //! still bounded: at most one further evaluation happens once the bound passes.
+//!
+//! # Where the typed reason survives — and where it does not
+//!
+//! [`WaitEnd`] is produced by every wait here, but not every *caller* keeps it.
+//! Be precise about which layer you are relying on:
+//!
+//! - **Kept.** The substrate itself, and `UxClient::wait_for_response`, which
+//!   folds the reason (plus the child's real exit status) into its error.
+//! - **Discarded today.** The convenience wrappers above it collapse the
+//!   outcome to a plain value: `DiagnosticsTracker`'s waits end in `.ok()`,
+//!   `UxHarness::wait_for_active_document_ready` and
+//!   `wait_for_index_ready_event_after` in `.is_ok()`, and
+//!   `wait_for_diagnostics` / `wait_for_latest_diagnostics` in
+//!   `.unwrap_or_default()`. A scenario calling those still cannot tell a
+//!   closed stream from an expired bound.
+//!
+//! So "the harness can tell you why a wait ended" is true of this module and
+//! the request path, and not yet true end to end. Propagating the reason
+//! through those wrappers changes their signatures and their call sites, and is
+//! tracked as remaining work on the still-open #13319 rather than claimed here.
 
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -417,6 +437,26 @@ impl Inbox {
             // so a match that genuinely arrived in time is still returned; and
             // a terminal stream state still outranks the deadline.
             if Instant::now() >= deadline {
+                // The view just evaluated may already be stale: an observation
+                // can land while the predicate runs outside the lock, and the
+                // predicate itself may publish or close. Returning a terminal
+                // outcome now would report `Ended`/`Deadline` with a match
+                // sitting buffered, contradicting the documented
+                // match-before-stream-end precedence at exactly the boundary
+                // where it matters most.
+                //
+                // So give the freshest view one final evaluation before
+                // reporting. This is bounded: it happens at most once, only
+                // when the sequence actually moved, and it returns either way.
+                let (fresh_seq, fresh_view) = {
+                    let state = self.lock();
+                    (state.seq, project(&state))
+                };
+                if fresh_seq != seq
+                    && let Some(matched) = select(&fresh_view)
+                {
+                    return Ok(matched);
+                }
                 return Err(self
                     .stream_end()
                     .map_or(WaitEnd::Deadline { timeout }, WaitEnd::Ended));
@@ -669,6 +709,54 @@ mod tests {
             started.elapsed() < Duration::from_secs(5),
             "the wait must honour its 150ms bound; took {:?}",
             started.elapsed()
+        );
+    }
+
+    /// The deadline boundary must not discard a match the predicate itself
+    /// created.
+    ///
+    /// With an already-expired bound, the first evaluation publishes the
+    /// awaited response *and* closes the stream, then reports no match. A
+    /// terminal return at that point would say `Ended` while the match sits
+    /// buffered — contradicting the documented match-before-stream-end
+    /// precedence. Zero timeout makes this deterministic: no sleeping, no
+    /// racing, the boundary is hit on the very first iteration.
+    #[test]
+    fn a_match_published_inside_the_predicate_window_wins_at_the_deadline() {
+        let inbox = Inbox::new();
+        let publisher = inbox.clone();
+        let mut evaluations = 0_u32;
+
+        let matched = inbox.wait_for(Duration::ZERO, |snapshot| {
+            evaluations += 1;
+            if evaluations == 1 {
+                // Land the match and the stream end inside this predicate's
+                // own window, after the snapshot it is looking at was taken.
+                publisher.push_response(response(json!(11)));
+                publisher.close(StreamEnd::ServerClosed);
+            }
+            select_response_id(11)(snapshot)
+        });
+
+        assert!(
+            matched.is_ok(),
+            "a match buffered during the predicate window must win over the \
+             terminal outcome at the deadline, got {matched:?}"
+        );
+        assert_eq!(evaluations, 2, "exactly one extra evaluation is expected at the boundary");
+    }
+
+    /// The boundary recheck must not become an escape hatch: with nothing new
+    /// buffered, an expired bound still reports terminally.
+    #[test]
+    fn an_expired_bound_with_no_new_observation_still_reports_terminally() {
+        let inbox = Inbox::new();
+
+        let matched = inbox.wait_for(Duration::ZERO, select_response_id(12));
+
+        assert!(
+            matches!(matched, Err(WaitEnd::Deadline { .. })),
+            "an expired bound over an unchanged inbox must report the deadline, got {matched:?}"
         );
     }
 
