@@ -744,3 +744,79 @@ fn explicit_file_rename_retires_the_old_metadata_declarations() {
         "renaming cpanfile away must retire its declarations"
     );
 }
+
+/// Open-buffer authority must not depend on the watcher (#8041/#13640).
+///
+/// An unsaved edit changes no bytes on disk, so no watched-file notification
+/// is delivered. Before the text-document half of the route existed, facts sat
+/// at the last disk-driven read until the user saved, and the PR claimed
+/// otherwise. The existing `..._keeps_becoming_current_as_it_is_edited` test
+/// did not catch that because it injects a watched event after each edit; this
+/// one deliberately sends none.
+#[test]
+fn editing_an_open_cpanfile_refreshes_without_any_watched_event() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "cpanfile", "requires 'On::Disk';\n");
+    let server = workspace_server(&dir);
+    let uri = file_uri(&dir, "cpanfile");
+    assert_eq!(declared_modules(&server), vec!["On::Disk".to_string()]);
+
+    server
+        .handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "requires 'Opened::Only';\n"
+            }
+        })))
+        .expect("didOpen params are valid");
+
+    assert_eq!(
+        declared_modules(&server),
+        vec!["Opened::Only".to_string()],
+        "didOpen alone must make the staged text authoritative"
+    );
+
+    server
+        .handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": "requires 'Edited::Only';\n" }]
+        })))
+        .expect("didChange params are valid");
+
+    assert_eq!(
+        declared_modules(&server),
+        vec!["Edited::Only".to_string()],
+        "an unsaved edit must refresh facts with no watched-file event at all"
+    );
+}
+
+/// The text-document route must stay narrow: an ordinary source edit is not
+/// project metadata and must not advance the dependency-fact generation.
+#[test]
+fn editing_an_ordinary_perl_file_does_not_refresh_metadata_facts() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "cpanfile", "requires 'On::Disk';\n");
+    write_file(&dir, "lib/App.pm", "package App;\n1;\n");
+    let server = workspace_server(&dir);
+    let before = server.dependency_facts_generation();
+
+    server
+        .handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": file_uri(&dir, "lib/App.pm"),
+                "languageId": "perl",
+                "version": 1,
+                "text": "package App;\n1;\n"
+            }
+        })))
+        .expect("didOpen params are valid");
+
+    assert_eq!(
+        server.dependency_facts_generation(),
+        before,
+        "a non-metadata document must not trigger a metadata refresh"
+    );
+    assert_eq!(declared_modules(&server), vec!["On::Disk".to_string()]);
+}

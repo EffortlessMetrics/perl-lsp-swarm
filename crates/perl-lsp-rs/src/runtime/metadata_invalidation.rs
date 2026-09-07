@@ -67,9 +67,18 @@ impl LspServer {
     /// facts stale when a workspace root, `local/`, or `.carmel/` is removed
     /// or moved, so a governed path *under* the event subject counts too.
     ///
-    /// Component-wise `starts_with` keeps sibling names safe: a `cpanfile2`
+    /// Component-wise matching keeps sibling names safe: a `cpanfile2`
     /// event does not match `cpanfile`. For an exact metadata file this is
     /// identical to classification, which the shared path set guarantees.
+    ///
+    /// Containment is ASCII case-insensitive for the same reason
+    /// classification is (`config::project_metadata::relative_matches`): the
+    /// detectors address metadata by `workspace_root.join(..)`, which resolves
+    /// a differently-cased name on a case-insensitive filesystem. A
+    /// byte-exact containment check would classify a `LOCAL/` delete as
+    /// irrelevant while the detector would still read `local/lib/perl5`,
+    /// leaving the include root stale. Matching too eagerly costs one extra
+    /// refresh that recomputes from disk; missing the event does not recover.
     fn subtree_touches_metadata(root: &Path, path: &Path) -> bool {
         if classify_project_metadata_path(root, path).is_some() {
             return true;
@@ -79,7 +88,57 @@ impl LspServer {
             for component in relative.split('/') {
                 metadata_path.push(component);
             }
-            metadata_path.starts_with(path)
+            Self::path_contains_ignore_ascii_case(path, &metadata_path)
+        })
+    }
+
+    /// Whether `prefix` is a component-wise, ASCII case-insensitive prefix of
+    /// `full`.
+    ///
+    /// Component-wise rather than string-wise so `local` does not "contain"
+    /// `localhost`, and ASCII-only so the comparison stays locale-independent.
+    fn path_contains_ignore_ascii_case(prefix: &Path, full: &Path) -> bool {
+        let mut prefix_components = prefix.components();
+        let mut full_components = full.components();
+        loop {
+            match (prefix_components.next(), full_components.next()) {
+                (None, _) => return true,
+                (Some(_), None) => return false,
+                (Some(expected), Some(actual)) => {
+                    let (Some(expected), Some(actual)) =
+                        (expected.as_os_str().to_str(), actual.as_os_str().to_str())
+                    else {
+                        return false;
+                    };
+                    if !expected.eq_ignore_ascii_case(actual) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Staged editor text for `path`, if any document is open for it.
+    ///
+    /// An exact match wins, so on a case-sensitive filesystem two genuinely
+    /// distinct documents (`cpanfile` and `CPANFILE`) each resolve to
+    /// themselves. Only when no document matches exactly does this fall back
+    /// to an ASCII case-insensitive search, which is what makes open-buffer
+    /// authority hold on a case-insensitive filesystem: there the editor's
+    /// URI may spell the file `CPANFILE` while the detector addresses it as
+    /// `cpanfile`, and a byte-exact lookup would silently prefer disk bytes
+    /// over the staged text the user is editing.
+    fn staged_metadata_text<'a>(
+        open_document_text: &'a BTreeMap<PathBuf, String>,
+        path: &Path,
+    ) -> Option<&'a String> {
+        if let Some(text) = open_document_text.get(path) {
+            return Some(text);
+        }
+        open_document_text.iter().find_map(|(candidate, text)| {
+            (candidate.components().count() == path.components().count()
+                && Self::path_contains_ignore_ascii_case(path, candidate))
+            .then_some(text)
         })
     }
 
@@ -193,7 +252,7 @@ impl LspServer {
             .into_iter()
             .map(|source| {
                 let path = root.join(source.file_name());
-                if let Some(text) = open_document_text.get(&path) {
+                if let Some(text) = Self::staged_metadata_text(open_document_text, &path) {
                     return (source, MetadataSourceRead::Text(text.clone()));
                 }
                 if !path.is_file() {
@@ -238,6 +297,31 @@ impl LspServer {
             roots.extend(self.project_metadata_roots_for_uri(uri));
         }
         roots
+    }
+
+    /// Refresh metadata facts after a text-document lifecycle change (#13640).
+    ///
+    /// Open-buffer authority (#8041) makes the staged text the authority for a
+    /// metadata document, but the buffer only becomes *the* authority when
+    /// something re-reads it. The watcher cannot supply that: an unsaved edit
+    /// changes no bytes on disk, so no filesystem notification is delivered and
+    /// the facts would sit at the last disk-or-watcher-driven read until the
+    /// user saved. This is the text-document half of the same route.
+    ///
+    /// Cheap for ordinary source: `project_metadata_roots_for_uri` returns
+    /// empty for anything that is not workspace-root project metadata, so a
+    /// keystroke in a `.pm` file costs one classification and nothing else.
+    ///
+    /// Called after the change is committed and with no document lock held —
+    /// `refresh_project_metadata_facts` takes `documents` and then
+    /// `workspace_folders`, so calling it mid-edit would invert that order.
+    pub(crate) fn refresh_metadata_for_document_uri(&self, uri: &str) {
+        let roots: BTreeSet<PathBuf> =
+            self.project_metadata_roots_for_uri(uri).into_iter().collect();
+        if roots.is_empty() {
+            return;
+        }
+        self.refresh_project_metadata_facts(&roots);
     }
 }
 
@@ -437,5 +521,84 @@ mod tests {
     fn a_path_outside_the_workspace_does_not_touch_metadata() {
         let outside = if cfg!(windows) { r"C:\other\local" } else { "/other/local" };
         assert!(!LspServer::subtree_touches_metadata(&root(), Path::new(outside)));
+    }
+
+    /// Containment must share the classifier's ASCII case-insensitive identity.
+    /// Deleting `LOCAL/` on a case-insensitive filesystem removes the tree the
+    /// detector reads as `local/lib/perl5`, so a byte-exact check would leave
+    /// the include root stale.
+    #[test]
+    fn a_case_variant_container_directory_touches_metadata() {
+        for relative in ["LOCAL", ".CARMEL", "Local"] {
+            assert!(
+                LspServer::subtree_touches_metadata(&root(), &joined(relative)),
+                "{relative}/ resolves to a governed container on a case-insensitive filesystem"
+            );
+        }
+    }
+
+    /// Case-insensitivity must not widen containment into unrelated names.
+    #[test]
+    fn case_insensitive_containment_does_not_admit_unrelated_directories() {
+        for relative in ["LOCALHOST", "CARMEL", "lib"] {
+            assert!(
+                !LspServer::subtree_touches_metadata(&root(), &joined(relative)),
+                "{relative} contains no governed metadata"
+            );
+        }
+    }
+
+    /// Open-buffer authority must survive a case-variant document URI: the
+    /// editor may spell the file `CPANFILE` while the detector addresses
+    /// `cpanfile`, and a byte-exact map lookup would silently prefer disk.
+    #[test]
+    fn a_case_variant_open_buffer_still_supplies_staged_text() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(temp.path().join("cpanfile"), "requires 'Disk';\n").expect("write disk");
+        let mut open = BTreeMap::new();
+        open.insert(temp.path().join("CPANFILE"), "requires 'Staged';\n".to_string());
+
+        let reads = LspServer::capture_metadata_reads(temp.path(), &open);
+
+        assert_eq!(
+            read_for(&reads, DeclaredDependencySource::Cpanfile),
+            MetadataSourceRead::Text("requires 'Staged';\n".to_string())
+        );
+    }
+
+    /// On a case-sensitive filesystem `cpanfile` and `CPANFILE` are genuinely
+    /// different documents, so an exact match must win over a case variant.
+    #[test]
+    fn an_exact_open_buffer_wins_over_a_case_variant() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let mut open = BTreeMap::new();
+        open.insert(temp.path().join("CPANFILE"), "requires 'Variant';\n".to_string());
+        open.insert(temp.path().join("cpanfile"), "requires 'Exact';\n".to_string());
+
+        let reads = LspServer::capture_metadata_reads(temp.path(), &open);
+
+        assert_eq!(
+            read_for(&reads, DeclaredDependencySource::Cpanfile),
+            MetadataSourceRead::Text("requires 'Exact';\n".to_string()),
+            "the exactly-spelled document is the one the detector addresses"
+        );
+    }
+
+    /// A case-variant lookup must not reach a different file in the same
+    /// directory, nor a same-named file at a different depth.
+    #[test]
+    fn a_case_variant_lookup_does_not_reach_an_unrelated_document() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let mut open = BTreeMap::new();
+        open.insert(temp.path().join("cpanfile.snapshot"), "snapshot\n".to_string());
+        open.insert(temp.path().join("t").join("cpanfile"), "requires 'Nested';\n".to_string());
+
+        let reads = LspServer::capture_metadata_reads(temp.path(), &open);
+
+        assert_eq!(
+            read_for(&reads, DeclaredDependencySource::Cpanfile),
+            MetadataSourceRead::Absent,
+            "neither a longer sibling name nor a nested same-name file is the root cpanfile"
+        );
     }
 }

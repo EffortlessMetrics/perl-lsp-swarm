@@ -1116,7 +1116,7 @@ pub struct WorkspaceConfig {
     /// refresh can drop a root whose markers disappeared without ever
     /// removing a path the user configured. An entry that was already present
     /// when first detected stays unowned and is never removed.
-    pub detected_dependency_include_paths: Vec<String>,
+    pub(crate) detected_dependency_include_paths: Vec<String>,
 
     /// Resolution timeout in milliseconds
     /// Default: 50ms
