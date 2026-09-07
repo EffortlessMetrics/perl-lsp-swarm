@@ -50,6 +50,7 @@
 pub mod client;
 pub mod diagnostics;
 pub mod env;
+pub mod observation;
 pub mod project_fixture;
 pub mod recorder;
 pub mod scorecard;
@@ -59,6 +60,7 @@ pub mod workspace;
 pub use client::{LspEvent, UxClient};
 pub use diagnostics::DiagnosticsTracker;
 pub use env::{PathGuard, RestrictedPath};
+pub use observation::{Inbox, InboxSnapshot, ObservationId, StreamEnd, WaitEnd};
 pub use project_fixture::{
     ProjectFixtureFile, create_fixture_harness, fixture_content, fixture_scenario_config,
     load_catalyst_fixture_files, load_dancer2_fixture_files, load_mojolicious_fixture_files,
@@ -571,10 +573,18 @@ impl UxHarness {
         }
     }
 
-    /// Poll `workspace/symbol` until `predicate` returns true or `timeout`
-    /// elapses.
+    /// Re-request `workspace/symbol` until `predicate` returns true or
+    /// `timeout` elapses.
     ///
     /// Returns the last observed symbol list in both success and timeout paths.
+    ///
+    /// # Timing disposition: product-owned retry, not harness synchronization
+    ///
+    /// `workspace/symbol` is a request/response contract with no server-pushed
+    /// "symbols changed" notification, so there is no observable event a wait
+    /// could block on. Each attempt must issue a *new request*; `poll_interval`
+    /// paces those requests rather than standing in for a missing signal. This
+    /// is deliberately not migrated to the event-driven substrate.
     pub fn wait_for_workspace_symbols(
         &self,
         query: &str,
@@ -590,6 +600,8 @@ impl UxHarness {
             if predicate(&latest) {
                 return Ok(latest);
             }
+            // ux-timing: product-retry — `workspace/symbol` publishes no
+            // notification to wait on; each attempt must issue a new request.
             std::thread::sleep(poll_interval);
         }
 
@@ -609,36 +621,21 @@ impl UxHarness {
     /// Wait until the server confirms that a specific active document has
     /// completed its E2E background indexing pass.
     pub fn wait_for_active_document_ready(&self, uri: &str, timeout: Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            if self
-                .client
-                .peek_events()
-                .iter()
-                .any(|event| is_active_document_ready_event(event, uri))
-            {
-                return true;
-            }
-            if std::time::Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        self.client
+            .wait_for_events(timeout, |events| {
+                events.iter().any(|event| is_active_document_ready_event(event, uri)).then_some(())
+            })
+            .is_ok()
     }
 
     /// Wait until a ready-index notification arrives after `already_seen` events.
     pub fn wait_for_index_ready_event_after(&self, already_seen: usize, timeout: Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            if self.index_ready_event_count() > already_seen {
-                std::thread::sleep(Duration::from_millis(50));
-                return true;
-            }
-            if std::time::Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        self.client
+            .wait_for_events(timeout, |events| {
+                let seen = events.iter().filter(|event| is_index_ready_event(event)).count();
+                (seen > already_seen).then_some(())
+            })
+            .is_ok()
     }
 
     /// Notify the server that workspace folders changed.
@@ -718,24 +715,18 @@ impl UxHarness {
         timeout: std::time::Duration,
     ) -> Vec<Value> {
         let uri = self.workspace.uri(relative_path);
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            {
-                let events = self.client.peek_events();
-                for ev in events.iter() {
-                    if let LspEvent::Diagnostics { uri: diag_uri, diagnostics, .. } = ev
-                        && diag_uri == &uri
+        self.client
+            .wait_for_events(timeout, |events| {
+                events.iter().find_map(|event| match event {
+                    LspEvent::Diagnostics { uri: diag_uri, diagnostics, .. }
+                        if *diag_uri == uri =>
                     {
-                        return diagnostics.clone();
+                        Some(diagnostics.clone())
                     }
-                }
-            }
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        Vec::new()
+                    _ => None,
+                })
+            })
+            .unwrap_or_default()
     }
 
     /// Wait up to `timeout` for a `textDocument/publishDiagnostics` notification
@@ -751,24 +742,18 @@ impl UxHarness {
         timeout: std::time::Duration,
     ) -> Vec<Value> {
         let uri = self.workspace.uri(relative_path);
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            {
-                let events = self.client.peek_events();
-                for ev in events.iter().rev() {
-                    if let LspEvent::Diagnostics { uri: diag_uri, diagnostics, .. } = ev
-                        && diag_uri == &uri
+        self.client
+            .wait_for_events(timeout, |events| {
+                events.iter().rev().find_map(|event| match event {
+                    LspEvent::Diagnostics { uri: diag_uri, diagnostics, .. }
+                        if *diag_uri == uri =>
                     {
-                        return diagnostics.clone();
+                        Some(diagnostics.clone())
                     }
-                }
-            }
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        Vec::new()
+                    _ => None,
+                })
+            })
+            .unwrap_or_default()
     }
 
     /// Count diagnostics notifications already observed for a file.
@@ -786,12 +771,7 @@ impl UxHarness {
         timeout: std::time::Duration,
     ) -> Option<Vec<Value>> {
         let uri = self.workspace.uri(relative_path);
-        DiagnosticsTracker::wait_for_uri_after_count(
-            || self.client.peek_events(),
-            &uri,
-            already_seen,
-            timeout,
-        )
+        DiagnosticsTracker::wait_for_uri_after_count(&self.client, &uri, already_seen, timeout)
     }
 
     /// Wait for diagnostics to become empty for a file (cleared UX state).
@@ -810,12 +790,9 @@ impl UxHarness {
         timeout: std::time::Duration,
     ) -> bool {
         let uri = self.workspace.uri(relative_path);
-        DiagnosticsTracker::wait_for_uri_matching(
-            || self.client.peek_events(),
-            &uri,
-            timeout,
-            |diagnostics| diagnostics.is_empty(),
-        )
+        DiagnosticsTracker::wait_for_uri_matching(&self.client, &uri, timeout, |diagnostics| {
+            diagnostics.is_empty()
+        })
         .is_some()
     }
 
@@ -856,6 +833,15 @@ impl UxHarness {
     /// Returns immediately when the first non-empty response is observed, or after
     /// `attempts` tries (minimum 1). This keeps UX scenarios deterministic without
     /// forcing each test to hand-roll sleep/retry loops.
+    ///
+    /// # Timing disposition: product-owned retry, not harness synchronization
+    ///
+    /// `textDocument/definition` is request/response; a stale empty answer is
+    /// only superseded by issuing another request. `pause` paces those product
+    /// requests and is not a substitute for an observable signal, so this is
+    /// deliberately not migrated to the event-driven substrate. Scenarios that
+    /// can instead wait for index readiness should prefer
+    /// [`UxHarness::wait_for_index_ready_event_after`], which is event-driven.
     pub fn definition_with_retry(
         &self,
         relative_path: &str,
@@ -875,6 +861,8 @@ impl UxHarness {
 
             last = current;
             if idx + 1 < max_attempts {
+                // ux-timing: product-retry — a stale empty `definition` answer
+                // is only superseded by issuing another request.
                 std::thread::sleep(pause);
             }
         }
