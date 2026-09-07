@@ -97,7 +97,7 @@ impl<'a> Parser<'a> {
         }
 
         let end = self.previous_position();
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::If {
                 condition: Box::new(condition),
                 then_branch: Box::new(then_branch),
@@ -106,7 +106,7 @@ impl<'a> Parser<'a> {
                 keyword: None,
             },
             SourceLocation { start, end },
-        )?)
+        )
     }
 
     /// Parse unless statement (syntactic sugar for if not)
@@ -164,7 +164,7 @@ impl<'a> Parser<'a> {
 
         let end = self.previous_position();
 
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::If {
                 condition: Box::new(negated_condition),
                 then_branch: Box::new(then_branch),
@@ -173,7 +173,7 @@ impl<'a> Parser<'a> {
                 keyword: Some("unless".to_string()),
             },
             SourceLocation { start, end },
-        )?)
+        )
     }
 
     /// Parse while loop
@@ -217,7 +217,7 @@ impl<'a> Parser<'a> {
         };
 
         let end = self.previous_position();
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::While {
                 condition: Box::new(condition),
                 body: Box::new(body),
@@ -225,7 +225,7 @@ impl<'a> Parser<'a> {
                 keyword: None,
             },
             SourceLocation { start, end },
-        )?)
+        )
     }
 
     /// Parse until loop (while not)
@@ -256,7 +256,7 @@ impl<'a> Parser<'a> {
 
         let end = self.previous_position();
 
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::While {
                 condition: Box::new(negated_condition),
                 body: Box::new(body),
@@ -264,7 +264,7 @@ impl<'a> Parser<'a> {
                 keyword: Some("until".to_string()),
             },
             SourceLocation { start, end },
-        )?)
+        )
     }
 
     /// Parse for loop
@@ -341,7 +341,7 @@ impl<'a> Parser<'a> {
                     SourceLocation { start, end: start },
                 )?;
 
-                return Ok(self.charge_node(
+                return self.charge_node(
                     NodeKind::Foreach {
                         variable: Box::new(implicit_var),
                         list: Box::new(expr),
@@ -349,7 +349,7 @@ impl<'a> Parser<'a> {
                         continue_block: None, // No continue block for implicit foreach
                     },
                     SourceLocation { start, end },
-                )?);
+                );
             }
 
             Some(Box::new(expr))
@@ -410,10 +410,10 @@ impl<'a> Parser<'a> {
         };
 
         let end = self.previous_position();
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::For { init, condition, update, body: Box::new(body), continue_block },
             SourceLocation { start, end },
-        )?)
+        )
     }
 
     /// Parse foreach loop
@@ -462,7 +462,7 @@ impl<'a> Parser<'a> {
         };
 
         let end = self.previous_position();
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::Foreach {
                 variable: Box::new(variable),
                 list: Box::new(list),
@@ -470,7 +470,7 @@ impl<'a> Parser<'a> {
                 continue_block,
             },
             SourceLocation { start, end },
-        )?)
+        )
     }
 
     /// Parse foreach-style for loop
@@ -509,7 +509,7 @@ impl<'a> Parser<'a> {
         let start = variable.location.start;
         let end = self.previous_position();
 
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::Foreach {
                 variable: Box::new(variable),
                 list: Box::new(list),
@@ -517,7 +517,7 @@ impl<'a> Parser<'a> {
                 continue_block,
             },
             SourceLocation { start, end },
-        )?)
+        )
     }
 
     /// Parse format declaration
@@ -545,7 +545,7 @@ impl<'a> Parser<'a> {
         };
 
         let end = value.as_ref().map(|v| v.location.end).unwrap_or(return_end);
-        Ok(self.charge_node(NodeKind::Return { value }, SourceLocation { start, end })?)
+        self.charge_node(NodeKind::Return { value }, SourceLocation { start, end })
     }
 
     /// Parse return in expression context (e.g. ternary branches, short-circuit).
@@ -581,7 +581,7 @@ impl<'a> Parser<'a> {
         };
 
         let end = value.as_ref().map(|v| v.location.end).unwrap_or(return_end);
-        Ok(self.charge_node(NodeKind::Return { value }, SourceLocation { start, end })?)
+        self.charge_node(NodeKind::Return { value }, SourceLocation { start, end })
     }
 
     /// Parse eval expression/block
@@ -593,12 +593,12 @@ impl<'a> Parser<'a> {
             // eval { ... }
             let block = self.parse_block()?;
             let end = block.location.end;
-            Ok(self.charge_node(NodeKind::Eval { block: Box::new(block) }, SourceLocation { start, end })?)
+            self.charge_node(NodeKind::Eval { block: Box::new(block) }, SourceLocation { start, end })
         } else {
             // eval "string" or eval $expr
             let expr = self.parse_expression()?;
             let end = expr.location.end;
-            Ok(self.charge_node(NodeKind::Eval { block: Box::new(expr) }, SourceLocation { start, end })?)
+            self.charge_node(NodeKind::Eval { block: Box::new(expr) }, SourceLocation { start, end })
         }
     }
 
@@ -644,10 +644,10 @@ impl<'a> Parser<'a> {
             }
         };
 
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::Goto { target: Box::new(target), form },
             SourceLocation { start, end },
-        )?)
+        )
     }
 
     /// Parse `defer { ... }` block (Perl 5.36+ experimental, stable in 5.40)
@@ -655,7 +655,7 @@ impl<'a> Parser<'a> {
         let start = self.consume_token()?.start(); // consume 'defer'
         let block = self.parse_block()?;
         let end = block.location.end;
-        Ok(self.charge_node(NodeKind::Defer { block: Box::new(block) }, SourceLocation { start, end })?)
+        self.charge_node(NodeKind::Defer { block: Box::new(block) }, SourceLocation { start, end })
     }
 
     /// Parse try/catch/finally block
@@ -749,14 +749,14 @@ impl<'a> Parser<'a> {
             .or_else(|| catch_blocks.last().map(|(_, b)| b.location.end))
             .unwrap_or(body.location.end);
 
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::Try {
                 body: Box::new(body),
                 catch_blocks: catch_blocks.into_iter().map(|(v, b)| (v, Box::new(b))).collect(),
                 finally_block,
             },
             SourceLocation { start, end },
-        )?)
+        )
     }
 
     /// Parse do expression/block
@@ -768,12 +768,12 @@ impl<'a> Parser<'a> {
             // do { ... }
             let block = self.parse_block()?;
             let end = block.location.end;
-            Ok(self.charge_node(NodeKind::Do { block: Box::new(block) }, SourceLocation { start, end })?)
+            self.charge_node(NodeKind::Do { block: Box::new(block) }, SourceLocation { start, end })
         } else {
             // do "filename" or do $expr
             let expr = self.parse_expression()?;
             let end = expr.location.end;
-            Ok(self.charge_node(NodeKind::Do { block: Box::new(expr) }, SourceLocation { start, end })?)
+            self.charge_node(NodeKind::Do { block: Box::new(expr) }, SourceLocation { start, end })
         }
     }
 
@@ -790,10 +790,10 @@ impl<'a> Parser<'a> {
         let body = self.parse_given_block()?;
         let end = body.location.end;
 
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::Given { expr: Box::new(expr), body: Box::new(body) },
             SourceLocation { start, end },
-        )?)
+        )
     }
 
     /// Parse given block (which contains when/default statements)
@@ -834,6 +834,7 @@ impl<'a> Parser<'a> {
                             e,
                             ParseError::RecursionLimit
                                 | ParseError::RecursionDepthExhausted { .. }
+                            | ParseError::CoreBudgetExhausted { .. }
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
                         ) {
@@ -866,7 +867,7 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::RightBrace)?;
         let end = self.previous_position();
 
-        Ok(self.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })?)
+        self.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })
     }
 
     /// Parse when statement
@@ -882,10 +883,10 @@ impl<'a> Parser<'a> {
         let body = self.parse_block()?;
         let end = body.location.end;
 
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::When { condition: Box::new(condition), body: Box::new(body) },
             SourceLocation { start, end },
-        )?)
+        )
     }
 
     /// Handle an orphaned `else` that appears at statement level without a
@@ -925,7 +926,7 @@ impl<'a> Parser<'a> {
             SourceLocation { start, end: start },
         )?;
 
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::If {
                 condition: Box::new(synthetic_cond),
                 then_branch: Box::new(else_block),
@@ -934,7 +935,7 @@ impl<'a> Parser<'a> {
                 keyword: None,
             },
             SourceLocation { start, end },
-        )?)
+        )
     }
 
     /// Handle an orphaned `elsif` that appears at statement level without a
@@ -1003,7 +1004,7 @@ impl<'a> Parser<'a> {
 
         let end = self.previous_position();
 
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::If {
                 condition: Box::new(condition),
                 then_branch: Box::new(then_branch),
@@ -1012,7 +1013,7 @@ impl<'a> Parser<'a> {
                 keyword: None,
             },
             SourceLocation { start, end },
-        )?)
+        )
     }
 
     /// Parse default statement
@@ -1023,7 +1024,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_block()?;
         let end = body.location.end;
 
-        Ok(self.charge_node(NodeKind::Default { body: Box::new(body) }, SourceLocation { start, end })?)
+        self.charge_node(NodeKind::Default { body: Box::new(body) }, SourceLocation { start, end })
     }
 }
 

@@ -451,7 +451,7 @@ impl<'a> Parser<'a> {
 
             let end =
                 args.last().map(|arg| arg.location.end).unwrap_or_else(|| s.previous_position());
-            Ok(s.charge_node(NodeKind::FunctionCall { name, args }, SourceLocation { start, end })?)
+            s.charge_node(NodeKind::FunctionCall { name, args }, SourceLocation { start, end })
         })
     }
 
@@ -595,10 +595,10 @@ impl<'a> Parser<'a> {
         };
 
         // Return as an indirect call node (using MethodCall with a flag or separate node)
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::IndirectCall { method, object: Box::new(object), args },
             SourceLocation { start, end },
-        )?)
+        )
     }
 
     /// Parse an assignment expression or a variable declaration.
@@ -707,7 +707,7 @@ impl<'a> Parser<'a> {
                 .as_ref()
                 .map_or(variable.location.end, |node| node.location.end)
                 .max(self.previous_position());
-            Ok(self.charge_node(
+            self.charge_node(
                 NodeKind::VariableDeclaration {
                     declarator,
                     variable: Box::new(variable),
@@ -715,7 +715,7 @@ impl<'a> Parser<'a> {
                     initializer,
                 },
                 SourceLocation { start, end },
-            )?)
+            )
         // Check if we have a list declaration like `my ($x, $y)`
         } else if self.peek_kind() == Some(TokenKind::LeftParen) {
             self.consume_token()?; // consume (
@@ -753,7 +753,7 @@ impl<'a> Parser<'a> {
             };
 
             let end = self.previous_position();
-            Ok(self.charge_node(
+            self.charge_node(
                 NodeKind::VariableListDeclaration {
                     declarator,
                     variables,
@@ -761,7 +761,7 @@ impl<'a> Parser<'a> {
                     initializer,
                 },
                 SourceLocation { start, end },
-            )?)
+            )
         } else {
             // Single variable declaration
             let variable = if declarator == "local" {
@@ -789,7 +789,7 @@ impl<'a> Parser<'a> {
                 .as_ref()
                 .map_or(variable.location.end, |node| node.location.end)
                 .max(self.previous_position());
-            Ok(self.charge_node(
+            self.charge_node(
                 NodeKind::VariableDeclaration {
                     declarator,
                     variable: Box::new(variable),
@@ -797,7 +797,7 @@ impl<'a> Parser<'a> {
                     initializer,
                 },
                 SourceLocation { start, end },
-            )?)
+            )
         }
     }
 

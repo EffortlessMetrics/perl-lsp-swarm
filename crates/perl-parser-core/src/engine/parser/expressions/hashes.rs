@@ -24,7 +24,7 @@ impl<'a> Parser<'a> {
             let end = s.previous_position();
 
             // Always return a block node for builtin functions
-            Ok(s.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })?)
+            s.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })
         })
     }
 
@@ -58,10 +58,10 @@ impl<'a> Parser<'a> {
 
             // For empty braces, default to hash (correct for most functions)
             // Functions like sort/map/grep have special handling that creates blocks
-            return Ok(self.charge_node(
+            return self.charge_node(
                 NodeKind::HashLiteral { pairs: Vec::new() },
                 SourceLocation { start, end },
-            )?);
+            );
         }
 
         // For non-empty braces, we need to check if it contains hash-like content
@@ -82,6 +82,7 @@ impl<'a> Parser<'a> {
                     e,
                     ParseError::RecursionLimit
                         | ParseError::RecursionDepthExhausted { .. }
+                            | ParseError::CoreBudgetExhausted { .. }
                         | ParseError::NestingTooDeep { .. }
                 ) {
                     return Err(e);
@@ -106,10 +107,10 @@ impl<'a> Parser<'a> {
                         NodeKind::MissingExpression,
                         SourceLocation { start, end },
                     )?;
-                    return Ok(self.charge_node(
+                    return self.charge_node(
                         NodeKind::Block { statements: vec![marker] },
                         SourceLocation { start, end },
-                    )?);
+                    );
                 }
                 // If we can't parse an expression, parse as block statements
                 let mut statements = Vec::new();
@@ -120,10 +121,10 @@ impl<'a> Parser<'a> {
                 self.expect(TokenKind::RightBrace)?;
                 let end = self.previous_position();
 
-                return Ok(self.charge_node(
+                return self.charge_node(
                     NodeKind::Block { statements },
                     SourceLocation { start, end },
-                )?);
+                );
             }
         };
 
@@ -153,25 +154,25 @@ impl<'a> Parser<'a> {
                         }
                     }
 
-                    return Ok(self.charge_node(
+                    return self.charge_node(
                         NodeKind::HashLiteral { pairs },
                         SourceLocation { start, end },
-                    )?);
+                    );
                 }
 
                 // Already a HashLiteral — return it directly
                 // This happens when parse_comma creates a HashLiteral from key => value pairs
                 kind @ NodeKind::HashLiteral { .. } => {
-                    return Ok(self.charge_node(kind, first_loc)?);
+                    return self.charge_node(kind, first_loc);
                 }
 
                 // Otherwise it's a block with a single expression
                 other_kind => {
                     let expr_node = self.charge_node(other_kind, first_loc)?;
-                    return Ok(self.charge_node(
+                    return self.charge_node(
                         NodeKind::Block { statements: vec![expr_node] },
                         SourceLocation { start, end },
-                    )?);
+                    );
                 }
             }
         }
@@ -274,7 +275,7 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
 
-            Ok(self.charge_node(NodeKind::HashLiteral { pairs }, SourceLocation { start, end })?)
+            self.charge_node(NodeKind::HashLiteral { pairs }, SourceLocation { start, end })
         } else {
             // Not a hash - parse as block
             if self.peek_kind() == Some(TokenKind::RightBrace) {
@@ -282,10 +283,10 @@ impl<'a> Parser<'a> {
                 self.advance_token()?; // consume }
                 let end = self.previous_position();
 
-                return Ok(self.charge_node(
+                return self.charge_node(
                     NodeKind::Block { statements: vec![first_expr] },
                     SourceLocation { start, end },
-                )?);
+                );
             }
 
             // Fix #1352: Detect unclosed-delimiter situations at the expression boundary
@@ -313,10 +314,10 @@ impl<'a> Parser<'a> {
             if unclosed_hash || unclosed_after_inner_error {
                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
                 let end = self.previous_position();
-                return Ok(self.charge_node(
+                return self.charge_node(
                     NodeKind::Block { statements: vec![first_expr] },
                     SourceLocation { start, end },
-                )?);
+                );
             }
 
             // Multiple statement block
@@ -334,7 +335,7 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
 
-            Ok(self.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })?)
+            self.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })
         }
     }
 

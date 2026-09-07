@@ -1452,10 +1452,10 @@ impl<'a> Parser<'a> {
     /// as hash keys, e.g. the `m` in `$h{m}` or `@h{m, s}`).
     fn consume_as_bareword_string(&mut self) -> ParseResult<Node> {
         let token = self.advance_token()?;
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::String { value: token.text.to_string(), interpolated: false },
             SourceLocation { start: token.start(), end: token.end() },
-        )?)
+        )
     }
 
     /// Parse hash subscript key expression, treating lone keywords as bare
@@ -1567,10 +1567,10 @@ impl<'a> Parser<'a> {
 
     fn consume_as_bareword_identifier(&mut self) -> ParseResult<Node> {
         let token = self.advance_token()?;
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::Identifier { name: token.text.to_string() },
             SourceLocation { start: token.start(), end: token.end() },
-        )?)
+        )
     }
 
     /// Attempt to parse a quote-operator name (`m`, `s`, `q`, `qq`, `qw`, `qr`,
@@ -1624,9 +1624,9 @@ impl<'a> Parser<'a> {
     fn consume_arrow_star_deref(&mut self, expr: Node, op: &'static str) -> ParseResult<Node> {
         let star = self.consume_token()?;
         let start = expr.location.start;
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::Unary { op: op.to_string(), operand: Box::new(expr) },
             SourceLocation { start, end: star.end() },
-        )?)
+        )
     }
 }

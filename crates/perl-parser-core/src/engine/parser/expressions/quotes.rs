@@ -191,17 +191,17 @@ impl<'a> Parser<'a> {
         match op {
             "qq" => {
                 // Double-quoted string with interpolation
-                Ok(self.charge_node(
+                self.charge_node(
                     NodeKind::String { value: format!("\"{}\"", content), interpolated: true },
                     SourceLocation { start, end },
-                )?)
+                )
             }
             "q" => {
                 // Single-quoted string without interpolation
-                Ok(self.charge_node(
+                self.charge_node(
                     NodeKind::String { value: format!("'{}'", content), interpolated: false },
                     SourceLocation { start, end },
-                )?)
+                )
             }
             "qw" => {
                 // Word list - split on whitespace
@@ -215,16 +215,16 @@ impl<'a> Parser<'a> {
                     })
                     .collect::<ParseResult<Vec<Node>>>()?;
 
-                Ok(self.charge_node(
+                self.charge_node(
                     NodeKind::ArrayLiteral { elements: words },
                     SourceLocation { start, end },
-                )?)
+                )
             }
             "qr" => {
                 // Regular expression
                 let has_embedded_code = self.analyze_regex_body_for_ast(&content, start)?;
 
-                Ok(self.charge_node(
+                self.charge_node(
                     NodeKind::Regex {
                         pattern: format!("{}{}{}", opening_delim, content, closing_delim),
                         replacement: None,
@@ -232,14 +232,14 @@ impl<'a> Parser<'a> {
                         has_embedded_code,
                     },
                     SourceLocation { start, end },
-                )?)
+                )
             }
             "qx" => {
                 // Backticks/command execution
-                Ok(self.charge_node(
+                self.charge_node(
                     NodeKind::String { value: format!("`{}`", content), interpolated: true },
                     SourceLocation { start, end },
-                )?)
+                )
             }
             "m" => {
                 // Match operator with pattern
@@ -268,7 +268,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 end = self.previous_position();
-                Ok(self.charge_node(
+                self.charge_node(
                     NodeKind::Regex {
                         pattern: format!("{}{}{}", opening_delim, content, closing_delim),
                         replacement: None,
@@ -276,7 +276,7 @@ impl<'a> Parser<'a> {
                         has_embedded_code,
                     },
                     SourceLocation { start, end },
-                )?)
+                )
             }
             "s" => {
                 let replacement = self.parse_quote_operator_substitution_replacement(
@@ -296,7 +296,7 @@ impl<'a> Parser<'a> {
                     NodeKind::Identifier { name: String::from("$_") },
                     SourceLocation { start, end: start },
                 )?;
-                Ok(self.charge_node(
+                self.charge_node(
                     NodeKind::Substitution {
                         expr: Box::new(implicit_topic),
                         pattern: content,
@@ -306,7 +306,7 @@ impl<'a> Parser<'a> {
                         negated: false,
                     },
                     SourceLocation { start, end },
-                )?)
+                )
             }
             _ => Err(ParseError::syntax(format!("Unknown quote operator: {}", op), start)),
         }

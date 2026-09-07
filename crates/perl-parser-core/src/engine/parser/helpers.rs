@@ -516,10 +516,10 @@ impl<'a> Parser<'a> {
         let start = expr.location.start;
         let end = rhs.location.end;
 
-        Ok(self.charge_node(
+        self.charge_node(
             NodeKind::Assignment { lhs: Box::new(expr), rhs: Box::new(rhs), op: op.to_string() },
             SourceLocation { start, end },
-        )?)
+        )
     }
 
     fn is_explicit_sub_sigil_argument_start(&mut self) -> bool {
@@ -770,6 +770,7 @@ impl<'a> Parser<'a> {
         if self.operation.authorize_diagnostic_emit().is_err() {
             return;
         }
+        // #8786: the seam itself.
         self.errors.push(error);
     }
 
@@ -777,6 +778,9 @@ impl<'a> Parser<'a> {
     /// (#8786). Charges before construction; a refused node is never built.
     fn charge_node(&mut self, kind: NodeKind, location: SourceLocation) -> ParseResult<Node> {
         self.operation.authorize_node_construct()?;
+        // #8786: the seam itself. This is the one permitted routed use of the
+        // raw constructor; `node_construction_seam_is_unique` enforces that
+        // every other use in the production parser is annotated.
         Ok(Node::new(kind, location))
     }
 
@@ -800,9 +804,9 @@ impl<'a> Parser<'a> {
         if !self.tokens.peeked_is_sticky_eof() {
             self.operation.authorize_token_consume()?;
         }
-        // The one permitted direct use of the raw stream advance: this method
-        // is the seam. The `token_advance_seam_is_unique` recurrence test
-        // fails if a second direct use appears.
+        // #8786: the seam itself. The one permitted direct use of the raw
+        // stream advance. The `token_advance_seam_is_unique` recurrence test
+        // fails if a second, unannotated direct use appears.
         self.tokens.next()
     }
 

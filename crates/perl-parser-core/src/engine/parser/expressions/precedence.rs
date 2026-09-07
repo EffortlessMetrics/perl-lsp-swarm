@@ -91,10 +91,10 @@ impl<'a> Parser<'a> {
                 let operand = s.parse_word_not_expr()?;
                 let end = operand.location.end;
 
-                return Ok(s.charge_node(
+                return s.charge_node(
                     NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                     SourceLocation { start, end },
-                )?);
+                );
             }
 
             // The right side of a word operator should be a full expression
@@ -143,10 +143,10 @@ impl<'a> Parser<'a> {
             ) && self.is_keyword_before_fat_arrow()
             {
                 let token = self.advance_token()?;
-                return Ok(self.charge_node(
+                return self.charge_node(
                     NodeKind::Identifier { name: token.text.to_string() },
                     SourceLocation { start: token.start(), end: token.end() },
-                )?);
+                );
             }
 
             // Check if we have a 'not' operator first
@@ -855,14 +855,14 @@ impl<'a> Parser<'a> {
         if !self.peek_is_relational_op() {
             let start = lhs.location.start;
             let end = rhs1.location.end;
-            return Ok(self.charge_node(
+            return self.charge_node(
                 NodeKind::Binary {
                     op: op1.text.to_string(),
                     left: Box::new(lhs),
                     right: Box::new(rhs1),
                 },
                 SourceLocation { start, end },
-            )?);
+            );
         }
 
         // Chain mode: two or more consecutive relational comparisons.
@@ -883,7 +883,7 @@ impl<'a> Parser<'a> {
         }
 
         let end = operands.last().map_or(start, |n| n.location.end);
-        Ok(self.charge_node(NodeKind::ChainedComparison { operands, ops }, SourceLocation { start, end })?)
+        self.charge_node(NodeKind::ChainedComparison { operands, ops }, SourceLocation { start, end })
     }
 
     /// Parse shift expression

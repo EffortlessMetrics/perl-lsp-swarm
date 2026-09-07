@@ -95,22 +95,22 @@ impl<'a> Parser<'a> {
                     NodeKind::Undef,
                     SourceLocation { start: end, end },
                 )?;
-                return Ok(self.charge_node(
+                return self.charge_node(
                     NodeKind::Unary {
                         op: op_token.text.to_string(),
                         operand: Box::new(charged_operand),
                     },
                     SourceLocation { start, end },
-                )?);
+                );
             }
 
             let operand = self.parse_unary()?;
             let end = operand.location.end;
 
-            return Ok(self.charge_node(
+            return self.charge_node(
                 NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                 SourceLocation { start, end },
-            )?);
+            );
         }
 
         if let Some(kind) = self.peek_kind() {
@@ -132,12 +132,12 @@ impl<'a> Parser<'a> {
                             {
                                 let test_token = self.advance_token()?;
                                 let end = test_token.end();
-                                return Ok(self.charge_node(
+                                return self.charge_node(
                                     NodeKind::Identifier {
                                         name: format!("-{}", test_token.text),
                                     },
                                     SourceLocation { start, end },
-                                )?);
+                                );
                             }
 
                             // It's a file test operator
@@ -182,10 +182,10 @@ impl<'a> Parser<'a> {
                             };
 
                             let end = operand.location.end;
-                            return Ok(self.charge_node(
+                            return self.charge_node(
                                 NodeKind::Unary { op: file_test, operand: Box::new(operand) },
                                 SourceLocation { start, end },
-                            )?);
+                            );
                         }
                     }
 
@@ -202,22 +202,22 @@ impl<'a> Parser<'a> {
                             && Self::is_word_op_keyword(kw_kind) {
                                 let kw_token = self.advance_token()?;
                                 let end = kw_token.end();
-                                return Ok(self.charge_node(
+                                return self.charge_node(
                                     NodeKind::Identifier {
                                         name: format!("-{}", kw_token.text),
                                     },
                                     SourceLocation { start, end },
-                                )?);
+                                );
                             }
 
                     // Regular unary minus
                     let operand = self.parse_power()?;
                     let end = operand.location.end;
 
-                    return Ok(self.charge_node(
+                    return self.charge_node(
                         NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                         SourceLocation { start, end },
-                    )?);
+                    );
                 }
                 TokenKind::Plus => {
                     let op_token = self.advance_token()?;
@@ -248,22 +248,22 @@ impl<'a> Parser<'a> {
                             NodeKind::Undef,
                             SourceLocation { start: end, end },
                         )?;
-                        return Ok(self.charge_node(
+                        return self.charge_node(
                             NodeKind::Unary {
                                 op: op_token.text.to_string(),
                                 operand: Box::new(charged_operand_2),
                             },
                             SourceLocation { start, end },
-                        )?);
+                        );
                     }
 
                     let operand = self.parse_power()?;
                     let end = operand.location.end;
 
-                    return Ok(self.charge_node(
+                    return self.charge_node(
                         NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                         SourceLocation { start, end },
-                    )?);
+                    );
                 }
                 // Handle 'not' keyword as a unary prefix at expression level.
                 // This lets `$a && not $b` parse correctly.
@@ -279,25 +279,25 @@ impl<'a> Parser<'a> {
                             NodeKind::Undef,
                             SourceLocation { start: end, end },
                         )?;
-                        return Ok(self.charge_node(
+                        return self.charge_node(
                             NodeKind::Unary {
                                 op: op_token.text.to_string(),
                                 operand: Box::new(charged_operand_3),
                             },
                             SourceLocation { start, end },
-                        )?);
+                        );
                     }
 
                     let operand = self.parse_unary()?;
                     let end = operand.location.end;
 
-                    return Ok(self.charge_node(
+                    return self.charge_node(
                         NodeKind::Unary {
                             op: op_token.text.to_string(),
                             operand: Box::new(operand),
                         },
                         SourceLocation { start, end },
-                    )?);
+                    );
                 }
                 TokenKind::Not | TokenKind::Backslash | TokenKind::BitwiseNot | TokenKind::Star => {
                     let op_token = self.advance_token()?;
@@ -321,10 +321,10 @@ impl<'a> Parser<'a> {
                                 terminator_kind,
                             ) {
                                 let t = self.advance_token()?;
-                                return Ok(self.charge_node(
+                                return self.charge_node(
                                     NodeKind::Typeglob { name },
                                     SourceLocation { start, end: t.end() },
-                                )?);
+                                );
                             }
 
                             match next_kind {
@@ -360,10 +360,10 @@ impl<'a> Parser<'a> {
                                         .trim_end_matches(';')
                                         .trim()
                                         .to_string();
-                                        return Ok(self.charge_node(
+                                        return self.charge_node(
                                             NodeKind::Typeglob { name },
                                             SourceLocation { start, end: body_end },
-                                        )?);
+                                        );
                                     }
                                     let node = self.charge_node(
                                         NodeKind::Unary {
@@ -381,10 +381,10 @@ impl<'a> Parser<'a> {
                                         let id_token = self.advance_token()?;
                                         let name = format!("^{}", id_token.text);
                                         let end = id_token.end();
-                                        return Ok(self.charge_node(
+                                        return self.charge_node(
                                             NodeKind::Typeglob { name },
                                             SourceLocation { start, end },
-                                        )?);
+                                        );
                                     }
                                     // Standalone *^ — fall through to parse operand
                                 }
@@ -398,10 +398,10 @@ impl<'a> Parser<'a> {
                                         self.tokens.peek_second().ok().map(|t| t.kind());
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.advance_token()?;
-                                        return Ok(self.charge_node(
+                                        return self.charge_node(
                                             NodeKind::Typeglob { name: "<".to_string() },
                                             SourceLocation { start, end: t.end() },
-                                        )?);
+                                        );
                                     }
                                 }
                                 TokenKind::Greater => {
@@ -409,10 +409,10 @@ impl<'a> Parser<'a> {
                                         self.tokens.peek_second().ok().map(|t| t.kind());
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.advance_token()?;
-                                        return Ok(self.charge_node(
+                                        return self.charge_node(
                                             NodeKind::Typeglob { name: ">".to_string() },
                                             SourceLocation { start, end: t.end() },
-                                        )?);
+                                        );
                                     }
                                 }
                                 TokenKind::LeftParen => {
@@ -420,10 +420,10 @@ impl<'a> Parser<'a> {
                                         self.tokens.peek_second().ok().map(|t| t.kind());
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.advance_token()?;
-                                        return Ok(self.charge_node(
+                                        return self.charge_node(
                                             NodeKind::Typeglob { name: "(".to_string() },
                                             SourceLocation { start, end: t.end() },
-                                        )?);
+                                        );
                                     }
                                 }
                                 TokenKind::RightParen => {
@@ -431,38 +431,38 @@ impl<'a> Parser<'a> {
                                     // RightParen cannot start a valid sub-expression in this
                                     // context, so no lookahead disambiguation is needed.
                                     let t = self.advance_token()?;
-                                    return Ok(self.charge_node(
+                                    return self.charge_node(
                                         NodeKind::Typeglob { name: ")".to_string() },
                                         SourceLocation { start, end: t.end() },
-                                    )?);
+                                    );
                                 }
                                 // *? = typeglob for $? (child process status).
                                 // Question cannot start an expression after *, so no lookahead.
                                 TokenKind::Question => {
                                     let t = self.advance_token()?;
-                                    return Ok(self.charge_node(
+                                    return self.charge_node(
                                         NodeKind::Typeglob { name: "?".to_string() },
                                         SourceLocation { start, end: t.end() },
-                                    )?);
+                                    );
                                 }
                                 // *, = typeglob for $, (output field separator).
                                 // Comma cannot start an expression after *, so no lookahead.
                                 TokenKind::Comma => {
                                     let t = self.advance_token()?;
-                                    return Ok(self.charge_node(
+                                    return self.charge_node(
                                         NodeKind::Typeglob { name: ",".to_string() },
                                         SourceLocation { start, end: t.end() },
-                                    )?);
+                                    );
                                 }
                                 // *= — the lexer emits StarAssign for the compound assignment
                                 // operator, so Star followed by bare Assign is always the typeglob
                                 // *=  (for $= "format lines per page").  No lookahead needed.
                                 TokenKind::Assign => {
                                     let t = self.advance_token()?;
-                                    return Ok(self.charge_node(
+                                    return self.charge_node(
                                         NodeKind::Typeglob { name: "=".to_string() },
                                         SourceLocation { start, end: t.end() },
-                                    )?);
+                                    );
                                 }
                                 // */ = typeglob for $/ (input record separator).
                                 // Use lookahead: if followed by a statement terminator, it's a
@@ -472,10 +472,10 @@ impl<'a> Parser<'a> {
                                         self.tokens.peek_second().ok().map(|t| t.kind());
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.advance_token()?;
-                                        return Ok(self.charge_node(
+                                        return self.charge_node(
                                             NodeKind::Typeglob { name: "/".to_string() },
                                             SourceLocation { start, end: t.end() },
-                                        )?);
+                                        );
                                     }
                                 }
                                 // *. = typeglob for $. (input line number).
@@ -486,10 +486,10 @@ impl<'a> Parser<'a> {
                                         self.tokens.peek_second().ok().map(|t| t.kind());
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.advance_token()?;
-                                        return Ok(self.charge_node(
+                                        return self.charge_node(
                                             NodeKind::Typeglob { name: ".".to_string() },
                                             SourceLocation { start, end: t.end() },
-                                        )?);
+                                        );
                                     }
                                 }
                                 // *| = typeglob for $| (output autoflush flag).
@@ -500,10 +500,10 @@ impl<'a> Parser<'a> {
                                         self.tokens.peek_second().ok().map(|t| t.kind());
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.advance_token()?;
-                                        return Ok(self.charge_node(
+                                        return self.charge_node(
                                             NodeKind::Typeglob { name: "|".to_string() },
                                             SourceLocation { start, end: t.end() },
-                                        )?);
+                                        );
                                     }
                                 }
                                 // *: = typeglob for $: (format line-break characters).
@@ -514,10 +514,10 @@ impl<'a> Parser<'a> {
                                         self.tokens.peek_second().ok().map(|t| t.kind());
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.advance_token()?;
-                                        return Ok(self.charge_node(
+                                        return self.charge_node(
                                             NodeKind::Typeglob { name: ":".to_string() },
                                             SourceLocation { start, end: t.end() },
-                                        )?);
+                                        );
                                     }
                                 }
                                 _ => {}
@@ -534,13 +534,13 @@ impl<'a> Parser<'a> {
                             NodeKind::Undef,
                             SourceLocation { start: end, end },
                         )?;
-                        return Ok(self.charge_node(
+                        return self.charge_node(
                             NodeKind::Unary {
                                 op: op_token.text.to_string(),
                                 operand: Box::new(charged_operand_4),
                             },
                             SourceLocation { start, end },
-                        )?);
+                        );
                     }
 
                     let operand = if matches!(
@@ -572,10 +572,10 @@ impl<'a> Parser<'a> {
                     let operand = self.parse_unary()?;
                     let end = operand.location.end;
 
-                    return Ok(self.charge_node(
+                    return self.charge_node(
                         NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                         SourceLocation { start, end },
-                    )?);
+                    );
                 }
                 TokenKind::SmartMatch => {
                     // Smart match can be used as a unary operator
@@ -592,22 +592,22 @@ impl<'a> Parser<'a> {
                             NodeKind::Undef,
                             SourceLocation { start: end, end },
                         )?;
-                        return Ok(self.charge_node(
+                        return self.charge_node(
                             NodeKind::Unary {
                                 op: op_token.text.to_string(),
                                 operand: Box::new(charged_operand_5),
                             },
                             SourceLocation { start, end },
-                        )?);
+                        );
                     }
 
                     let operand = self.parse_unary()?;
                     let end = operand.location.end;
 
-                    return Ok(self.charge_node(
+                    return self.charge_node(
                         NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                         SourceLocation { start, end },
-                    )?);
+                    );
                 }
                 _ => {}
             }
