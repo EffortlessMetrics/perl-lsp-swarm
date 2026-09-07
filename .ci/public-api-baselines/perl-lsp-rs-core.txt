@@ -3132,6 +3132,10 @@ pub perl_lsp_rs_core::providers::dancer2::CanonicalDancer2FileFacts::hooks: allo
 pub perl_lsp_rs_core::providers::dancer2::CanonicalDancer2FileFacts::parameters: alloc::vec::Vec<perl_semantic_facts::route::RouteParameterFact>
 pub perl_lsp_rs_core::providers::dancer2::CanonicalDancer2FileFacts::prefixes: alloc::vec::Vec<perl_semantic_facts::route::RoutePrefixFact>
 pub perl_lsp_rs_core::providers::dancer2::CanonicalDancer2FileFacts::routes: alloc::vec::Vec<perl_semantic_facts::route::RouteFact>
+pub perl_lsp_rs_core::providers::dancer2::CanonicalDancer2FileFacts::two_x: alloc::vec::Vec<perl_lsp_rs_core::providers::dancer2::activation::Dancer2TwoXPackageActivation>
+pub perl_lsp_rs_core::providers::dancer2::CanonicalDancer2FileFacts::two_x_extracted_routes: alloc::vec::Vec<perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration>
+pub perl_lsp_rs_core::providers::dancer2::CanonicalDancer2FileFacts::two_x_route_facts: alloc::vec::Vec<perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFacts>
+pub fn perl_lsp_rs_core::providers::dancer2::CanonicalDancer2FileFacts::has_comparison_facts(&self) -> bool
 pub fn perl_lsp_rs_core::providers::dancer2::CanonicalDancer2FileFacts::hook_at(&self, offset: usize) -> core::option::Option<&perl_semantic_facts::hook::HookFact>
 pub fn perl_lsp_rs_core::providers::dancer2::CanonicalDancer2FileFacts::inside_handler_context(&self, offset: usize) -> bool
 pub fn perl_lsp_rs_core::providers::dancer2::CanonicalDancer2FileFacts::inside_request_context(&self, offset: usize) -> bool
@@ -3170,6 +3174,8 @@ pub perl_lsp_rs_core::providers::dancer2::Dancer2FileActivations::detection: cor
 pub perl_lsp_rs_core::providers::dancer2::Dancer2FileActivations::evidence: std::collections::hash::map::HashMap<alloc::string::String, perl_semantic_facts::framework_adapters::dancer2::Dancer2ImportEvidence>
 pub perl_lsp_rs_core::providers::dancer2::Dancer2FileActivations::module: core::option::Option<perl_lsp_rs_core::providers::dancer2::RuntimeDancer2Module>
 pub perl_lsp_rs_core::providers::dancer2::Dancer2FileActivations::packages: alloc::vec::Vec<perl_lsp_rs_core::providers::dancer2::Dancer2PackageActivation>
+pub perl_lsp_rs_core::providers::dancer2::Dancer2FileActivations::two_x_detection: core::option::Option<perl_semantic_facts::framework::model::AdapterDetectionResult>
+pub perl_lsp_rs_core::providers::dancer2::Dancer2FileActivations::two_x_packages: alloc::vec::Vec<perl_lsp_rs_core::providers::dancer2::activation::Dancer2TwoXPackageActivation>
 pub fn perl_lsp_rs_core::providers::dancer2::Dancer2FileActivations::for_package(&self, package: &str) -> core::option::Option<&perl_lsp_rs_core::providers::dancer2::Dancer2PackageActivation>
 pub fn perl_lsp_rs_core::providers::dancer2::Dancer2FileActivations::has_exact(&self) -> bool
 pub fn perl_lsp_rs_core::providers::dancer2::Dancer2FileActivations::clone(&self) -> perl_lsp_rs_core::providers::dancer2::Dancer2FileActivations
@@ -3200,7 +3206,7 @@ pub fn perl_lsp_rs_core::providers::dancer2::dancer2_document_symbols(facts: &pe
 pub fn perl_lsp_rs_core::providers::dancer2::dancer2_request_kind(is_route: bool) -> u32
 pub fn perl_lsp_rs_core::providers::dancer2::dancer2_workspace_entities(facts: &perl_lsp_rs_core::providers::dancer2::CanonicalDancer2FileFacts) -> alloc::vec::Vec<perl_lsp_rs_core::providers::dancer2::symbols::Dancer2WorkspaceEntity>
 pub fn perl_lsp_rs_core::providers::dancer2::definition_target_at(_activations: &perl_lsp_rs_core::providers::dancer2::Dancer2FileActivations, facts: &perl_lsp_rs_core::providers::dancer2::CanonicalDancer2FileFacts, offset: usize) -> core::option::Option<perl_lsp_rs_core::providers::dancer2::Dancer2DefinitionTarget>
-pub fn perl_lsp_rs_core::providers::dancer2::file_activations(ast: &perl_ast::ast::Node, file_id: perl_semantic_facts::FileId, module: core::option::Option<&perl_lsp_rs_core::providers::dancer2::RuntimeDancer2Module>, generation: &perl_semantic_facts::envelope::SourceGeneration) -> perl_lsp_rs_core::providers::dancer2::Dancer2FileActivations
+pub fn perl_lsp_rs_core::providers::dancer2::file_activations(ast: &perl_ast::ast::Node, source: &str, file_id: perl_semantic_facts::FileId, module: core::option::Option<&perl_lsp_rs_core::providers::dancer2::RuntimeDancer2Module>, generation: &perl_semantic_facts::envelope::SourceGeneration) -> perl_lsp_rs_core::providers::dancer2::Dancer2FileActivations
 pub fn perl_lsp_rs_core::providers::dancer2::first_activation_site_offset(ast: &perl_ast::ast::Node) -> core::option::Option<usize>
 pub fn perl_lsp_rs_core::providers::dancer2::has_activation_site(ast: &perl_ast::ast::Node) -> bool
 pub fn perl_lsp_rs_core::providers::dancer2::hover_projection_at(activations: &perl_lsp_rs_core::providers::dancer2::Dancer2FileActivations, facts: &perl_lsp_rs_core::providers::dancer2::CanonicalDancer2FileFacts, ast: &perl_ast::ast::Node, package: &str, offset: usize) -> core::option::Option<perl_lsp_rs_core::providers::dancer2::RouteHoverProjection>

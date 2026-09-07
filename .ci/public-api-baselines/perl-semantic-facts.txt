@@ -549,6 +549,13 @@ pub fn perl_semantic_facts::framework_adapters::dancer2_hooks::dancer2_hook_fact
 pub fn perl_semantic_facts::framework_adapters::dancer2_hooks::dancer2_hook_handler_context_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, activation: &perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts, package: core::option::Option<&str>, declarations: &[perl_semantic_facts::framework_adapters::dancer2_hooks::Dancer2HookDeclaration]) -> alloc::vec::Vec<perl_semantic_facts::RouteHandlerContextFact>
 pub fn perl_semantic_facts::framework_adapters::dancer2_hooks::normalize_dancer2_hook_name(literal: &str) -> perl_semantic_facts::HookNameNormalization
 pub mod perl_semantic_facts::framework_adapters::dancer2_routes
+pub enum perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract
+pub perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::OneX
+pub perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::TwoX
+pub fn perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::clone(&self) -> perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract
+pub fn perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::eq(&self, other: &perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract) -> bool
+pub fn perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::default() -> perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract
+pub fn perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_semantic_facts::framework_adapters::dancer2_routes::RouteRegistration
 pub perl_semantic_facts::framework_adapters::dancer2_routes::RouteRegistration::NeverRegisters
 pub perl_semantic_facts::framework_adapters::dancer2_routes::RouteRegistration::Registers
@@ -576,6 +583,7 @@ pub fn perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDecl
 pub fn perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration::eq(&self, other: &perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration) -> bool
 pub fn perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFacts
+pub perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFacts::contract: perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract
 pub perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFacts::handler_contexts: alloc::vec::Vec<perl_semantic_facts::RouteHandlerContextFact>
 pub perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFacts::parameters: alloc::vec::Vec<perl_semantic_facts::RouteParameterFact>
 pub perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFacts::prefixes: alloc::vec::Vec<perl_semantic_facts::RoutePrefixFact>
@@ -586,10 +594,117 @@ pub fn perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFact
 pub fn perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const perl_semantic_facts::framework_adapters::dancer2_routes::DANCER2_ANY_DEFAULT_METHODS: &[&str]
 pub const perl_semantic_facts::framework_adapters::dancer2_routes::DANCER2_ROUTE_KEYWORDS: &[&str]
+pub trait perl_semantic_facts::framework_adapters::dancer2_routes::RouteFamilyKeywordView
+pub fn perl_semantic_facts::framework_adapters::dancer2_routes::RouteFamilyKeywordView::adapter_id(&self) -> perl_semantic_facts::framework::AdapterId
+pub fn perl_semantic_facts::framework_adapters::dancer2_routes::RouteFamilyKeywordView::application_name(&self) -> core::option::Option<&str>
+pub fn perl_semantic_facts::framework_adapters::dancer2_routes::RouteFamilyKeywordView::framework_version(&self) -> core::option::Option<&str>
+pub fn perl_semantic_facts::framework_adapters::dancer2_routes::RouteFamilyKeywordView::is_exact(&self) -> bool
+pub fn perl_semantic_facts::framework_adapters::dancer2_routes::RouteFamilyKeywordView::keyword_state(&self, keyword: &str) -> core::option::Option<perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordState>
+pub fn perl_semantic_facts::framework_adapters::dancer2_routes::RouteFamilyKeywordView::prefix_keyword_imported(&self) -> bool
+pub fn perl_semantic_facts::framework_adapters::dancer2_routes::RouteFamilyKeywordView::source_generation(&self) -> core::option::Option<&perl_semantic_facts::SourceGeneration>
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::adapter_id(&self) -> perl_semantic_facts::framework::AdapterId
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::application_name(&self) -> core::option::Option<&str>
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::framework_version(&self) -> core::option::Option<&str>
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::is_exact(&self) -> bool
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::keyword_state(&self, keyword: &str) -> core::option::Option<perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordState>
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::source_generation(&self) -> core::option::Option<&perl_semantic_facts::SourceGeneration>
 pub fn perl_semantic_facts::framework_adapters::dancer2_routes::dancer2_keyword_methods(keyword: &str) -> core::option::Option<perl_semantic_facts::RouteMethodSet>
 pub fn perl_semantic_facts::framework_adapters::dancer2_routes::dancer2_route_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, activation: &perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts, package: core::option::Option<&str>, declarations: &[perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration]) -> alloc::vec::Vec<perl_semantic_facts::RouteFact>
 pub fn perl_semantic_facts::framework_adapters::dancer2_routes::dancer2_route_family_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, activation: &perl_semantic_facts::framework_adapters::dancer2::Dancer2ActivationFacts, package: core::option::Option<&str>, declarations: &[perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration], prefix_declarations: &[perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2PrefixDeclaration]) -> perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFacts
 pub fn perl_semantic_facts::framework_adapters::dancer2_routes::normalize_dancer2_method(raw: &str) -> alloc::string::String
+pub mod perl_semantic_facts::framework_adapters::dancer2_two_x
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState::DynamicBoundary
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState::DynamicBoundary::reason: alloc::string::String
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState::Exact
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState::Exact::application_name: alloc::string::String
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState::Exact::framework_version: alloc::string::String
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState::Exact::source_generation: perl_semantic_facts::SourceGeneration
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState::ImportDied
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState::ImportDied::die_message: alloc::string::String
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState::NotActivated
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState::NotActivated::reason: alloc::string::String
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState::clone(&self) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState::eq(&self, other: &perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState) -> bool
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState::Excluded
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState::Imported
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState::Shadowed
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState::clone(&self) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState::eq(&self, other: &perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState) -> bool
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::dsl: perl_semantic_facts::framework_adapters::dancer2::DslSelection
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::dsl_contract_version: &'static str
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::keywords: alloc::vec::Vec<perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact>
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::no_op_tags: alloc::vec::Vec<alloc::string::String>
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::nopragmas: bool
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::state: perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationState
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::unknown_exclusions: alloc::vec::Vec<alloc::string::String>
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::is_exact(&self) -> bool
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::clone(&self) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::eq(&self, other: &perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts) -> bool
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXDslKeyword
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXDslKeyword::deprecation_replacement: core::option::Option<&'static str>
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXDslKeyword::name: &'static str
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXDslKeyword::prototype: core::option::Option<&'static str>
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXDslKeyword::scope: perl_semantic_facts::framework_adapters::dancer2::DslKeywordScope
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXDslKeyword::is_deprecated(&self) -> bool
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXDslKeyword::clone(&self) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXDslKeyword
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXDslKeyword::eq(&self, other: &perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXDslKeyword) -> bool
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXDslKeyword::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence::appname: core::option::Option<perl_semantic_facts::framework_adapters::dancer2::AppNameSelection>
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence::dsl: core::option::Option<perl_semantic_facts::framework_adapters::dancer2::DslSelection>
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence::excluded_keywords: alloc::vec::Vec<alloc::string::String>
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence::import_suppressed: bool
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence::no_op_tags: alloc::vec::Vec<alloc::string::String>
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence::nopragmas: bool
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence::odd_argument_count: bool
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence::unmodeled_options: alloc::vec::Vec<alloc::string::String>
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence::version_slot_spellings: alloc::vec::Vec<alloc::string::String>
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence::clone(&self) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence::eq(&self, other: &perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence) -> bool
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence::default() -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact::deprecation_replacement: core::option::Option<&'static str>
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact::keyword: alloc::string::String
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact::prototype: core::option::Option<&'static str>
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact::scope: perl_semantic_facts::framework_adapters::dancer2::DslKeywordScope
+pub perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact::state: perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact::clone(&self) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact::eq(&self, other: &perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact) -> bool
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'a>
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'a>::new(facts: &'a perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts) -> Self
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::adapter_id(&self) -> perl_semantic_facts::framework::AdapterId
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::application_name(&self) -> core::option::Option<&str>
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::framework_version(&self) -> core::option::Option<&str>
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::is_exact(&self) -> bool
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::keyword_state(&self, keyword: &str) -> core::option::Option<perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordState>
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordView<'_>::source_generation(&self) -> core::option::Option<&perl_semantic_facts::SourceGeneration>
+pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_ADAPTER_ID: perl_semantic_facts::framework::AdapterId
+pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_DESCRIPTOR_REVISION: u32
+pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_DSL_CONTRACT_VERSION: &str
+pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_DSL_KEYWORDS: &[perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXDslKeyword]
+pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_FRAMEWORK_NAME: &str
+pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_IMPORT_DIE_MESSAGE: &str
+pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_KEYWORD_GLOBAL: usize
+pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_KEYWORD_ROUTE_ONLY: usize
+pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_KEYWORD_TOTAL: usize
+pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_NOOP_IMPORT_TAGS: [&str; 3]
+pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_NOPRAGMAS_TAG: &str
+pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_PINNED_COMMIT_2_0_0: &str
+pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_PINNED_COMMIT_2_0_1: &str
+pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_PINNED_COMMIT_2_1_0: &str
+pub const perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_VERSION_CONSTRAINT: &str
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::dancer2_two_x_activation_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, package_name: core::option::Option<&str>, evidence: &perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence, shadowed_keywords: &[alloc::string::String]) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::dancer2_two_x_application_identity(package_name: core::option::Option<&str>, appname: core::option::Option<&perl_semantic_facts::framework_adapters::dancer2::AppNameSelection>) -> perl_semantic_facts::framework_adapters::dancer2::AppNameSelection
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::dancer2_two_x_descriptor() -> perl_semantic_facts::framework::AdapterDescriptor
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::dancer2_two_x_keyword(name: &str) -> core::option::Option<&'static perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXDslKeyword>
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::dancer2_two_x_route_family_facts(detection_detected: bool, activation: &perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXActivationFacts, package: core::option::Option<&str>, declarations: &[perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration], prefix_declarations: &[perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2PrefixDeclaration]) -> perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFacts
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::detect_dancer2_two_x(input: &perl_semantic_facts::framework::AdapterDetectionInput) -> perl_semantic_facts::framework::AdapterDetectionResult
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::parse_dancer2_two_x_import_args(args: &[alloc::string::String]) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::parse_parenthesized_dancer2_two_x_import_args(args: &[alloc::string::String]) -> perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXImportEvidence
+pub fn perl_semantic_facts::framework_adapters::dancer2_two_x::qw_words(token: &str) -> core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub mod perl_semantic_facts::framework_adapters::dbix_class
 pub perl_semantic_facts::framework_adapters::dbix_class::DbixClassInheritanceEvidence::Dynamic
 pub perl_semantic_facts::framework_adapters::dbix_class::DbixClassInheritanceEvidence::Dynamic::reason: alloc::string::String

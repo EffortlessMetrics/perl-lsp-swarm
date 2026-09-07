@@ -1196,6 +1196,7 @@ pub perl_parser_core::hir::DeclStorageClass::Local
 pub perl_parser_core::hir::DeclStorageClass::My
 pub perl_parser_core::hir::DeclStorageClass::Our
 pub perl_parser_core::hir::DeclStorageClass::State
+pub perl_parser_core::hir::DeclStorageClass::Unknown
 pub fn perl_parser_core::hir::DeclStorageClass::clone(&self) -> perl_parser_core::hir::DeclStorageClass
 pub fn perl_parser_core::hir::DeclStorageClass::eq(&self, other: &perl_parser_core::hir::DeclStorageClass) -> bool
 pub fn perl_parser_core::hir::DeclStorageClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
