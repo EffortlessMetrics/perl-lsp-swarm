@@ -626,6 +626,8 @@ include!("expressions/hashes.rs");
 include!("expressions/quotes.rs");
 
 #[cfg(test)]
+mod attribute_source_body_tests;
+#[cfg(test)]
 mod builtin_block_list_tests;
 #[cfg(test)]
 mod builtin_expansion_tests;
