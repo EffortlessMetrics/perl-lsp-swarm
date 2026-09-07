@@ -6,10 +6,23 @@
 //! bare strings, which silently discarded every explicitly named form.
 //!
 //! This module decodes one admitted spelling once and preserves its identity:
-//! the trait family, the raw spelling, and the argument disposition. It
+//! the trait family, the spelling as retained, and the argument disposition. It
 //! deliberately assigns no profile semantics — whether a language or module
 //! profile admits a decoded form remains the caller's decision, so decoding
 //! alone cannot widen a core or `Object::Pad` claim.
+//!
+//! # What "as retained" does and does not mean
+//!
+//! `raw_spelling` is the parser's value, byte for byte — this module normalizes
+//! nothing into it. That is *not* the same as the original source bytes. The
+//! parser rebuilds an attribute by concatenating token text, so internal
+//! whitespace and comments are already gone before anything here runs:
+//! `:param(foo - bar)` and `:param(foo-bar)` both arrive as `param(foo-bar)`,
+//! while Perl treats them as different constructor keys. The two are
+//! indistinguishable at this layer, so no decoder rule can separate them; the
+//! collapsed form is used, which is correct for contiguous spellings and wrong
+//! for spaced ones. Recovering the true bytes needs the argument source range
+//! that `perl_ast::DeclarationAttributeSyntax` models — tracked by #14998.
 //!
 //! # Terminal disposition
 //!
