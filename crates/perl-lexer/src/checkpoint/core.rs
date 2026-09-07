@@ -325,8 +325,9 @@ impl LexerCheckpoint {
 
     /// Apply an edit to source-relative checkpoint offsets.
     ///
-    /// Overlapping or shifted checkpoints are invalidated rather than rewritten
-    /// as a default-state origin at the edit start. Call [`Self::try_apply_edit`]
+    /// Checkpoints whose consumed prefix or state anchors were edited are
+    /// invalidated rather than rewritten as a default-state origin at the edit
+    /// start. Call [`Self::try_apply_edit`]
     /// when the caller must branch on that result.
     pub fn apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) {
         let _ = self.try_apply_edit(start, old_len, new_len);
@@ -335,14 +336,18 @@ impl LexerCheckpoint {
     /// Apply an edit and report whether the checkpoint remains a live restart.
     ///
     /// An edit overlapping a required state offset invalidates the checkpoint
-    /// without fabricating default lexer state at the edit start. A shift of
-    /// the replay position also fails closed because byte counts do not contain
-    /// enough information to recompute line and column. An edit beginning
-    /// exactly at an offset leaves it anchored so the new text is re-lexed.
+    /// without fabricating default lexer state at the edit start. Any nonempty
+    /// edit before the replay position also fails closed: even equal byte
+    /// lengths can change the mode, nesting, or line state of the consumed
+    /// prefix. An edit beginning exactly at the replay position leaves it
+    /// anchored so the new text is re-lexed. An empty edit preserves all state.
     #[must_use]
     pub fn try_apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) -> bool {
         if self.invalidated {
             return false;
+        }
+        if old_len == 0 && new_len == 0 {
+            return true;
         }
         let original_position = self.replay.position;
         let Some(position) = transform_offset(self.replay.position, start, old_len, new_len) else {
@@ -404,10 +409,10 @@ impl LexerCheckpoint {
         self.replay.current_quote_op = current_quote_op;
         self.replay.context = context;
         self.replay.eof_emitted = false;
-        if self.replay.position != original_position {
-            // Prefix inserts/deletes shift the byte cursor but cannot rebuild
-            // line/column or content identity. Keep transformed offsets for
-            // inspection and refuse restore.
+        if start < original_position {
+            // Byte geometry cannot prove the consumed prefix's lexical state,
+            // including when a replacement leaves every offset unchanged.
+            // Keep transformed offsets for inspection and refuse restore.
             self.invalidate();
             return false;
         }
