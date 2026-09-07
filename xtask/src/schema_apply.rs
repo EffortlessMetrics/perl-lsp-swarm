@@ -180,14 +180,16 @@ mod tests {
     /// and silently passing every document through.
     #[test]
     fn invalid_schema_is_an_error_not_an_empty_violation_list() {
-        let error = validate_payload_against_schema(
+        let outcome = validate_payload_against_schema(
             &json!({"type": "not-a-json-schema-type"}),
             "schema.json",
             &json!({}),
             "payload.json",
-        )
-        .expect_err("an uncompilable schema must not report a clean payload");
+        );
 
+        let Err(error) = outcome else {
+            panic!("an uncompilable schema must not report a clean payload");
+        };
         assert!(
             error.to_string().contains("schema.json: invalid schema"),
             "unexpected error: {error:?}"
