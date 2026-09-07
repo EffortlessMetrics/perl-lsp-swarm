@@ -51,6 +51,11 @@ pub struct CanonicalDancer2FileFacts {
     /// conflate (#14989).
     pub two_x_extracted_routes:
         Vec<perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration>,
+    /// Minted 2.x route-family facts (contract marker `TwoX`),
+    /// comparison-only output of the Shadow adapter — merged across exact
+    /// 2.x packages in source order (#14989).
+    pub two_x_route_facts:
+        Vec<perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFacts>,
 }
 
 impl CanonicalDancer2FileFacts {
@@ -233,6 +238,22 @@ pub fn canonical_file_facts(
                 facts.two_x_extracted_routes.push(declaration.clone());
             }
         }
+        // Mint the 2.x route family through the shared view core; the
+        // bundle carries the TwoX contract marker and stays
+        // comparison-only while the adapter is Shadow (#14989).
+        let detection_detected = activations
+            .two_x_detection
+            .as_ref()
+            .is_some_and(perl_semantic_facts::framework::AdapterDetectionResult::is_detected);
+        facts.two_x_route_facts.push(
+            perl_semantic_facts::framework_adapters::dancer2_two_x::dancer2_two_x_route_family_facts(
+                detection_detected,
+                &activation.facts,
+                package,
+                &route_contexts.routes,
+                &route_contexts.prefixes,
+            ),
+        );
     }
     facts
 }

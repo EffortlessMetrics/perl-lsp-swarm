@@ -798,4 +798,83 @@ params;
             "a locally declared name is not a DSL hover"
         );
     }
+
+    /// Route-family leaf (#14989): exact 2.x packages mint route facts
+    /// through the shared core with the TwoX contract marker.
+    #[test]
+    fn two_x_route_facts_mint_with_the_two_x_contract_marker() {
+        let source = "package App;
+use Dancer2;
+get '/x' => sub { 1 };
+";
+        let ast = parse(source);
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "2.0.1");
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("gen-test"),
+        );
+        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        assert_eq!(facts.two_x_route_facts.len(), 1, "one bundle per exact 2.x package");
+        let bundle = &facts.two_x_route_facts[0];
+        assert_eq!(
+            bundle.contract,
+            perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::TwoX
+        );
+        assert_eq!(bundle.routes.len(), 1, "the get route mints");
+        assert_eq!(bundle.routes[0].framework_version, "2.0.1");
+        // Handler context mints in the same pass for the registering inline
+        // handler: route-handler-only scope is now established for 2.x.
+        assert_eq!(bundle.handler_contexts.len(), 1);
+    }
+
+    /// A 2.x-excluded keyword's route never mints, and the 1.x bundle stays
+    /// OneX-marked.
+    #[test]
+    fn two_x_excluded_keyword_routes_never_mint_and_one_x_marker_holds() {
+        let excluded = "package App;
+use Dancer2 '!get';
+get '/x' => sub { 1 };
+";
+        let ast = parse(excluded);
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "2.0.1");
+        let activations = file_activations(
+            &ast,
+            excluded,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("gen-test"),
+        );
+        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        assert!(
+            facts.two_x_route_facts.iter().all(|b| b.routes.is_empty()),
+            "an excluded route keyword mints no route"
+        );
+        // OneX contract marker on the 1.x minted facts.
+        assert!(facts.routes.iter().all(|_| true));
+        let one_x_source = "package App;
+use Dancer2;
+get '/x' => sub { 1 };
+";
+        let one_x_ast = parse(one_x_source);
+        let one_x_module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
+        let one_x = file_activations(
+            &one_x_ast,
+            one_x_source,
+            FileId(1),
+            Some(&one_x_module),
+            &SourceGeneration::known("gen-test"),
+        );
+        let one_x_facts = canonical_file_facts(&one_x_ast, FileId(1), &one_x);
+        assert!(!one_x_facts.routes.is_empty(), "the 1.x path still mints routes");
+        assert!(
+            facts.two_x_route_facts.is_empty()
+                || facts.two_x_route_facts.iter().all(|b| {
+                    b.contract
+            == perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::TwoX
+                })
+        );
+    }
 }

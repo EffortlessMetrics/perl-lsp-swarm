@@ -133,6 +133,10 @@ pub struct Dancer2FileActivations {
     /// (the 2.x adapter stays `Shadow` until the disposition decision) —
     /// never a publication authority.
     pub two_x_packages: Vec<Dancer2TwoXPackageActivation>,
+    /// The 2.x adapter's own detection result for this document (#14989).
+    /// Distinct from `detection` (the 1.x verdict): a 2.x-resolved module is
+    /// detected by the 2.x contract and refused by the 1.x constraint.
+    pub two_x_detection: Option<AdapterDetectionResult>,
 }
 
 /// One 2.x activating package with its typed facts (#14989).
@@ -312,7 +316,10 @@ pub fn file_activations(
     // contract owns the document. A 2.x-resolved module fails the 1.x
     // adapter's constraint above (its facts stay NotActivated), so the 2.x
     // path below is the only contract that can speak for such a document.
-    activations.two_x_packages = two_x_activations(ast, source, file_id, module, generation);
+    let (two_x_packages, two_x_detection) =
+        two_x_activations(ast, source, file_id, module, generation);
+    activations.two_x_packages = two_x_packages;
+    activations.two_x_detection = two_x_detection;
     activations
 }
 
@@ -327,9 +334,9 @@ fn two_x_activations(
     file_id: FileId,
     module: Option<&RuntimeDancer2Module>,
     generation: &SourceGeneration,
-) -> Vec<Dancer2TwoXPackageActivation> {
+) -> (Vec<Dancer2TwoXPackageActivation>, Option<AdapterDetectionResult>) {
     let Some(module) = module else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
     // Version arbitration runs before any extraction work: the pinned 2.x
     // constraint decides ownership of the document.
@@ -338,11 +345,13 @@ fn two_x_activations(
         &module.declared_version,
     ) != Some(true)
     {
-        return Vec::new();
+        return (Vec::new(), None);
     }
     let sites = extract_dancer2_two_x_activation_sites(ast, source, file_id, generation.clone());
     if sites.is_empty() {
-        return Vec::new();
+        // No 2.x activation sites: no facts to mint and no 2.x detection
+        // result worth carrying.
+        return (Vec::new(), None);
     }
     let activation = ModuleActivationIdentity::new("Dancer2", Some(file_id), generation.clone())
         .with_observed_version(ModuleVersionEvidence::new(
@@ -370,6 +379,7 @@ fn two_x_activations(
         AdapterCancellation::active(),
     );
     let detection = detect_dancer2_two_x(&input);
+    let detection_clone = detection.clone();
     // Multiple imports in one package fold by pinned import semantics
     // (#15006 review): an odd-arity site dies compilation and dominates; a
     // suppressed site contributes nothing; keyword states fold per keyword
@@ -389,7 +399,7 @@ fn two_x_activations(
             None => packages.push(Dancer2TwoXPackageActivation { package, facts }),
         }
     }
-    packages
+    (packages, Some(detection_clone))
 }
 
 /// Fold one more import's facts into a package's record under the pinned
