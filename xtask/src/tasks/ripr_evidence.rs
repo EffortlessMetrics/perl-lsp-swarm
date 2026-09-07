@@ -708,14 +708,20 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let check_json = run_ripr_check(repo, options)?;
     let check_value: Value =
         serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
-    // Fail closed on a producer whose envelope changed shape (#9113), before any
-    // counting can turn missing fields into an all-zero "clean" verdict.
-    validate_check_envelope(&check_value)?;
     // Write raw check output for offline diagnostics (#1346): repo-exposure.json only contains
     // per-bucket counts; the findings[] array (which carries per-finding classification and path)
     // is required to diagnose suppression mismatches.  This file is included in the
     // ripr-pr-evidence artifact upload so it is available without re-running ripr.
+    //
+    // This must stay ahead of the envelope check below (#9113). The artifact upload is
+    // `if: always()`, so an unrecognized producer shape is exactly the case where the exact
+    // payload is needed to diagnose the refusal — and the only case where nobody has seen it
+    // before. Validating first would bail with the evidence directory missing the one file
+    // that explains why.
     write_text(&repo.join(PR_RAW_CHECK_JSON), &check_json)?;
+    // Fail closed on a producer whose envelope changed shape (#9113), before any
+    // counting can turn missing fields into an all-zero "clean" verdict.
+    validate_check_envelope(&check_value)?;
     let suppressions = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
     let head_extents = HeadLineExtents::from_committed_diff(repo, &diff_receipt);
     // Attribution basis for the new-gap count (#11690): findings must sit in a
@@ -3957,6 +3963,190 @@ mod tests {
 
         validate_check_envelope(&check).expect("an explicitly-zero envelope is clean, not broken");
         assert_eq!(counts_for(&check).weakly_exposed, 0);
+    }
+
+    fn rules_for(patterns: &[&str]) -> RiprSuppressionRules {
+        let mut rules = RiprSuppressionRules::default();
+        for pattern in patterns {
+            rules.display_patterns.push((*pattern).to_string());
+            rules.path_patterns.push(Pattern::new(pattern).expect("test glob must be valid"));
+            // Empty = no classification filter, matching how the current matcher
+            // treats `policy/ripr-suppressions.toml` classification lists as
+            // documentary rather than selective.
+            rules.classification_patterns.push(Vec::new());
+        }
+        rules
+    }
+
+    fn counts_with(check: &Value, rules: &RiprSuppressionRules) -> RiprPrSummaryCounts {
+        let summary = check.get("summary").and_then(Value::as_object);
+        ripr_pr_summary_counts(check, summary, rules, None, None, None)
+    }
+
+    #[test]
+    fn suppression_selects_exactly_the_intended_finding_on_real_010_output() {
+        let check = parse_check(REAL_010_CHECK);
+        // The captured finding's `probe.file` is `./src/lib.rs`.
+
+        // Positive control: a rule whose path matches moves the finding out of
+        // the actionable bucket and into the policy-suppressed count. Both
+        // halves are asserted — a matcher that dropped findings entirely would
+        // also zero the bucket, and only `suppressed_by_policy` tells them apart.
+        let matched = counts_with(&check, &rules_for(&["src/lib.rs"]));
+        assert_eq!(matched.weakly_exposed, 0, "a matching rule must clear the actionable bucket");
+        assert_eq!(matched.suppressed_by_policy, 1, "the finding must be accounted as suppressed");
+
+        // Same, through a glob, since the real policy file is glob-shaped.
+        let globbed = counts_with(&check, &rules_for(&["src/**"]));
+        assert_eq!(globbed.weakly_exposed, 0);
+        assert_eq!(globbed.suppressed_by_policy, 1);
+
+        // Negative control: an unsuppressed finding stays visible and blocking.
+        // Without this, a matcher that suppressed everything would pass the
+        // positive controls above.
+        let unmatched = counts_with(&check, &rules_for(&["crates/somewhere-else/**"]));
+        assert_eq!(
+            unmatched.weakly_exposed, 1,
+            "a non-matching rule must leave the finding visible to the gate"
+        );
+        assert_eq!(unmatched.suppressed_by_policy, 0);
+
+        // And the no-policy baseline agrees with the non-matching rule, so the
+        // rule set is doing the selecting rather than the fixture.
+        assert_eq!(counts_for(&check).weakly_exposed, 1);
+    }
+
+    /// Write a fake `ripr` that answers `--format json` with `check_json`.
+    ///
+    /// Only the `json` format is served: the evidence path under test asks for
+    /// exactly that, and refusing everything else keeps the double from quietly
+    /// absorbing an invocation change.
+    #[cfg(not(windows))]
+    fn write_fake_ripr_check_binary(dir: &Path, check_json: &str) -> Result<PathBuf> {
+        let path = dir.join("ripr");
+        write_text(
+            &path,
+            &format!(
+                r#"#!/bin/sh
+case "$*" in
+  *"--format json"*)
+    cat <<'RIPR_EOF'
+{check_json}
+RIPR_EOF
+    ;;
+  *)
+    echo "unexpected ripr args: $*" >&2
+    exit 2
+    ;;
+esac
+"#
+            ),
+        )?;
+        let mut permissions = fs::metadata(&path)?.permissions();
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions)?;
+        Ok(path)
+    }
+
+    /// Build a repository the evidence path can actually run against.
+    #[cfg(not(windows))]
+    fn evidence_repo() -> Result<tempfile::TempDir> {
+        let repo = tempfile::tempdir()?;
+        init_git_repo(repo.path())?;
+        // An empty but present policy, so the only difference between the
+        // refusal and acceptance tests is the producer envelope itself.
+        fs::create_dir_all(repo.path().join("policy"))?;
+        write_text(
+            &repo.path().join(DEFAULT_RIPR_SUPPRESSIONS),
+            "schema_version = 1\npolicy = \"ripr-suppressions\"\n",
+        )?;
+        Ok(repo)
+    }
+
+    #[cfg(not(windows))]
+    fn evidence_options() -> PrEvidenceOptions {
+        PrEvidenceOptions {
+            root: DEFAULT_ROOT.to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        }
+    }
+
+    /// The envelope check must be *wired into* evidence generation, not merely
+    /// present and unit-tested.
+    ///
+    /// The direct `validate_check_envelope` tests above all survive deleting its
+    /// call site in `write_pr_evidence`, because they call the function
+    /// themselves. Only this test fails when the ingest guard is removed, so it
+    /// is the one that holds the pipeline claim: a producer whose summary lost a
+    /// required count must abort evidence generation rather than write a packet
+    /// reporting zero gaps.
+    #[cfg(not(windows))]
+    #[test]
+    fn evidence_generation_refuses_a_producer_missing_a_required_count() -> Result<()> {
+        let repo = evidence_repo()?;
+
+        // A real 0.10-shaped envelope with exactly one required count removed.
+        let mut broken = parse_check(REAL_010_CHECK);
+        broken
+            .get_mut("summary")
+            .and_then(Value::as_object_mut)
+            .expect("summary")
+            .remove("weakly_exposed");
+
+        let bin_dir = tempfile::tempdir()?;
+        let fake = write_fake_ripr_check_binary(bin_dir.path(), &broken.to_string())?;
+        let _guard = override_ripr_bin(&fake)?;
+
+        let error = write_pr_evidence(repo.path(), &evidence_options())
+            .expect_err("evidence generation must abort on a broken producer envelope");
+        assert!(
+            error.to_string().contains("weakly_exposed"),
+            "the refusal must name the missing count, got: {error}"
+        );
+
+        // No evidence packet was left behind claiming a clean result.
+        assert!(
+            !repo.path().join(PR_EVIDENCE_JSON).exists(),
+            "a refused run must not write an evidence packet"
+        );
+
+        // But the exact producer payload IS preserved (Codex review on PR #14996).
+        // The `ripr-pr-evidence` artifact uploads `if: always()`, so a refusal is
+        // precisely when someone needs the bytes that caused it — and, being an
+        // unrecognized shape, the one case nobody has seen before. Refusing before
+        // writing this file would upload an evidence directory missing the only
+        // thing that explains the refusal.
+        let raw = fs::read_to_string(repo.path().join(PR_RAW_CHECK_JSON))
+            .expect("the raw producer payload must survive a refusal for offline diagnosis");
+        let recovered: Value =
+            serde_json::from_str(&raw).expect("preserved raw output must be the producer's bytes");
+        assert!(
+            recovered.get("summary").is_some_and(|summary| summary.get("weakly_exposed").is_none()),
+            "the preserved payload must be the offending envelope, not a repaired one"
+        );
+        Ok(())
+    }
+
+    /// The complement: the same pipeline accepts real, complete 0.10 output.
+    ///
+    /// Without this, the guard above could be satisfied by a validator that
+    /// refuses everything.
+    #[cfg(not(windows))]
+    #[test]
+    fn evidence_generation_accepts_real_ripr_010_output() -> Result<()> {
+        let repo = evidence_repo()?;
+
+        let bin_dir = tempfile::tempdir()?;
+        let fake = write_fake_ripr_check_binary(bin_dir.path(), REAL_010_CHECK)?;
+        let _guard = override_ripr_bin(&fake)?;
+
+        write_pr_evidence(repo.path(), &evidence_options())
+            .expect("real 0.10 output must flow through evidence generation");
+        assert!(repo.path().join(PR_EVIDENCE_JSON).exists(), "an accepted run writes its packet");
+        Ok(())
     }
 
     // ---------------------------------------------------------------------
@@ -7234,7 +7424,17 @@ paths = ["archive/["]
             .to_string())
     }
 
-    struct RiprBinOverrideGuard;
+    /// Serializes every test that swaps the `ripr` binary.
+    ///
+    /// `RIPR_BIN_OVERRIDE` is process-global and `override_ripr_bin` releases its
+    /// lock as soon as the value is stored, so two tests overriding concurrently
+    /// each run against whichever double was installed last. That is not a
+    /// theoretical race: it made a refusal test observe a *well-formed* stub and
+    /// pass its pipeline instead of failing it. Holding this lock for the whole
+    /// override lifetime is what keeps each test bound to its own double.
+    static RIPR_BIN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct RiprBinOverrideGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 
     impl Drop for RiprBinOverrideGuard {
         fn drop(&mut self) {
@@ -7245,10 +7445,13 @@ paths = ["archive/["]
     }
 
     fn override_ripr_bin(binary: &Path) -> Result<RiprBinOverrideGuard> {
+        // A panicking test poisons this lock; recover rather than cascading an
+        // unrelated failure into every other override test.
+        let exclusive = RIPR_BIN_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut guard =
             RIPR_BIN_OVERRIDE.lock().map_err(|_| eyre!("RIPR_BIN test override lock poisoned"))?;
         *guard = Some(binary.display().to_string());
-        Ok(RiprBinOverrideGuard)
+        Ok(RiprBinOverrideGuard(exclusive))
     }
 
     fn write_fake_ripr_binary(dir: &Path) -> Result<PathBuf> {
