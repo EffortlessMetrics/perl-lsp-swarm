@@ -11,6 +11,8 @@ and `docs/reference/NATIVE_STACK_POLICY.md`.
 
 - A typed `ProjectModel` with per-fact records for files, packages, and
   symbols, plus explicit `DynamicBoundary`s and `ModelLimitation`s.
+- Bounded non-executing distribution-authoring facts (`Makefile.PL`,
+  `Build.PL`, `dist.ini`) kept separate from final `META.*` facts.
 - Deterministic, host-path-free identity (`FileId`, `PackageId`,
   `SymbolId`) and content `Digest`s.
 - One internal range format (`SourceRange`): byte offsets + 0-based UTF-8
@@ -19,7 +21,7 @@ and `docs/reference/NATIVE_STACK_POLICY.md`.
 - `Provenance` + `Confidence` + `EvidenceSource` on every fact.
 - A `FactClasses` selector so a request only pays for the fact classes it
   asks for.
-- Modules: `boundary`, `builder`, `dist`, `effects`, `error`, `export`,
+- Modules: `boundary`, `builder`, `dist`, `dist_authoring`, `effects`, `error`, `export`,
   `fact_classes`, `file`, `id`, `import` (+ `import_walk`), `model`,
   `package`, `pod`, `provenance`, `range`, `relation`, `symbol`, `test`,
   `test_item`, `test_item_discovery`.

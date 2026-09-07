@@ -1,0 +1,13 @@
+project: product
+component: Parser and lexer
+kind: Fixed
+body: >-
+  Ordinary binary string repetition now accepts already-tokenized v-string,
+  quote-word, quote-command, regex, substitution, transliteration, eval, and
+  heredoc terms after `x`, without treating key, method, package, hash, or
+  direct-call uses of `x` as repetition.
+time: 2026-09-06T09:30:00Z
+custom:
+  PR: "14963"
+  Slug: parser-string-repetition-literal-term-rhs
+  Breaking: "no"
