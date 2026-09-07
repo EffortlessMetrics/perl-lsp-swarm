@@ -28,9 +28,11 @@ cargo xtask check-file-policy           # enforce the allowlist
 ## Authority boundary
 
 The merge check validates the allowlist, classifies the current tracked tree,
-and writes both evidence files before applying its merge-base ratchet.
-Inherited unclassified paths remain visible as warnings; newly added
-unclassified paths fail and remain named in the retained evidence.
+and writes both evidence files before applying its merge-base ratchet. The
+added-path set is `merge-base(baseline, HEAD)..HEAD` with `--no-renames`, not
+the live tip of `origin/main`. Inherited unclassified paths remain visible as
+warnings; newly added unclassified paths fail and remain named in the retained
+evidence.
 
 The tracked Markdown is publication, not policy input. Ordinary feature
 branches do not refresh it, and `inventory --check` does not read or compare

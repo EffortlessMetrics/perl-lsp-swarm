@@ -88,6 +88,10 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "unit_lsp_core_full": {"lanes": ["merge_gate_shards"]},
     "unit_lsp_full": {"lanes": ["merge_gate_shards"]},
     "unit_dap_support_full": {"lanes": ["merge_gate_shards"]},
+    # #11933 freshness gates run in the same required `lsp` merge-gate shard as
+    # unit_lsp_full/unit_lsp_core_full, so they share that shard's economics.
+    "pending_parse_freshness": {"lanes": ["merge_gate_shards"]},
+    "pull_diagnostics_freshness": {"lanes": ["merge_gate_shards"]},
     # The must-context guard runs in the required merge-gate shard. Keep this
     # explicit so gate-policy additions cannot silently leave the
     # policy/economics mapping incomplete.

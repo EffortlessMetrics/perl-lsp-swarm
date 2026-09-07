@@ -2226,10 +2226,13 @@ dependencies = [
  "anyhow",
  "lsp-types",
  "perl-parser-core",
+ "perl-position-tracking",
+ "perl-source-identity",
  "perl-test-must",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "url",
 ]
 
