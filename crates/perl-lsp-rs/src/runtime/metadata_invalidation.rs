@@ -288,27 +288,17 @@ impl LspServer {
                 .collect()
         };
 
-        // Decide which roots this refresh covers under a short lock, then let
-        // it go. `capture_metadata_reads` performs up to six blocking
-        // filesystem operations per root, and `workspace_folders` also guards
-        // request helpers and the indexing commit path; holding it across that
-        // I/O would stall unrelated work for however long the filesystem takes
-        // — an unresponsive network mount being the case that hurts.
-        let capture_roots: BTreeSet<PathBuf> = {
-            let folders = self.workspace_folders.lock();
-            folders
-                .iter()
-                .filter_map(|folder| folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri)))
-                .filter(|root| roots.contains(root))
-                .collect()
-        };
+        let selected = self.select_metadata_refresh_targets(roots);
 
         // Capture phase: no lock held, but still inside the refresh
         // serialization guard, so capture and apply remain one ordered unit
         // and a slower refresh cannot apply an older snapshot after a faster
         // one.
         let captured: BTreeMap<PathBuf, Vec<(DeclaredDependencySource, MetadataSourceRead)>> =
-            capture_roots
+            selected
+                .values()
+                .cloned()
+                .collect::<BTreeSet<PathBuf>>()
                 .into_iter()
                 .map(|root| {
                     let reads = Self::capture_metadata_reads(&root, &open_document_text);
@@ -316,45 +306,8 @@ impl LspServer {
                 })
                 .collect();
 
-        let mut refreshed_any = false;
-        let mut newly_stale: Vec<String> = Vec::new();
-        let mut now_current: Vec<String> = Vec::new();
-
-        {
-            let mut folders = self.workspace_folders.lock();
-            for folder in folders.iter_mut() {
-                let Some(root) = folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri)) else {
-                    continue;
-                };
-                // Match captured reads by root rather than re-reading, which
-                // also carries the `roots` filter. A folder added between the
-                // two phases has no captured reads and is left to its own
-                // refresh rather than being given a snapshot taken before it
-                // existed; one removed in that window is simply absent here.
-                let Some(reads) = captured.get(&root) else {
-                    continue;
-                };
-                let unreadable =
-                    reads.iter().any(|(_, read)| matches!(read, MetadataSourceRead::Unreadable));
-
-                folder.refresh_workspace_metadata_from_reads(reads);
-                refreshed_any = true;
-
-                if unreadable {
-                    tracing::debug!(
-                        folder = %folder.uri,
-                        "Retained facts for unreadable metadata sources; snapshot is stale (#13640)"
-                    );
-                    newly_stale.push(folder.uri.clone());
-                } else {
-                    now_current.push(folder.uri.clone());
-                }
-                tracing::debug!(
-                    folder = %folder.uri,
-                    "Refreshed dependency/environment facts from project metadata (#13640)"
-                );
-            }
-        }
+        let (refreshed_any, newly_stale, now_current) =
+            self.apply_metadata_refresh(&selected, &captured);
 
         {
             let mut stale = self.stale_dependency_facts.lock();
@@ -369,6 +322,85 @@ impl LspServer {
         if refreshed_any {
             self.dependency_facts_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
+    }
+
+    /// Choose the folder incarnations a refresh of `roots` covers.
+    ///
+    /// Holds `workspace_folders` only long enough to read the folder list.
+    /// `capture_metadata_reads` performs up to six blocking filesystem
+    /// operations per root, and this same mutex guards request helpers and the
+    /// indexing commit path, so the reads must happen after this returns — an
+    /// unresponsive network mount would otherwise stall unrelated request work
+    /// for as long as the filesystem takes.
+    ///
+    /// The result is keyed by [`WorkspaceFolderState::incarnation`], not by
+    /// root, because that is the only thing that survives the unlocked window
+    /// without being reused. A folder removed and re-added at the same path
+    /// while the reads are in flight has the same URI and the same root, so a
+    /// root-keyed result would let the pre-removal snapshot land on the new
+    /// registration and overwrite the facts its own re-add already loaded.
+    /// Keyed by incarnation, the replacement is simply absent and keeps them.
+    fn select_metadata_refresh_targets(&self, roots: &BTreeSet<PathBuf>) -> BTreeMap<u64, PathBuf> {
+        let folders = self.workspace_folders.lock();
+        folders
+            .iter()
+            .filter_map(|folder| {
+                let root = folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri))?;
+                roots.contains(&root).then_some((folder.incarnation, root))
+            })
+            .collect()
+    }
+
+    /// Commit captured reads to the folder incarnations that produced them.
+    ///
+    /// Returns whether anything refreshed, plus the folder URIs whose snapshot
+    /// is now stale and those that are now current.
+    ///
+    /// A folder is refreshed only when `selected` still recognizes its
+    /// incarnation, so this reapplies to exactly the registrations
+    /// [`Self::select_metadata_refresh_targets`] observed. Anything registered
+    /// during the capture — including a replacement at a root that was
+    /// captured — is skipped and left to its own refresh rather than handed a
+    /// snapshot predating it; anything removed is simply not iterated.
+    fn apply_metadata_refresh(
+        &self,
+        selected: &BTreeMap<u64, PathBuf>,
+        captured: &BTreeMap<PathBuf, Vec<(DeclaredDependencySource, MetadataSourceRead)>>,
+    ) -> (bool, Vec<String>, Vec<String>) {
+        let mut refreshed_any = false;
+        let mut newly_stale: Vec<String> = Vec::new();
+        let mut now_current: Vec<String> = Vec::new();
+
+        let mut folders = self.workspace_folders.lock();
+        for folder in folders.iter_mut() {
+            let Some(root) = selected.get(&folder.incarnation) else {
+                continue;
+            };
+            let Some(reads) = captured.get(root) else {
+                continue;
+            };
+            let unreadable =
+                reads.iter().any(|(_, read)| matches!(read, MetadataSourceRead::Unreadable));
+
+            folder.refresh_workspace_metadata_from_reads(reads);
+            refreshed_any = true;
+
+            if unreadable {
+                tracing::debug!(
+                    folder = %folder.uri,
+                    "Retained facts for unreadable metadata sources; snapshot is stale (#13640)"
+                );
+                newly_stale.push(folder.uri.clone());
+            } else {
+                now_current.push(folder.uri.clone());
+            }
+            tracing::debug!(
+                folder = %folder.uri,
+                "Refreshed dependency/environment facts from project metadata (#13640)"
+            );
+        }
+
+        (refreshed_any, newly_stale, now_current)
     }
 
     /// Resolve each declared-dependency source under `root` exactly once.
@@ -489,9 +521,114 @@ mod tests {
     )]
 
     use super::LspServer;
+    use crate::runtime::workspace_folder::WorkspaceFolderState;
     use perl_lsp_rs_core::config::{DeclaredDependencySource, MetadataSourceRead};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::{Path, PathBuf};
+
+    /// Register one folder for `root` and return its incarnation.
+    fn register_folder(server: &LspServer, root: &Path) -> u64 {
+        let uri = url::Url::from_file_path(root).expect("temp dir must convert to file URI");
+        let mut folder = WorkspaceFolderState::new(uri.to_string()).with_path(root.to_path_buf());
+        folder.refresh_workspace_metadata();
+        let incarnation = folder.incarnation;
+        server.workspace_folders.lock().push(folder);
+        incarnation
+    }
+
+    fn declared_modules(server: &LspServer) -> Vec<String> {
+        server
+            .workspace_folders
+            .lock()
+            .iter()
+            .flat_map(|folder| {
+                folder
+                    .effective_workspace_config
+                    .declared_dependencies
+                    .iter()
+                    .map(|entry| entry.module.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Every registration is a distinct incarnation, including one that reuses
+    /// a URI and path a previous registration released.
+    #[test]
+    fn a_readded_folder_is_a_different_incarnation() {
+        let uri = "file:///workspace".to_string();
+        let first = WorkspaceFolderState::new(uri.clone()).with_path(PathBuf::from("/workspace"));
+        let second = WorkspaceFolderState::new(uri).with_path(PathBuf::from("/workspace"));
+
+        assert_eq!(first.uri, second.uri, "the scenario reuses the URI");
+        assert_eq!(first.path, second.path, "and reuses the path");
+        assert_ne!(
+            first.incarnation, second.incarnation,
+            "identity must survive a remove/re-add that reuses both"
+        );
+        assert_eq!(
+            first.incarnation,
+            first.clone().incarnation,
+            "a clone stands for the same registration"
+        );
+    }
+
+    /// A folder replaced at the same root while the reads are in flight keeps
+    /// the facts its own re-add loaded, rather than taking the snapshot the
+    /// previous registration selected.
+    ///
+    /// Selection and application are driven directly so the window is exact
+    /// rather than raced: a threaded version would pass most runs even with
+    /// the bug, and a flaky test is worse than none.
+    #[test]
+    fn a_folder_replaced_during_capture_does_not_take_the_older_snapshot() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().to_path_buf();
+        std::fs::write(root.join("cpanfile"), "requires 'Before::Capture';\n")
+            .expect("write cpanfile");
+
+        let server = LspServer::new();
+        let original = register_folder(&server, &root);
+
+        let roots: BTreeSet<PathBuf> = std::iter::once(root.clone()).collect();
+        let selected = server.select_metadata_refresh_targets(&roots);
+        assert_eq!(
+            selected.get(&original),
+            Some(&root),
+            "the original registration is what this refresh selected"
+        );
+
+        // The capture is the pre-replacement view of the workspace.
+        let captured: BTreeMap<PathBuf, Vec<(DeclaredDependencySource, MetadataSourceRead)>> =
+            std::iter::once((
+                root.clone(),
+                LspServer::capture_metadata_reads(&root, &BTreeMap::new()),
+            ))
+            .collect();
+
+        // The client removes the folder and adds it back at the same path,
+        // and the re-add path loads facts from the workspace as it now is.
+        std::fs::write(root.join("cpanfile"), "requires 'After::Readd';\n")
+            .expect("rewrite cpanfile");
+        server.workspace_folders.lock().clear();
+        let replacement = register_folder(&server, &root);
+        assert_ne!(replacement, original, "the re-add is a new incarnation");
+        assert_eq!(
+            declared_modules(&server),
+            vec!["After::Readd".to_string()],
+            "the re-add loaded the current workspace"
+        );
+
+        let (refreshed_any, _, _) = server.apply_metadata_refresh(&selected, &captured);
+
+        assert!(!refreshed_any, "no selected incarnation is still registered");
+        assert_eq!(
+            declared_modules(&server),
+            vec!["After::Readd".to_string()],
+            "the replacement keeps its own facts; URI and root alone would have \
+             let the pre-removal snapshot overwrite them"
+        );
+    }
 
     fn read_for(
         reads: &[(DeclaredDependencySource, MetadataSourceRead)],

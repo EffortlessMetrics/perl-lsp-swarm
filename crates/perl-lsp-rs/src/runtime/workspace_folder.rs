@@ -7,8 +7,17 @@
 #![warn(missing_docs)]
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use perl_lsp_rs_core::config::{ProjectConfig, WorkspaceConfig};
+
+/// Source of workspace-folder incarnation ids.
+///
+/// Process-global and monotonic so that every registration is distinguishable
+/// from every other, including one that reuses a URI a previous registration
+/// released. Assigned in [`WorkspaceFolderState::new`], which is the only
+/// constructor, so a new incarnation cannot be created without one.
+static NEXT_FOLDER_INCARNATION: AtomicU64 = AtomicU64::new(0);
 
 /// State for a single workspace folder.
 ///
@@ -17,6 +26,19 @@ use perl_lsp_rs_core::config::{ProjectConfig, WorkspaceConfig};
 /// the foundation for multi-root workspace support.
 #[derive(Debug, Clone)]
 pub struct WorkspaceFolderState {
+    /// Identity of this particular registration of the folder.
+    ///
+    /// A folder removed and re-added under the same URI is a *different*
+    /// incarnation: it is a fresh state whose facts the re-add path has already
+    /// loaded. Any route that reads folder state, releases
+    /// `workspace_folders`, and writes back must carry this id and refuse to
+    /// apply to a different one — URI and path are both reused across a
+    /// remove/re-add and so cannot tell the two apart, and applying anyway
+    /// overwrites the new registration's facts with a snapshot taken before it
+    /// existed (#13640).
+    ///
+    /// Cloning preserves it: a clone stands for the same registration.
+    pub(crate) incarnation: u64,
     /// The URI of the workspace folder (e.g., "file:///path/to/folder")
     pub uri: String,
     /// The filesystem path of the workspace folder (if resolvable)
@@ -41,6 +63,7 @@ impl WorkspaceFolderState {
     #[must_use]
     pub fn new(uri: String) -> Self {
         Self {
+            incarnation: NEXT_FOLDER_INCARNATION.fetch_add(1, Ordering::Relaxed),
             uri,
             path: None,
             name: None,
