@@ -26,6 +26,8 @@
     "unit_lsp_core_full": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "unit_lsp_full": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "lsp_smoke": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
+    "pending_parse_freshness": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
+    "pull_diagnostics_freshness": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "unit_dap_support_full": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "common_corpus_clean": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "msrv_authority_sync": {"requires": [], "on_dependency_failure": "blocked_not_proven"},

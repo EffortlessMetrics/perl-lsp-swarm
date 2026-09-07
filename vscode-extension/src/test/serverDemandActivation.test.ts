@@ -12,16 +12,34 @@ const mockLanguageClientOnNotification = jest.fn(() => ({ dispose: jest.fn() }))
 const mockLanguageClientSendNotification = jest.fn(async () => undefined);
 
 jest.mock('vscode-languageclient/node', () => ({
-  LanguageClient: jest.fn().mockImplementation(() => ({
-    initializeResult: { capabilities: {} },
-    onDidChangeState: mockLanguageClientOnDidChangeState,
-    onNotification: mockLanguageClientOnNotification,
-    sendNotification: mockLanguageClientSendNotification,
-    setTrace: mockLanguageClientSetTrace,
-    start: mockLanguageClientStart,
-    stop: mockLanguageClientStop,
-    dispose: mockLanguageClientDispose,
-  })),
+  State: { Stopped: 1, Running: 2, Starting: 3 },
+  LanguageClient: jest.fn().mockImplementation(() => {
+    let state = 1;
+    return {
+      get state() {
+        return state;
+      },
+      initializeResult: { capabilities: {} },
+      onDidChangeState: mockLanguageClientOnDidChangeState,
+      onNotification: mockLanguageClientOnNotification,
+      sendNotification: mockLanguageClientSendNotification,
+      setTrace: mockLanguageClientSetTrace,
+      async start() {
+        state = 3;
+        await mockLanguageClientStart();
+        state = 2;
+      },
+      async stop() {
+        try {
+          await mockLanguageClientStop();
+        } finally {
+          // Match the client's terminal state even when its handshake rejects.
+          state = 1;
+        }
+      },
+      dispose: mockLanguageClientDispose,
+    };
+  }),
   Trace: { Off: 'off', Messages: 'messages', Verbose: 'verbose' },
   TransportKind: { stdio: 0 },
 }));

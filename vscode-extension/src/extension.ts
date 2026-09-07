@@ -52,6 +52,11 @@ import { registerGherkinProviders } from './gherkinProviders';
 import { registerGherkinStepDefinitionSupport } from './gherkinStepDefinitions';
 import { registerDocumentFeatureGroup } from './documentFeatureGroup';
 import { StreamingCompletionController } from './streamingCompletion';
+import {
+  awaitServerProcessExit,
+  serverProcessOf,
+  type ServerProcessLike,
+} from './serverProcessTermination';
 import { InlineCompletionOwner } from './inlineCompletionRouting';
 import {
   runAllTestsWithProve,
@@ -170,6 +175,12 @@ import {
 } from './activationOwner';
 import type { ClientResourceMeasurement } from './clientMeasurement';
 import { extensionOwnedResourceMeasurements } from './extensionOwnedResourceCensus';
+import type { LegacyMigrationState } from './configurationMigrationLive';
+import {
+  LegacyMigrationSurface,
+  refreshLegacyMigrationOnConfigurationChange,
+  registerLegacyMigrationFolderWatcher,
+} from './configurationMigrationHost';
 
 // Compatibility projections for existing command/provider code. Lifecycle
 // ownership lives in `languageClientLifecycle`; these values are synchronized
@@ -308,6 +319,15 @@ let lastStartupDiagnosis: StartupErrorDiagnosis | undefined;
 let extensionContext: vscode.ExtensionContext | undefined;
 
 /**
+ * Live compatibility reader for registered legacy settings (#14966, under #7838).
+ *
+ * Set in `runExtensionActivation`; cleared with the other module projections when an
+ * attempt rolls back. Its state is redacted by construction, so it is safe to hand to
+ * the activation API.
+ */
+let legacyMigrationSurface: LegacyMigrationSurface | undefined;
+
+/**
  * Mid-session crash recovery state (#4625, #7845).
  *
  * `crashRecoveryArbiter` is the single generation-owned recovery arbiter
@@ -328,6 +348,11 @@ const MAX_AUTO_RESTART_ATTEMPTS = 3;
 const STABLE_RUN_GRACE_MS = 30_000;
 const WATCHDOG_INTERVAL_MS = 30_000;
 const WATCHDOG_TIMEOUT_MS = 10_000;
+// vscode-languageclient schedules `checkProcessDied()` two seconds after
+// `stop()` settles and only then terminates a still-running server. Wait a
+// little past that for the exit event; the lifecycle's own stop bound (5 s)
+// caps the whole terminal check.
+const SERVER_PROCESS_EXIT_GRACE_MS = 4_000;
 const crashRecoveryArbiter = new CrashRecoveryArbiter(
   MAX_AUTO_RESTART_ATTEMPTS,
   STABLE_RUN_GRACE_MS,
@@ -807,6 +832,23 @@ async function runExtensionActivation(
   // (debug/info/warn/error) so the VS Code Output panel level filter works.
   outputChannel = vscode.window.createOutputChannel('Perl Language Server', { log: true });
   activation.own('base', 'support_surface_allowed_after_failure', outputChannel);
+  // Registered legacy settings are read before any feature domain runs, so the reasons a
+  // stale setting is being ignored are already in the output channel when the domain it
+  // used to configure reports itself inert (#14966). The reader interprets configuration
+  // and never writes it.
+  const migrationSurface = new LegacyMigrationSurface(
+    outputChannel,
+    (context.extension.packageJSON.version as string) ?? 'unknown',
+  );
+  legacyMigrationSurface = migrationSurface;
+  try {
+    migrationSurface.refresh();
+  } catch (error: unknown) {
+    // A support surface must not decide whether activation succeeds. The failure is
+    // reported rather than swallowed, and the published state stays empty.
+    const message = error instanceof Error ? error.message : String(error);
+    outputChannel.error(`[configuration-migration] initial read failed: ${message}`);
+  }
   // The generic MCP passthrough is runtime-inert (#7119), so this domain is no
   // longer activation-critical: it registers nothing and returns no disposable.
   const mcpDisposable = featureActivationMetrics.measure('mcp', false, () =>
@@ -1170,6 +1212,14 @@ async function runExtensionActivation(
 
   const configurationWatcher = featureActivationMetrics.measure('configuration', true, () =>
     registerWorkspaceConfigurationEvents({
+      // Registered legacy keys were removed and drive no subsystem, so no
+      // configuration class classifies them; they are observed unclassified
+      // (#14966) instead of through a second host listener.
+      onAnyConfigurationChanged: (event) => {
+        if (legacyMigrationSurface) {
+          refreshLegacyMigrationOnConfigurationChange(legacyMigrationSurface, event);
+        }
+      },
       onLiveConfigurationChanged: async (event) => {
         if (event.affectsConfiguration('perl-lsp.trace.server') && client) {
           const newTrace = getTraceLevel();
@@ -1218,29 +1268,21 @@ async function runExtensionActivation(
   );
   activation.own('workspace_listeners', 'mandatory_for_activation', configurationWatcher);
 
+  // Registered after the configuration watcher so the existing workspace_listeners
+  // ordinals keep their meaning. The migration surface depends on the folder set as well
+  // as configuration content, and VS Code reports folder changes on their own event.
+  const legacyMigrationFolderWatcher = registerLegacyMigrationFolderWatcher(
+    migrationSurface,
+    (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      outputChannel.error(`[configuration-migration] folder-change read failed: ${message}`);
+    },
+  );
+  activation.own('workspace_listeners', 'optional_degradable', legacyMigrationFolderWatcher);
+
   const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
     try {
-      const config = vscode.workspace.getConfiguration('perl-lsp');
-      if (!config.get<boolean>('autoPopulateNewFiles', true)) {
-        return;
-      }
-
-      for (const uri of event.files) {
-        const boilerplate = generateBoilerplate(uri.fsPath);
-        if (!boilerplate) {
-          continue;
-        }
-
-        const doc = await vscode.workspace.openTextDocument(uri);
-        if (doc.getText().length > 0) {
-          // File already has content — don't overwrite
-          continue;
-        }
-
-        const edit = new vscode.WorkspaceEdit();
-        edit.insert(uri, new vscode.Position(0, 0), boilerplate.content);
-        await vscode.workspace.applyEdit(edit);
-      }
+      await populateCreatedFiles(event);
     } catch (e) {
       outputChannel.error('File creation handler error', e);
     }
@@ -1285,6 +1327,7 @@ async function runExtensionActivation(
       getFeatureActivationMetrics,
       getActiveDocumentReadiness,
       getExtensionOwnedResourceMeasurements,
+      getLegacyConfigurationMigrationState,
       markLanguageClientStartupMilestone,
       waitForActiveDocumentReady,
       stop: stopLanguageClientForActivationApi,
@@ -1335,6 +1378,7 @@ async function runExtensionActivation(
     getFeatureActivationMetrics,
     getActiveDocumentReadiness,
     getExtensionOwnedResourceMeasurements,
+    getLegacyConfigurationMigrationState,
     markLanguageClientStartupMilestone,
     waitForActiveDocumentReady,
     stop: stopLanguageClientForActivationApi,
@@ -1395,6 +1439,18 @@ function clearActivationProjections(): void {
   languageClientLifecycle = undefined;
   lastStartupDiagnosis = undefined;
   extensionContext = undefined;
+  legacyMigrationSurface = undefined;
+}
+
+/**
+ * Redacted legacy-setting migration state for status, doctor, and installed transition
+ * tests (#14966, under #7838).
+ *
+ * Exposed through the activation API so those surfaces observe migration state without
+ * reaching into extension internals, and without any raw configuration value.
+ */
+function getLegacyConfigurationMigrationState(): LegacyMigrationState | undefined {
+  return legacyMigrationSurface?.snapshot();
 }
 
 /**
@@ -1879,6 +1935,17 @@ function createLanguageClientLifecycle(
       const message = error instanceof Error ? error.message : String(error);
       outputChannel.error(`[lifecycle] ${phase} callback failed: ${message}`);
     },
+    // vscode-languageclient can settle `stop()` successfully or with a
+    // handshake rejection before the node transport terminates its server.
+    // Require Stopped plus exit of the process captured before `stop()` for
+    // either settlement before admitting a replacement (#14155).
+    captureStopWitness: (client) => serverProcessOf(client),
+    isClientTerminal: async (client, witness) =>
+      client.state === LanguageClientState.Stopped &&
+      (await awaitServerProcessExit(
+        witness as ServerProcessLike | undefined,
+        SERVER_PROCESS_EXIT_GRACE_MS,
+      )),
   });
 }
 
@@ -2722,6 +2789,47 @@ export function maybeNudgeArrowCompletion(event: vscode.TextDocumentChangeEvent)
   }
 
   void vscode.commands.executeCommand('editor.action.triggerSuggest');
+}
+
+/**
+ * Insert boilerplate into newly created Perl files that are still empty.
+ *
+ * `perl-lsp.autoPopulateNewFiles` is contributed `scope: "resource"`, so the
+ * gate is resolved against each created URI rather than once for the whole
+ * event (#14547). An unscoped `getConfiguration('perl-lsp')` cannot observe a
+ * `workspaceFolderValue` at all, so a multi-root workspace where one folder
+ * turns population off previously took the global value for every folder. The
+ * read must stay inside the loop for the declared scope to mean anything.
+ *
+ * A URI outside every workspace folder resolves to the global/workspace value,
+ * which is the same answer the hoisted read gave, as does an unset value. A
+ * workspace opened as a single folder has no workspace-folder layer to select,
+ * so it is unaffected too — but note that a `.code-workspace` listing exactly
+ * one folder is mechanically multi-root and does have that layer, so a value
+ * set on that folder now wins where it previously could not be seen.
+ */
+export async function populateCreatedFiles(event: vscode.FileCreateEvent): Promise<void> {
+  for (const uri of event.files) {
+    const scoped = vscode.workspace.getConfiguration('perl-lsp', uri);
+    if (!scoped.get<boolean>('autoPopulateNewFiles', true)) {
+      continue;
+    }
+
+    const boilerplate = generateBoilerplate(uri.fsPath);
+    if (!boilerplate) {
+      continue;
+    }
+
+    const doc = await vscode.workspace.openTextDocument(uri);
+    if (doc.getText().length > 0) {
+      // File already has content — don't overwrite
+      continue;
+    }
+
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(uri, new vscode.Position(0, 0), boilerplate.content);
+    await vscode.workspace.applyEdit(edit);
+  }
 }
 
 /**

@@ -196,8 +196,13 @@ mod tests {
         let mut parser = Parser::new(source);
         let ast = must_with(parser.parse(), "fixture must parse");
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
-        let activations =
-            file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("g1"),
+        );
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         (activations, facts, ast)
     }
@@ -268,8 +273,13 @@ mod tests {
         let mut parser = Parser::new(source);
         let ast = must_with(parser.parse(), "fixture must parse");
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
-        let activations =
-            file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("g1"),
+        );
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         let offset = must_some_with(source.find("params"), "params offset");
         assert!(
@@ -312,7 +322,8 @@ mod tests {
         let source = "my $x = params;";
         let mut parser = Parser::new(source);
         let ast = must_with(parser.parse(), "fixture must parse");
-        let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
+        let activations =
+            file_activations(&ast, source, FileId(1), None, &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         assert!(bounded_diagnostics(&ast, &activations, &facts).is_empty());
     }
