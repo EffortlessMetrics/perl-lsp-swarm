@@ -288,12 +288,17 @@ impl std::fmt::Display for ParseCoreDimension {
 pub struct BudgetTracker {
     /// Number of errors charged against [`ParseBudget::max_errors`] so far.
     ///
-    /// This counts diagnostics the budget *admitted*, not diagnostics the
-    /// parse returned. Terminal diagnostics are exempt from `max_errors` and
-    /// are correspondingly absent from this count, so
+    /// Within a parse operation this counts diagnostics the budget *admitted*,
+    /// not diagnostics the parse returned. Terminal diagnostics are exempt from
+    /// `max_errors` and are correspondingly absent from this count, so
     /// `ParseOutput::diagnostics.len()` may exceed it (#8786). Compare this
     /// field against `max_errors` to reason about the budget; use the
     /// diagnostics themselves to reason about what the parse reported.
+    ///
+    /// Post-parse projection layers may add to this count after the operation
+    /// has ended and its tracker has been taken, in which case the value is no
+    /// longer bounded by `max_errors`. `engine::regex_retention` does this
+    /// today; that predates the charging authority and is not governed by it.
     pub errors_emitted: usize,
     /// Current nesting depth.
     pub current_depth: usize,
