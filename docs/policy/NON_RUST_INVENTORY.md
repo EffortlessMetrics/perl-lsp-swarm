@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12849 |
-| Rust-family files | 4050 |
-| Non-Rust files | 8799 |
-| Allowlisted | 6562 |
+| Total tracked files | 12860 |
+| Rust-family files | 4057 |
+| Non-Rust files | 8803 |
+| Allowlisted | 6566 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 519 |
-| documentation | 2871 |
+| config | 520 |
+| documentation | 2874 |
 | generated | 2 |
 | production | 361 |
 | test | 2118 |
@@ -2764,6 +2764,7 @@
 | `.ci/receipts/schemas/agent-receipt.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/agent-task.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/aggregator-receipt.schema.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/receipts/schemas/build-executor-measurement.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/common-gate-receipt.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/droid-live-run.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/failure-classifier.schema.json` | config | `non-rust-ci-config` | release/ci |
@@ -3255,6 +3256,9 @@
 | `.spec/11627-module-train-live/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11627-module-train-live/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11627-module-train-live/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11639-build-executor-measurement/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11639-build-executor-measurement/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11639-build-executor-measurement/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11649-clippy-repair-falsifier-corpus/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
