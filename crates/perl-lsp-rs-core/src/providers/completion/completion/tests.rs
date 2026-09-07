@@ -926,6 +926,45 @@ Point->new(
     assert_eq!(x_item.insert_text.as_deref(), Some("x => "));
 }
 
+/// A named `:param(external_name)` is the keyword `new` actually accepts, so
+/// the completion must offer the explicit name instead of the field name.
+///
+/// Controlling issue: #13449.
+#[test]
+fn test_object_pad_constructor_param_completion_uses_explicit_param_name() {
+    let code = r#"
+use Object::Pad;
+
+class Point {
+field $x :param(across) = 0;
+field $y :param = 0;
+}
+
+Point->new(
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len());
+
+    let across = must_some(completions.iter().find(|item| item.label == "across"));
+    assert_eq!(across.insert_text.as_deref(), Some("across => "));
+    assert_eq!(across.detail.as_deref(), Some("Object::Pad constructor parameter"));
+
+    assert!(
+        !completions.iter().any(|item| {
+            item.label == "x" && item.detail.as_deref() == Some("Object::Pad constructor parameter")
+        }),
+        "the field name must not be offered as a constructor keyword once :param names one"
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "y"),
+        "a bare :param still completes under the field name"
+    );
+}
+
 #[test]
 fn test_object_pad_constructor_param_completion_honors_prefix_and_value_context() {
     let prefix_code = r#"

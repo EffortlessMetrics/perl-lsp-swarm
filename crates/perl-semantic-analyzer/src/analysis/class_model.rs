@@ -5,6 +5,7 @@
 //! Built from AST traversal, reusing existing framework detection.
 
 use crate::SourceLocation;
+use crate::analysis::field_trait::{self, DecodedFieldTrait, FieldTraitArgument, FieldTraitKind};
 use crate::ast::{Node, NodeKind};
 use crate::pragma_tracker::{PerlVersion, PragmaState, PragmaTracker};
 use std::collections::{HashMap, HashSet};
@@ -100,8 +101,14 @@ pub struct FieldInfo {
     pub location: SourceLocation,
     /// Raw field traits such as `param`, `reader`, and `writer`
     pub attributes: Vec<String>,
-    /// Whether `:param` is present
+    /// Whether the field participates in constructor parameters
     pub param: bool,
+    /// Explicit constructor-parameter name from `:param(external_name)`.
+    ///
+    /// `None` for a bare `:param`, whose parameter name is the field's own
+    /// name. Use [`ClassModel::object_pad_constructor_param_names`] rather
+    /// than reconstructing that default at each call site.
+    pub param_name: Option<String>,
     /// Explicit or synthesized reader method name
     pub reader: Option<String>,
     /// Explicit or synthesized writer method name
@@ -301,8 +308,24 @@ impl ClassModel {
     }
 
     /// Return the names of Object::Pad fields that participate in constructor parameters.
+    ///
+    /// These are the *field* names. Callers building `Class->new(...)` keys
+    /// want [`Self::object_pad_constructor_param_names`], because
+    /// `:param(external_name)` accepts `external_name` rather than the field
+    /// name.
     pub fn object_pad_param_field_names(&self) -> impl Iterator<Item = &str> {
         self.fields.iter().filter(|field| field.param).map(|field| field.name.as_str())
+    }
+
+    /// Return the constructor parameter names this class accepts.
+    ///
+    /// A bare `:param` contributes the field's own name; `:param(external)`
+    /// contributes `external` instead of, not in addition to, the field name.
+    pub fn object_pad_constructor_param_names(&self) -> impl Iterator<Item = &str> {
+        self.fields
+            .iter()
+            .filter(|field| field.param)
+            .map(|field| field.param_name.as_deref().unwrap_or(field.name.as_str()))
     }
 }
 
@@ -1422,21 +1445,18 @@ impl ClassModelBuilder {
             return None;
         }
 
-        let mut param = false;
-        let mut traits = Vec::new();
-        for attr in attributes {
-            let attr_name = attr.trim().to_string();
-            if attr_name == "param" {
-                param = true;
-            }
-            traits.push(attr_name);
-        }
+        // Retain every attribute spelling exactly as the parser produced it;
+        // trait identity is decoded from these spellings rather than matched
+        // against exact bare strings.
+        let traits: Vec<String> = attributes.iter().map(|attr| attr.trim().to_string()).collect();
+        let (param, param_name) = Self::object_pad_param_identity(&traits);
 
         let mut field = FieldInfo {
             name: name.clone(),
             location: statement.location,
             attributes: traits,
             param,
+            param_name,
             reader: None,
             writer: None,
             accessor: None,
@@ -1457,12 +1477,43 @@ impl ClassModelBuilder {
         Some(field)
     }
 
-    fn object_pad_reader_name(field_name: &str, traits: &[String]) -> Option<String> {
-        if traits.iter().any(|trait_name| trait_name == "reader") {
-            Some(Self::object_pad_public_name(field_name).to_string())
-        } else {
-            None
+    /// Resolve one generated-member name from a decoded field trait.
+    ///
+    /// `bare_default` supplies the family's default identity for the bare
+    /// spelling. An explicit static name replaces that default rather than
+    /// supplementing it, and empty, malformed, dynamic, or profile-unsupported
+    /// forms generate nothing.
+    ///
+    /// `admits` carries the caller's profile decision for the decoded form. A
+    /// named form is admitted exactly where the same family's bare form is
+    /// admitted, so decoding an argument never widens a core or `Object::Pad`
+    /// claim.
+    fn generated_member_name(
+        traits: &[String],
+        kind: FieldTraitKind,
+        admits: impl FnOnce(&DecodedFieldTrait) -> bool,
+        bare_default: impl FnOnce() -> String,
+    ) -> Option<String> {
+        // The first trait of the family owns the result; a malformed spelling
+        // fails closed instead of falling through to a later duplicate.
+        let decoded = field_trait::first_trait_of_kind(traits, kind)?;
+        if !admits(&decoded) {
+            return None;
         }
+        match &decoded.argument {
+            FieldTraitArgument::None => Some(bare_default()),
+            FieldTraitArgument::StaticName(name) => Some(name.clone()),
+            FieldTraitArgument::Empty | FieldTraitArgument::MalformedOrDynamic => None,
+        }
+    }
+
+    fn object_pad_reader_name(field_name: &str, traits: &[String]) -> Option<String> {
+        Self::generated_member_name(
+            traits,
+            FieldTraitKind::Reader,
+            |_| true,
+            || Self::object_pad_public_name(field_name).to_string(),
+        )
     }
 
     fn object_pad_writer_name(
@@ -1471,42 +1522,46 @@ impl ClassModelBuilder {
         allow_named_writer: bool,
         allow_bare_writer: bool,
     ) -> Option<String> {
-        for trait_name in traits {
-            if trait_name == "writer" {
-                if !allow_bare_writer {
-                    return None;
-                }
-                return Some(format!("set_{}", Self::object_pad_public_name(field_name)));
-            }
-
-            if let Some(writer_name) = trait_name.strip_prefix("writer(") {
-                // The first writer trait owns the result. Malformed or unsupported
-                // forms fail closed instead of falling through to another trait.
-                let writer_name = writer_name.strip_suffix(')')?;
-                let writer_name = writer_name.trim();
-                if !allow_named_writer || !is_valid_named_writer(writer_name) {
-                    return None;
-                }
-                return Some(writer_name.to_owned());
-            }
-        }
-
-        None
+        Self::generated_member_name(
+            traits,
+            FieldTraitKind::Writer,
+            |decoded| if decoded.is_bare() { allow_bare_writer } else { allow_named_writer },
+            || format!("set_{}", Self::object_pad_public_name(field_name)),
+        )
     }
 
     fn object_pad_accessor_name(field_name: &str, traits: &[String]) -> Option<String> {
-        if traits.iter().any(|trait_name| trait_name == "accessor") {
-            Some(Self::object_pad_public_name(field_name).to_string())
-        } else {
-            None
-        }
+        Self::generated_member_name(
+            traits,
+            FieldTraitKind::Accessor,
+            |_| true,
+            || Self::object_pad_public_name(field_name).to_string(),
+        )
     }
 
     fn object_pad_mutator_name(field_name: &str, traits: &[String]) -> Option<String> {
-        if traits.iter().any(|trait_name| trait_name == "mutator") {
-            Some(Self::object_pad_public_name(field_name).to_string())
-        } else {
-            None
+        Self::generated_member_name(
+            traits,
+            FieldTraitKind::Mutator,
+            |_| true,
+            || Self::object_pad_public_name(field_name).to_string(),
+        )
+    }
+
+    /// Decode `:param` presence and its explicit constructor-parameter name.
+    ///
+    /// Returns `(participates, explicit_name)`. A bare `:param` participates
+    /// under the field's own name; `:param(external)` participates under
+    /// `external`; empty, malformed, and dynamic arguments participate under
+    /// no name at all rather than silently falling back to the field name.
+    fn object_pad_param_identity(traits: &[String]) -> (bool, Option<String>) {
+        let Some(decoded) = field_trait::first_trait_of_kind(traits, FieldTraitKind::Param) else {
+            return (false, None);
+        };
+        match &decoded.argument {
+            FieldTraitArgument::None => (true, None),
+            FieldTraitArgument::StaticName(name) => (true, Some(name.clone())),
+            FieldTraitArgument::Empty | FieldTraitArgument::MalformedOrDynamic => (false, None),
         }
     }
 
@@ -1654,13 +1709,6 @@ impl ClassModelBuilder {
 }
 
 // ---- Helper functions (parallel to SymbolExtractor's private helpers) ----
-
-fn is_valid_named_writer(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else { return false };
-    (first == '_' || first.is_ascii_alphabetic())
-        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
-}
 
 fn class_tiny_default_hash_pairs(statement: &Node) -> Option<(&[(Node, Node)], SourceLocation)> {
     let expression = match &statement.kind {
