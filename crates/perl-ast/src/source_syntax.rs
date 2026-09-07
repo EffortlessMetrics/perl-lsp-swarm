@@ -448,11 +448,12 @@ pub enum PayloadContradiction {
     /// A proven payload value over a recorded segmentation that contains a
     /// runtime-dependent run.
     ///
-    /// If any segment's contribution is [`CookedValue::Dynamic`], the payload's
-    /// value depends on runtime state and cannot have been statically proven.
+    /// If any segment interpolates or its contribution is [`CookedValue::Dynamic`],
+    /// the payload's value depends on runtime state and cannot have been statically
+    /// proven. An unavailable interpolation fragment does not erase that dependence.
     /// A partial prefix suffices to establish that dependence even when the
     /// remaining source has not been segmented.
-    /// A merely *unavailable* fragment is different: the value may have been
+    /// A merely *unavailable* static fragment is different: the value may have been
     /// proven by other means, so that combination is left alone.
     ProvenValueOverDynamicSegments,
     /// A written form and a delimiter pair that cannot occur together.
@@ -669,7 +670,12 @@ fn payload_contradictions(
         found.push(PayloadContradiction::ExactSegmentationLeavesContentUncovered);
     }
 
-    if cooked.is_proven() && segments.iter().any(|segment| segment.cooked_fragment.is_dynamic()) {
+    if cooked.is_proven()
+        && segments.iter().any(|segment| {
+            segment.cooked_fragment.is_dynamic()
+                || matches!(segment.payload, SourceSegmentPayload::Interpolation { .. })
+        })
+    {
         found.push(PayloadContradiction::ProvenValueOverDynamicSegments);
     }
 
@@ -2994,6 +3000,68 @@ mod tests {
             }]);
             if static_prefix.compat_value() != Some("abc") {
                 return Err("a static prefix must not invalidate external proof".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_interpolation_still_refuses_a_proven_payload_value() -> Result<(), String> {
+        for exact in [true, false] {
+            let mut string = plain_double_quoted_string();
+            let mut string_segment = interpolation_segment(1, if exact { 4 } else { 2 });
+            string_segment.cooked_fragment = CookedValue::Unavailable;
+            string.segmentation = if exact {
+                SourceSegmentation::Exact(vec![string_segment.clone()])
+            } else {
+                SourceSegmentation::Partial(vec![string_segment.clone()])
+            };
+            let mut doc = heredoc(HeredocForm::Bare, PayloadTerminal::Complete);
+            let mut body_segment = interpolation_segment(8, if exact { 14 } else { 10 });
+            body_segment.cooked_fragment = CookedValue::Unavailable;
+            doc.segmentation = if exact {
+                SourceSegmentation::Exact(vec![body_segment.clone()])
+            } else {
+                SourceSegmentation::Partial(vec![body_segment.clone()])
+            };
+
+            for contradictions in [string.contradictions(), doc.contradictions()] {
+                if !contradictions.contains(&PayloadContradiction::ProvenValueOverDynamicSegments) {
+                    return Err(format!(
+                        "unavailable interpolation hid runtime dependence: exact={exact}"
+                    ));
+                }
+            }
+            if string.compat_value().is_some()
+                || string.proven_literal_value().is_some()
+                || string.proven_segments().is_some()
+                || doc.compat_content().is_some()
+                || doc.proven_literal_value().is_some()
+                || doc.proven_segments().is_some()
+            {
+                return Err(format!(
+                    "contradictory interpolation published a result: exact={exact}"
+                ));
+            }
+
+            // Unavailability itself is not runtime dependence. Independently
+            // proven values over unknown literal fragments remain legitimate.
+            string_segment.payload = SourceSegmentPayload::Literal;
+            body_segment.payload = SourceSegmentPayload::Literal;
+            string.segmentation = if exact {
+                SourceSegmentation::Exact(vec![string_segment])
+            } else {
+                SourceSegmentation::Partial(vec![string_segment])
+            };
+            doc.segmentation = if exact {
+                SourceSegmentation::Exact(vec![body_segment])
+            } else {
+                SourceSegmentation::Partial(vec![body_segment])
+            };
+            if string.compat_value() != Some("abc") || doc.compat_content() != Some("body\n") {
+                return Err(format!(
+                    "unavailable literal fragments lost external proof: exact={exact}"
+                ));
             }
         }
         Ok(())
