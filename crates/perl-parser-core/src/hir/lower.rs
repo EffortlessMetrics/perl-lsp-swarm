@@ -478,7 +478,7 @@ impl Lowerer {
                 // the implicit topic as a first-class operand is #6666's claim,
                 // not this arm's.
                 //
-                // Both halves of the predicate are load-bearing. The sigil alone
+                // The empty range is the proven discriminator. The sigil alone
                 // is not enough: `new $class` is a *written* dynamic indirect
                 // constructor whose receiver the parser records as a real,
                 // nonzero-width `Identifier { name: "$class" }`. Dropping that
@@ -2585,10 +2585,10 @@ fn is_sigil_prefixed(value: &str) -> bool {
 /// should be classified as a *bareword* at all is a separate defect, #15031;
 /// this predicate deliberately leaves that behavior unchanged.)
 ///
-/// The sigil test is defence in depth rather than a proven discriminator. No
-/// zero-width `Identifier` with a non-sigil name is currently reachable: a probe
-/// over malformed and recovery-path inputs found none, and every zero-width
-/// `Identifier` observed anywhere is the `"$_"` topic. Keeping the sigil test
+/// The sigil test is defence in depth rather than a proven discriminator. A finite
+/// probe over malformed and recovery-path inputs found no zero-width
+/// `Identifier` with a non-sigil name; every zero-width identifier in that
+/// corpus was the `"$_"` topic. Keeping the sigil test
 /// means that if recovery ever does synthesize a zero-width placeholder named
 /// like an ordinary bareword, it is still recorded rather than silently dropped
 /// by this arm. `hir_synthesized_topic_not_a_bareword.rs` states that limit

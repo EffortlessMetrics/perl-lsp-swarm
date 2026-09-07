@@ -29,6 +29,24 @@ use perl_parser_core::Parser;
 use perl_parser_core::hir::{BarewordRole, HirFile, HirKind, lower_ast};
 use perl_parser_core::pir::lower_hir;
 
+type TestResult = Result<(), String>;
+
+fn require(condition: bool, message: impl FnOnce() -> String) -> TestResult {
+    if condition { Ok(()) } else { Err(message()) }
+}
+
+fn require_equal<T: PartialEq + std::fmt::Debug>(
+    actual: T,
+    expected: T,
+    message: impl FnOnce() -> String,
+) -> TestResult {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!("{}: actual {actual:?}, expected {expected:?}", message()))
+    }
+}
+
 fn lower(source: &str) -> HirFile {
     let mut parser = Parser::new(source);
     lower_ast(&parser.parse_with_recovery().ast)
@@ -58,46 +76,50 @@ const UNBOUND_TOPIC_FORMS: &[&str] =
 // ---------------------------------------------------------------------------
 
 #[test]
-fn unbound_regex_forms_contribute_no_bareword_fact() {
+fn unbound_regex_forms_contribute_no_bareword_fact() -> TestResult {
     for source in UNBOUND_TOPIC_FORMS {
-        assert!(
-            bareword_names(source).is_empty(),
-            "{source:?} recorded bareword facts {:?}; the synthesized `$_` topic is not a bareword",
-            bareword_names(source),
-        );
+        require(bareword_names(source).is_empty(), || {
+            format!(
+                "{source:?} recorded bareword facts {:?}; the synthesized `$_` topic is not a bareword",
+                bareword_names(source)
+            )
+        })?;
     }
+    Ok(())
 }
 
 #[test]
-fn unbound_regex_forms_contribute_no_bareword_item() {
+fn unbound_regex_forms_contribute_no_bareword_item() -> TestResult {
     for source in UNBOUND_TOPIC_FORMS {
-        assert!(
-            bareword_expr_names(source).is_empty(),
-            "{source:?} emitted BarewordExpr items {:?}; the same false claim must not survive \
+        require(bareword_expr_names(source).is_empty(), || {
+            format!(
+                "{source:?} emitted BarewordExpr items {:?}; the same false claim must not survive \
              in the item stream, which `pir::lower` keys unsupported-construct counts on",
-            bareword_expr_names(source),
-        );
+                bareword_expr_names(source)
+            )
+        })?;
     }
+    Ok(())
 }
 
 /// The two forms named verbatim in #14641's reproduction, including the
 /// two-statement case that produced one fabricated fact per statement.
 #[test]
-fn issue_reproduction_is_clean() {
-    assert_eq!(bareword_names("s/a/b/; tr/a/b/;"), Vec::<String>::new());
+fn issue_reproduction_is_clean() -> TestResult {
+    require_equal(bareword_names("s/a/b/; tr/a/b/;"), Vec::<String>::new(), String::new)?;
+    Ok(())
 }
 
 /// Real idiomatic Perl reaches the same fabrication, so the defect was not
 /// confined to a bare statement at file scope.
 #[test]
-fn unbound_topic_inside_common_idioms_records_nothing() {
+fn unbound_topic_inside_common_idioms_records_nothing() -> TestResult {
     for source in ["map { s/a/b/; $_ } @z;", "for (@x) { s/a/b/ }", "while (<STDIN>) { tr/a/b/ }"] {
-        assert!(
-            !bareword_names(source).iter().any(|name| name == "$_"),
-            "{source:?} recorded a `$$_` bareword fact: {:?}",
-            bareword_names(source),
-        );
+        require(!bareword_names(source).iter().any(|name| name == "$_"), || {
+            format!("{source:?} recorded a `$$_` bareword fact: {:?}", bareword_names(source))
+        })?;
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -105,23 +127,29 @@ fn unbound_topic_inside_common_idioms_records_nothing() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_written_bareword_is_still_recorded() {
-    assert_eq!(bareword_names("foo;"), vec!["foo".to_string()]);
-    assert_eq!(bareword_expr_names("foo;"), vec!["foo".to_string()]);
+fn a_written_bareword_is_still_recorded() -> TestResult {
+    require_equal(bareword_names("foo;"), vec!["foo".to_string()], String::new)?;
+    require_equal(bareword_expr_names("foo;"), vec!["foo".to_string()], String::new)?;
+    Ok(())
 }
 
 /// The discriminating pair: identical statement shape, one fabricated operand
 /// and one written bareword. A guard that dropped both — or kept both — fails.
 #[test]
-fn fabricated_and_written_names_are_distinguished_in_one_file() {
-    assert_eq!(bareword_names("foo; s/a/b/; bar;"), vec!["foo".to_string(), "bar".to_string()]);
+fn fabricated_and_written_names_are_distinguished_in_one_file() -> TestResult {
+    require_equal(
+        bareword_names("foo; s/a/b/; bar;"),
+        vec!["foo".to_string(), "bar".to_string()],
+        String::new,
+    )?;
+    Ok(())
 }
 
 /// The guard sits on the single arm every bareword role funnels through
 /// (`visit_identifier_with_bareword_context` delegates to it), so each role is
 /// checked rather than only the `Expression` one the fabrication happens to use.
 #[test]
-fn bareword_roles_other_than_expression_still_record() {
+fn bareword_roles_other_than_expression_still_record() -> TestResult {
     let cases: &[(&str, &str, BarewordRole)] = &[
         ("foo;", "foo", BarewordRole::Expression),
         ("require Foo::Bar;", "Foo::Bar", BarewordRole::ModuleRequest),
@@ -131,28 +159,32 @@ fn bareword_roles_other_than_expression_still_record() {
     ];
     for (source, expected_name, expected_role) in cases {
         let file = lower(source);
-        assert!(
+        require(
             file.bareword_table
                 .facts
                 .iter()
                 .any(|fact| fact.name == *expected_name && fact.role == *expected_role),
-            "{source:?} lost its {expected_role:?} bareword {expected_name:?}; recorded {:?}",
-            file.bareword_table.facts.iter().map(|f| (&f.name, f.role)).collect::<Vec<_>>(),
-        );
+            || {
+                format!(
+                    "{source:?} lost its {expected_role:?} bareword {expected_name:?}; recorded {:?}",
+                    file.bareword_table.facts.iter().map(|f| (&f.name, f.role)).collect::<Vec<_>>()
+                )
+            },
+        )?;
     }
+    Ok(())
 }
 
 /// A bound operator never had the fabrication, and must stay that way: this
 /// pins that the guard did not change the already-correct path.
 #[test]
-fn a_bound_operator_records_no_topic_fact() {
+fn a_bound_operator_records_no_topic_fact() -> TestResult {
     for source in ["$x =~ s/a/b/;", "$x =~ tr/a/b/;", "$_ =~ s/a/b/;"] {
-        assert!(
-            bareword_names(source).is_empty(),
-            "{source:?} recorded {:?}",
-            bareword_names(source),
-        );
+        require(bareword_names(source).is_empty(), || {
+            format!("{source:?} recorded {:?}", bareword_names(source))
+        })?;
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -165,20 +197,24 @@ fn a_bound_operator_records_no_topic_fact() {
 /// reflects only barewords that are in the source, and a file mixing the two
 /// reports one rather than two.
 #[test]
-fn pir_receipt_no_longer_counts_a_phantom_bareword() {
+fn pir_receipt_no_longer_counts_a_phantom_bareword() -> TestResult {
     fn bareword_count(source: &str) -> usize {
         let graph = lower_hir(&lower(source));
         graph.receipt.unsupported_construct_counts.get("BarewordExpr").copied().unwrap_or(0)
     }
 
-    assert_eq!(bareword_count("s/a/b/;"), 0, "unbound s/// contains no bareword to count");
-    assert_eq!(bareword_count("tr/a/b/;"), 0, "unbound tr/// contains no bareword to count");
-    assert_eq!(bareword_count("foo;"), 1, "a written bareword is still counted");
-    assert_eq!(
-        bareword_count("foo; s/a/b/;"),
-        1,
-        "only the written bareword counts; the fabricated topic must not inflate the tally",
-    );
+    require_equal(bareword_count("s/a/b/;"), 0, || {
+        "unbound s/// contains no bareword to count".to_owned()
+    })?;
+    require_equal(bareword_count("tr/a/b/;"), 0, || {
+        "unbound tr/// contains no bareword to count".to_owned()
+    })?;
+    require_equal(bareword_count("foo;"), 1, || "a written bareword is still counted".to_owned())?;
+    require_equal(bareword_count("foo; s/a/b/;"), 1, || {
+        "only the written bareword counts; the fabricated topic must not inflate the tally"
+            .to_owned()
+    })?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +249,7 @@ fn sigil_prefixed_identifiers(source: &str) -> Vec<(String, usize, usize)> {
 /// an `IndirectObject`. Whether a sigil-prefixed name should be a *bareword* at
 /// all is a separate defect (#15031), deliberately not changed here.
 #[test]
-fn a_written_dynamic_constructor_receiver_is_preserved() {
+fn a_written_dynamic_constructor_receiver_is_preserved() -> TestResult {
     for (source, name, start, end) in [
         ("new $class;", "$class", 4usize, 10usize),
         ("my $o = new $class;", "$class", 12, 18),
@@ -221,45 +257,53 @@ fn a_written_dynamic_constructor_receiver_is_preserved() {
         ("new $class::Foo;", "$class::Foo", 4, 15),
     ] {
         // The node really is source-backed: sigil-prefixed but *not* zero-width.
-        assert_eq!(
+        require_equal(
             sigil_prefixed_identifiers(source),
             vec![(name.to_string(), start, end)],
-            "{source:?} no longer yields a source-backed sigil-prefixed Identifier",
-        );
+            || format!("{source:?} no longer yields a source-backed sigil-prefixed Identifier"),
+        )?;
 
         let file = lower(source);
-        assert!(
-            file.bareword_table.facts.iter().any(|fact| fact.name == name
-                && fact.range.start == start
-                && fact.range.end == end
-                && fact.role == BarewordRole::IndirectObject),
-            "{source:?} lost its written receiver {name:?}; the guard must not discard a \
+        require(
+            file.bareword_table.facts.iter().any(|fact| {
+                fact.name == name
+                    && fact.range.start == start
+                    && fact.range.end == end
+                    && fact.role == BarewordRole::IndirectObject
+            }),
+            || {
+                format!(
+                    "{source:?} lost its written receiver {name:?}; the guard must not discard a \
              source-backed name. Recorded: {:?}",
-            file.bareword_table.facts.iter().map(|f| (&f.name, f.role)).collect::<Vec<_>>(),
-        );
+                    file.bareword_table.facts.iter().map(|f| (&f.name, f.role)).collect::<Vec<_>>()
+                )
+            },
+        )?;
     }
+    Ok(())
 }
 
 /// The premise the guard actually rests on: the fabricated operand is
 /// distinguishable from written source by being **zero-width**, not merely by
 /// carrying a sigil.
 #[test]
-fn the_fabrication_is_zero_width_and_written_names_are_not() {
-    assert_eq!(
-        sigil_prefixed_identifiers("s/a/b/;"),
-        vec![("$_".to_string(), 0, 0)],
-        "the parser no longer fabricates a zero-width `$$_` operand; this suite's subject is gone",
-    );
+fn the_fabrication_is_zero_width_and_written_names_are_not() -> TestResult {
+    require_equal(sigil_prefixed_identifiers("s/a/b/;"), vec![("$_".to_string(), 0, 0)], || {
+        "the parser no longer fabricates a zero-width `$$_` operand; this suite's subject is gone"
+            .to_owned()
+    })?;
 
     for (source, _) in [("new $class;", ()), ("my $o = new $class;", ())] {
         for (name, start, end) in sigil_prefixed_identifiers(source) {
-            assert_ne!(
-                start, end,
-                "{source:?} yielded a zero-width written name {name:?}; the guard's \
-                 discriminator would misclassify it as synthesized",
-            );
+            require(start != end, || {
+                format!(
+                    "{source:?} yielded a zero-width written name {name:?}; the guard's \
+                 discriminator would misclassify it as synthesized (start={start}, end={end})"
+                )
+            })?;
         }
     }
+    Ok(())
 }
 
 /// **A stated limit, not a passing claim.**
@@ -267,17 +311,17 @@ fn the_fabrication_is_zero_width_and_written_names_are_not() {
 /// `is_synthesized_operand` requires *both* an empty range and a sigil. Only the
 /// empty-range half is falsifiable by test today: mutating the guard to drop the
 /// sigil condition breaks nothing, because no zero-width `Identifier` with a
-/// non-sigil name is currently reachable.
+/// non-sigil name was observed in the finite recovery corpus below.
 ///
 /// This test measures that fact instead of asserting the sigil half is
 /// load-bearing when it is not. It probes malformed and recovery-path inputs —
 /// where a synthesized placeholder is most likely to appear — and pins that every
-/// zero-width `Identifier` produced anywhere is the `"$_"` topic. If recovery
-/// ever synthesizes a zero-width node named like an ordinary bareword, this fails
+/// zero-width `Identifier` produced by this corpus is the `"$_"` topic. If recovery
+/// produces a non-topic placeholder for one of these inputs, this test fails
 /// and the sigil condition becomes a real, testable guard rather than defence in
 /// depth.
 #[test]
-fn the_sigil_condition_is_defence_in_depth_not_a_proven_discriminator() {
+fn the_sigil_condition_is_defence_in_depth_not_a_proven_discriminator() -> TestResult {
     fn zero_width_identifiers(source: &str) -> Vec<String> {
         fn walk(node: &Node, found: &mut Vec<String>) {
             if let NodeKind::Identifier { name } = &node.kind
@@ -328,16 +372,18 @@ fn the_sigil_condition_is_defence_in_depth_not_a_proven_discriminator() {
     ];
     for source in recovery_inputs {
         let names = zero_width_identifiers(source);
-        assert!(
-            names.iter().all(|name| name == "$_"),
-            "{source:?} produced zero-width Identifier(s) {names:?} with a non-sigil name. The \
+        require(names.iter().all(|name| name == "$_"), || {
+            format!(
+                "{source:?} produced zero-width Identifier(s) {names:?} with a non-sigil name. The \
              sigil half of `is_synthesized_operand` is now load-bearing and must be given a \
-             discriminating test rather than left as defence in depth.",
-        );
+             discriminating test rather than left as defence in depth."
+            )
+        })?;
     }
 
     // Positive control: the probe can see zero-width nodes at all.
-    assert_eq!(zero_width_identifiers("s/a/b/;"), vec!["$_".to_string()]);
+    require_equal(zero_width_identifiers("s/a/b/;"), vec!["$_".to_string()], String::new)?;
+    Ok(())
 }
 
 /// The remaining half of the premise: for these forms the parser emits no
@@ -346,7 +392,7 @@ fn the_sigil_condition_is_defence_in_depth_not_a_proven_discriminator() {
 /// dereferences, globs, `goto`, hash keys, interpolation — not a proof of
 /// impossibility. A new counterexample fails here first.
 #[test]
-fn these_written_forms_yield_no_sigil_prefixed_identifier() {
+fn these_written_forms_yield_no_sigil_prefixed_identifier() -> TestResult {
     let sources = [
         "${foo};",
         "${$x};",
@@ -385,11 +431,13 @@ fn these_written_forms_yield_no_sigil_prefixed_identifier() {
     ];
 
     for source in sources {
-        assert!(
-            sigil_prefixed_identifiers(source).is_empty(),
-            "{source:?} produced sigil-prefixed Identifier node(s) {:?}; if any is zero-width \
+        require(sigil_prefixed_identifiers(source).is_empty(), || {
+            format!(
+                "{source:?} produced sigil-prefixed Identifier node(s) {:?}; if any is zero-width \
              the guard would now discard it — add it to the preserved-name control instead",
-            sigil_prefixed_identifiers(source),
-        );
+                sigil_prefixed_identifiers(source)
+            )
+        })?;
     }
+    Ok(())
 }
