@@ -5,7 +5,7 @@ mod cpan_test_helpers;
 use cpan_test_helpers::{assert_clean_parse, parse};
 use perl_parser_core::hir::{AssignMode, HirExpr, HirKind, HirStmt, lower_ast};
 use perl_parser_core::syntax::error::{ParseError, RecoveryKind, RecoverySite};
-use perl_parser_core::{Node, NodeKind, Parser};
+use perl_parser_core::{Node, NodeKind, Parser, TokenKind, TokenStream};
 
 fn find_assignment<'a>(node: &'a Node, expected_op: &str) -> Option<&'a Node> {
     if matches!(&node.kind, NodeKind::Assignment { op, .. } if op == expected_op) {
@@ -51,6 +51,24 @@ fn program_statements(ast: &Node) -> Result<&[Node], String> {
     match &ast.kind {
         NodeKind::Program { statements, .. } => Ok(statements),
         other => Err(format!("expected program root, got {other:?}")),
+    }
+}
+
+fn token_after_infix_x(source: &str) -> Result<(TokenKind, String), String> {
+    let mut stream = TokenStream::new(source);
+    let mut saw_x = false;
+    loop {
+        let token =
+            stream.next().map_err(|error| format!("lex error for {source:?}: {error:?}"))?;
+        if token.kind() == TokenKind::Eof {
+            return Err(format!("no token after infix x in {source:?}"));
+        }
+        if saw_x {
+            return Ok((token.kind(), token.text.to_string()));
+        }
+        if token.kind() == TokenKind::Identifier && token.text.as_ref() == "x" {
+            saw_x = true;
+        }
     }
 }
 
@@ -464,6 +482,17 @@ fn slash_after_infix_x_scans_as_bare_regex_not_c_comment() -> Result<(), String>
         "$value x/* separated */= 3;",
     ] {
         let ast = parse(source);
+        let (kind_after_x, text_after_x) = token_after_infix_x(source)?;
+        if kind_after_x == TokenKind::Assign {
+            return Err(format!(
+                "token after x is Assign — /* */ was skipped as a comment:\n{source}\n{text_after_x}"
+            ));
+        }
+        if kind_after_x != TokenKind::Slash {
+            return Err(format!(
+                "expected Slash after infix x (bare regex opener), got {kind_after_x:?} {text_after_x:?} for {source}"
+            ));
+        }
         if find_assignment(&ast, "x=").is_some() {
             return Err(format!(
                 "slash after infix x must not form x= (C comments do not exist):\n{}",
@@ -515,10 +544,18 @@ fn slash_after_infix_x_scans_as_bare_regex_not_c_comment() -> Result<(), String>
     };
     match &right.kind {
         NodeKind::Regex { pattern, modifiers, .. }
-            if pattern == "/foo/" && modifiers.is_empty() =>
-        {
-            Ok(())
-        }
-        other => Err(format!("expected Regex /foo/ after infix x, got: {other:?}")),
+            if pattern == "/foo/" && modifiers.is_empty() => {}
+        other => return Err(format!("expected Regex /foo/ after infix x, got: {other:?}")),
     }
+
+    // Opposite-direction token control: contiguous `x=` still lexes as
+    // Identifier("x") immediately followed by Assign. If this started
+    // requiring Slash after every `x`, the #13179 operator would be lost.
+    let (kind_after_contiguous_x, text_after_contiguous_x) = token_after_infix_x("$value x= 3;")?;
+    if kind_after_contiguous_x != TokenKind::Assign || text_after_contiguous_x != "=" {
+        return Err(format!(
+            "contiguous x= must still lex Assign after x, got {kind_after_contiguous_x:?} {text_after_contiguous_x:?}"
+        ));
+    }
+    Ok(())
 }
