@@ -139,10 +139,14 @@ mod tests {
 
     #[test]
     fn reported_slo_percentiles_are_unchanged_by_the_exact_rank() {
-        // P50/P95/P99 are the only percentiles the SLO reporter asks for, and
-        // the exact rank agrees with the retired floating rank for every
-        // sample count the tracker can hold.
-        for n in 1..=512usize {
+        // P50/P95/P99 are the only percentiles the SLO reporter asks for. The
+        // exact rank agrees with the retired floating rank for every sample
+        // count from 1 through 1_200 — past `SloConfig::sample_window_size`'s
+        // 1_000 default — plus a spread of larger windows, because that field
+        // is public and a caller may configure a wider one.
+        let counts = (1..=1_200usize).chain([2_000, 5_000, 10_000, 65_536, 100_000]);
+
+        for n in counts {
             let sorted: Vec<u64> = (0..n as u64).collect();
             for pct in [50, 95, 99] {
                 // The retired helper's rank, verbatim.
