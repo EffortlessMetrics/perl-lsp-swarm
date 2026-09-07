@@ -368,6 +368,7 @@ mod tests {
     use super::*;
     use color_eyre::eyre::eyre;
     use std::collections::BTreeSet;
+    use xtask::schema_apply::validate_payload_against_schema;
 
     fn sample_receipt() -> SessionReceipt {
         SessionReceipt {
@@ -579,6 +580,90 @@ mod tests {
                 properties.contains(key),
                 "receipt field {key} is not declared in schema properties"
             );
+        }
+
+        // The key-set comparison above only proves the two field lists line
+        // up. It cannot see `type`, `const`, `enum`, `minLength`, or
+        // `minimum`, so the emitted receipt could carry a wrong-typed or
+        // out-of-vocabulary value with this assertion green. Applying the
+        // compiled schema is what binds those constraints (#14268).
+        //
+        // `format` stays an annotation: JSON Schema 2020-12 does not assert
+        // it by default and this validator does not opt in, so `captured_at`
+        // is bound as a string here and nothing more.
+        let violations = validate_payload_against_schema(
+            &schema,
+            ".ci/receipts/schemas/session-start.schema.json",
+            &value,
+            "session-start receipt",
+        )?;
+        assert!(violations.is_empty(), "emitted receipt violates its schema: {violations:?}");
+        Ok(())
+    }
+
+    /// Discriminating control for #14268: each mutation keeps the receipt's
+    /// key set exactly as the schema declares it, so the required/properties
+    /// comparison above stays green, and only the applied schema rejects it.
+    #[test]
+    fn applied_schema_rejects_values_the_key_set_check_cannot_see() -> Result<()> {
+        let root = project_root()?;
+        let schema_path = root.join(".ci/receipts/schemas/session-start.schema.json");
+        let schema: serde_json::Value = serde_json::from_str(&fs::read_to_string(&schema_path)?)?;
+
+        let cases: &[(&str, fn(&mut serde_json::Value))] = &[
+            ("timestamp_source outside its enum", |receipt| {
+                receipt["timestamp_source"] = serde_json::json!("wall_clock");
+            }),
+            ("captured_at not a string", |receipt| {
+                receipt["captured_at"] = serde_json::json!(1_752_192_000);
+            }),
+            ("schema_version not the pinned const", |receipt| {
+                receipt["schema_version"] = serde_json::json!(2);
+            }),
+            ("kind not the pinned const", |receipt| {
+                receipt["kind"] = serde_json::json!("session_finish");
+            }),
+            ("branch empty under minLength", |receipt| {
+                receipt["branch"] = serde_json::json!("");
+            }),
+            ("behind_origin_main negative under minimum", |receipt| {
+                receipt["behind_origin_main"] = serde_json::json!(-1);
+            }),
+            ("fetch_ok not a boolean", |receipt| {
+                receipt["fetch_ok"] = serde_json::json!("yes");
+            }),
+        ];
+
+        let declared: BTreeSet<String> = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .map(|object| object.keys().cloned().collect())
+            .unwrap_or_default();
+
+        for (label, mutate) in cases {
+            let mut value = serde_json::to_value(sample_receipt())?;
+            mutate(&mut value);
+
+            // Negative control: the key set is untouched, so the check above
+            // would still pass for every one of these receipts.
+            let keys: BTreeSet<String> = value
+                .as_object()
+                .ok_or_else(|| eyre!("receipt did not serialize to an object"))?
+                .keys()
+                .cloned()
+                .collect();
+            assert!(
+                keys.is_subset(&declared),
+                "{label}: the mutation must not change the receipt's key set"
+            );
+
+            let violations = validate_payload_against_schema(
+                &schema,
+                ".ci/receipts/schemas/session-start.schema.json",
+                &value,
+                "session-start receipt",
+            )?;
+            assert!(!violations.is_empty(), "{label}: the applied schema must reject this receipt");
         }
         Ok(())
     }

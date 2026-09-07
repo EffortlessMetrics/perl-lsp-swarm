@@ -3449,6 +3449,22 @@ created = "2026-08-24"
 review_after = "2026-11-24"
 
 [[allow]]
+id = "non-rust-oracle-receipt-canonical-fixture"
+glob = "fixtures/oracle_receipt/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/oracle"
+reason = "Canonical conforming instance of `oracle_receipt.v1` (#14268). `cargo xtask check-oracle-receipt-schema` walked the schema document but never applied it to any receipt, so every `additionalProperties`, `uniqueItems`, `minItems`, `minLength`, `minimum` and nested `$defs` constraint bound nothing. This receipt is the instance the compiled schema is applied to, and the task's falsifiers mutate it in memory."
+covered_by = [
+  "cargo xtask check-oracle-receipt-schema",
+  "cargo test -p xtask --bin xtask oracle_receipt_schema --locked",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
 id = "non-rust-train-edge-contract-fixtures"
 glob = "fixtures/train_edge_contract/**/*.json"
 kind = "test_fixture"

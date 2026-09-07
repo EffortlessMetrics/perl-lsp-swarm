@@ -1,0 +1,132 @@
+{
+  "schema_version": "oracle_receipt.v1",
+  "receipt_id": "oracle-receipt-imports-exports-importexport-0001",
+  "comparison_class": "ImportExport",
+  "fixture_id": "imports_exports",
+  "source_snapshot": {
+    "path_class": "public_test_fixture",
+    "fixture_source": "crates/perl-corpus/fixtures/parser_accuracy/imports_exports.pl",
+    "content_hash": "sha256:9f2b1c0d4e5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c"
+  },
+  "rust_extractor": {
+    "name": "oracle-import-export-extractor",
+    "version": "oracle_runner.v1",
+    "fact_model": "normalized_fact.v1"
+  },
+  "perl_oracle": {
+    "interpreter": "declared_fixture_perl",
+    "version": "v5.38.2",
+    "invocation_mode": "declared_fixture_command"
+  },
+  "module_path_authority": {
+    "authority": "declared_fixture_root",
+    "declared_roots": [
+      "crates/perl-corpus/fixtures/parser_accuracy"
+    ],
+    "ambient_roots_reported": false
+  },
+  "environment": {
+    "denied": [
+      "PERL5LIB",
+      "PERL5OPT",
+      "local::lib"
+    ],
+    "declared": [
+      "LC_ALL"
+    ],
+    "redacted_values": true
+  },
+  "ambient_inputs": [],
+  "generated_inputs": [
+    {
+      "framework": "Exporter",
+      "provenance": "SourceBackedGenerated",
+      "source_range": {
+        "path_class": "public_test_fixture",
+        "start_line": 6,
+        "start_character": 0,
+        "end_line": 6,
+        "end_character": 28
+      }
+    }
+  ],
+  "dynamic_boundaries": [],
+  "stale_facts": [],
+  "unsupported_effects": [],
+  "normalized_facts": {
+    "rust": [
+      {
+        "fact_id": "export_ok.Accuracy::ImportsExports.answer",
+        "name": "answer",
+        "provenance": "SourceBackedGenerated",
+        "confidence": "high",
+        "freshness": "fresh",
+        "fallback": "none",
+        "source_range": {
+          "path_class": "public_test_fixture",
+          "start_line": 6,
+          "start_character": 0,
+          "end_line": 6,
+          "end_character": 28
+        }
+      },
+      {
+        "fact_id": "import.Accuracy::ImportsConsumer.answer",
+        "name": "answer",
+        "provenance": "ExplicitSource",
+        "confidence": "high",
+        "freshness": "fresh",
+        "fallback": "none",
+        "source_range": {
+          "path_class": "public_test_fixture",
+          "start_line": 4,
+          "start_character": 0,
+          "end_line": 4,
+          "end_character": 40
+        }
+      }
+    ],
+    "oracle": [
+      {
+        "fact_id": "export_ok.Accuracy::ImportsExports.answer",
+        "name": "answer",
+        "provenance": "SourceBackedGenerated",
+        "confidence": "high",
+        "freshness": "fresh",
+        "fallback": "none",
+        "source_range": null
+      },
+      {
+        "fact_id": "import.Accuracy::ImportsConsumer.answer",
+        "name": "answer",
+        "provenance": "ExplicitSource",
+        "confidence": "high",
+        "freshness": "fresh",
+        "fallback": "none",
+        "source_range": null
+      }
+    ]
+  },
+  "comparisons": [
+    {
+      "result_class": "oracle_agrees",
+      "fact_id": "export_ok.Accuracy::ImportsExports.answer",
+      "promotion_effect": "supports_promotion",
+      "message": "Rust extractor and real-Perl oracle agree that Accuracy::ImportsExports offers answer through @EXPORT_OK."
+    },
+    {
+      "result_class": "oracle_agrees",
+      "fact_id": "import.Accuracy::ImportsConsumer.answer",
+      "promotion_effect": "supports_promotion",
+      "message": "Rust extractor and real-Perl oracle agree that Accuracy::ImportsConsumer imports answer."
+    }
+  ],
+  "provider_behavior_changed": false,
+  "editor_runtime_dependency": false,
+  "redaction": {
+    "private_paths_redacted": true,
+    "environment_values_redacted": true,
+    "raw_launch_payloads_redacted": true
+  },
+  "claim_boundary": "One declared-fixture ImportExport comparison under a declared module root with ambient include paths denied. The oracle side reports no source ranges, so this receipt establishes no range-accuracy, runtime, editor, or workspace-wide claim; line and character offsets are zero-based."
+}
