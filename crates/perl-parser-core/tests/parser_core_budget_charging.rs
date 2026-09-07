@@ -151,6 +151,39 @@ fn repeated_operations_begin_from_fresh_core_counters() {
     );
 }
 
+/// Retained diagnostics are operation-scoped, exactly like the counters that
+/// account for them.
+///
+/// The counters and the vector are two halves of one receipt. Zeroing
+/// `errors_emitted` in `begin` while leaving the diagnostics behind lets a
+/// second operation return the first operation's diagnostics beside an
+/// `errors_emitted` that does not account for them — a vector and a receipt
+/// describing different operations. Against that implementation the second
+/// operation here reports one diagnostic and `errors_emitted == 0`.
+#[test]
+fn repeated_operations_do_not_inherit_retained_diagnostics() {
+    let config = ParserConfigIdentity::production_default().with_budget(ParseBudget::unlimited());
+    let mut parser = Parser::with_production_config("my $x = ;", config);
+
+    let first = parser.parse_with_recovery();
+    assert_eq!(first.diagnostics.len(), 1, "the fixture must retain one diagnostic");
+    assert_eq!(first.budget_usage.errors_emitted, 1, "and must charge for it");
+
+    // The stream is exhausted, so the second operation performs no work and can
+    // legitimately retain nothing. Anything it does return came from the first.
+    let second = parser.parse_with_recovery();
+    assert!(
+        second.diagnostics.is_empty(),
+        "a second operation must not return the first operation's diagnostics; got {:?}",
+        second.diagnostics
+    );
+    assert_eq!(
+        second.diagnostics.len(),
+        second.budget_usage.errors_emitted,
+        "the retained vector and the charge receipt must describe the same operation"
+    );
+}
+
 /// Strict and recovery-aware entry points share one meaning for core work.
 #[test]
 fn strict_and_recovery_paths_share_core_charges() -> Result<(), Box<dyn std::error::Error>> {
@@ -910,12 +943,19 @@ fn no_bulk_path_grows_the_diagnostic_vector_outside_the_seam() {
         ".errors.insert(",
         ".errors.extend_from_slice(",
         ".errors.retain(",
-        ".errors.clear(",
         ".errors.truncate(",
         ".errors.drain(",
     ] {
         assert_every_raw_use_is_annotated(mutator, 0);
     }
+
+    // One deliberate exemption: `begin_operation` clears the vector so
+    // retention shares the lifetime of the charge that accounts for it. It
+    // *shrinks* the vector at an operation boundary rather than growing it
+    // inside one, which is the opposite of the bypass this control exists to
+    // catch — but it is still a direct mutation, so it is pinned rather than
+    // exempted by pattern, and the annotation check above still applies to it.
+    assert_every_raw_use_is_annotated(".errors.clear(", 1);
 }
 
 /// The pre-#8786 defect must not return: the diagnostic limit is charged

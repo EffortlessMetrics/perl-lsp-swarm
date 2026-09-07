@@ -472,6 +472,13 @@ impl<'a> Parser<'a> {
     fn begin_operation(&mut self) {
         self.operation.begin();
         self.block_depth = 0;
+        // #8786: the retained diagnostics are operation-scoped too. `begin`
+        // zeroes the charge counters, so leaving the vector behind would let a
+        // second operation return the first operation's diagnostics while
+        // reporting `errors_emitted` that does not account for them — the
+        // receipt and the vector describing different operations. Retention and
+        // its charge share one lifetime, or neither means anything.
+        self.errors.clear();
     }
 
     /// Get all parse errors collected during parsing
