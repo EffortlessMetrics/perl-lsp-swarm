@@ -888,8 +888,102 @@ pub enum Outcome { Passed, Failed { reason: String } }\n\
 struct Hidden;\n\
 impl Hidden { pub fn reachable_only_in_crate() {} }\n";
 
+/// An enum whose variants carry payloads. Variant fields have no visibility of
+/// their own — they are exactly as public as the enum — so a fixture that
+/// spells `pub` on them would not exercise the real rule.
+const VARIANT_PAYLOAD_FIXTURE: &str = "\
+pub enum Decision {\n\
+    Allowed,\n\
+    Denied { reason: String, code: u16 },\n\
+    Raw(u8, String),\n\
+    #[cfg(test)]\n    OnlyInTests { note: String },\n\
+}\n\
+pub struct Decision2 { pub reason: String }\n\
+enum Hidden { Variant { secret: u8 } }\n";
+
 fn governed_ids(root: &Path) -> Result<Vec<String>> {
     Ok(discover_surface(root)?.into_iter().map(|item| item.id).collect())
+}
+
+/// The member-governance boundary, pinned so it cannot drift silently in either
+/// direction: a type re-exported from another crate is governed at the
+/// re-export row only. Lifting its members would make the checker's subject the
+/// transitive re-export closure; #14721 owns whether to widen it. The live
+/// crate re-exports `perl_parser_core` types, so this reads real output.
+#[test]
+fn foreign_reexported_types_are_governed_at_the_reexport_only() -> Result<()> {
+    let root = repo_root()?;
+    let ids = governed_ids(&root)?;
+    let foreign = ["Node", "NodeKind", "SourceLocation", "ParseError", "ParseResult", "Parser"];
+
+    // The re-export itself is governed — the boundary is about members, not
+    // about letting a foreign name onto the surface unrecorded.
+    for name in foreign {
+        let row = format!("reexport:perl_tdd_support::{name}");
+        if !ids.iter().any(|id| id == &row) {
+            bail!("{row} must be governed as a re-export: the crate re-exports it");
+        }
+    }
+
+    // No member row may hang off one of those foreign types.
+    for name in foreign {
+        let owner_prefix = format!("perl_tdd_support::{name}::");
+        if let Some(found) = ids.iter().find(|id| {
+            matches!(
+                id.split_once(':'),
+                Some((kind, path))
+                    if MEMBER_KINDS.contains(&kind) && path.starts_with(&owner_prefix)
+            )
+        }) {
+            bail!(
+                "member {found} was lifted from a foreign re-exported type; \
+                 members are governed for types defined in this crate (see #14721)"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A variant's payload is public surface: callers construct and destructure it,
+/// so renaming a named field or reordering a tuple element changes the
+/// contract. Governing only the variant name leaves that drift invisible.
+#[test]
+fn enum_variant_payload_fields_are_governed_members() -> Result<()> {
+    let dir = fixture_root(VARIANT_PAYLOAD_FIXTURE, MINIMAL_MANIFEST)?;
+    let ids = governed_ids(dir.path())?;
+    for expected in [
+        // Named payload fields, owned by `<Type>::<Variant>`.
+        "field:perl_tdd_support::Decision::Denied::reason",
+        "field:perl_tdd_support::Decision::Denied::code",
+        // Tuple payload elements are governed positionally.
+        "field:perl_tdd_support::Decision::Raw::0",
+        "field:perl_tdd_support::Decision::Raw::1",
+        // The variants themselves remain governed.
+        "variant:perl_tdd_support::Decision::Allowed",
+        "variant:perl_tdd_support::Decision::Denied",
+    ] {
+        if !ids.iter().any(|id| id == expected) {
+            bail!("{expected} was not discovered: {ids:?}");
+        }
+    }
+    for unexpected in [
+        // A unit variant has no payload to govern.
+        "field:perl_tdd_support::Decision::Allowed::0",
+        // `cfg(test)` payloads are not shipped surface.
+        "field:perl_tdd_support::Decision::OnlyInTests::note",
+        // A private enum's payload is not surface.
+        "field:perl_tdd_support::Hidden::Variant::secret",
+    ] {
+        if ids.iter().any(|id| id == unexpected) {
+            bail!("{unexpected} must not be governed surface: {ids:?}");
+        }
+    }
+    // The variant-scoped owner keeps a payload field distinct from a struct
+    // field of the same name, so one cannot silently stand in for the other.
+    if !ids.iter().any(|id| id == "field:perl_tdd_support::Decision2::reason") {
+        bail!("struct field `Decision2::reason` was not discovered: {ids:?}");
+    }
+    Ok(())
 }
 
 #[test]

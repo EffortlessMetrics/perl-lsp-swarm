@@ -24,9 +24,24 @@
 //!
 //! Granularity: named public exports, re-exports and Cargo features have rows.
 //! Public inherent methods, fields and enum variants also have individual rows
-//! under their public owning type (including qualified impls and re-exports).
-//! Trait implementations remain governed through their trait contract rather
-//! than being counted as inherent members.
+//! under their public owning type (including qualified impls and re-exports),
+//! and a variant's payload fields have rows under `<Type>::<Variant>` — named
+//! by identifier, tuple payloads by position — because callers construct and
+//! destructure them. Trait implementations remain governed through their trait
+//! contract rather than being counted as inherent members.
+//!
+//! Boundary of member governance: members are governed for types **defined in
+//! this crate**, including a type defined in a private module and republished
+//! by a `pub use`. A type re-exported from *another* crate — `Node`,
+//! `NodeKind`, `SourceLocation`, `ParseError`, `ParseResult`, `Parser` from
+//! `perl-parser-core`, and the `must*` family from `perl-test-must` — is
+//! governed at the re-export row only; its own methods, fields and variants
+//! belong to the crate that defines them and are not inventoried here.
+//! Discovery parses this crate's sources, so lifting foreign members would make
+//! the checker's subject the transitive re-export closure and couple this gate's
+//! verdict to churn in crates this policy does not own. #14721 owns the
+//! `perl-parser` re-export question; widening the subject is that issue's
+//! decision, not this checker's default.
 //!
 //! Consumers are attributed at crate-root entry-segment granularity: the scanner
 //! records the first path segment a consumer names after `perl_tdd_support::`,
@@ -309,14 +324,24 @@ pub(crate) fn discover_surface(root: &Path) -> Result<Vec<Discovered>> {
         .filter(|item| item.api_kind == "reexport")
         .flat_map(|reexport| {
             let origin = resolve_local_origin(&reexport.source, &reexport.path);
+            let nested_prefix = format!("{origin}::");
+            let origin_for_rewrite = origin.clone();
             shadow
                 .iter()
-                .filter(move |member| member.is_member() && member.owner == origin)
-                .map(|member| {
+                .filter(move |member| {
+                    // `owner == origin` is the type's own members; the nested
+                    // prefix carries an enum variant's payload fields, whose
+                    // owner is `<origin>::<Variant>`.
+                    member.is_member()
+                        && (member.owner == origin || member.owner.starts_with(&nested_prefix))
+                })
+                .map(move |member| {
                     let name = member.path.rsplit("::").next().unwrap_or_default();
+                    let suffix =
+                        member.owner.strip_prefix(origin_for_rewrite.as_str()).unwrap_or_default();
                     Discovered::member(
                         &member.api_kind,
-                        reexport.path.clone(),
+                        format!("{}{suffix}", reexport.path),
                         name,
                         combine_cfg(&reexport.cfg, &member.cfg),
                     )
@@ -428,7 +453,7 @@ fn walk_item(
             if is_pub(&node.vis) && !is_cfg_test(&node.attrs) {
                 let owner = qualify(module_path, &node.ident.to_string());
                 let type_cfg = combine_cfg(inherited_cfg, &cfg_of(&node.attrs));
-                walk_fields(&owner, &type_cfg, &node.fields, out);
+                walk_fields(&owner, &type_cfg, &node.fields, FieldVisibility::RequirePub, out);
             }
         }
         Item::Enum(node) => {
@@ -440,12 +465,27 @@ fn walk_item(
                     if is_cfg_test(&variant.attrs) {
                         continue;
                     }
+                    let variant_name = variant.ident.to_string();
+                    let variant_cfg = combine_cfg(&type_cfg, &cfg_of(&variant.attrs));
                     out.push(Discovered::member(
                         "variant",
                         owner.clone(),
-                        &variant.ident.to_string(),
-                        combine_cfg(&type_cfg, &cfg_of(&variant.attrs)),
+                        &variant_name,
+                        variant_cfg.clone(),
                     ));
+                    // A variant's payload is public surface too: callers
+                    // construct and destructure it, so a renamed named field,
+                    // a reordered tuple element, or a changed payload type is
+                    // a change to the contract. Those fields are governed
+                    // under `<Type>::<Variant>` so they cannot collide with a
+                    // struct field of the owning type.
+                    walk_fields(
+                        &format!("{owner}::{variant_name}"),
+                        &variant_cfg,
+                        &variant.fields,
+                        FieldVisibility::InheritedFromOwner,
+                        out,
+                    );
                 }
             }
         }
@@ -487,13 +527,31 @@ fn walk_item(
 ///
 /// Tuple-struct fields are named by position (`Type::0`), which is how a
 /// consumer spells them. Unit structs contribute nothing.
-fn walk_fields(owner: &str, type_cfg: &str, fields: &syn::Fields, out: &mut Sink) {
+/// Visibility rule for the fields of a container.
+///
+/// A struct field is surface only when it is itself `pub`. An enum variant's
+/// payload fields carry no visibility of their own: they are exactly as public
+/// as the enum, so requiring `pub` on them would discover nothing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FieldVisibility {
+    RequirePub,
+    InheritedFromOwner,
+}
+
+fn walk_fields(
+    owner: &str,
+    type_cfg: &str,
+    fields: &syn::Fields,
+    visibility: FieldVisibility,
+    out: &mut Sink,
+) {
+    let governed = |field: &syn::Field| {
+        !is_cfg_test(&field.attrs)
+            && (visibility == FieldVisibility::InheritedFromOwner || is_pub(&field.vis))
+    };
     match fields {
         syn::Fields::Named(named) => {
-            for field in &named.named {
-                if !is_pub(&field.vis) || is_cfg_test(&field.attrs) {
-                    continue;
-                }
+            for field in named.named.iter().filter(|field| governed(field)) {
                 if let Some(ident) = &field.ident {
                     out.push(Discovered::member(
                         "field",
@@ -506,7 +564,7 @@ fn walk_fields(owner: &str, type_cfg: &str, fields: &syn::Fields, out: &mut Sink
         }
         syn::Fields::Unnamed(unnamed) => {
             for (index, field) in unnamed.unnamed.iter().enumerate() {
-                if !is_pub(&field.vis) || is_cfg_test(&field.attrs) {
+                if !governed(field) {
                     continue;
                 }
                 out.push(Discovered::member(
