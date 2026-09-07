@@ -86,6 +86,9 @@ pub fn hover_projection_at(
 /// only keywords state their scope honestly: the 2.x route-family leaf that
 /// would establish request context at this position is a separate claim,
 /// so hover says so instead of guessing.
+// Unused in the lib build BY DESIGN: the production hover stays silent
+// while the adapter is Shadow; only comparison consumers call this.
+#[allow(dead_code)]
 pub fn two_x_shadow_hover_projection_at(
     activations: &Dancer2FileActivations,
     ast: &perl_parser_core::Node,
@@ -99,6 +102,7 @@ pub fn two_x_shadow_hover_projection_at(
     two_x_shadow_keyword_hover(activation, ast, offset, package)
 }
 
+#[allow(dead_code)]
 fn two_x_shadow_keyword_hover(
     activation: &Dancer2TwoXPackageActivation,
     ast: &perl_parser_core::Node,
