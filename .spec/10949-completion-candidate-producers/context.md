@@ -49,8 +49,9 @@ shape) or a `CompletionCandidate` (the migration target). Discovery is
 
 One plane is not enough, so discovery reconciles three:
 
-- **channel** — the producer population above, authoritative for "what can
-  append?";
+- **channel** — the producer population above, which also covers a return of a
+  named carrier struct such as `CompletionFinalization`, discovered from source
+  rather than listed;
 - **construction** — every file that builds a `CompletionItem`. A file that
   constructs candidates but exposes no producer must carry a
   `[[construction_only]]` row naming the producer that owns its output;

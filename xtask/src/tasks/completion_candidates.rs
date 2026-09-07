@@ -34,10 +34,10 @@
 //!
 //! # Discovery ceiling
 //!
-//! Stated so a reader does not over-trust the check: discovery is syntactic. A
-//! producer that returned candidates by value, or appended through a wrapper
-//! type rather than `&mut Vec<CompletionItem>`, would not appear in the first
-//! plane; the construction plane is what bounds that gap at file granularity.
+//! Stated so a reader does not over-trust the check: discovery is syntactic.
+//! The three planes bound one another — channel at function granularity,
+//! construction at file granularity, delegation at module granularity — but a
+//! producer evading all three would not appear.
 //! Reachability for core-provider rows is declared, not proven — only rows
 //! called directly from a runtime entry point are mechanically reconciled
 //! against the call site. Every row records which of those two it is, so no
@@ -800,20 +800,84 @@ fn discover_provider_references(
     root: &Path,
     files: &[String],
 ) -> Result<BTreeMap<String, BTreeSet<String>>> {
-    let pattern = regex::Regex::new(r"(?:crate|perl_lsp_rs_core)::providers::([a-z_0-9]+)")
-        .wrap_err("failed to compile the provider-reference pattern")?;
     let mut references: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for file in files {
         let source = fs::read_to_string(root.join(file))
             .wrap_err_with(|| format!("failed to read {file}"))?;
-        for capture in pattern.captures_iter(&source) {
-            let Some(module) = capture.get(1) else {
-                continue;
-            };
-            references.entry(module.as_str().to_string()).or_default().insert(file.clone());
+        let parsed = syn::parse_file(&source)
+            .wrap_err_with(|| format!("failed to parse {file} with syn"))?;
+        let mut modules = BTreeSet::new();
+        let mut visitor = ProviderReferenceVisitor { modules: &mut modules };
+        visitor.visit_file(&parsed);
+        for module in modules {
+            references.entry(module).or_default().insert(file.clone());
         }
     }
     Ok(references)
+}
+
+/// Collects `providers::<module>` names from use trees and from paths.
+///
+/// Syn-based rather than textual because a grouped import —
+/// `use crate::providers::{file_completion, htmx};` — has no
+/// `providers::<ident>` substring to match, and a delegation that escapes the
+/// plane is exactly what the plane exists to prevent.
+struct ProviderReferenceVisitor<'a> {
+    modules: &'a mut BTreeSet<String>,
+}
+
+impl ProviderReferenceVisitor<'_> {
+    /// Walk a use tree, noting every module named directly under `providers`.
+    fn walk_use_tree(&mut self, tree: &syn::UseTree, under_providers: bool) {
+        match tree {
+            syn::UseTree::Path(path) => {
+                let name = path.ident.to_string();
+                if under_providers {
+                    self.modules.insert(name);
+                    // Deeper segments belong to that module, not to another.
+                    return;
+                }
+                self.walk_use_tree(&path.tree, name == "providers");
+            }
+            syn::UseTree::Group(group) => {
+                for item in &group.items {
+                    self.walk_use_tree(item, under_providers);
+                }
+            }
+            syn::UseTree::Name(name) => {
+                if under_providers {
+                    self.modules.insert(name.ident.to_string());
+                }
+            }
+            syn::UseTree::Rename(rename) => {
+                if under_providers {
+                    self.modules.insert(rename.ident.to_string());
+                }
+            }
+            syn::UseTree::Glob(_) => {
+                // `use crate::providers::*` names no module of its own; the
+                // items it pulls in are reached by their own paths elsewhere.
+            }
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for ProviderReferenceVisitor<'_> {
+    fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
+        self.walk_use_tree(&node.tree, false);
+        syn::visit::visit_item_use(self, node);
+    }
+
+    fn visit_path(&mut self, node: &'ast syn::Path) {
+        let segments: Vec<String> =
+            node.segments.iter().map(|segment| segment.ident.to_string()).collect();
+        for window in segments.windows(2) {
+            if window[0] == "providers" {
+                self.modules.insert(window[1].clone());
+            }
+        }
+        syn::visit::visit_path(self, node);
+    }
 }
 
 /// Is every file of this `providers::` module inside the scan roots?
@@ -1226,9 +1290,26 @@ fn impl_type_name(node: &syn::ItemImpl) -> Option<String> {
     }
 }
 
+/// The whole path of a type, not its last segment.
+///
+/// `a::Shared` and `b::Shared` are different types, and each may carry a
+/// method of the same name in one file. A trailing-segment id gives both the
+/// same identity, and `merge_declarations` cannot distinguish that from the
+/// mutually exclusive `cfg` arms it is meant to collapse — so the second
+/// producer would join the first row and inherit its disposition.
 fn type_name(ty: &syn::Type) -> Option<String> {
     match ty {
-        syn::Type::Path(path) => path.path.segments.last().map(|segment| segment.ident.to_string()),
+        syn::Type::Path(path) => Some(
+            path.path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect::<Vec<_>>()
+                .join("::"),
+        ),
+        syn::Type::Reference(reference) => type_name(&reference.elem),
+        syn::Type::Paren(paren) => type_name(&paren.elem),
+        syn::Type::Group(group) => type_name(&group.elem),
         _ => None,
     }
 }
@@ -1398,6 +1479,16 @@ impl EntryBodyVisitor<'_> {
             syn::Expr::Reference(reference) => self.holds_candidates(&reference.expr),
             syn::Expr::Paren(paren) => self.holds_candidates(&paren.expr),
             syn::Expr::Group(group) => self.holds_candidates(&group.expr),
+            // Conservative on purpose. Wrapping is a rename with extra steps:
+            // `let page = Page { items: completions };` then
+            // `page.items.push(..)` reaches the client exactly as a direct
+            // push would, and nothing on that line names the original binding.
+            // Over-flagging costs a false alarm the author can restructure
+            // around; under-flagging ships unranked candidates.
+            syn::Expr::Field(field) => self.holds_candidates(&field.base),
+            syn::Expr::Index(index) => self.holds_candidates(&index.expr),
+            syn::Expr::Try(inner) => self.holds_candidates(&inner.expr),
+            syn::Expr::Unary(unary) => self.holds_candidates(&unary.expr),
             _ => false,
         }
     }
@@ -2879,6 +2970,85 @@ mod tests {
         let mut visitor = EntryBodyVisitor::new(&producers);
         visitor.visit_block(&ordinary.block);
         assert!(!visitor.appended_after_finalizer, "contribution before the finalizer is normal");
+    }
+
+    /// Grouped and renamed imports have no `providers::<ident>` substring, so
+    /// a textual scan of the delegation plane would miss exactly the hand-off
+    /// the plane exists to catch.
+    #[test]
+    fn provider_references_survive_every_import_shape() {
+        let file: syn::File = syn::parse_quote! {
+            use crate::providers::{file_completion, htmx};
+            use crate::providers::dancer2::completion as dancer_completion;
+            use perl_lsp_rs_core::providers::testing::Resolver;
+            fn call() {
+                let _ = crate::providers::inline_completion::something();
+            }
+        };
+        let mut modules = BTreeSet::new();
+        let mut visitor = ProviderReferenceVisitor { modules: &mut modules };
+        visitor.visit_file(&file);
+        for expected in ["file_completion", "htmx", "dancer2", "testing", "inline_completion"] {
+            assert!(
+                modules.contains(expected),
+                "the delegation plane lost `providers::{expected}`; found {modules:?}"
+            );
+        }
+    }
+
+    /// Two types whose paths differ only before the last segment are two
+    /// types, and each may carry a method of the same name in one file.
+    #[test]
+    fn producer_ids_keep_the_whole_self_type_path() {
+        let file: syn::File = syn::parse_quote! {
+            impl a::Shared {
+                fn add(&self, completions: &mut Vec<CompletionItem>) {}
+            }
+            impl b::Shared {
+                fn add(&self, completions: &mut Vec<CompletionItem>) {}
+            }
+        };
+        let carriers = BTreeSet::new();
+        let mut visitor = SeamVisitor::new(PROBE_FILE, &carriers);
+        visitor.visit_file(&file);
+        let merged = merge_declarations(visitor.producers).expect("distinct self-type paths");
+        assert_eq!(
+            merged.len(),
+            2,
+            "same-terminal-name types fused: {:?}",
+            merged.iter().map(|p| &p.id).collect::<Vec<_>>()
+        );
+    }
+
+    /// Wrapping the page and appending through the wrapper's field reaches the
+    /// client exactly as a direct push would.
+    #[test]
+    fn an_append_through_a_wrapper_field_is_detected() {
+        let no_producers = BTreeSet::new();
+        let wrapped: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
+                let mut page = Page { items: completions };
+                page.items.push(sneaky());
+            }
+        };
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
+        visitor.visit_block(&wrapped.block);
+        assert!(
+            visitor.appended_after_finalizer,
+            "an append through a wrapper field went undetected"
+        );
+
+        let tuple_wrapped: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
+                let mut page = (completions, is_incomplete);
+                page.0.push(sneaky());
+            }
+        };
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
+        visitor.visit_block(&tuple_wrapped.block);
+        assert!(visitor.appended_after_finalizer, "a tuple-field append went undetected");
     }
 
     /// Growing the finalized page is an append however it is spelled.

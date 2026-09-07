@@ -90,7 +90,7 @@ ship). The reviewer's clean results are also recorded: no `HashMap` anywhere,
 byte-identical second generation, self-consistent digest, and no Mermaid node-id
 collision.
 
-Twenty-nine ledger falsifiers, each corrupting the reconciled checked-in ledger
+Thirty-three ledger falsifiers, each corrupting the reconciled checked-in ledger
 along one axis and asserting the refusal names that axis:
 
 | Axis | Refused because |
@@ -124,6 +124,10 @@ along one axis and asserting the refusal names that axis:
 | a named carrier return missed | a struct field holds the page |
 | same-named traits from different modules fused | the whole trait path identifies the method |
 | a by-value producer call after finalization | candidates added with no mutating method in sight |
+| a grouped or renamed import of an unscanned module | no `providers::<ident>` substring to match |
+| same-terminal-name self types fused | `a::Shared` and `b::Shared` are two types |
+| an append through a wrapper field | wrapping is a rename with extra steps |
+| an append through a tuple field | same, by index |
 
 Plus positive controls: the checked-in ledger reconciles, the checked-in
 projection is current, generation is byte-identical on a second run, discovery
@@ -165,6 +169,10 @@ All were applied to product source, confirmed refused, and reverted.
    *"scanned completion source reaches into `providers::htmx` (…), which is not
    fully inside the scan roots and has no `[[delegations]]` row"*. This is the
    hole the PR review found, reproduced and closed.
+6. **Grouped import of unscanned modules.** `use crate::providers::{hover, symbols};`
+   added to the scanned file-path facade, digest accepted. `check` exits 1
+   naming `providers::hover` and the file that reaches it — the textual scan it
+   replaced would have matched nothing here.
 
 ## Limitations
 
