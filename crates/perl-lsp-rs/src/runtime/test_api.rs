@@ -944,6 +944,19 @@ impl LspServer {
         );
     }
 
+    /// Pause the real background scan inside its per-file commit critical
+    /// section, after `indexing_transition_lock` is acquired (#13308). The
+    /// gate fires once, at the first indexed file, and holds the scan — and
+    /// the transition lock — until `release` fires or the gate times out.
+    #[cfg(feature = "workspace")]
+    pub fn test_gate_indexing_commit(
+        &self,
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        super::readiness::set_indexing_commit_gate(&self.indexing_commit_gate, started, release);
+    }
+
     #[cfg(feature = "workspace")]
     /// Validate a provider response against its readiness receipt trace.
     fn validate_readiness_provider_observation(

@@ -58,13 +58,13 @@ impl LspServer {
                 );
                 if !file_on_disk {
                     if let Some(coordinator) = self.coordinator() {
-                        for key in self.uri_key_variants(uri) {
+                        for key in Self::uri_key_variants(uri) {
                             coordinator.index().remove_file(&key);
                         }
                     }
                 } else {
                     if session_diverged && let Some(coordinator) = self.coordinator() {
-                        for key in self.uri_key_variants(uri) {
+                        for key in Self::uri_key_variants(uri) {
                             coordinator.index().remove_file(&key);
                         }
                         if let Some(content) =
@@ -95,7 +95,7 @@ impl LspServer {
                     // (#11305) — is not blocked by the stale high-water mark
                     // from the previous session (#5438).
                     if let Some(coordinator) = self.coordinator() {
-                        for key in self.uri_key_variants(uri) {
+                        for key in Self::uri_key_variants(uri) {
                             coordinator.index().reset_generation_for_close(&key);
                         }
                     }

@@ -280,6 +280,10 @@ impl ReferenceKind {
 // ---------------------------------------------------------------------------
 
 /// An out-of-line module declared in `lib.rs`.
+///
+/// Test-only residue of the pre-syn hand-rolled parser (#14344 moved symbol
+/// discovery to `syn`); retained so its tests keep running under `cfg(test)`.
+#[cfg(test)]
 #[derive(Debug, Serialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Module {
     pub name: String,
@@ -553,6 +557,7 @@ fn tracked_files(root: &Path) -> Result<Vec<String>> {
 /// the scanner permanently one level deep, and every item declared after it
 /// would be silently dropped from discovery — a fail-open hole in a task whose
 /// entire job is to fail closed.
+#[cfg(test)]
 fn code_lines(source: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut block_comment_depth: usize = 0;
@@ -996,6 +1001,7 @@ fn module_path_attribute(item_mod: &syn::ItemMod) -> Option<String> {
 }
 
 /// `pub mod <name>;` declarations in `lib.rs`.
+#[cfg(test)]
 pub fn parse_modules(lib_rs: &str) -> Vec<Module> {
     let mut modules = Vec::new();
     for line in code_lines(lib_rs) {
@@ -1023,6 +1029,7 @@ pub fn parse_modules(lib_rs: &str) -> Vec<Module> {
 }
 
 /// `pub use <module>::{A, B};` and `pub use <module>::A;` in `lib.rs`.
+#[cfg(test)]
 pub fn parse_root_reexports(lib_rs: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for line in code_lines(lib_rs) {
@@ -1063,6 +1070,7 @@ pub fn parse_root_reexports(lib_rs: &str) -> Vec<(String, String)> {
 ///
 /// Internal items are returned alongside public ones rather than skipped, so the
 /// ledger has to account for them too.
+#[cfg(test)]
 pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility)> {
     let mut out = Vec::new();
     let mut depth: i32 = 0;
@@ -1134,11 +1142,13 @@ pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility
 /// generics, and `->` in a bound), so counting them would add a larger failure
 /// surface than the one it closes. Literals and comments are already removed by
 /// `code_lines`, so `{ /* … */ }` reaches here as an empty group.
+#[cfg(test)]
 fn impl_body_opens(trimmed: &str, delta: i32) -> bool {
     delta > 0 || (delta == 0 && closes_an_empty_brace_group(trimmed))
 }
 
 /// Whether the line ends by closing a brace group that encloses nothing.
+#[cfg(test)]
 fn closes_an_empty_brace_group(trimmed: &str) -> bool {
     let Some(head) = trimmed.strip_suffix('}') else {
         return false;
@@ -1153,6 +1163,7 @@ fn closes_an_empty_brace_group(trimmed: &str) -> bool {
 ///
 /// Trait-impl methods are not `pub`, so they never reach the caller anyway;
 /// returning `None` keeps the intent explicit.
+#[cfg(test)]
 fn inherent_impl_type(line: &str) -> Option<String> {
     let rest = line.strip_prefix("impl")?;
     if rest.contains(" for ") {
@@ -1201,6 +1212,7 @@ fn strip_fn_qualifiers(mut rest: &str) -> &str {
 /// The declared visibility is not the recorded one: a `pub` item in a private
 /// module is only reachable if `lib.rs` re-exports it, so [`discover`] narrows
 /// this to `Internal` where the module says so.
+#[cfg(test)]
 fn parse_item(trimmed: &str) -> Option<(String, SymbolKind, Visibility)> {
     // `pub(crate) fn` has no space after `pub`, so the two spellings are split
     // before the shared item parsing.
@@ -1227,6 +1239,7 @@ fn parse_item(trimmed: &str) -> Option<(String, SymbolKind, Visibility)> {
 /// Net brace depth contributed by one line. Callers must pass a line with
 /// literals and comments already stripped, or a brace inside a string shifts
 /// the depth permanently.
+#[cfg(test)]
 fn brace_delta(line: &str) -> i32 {
     let opens = line.matches('{').count() as i32;
     let closes = line.matches('}').count() as i32;

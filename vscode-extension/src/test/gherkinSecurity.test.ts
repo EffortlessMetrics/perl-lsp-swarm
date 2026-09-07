@@ -400,7 +400,7 @@ describe('bounded workspace step-definition scan', () => {
         if (candidate === filePath) {
           await grow();
         }
-        return realReadFile(candidate as never, ...(rest as []));
+        return realReadFile(candidate as never, ...rest);
       }),
     ];
 

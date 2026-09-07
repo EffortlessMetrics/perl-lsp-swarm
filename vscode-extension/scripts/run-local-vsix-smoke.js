@@ -153,6 +153,7 @@ function writeJsonAtomic(destination, value) {
  *   behavior_safe?: boolean,
  *   transition_state?: string,
  *   violations?: string[],
+ *   post_host_exit_processes?: string[],
  *   transition?: unknown,
  * }} SmokeStage
  */
@@ -165,6 +166,7 @@ function writeJsonAtomic(destination, value) {
  *   platform: string,
  *   architecture: string,
  *   vscode_version: string,
+ *   observed_vscode_version: string | null,
  *   source_label: string,
  *   server: { source_sha: string | null, path: string | null, sha256: string | null },
  *   vsix: { path: string | null, sha256: string | null },
@@ -196,6 +198,10 @@ function initialReceipt(revision) {
     // One default across receipt and child check: the extension-host child
     // records 'stable' when the matrix version is unset, so we do too.
     vscode_version: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
+    // The launched runtime version observed by the extension-host child; null
+    // until a bound first-hour receipt reports it. Consumers must treat null
+    // as unobserved, never as agreement with the requested selector.
+    observed_vscode_version: null,
     source_label: (process.env.PERL_LSP_SMOKE_SOURCE_LABEL || '').trim() || 'local-current-source',
     server: {
       source_sha: serverSourceRevision || null,
@@ -251,9 +257,9 @@ function shouldRunActivationFailureJourney(stages) {
  * The packaged crash-recovery journey (#7848) needs only a behavior-safe
  * package for the same reason: it installs the exact VSIX into its own
  * isolated profile and terminates the exact server process from the harness
- * in both legs. Its verdict composes per-row results, so an honestly
- * `not_proven` watchdog row on hosts without a suspend capability degrades
- * the stage verdict without weakening the other rows.
+ * in both legs. Its verdict composes per-row results; on hosts without a
+ * suspend capability the watchdog row is typed `pending` (visible,
+ * verdict-neutral) instead of degrading the stage verdict (#15019).
  */
 function shouldRunCrashRecoveryJourney(stages) {
   return (
@@ -585,6 +591,22 @@ function validateChildSmokeReceipt({
   if (environment.requested_vscode_version !== expectedVscodeVersion) {
     violations.push(
       `first-hour receipt VS Code version ${JSON.stringify(environment.requested_vscode_version)} is not this matrix leg`,
+    );
+  }
+  // The requested selector alone never proves the launched host: the child
+  // must record the actual runtime version, and on a concrete leg that
+  // runtime must equal the request.
+  const runtimeVersion = environment.vscode_version;
+  if (typeof runtimeVersion !== 'string' || !/^\d+\.\d+\.\d+$/.test(runtimeVersion)) {
+    violations.push(
+      `first-hour receipt does not record a concrete launched VS Code runtime version, got ${JSON.stringify(runtimeVersion)}`,
+    );
+  } else if (
+    /^\d+\.\d+\.\d+$/.test(expectedVscodeVersion) &&
+    runtimeVersion !== expectedVscodeVersion
+  ) {
+    violations.push(
+      `first-hour receipt launched VS Code ${JSON.stringify(runtimeVersion)} but this matrix leg requested the concrete ${JSON.stringify(expectedVscodeVersion)}`,
     );
   }
   if (environment.extension_id !== 'EffortlessMetrics.perl-lsp-rs') {
@@ -924,10 +946,12 @@ function crashRowFromObservation(value, legExitCode, isPass) {
  * child legs and the orchestrator's own post-host-exit process scan. The
  * verdict is fail-closed: any missing or contradictory child evidence leaves
  * the affected row `not_proven`, an observed product failure fails its row
- * outright, and any failed row fails the receipt while an honestly
- * `not_proven` row (for example the watchdog row on hosts that cannot suspend
- * a process) keeps the overall verdict `not_proven` without weakening the
- * other rows.
+ * outright, and any failed or `not_proven` row fails the receipt. A
+ * capability-absent leg (for example the watchdog row on hosts that cannot
+ * suspend a process, where the child leg emits no watchdog observation) is a
+ * typed `pending` row: visible in the receipt and verdict-neutral, so the
+ * journey's pass/fail signal stays actionable on hosts that cannot exercise
+ * every leg (#15019).
  *
  * @param {{
  *   vsixSha256: string,
@@ -1005,12 +1029,20 @@ function composeCrashRecoveryReceipt({
     ),
   );
 
+  // Typed pending (#15019): the child producer emits `pending` for a
+  // capability-absent watchdog leg (host cannot suspend), and the driver
+  // stays fail-closed for everything else — a malformed observation or an
+  // unexplained not_proven remains an instrument gap that degrades the
+  // journey.
+  const watchdogObservation = transientObservations.watchdog;
   const watchdogStatus =
-    transientObservations.watchdog && typeof transientObservations.watchdog.status === 'string'
-      ? transientObservations.watchdog.status
+    watchdogObservation && typeof watchdogObservation.status === 'string'
+      ? watchdogObservation.status
       : 'not_proven';
   const watchdogRow = boundRow(
-    ['pass', 'failed', 'not_proven'].includes(watchdogStatus) ? watchdogStatus : 'not_proven',
+    ['pass', 'failed', 'not_proven', 'pending'].includes(watchdogStatus)
+      ? watchdogStatus
+      : 'not_proven',
   );
 
   const legsExitedCleanly = legExitCodes.transient === 0 && legExitCodes.breaker === 0;
@@ -1089,6 +1121,8 @@ function composeCrashRecoveryReceipt({
     cleanupRow,
   ];
   let verdict;
+  // `pending` rows are neither failed nor not_proven, so they are
+  // naturally verdict-neutral here.
   if (observedChildFailure || rows.includes('failed')) {
     verdict = 'failed';
   } else if (rows.includes('not_proven')) {
@@ -1580,6 +1614,7 @@ function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
       exit_codes: legExitCodes,
       reason: 'activation_failure_journey_leg_did_not_exit_cleanly',
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   if (!validation.ok) {
@@ -1589,6 +1624,7 @@ function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
       reason: 'journey child receipts did not bind this run',
       violations: validation.violations,
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   return {
@@ -1596,6 +1632,7 @@ function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
     exit_codes: legExitCodes,
     recovery_verdict: joined.verdict,
     receipt: path.relative(repoRoot, joinedReceiptFile).replaceAll('\\', '/'),
+    post_host_exit_processes: postHostExitProcesses,
   };
 }
 
@@ -1801,6 +1838,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
         exit_codes: legExitCodes,
         reason: 'crash_recovery_journey_leg_observed_failure',
         recovery_verdict: joined.verdict,
+        post_host_exit_processes: postHostExitProcesses,
       };
     }
     // Aligned with the composer: a leg that did not exit cleanly is an
@@ -1810,6 +1848,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
       exit_codes: legExitCodes,
       reason: 'crash_recovery_journey_leg_did_not_exit_cleanly',
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   if (!validation.ok) {
@@ -1819,6 +1858,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
       reason: 'journey child receipts did not bind this run',
       violations: validation.violations,
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   return {
@@ -1829,6 +1869,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
       joined.verdict === 'pass' ? 'pass' : joined.verdict === 'failed' ? 'failed' : 'not_proven',
     exit_codes: legExitCodes,
     recovery_verdict: joined.verdict,
+    post_host_exit_processes: postHostExitProcesses,
     receipt: path.relative(repoRoot, joinedReceiptFile).replaceAll('\\', '/'),
   };
 }
@@ -2077,6 +2118,12 @@ function main() {
                 reason: 'child_receipt_did_not_bind_this_run',
                 violations: childReceipt.violations,
               };
+          if (childReceipt.ok) {
+            // Propagate the launched runtime version the bound child
+            // observed; downstream exactness claims must bind to this, never
+            // to the requested selector alone.
+            receipt.observed_vscode_version = childReceipt.receipt.environment.vscode_version;
+          }
         }
       } else {
         receipt.stages.behavioral_smoke = {
