@@ -300,12 +300,8 @@ fn spelled_version_requirement(source: &str, span_start: u32, span_end: u32) -> 
         return None;
     }
     let statement = source.get(start..end)?;
-    let Some(after_use_keyword) = skip_layout(statement).strip_prefix("use") else {
-        return None;
-    };
-    let Some(rest) = skip_layout(after_use_keyword).strip_prefix("Dancer2") else {
-        return None;
-    };
+    let after_use_keyword = skip_layout(statement).strip_prefix("use")?;
+    let rest = skip_layout(after_use_keyword).strip_prefix("Dancer2")?;
     let rest = skip_layout(rest);
     let body = rest.strip_prefix('v').unwrap_or(rest);
     if !body.starts_with(|c: char| c.is_ascii_digit()) {
@@ -813,6 +809,7 @@ get '/x' => sub { 1 };
         );
     }
 
+    #[test]
     fn leading_double_colon_addresses_main_root() {
         // `sub ::get` is main::get: the leading `::` addresses main's root,
         // so the leaf lands on main's shadow list.
