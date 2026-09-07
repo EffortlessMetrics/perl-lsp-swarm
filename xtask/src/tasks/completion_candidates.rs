@@ -43,6 +43,15 @@
 //! against the call site. Every row records which of those two it is, so no
 //! reader mistakes a declared reach for a proven one.
 //!
+//! Constructing a candidate after the finalizer is treated as an append,
+//! which is the backstop against rebuilding the page through an iterator
+//! chain: every such rewrite has to build a candidate before it can add one.
+//! Moving *already-built* candidates back in — from a vector captured before
+//! finalization — is not covered, because that needs value tracking to
+//! survive a round trip through an iterator chain. Those candidates were
+//! themselves constructed somewhere this scan can see, which is what bounds
+//! the gap.
+//!
 //! The post-finalizer control walks an entry body in source order with one
 //! monotonic "have I passed the finalizer" flag rather than a control-flow
 //! graph. That conflates mutually exclusive branches: a body that finalizes
