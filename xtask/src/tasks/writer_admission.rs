@@ -190,9 +190,24 @@ pub struct RemoteBranchInfo {
     pub error: Option<String>,
 }
 
+/// Branch identity is independent of its display name: `(detached)` is a
+/// valid branch name and must never serve as an admission sentinel.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetBranchState {
+    /// A resolved or explicitly requested branch, regardless of its spelling.
+    #[default]
+    Named,
+    /// No target branch was supplied or inferred from HEAD.
+    Detached,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WriterAdmissionSnapshot {
     pub target_branch: String,
+    #[serde(default)]
+    /// Whether the target is a named branch or a branch-less checkout.
+    pub target_branch_state: TargetBranchState,
     #[serde(default = "default_base")]
     pub requested_base: String,
     #[serde(default)]
@@ -305,6 +320,8 @@ pub struct AdmissionReport {
     pub schema_version: String,
     pub mode: String,
     pub target_branch: String,
+    /// Whether the target is a named branch or a branch-less checkout.
+    pub target_branch_state: TargetBranchState,
     pub verdict: AdmissionVerdict,
     pub checks: Vec<CheckResult>,
     pub guidance: AdmissionGuidance,
@@ -334,6 +351,7 @@ pub fn run(config: AdmissionConfig) -> Result<()> {
         schema_version: "1".to_string(),
         mode: "advisory".to_string(),
         target_branch: snapshot.target_branch.clone(),
+        target_branch_state: snapshot.target_branch_state,
         verdict,
         checks,
         guidance,
@@ -353,6 +371,7 @@ fn load_snapshot(config: &AdmissionConfig) -> Result<WriterAdmissionSnapshot> {
             .with_context(|| format!("failed to parse fixture {}", path.display()))?;
         if let Some(branch) = &config.branch {
             snapshot.target_branch = branch.clone();
+            snapshot.target_branch_state = TargetBranchState::Named;
         }
         return Ok(snapshot);
     }
@@ -646,7 +665,7 @@ fn check_disk_capacity(
 /// `NOT_PROVEN` without inferring anything about another session's liveness.
 fn check_remote_branch_identity(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
     let name = "remote-branch-identity".to_string();
-    if snapshot.target_branch == "(detached)" {
+    if snapshot.target_branch_state == TargetBranchState::Detached {
         return CheckResult {
             name,
             status: CheckStatus::Pass,
@@ -740,6 +759,9 @@ fn check_candidate_presence(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
 /// one) and `compute_guidance` (a REUSE candidate when exactly one) so the
 /// two never drift into disagreeing definitions of "matches".
 fn worktrees_matching_target_branch(snapshot: &WriterAdmissionSnapshot) -> Vec<&str> {
+    if snapshot.target_branch_state == TargetBranchState::Detached {
+        return Vec::new();
+    }
     snapshot
         .worktree_mapping
         .entries
@@ -1147,7 +1169,9 @@ fn gather_live_snapshot(config: &AdmissionConfig) -> WriterAdmissionSnapshot {
     let branch = config.branch.clone().or_else(|| {
         head.symbolic_ref.as_ref().map(|s| s.strip_prefix("refs/heads/").unwrap_or(s).to_string())
     });
-    let target_branch = branch.unwrap_or_else(|| "(detached)".to_string());
+    let target_branch_state =
+        if branch.is_some() { TargetBranchState::Named } else { TargetBranchState::Detached };
+    let target_branch = branch.as_deref().unwrap_or("(detached)").to_string();
 
     let worktree_mapping = gather_worktree_mapping(&root);
     let worktree_count = worktree_mapping.entries.len() as u32;
@@ -1157,23 +1181,22 @@ fn gather_live_snapshot(config: &AdmissionConfig) -> WriterAdmissionSnapshot {
     // list --head ""` would silently drop the filter and return an
     // unrelated open PR. A detached checkout has no branch identity to
     // query, so that case is simply not applicable.
-    let pr_ownership = if target_branch == "(detached)" {
-        PrOwnershipInfo { status: PrStatus::None, pr_number: None, error: None }
-    } else {
-        gather_pr_ownership(&target_branch, config.repo.as_deref())
+    let pr_ownership = match branch.as_deref() {
+        Some(branch) => gather_pr_ownership(branch, config.repo.as_deref()),
+        None => PrOwnershipInfo { status: PrStatus::None, pr_number: None, error: None },
     };
 
     // Same "no branch identity, nothing to resolve" carve-out as
     // pr_ownership above — a detached checkout has no target branch for a
     // remote-branch lookup to make sense against.
-    let remote_branch = if target_branch == "(detached)" {
-        RemoteBranchInfo::default()
-    } else {
-        gather_remote_branch_info(&root, &target_branch)
+    let remote_branch = match branch.as_deref() {
+        Some(branch) => gather_remote_branch_info(&root, branch),
+        None => RemoteBranchInfo::default(),
     };
 
     WriterAdmissionSnapshot {
         target_branch,
+        target_branch_state,
         requested_base: config.base.clone(),
         is_root_checkout,
         head,
@@ -1233,6 +1256,7 @@ mod tests {
     fn base_snapshot() -> WriterAdmissionSnapshot {
         WriterAdmissionSnapshot {
             target_branch: "impl/1234-feature".to_string(),
+            target_branch_state: TargetBranchState::Named,
             requested_base: "origin/main".to_string(),
             is_root_checkout: false,
             head: HeadInfo {
@@ -1319,6 +1343,7 @@ mod tests {
         let mut snapshot = base_snapshot();
         snapshot.is_root_checkout = true;
         snapshot.target_branch = "(detached)".to_string();
+        snapshot.target_branch_state = TargetBranchState::Detached;
         snapshot.head.symbolic_ref = None;
         snapshot.worktree_mapping.entries =
             vec![WorktreeEntry { path: "/repo".to_string(), branch: None }];
@@ -1733,6 +1758,7 @@ mod tests {
             schema_version: "1".to_string(),
             mode: "advisory".to_string(),
             target_branch: snapshot.target_branch.clone(),
+            target_branch_state: snapshot.target_branch_state,
             verdict,
             checks,
             guidance,
@@ -1743,6 +1769,90 @@ mod tests {
             "expected guidance to be serialized into the report JSON: {rendered}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn detached_spelling_remains_a_real_target_through_live_gathering() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let git = |args: &[&str]| -> Result<String> {
+            let output = Command::new("git").args(args).current_dir(dir.path()).output()?;
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            Ok(String::from_utf8(output.stdout)?.trim().to_string())
+        };
+        git(&["init", "-q", "--initial-branch=(detached)"])?;
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "fixture",
+        ])?;
+        let sha = git(&["rev-parse", "HEAD"])?;
+        git(&["update-ref", "refs/remotes/origin/(detached)", &sha])?;
+        let mut config = default_config();
+        config.worktree = Some(dir.path().to_path_buf());
+        // Reject the unrelated advisory PR lookup locally, without network access.
+        config.repo = Some("invalid".to_string());
+        let attached = gather_live_snapshot(&config);
+        assert_eq!(attached.target_branch_state, TargetBranchState::Named);
+        assert_eq!(
+            attached.remote_branch.sha.as_deref(),
+            Some(sha.as_str()),
+            "a real branch with the old sentinel spelling must be looked up"
+        );
+        git(&["checkout", "-q", "--detach"])?;
+        let detached = gather_live_snapshot(&config);
+        assert_eq!(detached.target_branch_state, TargetBranchState::Detached);
+        assert_eq!(
+            detached.remote_branch.sha, None,
+            "a genuinely detached checkout has no inferred target branch"
+        );
+        config.branch = Some("(detached)".to_string());
+        let explicit = gather_live_snapshot(&config);
+        assert_eq!(explicit.target_branch_state, TargetBranchState::Named);
+        assert_eq!(
+            explicit.remote_branch.sha.as_deref(),
+            Some(sha.as_str()),
+            "an explicit target must be resolved even from detached HEAD"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn detached_spelling_cannot_hide_a_remote_identity_failure() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut config = default_config();
+        config.worktree = Some(dir.path().to_path_buf());
+        // Reject the unrelated advisory PR lookup locally, without network access.
+        config.repo = Some("invalid".to_string());
+        config.branch = Some("(detached)".to_string());
+        let snapshot = gather_live_snapshot(&config);
+        assert!(snapshot.remote_branch.error.is_some(), "non-repository lookup must fail");
+        assert_eq!(check_remote_branch_identity(&snapshot).status, CheckStatus::NotProven);
+        Ok(())
+    }
+
+    #[test]
+    fn detached_checkout_does_not_reuse_a_branch_with_its_display_name() {
+        let mut snapshot = base_snapshot();
+        snapshot.target_branch = "(detached)".to_string();
+        snapshot.target_branch_state = TargetBranchState::Detached;
+        snapshot.worktree_mapping.entries = vec![WorktreeEntry {
+            path: "/other".to_string(),
+            branch: Some("(detached)".to_string()),
+        }];
+        assert_eq!(compute_guidance(&snapshot).existing_worktree_path, None);
+        snapshot.target_branch_state = TargetBranchState::Named;
+        assert_eq!(compute_guidance(&snapshot).existing_worktree_path.as_deref(), Some("/other"));
     }
 
     #[test]

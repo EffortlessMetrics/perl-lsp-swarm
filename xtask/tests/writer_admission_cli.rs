@@ -308,3 +308,23 @@ fn writer_admission_never_mutates_the_working_tree() -> Result<()> {
     assert_eq!(first, second, "repeated runs against the same fixture must be idempotent");
     Ok(())
 }
+
+#[test]
+fn explicit_detached_spelling_overrides_fixture_detached_state() -> Result<()> {
+    let mut fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture_path("detached-main-root.json"))?)?;
+    fixture["remote_branch"] = serde_json::json!({"error": "remote identity unavailable"});
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("snapshot.json");
+    std::fs::write(&path, serde_json::to_vec(&fixture)?)?;
+    let output = cargo_bin_cmd!("xtask")
+        .args(["writer-admission", "--fixture"])
+        .arg(path)
+        .args(["--branch", "(detached)", "--json"])
+        .output()?;
+    assert!(output.status.success(), "advisory command must succeed");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(report["target_branch_state"], "named");
+    assert_eq!(report["verdict"], "NOT_PROVEN", "explicit target cannot bypass identity");
+    Ok(())
+}

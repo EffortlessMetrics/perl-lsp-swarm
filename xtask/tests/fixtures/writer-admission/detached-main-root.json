@@ -1,5 +1,6 @@
 {
   "target_branch": "(detached)",
+  "target_branch_state": "detached",
   "requested_base": "origin/main",
   "is_root_checkout": true,
   "head": {
