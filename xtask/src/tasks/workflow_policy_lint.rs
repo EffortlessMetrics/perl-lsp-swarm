@@ -23,13 +23,26 @@ const ISOLATION_LIFECYCLES: &[&str] = &["disposable", "reimaged", "persistent"];
 ///
 /// `merge_group` is deliberately excluded: it runs approved content after
 /// review, which is a different trust subject from an open candidate.
+///
+/// `workflow_call` is included because a reusable workflow's reachability is
+/// defined entirely by its callers, which this per-file walk cannot see. A
+/// callee that declares `on: workflow_call:` and routes to self-hosted capacity
+/// must therefore carry a profile regardless of who calls it today.
 const PR_CONTROLLED_TRIGGERS: &[&str] = &[
     "pull_request",
     "pull_request_target",
     "pull_request_review",
     "pull_request_review_comment",
     "issue_comment",
+    "workflow_call",
 ];
+
+/// Label prefixes that identify GitHub-hosted capacity.
+///
+/// A `runs-on:` value outside this set cannot be cleared: a self-hosted runner
+/// can be targeted by a custom label alone, without the implicit `self-hosted`
+/// label ever appearing in the workflow file.
+const GITHUB_HOSTED_LABEL_PREFIXES: &[&str] = &["ubuntu-", "windows-", "macos-"];
 
 const ALLOWLIST_PR_CONTENTS_WRITE: &[&str] = &["ci.yml", "ci-nightly.yml", "droid-review.yml"];
 const POLICY_WARN_UNPINNED_ACTIONS: bool = true;
@@ -1207,38 +1220,78 @@ enum RunnerTarget {
 /// though the inventory has no token for them. Treating them as clean is the
 /// bypass #7414's recurrence bullet names.
 fn classify_runs_on(runs_on: &Value) -> RunnerTarget {
-    let self_hosted = |labels: &[Value]| -> RunnerTarget {
-        let label_strs: Vec<&str> = labels.iter().filter_map(Value::as_str).collect();
-        if !label_strs.contains(&"self-hosted") {
+    // GitHub matches runner labels case-insensitively, so `Self-Hosted` routes
+    // to self-hosted capacity exactly like `self-hosted`.
+    fn is_self_hosted_label(label: &str) -> bool {
+        label.trim().eq_ignore_ascii_case("self-hosted")
+    }
+
+    fn is_github_hosted_label(label: &str) -> bool {
+        let lowered = label.trim().to_ascii_lowercase();
+        GITHUB_HOSTED_LABEL_PREFIXES.iter().any(|prefix| lowered.starts_with(prefix))
+    }
+
+    let from_labels = |labels: &[Value], group: Option<&str>| -> RunnerTarget {
+        let named: Vec<&str> = labels.iter().filter_map(Value::as_str).collect();
+        if named.iter().copied().any(is_self_hosted_label) {
+            return RunnerTarget::SelfHosted {
+                pool: normalize_self_hosted_labels(labels),
+                descriptor: named.join(", "),
+            };
+        }
+        if named.iter().copied().any(is_github_hosted_label) {
             return RunnerTarget::Elsewhere;
         }
-        RunnerTarget::SelfHosted {
-            pool: normalize_self_hosted_labels(labels),
-            descriptor: label_strs.join(", "),
-        }
+        // A runner group names an operator-defined pool, and a label set that
+        // never says `self-hosted` does not prove the target is GitHub-hosted.
+        // Adding one harmless label must not clear the ambiguity that the
+        // labels-less case already fails closed on.
+        let detail = match group {
+            Some(group) => format!("runner group `{group}` with no recognised runner label"),
+            None => format!("runner labels `{}` match no recognised runner", named.join(", ")),
+        };
+        RunnerTarget::Unresolved(detail)
     };
 
     match runs_on {
         Value::String(raw) => {
             let value = raw.trim();
-            if value.contains("${{") || value.contains("matrix.") {
-                // Resolved at runtime from a matrix; the lane inventory records
-                // these as `mixed` and this check makes no claim about them.
-                RunnerTarget::Elsewhere
-            } else if value == "self-hosted" {
+            if value.contains("${{") {
+                // A matrix reference is the lane inventory's documented `mixed`
+                // case. Any other expression computes the runner target at run
+                // time from data this walk cannot see, so it cannot be cleared.
+                return if value.contains("matrix.") {
+                    RunnerTarget::Elsewhere
+                } else {
+                    RunnerTarget::Unresolved(
+                        "runner target is computed from an expression".to_string(),
+                    )
+                };
+            }
+            if is_self_hosted_label(value) {
                 RunnerTarget::SelfHosted { pool: None, descriptor: value.to_string() }
-            } else {
+            } else if is_github_hosted_label(value) {
                 RunnerTarget::Elsewhere
+            } else {
+                RunnerTarget::Unresolved(format!(
+                    "`{value}` is not a recognised GitHub-hosted runner label"
+                ))
             }
         }
-        Value::Sequence(labels) => self_hosted(labels),
+        Value::Sequence(labels) => from_labels(labels, None),
         Value::Mapping(map) => {
-            match map.get(Value::String("labels".to_string())).and_then(Value::as_sequence) {
-                Some(labels) => self_hosted(labels),
+            let group = map.get(Value::String("group".to_string())).and_then(Value::as_str);
+            match map.get(Value::String("labels".to_string())) {
+                Some(Value::Sequence(labels)) => from_labels(labels, group),
+                // `labels:` present but not a literal list (an expression, say)
+                // resolves at run time.
+                Some(_) => {
+                    RunnerTarget::Unresolved("runner labels are not a literal list".to_string())
+                }
                 // A bare `group:` may name self-hosted capacity or a GitHub
                 // larger-runner group. Nothing in the file distinguishes them,
                 // so it cannot be cleared without explicit labels.
-                None if map.contains_key(Value::String("group".to_string())) => {
+                None if group.is_some() => {
                     RunnerTarget::Unresolved("runner group without explicit labels".to_string())
                 }
                 None => RunnerTarget::Elsewhere,
@@ -1462,6 +1515,46 @@ fn check_self_hosted_isolation(
         // below reports as undeclared.
         Vec::new()
     };
+
+    // A profile that names no workflow or job can never match a job, and would
+    // otherwise reach the orphan walk as an empty path. Report it and drop it
+    // rather than letting a typo abort the whole gate with an I/O error.
+    let mut profiles = profiles;
+    profiles.retain(|profile| {
+        let malformed = profile.workflow.trim().is_empty() || profile.job.trim().is_empty();
+        if malformed {
+            issues.push(LintIssue {
+                level: "error",
+                code: "SELF_HOSTED_ISOLATION_INVALID",
+                workflow: SELF_HOSTED_ISOLATION_POLICY.to_string(),
+                message: format!(
+                    "a [[profile]] entry is missing `workflow` or `job` (workflow={:?}, job={:?}); \
+                     it can never cover a job",
+                    profile.workflow, profile.job
+                ),
+            });
+        }
+        !malformed
+    });
+
+    // Two profiles for one job make the verdict depend on array order: a lapsed
+    // entry listed after a current one is silently masked. A security registry
+    // must not accumulate contradictory history.
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    for profile in &profiles {
+        let key = (profile.workflow.clone(), profile.job.clone());
+        if !seen.insert(key) {
+            issues.push(LintIssue {
+                level: "error",
+                code: "SELF_HOSTED_ISOLATION_INVALID",
+                workflow: SELF_HOSTED_ISOLATION_POLICY.to_string(),
+                message: format!(
+                    "duplicate [[profile]] entries for job `{}` in `{}`; remove the stale one",
+                    profile.job, profile.workflow
+                ),
+            });
+        }
+    }
 
     let workflows_dir = root.join(".github").join("workflows");
     if !workflows_dir.exists() {
@@ -2571,6 +2664,99 @@ review_after = "2099-01-01"
         Ok(())
     }
 
+    /// GitHub matches runner labels case-insensitively, so a differently-cased
+    /// `self-hosted` still routes to self-hosted capacity.
+    #[test]
+    fn self_hosted_label_match_is_case_insensitive() -> Result<()> {
+        for runs_on in ["Self-Hosted", "[Self-Hosted, linux]", "{labels: [SELF-HOSTED, linux]}"] {
+            let workflow = workflow_with_runs_on(runs_on)?;
+            assert_eq!(
+                codes(&evaluate(&workflow, &[])?),
+                vec!["SELF_HOSTED_ISOLATION_UNDECLARED"],
+                "`runs-on: {runs_on}` is self-hosted capacity"
+            );
+        }
+        Ok(())
+    }
+
+    /// A runner target computed at run time cannot be cleared statically. The
+    /// one exception is a `matrix.*` reference, which the lane inventory
+    /// already records as `mixed`.
+    #[test]
+    fn non_matrix_runner_expressions_are_unresolved() -> Result<()> {
+        for runs_on in [
+            "${{ vars.RUNNER_LABEL }}",
+            "${{ inputs.target == 'x' && 'ubuntu-24.04' || 'self-hosted' }}",
+            "{labels: \"${{ inputs.runner_label }}\"}",
+        ] {
+            let workflow = workflow_with_runs_on(runs_on)?;
+            assert_eq!(
+                codes(&evaluate(&workflow, &[])?),
+                vec!["SELF_HOSTED_ISOLATION_UNRESOLVED"],
+                "`runs-on: {runs_on}` must not be cleared"
+            );
+        }
+        // The documented exception stays out of scope.
+        let matrix = workflow_with_runs_on("${{ matrix.os }}")?;
+        assert!(evaluate(&matrix, &[])?.is_empty());
+        Ok(())
+    }
+
+    /// Adding one harmless label must not clear the ambiguity that a bare
+    /// `group:` already fails closed on.
+    #[test]
+    fn runner_group_with_unrecognised_labels_is_unresolved() -> Result<()> {
+        for runs_on in [
+            "{group: operator-pool, labels: [linux, x64]}",
+            "[linux, x64]",
+            "some-custom-runner-label",
+        ] {
+            let workflow = workflow_with_runs_on(runs_on)?;
+            assert_eq!(
+                codes(&evaluate(&workflow, &[])?),
+                vec!["SELF_HOSTED_ISOLATION_UNRESOLVED"],
+                "`runs-on: {runs_on}` names no recognised runner"
+            );
+        }
+        // A recognised GitHub-hosted label in the set still clears it.
+        let hosted = workflow_with_runs_on("{group: larger-runners, labels: [ubuntu-24.04]}")?;
+        assert!(evaluate(&hosted, &[])?.is_empty());
+        Ok(())
+    }
+
+    /// A reusable workflow's reachability is defined by its callers, which this
+    /// per-file walk cannot see. `on: workflow_call:` must therefore carry the
+    /// obligation rather than escaping it.
+    #[test]
+    fn reusable_workflow_self_hosted_job_requires_a_profile() -> Result<()> {
+        let workflow = self_hosted_workflow("on:\n  workflow_call:\n")?;
+        assert_eq!(
+            codes(&evaluate(&workflow, &[])?),
+            vec!["SELF_HOSTED_ISOLATION_UNDECLARED"],
+            "a reusable workflow cannot prove it is unreachable from a candidate"
+        );
+        Ok(())
+    }
+
+    /// A malformed registry entry must report, not abort the whole gate.
+    #[test]
+    fn profile_missing_workflow_or_job_is_reported_not_fatal() -> Result<()> {
+        let profiles = parse_isolation_profiles(
+            r##"
+[[profile]]
+workflow = ""
+job = ""
+lifecycle = "persistent"
+candidate_writable = []
+runtime_proof = "#7414"
+review_after = "2099-01-01"
+"##,
+        )?;
+        assert_eq!(profiles.len(), 1, "the malformed entry parses");
+        assert!(profiles[0].workflow.is_empty());
+        Ok(())
+    }
+
     /// Mixed-trigger workflow: `pull_request` plus a manual trigger, with the
     /// self-hosted job guarded by a job-level `if:`.
     fn mixed_trigger_workflow(job_condition: &str) -> Result<Value> {
@@ -2650,15 +2836,34 @@ review_after = "2099-01-01"
     /// Every self-hosted job in the shipped tree is declared, and every shipped
     /// declaration still describes a real self-hosted job. This is the assertion
     /// that keeps the registry and `.github/workflows/**` from drifting apart.
+    ///
+    /// Evaluated at a fixed date on purpose. Drift and freshness are different
+    /// propositions: this test owns drift, and pinning the date keeps it from
+    /// turning red on the shipped profiles' review date for a reason that has
+    /// nothing to do with drift. Freshness is enforced by the live gate, and
+    /// owners are warned ahead of it through `policy/cadence-records.json`.
     #[test]
     fn shipped_tree_has_no_undeclared_or_orphaned_self_hosted_capacity() -> Result<()> {
         let root = project_root()?;
         let mut issues = Vec::new();
-        check_self_hosted_isolation(&root, Utc::now().date_naive(), &mut issues)?;
+        check_self_hosted_isolation(&root, today()?, &mut issues)?;
         assert!(
             issues.is_empty(),
             "current tree must be clean under the isolation gate: {issues:?}"
         );
+        Ok(())
+    }
+
+    /// The shipped profiles must still be within their review window when this
+    /// lands, so the gate is not born stale.
+    #[test]
+    fn shipped_profiles_are_current_today() -> Result<()> {
+        let root = project_root()?;
+        let mut issues = Vec::new();
+        check_self_hosted_isolation(&root, Utc::now().date_naive(), &mut issues)?;
+        let stale: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "SELF_HOSTED_ISOLATION_STALE").collect();
+        assert!(stale.is_empty(), "shipped isolation profiles have lapsed: {stale:?}");
         Ok(())
     }
 }
