@@ -275,6 +275,46 @@ impl ParserOperationContext {
         self.tracker.authorize_core(&self.config.budget(), dimension)
     }
 
+    /// The parent's *remaining* core allowance, as a budget for a nested parse.
+    ///
+    /// Handing a nested parse the parent's full configuration bounds one level
+    /// but not recursion: each nested `*{ ... }` would get a fresh allowance and
+    /// the aggregate would be unbounded. Each admitted core dimension is
+    /// therefore reduced by what this operation has already charged, so nested
+    /// work can never spend more than the parent has left (#8786).
+    ///
+    /// Non-core dimensions keep the parent's limits unchanged: they are charged
+    /// by their own owners (#7074 / #7291) and are not adopted here.
+    pub(crate) fn remaining_core_budget(&self) -> ParseBudget {
+        let mut budget = self.config.budget();
+        budget.max_tokens_consumed = budget
+            .max_tokens_consumed
+            .saturating_sub(self.tracker.core_usage(ParseCoreDimension::TokensConsumed));
+        budget.max_nodes_constructed = budget
+            .max_nodes_constructed
+            .saturating_sub(self.tracker.core_usage(ParseCoreDimension::NodesConstructed));
+        budget.max_errors = budget
+            .max_errors
+            .saturating_sub(self.tracker.core_usage(ParseCoreDimension::DiagnosticsEmitted));
+        budget
+    }
+
+    /// Charge the outer operation for tokens an inner sub-parse consumed and
+    /// whose nodes this AST adopted (#8786).
+    pub(crate) fn authorize_adopted_tokens(&mut self, count: usize) -> ParseResult<()> {
+        self.tracker.authorize_core_batch(
+            &self.config.budget(),
+            ParseCoreDimension::TokensConsumed,
+            count,
+        )
+    }
+
+    /// Tokens charged so far in this operation, for handing a nested parse's
+    /// usage back to its adopting parent.
+    pub(crate) fn charged_tokens(&self) -> usize {
+        self.tracker.core_usage(ParseCoreDimension::TokensConsumed)
+    }
+
     /// Charge the outer operation for nodes an inner sub-parse constructed and
     /// handed back into this AST (#8786).
     ///

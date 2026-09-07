@@ -519,9 +519,12 @@ fn a_nested_sub_parse_is_bounded_by_the_adopting_configuration() {
 /// report a cause nobody could locate.
 #[test]
 fn a_terminal_diagnostic_survives_an_exhausted_diagnostic_budget() {
+    // `max_heredoc_scan_bytes = 0` makes the pre-check *refuse* the collection,
+    // which is the terminal case. A drain that merely overran is not terminal
+    // and stays subject to `max_errors`.
     let mut budget = ParseBudget::unlimited();
-    budget.max_heredoc_scan_bytes = 0; // refuse the first heredoc collection
-    budget.max_errors = 0; // and spend the diagnostic budget entirely
+    budget.max_heredoc_scan_bytes = 0;
+    budget.max_errors = 0;
     let output = parse_with_budget("my $x = <<EOT;\nbody\nEOT\n", budget);
 
     assert!(
@@ -540,6 +543,88 @@ fn a_terminal_diagnostic_survives_an_exhausted_diagnostic_budget() {
          retained even at max_errors = 0; got {:?}",
         output.diagnostics
     );
+}
+
+/// Recursive fused dereferences cannot each spend a fresh full budget.
+///
+/// Handing a nested parse the parent's *full* configuration bounds one level
+/// but not recursion. The nested parse receives the parent's **remaining**
+/// core allowance instead, so aggregate nested work stays inside the outer
+/// limit no matter how deeply `*{ ... }` nests.
+#[test]
+fn recursive_nested_sub_parses_share_one_aggregate_allowance() {
+    const NESTED: &str = "my $g = *{ $a; *{ $b; 'STDOUT' } };";
+
+    let required = usage_unlimited(NESTED).nodes_constructed;
+    assert!(required > 2, "fixture must build a meaningful number of nodes");
+
+    // At the requirement the whole nested structure is admitted exactly once.
+    let at = parse_with_budget(NESTED, budget_with(ParseCoreDimension::NodesConstructed, required));
+    assert_eq!(at.stop_cause(), None, "the exact requirement must be admitted");
+    assert_eq!(at.budget_usage.nodes_constructed, required);
+
+    // Below it, the aggregate is refused — a nested parse cannot obtain a fresh
+    // allowance of its own and charge past the outer limit.
+    let below =
+        parse_with_budget(NESTED, budget_with(ParseCoreDimension::NodesConstructed, required - 1));
+    assert!(
+        matches!(
+            below.stop_cause(),
+            Some(ParseStopCause::CoreBudgetExhausted {
+                dimension: ParseCoreDimension::NodesConstructed,
+                ..
+            })
+        ),
+        "nested work must consume the parent's remaining allowance; got {:?}",
+        below.stop_cause()
+    );
+    assert!(
+        below.budget_usage.nodes_constructed <= required - 1,
+        "charged usage must never exceed the configured limit; charged {}",
+        below.budget_usage.nodes_constructed
+    );
+}
+
+/// Tokens consumed by a nested sub-parse are adopted too, not just its nodes.
+#[test]
+fn tokens_from_a_nested_sub_parse_are_adopted_by_the_adopting_operation() {
+    let fused = usage_unlimited("my $g = *{ $tmp; 'STDOUT' };").tokens_consumed;
+    let plain = usage_unlimited("my $g = *STDOUT;").tokens_consumed;
+    assert!(
+        fused > plain,
+        "the fused form consumes the nested parse's tokens as well, so it must charge more than \
+         the plain form ({fused} vs {plain})"
+    );
+}
+
+/// A heredoc drain that overran but *finished* is not terminal, so its
+/// diagnostic stays subject to `max_errors`.
+///
+/// The terminal exemption belongs only to the pre-check that actually refuses
+/// work. Extending it to the overrun report would let a completed parse return
+/// a diagnostic at `max_errors = 0`, contradicting the configured bound.
+#[test]
+fn an_overrun_heredoc_diagnostic_is_not_exempt_from_the_diagnostic_budget() {
+    // A scan limit smaller than the body forces an overrun that still finishes.
+    let source = "my $x = <<EOT;\nbody body body\nEOT\n";
+    let mut budget = ParseBudget::unlimited();
+    budget.max_heredoc_scan_bytes = 1;
+    let overran = parse_with_budget(source, budget);
+
+    // Whatever this parse reports, an ordinary (non-refused) diagnostic must
+    // not survive a zero retention budget.
+    let mut capped = ParseBudget::unlimited();
+    capped.max_heredoc_scan_bytes = 1;
+    capped.max_errors = 0;
+    let capped_output = parse_with_budget(source, capped);
+
+    if overran.stop_cause().is_none() {
+        assert!(
+            capped_output.diagnostics.is_empty(),
+            "a completed parse must not retain diagnostics at max_errors = 0; got {:?}",
+            capped_output.diagnostics
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

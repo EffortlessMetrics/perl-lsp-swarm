@@ -146,11 +146,11 @@ impl<'a> Parser<'a> {
             .iter()
             .any(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. }));
         if !already_reported {
-            self.retain_terminal_diagnostic(ParseError::HeredocBudgetExhausted {
-                limit,
-                usage,
-                location,
-            });
+            // Not terminal: this reports a drain that *overran* but finished,
+            // so the parse is complete and the diagnostic is an ordinary one.
+            // Only the pre-check refuses work and records the terminal, so only
+            // `report_heredoc_budget_refusal` may outlive the budget (#8786).
+            self.record_error(ParseError::HeredocBudgetExhausted { limit, usage, location });
         }
     }
 
