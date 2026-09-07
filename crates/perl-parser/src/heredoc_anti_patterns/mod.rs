@@ -93,6 +93,15 @@
 //! while `$y << FOO`, `$h{k} << FOO` and `CORE::time << FOO` remain shifts.
 //! Every row there is a `perl -c` result, not a reading of the grammar.
 //!
+//! Two residuals are accepted there, both losing coverage rather than blanking
+//! code. A filehandle block longer than `FILEHANDLE_BLOCK_BUDGET` is not matched
+//! back to its opening brace, so its heredoc is not admitted: the backward scan
+//! runs at every `<<` preceded by `}` and is quadratic without a bound, and
+//! precomputing whole-file brace matches would add an `O(n)` pass and `O(n)`
+//! memory to every call to serve a construct an order of magnitude larger than
+//! any observed filehandle expression. That precomputation is the fix if a real
+//! case appears.
+//!
 //! The unqualified bareword stays irreducible: Perl consults the symbol table,
 //! reading `somefunc<<FOO` as a shift when no such sub is declared and
 //! `Foo::bar<<FOO` as a heredoc when `Foo::bar` is defined. A mask that cannot
