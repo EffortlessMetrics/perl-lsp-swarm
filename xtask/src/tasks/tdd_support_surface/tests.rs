@@ -905,6 +905,69 @@ fn governed_ids(root: &Path) -> Result<Vec<String>> {
     Ok(discover_surface(root)?.into_iter().map(|item| item.id).collect())
 }
 
+/// Authored prose reaches a Markdown cell, so a `|` or a newline in an
+/// `exit_condition` would silently reshape the generated table instead of
+/// failing — and the projection would still pass its own currentness check
+/// while displaying a wrong ledger.
+#[test]
+fn authored_prose_cannot_reshape_the_projection_table() -> Result<()> {
+    let hostile = "close when a|b lands\nand the second line";
+    let cell = table_cell(hostile);
+    if cell.contains('\n') || cell.contains('\r') {
+        bail!("a newline survived into a table cell: {cell:?}");
+    }
+    for (index, _) in cell.match_indices('|') {
+        if index == 0 || !cell[..index].ends_with('\\') {
+            bail!("an unescaped `|` survived into a table cell: {cell:?}");
+        }
+    }
+    // The text is preserved, not dropped: escaping must not lose the content.
+    if !cell.contains("a\\|b") || !cell.contains("second line") {
+        bail!("escaping lost content: {cell:?}");
+    }
+    Ok(())
+}
+
+/// A type can be public at its defining module path *and* re-exported at the
+/// crate root. Consumers naming the root path must reach the same members:
+/// lifting only from the private-module shadow left those members with no row
+/// at the root path, so a real consumer went unattributed and the member read
+/// `self_only`. That is a false claim in the field #8605 consumes.
+#[test]
+fn members_of_a_public_module_type_are_governed_at_its_root_reexport() -> Result<()> {
+    const FIXTURE: &str = "\
+pub mod inner;\n\
+pub use inner::Widget;\n";
+    let dir = fixture_root(FIXTURE, MINIMAL_MANIFEST)?;
+    fs::write(
+        dir.path().join("crates/perl-tdd-support/src/inner.rs"),
+        "pub struct Widget { pub label: String }\n\
+         impl Widget { pub fn build() -> Self { Widget { label: String::new() } } }\n\
+         pub enum Mode { On { level: u8 } }\n",
+    )?;
+    let ids = governed_ids(dir.path())?;
+    for expected in [
+        // Governed at the defining path...
+        "method:perl_tdd_support::inner::Widget::build",
+        "field:perl_tdd_support::inner::Widget::label",
+        // ...and at the root path the re-export publishes.
+        "method:perl_tdd_support::Widget::build",
+        "field:perl_tdd_support::Widget::label",
+    ] {
+        if !ids.iter().any(|id| id == expected) {
+            bail!("{expected} was not discovered: {ids:?}");
+        }
+    }
+    // `Mode` is not re-exported, so it gains no root alias.
+    if ids.iter().any(|id| id == "variant:perl_tdd_support::Mode::On") {
+        bail!("a type that is not re-exported must not gain root-path members: {ids:?}");
+    }
+    if !ids.iter().any(|id| id == "variant:perl_tdd_support::inner::Mode::On") {
+        bail!("`inner::Mode::On` must still be governed at its defining path: {ids:?}");
+    }
+    Ok(())
+}
+
 /// The member-governance boundary, pinned so it cannot drift silently in either
 /// direction: a type re-exported from another crate is governed at the
 /// re-export row only. Lifting its members would make the checker's subject the

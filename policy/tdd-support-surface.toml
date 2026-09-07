@@ -7393,3 +7393,1308 @@ replacement_owner = "none available today; this tree has live production consume
 owner_issue = 14721
 exit_condition = "#14721 settles the production reach of this tree (`perl-parser` re-exports its four submodules explicitly since #14738; `perl-lsp-rs` builds LSP features on it). Until then no train slot may treat this item as test-only surface."
 proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceByteMapSegment::Replaced::new"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceByteMapSegment::Replaced::new"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceByteMapSegment::Replaced::old"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceByteMapSegment::Replaced::old"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceByteMapSegment::Unchanged::new"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceByteMapSegment::Unchanged::new"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceByteMapSegment::Unchanged::old"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceByteMapSegment::Unchanged::old"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::DuplicateStart::earlier_index"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::DuplicateStart::earlier_index"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::DuplicateStart::later_index"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::DuplicateStart::later_index"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::DuplicateStart::start_byte"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::DuplicateStart::start_byte"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::GenerationOverflow::generation"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::GenerationOverflow::generation"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::InvalidSourceGeometry::0"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::InvalidSourceGeometry::0"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::NewEndMismatch::actual_new_end_byte"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::NewEndMismatch::actual_new_end_byte"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::NewEndMismatch::expected_new_end_byte"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::NewEndMismatch::expected_new_end_byte"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::NewEndMismatch::index"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::NewEndMismatch::index"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::NoncanonicalOrder::earlier_index"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::NoncanonicalOrder::earlier_index"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::NoncanonicalOrder::earlier_start"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::NoncanonicalOrder::earlier_start"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::NoncanonicalOrder::later_index"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::NoncanonicalOrder::later_index"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::NoncanonicalOrder::later_start"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::NoncanonicalOrder::later_start"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::OutOfBounds::index"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::OutOfBounds::index"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::OutOfBounds::old_end_byte"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::OutOfBounds::old_end_byte"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::OutOfBounds::source_len"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::OutOfBounds::source_len"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::OutOfBounds::start_byte"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::OutOfBounds::start_byte"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::Overlap::earlier_index"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::Overlap::earlier_index"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::Overlap::earlier_old_end"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::Overlap::earlier_old_end"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::Overlap::later_index"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::Overlap::later_index"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::Overlap::later_start"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::Overlap::later_start"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::ReversedRange::index"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::ReversedRange::index"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::ReversedRange::old_end_byte"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::ReversedRange::old_end_byte"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::ReversedRange::start_byte"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::ReversedRange::start_byte"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::SplitUtf8Scalar::byte_offset"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::SplitUtf8Scalar::byte_offset"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::SplitUtf8Scalar::index"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::SplitUtf8Scalar::index"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::ReferenceEditError::UnsupportedCoordinateModel::requested"
+api_kind = "field"
+path = "perl_tdd_support::ReferenceEditError::UnsupportedCoordinateModel::requested"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "field:perl_tdd_support::SymlinkTestDecision::TypedSkip::reason"
+api_kind = "field"
+path = "perl_tdd_support::SymlinkTestDecision::TypedSkip::reason"
+cfg = ""
+behavior = "TODO: what this item does today"
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "TODO: replacement API or owning package"
+owner_issue = 8418
+exit_condition = "TODO: when this row is removed or revisited"
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::BddScenario::given"
+api_kind = "method"
+path = "perl_tdd_support::BddScenario::given"
+cfg = ""
+behavior = "Inherent method `given` of `perl_tdd_support::BddScenario`; governed with its owning type."
+consumers = ["perl-lexer", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided by design: #8605 selects retain-in-bounded-authoring, move-to-existing-owner, or delete"
+owner_issue = 8605
+exit_condition = "Row rewritten or removed when #8605 records the BddScenario ownership ruling. #9130 forbids moving it into `perl-test-must`."
+proof_command = "cargo test -p perl-lsp-rs --test lsp_bdd_workflows --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::BddScenario::new"
+api_kind = "method"
+path = "perl_tdd_support::BddScenario::new"
+cfg = ""
+behavior = "Inherent method `new` of `perl_tdd_support::BddScenario`; governed with its owning type."
+consumers = ["perl-lexer", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided by design: #8605 selects retain-in-bounded-authoring, move-to-existing-owner, or delete"
+owner_issue = 8605
+exit_condition = "Row rewritten or removed when #8605 records the BddScenario ownership ruling. #9130 forbids moving it into `perl-test-must`."
+proof_command = "cargo test -p perl-lsp-rs --test lsp_bdd_workflows --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::BddScenario::then"
+api_kind = "method"
+path = "perl_tdd_support::BddScenario::then"
+cfg = ""
+behavior = "Inherent method `then` of `perl_tdd_support::BddScenario`; governed with its owning type."
+consumers = ["perl-lexer", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided by design: #8605 selects retain-in-bounded-authoring, move-to-existing-owner, or delete"
+owner_issue = 8605
+exit_condition = "Row rewritten or removed when #8605 records the BddScenario ownership ruling. #9130 forbids moving it into `perl-test-must`."
+proof_command = "cargo test -p perl-lsp-rs --test lsp_bdd_workflows --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::BddScenario::when"
+api_kind = "method"
+path = "perl_tdd_support::BddScenario::when"
+cfg = ""
+behavior = "Inherent method `when` of `perl_tdd_support::BddScenario`; governed with its owning type."
+consumers = ["perl-lexer", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided by design: #8605 selects retain-in-bounded-authoring, move-to-existing-owner, or delete"
+owner_issue = 8605
+exit_condition = "Row rewritten or removed when #8605 records the BddScenario ownership ruling. #9130 forbids moving it into `perl-test-must`."
+proof_command = "cargo test -p perl-lsp-rs --test lsp_bdd_workflows --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceByteMapSegment::is_replaced"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceByteMapSegment::is_replaced"
+cfg = ""
+behavior = "Inherent method `is_replaced` of `perl_tdd_support::ReferenceByteMapSegment`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceByteMapSegment::new_span"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceByteMapSegment::new_span"
+cfg = ""
+behavior = "Inherent method `new_span` of `perl_tdd_support::ReferenceByteMapSegment`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceByteMapSegment::old"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceByteMapSegment::old"
+cfg = ""
+behavior = "Inherent method `old` of `perl_tdd_support::ReferenceByteMapSegment`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEdit::delete"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEdit::delete"
+cfg = ""
+behavior = "Inherent method `delete` of `perl_tdd_support::ReferenceEdit`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEdit::expected_new_end_byte"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEdit::expected_new_end_byte"
+cfg = ""
+behavior = "Inherent method `expected_new_end_byte` of `perl_tdd_support::ReferenceEdit`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEdit::insert"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEdit::insert"
+cfg = ""
+behavior = "Inherent method `insert` of `perl_tdd_support::ReferenceEdit`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEdit::old_end_byte"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEdit::old_end_byte"
+cfg = ""
+behavior = "Inherent method `old_end_byte` of `perl_tdd_support::ReferenceEdit`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEdit::replace"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEdit::replace"
+cfg = ""
+behavior = "Inherent method `replace` of `perl_tdd_support::ReferenceEdit`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEdit::replacement"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEdit::replacement"
+cfg = ""
+behavior = "Inherent method `replacement` of `perl_tdd_support::ReferenceEdit`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEdit::start_byte"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEdit::start_byte"
+cfg = ""
+behavior = "Inherent method `start_byte` of `perl_tdd_support::ReferenceEdit`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEdit::with_expected_new_end"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEdit::with_expected_new_end"
+cfg = ""
+behavior = "Inherent method `with_expected_new_end` of `perl_tdd_support::ReferenceEdit`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditError::reason"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditError::reason"
+cfg = ""
+behavior = "Inherent method `reason` of `perl_tdd_support::ReferenceEditError`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditResult::changed_new"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditResult::changed_new"
+cfg = ""
+behavior = "Inherent method `changed_new` of `perl_tdd_support::ReferenceEditResult`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditResult::changed_old"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditResult::changed_old"
+cfg = ""
+behavior = "Inherent method `changed_old` of `perl_tdd_support::ReferenceEditResult`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditResult::digest"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditResult::digest"
+cfg = ""
+behavior = "Inherent method `digest` of `perl_tdd_support::ReferenceEditResult`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditResult::generation"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditResult::generation"
+cfg = ""
+behavior = "Inherent method `generation` of `perl_tdd_support::ReferenceEditResult`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditResult::lines"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditResult::lines"
+cfg = ""
+behavior = "Inherent method `lines` of `perl_tdd_support::ReferenceEditResult`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditResult::map_old_to_new"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditResult::map_old_to_new"
+cfg = ""
+behavior = "Inherent method `map_old_to_new` of `perl_tdd_support::ReferenceEditResult`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditResult::mapping"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditResult::mapping"
+cfg = ""
+behavior = "Inherent method `mapping` of `perl_tdd_support::ReferenceEditResult`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditResult::predecessor_digest"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditResult::predecessor_digest"
+cfg = ""
+behavior = "Inherent method `predecessor_digest` of `perl_tdd_support::ReferenceEditResult`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditResult::predecessor_generation"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditResult::predecessor_generation"
+cfg = ""
+behavior = "Inherent method `predecessor_generation` of `perl_tdd_support::ReferenceEditResult`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditResult::predecessor_len"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditResult::predecessor_len"
+cfg = ""
+behavior = "Inherent method `predecessor_len` of `perl_tdd_support::ReferenceEditResult`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditResult::source"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditResult::source"
+cfg = ""
+behavior = "Inherent method `source` of `perl_tdd_support::ReferenceEditResult`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditResult::state"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditResult::state"
+cfg = ""
+behavior = "Inherent method `state` of `perl_tdd_support::ReferenceEditResult`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditResult::transaction"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditResult::transaction"
+cfg = ""
+behavior = "Inherent method `transaction` of `perl_tdd_support::ReferenceEditResult`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditTransaction::coordinate_model"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditTransaction::coordinate_model"
+cfg = ""
+behavior = "Inherent method `coordinate_model` of `perl_tdd_support::ReferenceEditTransaction`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditTransaction::edits"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditTransaction::edits"
+cfg = ""
+behavior = "Inherent method `edits` of `perl_tdd_support::ReferenceEditTransaction`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditTransaction::new"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditTransaction::new"
+cfg = ""
+behavior = "Inherent method `new` of `perl_tdd_support::ReferenceEditTransaction`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceEditTransaction::with_coordinate_model"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceEditTransaction::with_coordinate_model"
+cfg = ""
+behavior = "Inherent method `with_coordinate_model` of `perl_tdd_support::ReferenceEditTransaction`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceSourceState::apply"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceSourceState::apply"
+cfg = ""
+behavior = "Inherent method `apply` of `perl_tdd_support::ReferenceSourceState`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceSourceState::digest"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceSourceState::digest"
+cfg = ""
+behavior = "Inherent method `digest` of `perl_tdd_support::ReferenceSourceState`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceSourceState::generation"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceSourceState::generation"
+cfg = ""
+behavior = "Inherent method `generation` of `perl_tdd_support::ReferenceSourceState`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceSourceState::lines"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceSourceState::lines"
+cfg = ""
+behavior = "Inherent method `lines` of `perl_tdd_support::ReferenceSourceState`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceSourceState::new"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceSourceState::new"
+cfg = ""
+behavior = "Inherent method `new` of `perl_tdd_support::ReferenceSourceState`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceSourceState::source"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceSourceState::source"
+cfg = ""
+behavior = "Inherent method `source` of `perl_tdd_support::ReferenceSourceState`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::ReferenceSourceState::with_generation"
+api_kind = "method"
+path = "perl_tdd_support::ReferenceSourceState::with_generation"
+cfg = ""
+behavior = "Inherent method `with_generation` of `perl_tdd_support::ReferenceSourceState`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::SymlinkTestDecision::skip_reason"
+api_kind = "method"
+path = "perl_tdd_support::SymlinkTestDecision::skip_reason"
+cfg = ""
+behavior = "Inherent method `skip_reason` of `perl_tdd_support::SymlinkTestDecision`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink test-capability detection"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary under #8144 (provenance #12567); retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "method:perl_tdd_support::SymlinkTestDecision::skip_visibly"
+api_kind = "method"
+path = "perl_tdd_support::SymlinkTestDecision::skip_visibly"
+cfg = ""
+behavior = "Inherent method `skip_visibly` of `perl_tdd_support::SymlinkTestDecision`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink test-capability detection"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary under #8144 (provenance #12567); retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "variant:perl_tdd_support::ReferenceByteMapSegment::Replaced"
+api_kind = "variant"
+path = "perl_tdd_support::ReferenceByteMapSegment::Replaced"
+cfg = ""
+behavior = "Variant `Replaced` of `perl_tdd_support::ReferenceByteMapSegment`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "variant:perl_tdd_support::ReferenceByteMapSegment::Unchanged"
+api_kind = "variant"
+path = "perl_tdd_support::ReferenceByteMapSegment::Unchanged"
+cfg = ""
+behavior = "Variant `Unchanged` of `perl_tdd_support::ReferenceByteMapSegment`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "variant:perl_tdd_support::ReferenceEditError::DuplicateStart"
+api_kind = "variant"
+path = "perl_tdd_support::ReferenceEditError::DuplicateStart"
+cfg = ""
+behavior = "Variant `DuplicateStart` of `perl_tdd_support::ReferenceEditError`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "variant:perl_tdd_support::ReferenceEditError::GenerationOverflow"
+api_kind = "variant"
+path = "perl_tdd_support::ReferenceEditError::GenerationOverflow"
+cfg = ""
+behavior = "Variant `GenerationOverflow` of `perl_tdd_support::ReferenceEditError`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "variant:perl_tdd_support::ReferenceEditError::InvalidSourceGeometry"
+api_kind = "variant"
+path = "perl_tdd_support::ReferenceEditError::InvalidSourceGeometry"
+cfg = ""
+behavior = "Variant `InvalidSourceGeometry` of `perl_tdd_support::ReferenceEditError`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "variant:perl_tdd_support::ReferenceEditError::NewEndMismatch"
+api_kind = "variant"
+path = "perl_tdd_support::ReferenceEditError::NewEndMismatch"
+cfg = ""
+behavior = "Variant `NewEndMismatch` of `perl_tdd_support::ReferenceEditError`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "variant:perl_tdd_support::ReferenceEditError::NoncanonicalOrder"
+api_kind = "variant"
+path = "perl_tdd_support::ReferenceEditError::NoncanonicalOrder"
+cfg = ""
+behavior = "Variant `NoncanonicalOrder` of `perl_tdd_support::ReferenceEditError`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "variant:perl_tdd_support::ReferenceEditError::OutOfBounds"
+api_kind = "variant"
+path = "perl_tdd_support::ReferenceEditError::OutOfBounds"
+cfg = ""
+behavior = "Variant `OutOfBounds` of `perl_tdd_support::ReferenceEditError`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "variant:perl_tdd_support::ReferenceEditError::Overlap"
+api_kind = "variant"
+path = "perl_tdd_support::ReferenceEditError::Overlap"
+cfg = ""
+behavior = "Variant `Overlap` of `perl_tdd_support::ReferenceEditError`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "variant:perl_tdd_support::ReferenceEditError::ReversedRange"
+api_kind = "variant"
+path = "perl_tdd_support::ReferenceEditError::ReversedRange"
+cfg = ""
+behavior = "Variant `ReversedRange` of `perl_tdd_support::ReferenceEditError`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "variant:perl_tdd_support::ReferenceEditError::SplitUtf8Scalar"
+api_kind = "variant"
+path = "perl_tdd_support::ReferenceEditError::SplitUtf8Scalar"
+cfg = ""
+behavior = "Variant `SplitUtf8Scalar` of `perl_tdd_support::ReferenceEditError`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "variant:perl_tdd_support::ReferenceEditError::UnsupportedCoordinateModel"
+api_kind = "variant"
+path = "perl_tdd_support::ReferenceEditError::UnsupportedCoordinateModel"
+cfg = ""
+behavior = "Variant `UnsupportedCoordinateModel` of `perl_tdd_support::ReferenceEditError`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; perl-tdd-support owns the independent reference edit oracle"
+owner_issue = 7344
+exit_condition = "Retain the independent reference oracle accepted by #7344; revisit placement under #8144 if the support boundary moves, without delegating to production edit application."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "variant:perl_tdd_support::SymlinkTestDecision::Run"
+api_kind = "variant"
+path = "perl_tdd_support::SymlinkTestDecision::Run"
+cfg = ""
+behavior = "Variant `Run` of `perl_tdd_support::SymlinkTestDecision`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink test-capability detection"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary under #8144 (provenance #12567); retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "variant:perl_tdd_support::SymlinkTestDecision::TypedSkip"
+api_kind = "variant"
+path = "perl_tdd_support::SymlinkTestDecision::TypedSkip"
+cfg = ""
+behavior = "Variant `TypedSkip` of `perl_tdd_support::SymlinkTestDecision`; governed with its owning type."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink test-capability detection"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary under #8144 (provenance #12567); retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"

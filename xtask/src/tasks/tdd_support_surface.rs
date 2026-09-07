@@ -319,26 +319,45 @@ pub(crate) fn discover_surface(root: &Path) -> Result<Vec<Discovered>> {
     // republishes it. Its definition was walked into the shadow, so lift its
     // members under the re-export's public path; otherwise a private-module
     // type's methods, fields, and variants could change without a ledger row.
+    // Members can come from either side: `shadow` holds a private module's
+    // definitions, and `out` holds a public module's. A type is commonly both
+    // public at `bdd::BddScenario` and re-exported at the root, and a consumer
+    // naming the root path must reach the same members, so both are candidates.
+    // A foreign re-export resolves to an origin no local member owns, so this
+    // pool cannot lift another crate's members.
+    let member_pool: Vec<&Discovered> =
+        shadow.iter().chain(out.iter()).filter(|item| item.is_member()).collect();
+    // Only a re-export of a *type* lifts members. A re-export of a whole module
+    // (`pub use tdd::tdd_basic;`) republishes a namespace, not a type: its
+    // contents keep their rows at their defining path, and inventing member
+    // rows under the module alias would name owners that have no row of their
+    // own. `every_real_member_row_names_a_governed_owning_type` holds that line.
+    let type_paths: BTreeSet<&str> = shadow
+        .iter()
+        .chain(out.iter())
+        .filter(|item| matches!(item.api_kind.as_str(), "struct" | "enum" | "union"))
+        .map(|item| item.path.as_str())
+        .collect();
     let lifted: Vec<Discovered> = out
         .iter()
         .filter(|item| item.api_kind == "reexport")
         .flat_map(|reexport| {
             let origin = resolve_local_origin(&reexport.source, &reexport.path);
+            if !type_paths.contains(origin.as_str()) {
+                return Vec::new();
+            }
             let nested_prefix = format!("{origin}::");
-            let origin_for_rewrite = origin.clone();
-            shadow
+            member_pool
                 .iter()
-                .filter(move |member| {
+                .filter(|member| {
                     // `owner == origin` is the type's own members; the nested
                     // prefix carries an enum variant's payload fields, whose
                     // owner is `<origin>::<Variant>`.
-                    member.is_member()
-                        && (member.owner == origin || member.owner.starts_with(&nested_prefix))
+                    member.owner == origin || member.owner.starts_with(&nested_prefix)
                 })
-                .map(move |member| {
+                .map(|member| {
                     let name = member.path.rsplit("::").next().unwrap_or_default();
-                    let suffix =
-                        member.owner.strip_prefix(origin_for_rewrite.as_str()).unwrap_or_default();
+                    let suffix = member.owner.strip_prefix(origin.as_str()).unwrap_or_default();
                     Discovered::member(
                         &member.api_kind,
                         format!("{}{suffix}", reexport.path),
@@ -390,6 +409,16 @@ impl Sink {
 /// Resolve a re-export's origin (as written in `pub use`) to the crate path
 /// of the item it names. `crate::a::B` is absolute; `self::`/bare `a::B` is
 /// relative to the module the `pub use` sits in.
+/// Escape authored prose for a Markdown table cell.
+///
+/// `exit_condition` is free text an author writes per row. A `|` in it would
+/// open a new column and a newline would end the row, silently reshaping the
+/// generated table rather than failing, so the projection would keep passing
+/// its own currentness check while displaying a wrong ledger.
+fn table_cell(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('|', "\\|").replace(['\n', '\r'], " ")
+}
+
 fn resolve_local_origin(source: &str, reexport_path: &str) -> String {
     if let Some(rest) = source.strip_prefix("crate::") {
         return format!("{SUBJECT_ROOT_PATH}::{rest}");
@@ -1577,7 +1606,7 @@ pub(crate) fn render_projection(ledger: &Ledger, edges: &[ConsumerEdge]) -> Stri
             entry.compatibility,
             entry.disposition,
             entry.owner_issue,
-            entry.exit_condition,
+            table_cell(&entry.exit_condition),
         ));
     }
 
