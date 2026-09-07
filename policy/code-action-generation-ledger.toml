@@ -400,6 +400,15 @@ proof_gap = "No corpus fixture reaches it. Six range shapes were tried against t
 
 [[route]]
 generation = "provider_original"
+family = "refactor.extract:subroutine"
+disposition = "redundant_behavior"
+notes = "refactors::get_refactoring_actions extends with the WHOLE enhanced result, not just extraction of variables, so this generation transitively republishes subroutine extraction exactly as it does extract:variable and the rewrite transforms. Recorded so #9189 does not treat the nested publisher as nonexistent."
+retirement_blockers = []
+parity_fixtures = []
+proof_gap = "Inherits the canonical row's gap: no corpus fixture reaches subroutine extraction through the LSP surface, so the nested duplicate cannot be observed either. It is redundant by construction — the same call, on the same source and range, as the canonical generation — rather than by measurement."
+
+[[route]]
+generation = "provider_original"
 family = "refactor.extract:basic_fallback"
 disposition = "shadow_only_candidate"
 notes = "The literal 'Extract to variable' / 'Extract to function' arms in refactors.rs are guarded by `actions.is_empty()`, so they can only run when the nested enhanced generation returned nothing. They are not an independent production authority."

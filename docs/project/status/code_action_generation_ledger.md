@@ -77,6 +77,7 @@ whose only occurrences are outside the handler.
 | provider_enhanced | refactor.extract:variable | canonical_candidate | — |
 | provider_original | refactor.extract:variable | redundant_behavior | — |
 | provider_enhanced | refactor.extract:subroutine | canonical_candidate | — |
+| provider_original | refactor.extract:subroutine | redundant_behavior | — |
 | provider_original | refactor.extract:basic_fallback | shadow_only_candidate | — |
 | disabled_extract_placeholder | refactor.extract:disabled_placeholder | unique_behavior | capability_gated_disabled_state_has_no_other_producer |
 | provider_enhanced | refactor.rewrite:enhanced_transforms | canonical_candidate | — |
@@ -105,6 +106,12 @@ So the overlap between stages 6 and 7 for the extract and rewrite families is
 not two implementations that happen to agree — it is one implementation invoked
 twice. Those rows are `redundant_behavior` rather than `unique_behavior`, and
 retiring the stage-6 path for those families cannot change the published result.
+
+`get_refactoring_actions` extends with the **whole** enhanced result, so this
+applies to every enhanced family — variable extraction, subroutine extraction
+and the rewrite transforms alike. The subroutine duplicate was missing from an
+earlier draft of this ledger; review caught it, and omitting it would have let
+#9189 treat an active nested publisher as nonexistent.
 
 The literal extract arms that do live in `refactors.rs` are guarded by
 `actions.is_empty()`, so they only run when the nested enhanced call returned

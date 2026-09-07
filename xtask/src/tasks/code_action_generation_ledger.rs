@@ -419,6 +419,9 @@ fn blank_comments(source: &str) -> String {
     // stays valid UTF-8 and every byte offset is preserved.
     let mut out_bytes = bytes.to_vec();
     let mut state = State::Code;
+    // Rust block comments nest: `/* /* */ still a comment */`. Tracking depth
+    // stops an anchor after an inner `*/` from looking like executable code.
+    let mut block_depth = 0usize;
     let mut index = 0;
 
     while index < bytes.len() {
@@ -432,6 +435,7 @@ fn blank_comments(source: &str) -> String {
                 }
                 (b'/', Some(b'*')) => {
                     state = State::BlockComment;
+                    block_depth = 1;
                     out_bytes[index] = b' ';
                 }
                 (b'"', _) => state = State::Str,
@@ -446,13 +450,23 @@ fn blank_comments(source: &str) -> String {
                 }
             }
             State::BlockComment => {
+                if byte == b'/' && next == Some(b'*') {
+                    block_depth += 1;
+                    out_bytes[index] = b' ';
+                    out_bytes[index + 1] = b' ';
+                    index += 2;
+                    continue;
+                }
                 if byte == b'*' && next == Some(b'/') {
                     out_bytes[index] = b' ';
                     if index + 1 < out_bytes.len() {
                         out_bytes[index + 1] = b' ';
                     }
                     index += 2;
-                    state = State::Code;
+                    block_depth = block_depth.saturating_sub(1);
+                    if block_depth == 0 {
+                        state = State::Code;
+                    }
                     continue;
                 }
                 if byte != b'\n' {
@@ -1668,6 +1682,19 @@ mod tests {
                 .any(|violation| violation.contains("does not occur inside handle_code_action")),
             "expected comment-only anchor to be rejected, got {violations:?}"
         );
+    }
+
+    /// Rust block comments nest, so an inner `*/` must not end the outer one.
+    #[test]
+    fn blanks_nested_block_comments_entirely() {
+        let source = "/* outer /* inner */ STALE_CALL() */ let a = LIVE_CALL();\n";
+        let blanked = blank_comments(source);
+        assert_eq!(blanked.len(), source.len(), "offsets must be preserved");
+        assert!(
+            occurrences(&blanked, "STALE_CALL()").is_empty(),
+            "an anchor after an inner */ must stay commented out: {blanked:?}"
+        );
+        assert_eq!(occurrences(&blanked, "LIVE_CALL()").len(), 1, "live code must survive");
     }
 
     #[test]
