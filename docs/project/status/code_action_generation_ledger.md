@@ -160,13 +160,30 @@ fixture: reaching it needs a workspace fixture that writes a project config
 selecting a deprecated engine. Before #9190 spends effort proving parity here,
 it should check whether #9072 has already retired the engine.
 
-### Pragma authority is ordered, not resolved
+### Pragma duplicate authority is user-visible, not suppressed
 
-`missing_pragmas` and the PL100/PL101 arms of `provider_original` produce the
-same pragma quick fixes on the same request. Production relies on ordering —
-the canonical generation runs first so `source.fixAll` prefers its source-aware
-insertion point — and on `dedupe_code_actions` to collapse the rest. The
-duplicate authority is real; only its user-visible symptom is suppressed.
+An earlier draft of this page claimed ordering and deduplication hide the
+pragma overlap. That is wrong, and review caught it.
+
+`dedupe_code_actions` keys on `(kind, title, edit, command)`, so it collapses
+only *byte-identical* actions. Three generations insert `use strict` under
+three different titles on the same pragma-less request:
+
+| Title | Generation |
+| --- | --- |
+| `Add use strict;` | `missing_pragmas` |
+| `Add 'use strict'` | `native_critic` |
+| `Add missing pragmas (use strict;, use warnings;)` | `provider_enhanced` |
+
+A client sees all three at once, plus `Modernize: add use strict; and use
+warnings;` under `source.modernize`. Ordering only decides which insertion
+point `source.fixAll` prefers; it hides nothing.
+
+So this is the clearest user-visible duplicate authority in the inventory, and
+`cac-parity-pragma-duplicate-authority-is-user-visible` freezes it as fact
+rather than asserting the tidier claim that the family answers once. When #9189
+resolves the duplication that fixture must fail, forcing this ledger to be
+updated alongside the routing change.
 
 ## Parity corpus
 

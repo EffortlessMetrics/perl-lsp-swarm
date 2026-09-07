@@ -266,10 +266,10 @@ parity_fixtures = ["cac-parity-explain-diagnostic-command-only"]
 generation = "missing_pragmas"
 family = "quickfix:pragma"
 disposition = "canonical_candidate"
-notes = "Ordered first on purpose so its source-aware insertion point wins the source.fixAll aggregation."
+notes = "Ordered first on purpose so its source-aware insertion point wins the source.fixAll aggregation. Note that ordering does NOT hide the duplication: dedupe_code_actions keys on title, and three generations publish a `use strict` insertion under three different titles, so a client sees all three."
 retirement_blockers = []
 parity_fixtures = [
-  "cac-parity-pragma-quickfix-single-edit",
+  "cac-parity-pragma-duplicate-authority-is-user-visible",
   "cac-parity-stale-superseded-document-version",
 ]
 
@@ -279,7 +279,7 @@ family = "quickfix:pragma"
 disposition = "redundant_behavior"
 notes = "Reaches this family twice over and adds nothing: diagnostic_routes routes PL100/PL101 to the same add_use_strict/add_use_warnings quick fixes the canonical generation already produced, and the nested refactors::get_refactoring_actions re-invocation reaches provider_enhanced's combined fix. dedupe_code_actions collapses both byte-identical results."
 retirement_blockers = []
-parity_fixtures = ["cac-parity-pragma-quickfix-single-edit"]
+parity_fixtures = ["cac-parity-pragma-duplicate-authority-is-user-visible"]
 
 [[route]]
 generation = "provider_enhanced"

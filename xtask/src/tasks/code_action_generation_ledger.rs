@@ -282,6 +282,20 @@ fn validate_generations(
                 generation.path
             ));
         }
+
+        // Reachability and path are not independent: a production generation
+        // runs on a real branch, and a stub runs nowhere. Validating them
+        // separately let a row claim `production` with `path = "none"`, or
+        // `unreachable_stub` with an active branch.
+        match (generation.reachability.as_str(), generation.path.as_str()) {
+            ("production", "none") => violations.push(format!(
+                "{POLICY_PATH}: generation {id} is production-reachable but declares path \"none\""
+            )),
+            ("unreachable_stub", path) if path != "none" => violations.push(format!(
+                "{POLICY_PATH}: generation {id} is an unreachable stub but declares path {path:?}; expected \"none\""
+            )),
+            _ => {}
+        }
         if !reachability_states.contains(generation.reachability.as_str()) {
             violations.push(format!(
                 "{POLICY_PATH}: generation {id} reachability {:?} is not one of {REQUIRED_REACHABILITY:?}",
@@ -1256,6 +1270,57 @@ mod tests {
                 .iter()
                 .any(|violation| violation.contains("declared invocation order is stale")),
             "expected stage-order violation, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_production_generation_that_runs_nowhere() {
+        let mut nowhere = generation("ghost", Some("THE_CALL"));
+        nowhere.path = "none".to_string();
+
+        let ledger = ledger(
+            vec![nowhere],
+            vec![route("ghost", "quickfix:diagnostic_routed", "canonical_candidate")],
+        );
+
+        let mut violations = Vec::new();
+        validate_generations(
+            &std::path::PathBuf::from("."),
+            &ledger,
+            &handler(&format!("THE_CALL\n{NO_AST_MARKER}")),
+            &mut violations,
+        );
+
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("production-reachable but declares path")),
+            "expected production/none contradiction, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_an_unreachable_stub_that_claims_a_branch() {
+        let mut stub = generation("stub", None);
+        stub.reachability = "unreachable_stub".to_string();
+        stub.path = "ast".to_string();
+
+        let ledger =
+            ledger(vec![stub], vec![route("stub", "none:unreachable_stub", "retire_candidate")]);
+
+        let mut violations = Vec::new();
+        validate_generations(
+            &std::path::PathBuf::from("."),
+            &ledger,
+            &handler(NO_AST_MARKER),
+            &mut violations,
+        );
+
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("unreachable stub but declares path")),
+            "expected stub/branch contradiction, got {violations:?}"
         );
     }
 

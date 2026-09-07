@@ -24,7 +24,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 // --- fixture identities -----------------------------------------------------
 
 const SUCCESS_DIAGNOSTIC_ROUTED: &str = "cac-parity-diagnostic-routed-quickfix-edit";
-const SUCCESS_PRAGMA: &str = "cac-parity-pragma-quickfix-single-edit";
+const SUCCESS_PRAGMA: &str = "cac-parity-pragma-duplicate-authority-is-user-visible";
 const SUCCESS_CRITIC_SAFE_ONLY: &str = "cac-parity-critic-quickfix-safe-only";
 const SUCCESS_FIX_ALL: &str = "cac-parity-source-fixall-aggregates-after-dedupe";
 const SUCCESS_ENHANCED_COMBINED_PRAGMA: &str = "cac-parity-enhanced-combined-pragma-fix";
@@ -173,30 +173,68 @@ fn diagnostic_routed_quickfix_carries_an_edit() -> TestResult {
     Ok(())
 }
 
-/// The pragma family answers once, not once per generation. `missing_pragmas`
-/// and the PL100/PL101 arms of the original generation both produce this fix.
+/// Pragma duplicate authority is **user-visible**, not merely internal.
+///
+/// `dedupe_code_actions` keys on `(kind, title, edit, command)`, so it collapses
+/// only byte-identical actions. Three generations insert `use strict` under
+/// three different titles — `missing_pragmas`, the native critic, and the
+/// enhanced generation's combined fix — and a client sees all three at once.
+///
+/// This fixture freezes that as the current fact rather than asserting the
+/// tidier claim that the family "answers once". If #9189 resolves the
+/// duplication, this fixture must fail and the ledger must be updated with it;
+/// that coupling is the point.
 #[test]
-fn pragma_quickfix_is_published_once_per_pragma() -> TestResult {
+fn pragma_duplicate_authority_is_visible_and_uncollapsed() -> TestResult {
     let uri = "file:///cac_parity_pragma.pl";
     let mut harness = harness_with(None)?;
     harness.open(uri, NO_PRAGMAS)?;
     harness.barrier();
 
-    let actions = code_actions(&mut harness, uri, ((0, 0), (0, 0)), Some(&["quickfix"]))?;
+    let actions = code_actions(&mut harness, uri, ((0, 0), (1, 12)), Some(&["quickfix"]))?;
 
-    for pragma_title in ["Add use strict;", "Add use warnings;"] {
-        let matching =
-            actions.iter().filter(|action| title(action) == pragma_title).collect::<Vec<_>>();
-        assert!(
-            matching.len() <= 1,
-            "{SUCCESS_PRAGMA}: {pragma_title:?} was published {} times; duplicate pragma authority must stay collapsed",
-            matching.len()
-        );
-    }
+    // Semantic duplication: count actions whose edit actually inserts the
+    // pragma, not actions carrying one exact title.
+    let inserts_strict = actions
+        .iter()
+        .filter(|action| {
+            edits_for(action, uri).iter().any(|edit| {
+                edit.get("newText")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.contains("use strict"))
+            })
+        })
+        .map(|action| title(action))
+        .collect::<Vec<_>>();
 
     assert!(
-        actions.iter().any(|action| title(action).contains("use strict")),
-        "{SUCCESS_PRAGMA}: expected a use strict quick fix, got {:?}",
+        inserts_strict.len() >= 2,
+        "{SUCCESS_PRAGMA}: expected several generations to publish a `use strict` insertion, got {inserts_strict:?}"
+    );
+
+    // Distinct titles are exactly why dedupe does not collapse them.
+    let mut distinct = inserts_strict.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        inserts_strict.len(),
+        "{SUCCESS_PRAGMA}: two identical titles survived dedupe_code_actions: {inserts_strict:?}"
+    );
+
+    // What dedupe DOES guarantee: no two published actions are byte-identical.
+    let mut identities = actions
+        .iter()
+        .map(|action| (kind(action).to_string(), title(action).to_string(), edits_for(action, uri)))
+        .map(|identity| format!("{identity:?}"))
+        .collect::<Vec<_>>();
+    let published = identities.len();
+    identities.sort();
+    identities.dedup();
+    assert_eq!(
+        identities.len(),
+        published,
+        "{SUCCESS_PRAGMA}: a byte-identical duplicate survived dedupe_code_actions: {:?}",
         titles(&actions)
     );
 
