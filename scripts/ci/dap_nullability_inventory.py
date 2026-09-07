@@ -61,7 +61,7 @@ KNOWN_CONTRADICTIONS = {
 }
 
 STRUCT_RE = re.compile(r"#\[serde\(([^)]*)\)\]\s*pub struct (\w+)\s*\{(.*?)\n\}", re.S)
-FIELD_RE = re.compile(r"(#\[serde\(([^)]*)\)\]\s*)?pub (\w+):\s*([^,\n]+),")
+FIELD_RE = re.compile(r"((?:#\[serde\(([^)]*)\)\]\s*)+)pub (\w+):\s*([^,\n]+),")
 
 
 def load_pinned_schema() -> dict:
@@ -113,7 +113,13 @@ def parse_rust_structs() -> dict:
         rename_all = "camelCase" if "camelCase" in serde_attrs else None
         fields: dict[str, dict] = {}
         for field in FIELD_RE.finditer(body):
-            attrs, rust_name, rust_type = field.group(2) or "", field.group(3), field.group(4).strip()
+            # Group 1 captures ALL consecutive attribute lines; group 2 the
+            # last serde attr's content; group 3 the field name; group 4 the
+            # type. Searching group 1 for `rename` catches renames declared in
+            # any of the stacked attributes.
+            attrs = field.group(1) or ""
+            rust_name = field.group(3)
+            rust_type = field.group(4).strip()
             optional = rust_type.startswith("Option<")
             skips_when_none = "skip_serializing_if" in attrs
             has_default = "default" in attrs
