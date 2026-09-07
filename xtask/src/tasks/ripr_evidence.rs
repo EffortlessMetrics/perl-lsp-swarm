@@ -694,24 +694,34 @@ fn revision_sha(repo: &Path, revision: &str) -> Result<String> {
     Ok(run_git_output(repo, &["rev-parse", revision])?.trim().to_string())
 }
 
-/// Drop any evidence packet a previous run left, before this run can fail.
+/// Invalidate every artifact this command regenerates, before any of it can fail.
 ///
-/// `Validate PR evidence contracts` runs `if: always()` in
-/// `.github/workflows/ripr.yml`, so it executes even when generation failed, and
-/// the self-hosted lanes reuse `target/` across runs. A packet written by an
-/// earlier run of the same base/head therefore still satisfies
-/// [`check_pr_evidence`] — presenting a failed analysis as valid evidence, and
-/// failing *open* at the gate immediately after failing closed at ingest.
+/// `.github/workflows/ripr.yml` runs both `Validate PR evidence contracts` and
+/// `Upload ripr PR evidence` with `if: always()`, so they execute even when
+/// generation failed, and the self-hosted lanes reuse `target/` across runs.
+/// Anything an earlier run of the same base/head left behind is therefore still
+/// read afterwards, in two distinct ways:
 ///
-/// Clearing first makes every failure below leave nothing to accept: the check
-/// then refuses on the missing packet rather than validating a stale one.
+/// - the evidence packet and markdown are **gate input**: `check_pr_evidence`
+///   accepts them for matching revisions, so a failed analysis passes the
+///   contract — failing *open* at the gate immediately after failing closed at
+///   ingest;
+/// - `raw-check.json` is **diagnostic**: a stale payload is uploaded as though it
+///   were the failed run's output, misattributing an earlier producer's bytes to
+///   the current failure.
 ///
-/// [`PR_RAW_CHECK_JSON`] is deliberately not cleared. It is diagnostic output
-/// rather than gate input — `check_pr_evidence` never reads it — and it is
-/// rewritten from the current producer run before validation, so preserving it
-/// keeps the refusal explainable without making anything acceptable.
-fn clear_stale_pr_evidence(repo: &Path) -> Result<()> {
-    for relative in [PR_EVIDENCE_JSON, PR_EVIDENCE_MD] {
+/// Both follow from the same rule, so both are cleared together here: once a
+/// generation attempt starts, nothing it regenerates may survive it. This runs
+/// before every fallible step — revision checks, diff resolution, the diff
+/// write, and the producer invocation — because each of them can fail and leave
+/// the previous run's artifacts otherwise readable.
+///
+/// This does not conflict with preserving a refused envelope's payload: the
+/// current producer output is written back to `raw-check.json` immediately after
+/// `run_ripr_check` succeeds and *before* the envelope check, so a malformed
+/// envelope still leaves its own bytes behind — just never someone else's.
+fn clear_stale_pr_artifacts(repo: &Path) -> Result<()> {
+    for relative in [PR_EVIDENCE_JSON, PR_EVIDENCE_MD, PR_RAW_CHECK_JSON] {
         let path = repo.join(relative);
         match fs::remove_file(&path) {
             Ok(()) => {}
@@ -725,6 +735,10 @@ fn clear_stale_pr_evidence(repo: &Path) -> Result<()> {
 }
 
 fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
+    // First, before anything fallible: this run owns these artifacts now, so no
+    // failure below may leave an earlier run's copies readable to the always-run
+    // validator or artifact upload (#9113 review).
+    clear_stale_pr_artifacts(repo)?;
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
     if let Some(pr_head_sha) = &options.pr_head_sha {
@@ -735,9 +749,6 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
     let changed_file_count = diff_receipt.entries.len();
     write_pr_diff(repo, &diff_receipt)?;
-    // Nothing below may leave a previous run's packet behind as acceptable
-    // evidence for these revisions (#9113 review).
-    clear_stale_pr_evidence(repo)?;
     let check_json = run_ripr_check(repo, options)?;
     let check_value: Value =
         serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
@@ -4225,6 +4236,87 @@ esac
 
         // The offending payload still survives for diagnosis.
         assert!(repo.path().join(PR_RAW_CHECK_JSON).exists());
+        Ok(())
+    }
+
+    /// A failure *before* the producer runs must also invalidate the old packet.
+    ///
+    /// Placement control for `clear_stale_pr_artifacts`. An invalid base fails at
+    /// `verify_revision`, which is upstream of the diff write and the producer —
+    /// so this passes only while the clear is the first thing `write_pr_evidence`
+    /// does. Moving it back behind `write_pr_diff` (where it originally sat)
+    /// fails here, because none of those steps ever run.
+    #[cfg(not(windows))]
+    #[test]
+    fn an_early_failure_also_invalidates_the_previous_packet() -> Result<()> {
+        let repo = evidence_repo()?;
+        let options = evidence_options();
+        let bin_dir = tempfile::tempdir()?;
+
+        {
+            let fake = write_fake_ripr_check_binary(bin_dir.path(), REAL_010_CHECK)?;
+            let _guard = override_ripr_bin(&fake)?;
+            write_pr_evidence(repo.path(), &options)?;
+            check_pr_evidence(repo.path(), &options)?;
+        }
+
+        // Same repository, but a base that cannot resolve: fails at the first
+        // `verify_revision`, long before any artifact would be rewritten.
+        let bogus = PrEvidenceOptions {
+            base: "refs/heads/does-not-exist".to_string(),
+            ..evidence_options()
+        };
+        write_pr_evidence(repo.path(), &bogus).expect_err("an unresolvable base must fail");
+
+        assert!(
+            !repo.path().join(PR_EVIDENCE_JSON).exists(),
+            "an early failure must not leave the previous packet acceptable"
+        );
+        // Checked with the ORIGINAL revisions: those still resolve, so this is a
+        // real acceptance test of the leftovers rather than a second failure for
+        // the same reason the generation failed.
+        check_pr_evidence(repo.path(), &options)
+            .expect_err("stale evidence must not validate after an early failure");
+        Ok(())
+    }
+
+    /// A producer that fails outright must not leave someone else's payload behind.
+    ///
+    /// `Upload ripr PR evidence` runs `if: always()`, so a `raw-check.json` from an
+    /// earlier run would be uploaded as this failed run's diagnostic evidence.
+    /// Distinct from the refusal case, where there *is* current output and keeping
+    /// it is the point.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_failed_producer_leaves_no_stale_raw_payload() -> Result<()> {
+        let repo = evidence_repo()?;
+        let options = evidence_options();
+        let bin_dir = tempfile::tempdir()?;
+
+        {
+            let fake = write_fake_ripr_check_binary(bin_dir.path(), REAL_010_CHECK)?;
+            let _guard = override_ripr_bin(&fake)?;
+            write_pr_evidence(repo.path(), &options)?;
+        }
+        assert!(repo.path().join(PR_RAW_CHECK_JSON).exists(), "first run wrote a payload");
+
+        // A producer that exits non-zero without emitting anything.
+        let failing = bin_dir.path().join("ripr");
+        write_text(&failing, "#!/bin/sh\necho 'ripr exploded' >&2\nexit 3\n")?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&failing)?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&failing, permissions)?;
+        }
+        let _guard = override_ripr_bin(&failing)?;
+        write_pr_evidence(repo.path(), &options).expect_err("a failing producer must abort");
+
+        assert!(
+            !repo.path().join(PR_RAW_CHECK_JSON).exists(),
+            "an earlier run's payload must not be uploaded as this failure's diagnostic"
+        );
+        assert!(!repo.path().join(PR_EVIDENCE_JSON).exists());
         Ok(())
     }
 
