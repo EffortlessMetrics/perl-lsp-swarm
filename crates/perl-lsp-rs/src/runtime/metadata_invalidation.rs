@@ -168,47 +168,64 @@ impl LspServer {
         }
     }
 
-    /// Whether the volume holding `dir` resolves names case-insensitively.
+    /// Whether `dir` resolves the names of its own children case-insensitively.
     ///
-    /// Asked of `dir` itself — its own name is re-spelled in the opposite case
-    /// and both are canonicalized — rather than of anything *inside* it. An
-    /// earlier version scanned directory entries and was wrong in both
-    /// directions: an empty directory reported "case-sensitive" (and deleting
-    /// the last metadata file is exactly how the directory becomes empty),
-    /// while a case-sensitive directory that happened to hold both `Foo` and
-    /// `foo` reported "folds case", which is the dangerous answer. Identity of
-    /// one path that is known to exist does not depend on directory contents.
+    /// This has to be asked of `dir`'s children, and it has to be answered by
+    /// *identity* rather than existence. Two earlier versions each got one half
+    /// right. Scanning entries and asking whether a re-spelled name merely
+    /// exists reports "folds case" for a case-sensitive directory that happens
+    /// to hold both `Foo` and `fOO`, which is the dangerous answer. Re-spelling
+    /// `dir` inside its parent asks the *parent's* case behavior, which is a
+    /// different question wherever the two diverge — a mount boundary, or a
+    /// per-directory case-sensitivity setting — and cannot be asked at all of a
+    /// workspace whose own name carries no ASCII letter.
+    ///
+    /// So: take a child that exists, re-spell it in the opposite case, and ask
+    /// whether both paths canonicalize to the same file. That is the child-name
+    /// behavior of this directory, decided by the filesystem.
     ///
     /// Read-only, because this runs against the user's workspace, and probed
     /// rather than inferred from `cfg!(windows)`, because macOS folds case by
     /// default and a Linux volume may be mounted either way.
     ///
     /// Returns `false` — the conservative answer, which only ever withholds a
-    /// case-variant match — when `dir` has no parent, when its name carries no
-    /// ASCII letter to re-spell, or when either path fails to canonicalize.
+    /// case-variant match and never invents one — when the directory cannot be
+    /// read, holds no entry whose name has an ASCII letter to re-spell, or when
+    /// canonicalization does not resolve. An empty directory therefore answers
+    /// `false`; see the caller for why that boundary is acceptable.
     fn directory_folds_case(dir: &Path) -> bool {
-        let (Some(parent), Some(name)) =
-            (dir.parent(), dir.file_name().and_then(std::ffi::OsStr::to_str))
-        else {
+        let Ok(entries) = std::fs::read_dir(dir) else {
             return false;
         };
-        let respelled: String = name
-            .chars()
-            .map(|character| {
-                if character.is_ascii_lowercase() {
-                    character.to_ascii_uppercase()
-                } else {
-                    character.to_ascii_lowercase()
-                }
-            })
-            .collect();
-        if respelled == name {
-            return false;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let respelled: String = name
+                .chars()
+                .map(|character| {
+                    if character.is_ascii_lowercase() {
+                        character.to_ascii_uppercase()
+                    } else {
+                        character.to_ascii_lowercase()
+                    }
+                })
+                .collect();
+            if respelled == name {
+                continue;
+            }
+            return match (
+                std::fs::canonicalize(dir.join(name)),
+                std::fs::canonicalize(dir.join(respelled)),
+            ) {
+                (Ok(original), Ok(respelled)) => original == respelled,
+                // The re-spelled name does not resolve at all, so this
+                // directory distinguishes the two spellings.
+                _ => false,
+            };
         }
-        match (std::fs::canonicalize(dir), std::fs::canonicalize(parent.join(respelled))) {
-            (Ok(original), Ok(respelled)) => original == respelled,
-            _ => false,
-        }
+        false
     }
 
     /// Component-wise, ASCII case-insensitive path equality.
@@ -747,23 +764,29 @@ mod tests {
     /// workspace is the normal state right after the last metadata file is
     /// deleted — precisely when the delete case needs an answer.
     #[test]
-    fn the_case_fold_probe_does_not_depend_on_directory_contents() {
+    fn the_case_fold_probe_is_conservative_for_an_empty_directory() {
         let temp = tempfile::tempdir().expect("temp dir");
         let empty = temp.path().join("EmptyWorkspace");
         std::fs::create_dir(&empty).expect("create dir");
 
-        let expected = filesystem_is_case_insensitive(temp.path());
-        assert_eq!(
-            LspServer::directory_folds_case(&empty),
-            expected,
-            "an empty directory must report its volume's real behavior"
+        // Deliberately platform-independent. The probe answers by re-spelling
+        // a child, so an empty directory offers nothing to ask about and must
+        // fall back to the conservative answer — which withholds a
+        // case-variant match rather than inventing one. Asserting the volume's
+        // real behavior here would be asserting a capability the probe does
+        // not have.
+        assert!(
+            !LspServer::directory_folds_case(&empty),
+            "with no child to re-spell the probe must withhold, not guess"
         );
 
+        // Once a child exists the probe can answer, and must agree with the
+        // filesystem.
         std::fs::write(empty.join("cpanfile"), "requires 'X';\n").expect("write entry");
         assert_eq!(
             LspServer::directory_folds_case(&empty),
-            expected,
-            "adding an entry must not change the answer"
+            filesystem_is_case_insensitive(temp.path()),
+            "a directory with a re-spellable child reports its real behavior"
         );
     }
 
