@@ -708,6 +708,9 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let check_json = run_ripr_check(repo, options)?;
     let check_value: Value =
         serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
+    // Fail closed on a producer whose envelope changed shape (#9113), before any
+    // counting can turn missing fields into an all-zero "clean" verdict.
+    validate_check_envelope(&check_value)?;
     // Write raw check output for offline diagnostics (#1346): repo-exposure.json only contains
     // per-bucket counts; the findings[] array (which carries per-finding classification and path)
     // is required to diagnose suppression mismatches.  This file is included in the
@@ -828,6 +831,60 @@ struct RiprPrSummaryCounts {
     /// Same, for findings whose classification was not recognized. Decrements
     /// `severe_gaps` directly, like `suppressed_unclassified`.
     non_production_unclassified: usize,
+}
+
+/// The `summary` counts the required `ripr+ New Gap Gate` decision is derived from.
+///
+/// [`count_field`] reads an absent field as `0`. That is correct for a producer
+/// that genuinely found nothing, and catastrophic for one that renamed the field:
+/// every actionable bucket collapses to zero, `severe_gaps` becomes `0`, and
+/// `ripr_severe_gap` reports `false` for a diff whose exposure was never actually
+/// measured. The gate reads only `ripr_severe_gap`, so nothing downstream notices.
+///
+/// That is not hypothetical — it is the recorded regression in
+/// `docs/learnings/2026-06-ripr-output-schema-break.md`, where a RIPR version bump
+/// changed JSON fields and the suppression parser silently stopped matching them.
+const REQUIRED_CHECK_SUMMARY_COUNTS: [&str; 3] =
+    ["weakly_exposed", "reachable_unrevealed", "no_static_path"];
+
+/// Refuse a `ripr check` envelope that cannot support an honest gate decision.
+///
+/// This is a producer-contract check at ingest, deliberately separate from the
+/// counting logic: a schema break must surface as an instrument failure, never as
+/// a clean zero-gap result.
+///
+/// Absence is always a break, never a legitimate clean run. Real 0.9.0 and 0.10.0
+/// output for a diff touching no Rust at all still carries every one of these keys
+/// as an explicit `0` (captured in `xtask/tests/fixtures/ripr-0.10/`), so
+/// "field present and zero" and "field gone" are distinguishable, and only the
+/// former means clean.
+fn validate_check_envelope(check_value: &Value) -> Result<()> {
+    let Some(summary) = check_value.get("summary").and_then(Value::as_object) else {
+        bail!(
+            "ripr check output did not include a `summary` object; refusing to report \
+             a zero-gap result from an envelope the gate cannot measure"
+        );
+    };
+    for key in REQUIRED_CHECK_SUMMARY_COUNTS {
+        match summary.get(key) {
+            None => bail!(
+                "ripr check `summary` is missing required count `{key}`; the producer \
+                 output schema changed and an absent count would be read as zero gaps"
+            ),
+            Some(value) if value.as_u64().is_none() => bail!(
+                "ripr check `summary.{key}` is not a non-negative integer ({value}); \
+                 refusing to coerce a malformed count into zero gaps"
+            ),
+            Some(_) => {}
+        }
+    }
+    if !check_value.get("findings").is_some_and(Value::is_array) {
+        bail!(
+            "ripr check output did not include a `findings` array; per-finding \
+             classification and path are required to apply suppressions honestly"
+        );
+    }
+    Ok(())
 }
 
 fn ripr_pr_summary_counts(
@@ -3734,6 +3791,173 @@ fn bullet_list(values: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---------------------------------------------------------------------
+    // #9113: RIPR 0.9.0 → 0.10.0 consumer migration.
+    //
+    // These run against *captured producer output*, not hand-authored JSON.
+    // The repository has a recorded regression where a RIPR version bump
+    // changed JSON fields and the consumer silently stopped matching them
+    // (`docs/learnings/2026-06-ripr-output-schema-break.md`), and hand-written
+    // fixtures cannot catch that class because they encode the assumption
+    // under test. Provenance is in `xtask/tests/fixtures/ripr-0.10/README.md`.
+    // ---------------------------------------------------------------------
+
+    /// Real `ripr 0.10.0 check --format json` output, one `weakly_exposed` finding.
+    const REAL_010_CHECK: &str =
+        include_str!("../../tests/fixtures/ripr-0.10/weakly-exposed-check.json");
+    /// Real `ripr 0.9.0` output for the *same* diff and subject.
+    const REAL_009_CHECK: &str =
+        include_str!("../../tests/fixtures/ripr-0.10/weakly-exposed-check-0.9.json");
+
+    fn parse_check(raw: &str) -> Value {
+        serde_json::from_str(raw).expect("captured ripr output must be valid JSON")
+    }
+
+    fn counts_for(check: &Value) -> RiprPrSummaryCounts {
+        let summary = check.get("summary").and_then(Value::as_object);
+        ripr_pr_summary_counts(check, summary, &RiprSuppressionRules::default(), None, None, None)
+    }
+
+    #[test]
+    fn real_ripr_010_output_still_reaches_the_actionable_bucket() {
+        let check = parse_check(REAL_010_CHECK);
+
+        // The envelope 0.10 actually emits is accepted, not merely tolerated.
+        validate_check_envelope(&check)
+            .expect("real 0.10 output must satisfy the producer contract");
+
+        let counts = counts_for(&check);
+
+        // This is the assertion that would have caught the 2026-06 break. It is
+        // discriminating rather than tautological because the count is reached
+        // through *two independent paths that must agree*: the summary field
+        // `summary.weakly_exposed`, and the per-finding `classification` string
+        // that `ripr_pr_summary_counts` matches against its recognized set. A
+        // 0.10 that renamed either one collapses this to 0 while the fixture
+        // still parses as valid JSON.
+        assert_eq!(
+            counts.weakly_exposed, 1,
+            "real 0.10 output must still land in the actionable bucket the gate counts"
+        );
+        assert_eq!(counts.reachable_unrevealed, 0);
+        assert_eq!(counts.no_static_path, 0);
+    }
+
+    #[test]
+    fn ripr_010_is_schema_compatible_with_009_for_every_consumed_field() {
+        let old = parse_check(REAL_009_CHECK);
+        let new = parse_check(REAL_010_CHECK);
+
+        // The declared break signal did move, so these really are two different
+        // producer schemas and the comparison below is not comparing one release
+        // against itself.
+        assert_eq!(old.get("schema_version").and_then(Value::as_str), Some("0.1"));
+        assert_eq!(new.get("schema_version").and_then(Value::as_str), Some("0.2"));
+
+        // Every `summary` key the consumer may read survives the bump. Asserting
+        // over the whole key set (not just the three required counts) is what
+        // makes this a *migration* control: a field this consumer does not read
+        // today but a sibling consumer does would still show up here.
+        let keys = |value: &Value| -> BTreeSet<String> {
+            value
+                .get("summary")
+                .and_then(Value::as_object)
+                .map(|summary| summary.keys().cloned().collect())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            keys(&old),
+            keys(&new),
+            "0.10 changed the `summary` key set; every removed key would be read as zero"
+        );
+
+        // Identical input must produce an identical gate decision across the
+        // bump. This is the actual migration claim: not "0.10 parses", but
+        // "0.10 does not move the number the required check acts on".
+        let (old_counts, new_counts) = (counts_for(&old), counts_for(&new));
+        assert_eq!(
+            (old_counts.weakly_exposed, old_counts.reachable_unrevealed, old_counts.no_static_path),
+            (new_counts.weakly_exposed, new_counts.reachable_unrevealed, new_counts.no_static_path),
+            "the reviewed bump must not change the actionable counts for identical input"
+        );
+    }
+
+    #[test]
+    fn a_removed_summary_count_is_an_instrument_failure_not_a_clean_result() {
+        // The required negative control from #9113: "0.9-shaped output with a
+        // field removed must not silently become clean."
+        for key in REQUIRED_CHECK_SUMMARY_COUNTS {
+            let mut check = parse_check(REAL_010_CHECK);
+            check
+                .get_mut("summary")
+                .and_then(Value::as_object_mut)
+                .expect("fixture has a summary object")
+                .remove(key);
+
+            // Counting alone cannot tell this apart from a clean run — that is
+            // precisely the defect, and asserting it here keeps the negative
+            // control honest about *why* the envelope check has to exist.
+            assert_eq!(
+                counts_for(&check).weakly_exposed,
+                if key == "weakly_exposed" { 0 } else { 1 },
+                "counting reads a removed `{key}` as zero, so refusal must happen at ingest"
+            );
+
+            let refusal = validate_check_envelope(&check)
+                .expect_err("a removed required count must be refused, not counted as zero");
+            assert!(
+                refusal.to_string().contains(key),
+                "refusal must name the missing field, got: {refusal}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_summary_count_is_refused_rather_than_coerced() {
+        for malformed in [json!("3"), json!(-1), json!(1.5), json!(null), json!({})] {
+            let mut check = parse_check(REAL_010_CHECK);
+            check
+                .get_mut("summary")
+                .and_then(Value::as_object_mut)
+                .expect("fixture has a summary object")
+                .insert("weakly_exposed".to_string(), malformed.clone());
+
+            assert!(
+                validate_check_envelope(&check).is_err(),
+                "a non-integer count must be an instrument failure, not coerced to zero: \
+                 {malformed}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_findings_array_is_refused() {
+        // Without `findings[]` no suppression can be applied by path or
+        // classification, so a summary-only envelope would silently report
+        // unsuppressed totals as if the policy had been consulted.
+        let mut check = parse_check(REAL_010_CHECK);
+        check.as_object_mut().expect("object").remove("findings");
+        validate_check_envelope(&check)
+            .expect_err("summary-only output must be refused, not treated as unsuppressed truth");
+    }
+
+    #[test]
+    fn a_genuinely_clean_run_is_still_accepted() {
+        // The complement that keeps the refusal from being a blunt instrument:
+        // explicit zeros are a real result and must pass. Real producer output
+        // for a diff touching no Rust carries exactly this shape, which is why
+        // absence can be treated as a break without failing docs-only PRs.
+        let mut check = parse_check(REAL_010_CHECK);
+        let summary = check.get_mut("summary").and_then(Value::as_object_mut).expect("summary");
+        for key in REQUIRED_CHECK_SUMMARY_COUNTS {
+            summary.insert(key.to_string(), json!(0));
+        }
+        check["findings"] = json!([]);
+
+        validate_check_envelope(&check).expect("an explicitly-zero envelope is clean, not broken");
+        assert_eq!(counts_for(&check).weakly_exposed, 0);
+    }
 
     // ---------------------------------------------------------------------
     // #13809 falsifiers: the two path helpers whose Clippy repairs are only
