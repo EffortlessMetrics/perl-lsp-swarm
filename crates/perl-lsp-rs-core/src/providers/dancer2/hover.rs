@@ -888,5 +888,29 @@ get '/x' => sub { 1 };
             == perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::TwoX
                 })
         );
+        // The ONEX marker is load-bearing at the producer: a 1.x family
+        // bundle minted from a detected 1.x activation carries it, so a
+        // regression flipping the default cannot pass.
+        let one_x_detection =
+            must_some_with(one_x.detection.as_ref(), "the 1.x path carries its detection");
+        let one_x_activation = must_some_with(one_x.packages.first(), "1.x activation");
+        let route_contexts =
+            perl_semantic_analyzer::analysis::dancer2_routes::extract_dancer2_route_contexts(
+                &one_x_ast,
+                FileId(1),
+            );
+        let family =
+            perl_semantic_facts::framework_adapters::dancer2_routes::dancer2_route_family_facts(
+                one_x_detection,
+                &one_x_activation.facts,
+                Some("App"),
+                &route_contexts.routes,
+                &route_contexts.prefixes,
+            );
+        assert_eq!(
+            family.contract,
+            perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::OneX
+        );
+        assert!(!family.routes.is_empty(), "the producer still mints 1.x routes");
     }
 }
