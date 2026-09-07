@@ -1434,6 +1434,21 @@ jobs:
         env:
           PERL_LSP_BIN: ${{ github.workspace }}/target/debug/perllsp
           RUST_TEST_THREADS: "1"
+          # #9616: golden-manifest error waivers carry calendar expiry dates, so
+          # enforcing a lapse on every branch makes the verdict depend on
+          # merge-base age rather than on the diff under test. A branch reports
+          # a lapse as a warning; a push to the default branch fails, which is
+          # where the waiver can actually be refreshed. Waiver *shape* stays
+          # enforced everywhere.
+          #
+          # merge_group stays on `warn` deliberately. A lapsed waiver is a
+          # property of the repository, not of the candidate being queued: it
+          # is equally true whether or not this candidate lands, so failing the
+          # candidate's queue run would attribute a repository problem to a
+          # change that did not cause it — the same misattribution this issue
+          # removes from branches. The push-to-main run below catches the lapse
+          # within one merge, and reports it against the commit that can fix it.
+          PERL_LSP_UX_WAIVER_EXPIRY: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) && 'enforce' || 'warn' }}
         run: |
           set -o pipefail
           mkdir -p target/receipts
