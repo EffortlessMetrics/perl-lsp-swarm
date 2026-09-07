@@ -777,7 +777,50 @@ fn scanned_files(root: &Path) -> Result<Vec<String>> {
              report an empty denominator rather than fail, so this stops the run"
         );
     }
+
+    // An untracked `.rs` file under a scan root is the one way a real producer
+    // can sit in the working tree and contribute nothing to the digest or the
+    // population: `git ls-files` cannot see it, so `check` would report a
+    // green tree it has not actually inspected. Refusing is the honest
+    // outcome — the run cannot speak for a tree it is blind to.
+    let untracked = untracked_scan_root_files(root)?;
+    if !untracked.is_empty() {
+        bail!(
+            "untracked Rust file(s) under the completion scan roots: {}.\n\
+             Discovery reads tracked files, so an untracked producer would not appear in the \
+             denominator and this check would report a green tree it had not inspected. \
+             `git add` them (or remove them) and run again.",
+            untracked.join(", ")
+        );
+    }
+
     Ok(files)
+}
+
+/// Untracked, non-ignored `.rs` paths under the scan roots.
+fn untracked_scan_root_files(root: &Path) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "-z", "--others", "--exclude-standard"])
+        .output()
+        .wrap_err("failed to run `git ls-files --others`")?;
+    if !output.status.success() {
+        bail!(
+            "`git ls-files --others` failed with status {}{}",
+            output.status,
+            first_stderr_line(&output.stderr)
+        );
+    }
+    let mut paths: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+        .filter(|entry| entry.ends_with(".rs"))
+        .filter(|entry| SCAN_ROOTS.iter().any(|scope| entry.starts_with(scope) || entry == scope))
+        .map(str::to_string)
+        .collect();
+    paths.sort();
+    Ok(paths)
 }
 
 /// Repository-tracked paths, so discovery matches what review can see.
@@ -789,13 +832,40 @@ fn tracked_files(root: &Path) -> Result<Vec<String>> {
         .output()
         .wrap_err("failed to run `git ls-files`")?;
     if !output.status.success() {
-        bail!("`git ls-files` failed with status {}", output.status);
+        // An exit status alone is not diagnosable: the usual causes — not a
+        // repository, an unreadable index, a permissions failure — are
+        // distinguishable only from what git said.
+        bail!(
+            "`git ls-files` failed with status {}{}",
+            output.status,
+            first_stderr_line(&output.stderr)
+        );
     }
     Ok(String::from_utf8_lossy(&output.stdout)
         .split('\0')
         .filter(|entry| !entry.is_empty())
         .map(str::to_string)
         .collect())
+}
+
+/// Longest child-stderr excerpt carried into an error message.
+const MAX_STDERR_DIAGNOSTIC: usize = 200;
+
+/// The first non-empty stderr line, bounded, ready to append to an error.
+///
+/// Bounded rather than whole: a failing child can write an arbitrary amount to
+/// stderr, and an error message that dumps it is unreadable in a CI log. The
+/// first line carries the cause.
+fn first_stderr_line(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let Some(line) = text.lines().map(str::trim).find(|line| !line.is_empty()) else {
+        return String::new();
+    };
+    let mut excerpt: String = line.chars().take(MAX_STDERR_DIAGNOSTIC).collect();
+    if line.chars().count() > MAX_STDERR_DIAGNOSTIC {
+        excerpt.push('…');
+    }
+    format!(": {excerpt}")
 }
 
 /// Package owning a scanned path.
@@ -993,32 +1063,72 @@ fn last_segment_is(path: &syn::Path, name: &str) -> bool {
     path.segments.last().is_some_and(|segment| segment.ident == name)
 }
 
+/// Name segment for a producer id declared inside an `impl` block.
+///
+/// A trait impl is qualified `<Type as Trait>`, because the type alone does not
+/// identify the method: Rust permits two traits with the same method name on
+/// one type, and dropping the trait would give both the same producer id. Two
+/// same-id declarations in one file are indistinguishable from the mutually
+/// exclusive `cfg` arms `merge_declarations` legitimately collapses, so an
+/// unqualified trait method could join an existing row's declaration count and
+/// acquire its disposition without ever needing one of its own.
 fn impl_type_name(node: &syn::ItemImpl) -> Option<String> {
-    // Only inherent impls carry a name a producer id can use. A trait impl
-    // would need the trait too, and no candidate producer is written that way.
-    if node.trait_.is_some() {
-        return None;
+    let self_ty = type_name(node.self_ty.as_ref())?;
+    match &node.trait_ {
+        Some((path, _)) => {
+            let trait_name = path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            Some(format!("<{self_ty} as {trait_name}>"))
+        }
+        None => Some(self_ty),
     }
-    match node.self_ty.as_ref() {
+}
+
+fn type_name(ty: &syn::Type) -> Option<String> {
+    match ty {
         syn::Type::Path(path) => path.path.segments.last().map(|segment| segment.ident.to_string()),
         _ => None,
     }
 }
 
+/// Does this item exist only under `cfg(test)`?
+///
+/// Only `all(..)` is descended into. The distinction is not pedantic:
+/// `all(test, feature = "x")` compiles solely under test and is proof, while
+/// `any(test, feature = "x")` and `not(test)` both ship, so their items are
+/// product source and need a disposition like any other producer.
 fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         if !attr.path().is_ident("cfg") {
             return false;
         }
-        let mut found = false;
-        let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("test") {
-                found = true;
-            }
-            Ok(())
-        });
-        found
+        let syn::Meta::List(list) = &attr.meta else {
+            return false;
+        };
+        cfg_list_is_test_only(list)
     })
+}
+
+fn cfg_list_is_test_only(list: &syn::MetaList) -> bool {
+    let Ok(predicates) = list.parse_args_with(
+        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+    ) else {
+        // An unparseable predicate is not evidence of test-only code, and
+        // treating it as product source keeps the denominator inclusive.
+        return false;
+    };
+    predicates.iter().any(cfg_predicate_is_test_only)
+}
+
+fn cfg_predicate_is_test_only(meta: &syn::Meta) -> bool {
+    match meta {
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::List(list) if list.path.is_ident("all") => cfg_list_is_test_only(list),
+        _ => false,
+    }
 }
 
 fn has_test_attribute(attrs: &[syn::Attribute]) -> bool {
@@ -1087,24 +1197,113 @@ impl<'ast> Visit<'ast> for EntryCollector {
 /// the finalizer call? `syn`'s visitor descends statements and expression
 /// fields in source order, so a monotonic "have I passed the finalizer yet"
 /// flag answers it without needing span locations.
-#[derive(Default)]
 struct EntryBodyVisitor {
     called: BTreeSet<String>,
     seen_finalizer: bool,
     appended_after_finalizer: bool,
+    /// Every local name currently holding the candidate collection.
+    ///
+    /// Matching one fixed identifier is not enough: `let mut smuggled =
+    /// completions;` renames the page, and an append through the new name
+    /// reaches the client exactly as the original would have. Following `let`
+    /// bindings whose initializer mentions a known candidate name keeps the
+    /// control attached to the value rather than to the spelling.
+    bindings: BTreeSet<String>,
+}
+
+impl Default for EntryBodyVisitor {
+    fn default() -> Self {
+        Self {
+            called: BTreeSet::new(),
+            seen_finalizer: false,
+            appended_after_finalizer: false,
+            bindings: BTreeSet::from([CANDIDATE_BINDING.to_string()]),
+        }
+    }
 }
 
 impl EntryBodyVisitor {
-    /// A candidate append is either `completions.push(..)`/`.extend(..)` or
-    /// handing `&mut completions` to something else.
+    /// A candidate append is `<candidate>.push(..)`/`.extend(..)`, or handing
+    /// `&mut <candidate>` to something else.
     fn note_append(&mut self) {
         if self.seen_finalizer {
             self.appended_after_finalizer = true;
         }
     }
+
+    fn holds_candidates(&self, expr: &syn::Expr) -> bool {
+        match expr {
+            syn::Expr::Path(path) => path
+                .path
+                .get_ident()
+                .is_some_and(|ident| self.bindings.contains(&ident.to_string())),
+            syn::Expr::Reference(reference) => self.holds_candidates(&reference.expr),
+            syn::Expr::Paren(paren) => self.holds_candidates(&paren.expr),
+            syn::Expr::Group(group) => self.holds_candidates(&group.expr),
+            _ => false,
+        }
+    }
+
+    /// Does this initializer carry the candidate collection anywhere inside it?
+    ///
+    /// Deliberately broad: `std::mem::take(&mut completions)` and a bare
+    /// `completions` both hand the page to the new name.
+    fn initializer_carries_candidates(&self, expr: &syn::Expr) -> bool {
+        if self.holds_candidates(expr) {
+            return true;
+        }
+        let mut probe = CandidateMentionProbe { bindings: &self.bindings, found: false };
+        probe.visit_expr(expr);
+        probe.found
+    }
+}
+
+/// Finds a mention of any known candidate binding anywhere in an expression.
+struct CandidateMentionProbe<'a> {
+    bindings: &'a BTreeSet<String>,
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for CandidateMentionProbe<'_> {
+    fn visit_expr_path(&mut self, node: &'ast syn::ExprPath) {
+        if node.path.get_ident().is_some_and(|ident| self.bindings.contains(&ident.to_string())) {
+            self.found = true;
+        }
+        syn::visit::visit_expr_path(self, node);
+    }
+}
+
+/// Names bound by a `let` pattern, so a rebinding can be tracked.
+fn pattern_idents(pat: &syn::Pat, out: &mut Vec<String>) {
+    match pat {
+        syn::Pat::Ident(ident) => out.push(ident.ident.to_string()),
+        syn::Pat::Tuple(tuple) => {
+            for elem in &tuple.elems {
+                pattern_idents(elem, out);
+            }
+        }
+        syn::Pat::Type(typed) => pattern_idents(&typed.pat, out),
+        syn::Pat::Reference(reference) => pattern_idents(&reference.pat, out),
+        syn::Pat::Paren(paren) => pattern_idents(&paren.pat, out),
+        _ => {}
+    }
 }
 
 impl<'ast> Visit<'ast> for EntryBodyVisitor {
+    fn visit_local(&mut self, node: &'ast syn::Local) {
+        if let Some(init) = &node.init {
+            // Visit the initializer first: it is evaluated before the new name
+            // exists, and it may itself be the finalizer call.
+            syn::visit::visit_local_init(self, init);
+            if self.initializer_carries_candidates(&init.expr) {
+                let mut names = Vec::new();
+                pattern_idents(&node.pat, &mut names);
+                self.bindings.extend(names);
+            }
+        }
+        syn::visit::visit_pat(self, &node.pat);
+    }
+
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         if let syn::Expr::Path(path) = node.func.as_ref()
             && let Some(segment) = path.path.segments.last()
@@ -1121,27 +1320,26 @@ impl<'ast> Visit<'ast> for EntryBodyVisitor {
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
         let method = node.method.to_string();
         self.called.insert(method.clone());
-        if (method == "push" || method == "extend") && receiver_is_binding(&node.receiver) {
+        if APPEND_METHODS.contains(&method.as_str()) && self.holds_candidates(&node.receiver) {
             self.note_append();
         }
         syn::visit::visit_expr_method_call(self, node);
     }
 
     fn visit_expr_reference(&mut self, node: &'ast syn::ExprReference) {
-        if node.mutability.is_some() && receiver_is_binding(&node.expr) {
+        if node.mutability.is_some() && self.holds_candidates(&node.expr) {
             self.note_append();
         }
         syn::visit::visit_expr_reference(self, node);
     }
 }
 
-/// Is this expression the candidate binding the entry points append into?
-fn receiver_is_binding(expr: &syn::Expr) -> bool {
-    match expr {
-        syn::Expr::Path(path) => path.path.is_ident(CANDIDATE_BINDING),
-        _ => false,
-    }
-}
+/// Vec methods that can put a candidate into the page.
+///
+/// `push`/`extend` are the shapes the tree uses; the rest are here so a
+/// rewritten append is still an append.
+const APPEND_METHODS: &[&str] =
+    &["push", "extend", "append", "insert", "splice", "extend_from_slice", "push_within_capacity"];
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -1429,6 +1627,32 @@ fn validate_owners(ledger: &Ledger) -> Result<()> {
 /// require an owner for every route divergence.
 fn validate_reachability(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
     let entry_set: BTreeSet<String> = ENTRY_POINTS.iter().map(|e| (*e).to_string()).collect();
+
+    // Reach is matched by the trailing function-name segment, which two rows in
+    // different modules could share. Rather than let one row's evidence ride on
+    // an unrelated same-named call site, refuse the ambiguity outright: the
+    // entry-point call sites cannot say which row they meant.
+    let mut by_function: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for row in &ledger.producers {
+        by_function.entry(row.function_name()).or_default().push(row.id.as_str());
+    }
+    for (function, ids) in &by_function {
+        if ids.len() < 2 {
+            continue;
+        }
+        let called_by_an_entry =
+            discovered.entry_direct_calls.values().any(|calls| calls.contains(function));
+        if called_by_an_entry {
+            bail!(
+                "{LEDGER_PATH} has {} rows whose trailing function name is `{function}` ({}), and \
+                 a completion entry point calls that name directly. Reach is reconciled by \
+                 trailing name, so neither row's `reached_by` can be trusted; give the entry \
+                 point an unambiguous target or teach this check to resolve the call.",
+                ids.len(),
+                ids.join(", ")
+            );
+        }
+    }
 
     for row in &ledger.producers {
         for entry in &row.reached_by {
@@ -2270,6 +2494,172 @@ mod tests {
 
     /// The append-channel predicate is what makes the denominator mechanical,
     /// so it is proven directly rather than only through the ledger.
+    #[test]
+    fn stderr_diagnostic_is_bounded_and_meaningful() {
+        assert_eq!(first_stderr_line(b""), "");
+        assert_eq!(first_stderr_line(b"\n\n   \n"), "");
+        assert_eq!(
+            first_stderr_line(b"\nfatal: not a git repository\nsecond line\n"),
+            ": fatal: not a git repository",
+            "the first meaningful line is the cause; later lines are noise"
+        );
+        let long = vec![b'x'; MAX_STDERR_DIAGNOSTIC * 4];
+        let bounded = first_stderr_line(&long);
+        assert!(
+            bounded.chars().count() <= MAX_STDERR_DIAGNOSTIC + 3,
+            "a child that floods stderr must not flood the error message: {} chars",
+            bounded.chars().count()
+        );
+        assert!(bounded.ends_with('\u{2026}'), "truncation must be visible: {bounded}");
+    }
+
+    /// Two trait impls can share a method name on one type, and an
+    /// unqualified id would let the second silently join the first row's
+    /// declaration count instead of needing a disposition of its own.
+    #[test]
+    fn trait_impl_producers_do_not_share_one_id() {
+        let file: syn::File = syn::parse_quote! {
+            impl ProducerA for Shared {
+                fn add(&self, completions: &mut Vec<CompletionItem>) {}
+            }
+            impl ProducerB for Shared {
+                fn add(&self, completions: &mut Vec<CompletionItem>) {}
+            }
+        };
+        let mut visitor = SeamVisitor::new(PROBE_FILE);
+        visitor.visit_file(&file);
+        assert_eq!(visitor.producers.len(), 2, "both trait methods are producers");
+
+        let merged = merge_declarations(visitor.producers).expect("distinct ids do not collide");
+        assert_eq!(
+            merged.len(),
+            2,
+            "two trait impls collapsed into one row: {:?}",
+            merged.iter().map(|p| &p.id).collect::<Vec<_>>()
+        );
+        for producer in &merged {
+            assert_eq!(producer.declarations, 1, "neither row is a cfg-arm pair");
+            assert!(
+                producer.id.contains(" as "),
+                "trait impl id must name the trait: {}",
+                producer.id
+            );
+        }
+    }
+
+    /// The genuine `cfg` arm pair must still collapse: it is one producer with
+    /// one disposition, and splitting it would demand two rows for one seam.
+    #[test]
+    fn cfg_arms_of_one_producer_stay_one_row() {
+        let file: syn::File = syn::parse_quote! {
+            impl Provider {
+                #[cfg(not(target_arch = "wasm32"))]
+                fn add(&self, completions: &mut Vec<CompletionItem>) {}
+                #[cfg(target_arch = "wasm32")]
+                fn add(&self, completions: &mut Vec<CompletionItem>) {}
+            }
+        };
+        let mut visitor = SeamVisitor::new(PROBE_FILE);
+        visitor.visit_file(&file);
+        let merged = merge_declarations(visitor.producers).expect("same-file cfg arms merge");
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].declarations, 2);
+    }
+
+    /// `all(test, ..)` compiles only under test; `any(test, ..)` and
+    /// `not(test)` both ship, so only the first is proof rather than product.
+    #[test]
+    fn cfg_test_detection_follows_predicate_meaning() {
+        let only_under_test: syn::ItemFn = syn::parse_quote! {
+            #[cfg(all(test, feature = "wasm"))]
+            fn f(completions: &mut Vec<CompletionItem>) {}
+        };
+        assert!(has_cfg_test(&only_under_test.attrs), "all(test, ..) is test-only");
+
+        let nested: syn::ItemFn = syn::parse_quote! {
+            #[cfg(all(feature = "wasm", all(test)))]
+            fn f(completions: &mut Vec<CompletionItem>) {}
+        };
+        assert!(has_cfg_test(&nested.attrs), "nested all(..) is still test-only");
+
+        let also_ships: syn::ItemFn = syn::parse_quote! {
+            #[cfg(any(test, feature = "x"))]
+            fn f(completions: &mut Vec<CompletionItem>) {}
+        };
+        assert!(
+            !has_cfg_test(&also_ships.attrs),
+            "any(test, ..) can ship, so it is product source"
+        );
+
+        let never_test: syn::ItemFn = syn::parse_quote! {
+            #[cfg(not(test))]
+            fn f(completions: &mut Vec<CompletionItem>) {}
+        };
+        assert!(!has_cfg_test(&never_test.attrs), "not(test) ships");
+
+        let plain: syn::ItemFn = syn::parse_quote! {
+            #[cfg(test)]
+            fn f(completions: &mut Vec<CompletionItem>) {}
+        };
+        assert!(has_cfg_test(&plain.attrs));
+    }
+
+    /// The post-finalizer control must follow the page, not the spelling: a
+    /// candidate pushed through a renamed binding reaches the client exactly
+    /// as one pushed through the original would.
+    #[test]
+    fn post_finalizer_append_survives_a_renamed_binding() {
+        let renamed: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
+                let mut smuggled = completions;
+                smuggled.push(sneaky());
+                let completions = smuggled;
+            }
+        };
+        let mut visitor = EntryBodyVisitor::default();
+        visitor.visit_block(&renamed.block);
+        assert!(
+            visitor.appended_after_finalizer,
+            "an append through a renamed binding after the finalizer went undetected"
+        );
+
+        let taken: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
+                let mut page = std::mem::take(&mut completions);
+                page.append(&mut extra);
+            }
+        };
+        let mut visitor = EntryBodyVisitor::default();
+        visitor.visit_block(&taken.block);
+        assert!(visitor.appended_after_finalizer, "`append` through a moved page went undetected");
+    }
+
+    /// The same control must not fire on the ordinary shape, or every entry
+    /// point would be permanently red and the signal would be worthless.
+    #[test]
+    fn ordinary_finalization_is_not_a_post_finalizer_append() {
+        let ordinary: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let mut completions = provider.get_completions_with_path();
+                self.add_runtime_workspace_completions(&mut completions);
+                let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
+                let items: Vec<Value> = completions.into_iter().map(|c| render(c)).collect();
+                let mut payload = Vec::new();
+                payload.push(items);
+            }
+        };
+        let mut visitor = EntryBodyVisitor::default();
+        visitor.visit_block(&ordinary.block);
+        assert!(
+            !visitor.appended_after_finalizer,
+            "the serialization tail was mistaken for a candidate append"
+        );
+    }
+
+    const PROBE_FILE: &str = "crates/perl-lsp-rs-core/src/providers/completion/completion/probe.rs";
+
     #[test]
     fn append_channel_predicate_matches_the_real_shapes() {
         let accepted: syn::ItemFn = syn::parse_quote! {

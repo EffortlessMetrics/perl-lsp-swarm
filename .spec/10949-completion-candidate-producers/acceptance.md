@@ -20,13 +20,20 @@ constructors PR #10145 landed, and no live producer reports whether it finished.
 The second fact is what stops #10230 claiming a `Complete` outcome for any
 request.
 
-Three rows are recorded unreachable from every shipped entry point:
+Four rows are recorded unreachable from every shipped entry point:
 `CompletionProvider::get_completions` (test- and documentation-facing provider
-entry), `CompletionProvider::add_file_completions` (dead
-`#[allow(dead_code)]` compatibility wrapper), and
+entry), `CompletionProvider::add_file_completions` (dead `#[allow(dead_code)]`
+compatibility wrapper), `CompletionProvider::add_file_completions_with_cancellation`
+(reachable only through that dead wrapper), and
 `workspace::add_use_module_completions` (superseded by the cached variant). Each
 names why. They are recorded rather than dropped because an unreached producer
 is the obvious wrong place for a future fix to land.
+
+The file-path pair is the clearest example of why that matters: together they
+read like the real file-path implementation, complete with security and
+cancellation safeguards, while the live route is
+`file_path::complete_file_paths` called from `dispatch::complete_file_path_context`.
+A fix landing in the pair would change nothing a user sees.
 
 ## Proof commands
 
@@ -44,6 +51,37 @@ git diff --check
 ```
 
 ## Falsifier results
+
+Two independent detection surfaces were run against the candidate, because the
+construction context cannot be the only one.
+
+**A per-row audit against source** corrected three dispositions this context had
+wrong: a false-reachable row (`add_file_completions_with_cancellation` is
+reachable only through the dead `add_file_completions` wrapper), an evidence
+class (`add_has_option_completions` is a static twelve-entry catalogue, not
+document-derived), and an understated limitation (`complete_regex_context`
+double-finalizes on two branches, not one). The validator cannot catch these —
+it checks structure, not whether a reading of the code is correct.
+
+**An adversarial attack on the validator** proved three bypasses of the claim
+*"a producer cannot be added, moved, or left unowned without `check` failing"*,
+each by mutating real source and observing a green result. All three are closed
+and re-tested:
+
+| Bypass | Why it worked | Fix |
+| --- | --- | --- |
+| untracked producer file | `scanned_files` reads `git ls-files`, so a not-yet-added file was invisible to both the population and the digest — a green report on a tree the check had not inspected | refuse to run while any untracked `.rs` file sits under a scan root |
+| post-finalizer append through a renamed binding | the control matched the literal identifier `completions`; `let mut smuggled = completions; smuggled.push(..)` reaches the client identically | follow `let` bindings whose initializer carries the page, and widen the append methods beyond `push`/`extend` |
+| same-file trait-impl id collision | `impl_type_name` returned `None` for trait impls, so two distinct trait methods sharing a name got one id and `merge_declarations` fused them as if they were `cfg` arms | qualify trait-impl ids as `<Type as Trait>` |
+
+Two further gaps were reported and handled: reachability matched by bare
+trailing function name could cross-contaminate two same-named rows (now refused
+outright as an ambiguity the call sites cannot resolve), and
+`cfg(all(test, ..))` was not recognised as test-only (now recursed into, while
+`any(test, ..)` and `not(test)` correctly remain product source because both
+ship). The reviewer's clean results are also recorded: no `HashMap` anywhere,
+byte-identical second generation, self-consistent digest, and no Mermaid node-id
+collision.
 
 Twenty-two ledger falsifiers, each corrupting the reconciled checked-in ledger
 along one axis and asserting the refusal names that axis:
@@ -87,7 +125,7 @@ channels; `Vec<String>` is not.
 
 ## Source mutations run against the real tree
 
-Both were applied to product source, confirmed refused, and reverted.
+All were applied to product source, confirmed refused, and reverted.
 
 1. **Hidden producer.** `pub fn add_sneaky_completions(completions: &mut
    Vec<CompletionItem>)` appended to
@@ -100,6 +138,13 @@ Both were applied to product source, confirmed refused, and reverted.
    immediately after `sort_and_cap_completions` in `handle_completion`. `check`
    exits 1 with: *"candidate append after `sort_and_cap_completions` in
    handle_completion"*.
+3. **Post-finalizer append through a renamed binding.** `let mut smuggled =
+   completions; smuggled.push(sneaky_candidate()); let completions = smuggled;`
+   after the same finalizer call. This passed before the review round and now
+   exits 1 with the same message.
+4. **Untracked producer file.** A new `.rs` file under a scan root, not
+   `git add`-ed, carrying an append-channel function. This reported green before
+   the review round and now exits 1 naming the untracked path.
 
 ## Limitations
 

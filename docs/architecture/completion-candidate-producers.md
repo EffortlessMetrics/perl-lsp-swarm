@@ -90,11 +90,11 @@ A producer is a function taking the shared `&mut Vec<CompletionItem>` append cha
 | `perl_lsp_rs_core::providers::completion::completion::builtins::add_builtin_completions` | builtin | append | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #11021 |
 | `perl_lsp_rs_core::providers::completion::completion::keywords::add_keyword_completions` | keyword | append | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #11021 |
 | `perl_lsp_rs_core::providers::completion::completion::snippets::add_snippet_completions` | snippet | append | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #11021 |
-| `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_has_option_completions` | key_or_constant | append | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
+| `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_has_option_completions` | key_or_constant | append | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_has_type_completions` | key_or_constant | append | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_hash_key_completions` | key_or_constant | append | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #9478 |
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_file_completions` | file_path | append ×2 | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer |  | #10234 |
-| `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_file_completions_with_cancellation` | file_path | append ×2 | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10234 |
+| `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_file_completions_with_cancellation` | file_path | append ×2 | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer |  | #10234 |
 | `perl_lsp_rs_core::providers::completion::completion::file_path::complete_file_paths` | file_path | returned | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10234 |
 | `perl_lsp_rs_core::providers::completion::completion::regex_patterns::add_regex_completions` | regex_context | append | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
 | `perl_lsp_rs_core::providers::completion::completion::regex_patterns::add_regex_flag_completions` | regex_context | append | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
@@ -186,7 +186,7 @@ flowchart LR
   nhandle_completion --> nkey_or_constant_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nkey_or_constant_handle_completion_handle_completion_cancellable
   nkey_or_constant_handle_completion_handle_completion_cancellable --> pool
-  nfile_path_handle_completion_handle_completion_cancellable["file_path ×2"]
+  nfile_path_handle_completion_handle_completion_cancellable["file_path ×1"]
   nhandle_completion --> nfile_path_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nfile_path_handle_completion_handle_completion_cancellable
   nfile_path_handle_completion_handle_completion_cancellable --> pool
@@ -223,7 +223,7 @@ flowchart LR
   final --> wire
   subgraph unreached ["reached by no entry point"]
     nunreached_module["module ×1"]
-    nunreached_file_path["file_path ×1"]
+    nunreached_file_path["file_path ×2"]
     nunreached_router["router ×1"]
   end
 ```

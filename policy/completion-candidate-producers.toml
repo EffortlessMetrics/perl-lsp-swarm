@@ -164,11 +164,12 @@ evidence = "bounded_fallback"
 rank = "compatibility_with_exit"
 source_completeness = "legacy_unreported"
 finalizer_route = "compatibility_adapter_before_shared_finalizer"
-reach_evidence = "provider_seam"
-reached_by = ["handle_completion", "handle_completion_cancellable"]
+reach_evidence = "unreachable"
+reached_by = []
 migration_owner = "#10234"
-limitations = "Candidates describe the filesystem at scan time, not the document. Identity is the path label."
-note = "Filesystem path candidates with the security and cancellation safeguards."
+unreachable_reason = "Its only caller is `add_file_completions`, which is itself dead, so nothing reaches it either. The live file-path route is `file_path::complete_file_paths`, called directly from `dispatch::complete_file_path_context`. Recorded rather than dropped because the pair reads like the real file-path implementation and is the wrong place a fix would land."
+limitations = "Unreached. Nothing about live file-path behavior can be read from this row; the safeguards it implements do not run."
+note = "Cancellation-aware file-path producer, reachable only through the dead wrapper."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_has_option_completions"
@@ -177,15 +178,15 @@ candidate_class = "key_or_constant"
 tier = "core_provider"
 identity = "legacy_label_compatibility"
 insertion_plan = "legacy_compatibility"
-evidence = "current_document_generation"
+evidence = "static_server_metadata"
 rank = "compatibility_with_exit"
 source_completeness = "legacy_unreported"
 finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#15014"
-limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
-note = "Moose `has` option keys."
+limitations = "A fixed twelve-entry option list filtered by the typed prefix. It reads nothing from the document, so it cannot tell whether an option is valid for the attribute actually being declared."
+note = "Moose `has` option keys, from a static catalogue."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_has_type_completions"
@@ -495,8 +496,8 @@ finalizer_route = "compatibility_adapter_before_shared_finalizer"
 reach_evidence = "provider_seam"
 reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#15014"
-limitations = "This seam finalizes early: in the regex-flag branch it calls the shared deduplicate-and-sort and returns, after which the runtime finalizes the page again. Candidates on that branch are therefore sorted twice and capped once downstream. Collapsing the duplicate finalization is #10229's."
-note = "Regex-context routing, with an early finalization the shared route does not expect."
+limitations = "This seam finalizes early on two of its three exit paths: both the regex-flag branch and the plain in-regex branch call the shared deduplicate-and-sort and return, after which the runtime finalizes the page again. Candidates on either branch are therefore sorted twice and capped once downstream. Only the sigil-prefixed branch, which returns empty, is exempt. Collapsing the duplicate finalization is #10229's."
+note = "Regex-context routing, with an early finalization on two branches that the shared route does not expect."
 
 [[producers]]
 id = "perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_dispatch"
