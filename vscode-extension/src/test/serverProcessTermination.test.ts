@@ -24,7 +24,32 @@ const gone = (): boolean => false;
 
 describe('server process termination observation (#14155)', () => {
   afterEach(() => {
+    jest.restoreAllMocks();
     jest.useRealTimers();
+  });
+
+  test.each([
+    ['ESRCH', true],
+    ['EPERM', false],
+    ['EACCES', false],
+    [undefined, false],
+  ])('probe failure %s establishes exit only for a missing pid', (code, exited) => {
+    jest.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('probe failed'), { code });
+    });
+    expect(hasExited(new FakeChild())).toBe(exited);
+  });
+
+  test('an unobservable child cannot admit replacement at the grace bound', async () => {
+    jest.useFakeTimers();
+    jest.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('permission denied'), { code: 'EPERM' });
+    });
+    const child = new FakeChild();
+    const pending = awaitServerProcessExit(child, 4_000);
+    await jest.advanceTimersByTimeAsync(4_000);
+    await expect(pending).resolves.toBe(false);
+    expect(child.listenerCount('exit')).toBe(0);
   });
 
   test('serverProcessOf reads the client getter and rejects non-process values', () => {

@@ -20,15 +20,21 @@ export interface ServerProcessLike {
   removeListener(event: 'exit', listener: (...args: unknown[]) => void): unknown;
 }
 
-/** Probe whether a pid is still alive; returns false once the process is gone. */
+/** Probe whether a pid may still be alive; false requires observing its absence. */
 export type ProcessAliveProbe = (pid: number) => boolean;
 
 const defaultProbe: ProcessAliveProbe = (pid) => {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error: unknown) {
+    // Permission or other observation failures do not establish termination.
+    return !(
+      error !== null &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === 'ESRCH'
+    );
   }
 };
 
@@ -57,7 +63,10 @@ function isServerProcessLike(value: unknown): value is ServerProcessLike {
 }
 
 /** True once the child has reported an exit code or a terminating signal. */
-export function hasExited(child: ServerProcessLike, probe: ProcessAliveProbe = defaultProbe): boolean {
+export function hasExited(
+  child: ServerProcessLike,
+  probe: ProcessAliveProbe = defaultProbe,
+): boolean {
   if (child.exitCode !== null || child.signalCode !== null) {
     return true;
   }
