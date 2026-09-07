@@ -155,6 +155,35 @@ fn current_waiver_is_silent_under_the_warning_policy() -> Result<()> {
     Ok(())
 }
 
+/// The rendered line is the entire signal on the path that deliberately does
+/// not fail, so both renderings are pinned. A GitHub annotation must stay on
+/// one line: an embedded newline would terminate the annotation early and drop
+/// the debt identity that makes the report actionable.
+#[test]
+fn waiver_warning_renders_one_actionable_line_in_both_environments() -> Result<()> {
+    let report = "error waiver expired on 2026-08-11; refresh or remove the waiver";
+
+    let annotation = format_waiver_warning(report, true);
+    ensure!(
+        annotation.starts_with("::warning title="),
+        "GitHub output must be an annotation: {annotation}"
+    );
+    ensure!(annotation.contains(report), "annotation dropped the report: {annotation}");
+
+    let plain = format_waiver_warning(report, false);
+    ensure!(!plain.starts_with("::"), "local output must not be an annotation: {plain}");
+    ensure!(plain.contains(report), "local output dropped the report: {plain}");
+
+    for rendered in [&annotation, &plain] {
+        ensure!(rendered.ends_with('\n'), "report must terminate its line: {rendered}");
+        ensure!(
+            rendered.trim_end_matches('\n').lines().count() == 1,
+            "report must occupy exactly one line: {rendered}"
+        );
+    }
+    Ok(())
+}
+
 /// An unrecognized policy value must fail rather than fall back to `warn`:
 /// a typo in CI would otherwise silently disable the default-branch failure
 /// that this split exists to preserve.
@@ -657,14 +686,24 @@ fn validate_error_waiver_at(
 /// best-effort — failing to report a warning must not fail the run, since the
 /// actionable signal is the default-branch enforcement.
 fn report_waiver_warning(warning: &str) {
-    let line = if std::env::var_os("GITHUB_ACTIONS").is_some() {
-        format!("::warning title=Scenario 67 waiver lapsed::{warning}\n")
-    } else {
-        format!("warning: {warning}\n")
-    };
+    let line = format_waiver_warning(warning, std::env::var_os("GITHUB_ACTIONS").is_some());
     let mut stderr = std::io::stderr();
     let _ = stderr.write_all(line.as_bytes());
     let _ = stderr.flush();
+}
+
+/// Render the report line for the active environment.
+///
+/// GitHub Actions renders `::warning …` as a job annotation; elsewhere a plain
+/// prefix keeps the line readable. Kept separate from the write so both
+/// renderings are testable — this line is the entire signal on the path that
+/// deliberately does not fail.
+fn format_waiver_warning(warning: &str, github_actions: bool) -> String {
+    if github_actions {
+        format!("::warning title=Scenario 67 waiver lapsed::{warning}\n")
+    } else {
+        format!("warning: {warning}\n")
+    }
 }
 
 /// Validate the `YYYY-MM-DD` shape of a waiver expiry and return its day

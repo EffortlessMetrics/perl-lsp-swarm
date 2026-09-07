@@ -1440,6 +1440,14 @@ jobs:
           # a lapse as a warning; a push to the default branch fails, which is
           # where the waiver can actually be refreshed. Waiver *shape* stays
           # enforced everywhere.
+          #
+          # merge_group stays on `warn` deliberately. A lapsed waiver is a
+          # property of the repository, not of the candidate being queued: it
+          # is equally true whether or not this candidate lands, so failing the
+          # candidate's queue run would attribute a repository problem to a
+          # change that did not cause it — the same misattribution this issue
+          # removes from branches. The push-to-main run below catches the lapse
+          # within one merge, and reports it against the commit that can fix it.
           PERL_LSP_UX_WAIVER_EXPIRY: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) && 'enforce' || 'warn' }}
         run: |
           set -o pipefail
