@@ -136,7 +136,14 @@ LANE_FILE = re.compile(rf"^`({LANE_SEGMENT}(?:/{LANE_SEGMENT})*\.md)`$")
 # let the unverified half of the citation say anything -- the row would look
 # more precise than it had been checked to be.
 ISSUE_REF = re.compile(r"#(\d+)")
-COMMIT_REF = re.compile(r"\b([0-9a-f]{7,40})\b")
+# Case-insensitive, and every hash is lowercased in `receipt_tokens` before it
+# is compared. Git prints lowercase but accepts and renders either, and a
+# lowercase-only pattern did not merely mis-compare an uppercase hash -- it
+# extracted no commit at all, so the row was bound to nothing and silently
+# exempt from the rule its lowercase neighbours obey. Proved on the real
+# ledger: the same fabricated receipt in the `COVERED` row fails the suite as
+# `deadbeef1234567` and passes it as `DEADBEEF1234567`.
+COMMIT_REF = re.compile(r"\b([0-9a-fA-F]{7,40})\b")
 # Git abbreviates: a ledger row may carry the full squash SHA while the lane
 # document carries a short head. Prefix matching in either direction is the
 # comparison git itself uses.
@@ -425,8 +432,11 @@ def receipt_tokens(text: str) -> tuple[set[str], set[str]]:
     # so `#5717` cannot masquerade as a short SHA, and ignore anything that is
     # all digits for the same reason.
     without_issues = ISSUE_REF.sub(" ", text)
+    # Lowercased here so a ledger row and its lane document bind whichever
+    # casing each happens to use; `commit_is_bound` then compares like with
+    # like without every caller having to remember to normalize.
     commits = {
-        token
+        token.lower()
         for token in COMMIT_REF.findall(without_issues)
         if not token.isdigit()
     }
@@ -809,6 +819,47 @@ class WorkedLaneLedgerTests(unittest.TestCase):
                 f"{match.group(1)} never references; a ledger row may only "
                 f"claim the evidence its worked lane actually used",
             )
+
+    def test_commit_receipts_bind_regardless_of_hex_casing(self) -> None:
+        """Casing must not decide whether a receipt is checked at all.
+
+        `COMMIT_REF` matched lowercase hex only, so an uppercase hash was not
+        mis-compared -- it was extracted as no commit, leaving the row bound to
+        nothing and exempt from the rule its lowercase neighbours obey. On the
+        real ledger the same fabricated receipt in the `COVERED` row failed the
+        suite as `deadbeef1234567` and passed it as `DEADBEEF1234567`, which is
+        the whole defect: the check was decided by the shift key.
+
+        Git prints lowercase but accepts and renders either, so binding has to
+        be case-insensitive in both directions rather than merely stricter.
+        """
+        _, upper = receipt_tokens("squash DEADBEEF1234567")
+        _, lower = receipt_tokens("squash deadbeef1234567")
+        self.assertEqual(
+            upper,
+            {"deadbeef1234567"},
+            "an uppercase hash must be extracted, and normalized so it can be "
+            "compared with a lane document that spells it in lowercase",
+        )
+        self.assertEqual(upper, lower, "casing must not change what is extracted")
+
+        # Binding is case-insensitive whichever side differs, including git's
+        # abbreviation, which is the comparison `commit_is_bound` already makes.
+        _, ledger_side = receipt_tokens("ledger cites 556C717ABCDEF")
+        _, lane_side = receipt_tokens("lane names 556c717")
+        self.assertTrue(
+            all(commit_is_bound(c, lane_side) for c in ledger_side),
+            "an uppercase ledger citation must bind to the lowercase short "
+            "head its lane document names",
+        )
+
+        # False-positive control: normalizing casing must not make unrelated
+        # hashes bind to each other.
+        _, unrelated = receipt_tokens("lane names 0123456789abcdef")
+        self.assertFalse(
+            any(commit_is_bound(c, unrelated) for c in ledger_side),
+            "a hash the lane never names must stay unbound in any casing",
+        )
 
     def test_absent_rows_name_nothing(self) -> None:
         """The negative control.
