@@ -179,6 +179,11 @@ struct Stats {
     not_proven: usize,
 }
 
+/// Run the ledger check, optionally regenerating the Markdown projection first.
+///
+/// `write` regenerates `docs/project/status/dead_code_api_ledger.md` from the
+/// ledger before validating, which is how that file is maintained; without it
+/// the command is entirely read-only.
 pub fn run(write: bool) -> Result<()> {
     let root = project_root()?;
     if write {
@@ -205,6 +210,10 @@ pub fn run(write: bool) -> Result<()> {
     Ok(())
 }
 
+/// Run every law against the tree and collect all violations before failing.
+///
+/// Violations accumulate rather than short-circuiting so one run reports every
+/// disagreement, not just the first.
 fn validate(root: &Path) -> Result<Stats> {
     let ledger = read_ledger(root, POLICY_PATH)?;
     let module_text = read_text(root, &ledger.module_source)?;
@@ -251,11 +260,13 @@ fn validate(root: &Path) -> Result<Stats> {
     })
 }
 
+/// Parse the canonical ledger, naming the file when it will not parse.
 fn read_ledger(root: &Path, rel: &str) -> Result<Ledger> {
     let text = read_text(root, rel)?;
     toml::from_str(&text).with_context(|| format!("failed to parse {rel}"))
 }
 
+/// Read one repository-relative file, naming the absolute path on failure.
 fn read_text(root: &Path, rel: &str) -> Result<String> {
     let path = root.join(rel);
     fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))
@@ -265,6 +276,9 @@ fn read_text(root: &Path, rel: &str) -> Result<String> {
 // Shape
 // ---------------------------------------------------------------------------
 
+/// Check the ledger's own structural invariants: schema version, self-reference,
+/// canonical path, export-path roles, and that every declared vocabulary term
+/// used elsewhere actually exists.
 fn validate_shape(ledger: &Ledger, violations: &mut Vec<String>) {
     if ledger.schema_version != 1 {
         violations.push(format!(
@@ -470,6 +484,30 @@ fn parse_module_surface(text: &str) -> Result<BTreeSet<SourceItem>> {
             // must not pass silently. It is emitted with a kind the ledger
             // vocabulary rejects, so L1 reports it as unclassified rather than
             // letting the surface grow unobserved.
+            // Tokens `syn` could not interpret. There is no visibility to
+            // inspect, so it cannot be ruled out as public API.
+            syn::Item::Verbatim(_) => {
+                items.insert(SourceItem {
+                    id: format!("<uninterpreted item #{}>", items.len()),
+                    kind: "unsupported_public_form".to_string(),
+                });
+            }
+            // `extern "C" { … }` carries no visibility of its own, but its
+            // foreign items can be public.
+            syn::Item::ForeignMod(node) => {
+                let has_public_item = node.items.iter().any(|item| match item {
+                    syn::ForeignItem::Fn(node) => is_public(&node.vis),
+                    syn::ForeignItem::Static(node) => is_public(&node.vis),
+                    syn::ForeignItem::Type(node) => is_public(&node.vis),
+                    _ => false,
+                });
+                if has_public_item {
+                    items.insert(SourceItem {
+                        id: format!("<public foreign item #{}>", items.len()),
+                        kind: "unsupported_public_form".to_string(),
+                    });
+                }
+            }
             other => {
                 if let Some(vis) = item_visibility(other)
                     && is_public(vis)
@@ -498,6 +536,7 @@ fn use_tree_names(tree: &syn::UseTree) -> Vec<String> {
     }
 }
 
+/// Whether an attribute is `#[macro_export]`, which makes a macro public API.
 fn is_macro_export(attr: &syn::Attribute) -> bool {
     attr.path().is_ident("macro_export")
 }
@@ -521,10 +560,13 @@ fn item_visibility(item: &syn::Item) -> Option<&syn::Visibility> {
     }
 }
 
+/// Whether a visibility marks an item as part of the crate's public API.
 fn is_public(vis: &syn::Visibility) -> bool {
     matches!(vis, syn::Visibility::Public(_))
 }
 
+/// The final path segment of a type, used to name the `impl` block a method
+/// belongs to.
 fn type_ident(ty: &syn::Type) -> Option<String> {
     match ty {
         syn::Type::Path(path) => path.path.segments.last().map(|s| s.ident.to_string()),
@@ -532,6 +574,9 @@ fn type_ident(ty: &syn::Type) -> Option<String> {
     }
 }
 
+/// L1 — the public items in the module source and the ledger's rows are the same
+/// set, with matching kinds. A new public item fails until dispositioned; a row
+/// naming an item that no longer exists fails until retired.
 fn validate_source_coverage(
     ledger: &Ledger,
     source_items: &BTreeSet<SourceItem>,
@@ -608,6 +653,9 @@ fn baseline_item_id(line: &str, canonical_path: &str) -> Option<String> {
     Some(tail.to_string())
 }
 
+/// L2 — every `perl_parser::dead_code` declaration in the public-API baseline has
+/// a ledger row, with a vacuity guard so a baseline format change cannot leave
+/// this law checking nothing.
 fn validate_baseline_coverage(ledger: &Ledger, baseline_text: &str, violations: &mut Vec<String>) {
     let ledger_ids: BTreeSet<&str> = ledger.item.iter().map(|i| i.id.as_str()).collect();
     let mut missing = BTreeSet::new();
@@ -643,6 +691,9 @@ fn validate_baseline_coverage(ledger: &Ledger, baseline_text: &str, violations: 
 // L3, L4, L6 — per-item laws
 // ---------------------------------------------------------------------------
 
+/// L3, L4 and L6 — per-item laws: an unproduced item may not be presented as
+/// working and must carry a negative control; no item carries edit authority;
+/// inert configuration declares itself and never claims root identity.
 fn validate_item_laws(ledger: &Ledger, violations: &mut Vec<String>) {
     for item in &ledger.item {
         let id = &item.id;
@@ -728,6 +779,16 @@ fn validate_item_laws(ledger: &Ledger, violations: &mut Vec<String>) {
                     .push(format!("L6: `{id}` is inert but has no fixture proving inertness"));
             }
         }
+        // An inert configuration item must state the root-identity disposition
+        // explicitly. `root_identity` is optional, so leaving it out would pass
+        // the `Some(true)` rejection below while silently dropping the record
+        // that a path is not canonical root identity.
+        if item.producer == "inert" && item.root_identity.is_none() {
+            violations.push(format!(
+                "L6: `{id}` is inert but does not declare `root_identity`; the disposition must be \
+                 explicit, not absent"
+            ));
+        }
         if item.root_identity == Some(true) {
             violations.push(format!(
                 "L6: `{id}` claims root identity; a path is a configuration candidate, not canonical \
@@ -749,6 +810,8 @@ fn validate_item_laws(ledger: &Ledger, violations: &mut Vec<String>) {
 // L5 — result-state mapping
 // ---------------------------------------------------------------------------
 
+/// L5 — all twelve result states are dispositioned, every collapse names a defect
+/// and an owner, and every non-collapsing state explains itself.
 fn validate_result_states(ledger: &Ledger, violations: &mut Vec<String>) {
     let present: BTreeSet<&str> = ledger.result_state.iter().map(|s| s.id.as_str()).collect();
     if present.len() != ledger.result_state.len() {
@@ -849,6 +912,8 @@ fn fixture_is_bound(fixture_id: &str, test_functions: &BTreeSet<String>) -> bool
     test_functions.iter().any(|name| name == &snake || name.starts_with(&format!("{snake}_")))
 }
 
+/// L9 and L10 — every fixture a row cites names a real `#[test]` function, and
+/// every `dcapi_*` test supports at least one recorded claim.
 fn validate_fixtures(ledger: &Ledger, corpus_text: &str, violations: &mut Vec<String>) {
     let test_functions = match corpus_test_functions(corpus_text) {
         Ok(names) => names,
@@ -903,6 +968,11 @@ fn validate_fixtures(ledger: &Ledger, corpus_text: &str, violations: &mut Vec<St
 // L7 — consumer inventory
 // ---------------------------------------------------------------------------
 
+/// L7 — the declared consumer inventory matches the tree.
+///
+/// Scans the consumer roots for files referencing the surface and fails on any
+/// that is undeclared. Traversal, read and parse failures are violations, not
+/// skips: a file the scan cannot see has not been shown to be a non-consumer.
 fn validate_consumers(root: &Path, ledger: &Ledger, violations: &mut Vec<String>) {
     let declared: BTreeMap<&str, &str> =
         ledger.consumer.iter().map(|c| (c.path.as_str(), c.class.as_str())).collect();
@@ -1110,6 +1180,11 @@ fn references_surface(text: &str, inside_owning_crate: bool) -> std::result::Res
         || (facts.reaches_prelude && contains_word(text, "DeadCode")))
 }
 
+/// Extract the import facts that decide whether a file consumes this surface.
+///
+/// Two passes: the first collects crate aliases so `use perl_parser as pf;` can
+/// root a later `pf::dead_code`, the second classifies every flattened import
+/// path against the resulting root set.
 fn import_facts(file: &syn::File, inside_owning_crate: bool) -> ImportFacts {
     // First pass: collect crate aliases (`use perl_parser as pf;`), so a later
     // `pf::dead_code::…` is recognised as this surface.
@@ -1221,6 +1296,7 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
     })
 }
 
+/// Whether a character can appear inside a Rust identifier.
 fn is_ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
@@ -1229,6 +1305,8 @@ fn is_ident_char(c: char) -> bool {
 // L8 — Markdown projection agreement
 // ---------------------------------------------------------------------------
 
+/// L8 — the checked-in Markdown projection is byte-identical to what
+/// [`render_projection`] produces from the ledger.
 fn validate_human_projection(ledger: &Ledger, human_text: &str, violations: &mut Vec<String>) {
     let expected = render_projection(ledger);
     if human_text == expected {
@@ -1244,7 +1322,18 @@ fn validate_human_projection(ledger: &Ledger, human_text: &str, violations: &mut
     loop {
         line_number += 1;
         match (expected_lines.next(), actual_lines.next()) {
-            (None, None) => break,
+            (None, None) => {
+                // Reached only because the whole-document comparison above
+                // already failed, so the difference is real but invisible to
+                // `str::lines` — a trailing newline, or CRLF versus LF. Report
+                // it rather than falling out of the loop with no violation.
+                violations.push(format!(
+                    "L8: {} differs from the ledger only in line terminators or the trailing \
+                     newline; regenerate it with `cargo xtask check-dead-code-api-ledger --write`",
+                    ledger.human_ledger
+                ));
+                return;
+            }
             (want, got) if want == got => continue,
             (want, got) => {
                 violations.push(format!(
@@ -1437,6 +1526,7 @@ fn render_projection(ledger: &Ledger) -> String {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Reject a field value outside a fixed vocabulary defined in this module.
 fn require_member(
     subject: &str,
     field: &str,
@@ -1449,6 +1539,7 @@ fn require_member(
     }
 }
 
+/// Reject a field value outside a vocabulary the ledger itself declares.
 fn require_member_owned(
     subject: &str,
     field: &str,
@@ -1475,6 +1566,7 @@ mod tests {
         Ok(())
     }
 
+    /// A minimal module exercising public and private items of each shape.
     fn sample_source() -> &'static str {
         r#"
         pub enum Kind { A, B }
@@ -1485,6 +1577,7 @@ mod tests {
     }
 
     #[test]
+    /// Public items are discovered; private ones are not public API.
     fn source_surface_finds_public_items_and_skips_private_ones() -> Result<()> {
         let items = parse_module_surface(sample_source())?;
         let ids: BTreeSet<&str> = items.iter().map(|i| i.id.as_str()).collect();
@@ -1500,6 +1593,8 @@ mod tests {
     }
 
     #[test]
+    /// Baseline rows map to ledger ids, excluding the compatibility alias's
+    /// duplicate rows, derive-generated methods, and unrelated prelude rows.
     fn baseline_ids_reject_the_alias_and_derive_noise() {
         let canonical = "perl_parser::dead_code";
         assert_eq!(
@@ -1551,6 +1646,8 @@ mod tests {
     }
 
     #[test]
+    /// Needle matching honours identifier boundaries, so a needle cannot match
+    /// inside a longer identifier or an `#[allow(dead_code)]` attribute.
     fn contains_word_respects_identifier_boundaries() {
         assert!(contains_word("use crate::dead_code;", "crate::dead_code"));
         assert!(!contains_word("use crate::dead_code_detector;", "crate::dead_code"));
@@ -1647,7 +1744,74 @@ mod tests {
         Ok(())
     }
 
+    /// CodeRabbit review, PR #15086: `str::lines` drops the final terminator and
+    /// strips a trailing `\r`, so a projection differing only in its trailing
+    /// newline — or checked out with CRLF — produced identical line sequences,
+    /// fell out of the loop, and pushed no violation. L8 passed on a real byte
+    /// mismatch.
     #[test]
+    fn falsifier_l8_a_byte_difference_invisible_to_lines_is_rejected() -> Result<()> {
+        let root = project_root()?;
+        let ledger = read_ledger(&root, POLICY_PATH)?;
+        let rendered = render_projection(&ledger);
+
+        let truncated = rendered.trim_end_matches('\n').to_string();
+        assert_ne!(truncated, rendered, "the mutation must actually apply");
+        let mut violations = Vec::new();
+        validate_human_projection(&ledger, &truncated, &mut violations);
+        assert!(
+            violations.iter().any(|v| v.starts_with("L8:")),
+            "a missing trailing newline must fail: {violations:?}"
+        );
+
+        let crlf = rendered.replace('\n', "\r\n");
+        assert_ne!(crlf, rendered);
+        let mut violations = Vec::new();
+        validate_human_projection(&ledger, &crlf, &mut violations);
+        assert!(
+            violations.iter().any(|v| v.starts_with("L8:")),
+            "CRLF line endings must fail: {violations:?}"
+        );
+        Ok(())
+    }
+
+    /// CodeRabbit review, PR #15086: `root_identity` is optional and L6 rejected
+    /// only `Some(true)`, so deleting the field from the inert row passed.
+    #[test]
+    fn falsifier_l6_an_inert_row_must_declare_root_identity() -> Result<()> {
+        let violations = law_violations(|ledger| {
+            for item in &mut ledger.item {
+                if item.producer == "inert" {
+                    item.root_identity = None;
+                }
+            }
+        })?;
+        assert!(
+            violations.iter().any(|v| v.starts_with("L6:") && v.contains("does not declare")),
+            "an inert row with no root-identity disposition must fail: {violations:?}"
+        );
+        Ok(())
+    }
+
+    /// CodeRabbit review, PR #15086: `Item::Verbatim` and `Item::ForeignMod`
+    /// carry no visibility, so the fail-closed arm skipped them entirely.
+    #[test]
+    fn visibility_less_item_forms_fail_closed() -> Result<()> {
+        let foreign = parse_module_surface("unsafe extern \"C\" { pub fn exported(); }")?;
+        assert!(
+            foreign.iter().any(|i| i.kind == "unsupported_public_form"),
+            "a public foreign item must fail L1 rather than pass unseen"
+        );
+        let private_foreign = parse_module_surface("unsafe extern \"C\" { fn hidden(); }")?;
+        assert!(
+            !private_foreign.iter().any(|i| i.kind == "unsupported_public_form"),
+            "a non-public foreign item is not public API"
+        );
+        Ok(())
+    }
+
+    #[test]
+    /// Rendering the projection twice yields identical bytes.
     fn projection_render_is_deterministic() -> Result<()> {
         let root = project_root()?;
         let ledger = read_ledger(&root, POLICY_PATH)?;
@@ -1691,6 +1855,8 @@ mod tests {
     }
 
     #[test]
+    /// A `pub use other::*;` glob cannot be enumerated, so it must fail L1
+    /// rather than silently contributing no items.
     fn public_glob_reexport_fails_closed() -> Result<()> {
         let items = parse_module_surface("pub use other::*;")?;
         assert!(
@@ -1707,6 +1873,8 @@ mod tests {
     }
 
     #[test]
+    /// A wildcard prelude import combined with a bare `DeadCode` is a consumer;
+    /// neither half alone is.
     fn wildcard_prelude_consumers_are_detected() {
         assert!(
             is_consumer("use perl_parser::prelude::*;\nfn f(d: DeadCode) {}\n"),
@@ -1856,6 +2024,9 @@ mod tests {
 
     // ---- Falsifiers: each mutates a valid ledger and asserts the named law bites ----
 
+    /// Apply a mutation to the tracked ledger in memory and return the per-item
+    /// and result-state violations it produces, so a falsifier can assert the
+    /// named law fires without touching the checked-in file.
     fn law_violations(mutate: impl FnOnce(&mut Ledger)) -> Result<Vec<String>> {
         let root = project_root()?;
         let mut ledger = read_ledger(&root, POLICY_PATH)?;
@@ -1867,6 +2038,7 @@ mod tests {
     }
 
     #[test]
+    /// L3 — an item nothing constructs may not be dispositioned as retained.
     fn falsifier_l3_never_produced_item_cannot_be_retained() -> Result<()> {
         let violations = law_violations(|ledger| {
             for item in &mut ledger.item {
@@ -1883,6 +2055,7 @@ mod tests {
     }
 
     #[test]
+    /// L3 — an unproduced item without a fixture is an unfalsifiable claim.
     fn falsifier_l3_never_produced_item_needs_a_negative_control() -> Result<()> {
         let violations = law_violations(|ledger| {
             for item in &mut ledger.item {
@@ -1899,6 +2072,7 @@ mod tests {
     }
 
     #[test]
+    /// L4 — nothing on this compatibility surface authorizes an edit.
     fn falsifier_l4_no_item_may_claim_edit_authority() -> Result<()> {
         let violations = law_violations(|ledger| {
             if let Some(item) = ledger.item.iter_mut().find(|i| i.id == "generate_report") {
@@ -1913,6 +2087,7 @@ mod tests {
     }
 
     #[test]
+    /// L5 — a state that collapses into an ordinary result must name a defect.
     fn falsifier_l5_a_collapsed_state_cannot_be_accepted_silently() -> Result<()> {
         let violations = law_violations(|ledger| {
             for state in &mut ledger.result_state {
@@ -1928,6 +2103,7 @@ mod tests {
     }
 
     #[test]
+    /// L5 — dropping a result state fails rather than reading as absent.
     fn falsifier_l5_every_state_must_be_dispositioned() -> Result<()> {
         let violations = law_violations(|ledger| {
             ledger.result_state.retain(|s| s.id != "incomplete_semantic_computation");
@@ -1940,6 +2116,7 @@ mod tests {
     }
 
     #[test]
+    /// L6 — a path is a configuration candidate, never canonical root identity.
     fn falsifier_l6_entry_point_cannot_claim_root_identity() -> Result<()> {
         let violations = law_violations(|ledger| {
             if let Some(item) =
@@ -1956,6 +2133,7 @@ mod tests {
     }
 
     #[test]
+    /// L1 — a public item with no ledger row fails until dispositioned.
     fn falsifier_l1_a_new_public_item_is_unclassified() -> Result<()> {
         let root = project_root()?;
         let ledger = read_ledger(&root, POLICY_PATH)?;
@@ -1974,6 +2152,7 @@ mod tests {
     }
 
     #[test]
+    /// L7 — a file referencing the surface without an inventory row fails.
     fn falsifier_l7_an_undeclared_consumer_fails() -> Result<()> {
         let root = project_root()?;
         let mut ledger = read_ledger(&root, POLICY_PATH)?;
@@ -1988,6 +2167,7 @@ mod tests {
     }
 
     #[test]
+    /// L9 — citing proof that does not exist fails.
     fn falsifier_l9_a_ledger_row_cannot_cite_a_missing_fixture() -> Result<()> {
         let root = project_root()?;
         let mut ledger = read_ledger(&root, POLICY_PATH)?;
@@ -2005,6 +2185,7 @@ mod tests {
     }
 
     #[test]
+    /// L8 — a hand-edited projection fails.
     fn falsifier_l8_markdown_drift_is_rejected() -> Result<()> {
         let root = project_root()?;
         let ledger = read_ledger(&root, POLICY_PATH)?;
