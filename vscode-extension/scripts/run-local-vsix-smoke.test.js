@@ -1124,6 +1124,21 @@ void test('an honestly not_proven watchdog row degrades only the overall verdict
   assert.equal(joined.verdict, 'not_proven');
 });
 
+void test('an unexercised watchdog leg is typed pending and verdict-neutral', () => {
+  // #15019: on hosts whose transient leg emits no watchdog observation at
+  // all (capability absent), the row is a deliberate `pending` - visible in
+  // the receipt, but it must not degrade the journey to not_proven.
+  const observations = passingTransientChild().observations;
+  const { watchdog, ...withoutWatchdog } = observations;
+  const transient = passingTransientChild({ observations: withoutWatchdog });
+  const joined = composeCrashRecoveryReceipt(crashComposeBase({ transient }));
+  assert.equal(joined.watchdog, 'pending');
+  assert.equal(joined.transient_crash.replay, 'pass');
+  assert.equal(joined.circuit_breaker.explicit_retry, 'pass');
+  assert.equal(joined.cleanup, 'pass');
+  assert.equal(joined.verdict, 'pass');
+});
+
 void test('a breaker that never exhausts fails the circuit-breaker rows', () => {
   const breaker = passingBreakerChild({
     observations: {

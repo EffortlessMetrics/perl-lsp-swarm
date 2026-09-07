@@ -257,9 +257,9 @@ function shouldRunActivationFailureJourney(stages) {
  * The packaged crash-recovery journey (#7848) needs only a behavior-safe
  * package for the same reason: it installs the exact VSIX into its own
  * isolated profile and terminates the exact server process from the harness
- * in both legs. Its verdict composes per-row results, so an honestly
- * `not_proven` watchdog row on hosts without a suspend capability degrades
- * the stage verdict without weakening the other rows.
+ * in both legs. Its verdict composes per-row results; on hosts without a
+ * suspend capability the watchdog row is typed `pending` (visible,
+ * verdict-neutral) instead of degrading the stage verdict (#15019).
  */
 function shouldRunCrashRecoveryJourney(stages) {
   return (
@@ -946,10 +946,12 @@ function crashRowFromObservation(value, legExitCode, isPass) {
  * child legs and the orchestrator's own post-host-exit process scan. The
  * verdict is fail-closed: any missing or contradictory child evidence leaves
  * the affected row `not_proven`, an observed product failure fails its row
- * outright, and any failed row fails the receipt while an honestly
- * `not_proven` row (for example the watchdog row on hosts that cannot suspend
- * a process) keeps the overall verdict `not_proven` without weakening the
- * other rows.
+ * outright, and any failed or `not_proven` row fails the receipt. A
+ * capability-absent leg (for example the watchdog row on hosts that cannot
+ * suspend a process, where the child leg emits no watchdog observation) is a
+ * typed `pending` row: visible in the receipt and verdict-neutral, so the
+ * journey's pass/fail signal stays actionable on hosts that cannot exercise
+ * every leg (#15019).
  *
  * @param {{
  *   vsixSha256: string,
@@ -1027,12 +1029,19 @@ function composeCrashRecoveryReceipt({
     ),
   );
 
-  const watchdogStatus =
-    transientObservations.watchdog && typeof transientObservations.watchdog.status === 'string'
-      ? transientObservations.watchdog.status
-      : 'not_proven';
+  // Typed pending (#15019): when the transient leg emits NO watchdog
+  // observation, the leg was never exercised on this host (capability
+  // absent) — that is a deliberate pending state, verdict-neutral, and
+  // stays visible in the receipt. An observation that EXISTS but could not
+  // establish its verdict remains not_proven (an instrument gap), which
+  // still degrades the journey.
+  const watchdogExercised =
+    transientObservations.watchdog && typeof transientObservations.watchdog.status === 'string';
+  const watchdogStatus = watchdogExercised ? transientObservations.watchdog.status : 'pending';
   const watchdogRow = boundRow(
-    ['pass', 'failed', 'not_proven'].includes(watchdogStatus) ? watchdogStatus : 'not_proven',
+    ['pass', 'failed', 'not_proven', 'pending'].includes(watchdogStatus)
+      ? watchdogStatus
+      : 'not_proven',
   );
 
   const legsExitedCleanly = legExitCodes.transient === 0 && legExitCodes.breaker === 0;
@@ -1111,9 +1120,10 @@ function composeCrashRecoveryReceipt({
     cleanupRow,
   ];
   let verdict;
-  if (observedChildFailure || rows.includes('failed')) {
+  const verdictRows = rows.filter((row) => row !== 'pending');
+  if (observedChildFailure || verdictRows.includes('failed')) {
     verdict = 'failed';
-  } else if (rows.includes('not_proven')) {
+  } else if (verdictRows.includes('not_proven')) {
     verdict = 'not_proven';
   } else {
     verdict = 'pass';
