@@ -17,9 +17,12 @@
 //!
 //! * block mappings and block sequences (indentation-based);
 //! * flow collections (`[a, b]`, `{k: v}`);
-//! * plain, single-quoted, and double-quoted scalars (double-quoted escapes
+//! * inline plain, single-quoted, and double-quoted scalars (double-quoted escapes
 //!   support newline, tab, carriage return, quote and backslash; others refuse);
-//! * `#` comments, `---` / `...` document markers (single document only).
+//! * `#` comments, column-zero `---` / `...` document markers (single document only).
+//!
+//! Indented scalar-only lines are outside the block mapping/sequence subset;
+//! they refuse rather than being consumed as document markers.
 //!
 //! Everything outside the subset is an **explicit non-success state**, never a
 //! silent fallback: anchors/aliases, YAML tags, merge keys, block scalars
@@ -300,7 +303,7 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
             ));
         }
         let trimmed = line.text.trim();
-        if trimmed == "..." {
+        if indentation(&line.text) == 0 && trimmed == "..." {
             seen_document_end = true;
             continue;
         }
@@ -311,7 +314,7 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
                 "content appears after the first document's explicit end marker",
             ));
         }
-        if trimmed == "---" || trimmed.starts_with("--- ") {
+        if indentation(&line.text) == 0 && (trimmed == "---" || trimmed.starts_with("--- ")) {
             if !body.is_empty() || seen_first_marker {
                 // A second start marker starts another document even when
                 // no content follows it. Only `...` ends the first document.
@@ -947,6 +950,25 @@ fn unquote(text: &str, line: usize) -> Result<String, MetaYmlFinding> {
             trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')).ok_or_else(malformed)?;
         return decode_double_quoted(inner, line);
     }
+    // YAML 1.2.2 section 7.3.3: indicators cannot begin plain scalars,
+    // except `?`, `:`, or `-` followed by a non-space character.
+    // Check at the shared decoder so block/flow values and mapping keys all
+    // use this admission boundary; quoted strings above retain punctuation.
+    let mut chars = trimmed.chars();
+    let first = chars.next();
+    let forbidden_start = first.is_some_and(|c| ",[]{}#&*!|>%@`".contains(c))
+        || (first.is_some_and(|c| "?:-".contains(c))
+            && chars.next().is_none_or(|c| matches!(c, ' ' | '\t')));
+    let separated_colon = trimmed.char_indices().any(|(index, c)| {
+        c == ':' && trimmed[index + 1..].chars().next().is_none_or(|c| matches!(c, ' ' | '\t'))
+    });
+    if forbidden_start || separated_colon {
+        return Err(MetaYmlFinding::new(
+            MetaYmlFindingKind::MalformedSyntax,
+            Some(line),
+            "reserved indicator or separated colon in an unquoted scalar",
+        ));
+    }
     Ok(trimmed.to_string())
 }
 
@@ -1179,6 +1201,90 @@ mod tests {
             "{what}: expected a {kind:?} finding, got {:?}",
             outcome.findings
         );
+    }
+
+    #[test]
+    fn plain_scalar_admission_refuses_reserved_tokens_without_facts() {
+        for token in [
+            "X: Y", "X:", "]", "}", ",", "?", "? key", "- item", ": value", "@value", "`value",
+            "%value",
+        ] {
+            let mut sources = vec![format!("name: {token}\n")];
+            // A comma after an empty flow-map value is a valid trailing
+            // separator, not a plain scalar. Exercise comma in a block item.
+            sources.push(if token == "," {
+                "license:\n  - ,\n".to_string()
+            } else {
+                format!("requires: {{ Foo: {token} }}\n")
+            });
+            for source in sources {
+                assert_non_success(
+                    &parse_meta_yml(fid(), &source),
+                    MetaYmlFindingKind::MalformedSyntax,
+                    &source,
+                );
+            }
+        }
+        for source in ["@name: X\n", "? name: X\n", "requires: { @Foo: 1 }\n"] {
+            assert_non_success(
+                &parse_meta_yml(fid(), source),
+                MetaYmlFindingKind::MalformedSyntax,
+                source,
+            );
+        }
+    }
+
+    #[test]
+    fn plain_scalar_admission_preserves_safe_punctuation_and_quoted_indicators() {
+        for token in [
+            "?query",
+            "-123",
+            ":symbol",
+            "Foo::Bar",
+            "https://example.com/a#b",
+            "...",
+            "---",
+            "Up, up, and away!",
+            "prefix:\u{a0}suffix",
+        ] {
+            let source = format!("name: {token}\n");
+            let result = parse_meta_yml(fid(), &source);
+            assert_eq!(result.state, MetaYmlParseState::Parsed, "{source}: {:?}", result.findings);
+            assert_eq!(must_some(result.facts).name.as_deref(), Some(token));
+        }
+        for token in ["X: Y", "]", ",", "?", "@value", "`value"] {
+            let source = format!("name: '{token}'\n");
+            assert_eq!(
+                must_some(parse_meta_yml(fid(), &source).facts).name.as_deref(),
+                Some(token)
+            );
+        }
+    }
+
+    #[test]
+    fn empty_flow_value_with_trailing_comma_remains_null() {
+        let result = parse_meta_yml(fid(), "requires: { Foo: , }\n");
+        let facts = must_some(result.facts);
+        assert_eq!(facts.prereqs.len(), 1);
+        assert_eq!(facts.prereqs[0].module, "Foo");
+        assert!(facts.prereqs[0].version.is_none());
+    }
+
+    #[test]
+    fn indented_document_markers_refuse_instead_of_losing_values() {
+        for marker in ["...", "---"] {
+            for source in [format!("name:\n  {marker}\n"), format!("name:\n  {marker} # value\n")] {
+                assert_non_success(
+                    &parse_meta_yml(fid(), &source),
+                    MetaYmlFindingKind::MalformedSyntax,
+                    &source,
+                );
+            }
+            let source = format!("license:\n  - {marker}\n");
+            assert_eq!(must_some(parse_meta_yml(fid(), &source).facts).licenses, vec![marker]);
+        }
+        let result = parse_meta_yml(fid(), "---\nname: X\n... # end\n");
+        assert_eq!(must_some(result.facts).name.as_deref(), Some("X"));
     }
 
     #[test]

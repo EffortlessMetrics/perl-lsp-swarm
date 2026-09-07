@@ -661,6 +661,20 @@ mod tests {
     }
 
     #[test]
+    fn meta_yml_invalid_plain_or_indented_marker_never_publishes_facts() {
+        for source in ["name: X: Y\n", "name:\n  ...\n"] {
+            let model = model_for(
+                "meta-yml-refused-scalar",
+                &[("META.yml", source)],
+                FactClasses::FILES | FactClasses::DIST,
+            );
+            assert!(model.file_by_path("META.yml").is_some());
+            assert!(model.dist_metadata.is_empty(), "{source}");
+            assert!(model.limitations.iter().any(|l| l.kind == "meta_yml_malformed"), "{source}");
+        }
+    }
+
+    #[test]
     fn meta_yml_unknown_spec_keeps_facts_and_warning() {
         let model = model_for(
             "meta-yml-unknown-spec",
