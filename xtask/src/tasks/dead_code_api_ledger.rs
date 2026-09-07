@@ -1119,11 +1119,8 @@ fn import_facts(file: &syn::File, inside_owning_crate: bool) -> ImportFacts {
         roots.extend(["crate", "self", "super"].iter().map(|s| (*s).to_string()));
     }
     for item in &file.items {
-        if let syn::Item::Use(node) = item
-            && let syn::UseTree::Rename(rename) = &node.tree
-            && rename.ident == "perl_parser"
-        {
-            roots.insert(rename.rename.to_string());
+        if let syn::Item::Use(node) = item {
+            collect_crate_aliases(&node.tree, 0, &mut roots);
         }
     }
 
@@ -1162,6 +1159,26 @@ fn classify_import_path(path: &[String], roots: &BTreeSet<String>, facts: &mut I
         && path.last().is_some_and(|last| SURFACE_TYPES.contains(&last.as_str()))
     {
         facts.names_surface_type = true;
+    }
+}
+
+/// Collect crate aliases for `perl_parser`, descending through groups.
+///
+/// A rename only aliases the *crate* when it sits at depth zero — no path
+/// segment precedes it. `use {perl_parser as pf};` and `use ::perl_parser as pf;`
+/// both qualify; `use perl_parser::{dead_code as dc};` does not, because there
+/// `dc` renames a module inside the crate rather than the crate itself.
+fn collect_crate_aliases(tree: &syn::UseTree, depth: usize, roots: &mut BTreeSet<String>) {
+    match tree {
+        syn::UseTree::Rename(rename) if depth == 0 && rename.ident == "perl_parser" => {
+            roots.insert(rename.rename.to_string());
+        }
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                collect_crate_aliases(item, depth, roots);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1764,6 +1781,21 @@ mod tests {
         assert!(
             !is_consumer("use other_crate as pf;\nuse pf::dead_code::Thing;\n"),
             "aliasing an unrelated crate does not create a consumer"
+        );
+        // Devin review: a *grouped* crate alias left the alias outside `roots`.
+        assert!(
+            is_consumer("use {perl_parser as pf};\nuse pf::dead_code::DeadCodeStats;\n"),
+            "a grouped crate alias must still root at this surface"
+        );
+        assert!(
+            is_consumer("use ::perl_parser as pf;\nuse pf::prelude::DeadCode;\n"),
+            "a leading-colon crate alias must still root at this surface"
+        );
+        // A rename *inside* the crate path is not a crate alias, and must not
+        // widen the root set to some unrelated `dc::…` elsewhere in the file.
+        assert!(
+            !is_consumer("use other_crate::{something as dc};\nuse dc::Thing;\n"),
+            "a module rename inside another crate is not a crate alias"
         );
     }
 

@@ -71,9 +71,41 @@ fn import_and_export_workspace() -> Result<WorkspaceIndex, String> {
          }\n\
          1;\n",
     )?;
+    // A second module chosen so that, together with `Imports.pm`, every variant
+    // any current producer emits appears at least once. Without this the
+    // constant-confidence proof would sample only two of the six and could not
+    // see a change to the other four.
+    index_initial(
+        &index,
+        "file:///Wide.pm",
+        "package Wide;\n\
+         use constant UNUSED_CONST => 5;\n\
+         our $unused_package_var = 1;\n\
+         sub never_called { return 1; }\n\
+         sub with_dead {\n\
+         if (0) {\n\
+         print 'dead branch';\n\
+         }\n\
+         return 3;\n\
+         print 'unreachable';\n\
+         }\n\
+         1;\n",
+    )?;
     index_initial(&index, "file:///main.pl", "use Imports;\nreturn 1;\nprint 'x';\n")?;
     Ok(index)
 }
+
+/// The variants `variant_is_produced` claims a producer for. The corpus must
+/// exhibit every one of them, or a proof that ranges over "all findings" is
+/// silently ranging over a subset.
+const EXPECTED_PRODUCED: [DeadCodeType; 6] = [
+    DeadCodeType::UnusedSubroutine,
+    DeadCodeType::UnusedVariable,
+    DeadCodeType::UnusedConstant,
+    DeadCodeType::UnusedPackage,
+    DeadCodeType::UnreachableCode,
+    DeadCodeType::DeadBranch,
+];
 
 /// The per-file findings this corpus produces in `Imports.pm` — the file that
 /// is deliberately *not* declared as an entry point by
@@ -131,6 +163,13 @@ fn dcapi_variant_producer_partition_is_exhaustive_and_non_vacuous() {
 
     let produced = ALL.iter().filter(|v| variant_is_produced(**v)).count();
     let never_produced = ALL.len() - produced;
+
+    // The produced half must be exactly the set the corpus exhibits, so the two
+    // lists cannot drift apart.
+    for expected in EXPECTED_PRODUCED {
+        assert!(variant_is_produced(expected), "{expected:?} is exhibited by the corpus");
+    }
+    assert_eq!(produced, EXPECTED_PRODUCED.len());
 
     // Both sides are non-empty: a partition that collapsed to "everything is
     // produced" would silently restore the overclaim this ledger exists to
@@ -231,12 +270,23 @@ fn dcapi_entry_point_is_inert() -> TestResult {
         "declaring entry points changed the finding count; the ledger's `inert` disposition is stale"
     );
 
-    let baseline_keys: Vec<_> =
-        baseline.dead_code.iter().map(|d| (d.code_type, d.name.clone(), d.start_line)).collect();
-    let configured_keys: Vec<_> =
-        configured.dead_code.iter().map(|d| (d.code_type, d.name.clone(), d.start_line)).collect();
+    // Compared as a multiset, not a sequence. `analyze_workspace` walks the
+    // document store, whose iteration order is not stable between runs, so the
+    // *contents* are the claim here and an order difference is not a finding.
+    // (That instability is itself consistent with the ledger, which records
+    // `DeadCodeAnalysis::dead_code` as an unordered accumulation.)
+    let keys = |analysis: &DeadCodeAnalysis| {
+        let mut keys: Vec<String> = analysis
+            .dead_code
+            .iter()
+            .map(|d| format!("{:?}|{:?}|{}", d.code_type, d.name, d.start_line))
+            .collect();
+        keys.sort();
+        keys
+    };
     assert_eq!(
-        baseline_keys, configured_keys,
+        keys(&baseline),
+        keys(&configured),
         "declaring entry points changed the findings; the ledger's `inert` disposition is stale"
     );
 
@@ -306,17 +356,17 @@ fn dcapi_confidence_is_a_constant() -> TestResult {
         distinct[0]
     );
 
-    // Findings reached by different mechanisms (index-backed unused symbols and
-    // a text-scan unreachable statement) still share the constant, so the field
-    // cannot be used to tell the two proof classes apart.
-    let has_symbol_finding =
-        analysis.dead_code.iter().any(|d| d.code_type == DeadCodeType::UnusedSubroutine);
-    let has_scan_finding =
-        analysis.dead_code.iter().any(|d| d.code_type == DeadCodeType::UnreachableCode);
-    assert!(
-        has_symbol_finding && has_scan_finding,
-        "corpus must contain both an index-backed and a text-scan finding for this control to bite"
-    );
+    // The constant holds across *every* variant a producer emits, not just a
+    // sampled pair — so a change to any one producer's confidence breaks this.
+    // Both proof classes are represented (index-backed unused symbols and
+    // text-scan unreachable/dead-branch findings), so the field cannot be used
+    // to tell the two apart either.
+    for expected in EXPECTED_PRODUCED {
+        assert!(
+            analysis.dead_code.iter().any(|d| d.code_type == expected),
+            "corpus must exhibit {expected:?} for the constant-confidence proof to cover it"
+        );
+    }
 
     Ok(())
 }
