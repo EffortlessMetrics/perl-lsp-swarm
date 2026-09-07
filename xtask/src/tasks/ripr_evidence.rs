@@ -694,6 +694,36 @@ fn revision_sha(repo: &Path, revision: &str) -> Result<String> {
     Ok(run_git_output(repo, &["rev-parse", revision])?.trim().to_string())
 }
 
+/// Drop any evidence packet a previous run left, before this run can fail.
+///
+/// `Validate PR evidence contracts` runs `if: always()` in
+/// `.github/workflows/ripr.yml`, so it executes even when generation failed, and
+/// the self-hosted lanes reuse `target/` across runs. A packet written by an
+/// earlier run of the same base/head therefore still satisfies
+/// [`check_pr_evidence`] — presenting a failed analysis as valid evidence, and
+/// failing *open* at the gate immediately after failing closed at ingest.
+///
+/// Clearing first makes every failure below leave nothing to accept: the check
+/// then refuses on the missing packet rather than validating a stale one.
+///
+/// [`PR_RAW_CHECK_JSON`] is deliberately not cleared. It is diagnostic output
+/// rather than gate input — `check_pr_evidence` never reads it — and it is
+/// rewritten from the current producer run before validation, so preserving it
+/// keeps the refusal explainable without making anything acceptable.
+fn clear_stale_pr_evidence(repo: &Path) -> Result<()> {
+    for relative in [PR_EVIDENCE_JSON, PR_EVIDENCE_MD] {
+        let path = repo.join(relative);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("clearing stale {relative}"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
@@ -705,6 +735,9 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
     let changed_file_count = diff_receipt.entries.len();
     write_pr_diff(repo, &diff_receipt)?;
+    // Nothing below may leave a previous run's packet behind as acceptable
+    // evidence for these revisions (#9113 review).
+    clear_stale_pr_evidence(repo)?;
     let check_json = run_ripr_check(repo, options)?;
     let check_value: Value =
         serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
@@ -4134,6 +4167,67 @@ esac
     ///
     /// Without this, the guard above could be satisfied by a validator that
     /// refuses everything.
+    /// A refused rerun must not leave the previous run's packet behind.
+    ///
+    /// `Validate PR evidence contracts` runs `if: always()` in
+    /// `.github/workflows/ripr.yml`, so it executes even after generation failed,
+    /// and the self-hosted lanes reuse `target/` between runs. Without this, a
+    /// producer schema break aborts generation while `ripr-pr --check` happily
+    /// accepts the packet an earlier run of the *same* base/head wrote — failing
+    /// closed at ingest and open at the gate, which is worse than either alone.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_refused_rerun_leaves_no_stale_evidence_to_accept() -> Result<()> {
+        let repo = evidence_repo()?;
+        let options = evidence_options();
+        let bin_dir = tempfile::tempdir()?;
+
+        // First run: healthy producer writes a packet, and --check accepts it.
+        {
+            let fake = write_fake_ripr_check_binary(bin_dir.path(), REAL_010_CHECK)?;
+            let _guard = override_ripr_bin(&fake)?;
+            write_pr_evidence(repo.path(), &options)?;
+            check_pr_evidence(repo.path(), &options)
+                .expect("freshly written evidence must validate");
+        }
+        assert!(repo.path().join(PR_EVIDENCE_JSON).exists());
+        assert!(repo.path().join(PR_EVIDENCE_MD).exists());
+
+        // Second run, same revisions, broken producer envelope.
+        let mut broken = parse_check(REAL_010_CHECK);
+        broken
+            .get_mut("summary")
+            .and_then(Value::as_object_mut)
+            .expect("summary")
+            .remove("weakly_exposed");
+        {
+            let fake = write_fake_ripr_check_binary(bin_dir.path(), &broken.to_string())?;
+            let _guard = override_ripr_bin(&fake)?;
+            write_pr_evidence(repo.path(), &options)
+                .expect_err("the broken envelope must still be refused");
+        }
+
+        // The previous run's packet must be gone, not merely superseded.
+        assert!(
+            !repo.path().join(PR_EVIDENCE_JSON).exists(),
+            "a refused rerun must not leave the earlier packet on disk"
+        );
+        assert!(
+            !repo.path().join(PR_EVIDENCE_MD).exists(),
+            "a refused rerun must not leave the earlier markdown on disk"
+        );
+
+        // And the always-run contract check must now refuse rather than accept
+        // stale evidence for these revisions. This is the assertion that makes
+        // the whole operation fail closed, not just its ingest.
+        check_pr_evidence(repo.path(), &options)
+            .expect_err("stale evidence must not validate after a refused rerun");
+
+        // The offending payload still survives for diagnosis.
+        assert!(repo.path().join(PR_RAW_CHECK_JSON).exists());
+        Ok(())
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn evidence_generation_accepts_real_ripr_010_output() -> Result<()> {
