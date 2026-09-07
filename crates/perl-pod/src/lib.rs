@@ -219,9 +219,10 @@ fn pod_command(line: &str) -> Option<&'static str> {
     let rest = line.strip_prefix('=')?;
     // The command is the leading alphanumeric run (e.g. `head1`, `head2`).
     let cmd_end = rest.find(|c: char| !c.is_ascii_alphanumeric()).unwrap_or(rest.len());
-    let cmd = &rest[..cmd_end];
+    let cmd = rest.get(..cmd_end)?;
+    let after = rest.get(cmd_end..)?;
     // After the command, the next char must be whitespace or end-of-line.
-    if cmd_end < rest.len() && !rest[cmd_end..].starts_with(char::is_whitespace) {
+    if !after.is_empty() && !after.starts_with(char::is_whitespace) {
         return None;
     }
     match cmd {
@@ -835,6 +836,13 @@ mod tests {
             "=encodingx",
         ] {
             assert_eq!(pod_command(line), None, "lookalike directive {line}");
+        }
+    }
+
+    #[test]
+    fn pod_command_rejects_malformed_empty_and_no_argument_inputs() {
+        for line in ["", "=", "= ", "=\t", "==", "==pod", "=☃", " =head1 NAME"] {
+            assert_eq!(pod_command(line), None, "malformed directive {line:?}");
         }
     }
 

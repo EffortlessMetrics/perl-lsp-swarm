@@ -135,16 +135,17 @@ impl TryFrom<WireLocation> for lsp_types::Location {
 
     /// Converts structurally, preserving a valid URI exactly.
     ///
-    /// Returns [`WireLocationUriError`] when the URI does not parse. No synthetic,
+    /// Returns [`WireLocationUriError`] when the URI does not parse or lacks a scheme. No synthetic,
     /// default, or substitute URI is ever produced: naming a resource the caller
     /// never requested is the failure this conversion exists to prevent.
     ///
     /// An LSP `DocumentUri` is an *absolute* URI, but `lsp_types::Uri` parses the
     /// wider URI-**reference** grammar, in which a scheme-less relative reference
     /// (`""`, `"foo.pl"`, `"./rel.pl"`, `"/abs/path.pl"`, `"//host/x"`) parses
-    /// successfully while naming no resolvable document. Parse success alone is
+    /// successfully without identifying an absolute resource. Parse success alone is
     /// therefore not validity here: the scheme is required, so an emitted
-    /// `Location` always identifies an absolute resource.
+    /// `Location` always carries a scheme-bearing URI. This does not establish that
+    /// the resource exists or can be resolved.
     fn try_from(location: WireLocation) -> Result<Self, Self::Error> {
         let WireLocation { uri, range } = location;
         match uri.parse::<lsp_types::Uri>() {

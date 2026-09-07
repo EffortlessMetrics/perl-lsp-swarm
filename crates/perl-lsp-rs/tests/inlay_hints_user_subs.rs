@@ -52,7 +52,9 @@ fn get_hints(
 
 /// Assert that exactly one hint with the given label exists in `hints`.
 fn has_label(hints: &[serde_json::Value], label: &str) -> bool {
-    hints.iter().any(|h| h.get("label").and_then(|l| l.as_str()) == Some(label))
+    hints
+        .iter()
+        .any(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h) == Some(label))
 }
 
 /// Assert no hint with the given label exists.

@@ -2248,7 +2248,7 @@ impl LspServer {
                 "provider": "definition",
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
-                "compiler_receipt": null,
+                "source_backed_receipt": null,
                 "no_live_behavior_change": true,
                 "note": "definition runtime proof unavailable without workspace semantic queries"
             })))
@@ -2261,7 +2261,7 @@ impl LspServer {
                     "provider": "definition",
                     "live_provider_result": live_provider_result,
                     "live_provider_count": live_provider_count,
-                    "compiler_receipt": null,
+                    "source_backed_receipt": null,
                     "no_live_behavior_change": true,
                     "note": "definition runtime proof missing request params"
                 })));
@@ -2276,14 +2276,14 @@ impl LspServer {
                     "provider": "definition",
                     "live_provider_result": live_provider_result,
                     "live_provider_count": live_provider_count,
-                    "compiler_receipt": null,
+                    "source_backed_receipt": null,
                     "no_live_behavior_change": true,
                     "note": "definition runtime proof found no symbol at request position"
                 })));
             };
 
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
-            let compiler_receipt = if self.workspace_index_stale_for_any_open_document() {
+            let source_backed_receipt = if self.workspace_index_stale_for_any_open_document() {
                 None
             } else {
                 match route_index_access(self.coordinator()) {
@@ -2298,10 +2298,10 @@ impl LspServer {
                             &ctx,
                         )
                         .receipt;
-                        let compiler_result_count = receipt.new_result.match_count;
+                        let source_backed_result_count = receipt.new_result.match_count;
                         receipt.notes.push(format!(
-                            "definition runtime proof: live_provider_results={live_provider_count}; compiler_fact_candidates={}; compiler_result_count={}; partial live exact/imported cutover",
-                            compiler_result_count, compiler_result_count
+                            "definition runtime proof: live_provider_results={live_provider_count}; source_backed_candidates={}; source_backed_result_count={}; partial live exact/imported cutover",
+                            source_backed_result_count, source_backed_result_count
                         ));
                         receipt
                     })
@@ -2309,14 +2309,14 @@ impl LspServer {
                     IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
                 }
             };
-            let live_cutover = compiler_receipt.is_some();
+            let live_cutover = source_backed_receipt.is_some();
 
             Ok(Some(json!({
                 "provider": "definition",
                 "symbol": symbol,
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
-                "compiler_receipt": compiler_receipt,
+                "source_backed_receipt": source_backed_receipt,
                 "no_live_behavior_change": !live_cutover,
                 "live_cutover": if live_cutover {
                     Some("partial_exact_imported")
