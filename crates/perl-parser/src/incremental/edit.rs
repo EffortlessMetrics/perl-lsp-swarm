@@ -1,3 +1,4 @@
+#[cfg(feature = "lsp-compat")]
 use crate::incremental::LineIndex;
 
 /// Edit description
