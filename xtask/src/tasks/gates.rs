@@ -2893,8 +2893,8 @@ fn parse_test_metrics(output: &str) -> Option<GateMetrics> {
 /// footer; either marker alone proves the binary was reached.
 ///
 /// The receipt path streams the full log through [`log_reaches_test_execution`];
-/// this string variant is also retained for the bounded in-memory callers and
-/// unit tests.
+/// this string variant is retained for unit tests of the in-memory scan.
+#[cfg(test)]
 fn parse_test_execution_reached(command: &str, output: &str) -> Option<bool> {
     if !is_cargo_test_command(command) {
         return None;
@@ -7048,8 +7048,7 @@ error: aborting due to previous error
                 .find(|g| g.name == gate_name)
                 .ok_or_else(|| color_eyre::eyre::eyre!("gate '{gate_name}' not found"))?;
             assert!(
-                gate.timeout_seconds >= MIN_TIMEOUT_SECONDS
-                    && gate.timeout_seconds <= MAX_TIMEOUT_SECONDS,
+                (MIN_TIMEOUT_SECONDS..=MAX_TIMEOUT_SECONDS).contains(&gate.timeout_seconds),
                 "Gate '{gate_name}' timeout_seconds={} must sit in [{MIN_TIMEOUT_SECONDS}, {MAX_TIMEOUT_SECONDS}] \
                  to keep the configured PR Smoke policy within its outer 45m watchdog (#11797)",
                 gate.timeout_seconds,
@@ -7063,7 +7062,7 @@ error: aborting due to previous error
                 )
             })?;
             assert!(
-                max_ms >= MIN_MAX_DURATION_MS && max_ms <= MAX_MAX_DURATION_MS,
+                (MIN_MAX_DURATION_MS..=MAX_MAX_DURATION_MS).contains(&max_ms),
                 "Gate '{gate_name}' budget.max_duration_ms={max_ms} must sit in \
                  [{MIN_MAX_DURATION_MS}, {MAX_MAX_DURATION_MS}] (#11797)",
             );
