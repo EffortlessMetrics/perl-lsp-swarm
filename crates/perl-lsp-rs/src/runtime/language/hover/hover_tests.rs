@@ -1143,7 +1143,7 @@ fn hover_trace_source_region_kind_is_not_shared_across_concurrent_requests() {
 #[test]
 fn interpolated_string_variable_island_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
     // (source, needle, cursor byte offset within the needle, expected)
-    let cases: [(&str, &str, usize, bool); 11] = [
+    let cases: [(&str, &str, usize, bool); 19] = [
         ("open my $fh, '<', 'x' or die \"Cannot open: $!\";\n", "$!", 0, true),
         // Cursor on the punctuation, not the sigil.
         ("open my $fh, '<', 'x' or die \"Cannot open: $!\";\n", "$!", 1, true),
@@ -1151,6 +1151,14 @@ fn interpolated_string_variable_island_is_bounded() -> Result<(), Box<dyn std::e
         ("warn \"warnings are $^W\";\n", "$^W", 1, true),
         ("warn \"warnings are $^W\";\n", "$^W", 2, true),
         ("print \"last match ended at @+\";\n", "@+", 1, true),
+        ("print \"$!x\";\n", "$!", 2, false),
+        ("print \"@+x\";\n", "@+", 2, false),
+        ("print \"$!_\";\n", "$!", 2, false),
+        ("print \"$!é\";\n", "$!", 2, false),
+        ("print \"$!x\";\n", "$!", 0, true),
+        ("print \"$!x\";\n", "$!", 1, true),
+        ("print \"@+x\";\n", "@+", 1, true),
+        ("print \"@+;\";\n", "@+", 2, true),
         // `\\$!` is an escaped backslash followed by a live `$!`.
         ("my $msg = \"escaped slash \\\\$! text\";\n", "$!", 0, true),
         ("my $msg = 'literal $! text';\n", "$!", 1, false),

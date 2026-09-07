@@ -890,7 +890,18 @@ impl LspServer {
             .into_iter()
             .flatten()
             .find(|pos| text.get(*pos..).is_some_and(|rest| rest.starts_with(name.as_str())))?;
-        Some((start, start + name.len()))
+        let end = start + name.len();
+        // Preserve punctuation-boundary hover, but never claim identifier text
+        // immediately following a punctuation variable inside the string.
+        if offset >= end
+            && text
+                .get(offset..)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+        {
+            return None;
+        }
+        Some((start, end))
     }
 
     /// Extract hover information from the token fallback path.
