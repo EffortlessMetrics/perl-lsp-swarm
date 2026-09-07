@@ -1471,10 +1471,9 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
         let summary = required_failure_summary(&outcome, "summary for assertion failure");
         assert!(summary.contains("panicked at"), "summary retains the failure site");
 
-        let mut long_outcome = behavior_outcome(0, false, &String::new());
         let mut long = String::from("error: could not compile\n");
         long.push_str(&"x".repeat(10_000));
-        long_outcome.stdout = long;
+        let long_outcome = behavior_outcome(0, false, &long);
         let summary = required_failure_summary(&long_outcome, "summary for compile failure");
         assert!(summary.len() <= MAX_FAILURE_SUMMARY_CHARS + 8);
     }
