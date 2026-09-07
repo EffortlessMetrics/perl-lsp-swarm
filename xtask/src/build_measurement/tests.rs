@@ -72,10 +72,12 @@ fn fixture_cell(
 }
 
 fn scripted_clock() -> ScriptedClock {
-    // t0=0 | t1=1_000 (preparation) | t2=2_000 (admission) | t3=12_000
-    // (after command) | t4=12_200 (after reporting): phase sum 12_200 ==
-    // total 12_200, exactly reconciled.
-    ScriptedClock::new(vec![0, 1_000, 2_000, 12_000, 12_200])
+    // t0=0 | t1=3ms (preparation) | t2=5ms (admission) | t3=25ms (after
+    // command) | t4=28ms (after reporting): phase sum 28ms == total 28ms,
+    // exactly reconciled. Phases are scaled well ABOVE the 1ms tolerance so
+    // reconciliation is discriminating — sub-tolerance fixtures would let
+    // corrupt phase sums pass (#14739 review).
+    ScriptedClock::new(vec![0, 3_000_000, 5_000_000, 25_000_000, 28_000_000])
 }
 
 fn matching_filesystems() -> ScriptedFilesystems {
@@ -146,12 +148,12 @@ fn standard_parts(commit: &str) -> HarnessParts {
     (
         scripted_clock(),
         matching_filesystems(),
-        ScriptedLocks { flock_available: true, acquire_wait_nanos: 500 },
+        ScriptedLocks::new(true, 500),
         clean_process(),
         ScriptedCache::new(
             vec![Some("sccache://fixture-1".to_string()), Some("sccache://fixture-1".to_string())],
             attributed_cache_snapshots(),
-            0,
+            Some(0),
         ),
         ScriptedRunner::new(vec![successful_outcome(commit)]),
     )
@@ -189,7 +191,7 @@ fn admitted_shared_cache_record() -> Result<MeasurementRecord> {
         LockPolicy::None,
     );
     harness
-        .execute_cell(cell, proof_execution())
+        .execute_cell(cell, proof_execution(), None)
         .map_err(|error| eyre!("fixture cell executes: {error}"))
 }
 
@@ -201,7 +203,7 @@ fn executed(result: color_eyre::Result<MeasurementRecord>) -> Result<Measurement
 
 fn reasons_of(record: &MeasurementRecord) -> Vec<NotProvenReason> {
     match record.admit() {
-        CellVerdict::Admitted => Vec::new(),
+        CellVerdict::Admitted | CellVerdict::AdmittedPartialSubject { .. } => Vec::new(),
         CellVerdict::NotProven { reasons } => reasons,
     }
 }
@@ -225,7 +227,7 @@ fn current_wrapper_rows_preserve_the_direct_leaf_vs_xtask_split() -> Result<()> 
     // Direct leaf: declares the whole-process flock; the host lacks flock in
     // this scenario, so the row is NOT_PROVEN — never a locked success.
     let (clock, filesystems, _locks, process, cache, commands) = standard_parts(COMMIT_A);
-    let locks = ScriptedLocks { flock_available: false, acquire_wait_nanos: 0 };
+    let locks = ScriptedLocks::new(false, 0);
     let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
     let leaf_cell = fixture_cell(
         ExecutionModel::CargoSafeDirectLeaf,
@@ -235,7 +237,7 @@ fn current_wrapper_rows_preserve_the_direct_leaf_vs_xtask_split() -> Result<()> 
         HostProfile::NativePosix,
         LockPolicy::WholeProcessFlock,
     );
-    let leaf_record = executed(harness.execute_cell(leaf_cell, proof_execution()))?;
+    let leaf_record = executed(harness.execute_cell(leaf_cell, proof_execution(), None))?;
     assert_eq!(leaf_record.lock, LockObservation::PrimitiveUnavailable);
     assert!(reasons_of(&leaf_record).contains(&NotProvenReason::LockNotAdmitted));
 
@@ -251,7 +253,7 @@ fn current_wrapper_rows_preserve_the_direct_leaf_vs_xtask_split() -> Result<()> 
         HostProfile::NativePosix,
         LockPolicy::None,
     );
-    let xtask_record = executed(harness.execute_cell(xtask_cell, proof_execution()))?;
+    let xtask_record = executed(harness.execute_cell(xtask_cell, proof_execution(), None))?;
     assert_eq!(xtask_record.lock, LockObservation::PolicyDeclaresNone);
     assert_ne!(
         leaf_record.cell.canonical_id(),
@@ -280,7 +282,7 @@ fn false_cache_hit_cannot_substitute_for_subject_identity() -> Result<()> {
         HostProfile::NativePosix,
         LockPolicy::None,
     );
-    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
     assert!(record.cache.clean_delta().is_some(), "cache statistics alone look excellent");
     let reasons = reasons_of(&record);
     assert!(
@@ -349,8 +351,8 @@ fn timing_mismatch_beyond_tolerance_is_refused() -> Result<()> {
         Some(record.timings.total_wall_nanos.unwrap_or(0) + 50_000_000);
     match record.timings.reconcile() {
         TimingVerdict::Mismatch { computed_sum_nanos, declared_total_nanos } => {
-            assert_eq!(computed_sum_nanos, 12_200);
-            assert_eq!(declared_total_nanos, 50_012_200);
+            assert_eq!(computed_sum_nanos, 28_000_000);
+            assert_eq!(declared_total_nanos, 78_000_000);
         }
         other => return Err(eyre!("expected mismatch, got {other:?}")),
     }
@@ -385,7 +387,7 @@ fn growth_on_another_filesystem_than_declared_is_refused() -> Result<()> {
         HostProfile::NativePosix,
         LockPolicy::None,
     );
-    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
     assert!(
         reasons_of(&record)
             .iter()
@@ -417,7 +419,7 @@ fn failed_free_space_measurement_is_not_proven() -> Result<()> {
         HostProfile::NativePosix,
         LockPolicy::None,
     );
-    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
     assert!(
         reasons_of(&record)
             .iter()
@@ -432,7 +434,7 @@ fn failed_free_space_measurement_is_not_proven() -> Result<()> {
 #[test]
 fn missing_lock_primitive_is_never_a_locked_success() -> Result<()> {
     let (clock, filesystems, _locks, process, cache, commands) = standard_parts(COMMIT_A);
-    let locks = ScriptedLocks { flock_available: false, acquire_wait_nanos: 0 };
+    let locks = ScriptedLocks::new(false, 0);
     let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
     let cell = fixture_cell(
         ExecutionModel::CargoSafeDirectLeaf,
@@ -442,7 +444,7 @@ fn missing_lock_primitive_is_never_a_locked_success() -> Result<()> {
         HostProfile::NativePosix,
         LockPolicy::WholeProcessFlock,
     );
-    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
     assert_eq!(record.lock, LockObservation::PrimitiveUnavailable);
     assert!(!record.lock.is_admitted_for(record.cell.lock_policy));
     let human = render_human(&record);
@@ -472,7 +474,7 @@ fn zero_selected_work_is_not_proven_despite_exit_success() -> Result<()> {
         HostProfile::NativePosix,
         LockPolicy::None,
     );
-    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
     assert!(
         reasons_of(&record).contains(&NotProvenReason::SelectedWorkUnproven {
             expected: Some(4),
@@ -496,7 +498,7 @@ fn wsl_or_git_bash_evidence_cannot_fill_native_windows_row() -> Result<()> {
         HostProfile::WslOrGitBash,
         LockPolicy::None,
     );
-    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
     let required = fixture_subject(COMMIT_A);
     let refusal = record
         .satisfies_row(&required, &HostProfile::NativeWindows)
@@ -522,7 +524,7 @@ fn foreign_sccache_user_between_snapshots_forces_unattributed() -> Result<()> {
     let cache = ScriptedCache::new(
         vec![Some("sccache://fixture-1".to_string()), Some("sccache://fixture-1".to_string())],
         attributed_cache_snapshots(),
-        1,
+        Some(1),
     );
     let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
     let cell = fixture_cell(
@@ -533,7 +535,7 @@ fn foreign_sccache_user_between_snapshots_forces_unattributed() -> Result<()> {
         HostProfile::NativePosix,
         LockPolicy::None,
     );
-    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
     assert_eq!(
         record.cache.attribution,
         CacheAttribution::Unattributed {
@@ -565,7 +567,7 @@ fn process_instrument_unavailable_is_never_zero_descendants() -> Result<()> {
         HostProfile::NativePosix,
         LockPolicy::None,
     );
-    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
     assert_eq!(record.process, ProcessObservation::InstrumentUnavailable);
     assert_eq!(record.process.descendant_count(), None);
     assert!(reasons_of(&record).contains(&NotProvenReason::ProcessInstrumentUnavailable));
@@ -639,7 +641,7 @@ fn unsupported_host_is_never_admitted() -> Result<()> {
         HostProfile::Unsupported,
         LockPolicy::None,
     );
-    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
     assert!(reasons_of(&record).contains(&NotProvenReason::UnsupportedHost));
     Ok(())
 }
@@ -660,7 +662,7 @@ fn unobservable_run_is_fail_closed_not_invented() -> Result<()> {
         HostProfile::NativePosix,
         LockPolicy::None,
     );
-    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
     assert_eq!(record.work.exit_code, None);
     assert_eq!(record.work.observed_selected, None);
     assert_eq!(record.executed_subject_commit, None);
@@ -688,7 +690,7 @@ fn failed_exit_is_never_an_admitted_measurement() -> Result<()> {
         HostProfile::NativePosix,
         LockPolicy::None,
     );
-    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
     assert!(reasons_of(&record).contains(&NotProvenReason::CommandFailed { exit_code: 1 }));
     Ok(())
 }
@@ -717,7 +719,7 @@ fn residual_descendants_are_never_admitted() -> Result<()> {
             HostProfile::NativePosix,
             LockPolicy::None,
         );
-        let record = executed(harness.execute_cell(cell, proof_execution()))?;
+        let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
         let reasons = reasons_of(&record);
         assert!(
             reasons.iter().any(|reason| matches!(reason, NotProvenReason::ProcessResidual { .. })),
@@ -738,7 +740,7 @@ fn cache_restart_between_snapshots_forces_unattributed() -> Result<()> {
             Some("sccache://fixture-2-restarted".to_string()),
         ],
         attributed_cache_snapshots(),
-        0,
+        Some(0),
     );
     let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
     let cell = fixture_cell(
@@ -749,7 +751,7 @@ fn cache_restart_between_snapshots_forces_unattributed() -> Result<()> {
         HostProfile::NativePosix,
         LockPolicy::None,
     );
-    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
     assert_eq!(
         record.cache.attribution,
         CacheAttribution::Unattributed {
@@ -773,7 +775,7 @@ fn counter_regression_forces_unattributed() -> Result<()> {
             // Requests regressed: a restart or unrelated reset happened.
             CacheCounters { requests: 10, hits: 47, misses: 63, non_cacheable: 0 },
         ],
-        0,
+        Some(0),
     );
     let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
     let cell = fixture_cell(
@@ -784,7 +786,7 @@ fn counter_regression_forces_unattributed() -> Result<()> {
         HostProfile::NativePosix,
         LockPolicy::None,
     );
-    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
     assert_eq!(
         record.cache.attribution,
         CacheAttribution::Unattributed {
@@ -844,8 +846,10 @@ fn wrong_lock_primitive_or_policy_is_refused() -> Result<()> {
 #[test]
 fn reporting_phase_covers_post_command_work() -> Result<()> {
     let record = admitted_shared_cache_record()?;
-    assert_eq!(record.timings.reporting_nanos, Some(200));
-    assert_eq!(record.timings.total_wall_nanos, Some(12_200));
+    // The reporting boundary is taken after record assembly, so the phase
+    // includes the record construction work the docs assign to reporting.
+    assert_eq!(record.timings.reporting_nanos, Some(3_000_000));
+    assert_eq!(record.timings.total_wall_nanos, Some(28_000_000));
     assert_eq!(record.timings.reconcile(), TimingVerdict::Complete);
     Ok(())
 }
@@ -964,7 +968,7 @@ fn renders_are_deterministic_and_single_sourced() -> Result<()> {
     assert!(human_once.contains("verdict:            admitted"));
     // A refused record keeps its reasons visible in both projections.
     let (clock, filesystems, _locks, process, cache, commands) = standard_parts(COMMIT_A);
-    let locks = ScriptedLocks { flock_available: false, acquire_wait_nanos: 0 };
+    let locks = ScriptedLocks::new(false, 0);
     let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
     let cell = fixture_cell(
         ExecutionModel::CargoSafeDirectLeaf,
@@ -974,7 +978,7 @@ fn renders_are_deterministic_and_single_sourced() -> Result<()> {
         HostProfile::NativePosix,
         LockPolicy::WholeProcessFlock,
     );
-    let refused = executed(harness.execute_cell(cell, proof_execution()))?;
+    let refused = executed(harness.execute_cell(cell, proof_execution(), None))?;
     let refused_json = render_json(&refused);
     let refused_human = render_human(&refused);
     assert!(refused_json.contains("lock_not_admitted"));
@@ -1068,4 +1072,402 @@ fn refused_shapes_remain_serializable() {
 /// `vim_host_toolchain`'s test root).
 fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
+}
+
+// ---------------------------------------------------------------------------
+// Hardening falsifiers (#14739 review): every admission label and observation
+// shape is challenged against its raw facts.
+// ---------------------------------------------------------------------------
+
+/// Falsifier: a record deserialized under a foreign protocol version never
+/// passes admission, even with clean facts.
+#[test]
+fn admit_refuses_foreign_protocol_version() -> Result<()> {
+    let mut record = admitted_shared_cache_record()?;
+    record.protocol_version = "build_executor_measurement.v0".to_string();
+    assert!(reasons_of(&record).contains(&NotProvenReason::ProtocolMismatch {
+        record_protocol: "build_executor_measurement.v0".to_string(),
+    }));
+    Ok(())
+}
+
+/// Falsifier: an `Attributed` label over facts that contradict it (server
+/// identity changed) is refused for ANY model — the label is interpretation,
+/// not evidence.
+#[test]
+fn attributed_label_over_contradicting_facts_is_refused() -> Result<()> {
+    let mut record = admitted_shared_cache_record()?;
+    record.cache.attribution = CacheAttribution::Attributed;
+    record.cache.delta_server_identity = Some("sccache://restarted".to_string());
+    let reasons = reasons_of(&record);
+    assert!(
+        reasons.iter().any(|reason| matches!(
+            reason,
+            NotProvenReason::CacheEvidenceUnproven { reason }
+                if reason.contains("contradicts raw facts") && reason.contains("identity")
+        )),
+        "the contradicting attribution label must be refused: {reasons:?}"
+    );
+    Ok(())
+}
+
+/// Falsifier: `Attributed` over incomplete counters is refused too.
+#[test]
+fn attributed_label_over_missing_counters_is_refused() -> Result<()> {
+    let mut record = admitted_shared_cache_record()?;
+    record.cache.attribution = CacheAttribution::Attributed;
+    record.cache.baseline = None;
+    assert!(reasons_of(&record).iter().any(|reason| matches!(
+        reason,
+        NotProvenReason::CacheEvidenceUnproven { reason }
+            if reason.contains("snapshots incomplete")
+    )));
+    Ok(())
+}
+
+/// Falsifier: a lock wait exceeding the admission window and total wall time
+/// is physically impossible and never admits.
+#[test]
+fn impossible_lock_wait_is_refused() -> Result<()> {
+    let mut record = admitted_shared_cache_record()?;
+    record.lock = LockObservation::Held {
+        primitive: super::model::LockPrimitive::WholeProcessFlock,
+        wait_nanos: record.timings.total_wall_nanos.unwrap_or(0) + 1,
+    };
+    assert!(
+        reasons_of(&record)
+            .iter()
+            .any(|reason| matches!(reason, NotProvenReason::LockTimingInconsistent { .. }))
+    );
+    Ok(())
+}
+
+/// Falsifier: a zero-slot bounded pool cannot execute a cell.
+#[test]
+fn zero_slot_bounded_pool_is_unexecutable() -> Result<()> {
+    let mut record = admitted_shared_cache_record()?;
+    record.cell.capacity = CapacityPolicy::BoundedPool { slots: 0 };
+    assert!(
+        reasons_of(&record)
+            .iter()
+            .any(|reason| matches!(reason, NotProvenReason::CapacityUnexecutable { .. }))
+    );
+    Ok(())
+}
+
+/// The environment-only wrapper honestly carries NO disk admission, and its
+/// absence is not a refusal.
+#[test]
+fn environment_only_model_carries_no_disk_admission() -> Result<()> {
+    let (clock, filesystems, locks, process, cache, commands) = standard_parts(COMMIT_A);
+    let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
+    let cell = fixture_cell(
+        ExecutionModel::CargoSafeXtaskEnvironmentOnly,
+        WorkflowClass::Orchestration,
+        Operation::Check,
+        fixture_subject(COMMIT_A),
+        HostProfile::NativePosix,
+        LockPolicy::None,
+    );
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
+    assert!(record.disk_admission.is_none(), "environment-only carries no disk admission");
+    assert!(
+        !reasons_of(&record)
+            .iter()
+            .any(|reason| matches!(reason, NotProvenReason::DiskAdmissionMissing)),
+        "a growth-path-free model does not owe a disk admission"
+    );
+    Ok(())
+}
+
+/// Falsifier: a growth-path-free model carrying a disk admission is refused
+/// as spurious evidence for a surface it never touches.
+#[test]
+fn growth_free_model_with_disk_admission_is_refused() -> Result<()> {
+    let mut record = admitted_shared_cache_record()?;
+    record.cell.execution_model = ExecutionModel::CargoSafeXtaskEnvironmentOnly;
+    assert!(
+        reasons_of(&record)
+            .iter()
+            .any(|reason| matches!(reason, NotProvenReason::DiskAdmissionSpurious { .. }))
+    );
+    Ok(())
+}
+
+/// The barrier release signal fires exactly once: late and duplicate
+/// arrivals can never re-release.
+#[test]
+fn barrier_release_fires_exactly_once() {
+    let barrier = DeterministicBarrier::new(2);
+    assert!(!barrier.arrive("cell-a"));
+    assert!(barrier.arrive("cell-b"), "the completing arrival releases");
+    assert!(!barrier.arrive("cell-c"), "a late arrival cannot re-release");
+    assert!(!barrier.arrive("cell-a"), "a duplicate cannot re-release");
+}
+
+/// Falsifier: an unavailable foreign-user instrument fails attribution
+/// closed — unobserved isolation is never zero.
+#[test]
+fn unavailable_foreign_user_instrument_fails_attribution() -> Result<()> {
+    let (clock, filesystems, locks, process, _cache, commands) = standard_parts(COMMIT_A);
+    let cache = ScriptedCache::new(
+        vec![Some("sccache://fixture-1".to_string()), Some("sccache://fixture-1".to_string())],
+        attributed_cache_snapshots(),
+        None,
+    );
+    let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
+    let cell = fixture_cell(
+        ExecutionModel::PrivateTargetSharedCargoSccache,
+        WorkflowClass::Proof,
+        Operation::ExactTest,
+        fixture_subject(COMMIT_A),
+        HostProfile::NativePosix,
+        LockPolicy::None,
+    );
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
+    assert!(matches!(record.cache.attribution, CacheAttribution::Unattributed { .. }));
+    assert_eq!(record.cache.foreign_users_observed, None);
+    assert!(record.cache.clean_delta().is_none());
+    Ok(())
+}
+
+/// Falsifier: a failed cache reset refuses attribution — `ResetThenSnapshot`
+/// promised a fresh baseline it did not get.
+#[test]
+fn failed_reset_fails_attribution() -> Result<()> {
+    let (clock, filesystems, locks, process, _cache, commands) = standard_parts(COMMIT_A);
+    let mut cache = ScriptedCache::new(
+        vec![Some("sccache://fixture-1".to_string()), Some("sccache://fixture-1".to_string())],
+        attributed_cache_snapshots(),
+        Some(0),
+    );
+    cache.reset_succeeds = false;
+    let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
+    let cell = fixture_cell(
+        ExecutionModel::PrivateTargetSharedCargoSccache,
+        WorkflowClass::Proof,
+        Operation::ExactTest,
+        fixture_subject(COMMIT_A),
+        HostProfile::NativePosix,
+        LockPolicy::None,
+    );
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
+    assert!(matches!(record.cache.attribution, CacheAttribution::Unattributed { .. }));
+    Ok(())
+}
+
+/// The positive control observes its own reset: `ResetThenSnapshot` must
+/// actually call the reset before the baseline snapshot.
+#[test]
+fn positive_control_reset_is_called() -> Result<()> {
+    let (clock, filesystems, locks, process, cache, commands) = standard_parts(COMMIT_A);
+    let reset_called = std::sync::Arc::clone(&cache.reset_called);
+    let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
+    let cell = fixture_cell(
+        ExecutionModel::PrivateTargetSharedCargoSccache,
+        WorkflowClass::Proof,
+        Operation::ExactTest,
+        fixture_subject(COMMIT_A),
+        HostProfile::NativePosix,
+        LockPolicy::None,
+    );
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
+    assert!(
+        reset_called.load(std::sync::atomic::Ordering::SeqCst),
+        "ResetThenSnapshot must call the reset"
+    );
+    assert!(record.admit().is_admitted());
+    Ok(())
+}
+
+/// Falsifier: a regressing clock aborts the measurement — zero-width phases
+/// that reconcile are never emitted.
+#[test]
+fn clock_regression_aborts_the_measurement() {
+    let (_, filesystems, _locks, process, _cache, commands) = standard_parts(COMMIT_A);
+    let clock = ScriptedClock::new(vec![28_000_000, 25_000_000, 12_000_000, 5_000_000, 0]);
+    let mut harness = harness_from_parts(
+        clock,
+        filesystems,
+        ScriptedLocks::new(false, 0),
+        process,
+        _cache,
+        commands,
+    );
+    let cell = fixture_cell(
+        ExecutionModel::PrivateTargetSharedCargoSccache,
+        WorkflowClass::Proof,
+        Operation::ExactTest,
+        fixture_subject(COMMIT_A),
+        HostProfile::NativePosix,
+        LockPolicy::None,
+    );
+    let outcome = harness.execute_cell(cell, proof_execution(), None);
+    assert!(outcome.is_err(), "a regressing clock must abort, not emit a zero-phase record");
+}
+
+/// The lock lease is alive across the whole cell and released on return.
+#[test]
+fn lock_lease_is_held_for_the_whole_cell() -> Result<()> {
+    let (clock, filesystems, _locks, process, cache, commands) = standard_parts(COMMIT_A);
+    let locks = ScriptedLocks::new(true, 500);
+    let released = std::sync::Arc::clone(&locks.released);
+    let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
+    let cell = fixture_cell(
+        ExecutionModel::CargoSafeDirectLeaf,
+        WorkflowClass::Construction,
+        Operation::Check,
+        fixture_subject(COMMIT_A),
+        HostProfile::NativePosix,
+        LockPolicy::WholeProcessFlock,
+    );
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
+    assert!(
+        matches!(record.lock, LockObservation::Held { .. }),
+        "the acquired lock is recorded as held: {:?}",
+        record.lock
+    );
+    assert!(
+        released.load(std::sync::atomic::Ordering::SeqCst),
+        "the lease drops when the cell returns (scripted release observed)"
+    );
+    Ok(())
+}
+
+/// A declared preparation step is measured INSIDE the preparation phase.
+#[test]
+fn preparation_step_is_measured_inside_the_phase() -> Result<()> {
+    let (clock, filesystems, locks, process, cache, commands) = standard_parts(COMMIT_A);
+    let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
+    let cell = fixture_cell(
+        ExecutionModel::PrivateTargetSharedCargoSccache,
+        WorkflowClass::Proof,
+        Operation::ExactTest,
+        fixture_subject(COMMIT_A),
+        HostProfile::NativePosix,
+        LockPolicy::None,
+    );
+    let with_step = executed(harness.execute_cell(
+        cell.clone(),
+        proof_execution(),
+        Some(super::runner::PreparationStep {
+            description: "materialize subject".to_string(),
+            operation: Box::new(|| {}),
+        }),
+    ))?;
+    assert_eq!(with_step.timings.preparation_nanos, Some(3_000_000));
+    Ok(())
+}
+
+/// Admission today always carries the partial-subject boundary: a passing
+/// record never wears the bare `Admitted` label.
+#[test]
+fn admission_carries_the_partial_subject_boundary() -> Result<()> {
+    let record = admitted_shared_cache_record()?;
+    match record.admit() {
+        CellVerdict::AdmittedPartialSubject { proven_dimensions } => {
+            assert_eq!(proven_dimensions, vec!["commit".to_string()]);
+        }
+        other => return Err(eyre!("expected AdmittedPartialSubject, got {other:?}")),
+    }
+    Ok(())
+}
+
+/// The `NOT_PROVEN` shapes serialize with the schema's snake_case names —
+/// a wrong serde rename would emit an invalid protocol shape silently.
+#[test]
+fn not_proven_shapes_serialize_with_schema_names() -> Result<()> {
+    let refused = DiskAdmission {
+        measurements: Vec::new(),
+        declared_path_mismatches: vec![super::model::DiskRefusal::UnresolvedFilesystem {
+            path: "/wt-a/target".to_string(),
+        }],
+    };
+    let text = serde_json::to_string(&refused)?;
+    assert!(text.contains("unresolved_filesystem"), "refusal rename must match schema: {text}");
+    let work =
+        WorkObservation { expected_selected: None, observed_selected: None, exit_code: None };
+    assert!(serde_json::to_string(&work).is_ok());
+    let mut record = admitted_shared_cache_record()?;
+    record.timings.preparation_nanos = None;
+    let verdict = record.admit();
+    let text = serde_json::to_string(&verdict)?;
+    assert!(text.contains("not_proven"), "verdict rename must match schema: {text}");
+    Ok(())
+}
+
+/// Nested schema drift: every `properties` map contains only schema
+/// declaration keys (never prose), and the record's serialized shape matches
+/// the schema's `required`/`properties` at EVERY object level, both
+/// directions — top-level-only checks miss nested drift (#14739 review).
+#[test]
+fn emitted_record_matches_schema_at_every_nested_level() -> Result<()> {
+    let root = project_root();
+    let schema_path = root.join(".ci/receipts/schemas/build-executor-measurement.v1.schema.json");
+    let schema_text = fs::read_to_string(&schema_path)
+        .map_err(|error| eyre!("reading {}: {error}", schema_path.display()))?;
+    let schema: serde_json::Value = serde_json::from_str(&schema_text)?;
+
+    fn check_properties_maps(schema: &serde_json::Value, path: &str) -> Result<()> {
+        match schema {
+            serde_json::Value::Object(map) => {
+                if let Some(properties) = map.get("properties").and_then(|p| p.as_object()) {
+                    for key in properties.keys() {
+                        assert!(
+                            !matches!(key.as_str(), "description" | "type" | "required"),
+                            "non-schema value {key:?} found inside properties at {path}"
+                        );
+                    }
+                }
+                for (key, value) in map {
+                    check_properties_maps(value, &format!("{path}/{key}"))?;
+                }
+                Ok(())
+            }
+            serde_json::Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    check_properties_maps(item, &format!("{path}[{index}]"))?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+    check_properties_maps(&schema, "$")?;
+
+    fn compare(schema: &serde_json::Value, value: &serde_json::Value, path: &str) -> Result<()> {
+        let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) else {
+            return Ok(());
+        };
+        let Some(object) = value.as_object() else {
+            return Ok(());
+        };
+        for key in properties.keys() {
+            let required = schema
+                .get("required")
+                .and_then(|r| r.as_array())
+                .map(|items| items.iter().any(|item| item.as_str() == Some(key.as_str())))
+                .unwrap_or(false);
+            assert!(
+                !required || object.contains_key(key),
+                "record missing schema-required field {path}/{key}"
+            );
+        }
+        for key in object.keys() {
+            assert!(
+                properties.contains_key(key),
+                "record field {path}/{key} is not declared in schema properties"
+            );
+        }
+        for (key, property) in properties {
+            if let Some(child) = object.get(key) {
+                compare(property, child, &format!("{path}/{key}"))?;
+            }
+        }
+        Ok(())
+    }
+    let record = admitted_shared_cache_record()?;
+    let value = serde_json::to_value(&record)?;
+    compare(&schema, &value, "$")?;
+    Ok(())
 }

@@ -84,7 +84,7 @@ pub fn render_human(record: &MeasurementRecord) -> String {
     }
 
     out.push_str(&format!("lock:               {}\n", lock_text(&record.lock)));
-    out.push_str(&format!("disk admission:     {}\n", disk_text(record.disk_admission.as_ref())));
+    out.push_str(&format!("disk admission:     {}\n", disk_text(record)));
     out.push_str(&format!("process:            {}\n", process_text(&record.process)));
     out.push_str(&format!("cache:              {}\n", cache_text(record)));
     out.push_str(&format!("work:               {}\n", work_text(record)));
@@ -92,6 +92,11 @@ pub fn render_human(record: &MeasurementRecord) -> String {
 
     match record.admit() {
         CellVerdict::Admitted => out.push_str("verdict:            admitted\n"),
+        CellVerdict::AdmittedPartialSubject { proven_dimensions } => out.push_str(&format!(
+            "verdict:            admitted (partial executed-subject evidence: {} proven; host \
+             lanes complete subject proof)\n",
+            proven_dimensions.join(", ")
+        )),
         CellVerdict::NotProven { reasons } => {
             out.push_str(&format!("verdict:            not_proven ({} reasons)\n", reasons.len()));
             for reason in &reasons {
@@ -120,32 +125,37 @@ fn lock_text(lock: &LockObservation) -> String {
     }
 }
 
-fn disk_text(admission: Option<&super::model::DiskAdmission>) -> String {
-    match admission {
-        None => "not_proven (no disk admission recorded)".to_string(),
-        Some(admission) => {
-            if let Some(refusal) = admission.declared_path_mismatches.first() {
-                return format!("not_proven ({})", refusal_text(refusal));
+/// The disk row is derived from `DiskAdmission::covers` against the cell's
+/// declared growth paths — the same law admission applies — so a rendered
+/// "covered" can never contradict the verdict (#14739 review).
+fn disk_text(record: &MeasurementRecord) -> String {
+    let cell = &record.cell;
+    if !cell.execution_model.declares_growth_paths() {
+        return match record.disk_admission {
+            None => "not_applicable (model declares no disk growth)".to_string(),
+            Some(_) => {
+                "not_proven (growth-path-free model carries a disk admission it never declared)"
+                    .to_string()
             }
-            match admission.measurements.len() {
-                0 => "covered (no declared growth paths)".to_string(),
-                n => {
-                    let mut parts = Vec::new();
-                    for measurement in &admission.measurements {
-                        match measurement.free_bytes {
-                            Some(free) => parts
-                                .push(format!("{}: {free} bytes free", measurement.filesystem.0)),
-                            None => parts.push(format!(
-                                "{}: not_proven (free-space measurement failed)",
-                                measurement.filesystem.0
-                            )),
-                        }
-                    }
-                    format!("covered ({n} filesystems: {})", parts.join("; "))
-                }
-            }
+        };
+    }
+    let Some(admission) = record.disk_admission.as_ref() else {
+        return "not_proven (no disk admission recorded)".to_string();
+    };
+    if let Err(refusal) = admission.covers(&cell.canonical().growth_paths) {
+        return format!("not_proven ({})", refusal_text(&refusal));
+    }
+    let mut parts = Vec::new();
+    for measurement in &admission.measurements {
+        match measurement.free_bytes {
+            Some(free) => parts.push(format!("{}: {free} bytes free", measurement.filesystem.0)),
+            None => parts.push(format!(
+                "{}: not_proven (free-space measurement failed)",
+                measurement.filesystem.0
+            )),
         }
     }
+    format!("covered ({} filesystems: {})", admission.measurements.len(), parts.join("; "))
 }
 
 fn process_text(process: &ProcessObservation) -> String {
@@ -254,6 +264,23 @@ fn reason_text(reason: &NotProvenReason) -> String {
         }
         NotProvenReason::CacheEvidenceUnproven { reason } => {
             format!("cache evidence unproven: {reason}")
+        }
+        NotProvenReason::ProtocolMismatch { record_protocol } => {
+            format!("record protocol {record_protocol} does not match the current protocol")
+        }
+        NotProvenReason::LockTimingInconsistent {
+            wait_nanos,
+            admission_wait_nanos,
+            total_wall_nanos,
+        } => format!(
+            "lock wait {wait_nanos}ns exceeds the admission window ({admission_wait_nanos:?}) or \
+             the total wall time ({total_wall_nanos:?})"
+        ),
+        NotProvenReason::CapacityUnexecutable { detail } => {
+            format!("capacity policy cannot execute: {detail}")
+        }
+        NotProvenReason::DiskAdmissionSpurious { detail } => {
+            format!("spurious disk admission: {detail}")
         }
     }
 }

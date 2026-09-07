@@ -56,9 +56,19 @@ pub trait FilesystemProvider {
 pub trait LockPrimitiveProvider {
     /// Whether the host actually provides `primitive`.
     fn available(&self, primitive: LockPrimitive) -> bool;
-    /// Monotonic nanos spent acquiring `primitive`; `None` when acquisition
-    /// failed.
-    fn acquire(&self, primitive: LockPrimitive) -> Option<u64>;
+    /// Acquire `primitive`. The returned lease reports the monotonic nanos
+    /// spent acquiring and MUST be held by the harness for the remainder of
+    /// the cell — dropping it releases the lock — so a whole-process lock
+    /// actually covers execution instead of only its acquisition (#14739
+    /// review). `None` when acquisition failed.
+    fn acquire(&self, primitive: LockPrimitive) -> Option<Box<dyn LockLease + '_>>;
+}
+
+/// One held lock. The lease is the live lock ownership: holding it keeps the
+/// lock, dropping it releases (#14739 review).
+pub trait LockLease {
+    /// Monotonic nanos spent acquiring the lock.
+    fn wait_nanos(&self) -> u64;
 }
 
 /// Process-tree observation (descendants, terminality).
@@ -70,15 +80,21 @@ pub trait ProcessObserver {
 
 /// Cache metrics (sccache-style counters) under an exact server identity.
 pub trait CacheMetricsProvider {
-    /// Reset counters so the next snapshot is a fresh baseline.
-    fn reset(&mut self);
+    /// Reset counters so the next snapshot is a fresh baseline. Returns
+    /// `false` when the reset could not be confirmed — the harness must
+    /// then refuse attribution, because `ResetThenSnapshot` promised a
+    /// fresh baseline it did not get (#14739 review).
+    fn reset(&mut self) -> bool;
     /// Exact server/process identity the counters belong to.
     fn server_identity(&self) -> Option<String>;
     /// Current counter snapshot.
     fn snapshot(&self) -> Option<CacheCounters>;
     /// Unrelated users observed on this server since the harness began the
-    /// cell. Any positive count forces attribution to `Unattributed`.
-    fn foreign_users_observed(&self) -> u64;
+    /// cell. `Some(0)` is required for attribution; any positive count
+    /// forces `Unattributed`, and `None` — the instrument could not observe
+    /// — also fails attribution closed (never treated as zero) (#14739
+    /// review).
+    fn foreign_users_observed(&self) -> Option<u64>;
 }
 
 /// The declared command for one cell.
@@ -142,25 +158,37 @@ impl CommandRunner for SystemCommandRunner {
 #[derive(Debug)]
 pub struct DeterministicBarrier {
     required: usize,
-    arrivals: Mutex<BTreeMap<String, ()>>,
+    state: Mutex<BarrierState>,
+}
+
+#[derive(Debug, Default)]
+struct BarrierState {
+    arrivals: BTreeMap<String, ()>,
+    /// Latch: the release signal fires exactly once, so late or duplicate
+    /// arrivals can never re-release (#14739 review).
+    released: bool,
 }
 
 impl DeterministicBarrier {
     pub fn new(required: usize) -> Self {
-        Self { required, arrivals: Mutex::new(BTreeMap::new()) }
+        Self { required, state: Mutex::new(BarrierState::default()) }
     }
 
-    /// Record one arrival. Returns `true` exactly when this arrival completes
-    /// the required set (the release signal).
+    /// Record one arrival. Returns `true` exactly when THIS arrival
+    /// completes the required set (the one-time release signal).
     pub fn arrive(&self, participant: &str) -> bool {
-        let mut arrivals = match self.arrivals.lock() {
+        let mut state = match self.state.lock() {
             Ok(guard) => guard,
             // A poisoned barrier means a participant panicked mid-cell; the
             // honest answer is "never release".
             Err(_) => return false,
         };
-        arrivals.insert(participant.to_string(), ());
-        arrivals.len() >= self.required
+        state.arrivals.insert(participant.to_string(), ());
+        if !state.released && state.arrivals.len() >= self.required {
+            state.released = true;
+            return true;
+        }
+        false
     }
 }
 
@@ -218,10 +246,42 @@ impl FilesystemProvider for ScriptedFilesystems {
 }
 
 /// Scripted lock provider: models primitive availability and an acquisition
-/// wait. `wait_nanos` is returned only when `available` holds.
+/// wait. The lease reports `acquire_wait_nanos` and records its own release
+/// into `released`, so tests can assert the harness held the lock across the
+/// cell instead of dropping it at acquisition.
 pub struct ScriptedLocks {
     pub flock_available: bool,
     pub acquire_wait_nanos: u64,
+    /// Set to `true` when the harness drops the lease (the scripted
+    /// release).
+    pub released: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ScriptedLocks {
+    pub fn new(flock_available: bool, acquire_wait_nanos: u64) -> Self {
+        Self {
+            flock_available,
+            acquire_wait_nanos,
+            released: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+}
+
+struct ScriptedLease {
+    wait_nanos: u64,
+    released: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl LockLease for ScriptedLease {
+    fn wait_nanos(&self) -> u64 {
+        self.wait_nanos
+    }
+}
+
+impl Drop for ScriptedLease {
+    fn drop(&mut self) {
+        self.released.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl LockPrimitiveProvider for ScriptedLocks {
@@ -232,8 +292,15 @@ impl LockPrimitiveProvider for ScriptedLocks {
         }
     }
 
-    fn acquire(&self, primitive: LockPrimitive) -> Option<u64> {
-        if self.available(primitive) { Some(self.acquire_wait_nanos) } else { None }
+    fn acquire(&self, primitive: LockPrimitive) -> Option<Box<dyn LockLease + '_>> {
+        if self.available(primitive) {
+            Some(Box::new(ScriptedLease {
+                wait_nanos: self.acquire_wait_nanos,
+                released: std::sync::Arc::clone(&self.released),
+            }))
+        } else {
+            None
+        }
     }
 }
 
@@ -251,31 +318,42 @@ impl ProcessObserver for ScriptedProcess {
 
 /// Scripted cache metrics: scripted successive server identities (baseline
 /// then delta — a changed second identity models a restart/reconnection),
-/// scripted successive counter snapshots, and a foreign-user count observed
-/// between snapshots. A dry script yields `None` (instrument unavailable —
-/// fail-closed).
+/// scripted successive counter snapshots, a foreign-user observation
+/// (`None` models an unavailable instrument), and a configurable reset
+/// outcome.
 pub struct ScriptedCache {
     server_identities: Mutex<VecDeque<Option<String>>>,
     snapshots: Mutex<VecDeque<CacheCounters>>,
-    pub foreign_users: u64,
+    pub foreign_users: Option<u64>,
+    /// What [`CacheMetricsProvider::reset`] reports; `false` models a
+    /// failed reset the harness must refuse attribution over.
+    pub reset_succeeds: bool,
+    /// Set to `true` when `reset` is called — lets the positive control
+    /// assert the reset actually happened under `ResetThenSnapshot`.
+    pub reset_called: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ScriptedCache {
     pub fn new(
         server_identities: Vec<Option<String>>,
         snapshots: Vec<CacheCounters>,
-        foreign_users: u64,
+        foreign_users: Option<u64>,
     ) -> Self {
         Self {
             server_identities: Mutex::new(VecDeque::from(server_identities)),
             snapshots: Mutex::new(VecDeque::from(snapshots)),
             foreign_users,
+            reset_succeeds: true,
+            reset_called: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
 
 impl CacheMetricsProvider for ScriptedCache {
-    fn reset(&mut self) {}
+    fn reset(&mut self) -> bool {
+        self.reset_called.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.reset_succeeds
+    }
 
     fn server_identity(&self) -> Option<String> {
         let mut identities = match self.server_identities.lock() {
@@ -296,7 +374,7 @@ impl CacheMetricsProvider for ScriptedCache {
         snapshots.pop_front()
     }
 
-    fn foreign_users_observed(&self) -> u64 {
+    fn foreign_users_observed(&self) -> Option<u64> {
         self.foreign_users
     }
 }

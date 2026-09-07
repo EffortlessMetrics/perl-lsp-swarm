@@ -75,6 +75,15 @@ impl ExecutionModel {
                 | ExecutionModel::PrivateTargetSharedCacheHostCapacityPool
         )
     }
+
+    /// Whether the model declares disk growth paths at all. The
+    /// `cargo_safe_xtask_environment_only` wrapper materializes no private
+    /// build state, so an honest record for it carries **no** disk admission
+    /// rather than an empty one that reads as "measured, nothing found"
+    /// (#14739 review).
+    pub fn declares_growth_paths(&self) -> bool {
+        !matches!(self, ExecutionModel::CargoSafeXtaskEnvironmentOnly)
+    }
 }
 
 /// The measured Cargo-family operation. Test-runner profiles are represented
@@ -580,7 +589,11 @@ pub struct CacheObservation {
     pub baseline: Option<CacheCounters>,
     pub delta: Option<CacheCounters>,
     /// Unrelated users observed on the same server between snapshots.
-    pub foreign_users_observed: u64,
+    /// `None` means the foreign-user instrument was unavailable — a record
+    /// that cannot observe isolation cannot claim it, so attribution fails
+    /// closed instead of treating zero as "no foreign users" (#14739
+    /// review).
+    pub foreign_users_observed: Option<u64>,
     pub attribution: CacheAttribution,
 }
 
@@ -601,6 +614,11 @@ impl CacheObservation {
         let baseline = self.baseline.as_ref()?;
         let later = self.delta.as_ref()?;
         if !later.is_monotonic_after(baseline) {
+            return None;
+        }
+        // Isolation is part of the clean interval: an unavailable
+        // foreign-user instrument or any positive count blocks the delta.
+        if self.foreign_users_observed != Some(0) {
             return None;
         }
         Some(later.delta_since(baseline))
@@ -631,12 +649,32 @@ pub type ExecutedSubjectCommit = Option<String>;
 #[serde(rename_all = "snake_case")]
 pub enum CellVerdict {
     Admitted,
-    NotProven { reasons: Vec<NotProvenReason> },
+    /// Every admission law passed, but the executed-subject evidence is
+    /// explicitly partial (today: only `commit` is proven at execution).
+    /// The remaining subject dimensions are the *declared* cell's identity,
+    /// not proven facts — the host observation lanes (#11640/#11641) must
+    /// complete subject proof before this record stands in for a required
+    /// row (#14739 review). `Admitted` is reserved for records whose
+    /// executed subject is proven in every dimension.
+    AdmittedPartialSubject {
+        proven_dimensions: Vec<String>,
+    },
+    NotProven {
+        reasons: Vec<NotProvenReason>,
+    },
 }
 
 impl CellVerdict {
-    /// True only for [`CellVerdict::Admitted`].
+    /// True for [`CellVerdict::Admitted`] and
+    /// [`CellVerdict::AdmittedPartialSubject`] — the record passed every
+    /// admission law. Distinguish the two via `is_fully_proven_subject`.
     pub fn is_admitted(&self) -> bool {
+        matches!(self, CellVerdict::Admitted | CellVerdict::AdmittedPartialSubject { .. })
+    }
+
+    /// True only for [`CellVerdict::Admitted`] (executed subject proven in
+    /// every dimension).
+    pub fn is_fully_proven_subject(&self) -> bool {
         matches!(self, CellVerdict::Admitted)
     }
 }
@@ -695,6 +733,31 @@ pub enum NotProvenReason {
     /// A shared-cache model's cache delta was not attributed to this cell.
     CacheEvidenceUnproven {
         reason: String,
+    },
+    /// The record was emitted under a different protocol version. Two
+    /// records under different versions are never matched pairs, and a
+    /// foreign version can never pass admission (#14739 review).
+    ProtocolMismatch {
+        record_protocol: String,
+    },
+    /// The observed lock wait exceeds the admission window or the total wall
+    /// time — physically impossible timing from a hostile or corrupt record
+    /// (#14739 review).
+    LockTimingInconsistent {
+        wait_nanos: u64,
+        admission_wait_nanos: Option<u64>,
+        total_wall_nanos: Option<u64>,
+    },
+    /// A declared capacity policy cannot execute a cell (e.g. a bounded
+    /// pool with zero slots) (#14739 review).
+    CapacityUnexecutable {
+        detail: String,
+    },
+    /// A growth-path-free model carries a disk admission it never declared:
+    /// spurious evidence for a surface the model does not touch (#14739
+    /// review).
+    DiskAdmissionSpurious {
+        detail: String,
     },
 }
 
@@ -759,11 +822,21 @@ impl MeasurementRecord {
         Ok(())
     }
 
-    /// Admission: apply every decision law to this record. A clean verdict is
-    /// [`CellVerdict::Admitted`]; anything else lists the typed
-    /// `NOT_PROVEN` reasons.
+    /// Admission: apply every decision law to this record. A clean verdict
+    /// is [`CellVerdict::Admitted`] (executed subject fully proven —
+    /// currently unreachable: the harness proves only `commit`) or
+    /// [`CellVerdict::AdmittedPartialSubject`]; anything else lists the
+    /// typed `NOT_PROVEN` reasons.
     pub fn admit(&self) -> CellVerdict {
         let mut reasons = Vec::new();
+
+        // A record from another protocol version never passes admission:
+        // the field semantics this check relies on may not hold there.
+        if self.protocol_version != PROTOCOL_VERSION {
+            reasons.push(NotProvenReason::ProtocolMismatch {
+                record_protocol: self.protocol_version.clone(),
+            });
+        }
 
         match self.timings.reconcile() {
             TimingVerdict::Complete => {}
@@ -789,6 +862,34 @@ impl MeasurementRecord {
             reasons.push(NotProvenReason::LockNotAdmitted);
         }
 
+        // A lock wait longer than the admission window (or the total) is
+        // physically impossible; it never admits (#14739 review).
+        if let LockObservation::Held { wait_nanos, .. } = &self.lock {
+            let admission_wait = self.timings.admission_wait_nanos;
+            let total_wall = self.timings.total_wall_nanos;
+            let impossible = match (admission_wait, total_wall) {
+                (Some(admission), Some(total)) => *wait_nanos > admission || *wait_nanos > total,
+                (Some(admission), None) => *wait_nanos > admission,
+                (None, Some(total)) => *wait_nanos > total,
+                (None, None) => false,
+            };
+            if impossible {
+                reasons.push(NotProvenReason::LockTimingInconsistent {
+                    wait_nanos: *wait_nanos,
+                    admission_wait_nanos: admission_wait,
+                    total_wall_nanos: total_wall,
+                });
+            }
+        }
+
+        // A capacity policy that cannot execute a cell (zero-slot pool) is
+        // not a measurable experiment (#14739 review).
+        if let CapacityPolicy::BoundedPool { slots: 0 } = &self.cell.capacity {
+            reasons.push(NotProvenReason::CapacityUnexecutable {
+                detail: "bounded pool declares zero slots; no cell can execute".to_string(),
+            });
+        }
+
         match &self.process {
             ProcessObservation::InstrumentUnavailable => {
                 reasons.push(NotProvenReason::ProcessInstrumentUnavailable);
@@ -807,9 +908,21 @@ impl MeasurementRecord {
         }
 
         match &self.disk_admission {
-            None => reasons.push(NotProvenReason::DiskAdmissionMissing),
+            None => {
+                // Only models that declare growth paths require an
+                // admission; a growth-path-free model honestly carries none.
+                if self.cell.execution_model.declares_growth_paths() {
+                    reasons.push(NotProvenReason::DiskAdmissionMissing);
+                }
+            }
             Some(admission) => {
-                if let Err(refusal) = admission.covers(&self.cell.canonical().growth_paths) {
+                if !self.cell.execution_model.declares_growth_paths() {
+                    reasons.push(NotProvenReason::DiskAdmissionSpurious {
+                        detail: "growth-path-free model carries a disk admission it never \
+                                 declared"
+                            .to_string(),
+                    });
+                } else if let Err(refusal) = admission.covers(&self.cell.canonical().growth_paths) {
                     reasons.push(NotProvenReason::DiskAdmissionRefused {
                         detail: refusal_text(&refusal),
                     });
@@ -859,7 +972,61 @@ impl MeasurementRecord {
             }
         }
 
-        if reasons.is_empty() { CellVerdict::Admitted } else { CellVerdict::NotProven { reasons } }
+        // The attribution label is an interpretation, not evidence: a
+        // (deserializable) record can carry `attributed` over facts that
+        // contradict it. Re-derive the preconditions from the raw facts for
+        // EVERY model — a label its own facts refute marks the record
+        // corrupt, whether or not this model leans on cache evidence
+        // (#14739 review).
+        if matches!(self.cache.attribution, CacheAttribution::Attributed) {
+            let contradiction = match (self.cache.baseline.as_ref(), self.cache.delta.as_ref()) {
+                (None, _) | (_, None) => Some(
+                    "attribution label contradicts raw facts: counter snapshots \
+                              incomplete"
+                        .to_string(),
+                ),
+                (Some(baseline), Some(delta)) if !delta.is_monotonic_after(baseline) => Some(
+                    "attribution label contradicts raw facts: counter regression \
+                             observed"
+                        .to_string(),
+                ),
+                (Some(_), Some(_)) if self.cache.foreign_users_observed != Some(0) => Some(
+                    "attribution label contradicts raw facts: foreign-user isolation \
+                             unobserved or violated"
+                        .to_string(),
+                ),
+                (Some(_), Some(_)) => None,
+            };
+            let identity_contradiction = if self.cache.server_identity.is_none()
+                || self.cache.delta_server_identity.is_none()
+            {
+                Some("attribution label contradicts raw facts: server identity unresolved")
+            } else if self.cache.server_identity != self.cache.delta_server_identity {
+                Some(
+                    "attribution label contradicts raw facts: server identity changed between \
+                     snapshots",
+                )
+            } else {
+                None
+            };
+            if let Some(reason) = identity_contradiction {
+                reasons.push(NotProvenReason::CacheEvidenceUnproven { reason: reason.to_string() });
+            }
+            if let Some(reason) = contradiction {
+                reasons.push(NotProvenReason::CacheEvidenceUnproven { reason });
+            }
+        }
+
+        // Admission today is always partial on the executed subject: only
+        // the commit dimension is proven at execution. Full-subject proof
+        // (package, target, features, toolchain, profiles) is the host
+        // observation lanes' obligation, so a passing record must not wear
+        // the bare `Admitted` label (#14739 review).
+        if reasons.is_empty() {
+            CellVerdict::AdmittedPartialSubject { proven_dimensions: vec!["commit".to_string()] }
+        } else {
+            CellVerdict::NotProven { reasons }
+        }
     }
 }
 
