@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 14155,
-  "reason": "Refreshes a stale size-only row. out/extension.js on current main packages at 1640957 bytes where the baseline landed in #14719 recorded 1636669; extension source landed after that baseline (#14474, #14624, #14755, #14760) and the smoke's transition instrument now fails every unrelated PR with 'total bytes grew from 1814627 to 1818915'. Measured from a clean npm ci, npm run package, and the transition instrument's own archive projection at current main. The 29-file package is unchanged: no file additions, removals, or permission loosening.",
-  "base_baseline_file_sha256": "a966dac61b30ed8f950dc9910b5dfaf354ff131cf797dcd7ea24f6b1fa756c2a",
-  "candidate_baseline_file_sha256": "bc56a9d640213d509add8c24f807a35efdce01fccce5fd9c6f2b0a380f7441fd",
-  "base_inventory_sha256": "71c92a4b4282c160e4db6417312fa3622a9ba9a8266bce7fbe6172b9ad5004f1",
-  "candidate_inventory_sha256": "114b0ad804f9267deabbdc0bcc0a1ba92d7436c207447727c82f287077a45d8d"
+  "reason": "Accept the packaged lifecycle process-exit repair in #14857. The actual VSIX retains 29 payload files; out/extension.js grows by 3356 bytes (1640957 to 1644313), bringing total payload bytes to 1822271. Generated from the package archive using the inventory owner; no file additions, removals, or permission changes. Installed watchdog recovery is independently proven by hosted run 33995245145.",
+  "base_baseline_file_sha256": "bc56a9d640213d509add8c24f807a35efdce01fccce5fd9c6f2b0a380f7441fd",
+  "candidate_baseline_file_sha256": "00c995a76bdd70af5da15336d1ee47e341b1cc46001de7b0662401c64c874d42",
+  "base_inventory_sha256": "114b0ad804f9267deabbdc0bcc0a1ba92d7436c207447727c82f287077a45d8d",
+  "candidate_inventory_sha256": "fc2e0cd878444fe5704d6a65f730569305ed16219e08f1f2dde0abb0f933e448"
 }
