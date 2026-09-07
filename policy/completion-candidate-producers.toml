@@ -1,0 +1,959 @@
+# Live `textDocument/completion` candidate producer inventory
+#
+# Controlling issue #10949, programme #8969, identity controller #8963. This
+# ledger is the denominator for completion candidate convergence: #10229 cannot
+# claim one live application route, and #10230 cannot claim a complete outcome,
+# without knowing every seam that can put a candidate in front of a user.
+#
+# Read by `cargo xtask completion-candidates check`, which reconciles every row
+# against current source and fails closed on an uninventoried append or return
+# seam, a stale row, a forbidden disposition, an unowned compatibility, a
+# declared reach that disagrees with the call site, an append after
+# finalization, or generated-projection drift.
+#
+# This ledger changes no completion behavior. Every row records what the source
+# does today, not what it should do.
+#
+# Denominator
+#   A producer is a function that carries candidates: it takes a
+#   `&mut Vec<Candidate>` append channel, or returns a type containing
+#   `Vec<Candidate>`, where a candidate is a `CompletionItem` (today's
+#   compatibility shape) or a `CompletionCandidate` (the migration target).
+#   `cargo xtask completion-candidates check` derives that set from source; the
+#   dispositions below are the authored half.
+#
+# On `identity = legacy_label_compatibility` everywhere
+#   That is not a placeholder. The candidate envelope landed with semantic and
+#   source-anchored constructors in PR #10145, and no live producer uses them
+#   yet: every candidate reaches merge identified by its label. Each row names
+#   the issue that changes that.
+#
+# On `source_completeness = legacy_unreported` everywhere
+#   No current producer reports whether it finished. Until that changes, a
+#   `Complete` completion outcome is not earned by any request, because an
+#   empty result is indistinguishable from a producer that gave up. This is the
+#   fact #10230 consumes.
+#
+# On the Dancer2 row
+#   `add_dancer2_keyword_completions` is reached by `handle_completion_cancellable`
+#   and not by `handle_completion`. That is a live behavior difference, not a
+#   bookkeeping artifact, and it is recorded here rather than repaired: route
+#   convergence is #10229's claim.
+
+
+schema_version = "completion_candidate_producers.v1"
+controlling_issue = "#10949"
+route_owner = "#10229"
+finalizer_owner = "#10914"
+outcome_owner = "#10230"
+source_digest = "sha256:a4191ca58529bec5b393084a1ef9de1756317178209048bd8674cd33f85ebef8"
+
+[[producers]]
+id = "perl_lsp_rs::runtime::language::completion::LspServer::add_dancer2_keyword_completions"
+package = "perl-lsp-rs"
+candidate_class = "framework_generated"
+tier = "runtime_enrichment"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "accepted_semantic_snapshot"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "direct_call"
+reached_by = ["handle_completion_cancellable"]
+migration_owner = "#15014"
+route_divergence_owner = "#10229"
+route_divergence_note = "Dancer2 DSL keywords are offered on the cancellable request path and not on the ordinary one, so which framework keywords a user sees depends on which path the editor's request took, not on the document."
+limitations = "Identity is the keyword label. Activation and request-scope come from the canonical Dancer2 facts, but nothing carries that provenance past merge, so a local subroutine sharing a keyword name is separated by the producer, not by the candidate envelope."
+note = "Converts the canonical Dancer2 keyword cell's candidates into completion items and applies the framework rank penalty."
+
+[[producers]]
+id = "perl_lsp_rs::runtime::language::completion::LspServer::add_declared_dependency_completions"
+package = "perl-lsp-rs"
+candidate_class = "declared_dependency"
+tier = "runtime_enrichment"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "bounded_fallback"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "direct_call"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#11009"
+limitations = "Derived from the workspace index, whose freshness is not bound to this request's document generation. A candidate can therefore describe source the user has already changed."
+note = "Offers modules declared as dependencies that the workspace index has not indexed."
+
+[[producers]]
+id = "perl_lsp_rs::runtime::language::completion::LspServer::add_runtime_workspace_completions"
+package = "perl-lsp-rs"
+candidate_class = "workspace_symbol"
+tier = "runtime_enrichment"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "bounded_fallback"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "direct_call"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#11009"
+limitations = "Derived from the workspace index, whose freshness is not bound to this request's document generation. A candidate can therefore describe source the user has already changed."
+note = "Enriches the pool with workspace-indexed symbols under the routing policy."
+
+[[producers]]
+id = "perl_lsp_rs::runtime::language::completion::LspServer::lexical_complete"
+package = "perl-lsp-rs"
+candidate_class = "lexical_fallback"
+tier = "runtime_enrichment"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "bounded_fallback"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "direct_call"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#15014"
+limitations = "The degraded route taken when no AST is available. Its candidates are lexical guesses: they carry no scope, no visibility, and no semantic entity, and must not be read as evidence that a symbol exists."
+note = "Fallback producer used when the document has no usable parse."
+
+[[producers]]
+id = "perl_lsp_rs::runtime::language::completion::sort_and_cap_completions"
+package = "perl-lsp-rs"
+candidate_class = "finalizer"
+tier = "shared_finalizer"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "is_shared_finalizer"
+reach_evidence = "direct_call"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#10914"
+limitations = "Merges, ranks, and caps. It cannot repair an identity a producer did not supply: two legacy candidates with one label merge here whatever they meant."
+note = "The runtime finalization seam. Nothing may append after it."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_file_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "file_path"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "bounded_fallback"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "unreachable"
+reached_by = []
+migration_owner = "#10234"
+unreachable_reason = "A backward-compatibility wrapper marked `#[allow(dead_code)]` that delegates to `add_file_completions_with_cancellation`. No shipped entry point reaches it. It is recorded rather than dropped because it is exactly the wrong place a future file-path fix would land."
+limitations = "Unreached. Nothing about live file-path behavior can be read from this row."
+note = "Two mutually exclusive `cfg(target_arch)` arms of one logical wrapper."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_file_completions_with_cancellation"
+package = "perl-lsp-rs-core"
+candidate_class = "file_path"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "bounded_fallback"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#10234"
+limitations = "Candidates describe the filesystem at scan time, not the document. Identity is the path label."
+note = "Filesystem path candidates with the security and cancellation safeguards."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_has_option_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "key_or_constant"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "current_document_generation"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#15014"
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+note = "Moose `has` option keys."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_has_type_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "key_or_constant"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "current_document_generation"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#15014"
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+note = "Moose `has` type constraint values."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_hash_key_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "key_or_constant"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "current_document_generation"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#9478"
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+note = "Hash key candidates for a subscript context."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_object_pad_constructor_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "method"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "current_document_generation"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#15014"
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+note = "Object::Pad constructor parameter candidates."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::CompletionProvider::get_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "router"
+tier = "core_provider"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "unreachable"
+reached_by = []
+migration_owner = "#10229"
+unreachable_reason = "A path-less convenience entry used by tests, examples, and doc comments. No shipped entry point calls it. A second provider entry that only proof exercises is the shape #10229 names: tests can pass against a route the product never takes."
+limitations = "Unreached by any request. Proof through this entry does not cover the shipped route."
+note = "Test- and documentation-facing provider entry."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::CompletionProvider::get_completions_with_path"
+package = "perl-lsp-rs-core"
+candidate_class = "router"
+tier = "core_provider"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "direct_call"
+reached_by = ["handle_completion"]
+migration_owner = "#10229"
+route_divergence_owner = "#10229"
+route_divergence_note = "One half of the ordinary/cancellable provider-call pair. The divergence is the duplicated route itself, which is what #10229 collapses."
+limitations = "Routes candidates; establishes no identity, insertion plan, evidence, or rank of its own. A green row here says nothing about the producers it dispatches to."
+note = "Provider entry taken by the ordinary request path."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::CompletionProvider::get_completions_with_path_cancellable"
+package = "perl-lsp-rs-core"
+candidate_class = "router"
+tier = "core_provider"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "direct_call"
+reached_by = ["handle_completion_cancellable"]
+migration_owner = "#10229"
+route_divergence_owner = "#10229"
+route_divergence_note = "One half of the ordinary/cancellable provider-call pair. The divergence is the duplicated route itself, which is what #10229 collapses."
+limitations = "Routes candidates; establishes no identity, insertion plan, evidence, or rank of its own. A green row here says nothing about the producers it dispatches to."
+note = "Provider entry taken by the cancellable request path."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::builtins::add_builtin_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "builtin"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "static_server_metadata"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#11021"
+limitations = "Server-authored catalogue with no semantic entity behind it. Identity is the label today, so two catalogue entries sharing a label are indistinguishable at merge."
+note = "Built-in function catalogue with signatures."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::file_path::complete_file_paths"
+package = "perl-lsp-rs-core"
+candidate_class = "file_path"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "bounded_fallback"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#10234"
+limitations = "Candidates describe the filesystem at scan time, not the document."
+note = "Returns filesystem path candidates for a path context."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::functions::add_function_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "local_symbol"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "current_document_generation"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#11002"
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+note = "Subroutines declared in the current document."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::keywords::add_keyword_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "keyword"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "static_server_metadata"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#11021"
+limitations = "Server-authored catalogue with no semantic entity behind it. Identity is the label today, so two catalogue entries sharing a label are indistinguishable at merge."
+note = "Perl keyword catalogue."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::methods::add_method_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "method"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "current_document_generation"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#8958"
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+note = "Method candidates for an arrow receiver."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::packages::add_known_core_module_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "module"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "static_server_metadata"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#11015"
+limitations = "Server-authored catalogue with no semantic entity behind it. Identity is the label today, so two catalogue entries sharing a label are indistinguishable at merge."
+note = "Core module name catalogue."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::packages::add_local_package_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "local_symbol"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "current_document_generation"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#11002"
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+note = "Packages declared in the current document."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::packages::add_package_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "module"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "current_document_generation"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#11015"
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+note = "Package member candidates for a qualified prefix."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::regex_patterns::add_regex_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "regex_context"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "static_server_metadata"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#15014"
+limitations = "Server-authored catalogue with no semantic entity behind it. Identity is the label today, so two catalogue entries sharing a label are indistinguishable at merge."
+note = "Regex construct candidates inside a pattern."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::regex_patterns::add_regex_flag_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "regex_context"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "static_server_metadata"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#15014"
+limitations = "Server-authored catalogue with no semantic entity behind it. Identity is the label today, so two catalogue entries sharing a label are indistinguishable at merge."
+note = "Regex flag candidates in the modifier position."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::request::complete"
+package = "perl-lsp-rs-core"
+candidate_class = "router"
+tier = "core_provider"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#10229"
+limitations = "Routes candidates; establishes no identity, insertion plan, evidence, or rank of its own. A green row here says nothing about the producers it dispatches to."
+note = "Provider-side request entry; builds the context and dispatches."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::request::context::complete_regex_context"
+package = "perl-lsp-rs-core"
+candidate_class = "router"
+tier = "core_provider"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#15014"
+limitations = "This seam finalizes early: in the regex-flag branch it calls the shared deduplicate-and-sort and returns, after which the runtime finalizes the page again. Candidates on that branch are therefore sorted twice and capped once downstream. Collapsing the duplicate finalization is #10229's."
+note = "Regex-context routing, with an early finalization the shared route does not expect."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_dispatch"
+package = "perl-lsp-rs-core"
+candidate_class = "router"
+tier = "core_provider"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#10229"
+limitations = "Routes candidates; establishes no identity, insertion plan, evidence, or rank of its own. A green row here says nothing about the producers it dispatches to."
+note = "Context routing inside the provider dispatch."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_file_path_context"
+package = "perl-lsp-rs-core"
+candidate_class = "router"
+tier = "core_provider"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#10229"
+limitations = "Routes candidates; establishes no identity, insertion plan, evidence, or rank of its own. A green row here says nothing about the producers it dispatches to."
+note = "Context routing inside the provider dispatch."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_general_context"
+package = "perl-lsp-rs-core"
+candidate_class = "router"
+tier = "core_provider"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#10229"
+limitations = "Routes candidates; establishes no identity, insertion plan, evidence, or rank of its own. A green row here says nothing about the producers it dispatches to."
+note = "Context routing inside the provider dispatch."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_indirect_method_context"
+package = "perl-lsp-rs-core"
+candidate_class = "router"
+tier = "core_provider"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#10229"
+limitations = "Routes candidates; establishes no identity, insertion plan, evidence, or rank of its own. A green row here says nothing about the producers it dispatches to."
+note = "Context routing inside the provider dispatch."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_sigil_context"
+package = "perl-lsp-rs-core"
+candidate_class = "router"
+tier = "core_provider"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#10229"
+limitations = "Routes candidates; establishes no identity, insertion plan, evidence, or rank of its own. A green row here says nothing about the producers it dispatches to."
+note = "Context routing inside the provider dispatch."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_symbol_namespace_context"
+package = "perl-lsp-rs-core"
+candidate_class = "router"
+tier = "core_provider"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#10229"
+limitations = "Routes candidates; establishes no identity, insertion plan, evidence, or rank of its own. A green row here says nothing about the producers it dispatches to."
+note = "Context routing inside the provider dispatch."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_use_or_structural_context"
+package = "perl-lsp-rs-core"
+candidate_class = "router"
+tier = "core_provider"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#10229"
+limitations = "Routes candidates; establishes no identity, insertion plan, evidence, or rank of its own. A green row here says nothing about the producers it dispatches to."
+note = "Context routing inside the provider dispatch."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::request::test_frameworks::reconcile"
+package = "perl-lsp-rs-core"
+candidate_class = "test_framework"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "current_document_generation"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#15014"
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+note = "Reconciles Test2 import semantics into test-framework candidates."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::snippets::add_snippet_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "snippet"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "static_server_metadata"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#11021"
+limitations = "Server-authored catalogue with no semantic entity behind it. Identity is the label today, so two catalogue entries sharing a label are indistinguishable at merge."
+note = "Snippet catalogue."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::test_more::add_test_more_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "test_framework"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "static_server_metadata"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#15014"
+limitations = "Server-authored catalogue with no semantic entity behind it. Identity is the label today, so two catalogue entries sharing a label are indistinguishable at merge."
+note = "Test::More function catalogue."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::variables::add_all_variables"
+package = "perl-lsp-rs-core"
+candidate_class = "local_symbol"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "current_document_generation"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#11002"
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+note = "Every visible variable for a general context."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::variables::add_special_variables"
+package = "perl-lsp-rs-core"
+candidate_class = "local_symbol"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "static_server_metadata"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#11021"
+limitations = "Server-authored catalogue with no semantic entity behind it. Identity is the label today, so two catalogue entries sharing a label are indistinguishable at merge."
+note = "Perl special-variable catalogue."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::variables::add_variable_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "local_symbol"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "current_document_generation"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#11002"
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+note = "Variables matching a typed sigil prefix."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::workspace::add_semantic_method_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "method"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "accepted_semantic_snapshot"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#8958"
+limitations = "The semantic snapshot resolves the receiver, but the candidate carries a label identity, so the resolution is not readable downstream."
+note = "Method candidates from the semantic receiver resolution."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::workspace::add_union_receiver_method_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "method"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "accepted_semantic_snapshot"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#8958"
+limitations = "Offers the union across a finite receiver set. Which member contributed a candidate is not recoverable after merge."
+note = "Method candidates for a receiver with several resolved types."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::workspace::add_unknown_receiver_fallback"
+package = "perl-lsp-rs-core"
+candidate_class = "method"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "bounded_fallback"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#8958"
+limitations = "The receiver is not resolved. These candidates are a bounded guess and must not be read as evidence the method exists on the receiver."
+note = "Bounded method fallback when the receiver cannot be resolved."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::workspace::add_use_module_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "module"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "bounded_fallback"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "unreachable"
+reached_by = []
+migration_owner = "#11015"
+unreachable_reason = "Superseded by `add_use_module_completions_with_cache`, which every live caller uses. No shipped entry point reaches this one."
+limitations = "Unreached. Live module-completion behavior comes from the cached variant."
+note = "Uncached predecessor of the module-completion producer."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::workspace::add_use_module_completions_with_cache"
+package = "perl-lsp-rs-core"
+candidate_class = "module"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "bounded_fallback"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#11015"
+limitations = "Derived from the workspace index, whose freshness is not bound to this request's document generation. A candidate can therefore describe source the user has already changed."
+note = "Module name candidates in a `use`/`require` context, served from the scan cache."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::workspace::add_use_qw_import_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "import_projection"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "current_document_generation"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#1701"
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+note = "Importable symbol candidates inside a `use ... qw(...)` list."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::workspace::add_visible_symbol_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "import_projection"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "current_document_generation"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#1701"
+limitations = "Identity is the label today, so a same-named binding in another scope, package, or document instance can merge with this one. Nothing here proves visibility."
+note = "Symbols the current document's imports make visible."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::workspace::add_workspace_method_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "method"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "bounded_fallback"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#8958"
+limitations = "Derived from the workspace index, whose freshness is not bound to this request's document generation. A candidate can therefore describe source the user has already changed."
+note = "Method candidates from the workspace index."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::workspace::add_workspace_symbol_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "workspace_symbol"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "bounded_fallback"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#11009"
+limitations = "Derived from the workspace index, whose freshness is not bound to this request's document generation. A candidate can therefore describe source the user has already changed."
+note = "Workspace-indexed symbol candidates."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::xs_api::add_xs_api_completions"
+package = "perl-lsp-rs-core"
+candidate_class = "xs_api"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "static_server_metadata"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#15014"
+limitations = "Server-authored catalogue with no semantic entity behind it. Identity is the label today, so two catalogue entries sharing a label are indistinguishable at merge."
+note = "XS API catalogue."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion::completion::xs_api::add_xs_api_completions_for_prefix"
+package = "perl-lsp-rs-core"
+candidate_class = "xs_api"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "static_server_metadata"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#15014"
+limitations = "Server-authored catalogue with no semantic entity behind it. Identity is the label today, so two catalogue entries sharing a label are indistinguishable at merge."
+note = "XS API catalogue filtered by a typed prefix."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion_item::candidate::merge_completion_candidates"
+package = "perl-lsp-rs-core"
+candidate_class = "finalizer"
+tier = "shared_finalizer"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "is_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#10914"
+limitations = "Merges compatible identities. Two `legacy_label` candidates with one label are compatible by construction, so this seam cannot preserve a distinction the producer did not make."
+note = "Compatible-identity merge over the candidate pool."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion_item::deduplicate_and_sort"
+package = "perl-lsp-rs-core"
+candidate_class = "finalizer"
+tier = "shared_finalizer"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "is_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#10914"
+limitations = "The legacy adapter: it wraps every incoming item as a label-identified candidate before merging. Identity lost before this call cannot be recovered."
+note = "Compatibility entry into the shared finalizer for legacy item vectors."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::completion_item::merge_and_sort_completion_candidates"
+package = "perl-lsp-rs-core"
+candidate_class = "finalizer"
+tier = "shared_finalizer"
+identity = "not_applicable"
+insertion_plan = "not_applicable"
+evidence = "not_applicable"
+rank = "not_applicable"
+source_completeness = "legacy_unreported"
+finalizer_route = "is_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#10914"
+limitations = "Pure merge and deterministic order over candidates already built."
+note = "Typed merge and stable ordering over the candidate pool."
