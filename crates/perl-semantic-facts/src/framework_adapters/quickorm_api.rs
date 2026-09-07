@@ -228,6 +228,15 @@ pub enum QuickOrmArgumentCohort {
     ZeroArgGetter,
     /// The argument-bearing form of a dual-purpose accessor, which clones.
     ValueSetter,
+    /// The argument-bearing form called with an explicit undef, which clears the
+    /// stored value rather than setting one.
+    ///
+    /// Distinct from [`Self::ValueSetter`] because upstream branches on
+    /// definedness before assigning: the named-key path deletes the slot and
+    /// returns early when the value is undefined (Handle.pm:908-912). Keeping
+    /// it separate is also what makes `receiver × method × cohort` select a
+    /// single row for `row`.
+    ExplicitUndefClearing,
     /// One or more required arguments that do not change the return class.
     Required,
     /// Optional arguments that do not change the return class.
@@ -254,6 +263,7 @@ impl QuickOrmArgumentCohort {
             Self::None => "none",
             Self::ZeroArgGetter => "zero_arg_getter",
             Self::ValueSetter => "value_setter",
+            Self::ExplicitUndefClearing => "explicit_undef_clearing",
             Self::Required => "required",
             Self::Optional => "optional",
             Self::TrailingCoderef => "trailing_coderef",
@@ -571,7 +581,9 @@ pub struct QuickOrmEvidence {
     pub line: u32,
 }
 
-/// One reviewed `receiver × method × argument cohort` return contract.
+/// One reviewed return contract, keyed by `receiver × method × argument cohort`
+/// and, where the discriminator is receiver state rather than an argument, by
+/// [`Self::receiver_constraints`] as well.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct QuickOrmApiCase {
@@ -1978,7 +1990,7 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         method: "row",
         receiver: R::Handle,
         receiver_constraints: NO_CONSTRAINTS,
-        arguments: A::ValueSetter,
+        arguments: A::ExplicitUndefClearing,
         return_class: C::TransformHandleSourceRow,
         multiplicity: N::One,
         type_params: T::SourcePreservedRowUnbound,
@@ -3635,6 +3647,15 @@ pub fn quickorm_api_case(api_case_id: &str) -> Option<&'static QuickOrmApiCase> 
 /// This returns more than one case whenever the argument cohort changes the
 /// return, so callers must select on [`QuickOrmApiCase::arguments`] rather than
 /// taking the first match.
+///
+/// The cohort is not always sufficient on its own. Where the discriminator is
+/// receiver state rather than an argument — `update` and `delete`, whose bulk
+/// and bound-row forms both take an optional argument — two cases share a
+/// cohort and are told apart by [`QuickOrmApiCase::receiver_constraints`],
+/// which name the state each applies to. A caller that cannot resolve that
+/// state must treat the stricter case as applicable rather than picking one.
+/// `receiver_method_cohort_selects_one_case_or_names_the_state` enforces that
+/// every such collision carries distinguishing constraints.
 pub fn quickorm_api_cases_for_method<'a>(
     package: &'a str,
     method: &'a str,
@@ -3653,7 +3674,7 @@ pub fn quickorm_api_cases_for_receiver(
 mod tests {
     use super::*;
     use perl_test_must::must_some_with;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn case_by_id(id: &str) -> &'static QuickOrmApiCase {
         must_some_with(
@@ -3673,6 +3694,47 @@ mod tests {
             QUICKORM_UPSTREAM_COMMIT.chars().all(|c| c.is_ascii_hexdigit()),
             "the pinned commit must be an exact SHA-1, not a branch or tag"
         );
+    }
+
+    #[test]
+    fn receiver_method_cohort_selects_one_case_or_names_the_state() {
+        // A consumer resolves a call site by receiver, method and argument
+        // cohort. Where that triple lands on more than one row the registry
+        // owes an explicit tie-breaker, or the consumer is left guessing which
+        // contract applies — so every collision must be told apart by
+        // receiver_constraints, and those must be non-empty and distinct.
+        let mut groups: BTreeMap<
+            (QuickOrmReceiver, &str, &str, QuickOrmArgumentCohort),
+            Vec<&QuickOrmApiCase>,
+        > = BTreeMap::new();
+        for case in QUICKORM_API_CASES {
+            groups
+                .entry((case.receiver, case.package, case.method, case.arguments))
+                .or_default()
+                .push(case);
+        }
+
+        for ((_, package, method, cohort), cases) in &groups {
+            if cases.len() == 1 {
+                continue;
+            }
+            let mut seen: BTreeSet<&[&str]> = BTreeSet::new();
+            for case in cases {
+                assert!(
+                    !case.receiver_constraints.is_empty(),
+                    "`{}` shares the `{package}::{method}` `{}` cohort with another case and must \
+                     name the receiver state it applies to",
+                    case.api_case_id,
+                    cohort.as_str()
+                );
+                assert!(
+                    seen.insert(case.receiver_constraints),
+                    "`{}` is indistinguishable from a sibling case: same receiver, method, cohort \
+                     and constraints",
+                    case.api_case_id
+                );
+            }
+        }
     }
 
     #[test]
