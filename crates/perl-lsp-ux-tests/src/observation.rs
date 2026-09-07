@@ -284,9 +284,21 @@ impl Inbox {
     /// Returns `None` when another waiter already consumed it, which is the
     /// signal for the caller to re-evaluate rather than assume a match.
     pub fn take_response(&self, id: ObservationId) -> Option<Value> {
-        let mut state = self.lock();
-        let position = state.responses.iter().position(|(candidate, _)| *candidate == id)?;
-        state.responses.remove(position).map(|(_, value)| value)
+        let taken = {
+            let mut state = self.lock();
+            let position = state.responses.iter().position(|(candidate, _)| *candidate == id)?;
+            // Consuming is a mutation of a waiter's input, so it advances the
+            // sequence for the same reason a publication or a drain does. No
+            // predicate here reasons about a response *disappearing* today, but
+            // the lost-wakeup guard is only sound while the sequence tracks
+            // every change — a silent removal would be a trap for the first one
+            // that does.
+            let taken = state.responses.remove(position).map(|(_, value)| value);
+            state.seq += 1;
+            taken
+        };
+        self.inner.signal.notify_all();
+        taken
     }
 
     /// Drain every buffered event, leaving the responses untouched.
@@ -676,6 +688,33 @@ mod tests {
             matches!(matched, Err(WaitEnd::Ended(StreamEnd::ServerClosed))),
             "the stream end must still win over the deadline, got {matched:?}"
         );
+    }
+
+    /// Consuming a response is a mutation too, and must advance the sequence
+    /// for the same reason.
+    #[test]
+    fn taking_a_response_advances_the_sequence() {
+        let inbox = Inbox::new();
+        let observation = inbox.push_response(response(json!(4)));
+        let before = inbox.snapshot().seq();
+
+        assert!(inbox.take_response(observation).is_some());
+
+        assert_ne!(inbox.snapshot().seq(), before, "a consumed response must advance the sequence");
+    }
+
+    /// A failed take changes nothing, so it must not advance the sequence
+    /// either — a spurious bump would wake every waiter for no reason.
+    #[test]
+    fn a_take_that_removes_nothing_leaves_the_sequence_alone() {
+        let inbox = Inbox::new();
+        let observation = inbox.push_response(response(json!(4)));
+        assert!(inbox.take_response(observation).is_some());
+        let before = inbox.snapshot().seq();
+
+        assert!(inbox.take_response(observation).is_none());
+
+        assert_eq!(inbox.snapshot().seq(), before, "a no-op take must not advance the sequence");
     }
 
     /// Draining is a mutation, so it must advance the sequence and wake
