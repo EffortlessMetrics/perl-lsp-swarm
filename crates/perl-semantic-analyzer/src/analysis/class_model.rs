@@ -1442,8 +1442,9 @@ impl ClassModelBuilder {
 
         // Retain every attribute spelling exactly as the parser produced it;
         // trait identity is decoded from these spellings rather than matched
-        // against exact bare strings.
-        let traits: Vec<String> = attributes.iter().map(|attr| attr.trim().to_string()).collect();
+        // against exact bare strings, and the decoder normalizes locally for
+        // classification only.
+        let traits = attributes.clone();
         // Decode every spelling once; each family then selects from the result.
         let decoded = field_trait::decode_all(&traits);
         let (param, param_name) = Self::object_pad_param_identity(&decoded);
@@ -1500,7 +1501,11 @@ impl ClassModelBuilder {
         match &decoded.argument {
             FieldTraitArgument::None => Some(bare_default()),
             FieldTraitArgument::StaticName(name) => Some(name.clone()),
-            FieldTraitArgument::Empty | FieldTraitArgument::MalformedOrDynamic => None,
+            // A generated method must be callable, so non-identifier literal
+            // text names no member even though it is a valid `:param` key.
+            FieldTraitArgument::LiteralText(_)
+            | FieldTraitArgument::Empty
+            | FieldTraitArgument::MalformedOrDynamic => None,
         }
     }
 
@@ -1558,7 +1563,10 @@ impl ClassModelBuilder {
         };
         match &decoded.argument {
             FieldTraitArgument::None => (true, None),
-            FieldTraitArgument::StaticName(name) => (true, Some(name.clone())),
+            // A constructor key is arbitrary literal text, not a method name.
+            FieldTraitArgument::StaticName(name) | FieldTraitArgument::LiteralText(name) => {
+                (true, Some(name.clone()))
+            }
             FieldTraitArgument::Empty | FieldTraitArgument::MalformedOrDynamic => (false, None),
         }
     }

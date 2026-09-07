@@ -45,16 +45,29 @@ pub(crate) enum FieldTraitKind {
 pub(crate) enum FieldTraitArgument {
     /// The bare spelling, as in `:reader`. The family's default applies.
     None,
-    /// An exact static name, as in `:reader(read_name)`.
+    /// An exact static identifier, as in `:reader(read_name)`.
+    ///
+    /// This is the only form that can name a generated *method*, because a
+    /// method name must be a callable identifier.
     StaticName(String),
+    /// Static argument text that is not an identifier, as in `:param(foo-bar)`
+    /// or `:param(1bad)`.
+    ///
+    /// Perl accepts arbitrary literal text as a `:param` constructor key —
+    /// `class C { field $x :param(foo-bar); } C->new('foo-bar' => 1)` compiles
+    /// and runs on 5.38 — so this is a legitimate spelling for a key even
+    /// though it can never name a method. Families that generate methods
+    /// reject it; the `:param` family accepts it.
+    LiteralText(String),
     /// Delimiters were present but the argument body was empty, as in
     /// `:reader()`.
     Empty,
-    /// The argument was unclosed, or its body is not a static name — for
-    /// example `:reader(` or `:reader($dyn)`.
+    /// The argument was unclosed, or its body is genuinely dynamic — for
+    /// example `:reader(` or `:param($dyn)`, where Perl evaluates the sigil
+    /// form as a variable rather than treating it as literal text.
     ///
     /// This state stays explicit rather than degrading into either the bare
-    /// default or a trimmed static name.
+    /// default or an invented static name.
     MalformedOrDynamic,
 }
 
@@ -125,17 +138,31 @@ fn decode_argument_body(body: &str) -> FieldTraitArgument {
     if trimmed.is_empty() {
         return FieldTraitArgument::Empty;
     }
+    if is_dynamic(trimmed) {
+        return FieldTraitArgument::MalformedOrDynamic;
+    }
     if is_static_name(trimmed) {
         FieldTraitArgument::StaticName(trimmed.to_owned())
     } else {
-        FieldTraitArgument::MalformedOrDynamic
+        FieldTraitArgument::LiteralText(trimmed.to_owned())
     }
+}
+
+/// Return true when the argument body references a variable rather than
+/// spelling static text.
+///
+/// Perl really does evaluate the sigil form: `field $x :param($dyn)` fails to
+/// compile with "Global symbol `$dyn` requires explicit package name", so such
+/// a body is not a literal key and this path refuses to invent one from it.
+fn is_dynamic(body: &str) -> bool {
+    body.contains(['$', '@', '%'])
 }
 
 /// Return true when `name` is a static Perl method-name identifier.
 ///
-/// Anything else — a sigil, a call, an interpolation, punctuation — is not a
-/// name this compatibility path is willing to generate a member from.
+/// Only an identifier can name a generated method. Non-identifier static text
+/// is still meaningful as a `:param` constructor key, and is reported as
+/// [`FieldTraitArgument::LiteralText`] rather than discarded.
 fn is_static_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else { return false };
@@ -226,13 +253,38 @@ mod tests {
             ("reader(", FieldTraitKind::Reader, FieldTraitArgument::MalformedOrDynamic),
             ("writer(write_name", FieldTraitKind::Writer, FieldTraitArgument::MalformedOrDynamic),
             ("reader($dyn)", FieldTraitKind::Reader, FieldTraitArgument::MalformedOrDynamic),
-            ("reader(1bad)", FieldTraitKind::Reader, FieldTraitArgument::MalformedOrDynamic),
-            ("reader(a-b)", FieldTraitKind::Reader, FieldTraitArgument::MalformedOrDynamic),
-            ("reader(get())", FieldTraitKind::Reader, FieldTraitArgument::MalformedOrDynamic),
+            (
+                "reader(1bad)",
+                FieldTraitKind::Reader,
+                FieldTraitArgument::LiteralText("1bad".to_owned()),
+            ),
+            // Non-identifier static text is a real `:param` key, so it is
+            // preserved as literal text rather than discarded. Families that
+            // generate methods reject it separately.
+            (
+                "reader(a-b)",
+                FieldTraitKind::Reader,
+                FieldTraitArgument::LiteralText("a-b".to_owned()),
+            ),
+            (
+                "reader(get())",
+                FieldTraitKind::Reader,
+                FieldTraitArgument::LiteralText("get()".to_owned()),
+            ),
             (
                 "accessor(Foo::bar)",
                 FieldTraitKind::Accessor,
-                FieldTraitArgument::MalformedOrDynamic,
+                FieldTraitArgument::LiteralText("Foo::bar".to_owned()),
+            ),
+            (
+                "param(1bad)",
+                FieldTraitKind::Param,
+                FieldTraitArgument::LiteralText("1bad".to_owned()),
+            ),
+            (
+                "param(foo-bar)",
+                FieldTraitKind::Param,
+                FieldTraitArgument::LiteralText("foo-bar".to_owned()),
             ),
             // Unknown families never borrow a known trait's meaning.
             ("Custom", FieldTraitKind::Unknown, FieldTraitArgument::None),
@@ -261,13 +313,13 @@ mod tests {
             DecodedFieldTrait::decode("reader(read_name)").argument,
             FieldTraitArgument::StaticName("read_name".to_owned())
         );
-        for spelling in ["reader", "reader()", "reader(", "reader($dyn)"] {
+        for spelling in ["reader", "reader()", "reader(", "reader($dyn)", "reader(a-b)"] {
             assert!(
                 !matches!(
                     DecodedFieldTrait::decode(spelling).argument,
                     FieldTraitArgument::StaticName(_)
                 ),
-                "`{spelling}` must not expose a static name"
+                "`{spelling}` must not expose a static method name"
             );
         }
     }

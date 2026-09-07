@@ -146,11 +146,64 @@ fn malformed_and_dynamic_arguments_stay_bounded() {
         );
     }
 
-    for attribute in ["param($dyn)", "param(1bad)"] {
+    // Only a genuinely dynamic body is refused. Perl evaluates the sigil form
+    // as a variable (`field $x :param($dyn)` fails to compile with "Global
+    // symbol \"$dyn\" requires explicit package name" on 5.38), so no literal
+    // key can be recovered from it.
+    for attribute in ["param($dyn)", "param(@list)", "param(%opts)"] {
         let (_, field) = object_pad_field(attribute);
         assert!(!field.param, "`{attribute}` must not admit a constructor input");
         assert_eq!(field.param_name, None, "`{attribute}` must not invent a parameter name");
     }
+}
+
+/// A `:param` argument is a constructor *key*, not a method name.
+///
+/// Verified against perl 5.38.2: `class C { field $x :param(foo-bar) = 0; }`
+/// compiles and `C->new('foo-bar' => 1)` is accepted, as are `1bad`,
+/// `Foo::bar`, and `get()`. Routing these through the generated-method
+/// identifier rule would drop a required constructor key.
+#[test]
+fn non_identifier_param_keys_are_preserved_but_never_name_a_method() {
+    for key in ["1bad", "foo-bar", "Foo::bar", "get()"] {
+        let (model, field) = object_pad_field(&format!("param({key})"));
+        assert!(field.param, "`:param({key})` is a valid Perl constructor key");
+        assert_eq!(field.param_name.as_deref(), Some(key));
+        let constructor: Vec<&str> = model.object_pad_constructor_param_names().collect();
+        assert_eq!(constructor, vec![key]);
+    }
+
+    // The same text can never name a generated method, because a method must
+    // be callable by an identifier.
+    for family in ["reader", "accessor", "mutator", "writer"] {
+        let (model, field) = object_pad_field(&format!("{family}(foo-bar)"));
+        assert_eq!(field.reader, None);
+        assert_eq!(field.writer, None);
+        assert_eq!(field.accessor, None);
+        assert_eq!(field.mutator, None);
+        assert!(
+            model.methods.iter().all(|method| !method.synthetic),
+            "`:{family}(foo-bar)` must not synthesize a method"
+        );
+    }
+}
+
+/// Duplicate spellings of one family: the first owns the result and fails
+/// closed, end to end through the class model rather than only in the decoder.
+#[test]
+fn a_duplicate_later_spelling_cannot_repair_a_broken_first_one() {
+    let source = "use Object::Pad;\nclass Dup {\n    field $value :reader($dyn) :reader;\n}\n";
+    let model = model_for(source, "Dup");
+    let field = must_some(model.fields.first().cloned());
+
+    assert_eq!(
+        field.reader, None,
+        "a dynamic first :reader must not be repaired by a later bare duplicate"
+    );
+    assert!(
+        !synthesizes(&model, "value"),
+        "no default reader may be generated from the later duplicate"
+    );
 }
 
 #[test]
