@@ -119,4 +119,23 @@ mod tests {
             assert_eq!(l, back);
         }
     }
+
+    /// `deny_unknown_fields` is a contract, not decoration: the round-trip
+    /// tests above pass unchanged if the attribute is removed, so pin the
+    /// rejection directly for both records in this module.
+    #[test]
+    fn claim_records_reject_unknown_fields() {
+        assert!(
+            serde_json::from_str::<ClaimBoundary>(
+                r#"{"established":[],"not_established":[],"typo":1}"#
+            )
+            .is_err(),
+            "ClaimBoundary must reject an unknown field"
+        );
+        assert!(
+            serde_json::from_str::<Limitation>(r#"{"detail":"d","affected_claim":null,"typo":1}"#)
+                .is_err(),
+            "Limitation must reject an unknown field"
+        );
+    }
 }

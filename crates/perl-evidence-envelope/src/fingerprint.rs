@@ -264,19 +264,71 @@ mod tests {
     /// test isolates.
     #[test]
     fn fingerprint_domain_is_separated_from_content_digest_domain() {
-        let material = b"identical material across both domains";
-
-        let mut h = FingerprintHasher::new();
-        h.push_field(material);
-        let raw = h.finish();
-        let fingerprint_wire = format!("sha256:{}", bytes_to_wire_hex(&raw));
-
-        let content_digest = ContentDigest::of_bytes(material);
+        // `perl-source-identity` keeps its domain tag private, so the constant
+        // is duplicated here. The test asserts inequality, so an upstream
+        // rename cannot make it fail spuriously — it would only stop guarding
+        // that specific collision, which the assertion below names.
+        const UPSTREAM_CONTENT_DIGEST_DOMAIN: &[u8] = b"perl-lsp:content-digest:v1\0";
 
         assert_ne!(
-            fingerprint_wire,
-            content_digest.as_wire(),
-            "identical material hashed under two domains must not collide"
+            FINGERPRINT_DOMAIN, UPSTREAM_CONTENT_DIGEST_DOMAIN,
+            "the fingerprint domain tag must never equal the content-digest domain tag"
+        );
+
+        // Hash the same material under both tags with one identical encoding,
+        // so the domain constant is the only variable.
+        let material = b"identical material across both domains";
+        let under = |domain: &[u8]| -> [u8; 32] {
+            let mut h = Sha256::new();
+            h.update(domain);
+            h.update(material);
+            h.finalize().into()
+        };
+
+        assert_ne!(
+            under(FINGERPRINT_DOMAIN),
+            under(UPSTREAM_CONTENT_DIGEST_DOMAIN),
+            "identical material hashed under the two domains must not collide"
+        );
+    }
+
+    /// Guards the test above against the failure it already suffered once.
+    ///
+    /// The original version compared `FingerprintHasher` output against
+    /// `ContentDigest::of_bytes`. That discriminated only while both crates
+    /// length-prefixed identically; when this crate widened its prefix to
+    /// `u64` and `perl-source-identity` kept `u32`, the two byte streams
+    /// differed by *encoding*, so the assertion passed even with identical
+    /// domain tags — a vacuous test that no other test caught.
+    ///
+    /// This pins the property that made it vacuous: the two crates' encodings
+    /// are known to differ, so a domain-separation test must never route
+    /// through both crates' encoders to compare domains.
+    #[test]
+    fn the_two_crates_length_prefix_encodings_differ() {
+        let material = b"x";
+        // This crate: 8-byte big-endian length prefix.
+        assert_eq!(length_prefixed(material).len(), 8 + material.len());
+        // `perl-source-identity`: 4-byte prefix, so `ContentDigest::of_bytes`
+        // hashes a different byte stream for the same material regardless of
+        // domain. Asserted through its public output rather than its private
+        // encoder: an identical encoding would make the digests equal when the
+        // domains are equal, which is precisely the confusion to avoid.
+        assert_ne!(
+            ContentDigest::of_bytes(material).as_wire(),
+            format!(
+                "sha256:{}",
+                bytes_to_wire_hex(&{
+                    let mut h = Sha256::new();
+                    h.update(b"perl-lsp:content-digest:v1\0");
+                    h.update(length_prefixed(material));
+                    let out: [u8; 32] = h.finalize().into();
+                    out
+                })
+            ),
+            "if these ever match, this crate's encoder has converged with \
+             perl-source-identity's and the domain test may be rewritten to \
+             compare through both"
         );
     }
 

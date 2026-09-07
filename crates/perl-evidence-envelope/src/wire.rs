@@ -126,5 +126,25 @@ mod tests {
         assert!(!is_sha256_hex_body(&"A".repeat(64)));
         assert!(!is_sha256_hex_body(&"a".repeat(63)));
         assert!(!is_sha256_hex_body(""));
+
+        // Two realistic wrong implementations the cases above cannot catch.
+        // This function decides which durable `ReceiptId` and
+        // `EnvelopeFingerprint` wire forms the crate admits, so both matter.
+
+        // `len() >= 64` instead of `== 64`.
+        assert!(
+            !is_sha256_hex_body(&"a".repeat(65)),
+            "over-length input must be rejected, not truncated"
+        );
+        // A permissive byte set such as `is_ascii_alphanumeric`.
+        assert!(
+            !is_sha256_hex_body(&format!("{}g", "a".repeat(63))),
+            "a lowercase non-hex ASCII letter must be rejected"
+        );
+        // Multi-byte input whose char count differs from its byte length.
+        assert!(
+            !is_sha256_hex_body(&format!("{}é", "a".repeat(62))),
+            "non-ASCII bytes must be rejected"
+        );
     }
 }

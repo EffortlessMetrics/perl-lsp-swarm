@@ -414,4 +414,25 @@ mod tests {
         )];
         assert_ne!(a.fingerprint(), b.fingerprint());
     }
+
+    /// Fail-closed decode extends to unknown fields: an envelope carrying a
+    /// field this build does not understand is rejected, never silently
+    /// dropped. Without `deny_unknown_fields` every other test in this module
+    /// still passes while the field vanishes on decode.
+    #[test]
+    fn envelope_rejects_unknown_field() {
+        let value = serde_json::to_value(sample_envelope()).expect("to_value");
+        let mut map = value.as_object().expect("envelope is a JSON object").clone();
+        assert!(
+            map.insert("future_field".to_string(), serde_json::Value::Bool(true)).is_none(),
+            "the field must be genuinely new for this test to mean anything"
+        );
+        assert!(
+            serde_json::from_str::<EvidenceEnvelope>(
+                &serde_json::to_string(&map).expect("serialize")
+            )
+            .is_err(),
+            "an unknown envelope field must be rejected, never ignored"
+        );
+    }
 }

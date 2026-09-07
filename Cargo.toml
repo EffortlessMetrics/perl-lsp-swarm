@@ -243,8 +243,10 @@ perl-ast-v2 = { path = "crates/perl-ast-v2", version = "0.17.0" }
 perl-token = { path = "crates/perl-token", version = "0.17.0" }
 # perl-source-identity: source_identity.v1 core types (#7652). No internal deps.
 perl-source-identity = { path = "crates/perl-source-identity", version = "0.17.0" }
-# perl-evidence-envelope: evidence_envelope.v1 core types (#15057). Depends
-# only on perl-source-identity (ContentDigest, ProjectId).
+# perl-evidence-envelope: evidence_envelope.v1 core types (#15057). Direct
+# dependencies are serde, sha2, and perl-source-identity (ContentDigest,
+# ProjectId) — the last being its only internal one. Exact closure asserted
+# by crates/perl-evidence-envelope/tests/dependency_contract.rs.
 perl-evidence-envelope = { path = "crates/perl-evidence-envelope", version = "0.17.0" }
 perl-regex = { path = "crates/perl-regex", version = "0.17.0" }
 perl-pragma = { path = "crates/perl-pragma", version = "0.17.0" }

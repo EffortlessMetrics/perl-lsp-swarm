@@ -1,5 +1,4 @@
 #![warn(missing_docs)]
-#![cfg_attr(clippy, allow(missing_docs))]
 
 //! `perl-evidence-envelope` — canonical `evidence_envelope.v1` core types and
 //! deterministic envelope identity for the Perl toolchain's evidence

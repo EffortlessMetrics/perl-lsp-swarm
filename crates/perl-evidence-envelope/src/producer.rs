@@ -85,4 +85,16 @@ mod tests {
         with_build.build_identity = "ci-build-43".to_string();
         assert_ne!(base, with_build);
     }
+
+    /// Pins `deny_unknown_fields`; the round-trip test above passes without it.
+    #[test]
+    fn producer_identity_rejects_unknown_field() {
+        assert!(
+            serde_json::from_str::<ProducerIdentity>(
+                r#"{"name":"n","version":"v","source_sha":"s","build_identity":"b","typo":1}"#
+            )
+            .is_err(),
+            "ProducerIdentity must reject an unknown field"
+        );
+    }
 }

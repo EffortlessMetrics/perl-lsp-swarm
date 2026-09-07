@@ -188,4 +188,23 @@ mod tests {
         let json = r#"{"source":"workflow","run_id":"r","attempt":1,"typo":true}"#;
         assert!(serde_json::from_str::<RunIdentity>(json).is_err());
     }
+
+    /// Pins `deny_unknown_fields` on the subject record itself; the sibling
+    /// `RunIdentity` case is covered separately.
+    #[test]
+    fn evidence_subject_rejects_unknown_field() {
+        let json = serde_json::to_value(sample_subject()).expect("to_value");
+        let mut map = json.as_object().expect("object").clone();
+        assert!(
+            map.insert("future_field".to_string(), serde_json::Value::Bool(true)).is_none(),
+            "the field must be genuinely new for this test to mean anything"
+        );
+        assert!(
+            serde_json::from_str::<EvidenceSubject>(
+                &serde_json::to_string(&map).expect("serialize")
+            )
+            .is_err(),
+            "EvidenceSubject must reject an unknown field"
+        );
+    }
 }
