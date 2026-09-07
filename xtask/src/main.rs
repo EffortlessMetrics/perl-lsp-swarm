@@ -149,7 +149,11 @@ enum Commands {
     /// Validate the `perl_parser::dead_code` API disposition ledger against
     /// current module source, the public-API baseline, its compatibility
     /// corpus, the consumer inventory and the generated projection (#9777).
-    CheckDeadCodeApiLedger,
+    CheckDeadCodeApiLedger {
+        /// Regenerate the Markdown projection from the ledger before checking.
+        #[arg(long)]
+        write: bool,
+    },
 
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
@@ -4978,7 +4982,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckActiveGoalManifest => active_goal_manifest::run(),
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckCodeActionGenerationLedger => code_action_generation_ledger::run(),
-        Commands::CheckDeadCodeApiLedger => dead_code_api_ledger::run(),
+        Commands::CheckDeadCodeApiLedger { write } => dead_code_api_ledger::run(write),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),

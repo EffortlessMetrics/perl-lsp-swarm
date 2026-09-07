@@ -19,6 +19,9 @@ use walkdir::WalkDir;
 
 const POLICY_PATH: &str = "policy/dead-code-api-ledger.toml";
 
+/// Placeholder rendered for an empty projection cell.
+const EMPTY_CELL: &str = "—";
+
 /// Trait methods produced by `#[derive(...)]`. They appear in the public-API
 /// baseline but are consequences of a type's own disposition rather than
 /// separately decided API, so the ledger dispositions the type, not the derive.
@@ -57,7 +60,7 @@ const CONSUMER_NEEDLES: &[&str] = &[
 ];
 
 /// Directories scanned for consumers, relative to the repository root.
-const CONSUMER_SCAN_ROOTS: &[&str] = &["crates", "xtask/src"];
+const CONSUMER_SCAN_ROOTS: &[&str] = &["crates", "xtask/src", "xtask/tests"];
 
 /// The twelve result states the reachability programme distinguishes. Every one
 /// must be dispositioned; the set is fixed here so a state cannot quietly
@@ -89,6 +92,8 @@ struct Ledger {
     public_api_baseline: String,
     compat_corpus: String,
     canonical_path: String,
+    controlling_issue: String,
+    compatibility_controller: String,
     semantic_classes: Vec<String>,
     dispositions: Vec<String>,
     producer_states: Vec<String>,
@@ -177,8 +182,16 @@ struct Stats {
     not_proven: usize,
 }
 
-pub fn run() -> Result<()> {
+pub fn run(write: bool) -> Result<()> {
     let root = project_root()?;
+    if write {
+        let ledger = read_ledger(&root, POLICY_PATH)?;
+        let rendered = render_projection(&ledger);
+        let path = root.join(&ledger.human_ledger);
+        fs::write(&path, &rendered)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        println!("wrote {}", ledger.human_ledger);
+    }
     let stats = validate(&root)?;
     println!(
         "dead-code API ledger check passed: {} dispositioned items ({} never produced, {} inert), \
@@ -343,7 +356,25 @@ fn parse_module_surface(text: &str) -> Result<BTreeSet<SourceItem>> {
             syn::Item::Struct(node) if is_public(&node.vis) => {
                 let name = node.ident.to_string();
                 items.insert(SourceItem { id: name.clone(), kind: "struct".to_string() });
-                for field in &node.fields {
+                for (index, field) in node.fields.iter().enumerate() {
+                    if !is_public(&field.vis) {
+                        continue;
+                    }
+                    // Tuple-struct fields are positional and still public API.
+                    let field_id = match field.ident.as_ref() {
+                        Some(ident) => ident.to_string(),
+                        None => index.to_string(),
+                    };
+                    items.insert(SourceItem {
+                        id: format!("{name}::{field_id}"),
+                        kind: "field".to_string(),
+                    });
+                }
+            }
+            syn::Item::Union(node) if is_public(&node.vis) => {
+                let name = node.ident.to_string();
+                items.insert(SourceItem { id: name.clone(), kind: "union".to_string() });
+                for field in &node.fields.named {
                     if !is_public(&field.vis) {
                         continue;
                     }
@@ -361,25 +392,136 @@ fn parse_module_surface(text: &str) -> Result<BTreeSet<SourceItem>> {
                     kind: "function".to_string(),
                 });
             }
+            syn::Item::Type(node) if is_public(&node.vis) => {
+                items.insert(SourceItem {
+                    id: node.ident.to_string(),
+                    kind: "type_alias".to_string(),
+                });
+            }
+            syn::Item::Const(node) if is_public(&node.vis) => {
+                items.insert(SourceItem {
+                    id: node.ident.to_string(),
+                    kind: "constant".to_string(),
+                });
+            }
+            syn::Item::Static(node) if is_public(&node.vis) => {
+                items.insert(SourceItem { id: node.ident.to_string(), kind: "static".to_string() });
+            }
+            syn::Item::Trait(node) if is_public(&node.vis) => {
+                let name = node.ident.to_string();
+                items.insert(SourceItem { id: name.clone(), kind: "trait".to_string() });
+                for inner in &node.items {
+                    let member = match inner {
+                        syn::TraitItem::Fn(method) => Some(method.sig.ident.to_string()),
+                        syn::TraitItem::Const(konst) => Some(konst.ident.to_string()),
+                        syn::TraitItem::Type(ty) => Some(ty.ident.to_string()),
+                        _ => None,
+                    };
+                    if let Some(member) = member {
+                        items.insert(SourceItem {
+                            id: format!("{name}::{member}"),
+                            kind: "trait_member".to_string(),
+                        });
+                    }
+                }
+            }
+            syn::Item::Mod(node) if is_public(&node.vis) => {
+                items.insert(SourceItem {
+                    id: node.ident.to_string(),
+                    kind: "submodule".to_string(),
+                });
+            }
+            syn::Item::Use(node) if is_public(&node.vis) => {
+                for name in use_tree_names(&node.tree) {
+                    items.insert(SourceItem { id: name, kind: "reexport".to_string() });
+                }
+            }
+            syn::Item::Macro(node) if node.attrs.iter().any(is_macro_export) => {
+                if let Some(ident) = node.ident.as_ref() {
+                    items.insert(SourceItem {
+                        id: ident.to_string(),
+                        kind: "exported_macro".to_string(),
+                    });
+                }
+            }
             syn::Item::Impl(node) if node.trait_.is_none() => {
                 let Some(self_name) = type_ident(&node.self_ty) else {
                     continue;
                 };
                 for inner in &node.items {
-                    if let syn::ImplItem::Fn(method) = inner
-                        && is_public(&method.vis)
-                    {
+                    let member = match inner {
+                        syn::ImplItem::Fn(method) if is_public(&method.vis) => {
+                            Some((method.sig.ident.to_string(), "method"))
+                        }
+                        syn::ImplItem::Const(konst) if is_public(&konst.vis) => {
+                            Some((konst.ident.to_string(), "associated_constant"))
+                        }
+                        syn::ImplItem::Type(ty) if is_public(&ty.vis) => {
+                            Some((ty.ident.to_string(), "associated_type"))
+                        }
+                        _ => None,
+                    };
+                    if let Some((member, kind)) = member {
                         items.insert(SourceItem {
-                            id: format!("{self_name}::{}", method.sig.ident),
-                            kind: "method".to_string(),
+                            id: format!("{self_name}::{member}"),
+                            kind: kind.to_string(),
                         });
                     }
                 }
             }
-            _ => {}
+            // Fail closed: a public item in a form this parser does not model
+            // must not pass silently. It is emitted with a kind the ledger
+            // vocabulary rejects, so L1 reports it as unclassified rather than
+            // letting the surface grow unobserved.
+            other => {
+                if let Some(vis) = item_visibility(other)
+                    && is_public(vis)
+                {
+                    items.insert(SourceItem {
+                        id: format!("<unmodelled public item #{}>", items.len()),
+                        kind: "unsupported_public_form".to_string(),
+                    });
+                }
+            }
         }
     }
     Ok(items)
+}
+
+/// Every name a `pub use` tree introduces into the module's public surface.
+fn use_tree_names(tree: &syn::UseTree) -> Vec<String> {
+    match tree {
+        syn::UseTree::Path(path) => use_tree_names(&path.tree),
+        syn::UseTree::Name(name) => vec![name.ident.to_string()],
+        syn::UseTree::Rename(rename) => vec![rename.rename.to_string()],
+        syn::UseTree::Group(group) => group.items.iter().flat_map(use_tree_names).collect(),
+        // A public glob re-export is unbounded: it cannot be enumerated here, so
+        // it is surfaced as a single unclassifiable name and fails L1.
+        syn::UseTree::Glob(_) => vec!["<public glob re-export>".to_string()],
+    }
+}
+
+fn is_macro_export(attr: &syn::Attribute) -> bool {
+    attr.path().is_ident("macro_export")
+}
+
+/// Visibility of the item forms that can carry one, for the fail-closed arm.
+fn item_visibility(item: &syn::Item) -> Option<&syn::Visibility> {
+    match item {
+        syn::Item::Const(node) => Some(&node.vis),
+        syn::Item::Enum(node) => Some(&node.vis),
+        syn::Item::ExternCrate(node) => Some(&node.vis),
+        syn::Item::Fn(node) => Some(&node.vis),
+        syn::Item::Mod(node) => Some(&node.vis),
+        syn::Item::Static(node) => Some(&node.vis),
+        syn::Item::Struct(node) => Some(&node.vis),
+        syn::Item::Trait(node) => Some(&node.vis),
+        syn::Item::TraitAlias(node) => Some(&node.vis),
+        syn::Item::Type(node) => Some(&node.vis),
+        syn::Item::Union(node) => Some(&node.vis),
+        syn::Item::Use(node) => Some(&node.vis),
+        _ => None,
+    }
 }
 
 fn is_public(vis: &syn::Visibility) -> bool {
@@ -680,52 +822,81 @@ fn validate_result_states(ledger: &Ledger, violations: &mut Vec<String>) {
 // L9, L10 — fixture binding
 // ---------------------------------------------------------------------------
 
-/// Fixture identities declared in the compatibility corpus, written as
-/// `dcapi-<name>` in its section banners and doc comments.
-fn corpus_fixture_ids(corpus_text: &str) -> BTreeSet<String> {
-    let mut ids = BTreeSet::new();
-    for line in corpus_text.lines() {
-        let mut rest = line;
-        while let Some(idx) = rest.find("dcapi-") {
-            let tail = &rest[idx..];
-            let id: String =
-                tail.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
-            let id = id.trim_end_matches('-').to_string();
-            if id.len() > "dcapi-".len() {
-                ids.insert(id);
-            }
-            rest = &tail[1..];
+/// Names of the `#[test]` functions in the compatibility corpus.
+///
+/// Derived from parsed Rust, not from comment text: a fixture identity is only
+/// real if an executable test carries it. Section banners and doc comments are
+/// deliberately non-authoritative, so deleting a test while leaving its banner
+/// behind breaks the binding instead of silently preserving it.
+fn corpus_test_functions(corpus_text: &str) -> Result<BTreeSet<String>> {
+    let file: syn::File =
+        syn::parse_str(corpus_text).context("compatibility corpus is not parseable Rust")?;
+    let mut names = BTreeSet::new();
+    for item in &file.items {
+        if let syn::Item::Fn(node) = item
+            && node.attrs.iter().any(|attr| attr.path().is_ident("test"))
+        {
+            names.insert(node.sig.ident.to_string());
         }
     }
-    ids
+    Ok(names)
+}
+
+/// The ledger writes fixture ids in kebab case (`dcapi-entry-point-is-inert`);
+/// the corpus writes test functions in snake case, optionally with a longer
+/// descriptive tail (`dcapi_entry_point_is_inert_and_non_vacuous`). A fixture is
+/// bound when some test function equals its snake form or extends it at an
+/// identifier boundary.
+fn fixture_is_bound(fixture_id: &str, test_functions: &BTreeSet<String>) -> bool {
+    let snake = fixture_id.replace('-', "_");
+    test_functions.iter().any(|name| name == &snake || name.starts_with(&format!("{snake}_")))
 }
 
 fn validate_fixtures(ledger: &Ledger, corpus_text: &str, violations: &mut Vec<String>) {
-    let corpus = corpus_fixture_ids(corpus_text);
-    if corpus.is_empty() {
+    let test_functions = match corpus_test_functions(corpus_text) {
+        Ok(names) => names,
+        Err(error) => {
+            violations.push(format!("L9: cannot parse {}: {error}", ledger.compat_corpus));
+            return;
+        }
+    };
+    if test_functions.is_empty() {
         violations.push(format!(
-            "L9: no `dcapi-` fixture identities found in {}; the ledger would be unbound",
+            "L9: no `#[test]` functions found in {}; the ledger would be unbound",
             ledger.compat_corpus
         ));
+        return;
     }
 
     let mut cited = BTreeSet::new();
     for item in &ledger.item {
         for fixture in &item.fixtures {
             cited.insert(fixture.clone());
-            if !corpus.contains(fixture) {
+            if !fixture_is_bound(fixture, &test_functions) {
                 violations.push(format!(
-                    "L9: `{}` cites fixture `{fixture}`, which does not exist in {}",
+                    "L9: `{}` cites fixture `{fixture}`, which names no `#[test]` function in {}; \
+                     a comment banner is not proof",
                     item.id, ledger.compat_corpus
                 ));
             }
         }
     }
-    for fixture in &corpus {
-        if !cited.contains(fixture) {
+
+    // L10: every dcapi test must support a recorded claim, so proof cannot drift
+    // loose from the ledger it exists to hold down.
+    for name in &test_functions {
+        if !name.starts_with("dcapi_") {
+            continue;
+        }
+        if !cited.iter().any(|fixture| {
+            fixture_is_bound(fixture, &test_functions) && {
+                let snake = fixture.replace('-', "_");
+                name == &snake || name.starts_with(&format!("{snake}_"))
+            }
+        }) {
             violations.push(format!(
-                "L10: fixture `{fixture}` exists in the corpus but no ledger row cites it; proof \
-                 that supports no recorded claim is either mis-filed or the claim is missing"
+                "L10: `{name}` is an executable fixture that no ledger row cites; proof that \
+                 supports no recorded claim is either mis-filed or the claim is missing"
             ));
         }
     }
@@ -781,7 +952,7 @@ fn validate_consumers(root: &Path, ledger: &Ledger, violations: &mut Vec<String>
             let Ok(text) = fs::read_to_string(path) else {
                 continue;
             };
-            if CONSUMER_NEEDLES.iter().any(|needle| contains_word(&text, needle)) {
+            if references_surface(&text) {
                 let Ok(rel) = path.strip_prefix(root) else {
                     continue;
                 };
@@ -842,6 +1013,28 @@ fn validate_consumers(root: &Path, ledger: &Ledger, violations: &mut Vec<String>
     }
 }
 
+/// Whether a file consumes the dead-code surface.
+///
+/// Two routes. A direct needle is conclusive. The second route closes the
+/// wildcard-prelude hole: `use perl_parser::prelude::*;` imports `DeadCode`
+/// without ever naming it in a path, so a file that pulls in the prelude and
+/// then mentions the bare `DeadCode` identifier is a consumer too. The bare
+/// identifier alone is deliberately NOT sufficient — `perl-tdd-support` has an
+/// unrelated `CodeSmell::DeadCode` variant, and it imports no prelude.
+fn references_surface(text: &str) -> bool {
+    if CONSUMER_NEEDLES.iter().any(|needle| contains_word(text, needle)) {
+        return true;
+    }
+    imports_perl_parser_prelude(text) && contains_word(text, "DeadCode")
+}
+
+/// Whether the file imports `perl_parser::prelude` in any form (glob, group or
+/// single name), including through the `crate::prelude` spelling used inside
+/// `perl-parser` itself.
+fn imports_perl_parser_prelude(text: &str) -> bool {
+    text.contains("perl_parser::prelude") || text.contains("crate::prelude")
+}
+
 /// Substring search with identifier boundaries, so `DeadCodeType` does not match
 /// inside a longer identifier and `crate::dead_code` does not match
 /// `crate::dead_code_detector`.
@@ -862,109 +1055,207 @@ fn is_ident_char(c: char) -> bool {
 // ---------------------------------------------------------------------------
 
 fn validate_human_projection(ledger: &Ledger, human_text: &str, violations: &mut Vec<String>) {
-    let Some(item_table) = parse_table(human_text, "Item") else {
-        violations.push(format!("L8: {} has no item disposition table", ledger.human_ledger));
+    let expected = render_projection(ledger);
+    if human_text == expected {
         return;
-    };
-    let Some(state_table) = parse_table(human_text, "Result state") else {
-        violations.push(format!("L8: {} has no result-state table", ledger.human_ledger));
-        return;
-    };
-
-    let expected_items: Vec<Vec<String>> = ledger
-        .item
-        .iter()
-        .map(|i| {
-            vec![
-                format!("`{}`", i.id),
-                i.kind.clone(),
-                i.semantic_class.clone(),
-                i.disposition.clone(),
-                i.producer.clone(),
-                i.proof_ceiling.clone(),
-                i.replacement_owner.clone(),
-            ]
-        })
-        .collect();
-    compare_table("item", &expected_items, &item_table, &ledger.human_ledger, violations);
-
-    let expected_states: Vec<Vec<String>> = ledger
-        .result_state
-        .iter()
-        .map(|s| {
-            vec![
-                format!("`{}`", s.id),
-                s.analyze_file.clone(),
-                s.analyze_workspace.clone(),
-                if s.owner.is_empty() { "—".to_string() } else { s.owner.clone() },
-            ]
-        })
-        .collect();
-    compare_table("result-state", &expected_states, &state_table, &ledger.human_ledger, violations);
+    }
+    // Report the first differing line so the failure names a place, not just a
+    // mismatch. Comparing the WHOLE document (not only its tables) is the point:
+    // every sentence in the projection is derived from the ledger, so prose that
+    // drifts is exactly as wrong as a table that drifts.
+    let mut expected_lines = expected.lines();
+    let mut actual_lines = human_text.lines();
+    let mut line_number = 0usize;
+    loop {
+        line_number += 1;
+        match (expected_lines.next(), actual_lines.next()) {
+            (None, None) => break,
+            (want, got) if want == got => continue,
+            (want, got) => {
+                violations.push(format!(
+                    "L8: {} line {line_number} disagrees with the ledger; the projection is \
+                     generated, not hand-edited — regenerate it with \
+                     `cargo xtask check-dead-code-api-ledger --write`\n      ledger:   {:?}\n      \
+                     markdown: {:?}",
+                    ledger.human_ledger,
+                    want.unwrap_or("<end of file>"),
+                    got.unwrap_or("<end of file>")
+                ));
+                return;
+            }
+        }
+    }
 }
 
-fn compare_table(
-    label: &str,
-    expected: &[Vec<String>],
-    actual: &[Vec<String>],
-    human_ledger: &str,
-    violations: &mut Vec<String>,
-) {
-    if expected.len() != actual.len() {
-        violations.push(format!(
-            "L8: {human_ledger} {label} table has {} rows, the ledger has {}; the projection is not \
-             hand-edited and must be regenerated from the ledger",
-            actual.len(),
-            expected.len()
+/// Render the complete Markdown projection from the ledger.
+///
+/// This is the only generator for `docs/project/status/dead_code_api_ledger.md`.
+/// `validate_human_projection` compares the checked-in file against this output
+/// byte for byte, so the document cannot be edited by hand and cannot drift in
+/// prose, tables, counts or ordering.
+fn render_projection(ledger: &Ledger) -> String {
+    let mut out = String::new();
+    let never_produced: Vec<&Item> =
+        ledger.item.iter().filter(|i| i.producer == "never_produced").collect();
+    let inert: Vec<&Item> = ledger.item.iter().filter(|i| i.producer == "inert").collect();
+
+    out.push_str("# `perl_parser::dead_code` API disposition ledger\n\n");
+    out.push_str("<!-- GENERATED PROJECTION — do not hand-edit.\n");
+    out.push_str("     Canonical source: `policy/dead-code-api-ledger.toml`.\n");
+    out.push_str("     Regenerate with `cargo xtask check-dead-code-api-ledger --write`. -->\n\n");
+    out.push_str(&format!(
+        "Controlling issue: {} (C00 under the #8062 reachability programme).\n",
+        ledger.controlling_issue
+    ));
+    out.push_str(&format!("Compatibility controller: {}.\n\n", ledger.compatibility_controller));
+    out.push_str(
+        "This is a **record of current behavior**, not a specification of desired behavior.\n\
+         It says what the bounded compatibility surface does today, what it cannot represent,\n\
+         and which authority owns each replacement. It grants no authority of its own: no item\n\
+         on this surface authorizes an edit, and no value it produces is proof that removing\n\
+         code is safe.\n\n",
+    );
+
+    out.push_str("## Export paths\n\n");
+    out.push_str(&format!(
+        "{} public paths reach one module. The module is dispositioned once; the others\n\
+         are projections, not separate authorities.\n\n",
+        ledger.export_path.len()
+    ));
+    out.push_str("| Path | Role | Declared at |\n| --- | --- | --- |\n");
+    for export in &ledger.export_path {
+        out.push_str(&format!(
+            "| `{}` | {} | `{}` |\n",
+            export.path, export.role, export.declared_at
         ));
-        return;
     }
-    for (index, (want, got)) in expected.iter().zip(actual.iter()).enumerate() {
-        if want != got {
-            violations.push(format!(
-                "L8: {human_ledger} {label} row {} disagrees with the ledger:\n      ledger: {:?}\n      \
-                 markdown: {:?}",
-                index + 1,
-                want,
-                got
-            ));
+    for export in &ledger.export_path {
+        out.push_str(&format!("\n- `{}` — {}", export.path, export.note));
+    }
+    out.push_str("\n\n## Item dispositions\n\n");
+    out.push_str(&format!(
+        "All {} public items in the module have exactly one row. A new public item fails the\n\
+         check until it is dispositioned here.\n\n",
+        ledger.item.len()
+    ));
+    out.push_str(
+        "| Item | Kind | Class | Disposition | Producer | Proof ceiling | Replacement owner |\n\
+         | --- | --- | --- | --- | --- | --- | --- |\n",
+    );
+    for item in &ledger.item {
+        out.push_str(&format!(
+            "| `{}` | {} | {} | {} | {} | {} | {} |\n",
+            item.id,
+            item.kind,
+            item.semantic_class,
+            item.disposition,
+            item.producer,
+            item.proof_ceiling,
+            item.replacement_owner
+        ));
+    }
+
+    out.push_str("\n### What the producer states mean\n\n");
+    out.push_str("- `produced` — some current code path constructs it.\n");
+    out.push_str(
+        "- `never_produced` — advertised by the type and by the serde representation, constructed by nothing.\n",
+    );
+    out.push_str("- `inert` — accepted and stored, never read by any code path.\n");
+    out.push_str("- `structural` — a container or definition that is not itself produced.\n\n");
+    out.push_str(&format!(
+        "Currently {} items are `never_produced` and {} are `inert`:\n\n",
+        never_produced.len(),
+        inert.len()
+    ));
+    for item in never_produced.iter().chain(inert.iter()) {
+        out.push_str(&format!("- **`{}`** ({}) — {}\n", item.id, item.producer, item.lossiness));
+    }
+
+    out.push_str("\n## Result-state mapping\n\n");
+    out.push_str(
+        "For each state the reachability programme distinguishes, how the two public entry\n\
+         points represent it. A collapse is recorded as a defect with an owner; it is never\n\
+         accepted silently.\n\n",
+    );
+    out.push_str(
+        "| Result state | analyze_file | analyze_workspace | Owner |\n| --- | --- | --- | --- |\n",
+    );
+    for state in &ledger.result_state {
+        out.push_str(&format!(
+            "| `{}` | {} | {} | {} |\n",
+            state.id,
+            state.analyze_file,
+            state.analyze_workspace,
+            if state.owner.is_empty() { EMPTY_CELL } else { state.owner.as_str() }
+        ));
+    }
+    out.push_str("\nRepresentations:\n\n");
+    out.push_str("- `represented` — the state is distinctly expressible.\n");
+    out.push_str("- `represented_lossy` — expressible, but the row's note names what is lost.\n");
+    out.push_str(
+        "- `indistinguishable_from_complete` — the state arrives looking like a complete result. **Defect.**\n",
+    );
+    out.push_str(
+        "- `indistinguishable_from_clean_empty` — the state arrives looking like a clean empty result. **Defect.**\n",
+    );
+    out.push_str(
+        "- `not_reachable` — the implementation cannot enter the state at all; it is absent, not hidden.\n\n",
+    );
+    let defects: Vec<&ResultState> =
+        ledger.result_state.iter().filter(|s| !s.defect.trim().is_empty()).collect();
+    out.push_str(&format!("### Recorded defects ({})\n\n", defects.len()));
+    for state in &defects {
+        out.push_str(&format!("- **`{}`** → {} — {}\n", state.id, state.owner, state.defect));
+    }
+    let notes: Vec<&ResultState> =
+        ledger.result_state.iter().filter(|s| !s.note.trim().is_empty()).collect();
+    if !notes.is_empty() {
+        out.push_str("\n### Notes on the remaining states\n\n");
+        for state in &notes {
+            out.push_str(&format!("- **`{}`** — {}\n", state.id, state.note));
         }
     }
-}
 
-/// Parse the first Markdown table whose header begins with `first_header_cell`.
-fn parse_table(text: &str, first_header_cell: &str) -> Option<Vec<Vec<String>>> {
-    let lines: Vec<&str> = text.lines().collect();
-    let header_index = lines.iter().position(|line| {
-        split_row(line)
-            .is_some_and(|cells| cells.first().map(String::as_str) == Some(first_header_cell))
-    })?;
-    let mut rows = Vec::new();
-    for line in lines.iter().skip(header_index + 1) {
-        let Some(cells) = split_row(line) else {
-            break;
-        };
-        if is_separator(&cells) {
-            continue;
-        }
-        rows.push(cells);
+    out.push_str("\n## Consumer inventory\n\n");
+    let roots =
+        CONSUMER_SCAN_ROOTS.iter().map(|root| format!("`{root}`")).collect::<Vec<_>>().join(", ");
+    out.push_str(&format!(
+        "The check scans {roots} and fails on any file that references this surface without a\n\
+         row here, so it cannot be wired into a new path silently.\n\n"
+    ));
+    out.push_str("| Consumer | Class |\n| --- | --- |\n");
+    for consumer in &ledger.consumer {
+        out.push_str(&format!("| `{}` | {} |\n", consumer.path, consumer.class));
     }
-    Some(rows)
-}
-
-fn split_row(line: &str) -> Option<Vec<String>> {
-    let trimmed = line.trim();
-    if !trimmed.starts_with('|') || !trimmed.ends_with('|') || trimmed.len() < 2 {
-        return None;
+    out.push('\n');
+    for consumer in &ledger.consumer {
+        out.push_str(&format!("- `{}` — {}\n", consumer.path, consumer.note));
     }
-    Some(trimmed[1..trimmed.len() - 1].split('|').map(|cell| cell.trim().to_string()).collect())
-}
+    let production = ledger.consumer.iter().filter(|c| c.class == "production").count();
+    out.push_str(&format!(
+        "\nProduction consumers: **{production}**.\n\n\
+         Paths that name the surface in order to govern it rather than consume it — the module\n\
+         itself and this ledger's own tooling — are declared as `governance_paths` and are\n\
+         checked for staleness:\n\n"
+    ));
+    for path in &ledger.governance_paths {
+        out.push_str(&format!("- `{path}`\n"));
+    }
 
-fn is_separator(cells: &[String]) -> bool {
-    !cells.is_empty()
-        && cells
-            .iter()
-            .all(|cell| !cell.is_empty() && cell.chars().all(|c| matches!(c, '-' | ':' | ' ')))
+    out.push_str("\n## Boundaries this ledger does not resolve\n\n");
+    for np in &ledger.not_proven {
+        out.push_str(&format!(
+            "- **{}** — *claim:* {} *Why NOT_PROVEN:* {}\n",
+            np.id, np.claim, np.reason
+        ));
+    }
+
+    out.push_str("\n## Verification\n\n```bash\n");
+    out.push_str("cargo xtask check-dead-code-api-ledger\n");
+    out.push_str("cargo test -p xtask --locked dead_code_api_ledger\n");
+    out.push_str("cargo test -p perl-parser --test dead_code_api_compat --locked\n");
+    out.push_str("```\n");
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1112,19 +1403,140 @@ mod tests {
     }
 
     #[test]
-    fn corpus_fixture_ids_are_extracted() {
-        let text = "// dcapi-one proves a thing\n//! see `dcapi-two-three`.\nlet x = 1;\n";
-        let ids = corpus_fixture_ids(text);
-        assert!(ids.contains("dcapi-one"));
-        assert!(ids.contains("dcapi-two-three"));
-        assert_eq!(ids.len(), 2);
+    fn fixture_ids_come_from_test_functions_not_comments() -> Result<()> {
+        let corpus = r#"
+        /// Fixture `dcapi-real-one`.
+        #[test]
+        fn dcapi_real_one_with_a_longer_tail() {}
+
+        // Fixture `dcapi-only-a-comment` — the test below was deleted.
+        fn helper_not_a_test() {}
+        "#;
+        let names = corpus_test_functions(corpus)?;
+        assert!(names.contains("dcapi_real_one_with_a_longer_tail"));
+        assert_eq!(names.len(), 1, "only `#[test]` functions count");
+
+        assert!(fixture_is_bound("dcapi-real-one", &names), "snake-prefix binding");
+        assert!(
+            !fixture_is_bound("dcapi-only-a-comment", &names),
+            "a fixture that exists only as comment text must not count as bound"
+        );
+        Ok(())
+    }
+
+    /// Devin review, PR #15086: deleting a test while keeping its banner left
+    /// L9/L10 green because fixture ids were scraped from comment text.
+    #[test]
+    fn falsifier_l9_a_comment_only_fixture_is_not_proof() -> Result<()> {
+        let root = project_root()?;
+        let ledger = read_ledger(&root, POLICY_PATH)?;
+        let corpus = read_text(&root, &ledger.compat_corpus)?;
+        // Delete the test function but leave every comment mentioning it.
+        let gutted = corpus.replace(
+            "fn dcapi_entry_point_is_inert() -> TestResult {",
+            "fn deleted_entry_point_fixture_renamed_away() -> TestResult {",
+        );
+        assert_ne!(gutted, corpus, "the mutation must actually apply");
+        let mut violations = Vec::new();
+        validate_fixtures(&ledger, &gutted, &mut violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.starts_with("L9:") && v.contains("dcapi-entry-point-is-inert")),
+            "a deleted test with a surviving banner must break its binding: {violations:?}"
+        );
+        Ok(())
+    }
+
+    /// Devin review, PR #15086: only two tables were compared, so generated
+    /// prose outside them could drift without failing L8.
+    #[test]
+    fn falsifier_l8_prose_outside_the_tables_cannot_drift() -> Result<()> {
+        let root = project_root()?;
+        let ledger = read_ledger(&root, POLICY_PATH)?;
+        let rendered = render_projection(&ledger);
+
+        // A sentence in the consumer-inventory narrative, well outside both tables.
+        let drifted =
+            rendered.replace("Production consumers: **0**.", "Production consumers: **7**.");
+        assert_ne!(drifted, rendered, "the mutation must actually apply");
+        let mut violations = Vec::new();
+        validate_human_projection(&ledger, &drifted, &mut violations);
+        assert!(
+            violations.iter().any(|v| v.starts_with("L8:")),
+            "prose drift outside the tables must fail: {violations:?}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn markdown_tables_parse_and_skip_separators() {
-        let text = "| Item | Kind |\n| --- | --- |\n| `a` | enum |\n| `b` | field |\n\ntext\n";
-        let table = parse_table(text, "Item").expect("table");
-        assert_eq!(table, vec![vec!["`a`", "enum"], vec!["`b`", "field"]]);
+    fn projection_render_is_deterministic() -> Result<()> {
+        let root = project_root()?;
+        let ledger = read_ledger(&root, POLICY_PATH)?;
+        assert_eq!(render_projection(&ledger), render_projection(&ledger));
+        Ok(())
+    }
+
+    /// Devin review, PR #15086: type aliases, constants, statics, traits,
+    /// unions, re-exports and associated constants escaped disposition.
+    #[test]
+    fn source_surface_covers_every_public_form() -> Result<()> {
+        let items = parse_module_surface(
+            r#"
+            pub type Alias = usize;
+            pub const LIMIT: usize = 1;
+            pub static TABLE: usize = 2;
+            pub trait Shape { fn area(&self) -> usize; const SIDES: usize; }
+            pub use other::Reexported;
+            pub mod nested {}
+            pub struct Tuple(pub usize);
+            struct Private;
+            impl Tuple { pub const ZERO: usize = 0; pub fn make() -> Self { Self(0) } }
+            "#,
+        )?;
+        let by_id: BTreeMap<&str, &str> =
+            items.iter().map(|i| (i.id.as_str(), i.kind.as_str())).collect();
+
+        assert_eq!(by_id.get("Alias"), Some(&"type_alias"));
+        assert_eq!(by_id.get("LIMIT"), Some(&"constant"));
+        assert_eq!(by_id.get("TABLE"), Some(&"static"));
+        assert_eq!(by_id.get("Shape"), Some(&"trait"));
+        assert_eq!(by_id.get("Shape::area"), Some(&"trait_member"));
+        assert_eq!(by_id.get("Shape::SIDES"), Some(&"trait_member"));
+        assert_eq!(by_id.get("Reexported"), Some(&"reexport"));
+        assert_eq!(by_id.get("nested"), Some(&"submodule"));
+        assert_eq!(by_id.get("Tuple::0"), Some(&"field"), "tuple fields are public API");
+        assert_eq!(by_id.get("Tuple::ZERO"), Some(&"associated_constant"));
+        assert_eq!(by_id.get("Tuple::make"), Some(&"method"));
+        assert!(!by_id.contains_key("Private"), "private items stay out");
+        Ok(())
+    }
+
+    #[test]
+    fn public_glob_reexport_fails_closed() -> Result<()> {
+        let items = parse_module_surface("pub use other::*;")?;
+        assert!(
+            items.iter().any(|i| i.id.contains("glob")),
+            "an unbounded public glob re-export cannot be enumerated and must fail L1"
+        );
+        Ok(())
+    }
+
+    /// Devin review, PR #15086: `use perl_parser::prelude::*;` followed by a bare
+    /// `DeadCode` bypassed the needle scan entirely.
+    #[test]
+    fn wildcard_prelude_consumers_are_detected() {
+        let wildcard = "use perl_parser::prelude::*;\nfn f(d: DeadCode) {}\n";
+        assert!(
+            references_surface(wildcard),
+            "a wildcard prelude import plus a bare DeadCode is a consumer"
+        );
+        // The unrelated identifier still must not register: no prelude import.
+        let unrelated = "    /// Unreachable or unused code\n    DeadCode,\n";
+        assert!(!references_surface(unrelated));
+        // Nor does a prelude import on its own.
+        let prelude_only = "use perl_parser::prelude::*;\nfn f(p: Parser) {}\n";
+        assert!(!references_surface(prelude_only));
     }
 
     // ---- Falsifiers: each mutates a valid ledger and asserts the named law bites ----

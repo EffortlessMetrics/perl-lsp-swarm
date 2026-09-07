@@ -1762,6 +1762,20 @@ jobs:
       - name: Freshness-gate cfg-binding contract (required merge surface)
         run: cargo test -p xtask --test gate_policy_profile_tests --locked -- freshness_gate_commands_satisfy_every_named_suite_cfg --nocapture
 
+      # #9777: the dead-code API disposition ledger's drift check lives in
+      # `xtask/src/tasks/dead_code_api_ledger.rs` — a *bin* unit-test module.
+      # Same failure mode as the changelog contract above (#13484): `--lib`
+      # gates skip bin targets entirely, and unit_routed_full only executes via
+      # advisory pr-smoke and only when the PR diff selects xtask. A public item
+      # added to `crates/perl-parser/src/dead_code/mod.rs` alone therefore
+      # touches no xtask path, so the ledger could go stale — the surface
+      # growing an undispositioned item — with every required check green. That
+      # is the exact guard-with-no-way-to-fail this ledger exists to prevent.
+      # Filtered to this module rather than the whole bin suite on purpose: that
+      # suite also carries inventory ratchets red on main today.
+      - name: Dead-code API ledger contract (required merge surface)
+        run: cargo test -p xtask --bin xtask --locked -- --nocapture dead_code_api_ledger
+
   lsp-memory-smoke:
     name: LSP Memory Smoke
     runs-on: ubuntu-24.04
