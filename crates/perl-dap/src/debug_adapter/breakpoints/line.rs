@@ -197,8 +197,7 @@ impl DebugAdapter {
         let mut rejected_results = rejected.into_iter().peekable();
         let mut body_breakpoints: Vec<Value> = Vec::with_capacity(input_len);
         for index in 0..input_len {
-            if let Some((_, line, column, message)) =
-                rejected_results.next_if(|(i, ..)| *i == index)
+            if let Some((_, line, column, message)) = rejected_results.next_if(|(i, ..)| *i == index)
             {
                 let mut entry = json!({
                     "verified": false,
@@ -289,11 +288,8 @@ mod source_boundary_tests {
         assert_eq!(absolute["breakpoints"].as_array().map(Vec::len), Some(1));
         assert_eq!(absolute["breakpoints"][0]["verified"], json!(true));
 
-        let relative = successful_body(request(
-            &mut adapter,
-            "boundary_fixture.pl",
-            json!([{ "line": 2 }]),
-        ))?;
+        let relative =
+            successful_body(request(&mut adapter, "boundary_fixture.pl", json!([{ "line": 2 }])))?;
         assert_eq!(relative["breakpoints"].as_array().map(Vec::len), Some(1));
         assert_eq!(relative["breakpoints"][0]["verified"], json!(true));
         let records = adapter.breakpoints.get_breakpoints(canonical_key);
@@ -364,11 +360,8 @@ mod source_boundary_tests {
         let root = tempfile::tempdir()?;
         let source = root.path().join("not_created_yet.pl");
         let mut adapter = bounded_adapter(root.path())?;
-        let body = successful_body(request(
-            &mut adapter,
-            source_text(&source)?,
-            json!([{ "line": 1 }]),
-        ))?;
+        let body =
+            successful_body(request(&mut adapter, source_text(&source)?, json!([{ "line": 1 }])))?;
         assert_eq!(body["breakpoints"].as_array().map(Vec::len), Some(1));
         assert!(!source.exists(), "breakpoint admission must not create source files");
         Ok(())
@@ -381,11 +374,8 @@ mod source_boundary_tests {
         let source = root.path().join("ordinary.pl");
         fs::write(&source, "print 'fixture';\n")?;
         let mut adapter = DebugAdapter::new();
-        let body = successful_body(request(
-            &mut adapter,
-            source_text(&source)?,
-            json!([{ "line": 1 }]),
-        ))?;
+        let body =
+            successful_body(request(&mut adapter, source_text(&source)?, json!([{ "line": 1 }])))?;
         assert_eq!(body["breakpoints"].as_array().map(Vec::len), Some(1));
         assert_eq!(body["breakpoints"][0]["verified"], json!(true));
         Ok(())
