@@ -81,7 +81,7 @@ branch on trust; it is what caught both rows being mis-declared as `ast`.
 
 ## What the inventory found
 
-Four findings decide how much freedom #9189 and #9190 actually have.
+Five findings decide how much freedom #9189 and #9190 actually have.
 
 ### The enhanced generation runs twice per request
 
@@ -138,6 +138,20 @@ shape. No corpus fixture can pin that without racing the parser, so both
 treat them as parity-proven, and #9190 should decide whether a generation
 reachable only inside that window is worth keeping at all.
 
+### The legacy critic engine is unreachable from any LSP client setting
+
+`legacy_critic` is opt-in, but not through the channels a client controls.
+`parse_lsp_critic_engine` maps `Legacy` to `None`, so `critic.engine =
+"legacy"` is rejected as an invalid setting on `initializationOptions`,
+`didChangeConfiguration`, and `workspace/configuration` alike. Only the trusted
+`.perl-lsp.toml` project channel still accepts it, and that path logs a
+deprecation naming #8253 and #9072 as the owning migration.
+
+So the row is `compatibility_only` with a recorded `proof_gap` rather than a
+fixture: reaching it needs a workspace fixture that writes a project config
+selecting a deprecated engine. Before #9190 spends effort proving parity here,
+it should check whether #9072 has already retired the engine.
+
 ### Pragma authority is ordered, not resolved
 
 `missing_pragmas` and the PL100/PL101 arms of `provider_original` produce the
@@ -167,6 +181,7 @@ The corpus covers the outcome classes #9188 requires:
 | --- | --- |
 | successful | `cac-parity-diagnostic-routed-quickfix-edit`, `cac-parity-pragma-quickfix-single-edit`, `cac-parity-critic-quickfix-safe-only`, `cac-parity-source-fixall-aggregates-after-dedupe`, `cac-parity-enhanced-combined-pragma-fix`, `cac-parity-utf8-pragma-only-for-non-ascii-source` |
 | disabled / refused | `cac-parity-disabled-extract-requires-selection`, `cac-parity-refused-without-disabled-support` |
+| recorded gap (`NOT_PROVEN`) | `text_fallback` (both rows) and `legacy_critic` carry a `proof_gap` instead of a fixture |
 | stale | `cac-parity-stale-superseded-document-version` |
 | ambiguous | `cac-parity-extract-variable-requires-selection`, `cac-parity-duplicate-authority-collapsed` |
 | malformed | `cac-parity-parse-error-recovery-keeps-ast-path` |

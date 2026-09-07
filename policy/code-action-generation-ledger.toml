@@ -342,9 +342,10 @@ parity_fixtures = ["cac-parity-critic-quickfix-safe-only"]
 generation = "legacy_critic"
 family = "quickfix:critic_finding"
 disposition = "compatibility_only"
-notes = "Selected only by the opt-in Legacy engine and mutually exclusive with the native engine, so the two never publish together."
+notes = "Mutually exclusive with the native engine, so the two never publish together. Reachable only through the trusted .perl-lsp.toml project channel: parse_lsp_critic_engine maps Legacy to None, so initializationOptions, didChangeConfiguration and workspace/configuration all reject critic.engine = \"legacy\". The project channel logs a deprecation naming #8253/#9072 as the owning migration."
 retirement_blockers = ["opt_in_engine_has_no_canonical_equivalent"]
-parity_fixtures = ["cac-parity-critic-quickfix-safe-only"]
+parity_fixtures = []
+proof_gap = "The shared critic fixture exercises the default native engine only. Reaching this generation needs a workspace carrying a .perl-lsp.toml that selects the deprecated engine, which no corpus fixture sets up; the LSP settings channels cannot select it at all. #9190 should confirm whether #9072 retires the engine before this row needs parity evidence."
 
 [[route]]
 generation = "provider_original"
