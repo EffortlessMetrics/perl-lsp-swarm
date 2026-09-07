@@ -1256,19 +1256,16 @@ fn matrix_values(job: &Mapping, key: &str) -> Option<Vec<String>> {
             values.push(entry.as_str()?.to_string());
         }
     }
-    if let Some(include) = matrix.get(Value::String("include".to_string())) {
-        for row in include.as_sequence()? {
-            if let Some(entry) = row.as_mapping()?.get(Value::String(key.to_string())) {
-                values.push(entry.as_str()?.to_string());
-            }
-        }
-    }
 
-    // `exclude:` removes scheduled combinations. An entry naming only this key
-    // removes that value from every combination, so it can be subtracted. An
-    // entry that also constrains another axis removes only some combinations,
-    // leaving the value reachable through the others — subtracting it there
-    // would turn a real obligation into a silent pass, so it is kept.
+    // GitHub applies `exclude:` to the combinations generated from the axes, so
+    // it can only subtract from those — never from `include:` rows, which are
+    // processed afterwards and may add a combination back. Subtracting across
+    // both would let `exclude` cancel an `include` that GitHub still schedules.
+    //
+    // Within the axis values: an exclude entry naming only this key removes the
+    // value from every generated combination, so it is subtracted. One that
+    // also constrains another axis removes only some combinations and leaves
+    // the value reachable through the rest, so it is kept.
     if let Some(exclude) = matrix.get(Value::String("exclude".to_string())) {
         for row in exclude.as_sequence()? {
             let row = row.as_mapping()?;
@@ -1280,6 +1277,15 @@ fn matrix_values(job: &Mapping, key: &str) -> Option<Vec<String>> {
             }
             let excluded = excluded.as_str()?;
             values.retain(|value| value != excluded);
+        }
+    }
+
+    // Added after exclusion, and deliberately not subject to it.
+    if let Some(include) = matrix.get(Value::String("include".to_string())) {
+        for row in include.as_sequence()? {
+            if let Some(entry) = row.as_mapping()?.get(Value::String(key.to_string())) {
+                values.push(entry.as_str()?.to_string());
+            }
         }
     }
 
@@ -2890,6 +2896,24 @@ review_after = "2099-01-01"
         )?;
         let issues = evaluate_workflow(&workflow)?;
         assert!(issues.is_empty(), "the self-hosted row is never scheduled: {issues:?}");
+        Ok(())
+    }
+
+    /// `include:` is processed after `exclude:` and can add a combination back.
+    /// An exclusion must therefore never cancel an inclusion — GitHub still
+    /// schedules the included row.
+    #[test]
+    fn included_row_survives_an_exclusion_of_the_same_value() -> Result<()> {
+        let workflow = matrix_workflow(
+            "os: [ubuntu-24.04, self-hosted]\n        \
+             exclude:\n          - os: self-hosted\n        \
+             include:\n          - os: self-hosted",
+        )?;
+        assert_eq!(
+            codes(&evaluate_workflow(&workflow)?),
+            vec!["SELF_HOSTED_ISOLATION_UNDECLARED"],
+            "the included self-hosted row is still scheduled"
+        );
         Ok(())
     }
 
