@@ -417,7 +417,28 @@ pub enum QuickOrmTypeParamEffect {
     /// the receiver's row *class* survives an argument-bearing call. Clearing
     /// the binding likewise does not mean later results have no row type: they
     /// are then derived from the retained source.
+    ///
+    /// Where changing the binding is a call's whole purpose, that is recorded
+    /// explicitly rather than folded in here — see
+    /// [`Self::SourcePreservedRowFromArgument`] and
+    /// [`Self::SourcePreservedRowUnbound`].
     PreservedFromReceiver,
+    /// The receiver's source is carried through, but the bound row is replaced
+    /// by the argument, whose class need not match the receiver's.
+    ///
+    /// `Handle::row($r)` is the case. The source survives because the row
+    /// travels as a named key (Handle.pm:1312, 902-928), while `_check_row`
+    /// admits any row on a matching connection whose source shares a
+    /// `source_orm_name` and does **not** require a matching row class
+    /// (Handle.pm:291-304). A consumer must take the row parameter from the
+    /// argument, not from the receiver.
+    SourcePreservedRowFromArgument,
+    /// The receiver's source is carried through and the bound row is removed.
+    ///
+    /// `Handle::row(undef)` deletes the ROW slot and leaves SOURCE untouched
+    /// (Handle.pm:908-912). Later terminals still carry a row type; it is
+    /// derived from the retained source rather than from a bound row.
+    SourcePreservedRowUnbound,
     /// The source becomes a join and the row becomes a join row.
     TransformedToJoinRow,
     /// The source is taken from an argument rather than the receiver.
@@ -436,6 +457,8 @@ impl QuickOrmTypeParamEffect {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PreservedFromReceiver => "preserved_from_receiver",
+            Self::SourcePreservedRowFromArgument => "source_preserved_row_from_argument",
+            Self::SourcePreservedRowUnbound => "source_preserved_row_unbound",
             Self::TransformedToJoinRow => "transformed_to_join_row",
             Self::DerivedFromArgumentSource => "derived_from_argument_source",
             Self::ErasedToPlainData => "erased_to_plain_data",
@@ -1956,9 +1979,9 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         receiver: R::Handle,
         receiver_constraints: NO_CONSTRAINTS,
         arguments: A::ValueSetter,
-        return_class: C::PreserveHandleSourceRow,
+        return_class: C::TransformHandleSourceRow,
         multiplicity: N::One,
-        type_params: T::PreservedFromReceiver,
+        type_params: T::SourcePreservedRowUnbound,
         mode: M::SyncAsyncAsideForked,
         void_context: V::Croaks,
         boundary: B::Exact,
@@ -1991,14 +2014,14 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
             "argument row's source must share the receiver's `source_orm_name`",
         ],
         arguments: A::ValueSetter,
-        return_class: C::PreserveHandleSourceRow,
+        return_class: C::TransformHandleSourceRow,
         multiplicity: N::One,
-        type_params: T::PreservedFromReceiver,
+        type_params: T::SourcePreservedRowFromArgument,
         mode: M::SyncAsyncAsideForked,
         void_context: V::Croaks,
-        boundary: B::Exact,
+        boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: HANDLE, line: 1312 },
-        notes: "Binding a row clears the where clause but keeps the receiver's source. `row($r)` calls `clone(ROW() => $r, WHERE() => undef)` (Handle.pm:1312), so the row travels as a *named key* and takes the constant path at Handle.pm:902-928, which assigns the slot and never touches SOURCE. The `if ($set{+SOURCE})` branch that can adopt a row's own source is the *positional* `Role::Row` argument form (Handle.pm:829-840), which this call never reaches. `_check_row` admits any row on a matching connection whose source shares a `source_orm_name` (Handle.pm:291-304) and does not require a matching row class, so the source survives while the bound row's class need not.",
+        notes: "Binding a row clears the where clause but keeps the receiver's source. `row($r)` calls `clone(ROW() => $r, WHERE() => undef)` (Handle.pm:1312), so the row travels as a *named key* and takes the constant path at Handle.pm:902-928, which assigns the slot and never touches SOURCE. The `if ($set{+SOURCE})` branch that can adopt a row's own source is the *positional* `Role::Row` argument form (Handle.pm:829-840), which this call never reaches. `_check_row` admits any row on a matching connection whose source shares a `source_orm_name` (Handle.pm:291-304) and does not require a matching row class, so the source survives while the bound row's class need not. The two facts are recorded separately: the source is preserved, and the row parameter comes from the argument. A consumer must not read the receiver's row class through this call.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.source.get",
@@ -4061,17 +4084,33 @@ mod tests {
         // adopts a row's own source is the positional argument form, which
         // this call cannot reach — so both the binding and the clearing form
         // keep the receiver's source.
+        // Both forms keep the source, so neither may claim the source comes
+        // from the argument — that is the withdrawn rebinding claim.
         for id in ["handle.row.set", "handle.row.clear"] {
-            let case = case_by_id(id);
-            assert_eq!(
-                case.return_class,
-                QuickOrmReturnClass::PreserveHandleSourceRow,
-                "`{id}` keeps the receiver's source"
+            assert_ne!(
+                case_by_id(id).type_params,
+                QuickOrmTypeParamEffect::DerivedFromArgumentSource,
+                "`{id}` keeps the receiver's source and must not claim otherwise"
             );
-            assert_eq!(
-                case.type_params,
-                QuickOrmTypeParamEffect::PreservedFromReceiver,
-                "`{id}` must not claim the source is derived from the argument"
+        }
+
+        // But the source fact and the row fact are separate. `row($r)` binds
+        // the argument's row, whose class `_check_row` does not constrain, and
+        // `row(undef)` removes the binding — so neither may claim the
+        // receiver's row parameter survives unchanged either.
+        assert_eq!(
+            case_by_id("handle.row.set").type_params,
+            QuickOrmTypeParamEffect::SourcePreservedRowFromArgument
+        );
+        assert_eq!(
+            case_by_id("handle.row.clear").type_params,
+            QuickOrmTypeParamEffect::SourcePreservedRowUnbound
+        );
+        for id in ["handle.row.set", "handle.row.clear"] {
+            assert_ne!(
+                case_by_id(id).return_class,
+                QuickOrmReturnClass::PreserveHandleSourceRow,
+                "`{id}` changes the row parameter, so it does not preserve both"
             );
         }
 
