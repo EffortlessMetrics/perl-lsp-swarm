@@ -168,41 +168,47 @@ impl LspServer {
         }
     }
 
-    /// Whether `dir` resolves entry names case-insensitively.
+    /// Whether the volume holding `dir` resolves names case-insensitively.
     ///
-    /// Probed read-only against an existing entry rather than written, because
-    /// this runs against the user's workspace, and probed rather than inferred
-    /// from `cfg!(windows)`, because macOS folds case by default and a Linux
-    /// volume may be mounted either way.
+    /// Asked of `dir` itself — its own name is re-spelled in the opposite case
+    /// and both are canonicalized — rather than of anything *inside* it. An
+    /// earlier version scanned directory entries and was wrong in both
+    /// directions: an empty directory reported "case-sensitive" (and deleting
+    /// the last metadata file is exactly how the directory becomes empty),
+    /// while a case-sensitive directory that happened to hold both `Foo` and
+    /// `foo` reported "folds case", which is the dangerous answer. Identity of
+    /// one path that is known to exist does not depend on directory contents.
     ///
-    /// Returns `false` when the directory cannot be read or holds no entry
-    /// whose name contains an ASCII letter — the conservative answer, since it
-    /// only ever withholds a case-variant match.
+    /// Read-only, because this runs against the user's workspace, and probed
+    /// rather than inferred from `cfg!(windows)`, because macOS folds case by
+    /// default and a Linux volume may be mounted either way.
+    ///
+    /// Returns `false` — the conservative answer, which only ever withholds a
+    /// case-variant match — when `dir` has no parent, when its name carries no
+    /// ASCII letter to re-spell, or when either path fails to canonicalize.
     fn directory_folds_case(dir: &Path) -> bool {
-        let Ok(entries) = std::fs::read_dir(dir) else {
+        let (Some(parent), Some(name)) =
+            (dir.parent(), dir.file_name().and_then(std::ffi::OsStr::to_str))
+        else {
             return false;
         };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            let flipped: String = name
-                .chars()
-                .map(|c| {
-                    if c.is_ascii_lowercase() {
-                        c.to_ascii_uppercase()
-                    } else {
-                        c.to_ascii_lowercase()
-                    }
-                })
-                .collect();
-            if flipped == name {
-                continue;
-            }
-            return dir.join(flipped).symlink_metadata().is_ok();
+        let respelled: String = name
+            .chars()
+            .map(|character| {
+                if character.is_ascii_lowercase() {
+                    character.to_ascii_uppercase()
+                } else {
+                    character.to_ascii_lowercase()
+                }
+            })
+            .collect();
+        if respelled == name {
+            return false;
         }
-        false
+        match (std::fs::canonicalize(dir), std::fs::canonicalize(parent.join(respelled))) {
+            (Ok(original), Ok(respelled)) => original == respelled,
+            _ => false,
+        }
     }
 
     /// Component-wise, ASCII case-insensitive path equality.
@@ -735,6 +741,52 @@ mod tests {
     fn the_case_fold_probe_is_false_for_a_missing_directory() {
         let temp = tempfile::tempdir().expect("temp dir");
         assert!(!LspServer::directory_folds_case(&temp.path().join("absent")));
+    }
+
+    /// The probe must not depend on what the directory contains. An empty
+    /// workspace is the normal state right after the last metadata file is
+    /// deleted — precisely when the delete case needs an answer.
+    #[test]
+    fn the_case_fold_probe_does_not_depend_on_directory_contents() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let empty = temp.path().join("EmptyWorkspace");
+        std::fs::create_dir(&empty).expect("create dir");
+
+        let expected = filesystem_is_case_insensitive(temp.path());
+        assert_eq!(
+            LspServer::directory_folds_case(&empty),
+            expected,
+            "an empty directory must report its volume's real behavior"
+        );
+
+        std::fs::write(empty.join("cpanfile"), "requires 'X';\n").expect("write entry");
+        assert_eq!(
+            LspServer::directory_folds_case(&empty),
+            expected,
+            "adding an entry must not change the answer"
+        );
+    }
+
+    /// A case-sensitive directory that happens to hold a name and its exact
+    /// case-flip must not be mistaken for a case-folding one.
+    ///
+    /// `Foo` and `fOO` are genuine flips of each other, which is what an
+    /// entry-scanning probe keys on: it would find `Foo`, re-spell it as
+    /// `fOO`, see that it exists, and wrongly conclude the volume folds case —
+    /// then let an unrelated `CPANFILE` buffer supply text for `cpanfile`.
+    #[test]
+    fn a_flipped_name_pair_inside_a_directory_does_not_imply_case_folding() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let workspace = temp.path().join("Workspace");
+        std::fs::create_dir(&workspace).expect("create dir");
+        std::fs::write(workspace.join("Foo"), "upper").expect("write Foo");
+        std::fs::write(workspace.join("fOO"), "flipped").expect("write fOO");
+
+        assert_eq!(
+            LspServer::directory_folds_case(&workspace),
+            filesystem_is_case_insensitive(temp.path()),
+            "entry names that differ only by case say nothing about the volume"
+        );
     }
 
     /// A case-variant lookup must not reach a different file in the same
