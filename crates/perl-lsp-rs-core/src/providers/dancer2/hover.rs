@@ -825,6 +825,11 @@ get '/x' => sub { 1 };
         );
         assert_eq!(bundle.routes.len(), 1, "the get route mints");
         assert_eq!(bundle.routes[0].framework_version, "2.0.1");
+        // Provenance: 2.x leaves attribute to the 2.X adapter, never 1.x.
+        assert_eq!(
+            bundle.routes[0].adapter_id,
+            perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_ADAPTER_ID
+        );
         // Handler context mints in the same pass for the registering inline
         // handler: route-handler-only scope is now established for 2.x.
         assert_eq!(bundle.handler_contexts.len(), 1);

@@ -506,6 +506,9 @@ impl super::dancer2_routes::RouteFamilyKeywordView for Dancer2TwoXKeywordView<'_
     fn is_exact(&self) -> bool {
         self.facts.is_exact()
     }
+    fn adapter_id(&self) -> crate::framework::AdapterId {
+        DANCER2_TWO_X_ADAPTER_ID
+    }
     fn application_name(&self) -> Option<&str> {
         match &self.facts.state {
             Dancer2TwoXActivationState::Exact { application_name, .. } => {

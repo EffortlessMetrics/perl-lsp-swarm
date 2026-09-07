@@ -143,6 +143,9 @@ pub enum RouteFactsContract {
 pub trait RouteFamilyKeywordView {
     /// Whether the activation is exact (anything else mints nothing).
     fn is_exact(&self) -> bool;
+    /// The adapter identity every minted leaf carries — 2.x facts must
+    /// attribute to the 2.x adapter, never the 1.x one (#15006 review).
+    fn adapter_id(&self) -> crate::framework::AdapterId;
     fn application_name(&self) -> Option<&str>;
     fn framework_version(&self) -> Option<&str>;
     fn source_generation(&self) -> Option<&SourceGeneration>;
@@ -266,6 +269,9 @@ impl RouteFamilyKeywordView for OneXKeywordView<'_> {
     fn is_exact(&self) -> bool {
         true
     }
+    fn adapter_id(&self) -> crate::framework::AdapterId {
+        DANCER2_ADAPTER_ID
+    }
     fn application_name(&self) -> Option<&str> {
         Some(self.application_name)
     }
@@ -304,6 +310,7 @@ pub(crate) fn route_family_facts_from_view(
         return facts;
     };
 
+    let adapter_id = view.adapter_id();
     let mut route_facts = Vec::new();
     let mut parameter_facts = Vec::new();
     let mut handler_context_facts = Vec::new();
@@ -338,13 +345,19 @@ pub(crate) fn route_family_facts_from_view(
         } else {
             declaration
         };
-        let route_fact =
-            mint_route_fact(declaration, application_name, framework_version, source_generation);
+        let route_fact = mint_route_fact(
+            declaration,
+            adapter_id,
+            application_name,
+            framework_version,
+            source_generation,
+        );
         // Parameter facts exist only for minted routes: route-local keys of an
         // excluded or foreign-package route are never published.
         for (parameter_index, segment) in declaration.parameters.iter().enumerate() {
             parameter_facts.push(mint_parameter_fact(
                 declaration,
+                adapter_id,
                 segment,
                 parameter_index as u32,
                 application_name,
@@ -362,6 +375,7 @@ pub(crate) fn route_family_facts_from_view(
         {
             handler_context_facts.push(mint_handler_context_fact(
                 declaration,
+                adapter_id,
                 application_name,
                 framework_version,
                 source_generation,
@@ -380,6 +394,7 @@ pub(crate) fn route_family_facts_from_view(
         }
         prefix_facts.push(mint_prefix_fact(
             prefix_declaration,
+            adapter_id,
             application_name,
             framework_version,
             source_generation,
@@ -395,6 +410,7 @@ pub(crate) fn route_family_facts_from_view(
 
 fn mint_route_fact(
     declaration: &Dancer2RouteDeclaration,
+    adapter_id: crate::framework::AdapterId,
     application_name: &str,
     framework_version: &str,
     generation: &SourceGeneration,
@@ -444,7 +460,7 @@ fn mint_route_fact(
     RouteFact::new(
         envelope,
         DANCER2_FRAMEWORK_NAME,
-        DANCER2_ADAPTER_ID,
+        adapter_id,
         framework_version,
         application_name,
         declaration.route.clone(),
@@ -453,6 +469,7 @@ fn mint_route_fact(
 
 fn mint_prefix_fact(
     declaration: &Dancer2PrefixDeclaration,
+    adapter_id: crate::framework::AdapterId,
     application_name: &str,
     framework_version: &str,
     generation: &SourceGeneration,
@@ -490,7 +507,7 @@ fn mint_prefix_fact(
     RoutePrefixFact::new(
         envelope,
         DANCER2_FRAMEWORK_NAME,
-        DANCER2_ADAPTER_ID,
+        adapter_id,
         framework_version,
         application_name,
         declaration.prefix.clone(),
@@ -499,6 +516,7 @@ fn mint_prefix_fact(
 
 fn mint_parameter_fact(
     declaration: &Dancer2RouteDeclaration,
+    adapter_id: crate::framework::AdapterId,
     segment: &RouteParameterSegment,
     parameter_index: u32,
     application_name: &str,
@@ -533,7 +551,7 @@ fn mint_parameter_fact(
     RouteParameterFact::new(
         envelope,
         DANCER2_FRAMEWORK_NAME,
-        DANCER2_ADAPTER_ID,
+        adapter_id,
         framework_version,
         application_name,
         declaration.route.declaration_index,
@@ -543,6 +561,7 @@ fn mint_parameter_fact(
 
 fn mint_handler_context_fact(
     declaration: &Dancer2RouteDeclaration,
+    adapter_id: crate::framework::AdapterId,
     application_name: &str,
     framework_version: &str,
     generation: &SourceGeneration,
@@ -587,7 +606,7 @@ fn mint_handler_context_fact(
     RouteHandlerContextFact::new(
         envelope,
         DANCER2_FRAMEWORK_NAME,
-        DANCER2_ADAPTER_ID,
+        adapter_id,
         framework_version,
         application_name,
         declaration.route.declaration_index,

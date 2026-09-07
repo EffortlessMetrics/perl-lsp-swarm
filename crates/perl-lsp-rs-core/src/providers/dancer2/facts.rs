@@ -68,8 +68,13 @@ impl CanonicalDancer2FileFacts {
             && self.parameters.is_empty()
             && self.handler_contexts.is_empty()
             && self.hooks.is_empty()
-            && self.two_x.is_empty()
-            && self.two_x_extracted_routes.is_empty()
+    }
+
+    /// Whether comparison-only 2.x (shadow) facts are present. Deliberately
+    /// separate from [`Self::is_empty`]: shadow evidence must never read as
+    /// publication-grade canonical output (#15006 review).
+    pub fn has_comparison_facts(&self) -> bool {
+        !self.two_x.is_empty() || !self.two_x_extracted_routes.is_empty()
     }
 
     /// The route fact whose declaration span contains `offset`, excluding
