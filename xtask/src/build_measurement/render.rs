@@ -293,5 +293,14 @@ fn reason_text(reason: &NotProvenReason) -> String {
                 "reconciliation tolerance {declared}ns is not the protocol default {expected}ns"
             )
         }
+        NotProvenReason::OperationCommandMismatch { operation, command } => {
+            format!("operation {operation} does not match the executed command {command:?}")
+        }
+        NotProvenReason::HostEnvironmentMismatch { declared_host, observed_triple } => format!(
+            "declared host {declared_host:?} contradicts the observed environment triple {observed_triple:?}"
+        ),
+        NotProvenReason::DeclaredPathsUnmeasurable { detail } => {
+            format!("declared growth paths are unmeasurable: {detail}")
+        }
     }
 }

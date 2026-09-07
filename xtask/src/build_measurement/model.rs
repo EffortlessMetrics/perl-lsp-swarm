@@ -287,6 +287,19 @@ impl MeasurementCell {
         }
     }
 
+    /// The subcommand token the declared operation must carry in its
+    /// command, so a Check cell cannot admit test timings (#14739 review).
+    pub fn expected_command_token(&self) -> Option<&'static str> {
+        match self.operation {
+            Operation::Metadata => Some("metadata"),
+            Operation::Check => Some("check"),
+            Operation::Clippy => Some("clippy"),
+            Operation::Test | Operation::ExactTest => Some("test"),
+            Operation::Build => Some("build"),
+            Operation::SelectedNextest => Some("nextest"),
+        }
+    }
+
     /// Proof-workflow test-shaped cells must prove they selected and executed
     /// real work; zero selected tests can never satisfy them.
     pub fn requires_selected_work(&self) -> bool {
@@ -772,6 +785,25 @@ pub enum NotProvenReason {
         declared: u64,
         expected: u64,
     },
+    /// The executed command does not carry the declared operation's
+    /// expected subcommand: a Check cell cannot admit test timings
+    /// (#14739 review).
+    OperationCommandMismatch {
+        operation: String,
+        command: String,
+    },
+    /// The declared host profile contradicts the observed environment
+    /// triple (e.g. a NativeWindows cell on a linux-gnu triple) (#14739
+    /// review).
+    HostEnvironmentMismatch {
+        declared_host: String,
+        observed_triple: String,
+    },
+    /// A growth-path-free model declares growth paths it can never have
+    /// measured (#14739 review).
+    DeclaredPathsUnmeasurable {
+        detail: String,
+    },
 }
 
 /// The complete measurement record for one declared cell: raw facts plus
@@ -791,6 +823,9 @@ pub struct MeasurementRecord {
     pub cache: CacheObservation,
     pub work: WorkObservation,
     pub executed_subject_commit: ExecutedSubjectCommit,
+    /// Description of the declared in-harness preparation step, when one
+    /// was measured (#14739 review).
+    pub preparation_description: Option<String>,
     /// Digest over the raw observed facts only.
     pub raw_digest: String,
     /// Digest over the normalized interpretation (canonical cell + admission
@@ -897,6 +932,47 @@ impl MeasurementRecord {
 
         if self.cell.host == HostProfile::Unsupported {
             reasons.push(NotProvenReason::UnsupportedHost);
+        }
+
+        // The observed environment triple must be compatible with the
+        // declared host profile (#14739 review).
+        if let Some(triple) = &self.environment.host_triple {
+            let compatible = match self.cell.host {
+                HostProfile::NativeWindows => triple.contains("windows"),
+                HostProfile::NativePosix => {
+                    triple.contains("linux") || triple.contains("darwin") || triple.contains("bsd")
+                }
+                HostProfile::WslOrGitBash => triple.contains("linux"),
+                HostProfile::Unsupported => true,
+            };
+            if !compatible {
+                reasons.push(NotProvenReason::HostEnvironmentMismatch {
+                    declared_host: format!("{:?}", self.cell.host),
+                    observed_triple: triple.clone(),
+                });
+            }
+        }
+
+        // A growth-path-free model that declares growth paths contradicts
+        // itself: those paths can never have been measured (#14739 review).
+        if !self.cell.execution_model.declares_growth_paths()
+            && !self.cell.canonical().growth_paths.is_empty()
+        {
+            reasons.push(NotProvenReason::DeclaredPathsUnmeasurable {
+                detail: "environment-only model declares growth paths".to_string(),
+            });
+        }
+
+        // The executed command must carry the declared operation's expected
+        // subcommand (#14739 review).
+        if let Some(expected) = self.cell.expected_command_token() {
+            let haystack = format!("{} {}", self.command.program, self.command.args.join(" "));
+            if !haystack.split_whitespace().any(|token| token == expected) {
+                reasons.push(NotProvenReason::OperationCommandMismatch {
+                    operation: format!("{:?}", self.cell.operation),
+                    command: haystack.trim().to_string(),
+                });
+            }
         }
 
         // Lock admission is policy-aware: the observed state must match the

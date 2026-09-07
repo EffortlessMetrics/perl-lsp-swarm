@@ -17,6 +17,7 @@
     "cache",
     "work",
     "executed_subject_commit",
+    "preparation_description",
     "raw_digest",
     "normalized_digest"
   ],
@@ -338,6 +339,10 @@
     "executed_subject_commit": {
       "type": ["string", "null"],
       "description": "Explicitly partial evidence: the exact candidate (commit) the cell actually executed, as proven by artifact/output identity metadata. No other subject dimension is claimed; null means never proven."
+    },
+    "preparation_description": {
+      "type": ["string", "null"],
+      "description": "Description of the declared in-harness preparation step, when one was measured; null when no step was measured."
     },
     "raw_digest": {
       "type": "string",

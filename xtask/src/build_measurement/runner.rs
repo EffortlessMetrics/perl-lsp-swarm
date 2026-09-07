@@ -41,8 +41,11 @@ pub struct CellExecution {
 pub struct PreparationStep {
     /// What the step materializes, for provenance.
     pub description: String,
-    /// The measured operation.
-    pub operation: Box<dyn FnOnce()>,
+    /// The measured operation. Returns `Err` on a recoverable
+    /// materialization failure: the harness then aborts before admission
+    /// and never runs the command against missing or stale prepared state
+    /// (#14739 review).
+    pub operation: Box<dyn FnOnce() -> Result<()>>,
 }
 
 impl std::fmt::Debug for PreparationStep {
@@ -134,9 +137,12 @@ impl MeasurementHarness {
 
         // Preparation (subject materialization boundary). Declared work runs
         // inside the phase; `None` keeps it zero-width.
+        let preparation_description = preparation.as_ref().map(|step| step.description.clone());
         let t0 = self.clock.monotonic_nanos();
         if let Some(step) = preparation {
-            (step.operation)();
+            let description = step.description;
+            (step.operation)()
+                .map_err(|error| eyre!("preparation step {description} failed: {error:#}"))?;
         }
         let t1 = self.clock.monotonic_nanos();
 
@@ -240,6 +246,7 @@ impl MeasurementHarness {
             cache,
             work,
             executed_subject_commit,
+            preparation_description,
             raw_digest: String::new(),
             normalized_digest: String::new(),
         };

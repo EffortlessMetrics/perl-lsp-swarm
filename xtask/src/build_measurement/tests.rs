@@ -1352,7 +1352,7 @@ fn preparation_step_is_measured_inside_the_phase() -> Result<()> {
         proof_execution(),
         Some(super::runner::PreparationStep {
             description: "materialize subject".to_string(),
-            operation: Box::new(|| {}),
+            operation: Box::new(|| Ok(())),
         }),
     ))?;
     assert_eq!(with_step.timings.preparation_nanos, Some(3_000_000));
