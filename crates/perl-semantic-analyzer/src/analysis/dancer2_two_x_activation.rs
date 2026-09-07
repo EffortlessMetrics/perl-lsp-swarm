@@ -88,7 +88,7 @@ pub fn extract_dancer2_two_x_activation_sites(
     // `my`/`state` subs bind lexically and never occupy the package glob the
     // import checks, so they are not shadowing here; lexical-sub precedence
     // inside their scope is a separate mechanism this profile does not model.
-    let mut package_subs: Vec<(String, String)> = Vec::new();
+    let mut package_subs: Vec<PackageSub> = Vec::new();
     let mut root_package = Some("main".to_string());
     collect_package_subs(ast, &mut root_package, &mut package_subs);
 
@@ -125,35 +125,48 @@ fn occupies_package_glob(declarator: Option<&String>) -> bool {
 const NON_IMPORTING_CORE_MODULES: [&str; 7] =
     ["lib", "strict", "warnings", "utf8", "feature", "experimental", "mro"];
 
+/// One package-glob entry that can shadow a DSL keyword: a sub definition
+/// (`declaration_offset: None` — it owns the glob regardless of position,
+/// because it replaces whatever the import installed) or a forward
+/// declaration (`Some(offset)` — its stub only blocks the import when it
+/// compiled before the `use`; against an already-installed CV it is a
+/// no-op).
+type PackageSub = (String, String, Option<u32>);
+
 fn collect_package_subs(
     node: &Node,
     current_package: &mut Option<String>,
-    package_subs: &mut Vec<(String, String)>,
+    package_subs: &mut Vec<PackageSub>,
 ) {
     match &node.kind {
         NodeKind::Subroutine { name: Some(name), declarator, body, .. }
             if occupies_package_glob(declarator.as_ref()) =>
         {
-            // A forward declaration (`sub get;`) predeclares the name without
-            // installing a glob entry, so it cannot shadow an import; only a
-            // definition — a real body block with braces — does. The parser
-            // synthesizes a zero-width body for the declaration form.
+            // A forward declaration (`sub get;`) installs a stub CV into the
+            // package glob at compile time. Upstream fetches
+            // `*{"${caller}::${export}"}{CODE}` and `next if defined
+            // $existing` — `defined` on the fetched CV REFERENCE is true for
+            // a stub — so a declaration compiled BEFORE the `use` blocks the
+            // keyword exactly like a definition (#14408 review; pinned
+            // upstream Role/DSL.pm @ 674837c). A declaration AFTER the `use`
+            // is a no-op against the already-installed CV, so only
+            // definitions shadow position-independently. Lexical subs stay
+            // excluded via the declarator gate above.
             let body_span_width = body.location.end.saturating_sub(body.location.start);
             let is_forward_declaration =
                 body.location.start == body.location.end || body_span_width < 2;
-            if is_forward_declaration {
-                return;
-            }
+            let declaration_offset =
+                if is_forward_declaration { Some(body.location.start as u32) } else { None };
             if name.contains("::") {
                 // A qualified name belongs to its declared package, however
                 // the running package scope is spelled: `sub App::get` inside
                 // package Main still defines App::get, and a leading `::`
                 // addresses main's namespace.
                 if let Some((owner, leaf)) = split_qualified_sub(name) {
-                    package_subs.push((owner, leaf));
+                    package_subs.push((owner, leaf, declaration_offset));
                 }
             } else if let Some(package) = current_package.as_deref() {
-                package_subs.push((package.to_string(), name.clone()));
+                package_subs.push((package.to_string(), name.clone(), declaration_offset));
             }
         }
         NodeKind::Use { module, args, .. }
@@ -181,7 +194,7 @@ fn collect_package_subs(
                         continue;
                     }
                     if let Some(package) = current_package.as_deref() {
-                        package_subs.push((package.to_string(), text));
+                        package_subs.push((package.to_string(), text, None));
                     }
                 }
             }
@@ -237,15 +250,15 @@ fn collect_package_subs(
 fn record_glob_shadow(
     name: &str,
     current_package: &Option<String>,
-    package_subs: &mut Vec<(String, String)>,
+    package_subs: &mut Vec<PackageSub>,
 ) {
     if name.contains("::") {
         if let Some((owner, leaf)) = split_qualified_sub(name) {
-            package_subs.push((owner, leaf));
+            package_subs.push((owner, leaf, None));
         }
     } else if !name.is_empty() {
         if let Some(package) = current_package.as_deref() {
-            package_subs.push((package.to_string(), name.to_string()));
+            package_subs.push((package.to_string(), name.to_string(), None));
         }
     }
 }
@@ -265,14 +278,17 @@ fn has_parenthesized_import_list(source: &str, span_start: u32, span_end: u32) -
     };
     let module = skip_layout(after_use);
     // Scan past the module spelling (letters, `::`, underscores, and any
-    // version components the parser folded into the module name); a folded
-    // bare version already claimed the requirement, so only a bare form can
-    // be followed by a parenthesized list.
+    // version components the parser folded into the module name).
     let after_module = match module.find(|c: char| !(c.is_alphanumeric() || c == ':' || c == '_')) {
         Some(index) => &module[index..],
         None => return false,
     };
-    skip_layout(after_module).starts_with('(')
+    // A spelled bare version (`use Dancer2 2.0 (...)`) occupies the
+    // requirement slot; the parenthesized list that follows is still an
+    // import list whose contents never claim the version slot (#14408
+    // review).
+    let after_version = skip_version_token(skip_layout(after_module));
+    skip_layout(after_version).starts_with('(')
 }
 
 /// Split a fully-qualified subroutine name into its owning package and the
@@ -290,12 +306,20 @@ fn split_qualified_sub(name: &str) -> Option<(String, String)> {
     }
 }
 
-fn shadowed_for_package(package: Option<&str>, package_subs: &[(String, String)]) -> Vec<String> {
+fn shadowed_for_package(
+    package: Option<&str>,
+    package_subs: &[PackageSub],
+    site_offset: u32,
+) -> Vec<String> {
     let Some(package) = package else { return Vec::new() };
     let mut shadowed: Vec<String> = package_subs
         .iter()
-        .filter(|(sub_package, _)| sub_package == package)
-        .map(|(_, name)| name.clone())
+        .filter(|(sub_package, _, _)| sub_package == package)
+        .filter(|(_, _, declaration_offset)| match declaration_offset {
+            None => true,
+            Some(offset) => *offset < site_offset,
+        })
+        .map(|(_, name, _)| name.clone())
         .collect();
     shadowed.sort_unstable();
     shadowed.dedup();
@@ -402,7 +426,7 @@ fn walk_activation_sites(
     file_id: FileId,
     generation: SourceGeneration,
     current_package: &mut Option<String>,
-    package_subs: &[(String, String)],
+    package_subs: &[PackageSub],
     sites: &mut Vec<Dancer2TwoXActivationSite>,
 ) {
     match &node.kind {
@@ -457,7 +481,11 @@ fn walk_activation_sites(
                 file_id,
                 anchor_id: AnchorId(node.location.start as u64),
                 span_start_byte: span_start,
-                shadowed_keywords: shadowed_for_package(current_package.as_deref(), package_subs),
+                shadowed_keywords: shadowed_for_package(
+                    current_package.as_deref(),
+                    package_subs,
+                    span_start,
+                ),
                 evidence,
             });
         }
@@ -531,7 +559,7 @@ fn walk_package_block(
     source: &str,
     file_id: FileId,
     generation: SourceGeneration,
-    package_subs: &[(String, String)],
+    package_subs: &[PackageSub],
     sites: &mut Vec<Dancer2TwoXActivationSite>,
 ) {
     if let NodeKind::Block { statements } = &block.kind {
@@ -793,8 +821,10 @@ use Dancer2;
 
     #[test]
     fn forward_declaration_after_import_does_not_shadow() {
-        // `sub get;` predeclares the name without installing a glob entry:
-        // Dancer2's un-overwrite rule keeps the keyword installed.
+        // A stub declaration compiled AFTER the `use` is a no-op against the
+        // already-installed CV (Perl never replaces a real CV with a stub),
+        // so the keyword stays imported. The position matters: see
+        // forward_declaration_before_import_shadows.
         let found = sites(
             "use Dancer2;
 sub get;
@@ -804,8 +834,49 @@ get '/x' => sub { 1 };
         assert_eq!(found.len(), 1);
         assert!(
             !found[0].shadowed_keywords.iter().any(|k| k == "get"),
-            "a forward declaration must not shadow the import, got {:?}",
+            "a post-import stub declaration never replaces the installed CV, got {:?}",
             found[0].shadowed_keywords
+        );
+    }
+
+    #[test]
+    fn forward_declaration_before_import_shadows() {
+        // `sub get;` before `use Dancer2` installs a stub CV at compile
+        // time. Upstream fetches `*{"${caller}::${export}"}{CODE}` and `next
+        // if defined $existing` — `defined` on the CV reference is true for
+        // a stub — so the keyword is skipped (pinned upstream Role/DSL.pm @
+        // 674837c, #14408 review).
+        let found = sites(
+            "sub get;
+use Dancer2;
+get '/x' => sub { 1 };
+",
+        );
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0].shadowed_keywords.iter().any(|k| k == "get"),
+            "a pre-import stub occupies the glob and blocks the keyword: {:?}",
+            found[0].shadowed_keywords
+        );
+    }
+
+    #[test]
+    fn versioned_parenthesized_list_stays_an_import_list() {
+        // `use Dancer2 2.0 (v3.0)`: the bare `2.0` claims the VERSION slot
+        // and `(v3.0)` is the import list, so its lone v-string keeps the
+        // pinned odd-arity die instead of hiding as a second version
+        // (#14408 review).
+        let found = sites("package App;\nuse Dancer2 2.0 (v3.0);\n");
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].evidence.version_slot_spellings,
+            vec!["2.0".to_string()],
+            "the bare spelled requirement claims the VERSION slot"
+        );
+        assert!(
+            found[0].evidence.odd_argument_count,
+            "the parenthesized v-string stays an import argument: {:?}",
+            found[0].evidence
         );
     }
 
