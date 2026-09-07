@@ -2220,6 +2220,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "perl-sync-convergence"
+version = "0.17.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "perl-tdd-support"
 version = "0.17.0"
 dependencies = [
