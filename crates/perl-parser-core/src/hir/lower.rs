@@ -915,8 +915,17 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.record_declaration_bindings(declarator, &variables, item_id);
-                self.record_variable_stash_effects(declarator, &variables, initializer, item_id);
+                // A legacy `field` call declares nothing. Body lowering owns
+                // the argument's resolved read/write effects instead.
+                if declarator != "field" {
+                    self.record_declaration_bindings(declarator, &variables, item_id);
+                    self.record_variable_stash_effects(
+                        declarator,
+                        &variables,
+                        initializer,
+                        item_id,
+                    );
+                }
                 if let Some(initializer) = initializer {
                     self.visit(initializer, confidence);
                 }
@@ -3384,6 +3393,24 @@ impl<'a> BodyBuilder2<'a> {
         VariableKind::Package
     }
 
+    /// Whether `expr_id` is already an assignment whose target is the same
+    /// variable a declaration-shaped node names.
+    ///
+    /// Distinguishes `field $x += 1` — where the lowered initializer is the
+    /// complete operation over `$x` — from `field $x = ($y += 1)`, where the
+    /// inner assignment targets a different variable and the outer write to
+    /// `$x` is real.
+    fn assign_targets_same_variable(&self, expr_id: HirExprId, sigil: &str, name: &str) -> bool {
+        let Some(HirExpr::Assign { lhs, .. }) = self.exprs.get(expr_id.0) else {
+            return false;
+        };
+        let wanted = sigil_from_str(sigil);
+        matches!(
+            self.exprs.get(lhs.0),
+            Some(HirExpr::Variable(var)) if var.name == name && var.sigil == wanted
+        )
+    }
+
     fn lower_statement(&mut self, node: &Node) -> HirStmtId {
         let range = node.location;
 
@@ -3480,6 +3507,9 @@ impl<'a> BodyBuilder2<'a> {
     ) -> HirStmtId {
         let sigil = sigil_from_str(sigil_str);
         let storage = storage_class_for_decl(declarator);
+        // Unknown storage represents a legacy call. Its argument uses the
+        // visible binding rather than creating a new declaration.
+        let is_legacy_call = storage == DeclStorageClass::Unknown;
 
         let init_expr_id = match (initializer, &variable.kind) {
             // `local $x = EXPR` / `local $x .= EXPR`: the parser stores the
@@ -3490,10 +3520,11 @@ impl<'a> BodyBuilder2<'a> {
             (None, _) => None,
             (Some(init_node), _) => Some({
                 // Allocate the write-place for the declared variable.
-                // Always Lexical regardless of declarator — the place IS the
-                // declaration site, not a resolved binding.
+                // Real declarations own their place; legacy calls resolve
+                // their argument through the existing scope authority.
                 let place_kind = match declarator {
                     "our" => VariableKind::Package,
+                    "field" => self.resolve_variable_kind(sigil_str, &var_name),
                     _ => VariableKind::Lexical,
                 };
                 let place_expr = HirExpr::Variable(HirVariable {
@@ -3505,15 +3536,38 @@ impl<'a> BodyBuilder2<'a> {
                 let place_id = self.alloc_expr(place_expr, variable.location);
 
                 let rhs_id = self.lower_expr(init_node);
-                let assign_range = crate::SourceLocation {
-                    start: variable.location.start,
-                    end: init_node.location.end,
-                };
-                let assign_expr =
-                    HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
-                self.alloc_expr(assign_expr, assign_range)
+                // A parser-folded compound argument already owns its write.
+                // Nested same-target assignments start later and need both
+                // writes, so matching the variable name alone is insufficient.
+                if is_legacy_call
+                    && init_node.location.start == variable.location.start
+                    && self.assign_targets_same_variable(rhs_id, sigil_str, &var_name)
+                {
+                    rhs_id
+                } else {
+                    let assign_range = crate::SourceLocation {
+                        start: variable.location.start,
+                        end: init_node.location.end,
+                    };
+                    let assign_expr =
+                        HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
+                    self.alloc_expr(assign_expr, assign_range)
+                }
             }),
         };
+
+        let init_expr_id = init_expr_id.or_else(|| {
+            if !is_legacy_call {
+                return None;
+            }
+            let argument = HirExpr::Variable(HirVariable {
+                sigil: sigil_from_str(sigil_str),
+                name: var_name.clone(),
+                kind: self.resolve_variable_kind(sigil_str, &var_name),
+                access: AccessMode::Read,
+            });
+            Some(self.alloc_expr(argument, binding_node.location))
+        });
 
         self.alloc_stmt(
             HirStmt::Let {
@@ -4427,7 +4481,7 @@ fn storage_class_for_decl(declarator: &str) -> DeclStorageClass {
         "our" => DeclStorageClass::Our,
         "local" => DeclStorageClass::Local,
         "state" => DeclStorageClass::State,
-        _ => DeclStorageClass::My,
+        _ => DeclStorageClass::Unknown,
     }
 }
 
