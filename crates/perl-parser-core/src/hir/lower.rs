@@ -465,6 +465,21 @@ impl Lowerer {
                     self.visit(arg, confidence);
                 }
             }
+            NodeKind::Identifier { name } if is_sigil_prefixed(name) => {
+                // Not a bareword, and not source text: a bareword cannot carry a
+                // sigil, so this `Identifier` was fabricated by the parser rather
+                // than read from the file. Unbound `s///`, `tr///` and `y///`
+                // materialize their implicit `$_` topic as a zero-width
+                // `Identifier { name: "$_" }` operand (#14641).
+                //
+                // Adopting it would assert a maximum-strength claim — `ExactAst`
+                // provenance at `High` confidence — about a name that is
+                // unrepresentable in real Perl source, over a range covering no
+                // text. Emit neither the `BarewordExpr` item nor the
+                // `BarewordFact`, so no downstream consumer can mistake the
+                // fabrication for a bareword. Modeling the implicit topic as a
+                // first-class operand is #6666's claim, not this arm's.
+            }
             NodeKind::Identifier { name } => {
                 let item_id = self.push_item(
                     node,
@@ -2533,12 +2548,26 @@ fn is_export_symbol_name(value: &str) -> bool {
     let Some(first) = value.chars().next() else {
         return false;
     };
-    let body = if matches!(first, '$' | '@' | '%' | '&' | '*') {
-        &value[first.len_utf8()..]
-    } else {
-        value
-    };
+    let body = if PERL_SIGILS.contains(&first) { &value[first.len_utf8()..] } else { value };
     is_bareword_like(body)
+}
+
+/// Sigils that introduce a non-bareword Perl symbol form.
+///
+/// A bareword is by definition an unquoted name carrying no sigil, so each of
+/// these characters marks a name as something other than a bareword.
+const PERL_SIGILS: [char; 5] = ['$', '@', '%', '&', '*'];
+
+/// Whether `value` begins with a Perl sigil, and therefore cannot be a bareword.
+///
+/// This is a property of the name alone, not of the construct that produced it:
+/// no sequence of Perl source can be read as a bareword whose text starts with
+/// `$`, `@`, `%`, `&` or `*`. A `NodeKind::Identifier` carrying such a name was
+/// therefore synthesized by the parser rather than scanned from the file — the
+/// implicit `$_` topic of an unbound `s///`, `tr///` or `y///` is the case that
+/// exists today (#14641).
+fn is_sigil_prefixed(value: &str) -> bool {
+    value.chars().next().is_some_and(|first| PERL_SIGILS.contains(&first))
 }
 
 fn is_bareword_like(value: &str) -> bool {
