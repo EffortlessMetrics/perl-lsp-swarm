@@ -166,6 +166,13 @@ struct NotProven {
     id: String,
     claim: String,
     reason: String,
+    /// Ledger item ids whose removal this boundary blocks.
+    ///
+    /// Without this the boundary was recorded once at ledger level and bound to
+    /// nothing: a row could reach a removal decision on inventory evidence
+    /// alone while an unresolved boundary said that evidence was insufficient.
+    #[serde(default)]
+    blocks_removal_of: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -229,6 +236,7 @@ fn validate(root: &Path) -> Result<Stats> {
     validate_source_coverage(&ledger, &source_items, &mut violations);
     validate_baseline_coverage(&ledger, &baseline_text, &mut violations);
     validate_export_paths(&ledger, &baseline_text, &mut violations);
+    validate_boundary_bindings(&ledger, &mut violations);
     validate_item_laws(&ledger, &mut violations);
     validate_result_states(&ledger, &mut violations);
     validate_fixtures(&ledger, &corpus_text, &mut violations);
@@ -745,6 +753,49 @@ fn validate_baseline_coverage(ledger: &Ledger, baseline_text: &str, violations: 
             "L2: `{id}` is exported per {} but has no ledger disposition",
             ledger.public_api_baseline
         ));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// L12 — unresolved boundaries bind to the rows they block
+// ---------------------------------------------------------------------------
+
+/// Dispositions that put an item on a path toward leaving the surface.
+const REMOVAL_BOUND_DISPOSITIONS: [&str; 2] = ["deprecate", "remove"];
+
+/// L12 — every item headed out of the surface is named by at least one
+/// unresolved boundary, and no boundary names an item that does not exist.
+///
+/// The NOT_PROVEN rows were recorded at ledger level and bound to nothing, so
+/// an item could reach a removal decision on this ledger's inventory evidence
+/// while an unresolved boundary said that evidence was insufficient — exactly
+/// the overclaim the rows exist to prevent. Naming the blocked rows makes the
+/// boundary refuse to be read past.
+fn validate_boundary_bindings(ledger: &Ledger, violations: &mut Vec<String>) {
+    let item_ids: BTreeSet<&str> = ledger.item.iter().map(|item| item.id.as_str()).collect();
+    let mut blocked: BTreeSet<&str> = BTreeSet::new();
+    for boundary in &ledger.not_proven {
+        for id in &boundary.blocks_removal_of {
+            if !item_ids.contains(id.as_str()) {
+                violations.push(format!(
+                    "L12: NOT_PROVEN boundary {} blocks removal of `{id}`, which is not a ledger \
+                     item",
+                    boundary.id
+                ));
+            }
+            blocked.insert(id.as_str());
+        }
+    }
+    for item in &ledger.item {
+        if REMOVAL_BOUND_DISPOSITIONS.contains(&item.disposition.as_str())
+            && !blocked.contains(item.id.as_str())
+        {
+            violations.push(format!(
+                "L12: `{}` is dispositioned `{}` but no NOT_PROVEN boundary blocks its removal; \
+                 either the boundary must name it or the disposition overstates what is settled",
+                item.id, item.disposition
+            ));
+        }
     }
 }
 
@@ -1694,9 +1745,16 @@ fn render_projection(ledger: &Ledger) -> String {
     out.push_str("\n## Boundaries this ledger does not resolve\n\n");
     for np in &ledger.not_proven {
         out.push_str(&format!(
-            "- **{}** — *claim:* {} *Why NOT_PROVEN:* {}\n",
+            "- **{}** — *claim:* {} *Why NOT_PROVEN:* {}",
             np.id, np.claim, np.reason
         ));
+        if np.blocks_removal_of.is_empty() {
+            out.push('\n');
+        } else {
+            let blocked: Vec<String> =
+                np.blocks_removal_of.iter().map(|id| format!("`{id}`")).collect();
+            out.push_str(&format!(" *Blocks removal of:* {}\n", blocked.join(", ")));
+        }
     }
 
     out.push_str("\n## Verification\n\n```bash\n");
@@ -2431,6 +2489,47 @@ mod tests {
         assert!(
             exported.iter().any(|item| item.id == "shouted" && item.kind == "exported_macro"),
             "an exported macro keeps its own row: {exported:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    /// L12 — an item headed out of the surface must be named by an unresolved
+    /// boundary, and a boundary may not name an item that does not exist.
+    /// Before this the NOT_PROVEN rows were recorded at ledger level and bound
+    /// to nothing, so a row could reach a removal decision on this ledger's
+    /// evidence while a boundary said that evidence was insufficient.
+    fn falsifier_l12_boundaries_bind_to_the_rows_they_block() -> Result<()> {
+        let root = project_root()?;
+
+        // Dropping the binding leaves a `deprecate` row unblocked.
+        let mut unbound = read_ledger(&root, POLICY_PATH)?;
+        let freed = unbound
+            .not_proven
+            .iter_mut()
+            .find(|boundary| !boundary.blocks_removal_of.is_empty())
+            .map(|boundary| std::mem::take(&mut boundary.blocks_removal_of))
+            .unwrap_or_default();
+        assert!(!freed.is_empty(), "the tracked ledger must bind at least one boundary");
+        let mut violations = Vec::new();
+        validate_boundary_bindings(&unbound, &mut violations);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.starts_with("L12:") && freed.iter().any(|id| v.contains(id.as_str()))),
+            "an unblocked removal-bound row must fail: {violations:?}"
+        );
+
+        // A boundary naming an item that does not exist is stale.
+        let mut stale = read_ledger(&root, POLICY_PATH)?;
+        if let Some(boundary) = stale.not_proven.first_mut() {
+            boundary.blocks_removal_of.push("DeadCode::vanished".to_string());
+        }
+        let mut violations = Vec::new();
+        validate_boundary_bindings(&stale, &mut violations);
+        assert!(
+            violations.iter().any(|v| v.starts_with("L12:") && v.contains("DeadCode::vanished")),
+            "a boundary naming a missing item must fail: {violations:?}"
         );
         Ok(())
     }
