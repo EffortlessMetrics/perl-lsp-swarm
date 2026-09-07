@@ -31,7 +31,8 @@
 //! documents cannot dodge it.
 //!
 //! Scalars deliberately keep their **source spelling** (versions like `1.5`
-//! stay the string `"1.5"`); only recognized v1.4/v2 fields are normalized
+//! stay the string `"1.5"`). Unquoted nulls are distinct from quoted strings,
+//! including `"null"`, `"~"`, and `""`; only recognized v1.4/v2 fields are normalized
 //! into comparison-ready facts via the same shape [crate::dist] uses for
 //! `META.json`, so the two sources stay comparable.
 //!
@@ -516,6 +517,8 @@ fn strip_comment(line: &str) -> std::borrow::Cow<'_, str> {
 /// A YAML value in the bounded subset. Scalars keep their source spelling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Yaml {
+    /// An unquoted YAML null, kept distinct from quoted strings like "null".
+    Null,
     Scalar(String),
     Seq(Vec<Yaml>),
     /// Insertion-ordered mapping; duplicate keys are refused at insert time.
@@ -681,7 +684,7 @@ impl<'a> Parser<'a> {
             };
             self.pos += 1;
             let value = if rest.is_empty() {
-                // Value is the nested block (or an empty scalar when the next
+                // Value is the nested block (or null when the next
                 // line is a sibling). Every entry charges a node — block
                 // values through their own parse_block, flow values through
                 // their elements — so flat maps cannot dodge the budget.
@@ -691,7 +694,7 @@ impl<'a> Parser<'a> {
                     }
                     _ => {
                         self.charge_node_at(line.number)?;
-                        Yaml::Scalar(String::new())
+                        Yaml::Null
                     }
                 }
             } else {
@@ -754,7 +757,7 @@ impl<'a> Parser<'a> {
             return self.flow_map(trimmed, line);
         }
         self.charge_node_at(line)?;
-        Ok(Yaml::Scalar(unquote(trimmed, line)?))
+        parse_scalar_value(trimmed, line)
     }
 
     /// Parse a flow sequence `[a, b, [c]]` with the same budgets: the
@@ -790,7 +793,7 @@ impl<'a> Parser<'a> {
                 } else if part.starts_with('{') {
                     items.push(self.flow_map(part, line)?);
                 } else {
-                    items.push(Yaml::Scalar(unquote(part, line)?));
+                    items.push(parse_scalar_value(part, line)?);
                 }
             }
             Ok(Yaml::Seq(items))
@@ -947,6 +950,16 @@ fn unquote(text: &str, line: usize) -> Result<String, MetaYmlFinding> {
     Ok(trimmed.to_string())
 }
 
+/// Resolve null before decoding quotes; quoted null-like text remains a
+/// string. Other scalars retain their spelling rather than numeric coercion.
+fn parse_scalar_value(text: &str, line: usize) -> Result<Yaml, MetaYmlFinding> {
+    let trimmed = text.trim();
+    if matches!(trimmed, "" | "~" | "null" | "Null" | "NULL") {
+        return Ok(Yaml::Null);
+    }
+    Ok(Yaml::Scalar(unquote(trimmed, line)?))
+}
+
 fn decode_double_quoted(text: &str, line: usize) -> Result<String, MetaYmlFinding> {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars();
@@ -1055,12 +1068,7 @@ fn split_flow(text: &str, line: usize) -> Result<Vec<String>, MetaYmlFinding> {
 
 fn root_string(root: &[(String, Yaml)], key: &str) -> Option<String> {
     let value = root.iter().find(|(k, _)| k == key).map(|(_, v)| v)?;
-    let scalar = value.as_scalar()?;
-    let scalar = scalar.trim();
-    if scalar.is_empty() || scalar == "~" || scalar == "null" {
-        return None;
-    }
-    Some(scalar.to_string())
+    value.as_scalar().map(str::to_string)
 }
 
 fn root_licenses(root: &[(String, Yaml)]) -> Vec<String> {
@@ -1069,13 +1077,11 @@ fn root_licenses(root: &[(String, Yaml)]) -> Vec<String> {
     };
     match value {
         // v2: an array of license strings.
-        Yaml::Seq(items) => items
-            .iter()
-            .filter_map(|v| v.as_scalar().map(str::to_string))
-            .filter(|s| !s.is_empty() && s != "~" && s != "null")
-            .collect(),
+        Yaml::Seq(items) => {
+            items.iter().filter_map(|v| v.as_scalar().map(str::to_string)).collect()
+        }
         // v1.4: a single string.
-        Yaml::Scalar(s) if !s.is_empty() && s != "~" && s != "null" => vec![s.clone()],
+        Yaml::Scalar(s) => vec![s.clone()],
         _ => Vec::new(),
     }
 }
@@ -1119,10 +1125,7 @@ fn collect_modules(modules: &Yaml, phase: &str, relation: &str, out: &mut Vec<Pr
     let mut recovered = false;
     for (module, version) in map {
         recovered = true;
-        let version = version
-            .as_scalar()
-            .map(str::to_string)
-            .filter(|v| !v.is_empty() && v != "~" && v != "null");
+        let version = version.as_scalar().map(str::to_string);
         out.push(Prereq {
             module: module.clone(),
             version,
@@ -1190,6 +1193,58 @@ mod tests {
         for source in ["---\nname: X\n", "name: X\n...\n"] {
             assert_eq!(parse_meta_yml(fid(), source).state, MetaYmlParseState::Parsed);
         }
+    }
+
+    #[test]
+    fn quoted_null_like_scalars_remain_strings_across_metadata_fields() {
+        for (token, expected) in [
+            ("'null'", "null"),
+            ("\"null\"", "null"),
+            ("'~'", "~"),
+            ("\"~\"", "~"),
+            ("''", ""),
+            ("' '", " "),
+        ] {
+            for prerequisites in [
+                format!("requires: {{ Foo: {token} }}"),
+                format!("prereqs: {{ runtime: {{ requires: {{ Foo: {token} }} }} }}"),
+            ] {
+                let source = format!(
+                    "name: {token}\nversion: {token}\nabstract: {token}\nlicense: [{token}]\n{prerequisites}\n"
+                );
+                let outcome = parse_meta_yml(fid(), &source);
+                assert_eq!(outcome.state, MetaYmlParseState::Parsed, "{:?}", outcome.findings);
+                let facts = must_some(outcome.facts);
+                assert_eq!(facts.name.as_deref(), Some(expected));
+                assert_eq!(facts.version.as_deref(), Some(expected));
+                assert_eq!(facts.summary.as_deref(), Some(expected));
+                assert_eq!(facts.licenses, vec![expected]);
+                assert_eq!(must_some(facts.prereqs.first()).version.as_deref(), Some(expected));
+            }
+            let source = format!("license: {token}\nrequires:\n  Foo: {token}\n");
+            let facts = must_some(parse_meta_yml(fid(), &source).facts);
+            assert_eq!(facts.licenses, vec![expected]);
+            assert_eq!(must_some(facts.prereqs.first()).version.as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn unquoted_null_scalars_are_absent_across_metadata_fields() {
+        for token in ["null", "Null", "NULL", "~", ""] {
+            let source = format!(
+                "name: {token}\nversion: {token}\nabstract: {token}\nlicense: {token}\nrequires:\n  Foo: {token}\n"
+            );
+            let outcome = parse_meta_yml(fid(), &source);
+            assert_eq!(outcome.state, MetaYmlParseState::Parsed, "{:?}", outcome.findings);
+            let facts = must_some(outcome.facts);
+            assert!(facts.name.is_none());
+            assert!(facts.version.is_none());
+            assert!(facts.summary.is_none());
+            assert!(facts.licenses.is_empty());
+            assert!(must_some(facts.prereqs.first()).version.is_none());
+        }
+        let facts = must_some(parse_meta_yml(fid(), "license: [null, Null, NULL, ~]\n").facts);
+        assert!(facts.licenses.is_empty());
     }
 
     #[test]
