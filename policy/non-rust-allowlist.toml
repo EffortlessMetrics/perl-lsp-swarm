@@ -4201,21 +4201,109 @@ review_after = "2027-02-28"
 # =============================================================================
 
 [[allow]]
-id = "non-rust-dir-root-tooling-configs"
-glob = "*"
+id = "non-rust-root-changie-yaml"
+path = ".changie.yaml"
 kind = "tooling_config"
 language = "mixed"
 surface = "tooling"
-classification = "tooling"
+classification = "config"
 owner = "release/ci"
-reason = "Root-level one-per-tool configuration files (.changie.yaml, .dockerignore, .editorconfig, .typos.toml, aqua.yaml, taplo.toml, tokmd.toml): each belongs to a single tool, has no shared owner beyond repo automation, and changes only when the tool does. (7 tracked files under (repo root))"
+reason = "Changie CLI configuration. Exact-path allowlist keeps the new-file ratchet intact (#14861 bulk classification)."
 covered_by = [
   "cargo xtask check-file-policy",
-  "cargo xtask non-rust inventory",
 ]
 created = "2026-09-07"
 review_after = "2026-12-07"
-broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-root-dockerignore"
+path = ".dockerignore"
+kind = "tooling_config"
+language = "mixed"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "Docker build ignore rules. Exact-path allowlist keeps the new-file ratchet intact (#14861 bulk classification)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-root-editorconfig"
+path = ".editorconfig"
+kind = "tooling_config"
+language = "mixed"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "Editor formatting conventions. Exact-path allowlist keeps the new-file ratchet intact (#14861 bulk classification)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-root-typos-toml"
+path = ".typos.toml"
+kind = "tooling_config"
+language = "mixed"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "Typos spell-check configuration. Exact-path allowlist keeps the new-file ratchet intact (#14861 bulk classification)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-root-aqua-yaml"
+path = "aqua.yaml"
+kind = "tooling_config"
+language = "mixed"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "aqua tool configuration. Exact-path allowlist keeps the new-file ratchet intact (#14861 bulk classification)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-root-taplo-toml"
+path = "taplo.toml"
+kind = "tooling_config"
+language = "mixed"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "Taplo TOML language-server configuration. Exact-path allowlist keeps the new-file ratchet intact (#14861 bulk classification)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-root-tokmd-toml"
+path = "tokmd.toml"
+kind = "tooling_config"
+language = "mixed"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "tokmd documentation tool configuration. Exact-path allowlist keeps the new-file ratchet intact (#14861 bulk classification)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-dir--agents"
@@ -4320,21 +4408,114 @@ review_after = "2026-12-07"
 broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
 
 [[allow]]
-id = "non-rust-dir-crates"
-glob = "crates/**/*"
-kind = "test_fixture_and_data"
+id = "non-rust-crates-fixture-data"
+glob = "crates/*/fixtures/**"
+kind = "test_fixture"
 language = "mixed"
 surface = "testing"
 classification = "test"
 owner = "release/ci"
-reason = "Non-Rust files inside crate trees: insta snapshots, tree-sitter queries, test fixtures, and corpus data that the crates own. Source stays Rust by the default rule; these are data. (49 tracked files under crates/)"
+reason = "Per-crate fixture manifests and fixture data (differential oracles, parser accuracy manifests). (49 tracked files across the fixture/fuzz classes)"
 covered_by = [
   "cargo xtask check-file-policy",
-  "cargo xtask non-rust inventory",
 ]
 created = "2026-09-07"
 review_after = "2026-12-07"
-broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the fixture/fuzz directory class is the reviewed unit because the files are data whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-crates-tests-fixtures"
+glob = "crates/*/tests/fixtures/**"
+kind = "test_fixture"
+language = "mixed"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Per-crate test-tree fixture data (golden transcripts, security cases, mocks, expected diagnostics)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the fixture/fuzz directory class is the reviewed unit because the files are data whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-crates-tests-snapshots"
+glob = "crates/*/tests/snapshots/**"
+kind = "test_snapshot"
+language = "json"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Per-crate serialized test snapshots (capability profiles and similar pinned expectations)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the fixture/fuzz directory class is the reviewed unit because the files are data whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-crates-tests-helper-data"
+path = "crates/perl-lsp-rs/src/features/inlay_hints_provider_tests.txt"
+kind = "test_data_file"
+language = "text"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Helper data file consumed by the inlay-hints provider tests."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-parser-core-libcheck-rlib"
+path = "crates/perl-parser-core/libcheck_unwrap.rlib"
+kind = "test_binary"
+language = "binary"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Prebuilt check artifact consumed by the parser-core tests; tracked deliberately so the unwrap check runs without a rebuild."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-parser-tests-override-script"
+path = "crates/perl-parser/tests/test_with_override.sh"
+kind = "test_script"
+language = "shell"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Test-local override script for the parser tests."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+
+[[allow]]
+id = "non-rust-crates-fuzz-artifacts"
+glob = "crates/*/fuzz/**"
+kind = "fuzz_artifact"
+language = "mixed"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Per-crate fuzz artifacts: crash reproducers and validation notes."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the fixture/fuzz directory class is the reviewed unit because the files are data whose per-file identity carries no policy information"
 
 [[allow]]
 id = "non-rust-dir-distribution"
@@ -4388,8 +4569,8 @@ review_after = "2026-12-07"
 broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
 
 [[allow]]
-id = "non-rust-dir-hooks"
-glob = "hooks/**/*"
+id = "non-rust-hooks-pre-push"
+path = "hooks/pre-push"
 kind = "git_hook"
 language = "shell"
 surface = "ci"
