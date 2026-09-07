@@ -938,18 +938,20 @@ impl<'a> Parser<'a> {
                 // fall back to simple token consumption
                 let list = match self.parse_qw_words() {
                     Ok(words) => words,
+                    // A core budget refusal is a terminal resource condition,
+                    // not malformed `qw` input: swallowing it here would build a
+                    // partial `Use` node instead of reporting the refusal
+                    // (#8786).
+                    Err(error @ ParseError::CoreBudgetExhausted { .. }) => return Err(error),
                     Err(_) => {
                         // Fallback: just consume tokens until semicolon
                         let mut words = Vec::new();
                         while !Self::is_statement_terminator(self.peek_kind())
                             && !self.tokens.is_eof()
                         {
-                            if let Ok(tok) = self.advance_token() {
-                                if matches!(tok.kind(), TokenKind::Identifier | TokenKind::Number) {
-                                    words.push(tok.text.to_string());
-                                }
-                            } else {
-                                break;
+                            let tok = self.advance_token()?;
+                            if matches!(tok.kind(), TokenKind::Identifier | TokenKind::Number) {
+                                words.push(tok.text.to_string());
                             }
                         }
                         words

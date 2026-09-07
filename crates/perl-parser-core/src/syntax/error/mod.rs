@@ -426,12 +426,18 @@ impl BudgetTracker {
     /// a single named mutation per dimension; production callers reach it
     /// through the operation context, never directly.
     fn charge_core(&mut self, dimension: ParseCoreDimension) {
+        self.charge_core_batch(dimension, 1);
+    }
+
+    /// Charge `count` admitted units at once, in a single saturating add, so a
+    /// batch cannot lose units to repeated per-unit saturation.
+    fn charge_core_batch(&mut self, dimension: ParseCoreDimension, count: usize) {
         let slot = match dimension {
             ParseCoreDimension::TokensConsumed => &mut self.tokens_consumed,
             ParseCoreDimension::NodesConstructed => &mut self.nodes_constructed,
             ParseCoreDimension::DiagnosticsEmitted => &mut self.errors_emitted,
         };
-        *slot = slot.saturating_add(1);
+        *slot = slot.saturating_add(count);
     }
 
     /// Check-then-charge `count` units of core work in `dimension` (#8786).
@@ -456,12 +462,14 @@ impl BudgetTracker {
         }
         let limit = budget.core_limit(dimension);
         let usage = self.core_usage(dimension);
-        if usage.saturating_add(count) > limit {
+        // Compare against remaining capacity rather than `usage + count`: a
+        // saturating sum lands exactly on the limit at the top of the range and
+        // would admit a batch it cannot actually charge, then silently charge
+        // fewer units than it promised.
+        if count > limit.saturating_sub(usage) {
             return Err(ParseError::CoreBudgetExhausted { dimension, limit, usage });
         }
-        for _ in 0..count {
-            self.charge_core(dimension);
-        }
+        self.charge_core_batch(dimension, count);
         Ok(())
     }
 

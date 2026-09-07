@@ -341,13 +341,37 @@ fn dimension_tokens_are_stable_and_distinct() {
 fn charging_saturates_and_never_wraps() {
     let budget = ParseBudget::unlimited();
     let mut tracker = BudgetTracker::new();
-    tracker.tokens_consumed = usize::MAX;
 
-    // At usize::MAX with a usize::MAX limit, the next unit is refused rather
-    // than wrapping the counter to zero.
+    // Start one below the top so the charge itself executes: at usize::MAX the
+    // limit check refuses first and `charge_core` is never reached, which would
+    // let a wrapping `+= 1` pass unnoticed.
+    tracker.tokens_consumed = usize::MAX - 1;
+    assert!(
+        tracker.authorize_core(&budget, ParseCoreDimension::TokensConsumed).is_ok(),
+        "the final admissible unit under a usize::MAX limit must be admitted"
+    );
+    assert_eq!(tracker.tokens_consumed, usize::MAX, "the charge must saturate, not wrap");
+
+    // Now at the top, the next unit is refused rather than wrapping to zero.
     let refusal = tracker.authorize_core(&budget, ParseCoreDimension::TokensConsumed);
     assert!(refusal.is_err(), "a saturated counter must refuse, not wrap");
     assert_eq!(tracker.tokens_consumed, usize::MAX, "a refused charge must not mutate usage");
+
+    // A batch must not be admitted when it cannot be charged in full: at
+    // usize::MAX - 1 with a usize::MAX limit there is room for exactly one.
+    let mut batched = BudgetTracker::new();
+    batched.nodes_constructed = usize::MAX - 1;
+    assert!(
+        batched.authorize_core_batch(&budget, ParseCoreDimension::NodesConstructed, 2).is_err(),
+        "a batch larger than the remaining capacity must be refused, not saturated into a \
+         partial charge"
+    );
+    assert_eq!(batched.nodes_constructed, usize::MAX - 1, "a refused batch must not charge");
+    assert!(
+        batched.authorize_core_batch(&budget, ParseCoreDimension::NodesConstructed, 1).is_ok(),
+        "a batch that exactly fits the remaining capacity must be admitted"
+    );
+    assert_eq!(batched.nodes_constructed, usize::MAX);
 }
 
 /// A refused charge leaves usage untouched; an admitted one charges exactly
@@ -631,11 +655,55 @@ fn an_overrun_heredoc_diagnostic_is_not_exempt_from_the_diagnostic_budget() {
 // Recurrence controls
 // ---------------------------------------------------------------------------
 
-/// Production parser sources, excluding inline test modules.
+/// Blank out inline `#[cfg(test)]` modules, preserving line numbering.
+///
+/// The scanner's contract is "production code only". Standalone test files are
+/// excluded by name, but several production modules carry inline
+/// `#[cfg(test)] mod`s, and a needle inside one of those would change a
+/// recurrence total, or fail the vector-length check, with no production code
+/// at fault. Lines are blanked rather than removed so reported line numbers
+/// still match the real file.
+fn strip_inline_test_modules(body: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut depth: Option<i32> = None;
+    for line in body.lines() {
+        match depth {
+            None => {
+                if line.trim_start().starts_with("#[cfg(test)]") {
+                    depth = Some(0);
+                    out.push(String::new());
+                } else {
+                    out.push(line.to_string());
+                }
+            }
+            Some(current) => {
+                let opened = i32::try_from(line.matches('{').count()).unwrap_or(0);
+                let closed = i32::try_from(line.matches('}').count()).unwrap_or(0);
+                let next = current + opened - closed;
+                out.push(String::new());
+                if current == 0 && opened == 0 {
+                    // A brace-less attribute target, e.g. `#[cfg(test)] mod x;`
+                    // or a `use`. It ends at its own semicolon; without this the
+                    // scanner would blank the rest of the file and hide real
+                    // production sites.
+                    if line.contains(';') {
+                        depth = None;
+                    }
+                } else {
+                    depth = if next <= 0 { None } else { Some(next) };
+                }
+            }
+        }
+    }
+    out.join("\n")
+}
+
+/// Production parser sources, excluding standalone test files *and* inline
+/// `#[cfg(test)]` modules.
 fn production_parser_sources() -> Vec<(String, String)> {
-    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine/parser");
+    let root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine/parser"));
     let mut out = Vec::new();
-    let mut dirs = vec![std::path::PathBuf::from(root)];
+    let mut dirs = vec![root.clone()];
     while let Some(dir) = dirs.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -651,10 +719,20 @@ fn production_parser_sources() -> Vec<(String, String)> {
             if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "tests.rs" {
                 continue;
             }
+            // Several modules share the basename `mod.rs`, so a bare file name
+            // would be ambiguous in a failure message.
+            let label = path
+                .strip_prefix(&root)
+                .ok()
+                .and_then(|relative| relative.to_str())
+                .unwrap_or(name.as_str())
+                .to_string();
             let Ok(body) = std::fs::read_to_string(&path) else { continue };
-            out.push((name, body));
+            out.push((label, strip_inline_test_modules(&body)));
         }
     }
+    // `read_dir` order is not guaranteed; these tests must be deterministic.
+    out.sort_by(|left, right| left.0.cmp(&right.0));
     assert!(out.len() > 5, "expected to find the parser sources, found {}", out.len());
     out
 }
@@ -690,6 +768,45 @@ fn assert_every_raw_use_is_annotated(needle: &str, expected_total: usize) {
          through the charging seam; if you deliberately added an exemption, update this count and \
          say why in the PR."
     );
+}
+
+/// The source scanner must actually honor its own contract.
+///
+/// Three recurrence controls depend on `strip_inline_test_modules` excluding
+/// inline `#[cfg(test)]` code while preserving line numbers. Two failure modes
+/// matter and both have bitten: under-stripping lets a test-only line change a
+/// production count, and over-stripping on a brace-less target such as
+/// `#[cfg(test)] mod x;` blanks the rest of the file and hides real production
+/// sites.
+#[test]
+fn the_source_scanner_strips_inline_tests_without_swallowing_production_code() {
+    let body = "\
+fn production_one() { Node::new(a, b); }
+#[cfg(test)]
+mod inline {
+    fn hidden() { Node::new(c, d); }
+}
+#[cfg(test)]
+mod declared_elsewhere;
+fn production_two() { Node::new(e, f); }
+";
+    let stripped = strip_inline_test_modules(body);
+
+    assert_eq!(
+        stripped.lines().count(),
+        body.lines().count(),
+        "line numbering must be preserved so reported positions match the real file"
+    );
+    assert_eq!(
+        stripped.matches("Node::new(").count(),
+        2,
+        "both production constructions must survive and the inline-test one must not; got:\n{stripped}"
+    );
+    assert!(
+        stripped.contains("production_two"),
+        "a brace-less `#[cfg(test)] mod x;` must not blank the rest of the file"
+    );
+    assert!(!stripped.contains("hidden"), "inline test module bodies must be excluded");
 }
 
 /// No production parser code may reach the token stream's advance directly:
