@@ -447,7 +447,7 @@ jobs:
   publish-dockerhub:
     name: Publish Docker Hub images by digest
     runs-on: ubuntu-24.04
-    needs: [verify-release-eligibility, init, build, build-perl-runtime]
+    needs: [verify-release-eligibility, init, build-perl-runtime]
     if: github.event.inputs.push != 'false'
     timeout-minutes: 60
     permissions:

@@ -475,6 +475,34 @@ class RustBuilderIsNotAProduct(unittest.TestCase):
                 f"got: {pushes[0]}",
             )
 
+    def test_every_needs_edge_resolves_to_a_declared_job(self) -> None:
+        # Removing a job is exactly the edit that strands a `needs:` edge in
+        # some other job, and GitHub rejects the whole workflow when that
+        # happens. This caught a real stranded `build` edge on
+        # `publish-dockerhub` during the #8980 retirement, which none of the
+        # identity controls above would have noticed.
+        declared = set(self.jobs)
+        stranded: list[str] = []
+        for job_id, body in self.jobs.items():
+            for line in body:
+                match = re.match(r"^    needs:\s*(.+?)\s*$", line)
+                if not match:
+                    continue
+                raw = match.group(1).strip()
+                names = (
+                    raw[1:-1].split(",")
+                    if raw.startswith("[") and raw.endswith("]")
+                    else [raw]
+                )
+                for name in (n.strip() for n in names):
+                    if name and name not in declared:
+                        stranded.append(f"{job_id} -> {name}")
+        self.assertEqual(
+            [],
+            stranded,
+            f"every needs edge must name a declared job; declared={sorted(declared)}",
+        )
+
     def test_summary_advertises_no_builder_image(self) -> None:
         summary_text = "\n".join(
             line
