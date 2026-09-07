@@ -387,7 +387,26 @@ impl QuickOrmMultiplicity {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum QuickOrmTypeParamEffect {
-    /// Source and row identity are carried through unchanged.
+    /// The receiver's **source** is carried through unchanged.
+    ///
+    /// This is a claim about the source, not about which row object happens to
+    /// be bound. Twelve methods route their optional argument through
+    /// `Handle::_row_or_hashref` (Handle.pm:1995-2013), and that helper can
+    /// change the binding while leaving the source alone:
+    ///
+    /// - a blessed argument doing `Role::Row` becomes `$self->row($item)`
+    ///   (Handle.pm:2005), replacing any bound row;
+    /// - a hashref or key/value list becomes the named setter — usually
+    ///   `where(...)` — whose named-key path deletes the bound row outright
+    ///   (Handle.pm:918-921).
+    ///
+    /// `_check_row` admits the replacement whenever the connection matches and
+    /// the two sources share a `source_orm_name`; it does **not** require the
+    /// argument's row class to match the receiver's (Handle.pm:291-304). So a
+    /// consumer may rely on the source surviving, but must not conclude that
+    /// the receiver's row *class* survives an argument-bearing call. Clearing
+    /// the binding likewise does not mean later results have no row type: they
+    /// are then derived from the retained source.
     PreservedFromReceiver,
     /// The source becomes a join and the row becomes a join row.
     TransformedToJoinRow,
@@ -1597,13 +1616,12 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         arguments: A::TrailingCoderef,
         return_class: C::MutationOrSideEffectResult,
         multiplicity: N::Nothing,
-        type_params: T::PreservedFromReceiver,
+        type_params: T::NotApplicable,
         mode: M::SyncOnly,
         void_context: V::Permitted,
         boundary: B::Exact,
-        evidence: QuickOrmEvidence { file: HANDLE, line: 3376 },
-        notes: "Croaks unless the final argument is a coderef and the handle is sync; \
-         returns nothing.",
+        evidence: QuickOrmEvidence { file: HANDLE, line: 3397 },
+        notes: "Croaks unless the final argument is a coderef and the handle is sync, then ends in a bare `return` (Handle.pm:3397). Because it yields nothing, there is no returned value to carry a type parameter. The rows the callback receives are built from the retained source (Handle.pm:3388-3392), but that is the callback's argument contract, not this call's return, and it is deliberately not recorded here.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.iterator",
@@ -1912,6 +1930,22 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         notes: "Clone whose source is the resulting join.",
     },
     QuickOrmApiCase {
+        api_case_id: "handle.row.clear",
+        package: PKG_HANDLE,
+        method: "row",
+        receiver: R::Handle,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::ValueSetter,
+        return_class: C::PreserveHandleSourceRow,
+        multiplicity: N::One,
+        type_params: T::PreservedFromReceiver,
+        mode: M::SyncAsyncAsideForked,
+        void_context: V::Croaks,
+        boundary: B::Exact,
+        evidence: QuickOrmEvidence { file: HANDLE, line: 908 },
+        notes: "`row(undef)` reaches the named-key path with an undefined value, which deletes the ROW slot and returns (Handle.pm:908-912). The source is untouched, so the clone is an unbound handle over the same source: clearing the binding does not mean later terminals have no row type, only that it is derived from the retained source rather than from a bound row.",
+    },
+    QuickOrmApiCase {
         api_case_id: "handle.row.get",
         package: PKG_HANDLE,
         method: "row",
@@ -1932,16 +1966,19 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         package: PKG_HANDLE,
         method: "row",
         receiver: R::Handle,
-        receiver_constraints: NO_CONSTRAINTS,
+        receiver_constraints: &[
+            "argument row must share the receiver's connection",
+            "argument row's source must share the receiver's `source_orm_name`",
+        ],
         arguments: A::ValueSetter,
-        return_class: C::TransformHandleSourceRow,
+        return_class: C::PreserveHandleSourceRow,
         multiplicity: N::One,
-        type_params: T::DerivedFromArgumentSource,
+        type_params: T::PreservedFromReceiver,
         mode: M::SyncAsyncAsideForked,
         void_context: V::Croaks,
-        boundary: B::RuntimeResolved,
-        evidence: QuickOrmEvidence { file: HANDLE, line: 1308 },
-        notes: "Binding a row clears the where clause, and it also replaces the source: the consistency croak is guarded by `if ($set{+SOURCE})`, which only tracks a source passed in the same call, so `row($other)` takes the else branch and overwrites the inherited source with the row's own (Handle.pm:833-840). The receiver's row type does not survive.",
+        boundary: B::Exact,
+        evidence: QuickOrmEvidence { file: HANDLE, line: 1312 },
+        notes: "Binding a row clears the where clause but keeps the receiver's source. `row($r)` calls `clone(ROW() => $r, WHERE() => undef)` (Handle.pm:1312), so the row travels as a *named key* and takes the constant path at Handle.pm:902-928, which assigns the slot and never touches SOURCE. The `if ($set{+SOURCE})` branch that can adopt a row's own source is the *positional* `Role::Row` argument form (Handle.pm:829-840), which this call never reaches. `_check_row` admits any row on a matching connection whose source shares a `source_orm_name` (Handle.pm:291-304) and does not require a matching row class, so the source survives while the bound row's class need not.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.source.get",
@@ -3989,15 +4026,61 @@ mod tests {
     /// Binding a row also rebinds the source, because the consistency croak
     /// only fires for a source passed in the same call.
     #[test]
-    fn binding_a_row_rebinds_the_source() {
-        let case = case_by_id("handle.row.set");
-        assert_eq!(case.return_class, QuickOrmReturnClass::TransformHandleSourceRow);
-        assert_eq!(case.type_params, QuickOrmTypeParamEffect::DerivedFromArgumentSource);
+    fn binding_a_row_keeps_the_receiver_source() {
+        // `row($r)` passes the row as a *named* key (Handle.pm:1312), which
+        // takes the constant path and never assigns SOURCE. The branch that
+        // adopts a row's own source is the positional argument form, which
+        // this call cannot reach — so both the binding and the clearing form
+        // keep the receiver's source.
+        for id in ["handle.row.set", "handle.row.clear"] {
+            let case = case_by_id(id);
+            assert_eq!(
+                case.return_class,
+                QuickOrmReturnClass::PreserveHandleSourceRow,
+                "`{id}` keeps the receiver's source"
+            );
+            assert_eq!(
+                case.type_params,
+                QuickOrmTypeParamEffect::PreservedFromReceiver,
+                "`{id}` must not claim the source is derived from the argument"
+            );
+        }
+
+        // Binding is the conditional one: upstream admits the row only on a
+        // matching connection and source name, so that boundary must be
+        // recorded. Clearing takes no row and has nothing to check.
+        assert!(
+            !case_by_id("handle.row.set").receiver_constraints.is_empty(),
+            "binding a row is gated by `_check_row` and must say so"
+        );
+        assert!(
+            case_by_id("handle.row.clear").receiver_constraints.is_empty(),
+            "clearing the binding passes no row, so it has no row precondition"
+        );
+
         // The reading form still just returns the bound row, if any.
         assert_eq!(
             case_by_id("handle.row.get").return_class,
             QuickOrmReturnClass::MetadataOrScalar
         );
+    }
+
+    /// A call that returns nothing cannot carry a type parameter. `iterate`
+    /// ends in a bare `return` (Handle.pm:3397); its callback's row argument is
+    /// a separate contract and is not recorded as this call's return.
+    #[test]
+    fn calls_returning_nothing_carry_no_type_parameter() {
+        for case in QUICKORM_API_CASES {
+            if case.multiplicity != QuickOrmMultiplicity::Nothing {
+                continue;
+            }
+            assert_eq!(
+                case.type_params,
+                QuickOrmTypeParamEffect::NotApplicable,
+                "`{}` returns nothing, so it has no returned value to carry a type parameter",
+                case.api_case_id
+            );
+        }
     }
 
     /// `new`, `clone` and `handle` are documented interchangeable aliases, so
