@@ -9,6 +9,12 @@
 # broaden code-action behavior, promote support tiers, or replace the #8068
 # provider contract or the #8392 provider-selection policy.
 #
+# Family names are this ledger's own labels, not IDs from an upstream registry:
+# #4205's "one registry [linking] diagnostic codes to stable action IDs" has no
+# code artifact in the tree, so a family is <emitted CodeActionKind>:<capability
+# name>. Dispositions attach to the capability, not to the label; if #4205 lands
+# a different partition, these names give way. See the human ledger.
+#
 # Controlling issue: #9188 (this ledger + its parity corpus; no routing change)
 # Cutover consumer:  #9189 (canonical route selection)
 # Retirement:        #9190 (delete retired generations)

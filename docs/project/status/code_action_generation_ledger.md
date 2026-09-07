@@ -13,9 +13,27 @@ against recorded behavior instead of against assumption.
 - Retirement: #9190 — delete retired generations and convert parity fixtures into
   canonical-route regression proof.
 
-The ledger joins, it does not replace: the provider contract remains #8068, the
-provider-selection policy remains #8392, and the remediation contract remains
-#4205. Nothing here promotes a support tier or advertises a capability.
+The ledger subordinates itself, it does not replace: the provider contract
+remains #8068, the provider-selection policy remains #8392, and the remediation
+contract remains #4205. Nothing here promotes a support tier or advertises a
+capability.
+
+**Family names are this ledger's own labels, not IDs borrowed from an upstream
+registry.** #9188 asks for #8068/#8392 IDs to be used rather than a parallel
+registry, and #4205's definition of done names "one registry [linking]
+diagnostic codes to stable action IDs and safety metadata" — but no such
+registry exists in the tree today. Searching the workspace for an action-ID or
+fixability registry finds only `tooling/perl_critic/remediation.rs`, which
+classifies *critic remediation eligibility*, not action identity. So a family
+here is `<emitted CodeActionKind>:<capability name>` — a label chosen to name
+the user-visible capability a generation answers, deliberately shaped so it can
+be mapped onto real action IDs later rather than competing with them.
+
+Two consequences #9189 must not gloss over. This ledger's rows cannot be joined
+to remediation IDs by key today, only by reading. And if the #4205 registry
+lands with a different partition of capabilities, these family names are the
+side that gives way — the dispositions attach to the capability, not to the
+label.
 
 ## Production order
 
