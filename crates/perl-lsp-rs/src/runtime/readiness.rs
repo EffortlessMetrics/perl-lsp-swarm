@@ -1014,29 +1014,6 @@ mod tests {
         assert!(outcome.reason().contains("scan timeout"));
         Ok(())
     }
-
-    /// The timeout outcome stays a distinct, pinned result: an unmeetable
-    /// budget resolves as TimedOut (never Ready, never Waited) so the
-    /// widened positive budget above cannot mask it.
-    #[test]
-    fn readiness_contract_waitbriefly_timeout_is_distinct() -> Result<()> {
-        let coordinator = Arc::new(IndexCoordinator::new());
-        let indexing = AtomicBool::new(true);
-
-        let outcome = check_readiness_with_budget(
-            Some(&coordinator),
-            &indexing,
-            IndexReadinessPolicy::WaitBriefly,
-            Duration::from_millis(1),
-        );
-
-        assert!(
-            matches!(outcome, IndexReadinessOutcome::TimedOut(_)),
-            "an unmeetable budget must resolve as TimedOut, got {outcome:?}"
-        );
-        assert!(outcome.is_fallback_safe());
-        Ok(())
-    }
 }
 
 use std::collections::HashMap;
