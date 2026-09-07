@@ -2,7 +2,7 @@
 
 Mapped to #10949's acceptance criteria.
 
-- [x] Every standard completion candidate producer and append site is inventoried from current source (58 rows, `syn`-derived over 41 tracked files, across three discovery planes).
+- [x] Every standard completion candidate producer and append site is inventoried from current source (58 rows, `syn`-derived over 42 tracked files, across three discovery planes).
 - [x] Identity, insertion, evidence, rank, completeness, finalizer route and legacy status are explicit on every row, as closed vocabularies rejected by serde when unknown.
 - [x] Every nonterminal legacy row names one focused migration or retirement owner; a controller (`#8969`/`#8963`/`#9621`) is refused as an owner.
 - [x] A new hidden producer fails the check — proven by source mutation, not only by fixture; an untracked one now stops the run rather than reporting green.

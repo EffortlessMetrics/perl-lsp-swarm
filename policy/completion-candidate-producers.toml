@@ -28,11 +28,14 @@
 #   yet: every candidate reaches merge identified by its label. Each row names
 #   the issue that changes that.
 #
-# On `source_completeness = legacy_unreported` everywhere
-#   No current producer reports whether it finished. Until that changes, a
+# On `source_completeness = legacy_unreported` almost everywhere
+#   One producer already reports whether it finished: `htmx::complete_header_names`
+#   distinguishes "not my context" from "mine, and empty". Every other row is
+#   `legacy_unreported`, and the one exception is discarded by the facade above
+#   it, so no request outcome preserves the signal. Until that changes a
 #   `Complete` completion outcome is not earned by any request, because an
-#   empty result is indistinguishable from a producer that gave up. This is the
-#   fact #10230 consumes.
+#   empty result is indistinguishable from a producer that gave up. The gap is
+#   propagation, not capability — which is what #10230 consumes.
 #
 # On the Dancer2 row
 #   `add_dancer2_keyword_completions` is reached by `handle_completion_cancellable`

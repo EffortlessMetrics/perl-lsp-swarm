@@ -7030,6 +7030,66 @@ mod tests {
 
     type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+    fn parse_completion_candidates(
+        args: &[&str],
+    ) -> TestResult<completion_candidates::CompletionCandidatesSubcommand> {
+        match Cli::try_parse_from(args)?.command {
+            Commands::CompletionCandidates { command } => Ok(command),
+            _ => Err(std::io::Error::other("expected completion-candidates command").into()),
+        }
+    }
+
+    /// The inventory's four verbs are its whole interface (#10949). A wrong
+    /// clap name, a missing `#[command(subcommand)]`, or an argument declared
+    /// as a flag instead of a positional all compile cleanly and break the CLI,
+    /// so each shape is parsed here and each wrong shape is refused.
+    #[test]
+    fn completion_candidates_cli_shapes_parse() -> TestResult {
+        use completion_candidates::CompletionCandidatesSubcommand as Sub;
+
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "check"])?,
+            Sub::Check
+        ));
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "list"])?,
+            Sub::List
+        ));
+
+        let explain = parse_completion_candidates(&[
+            "xtask",
+            "completion-candidates",
+            "explain",
+            "some::producer::id",
+        ])?;
+        match explain {
+            Sub::Explain { producer_id } => assert_eq!(producer_id, "some::producer::id"),
+            other => {
+                return Err(
+                    std::io::Error::other(format!("expected explain, got {other:?}")).into()
+                );
+            }
+        }
+
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "graph"])?,
+            Sub::Graph { stdout: false }
+        ));
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "graph", "--stdout"])?,
+            Sub::Graph { stdout: true }
+        ));
+
+        // A verb is required, `explain` needs its producer id, and the
+        // subcommand name is `completion-candidates` rather than the Rust
+        // identifier — each is a regression clap would otherwise accept.
+        assert!(Cli::try_parse_from(["xtask", "completion-candidates"]).is_err());
+        assert!(Cli::try_parse_from(["xtask", "completion-candidates", "explain"]).is_err());
+        assert!(Cli::try_parse_from(["xtask", "completion_candidates", "check"]).is_err());
+        assert!(Cli::try_parse_from(["xtask", "completion-candidates", "chekc"]).is_err());
+        Ok(())
+    }
+
     fn parse_devex_command(args: &[&str]) -> TestResult<DevexCommand> {
         match Cli::try_parse_from(args)?.command {
             Commands::Devex { command } => Ok(command),

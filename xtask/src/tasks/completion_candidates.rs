@@ -52,6 +52,15 @@
 //! themselves constructed somewhere this scan can see, which is what bounds
 //! the gap.
 //!
+//! Two rules are deliberately over-inclusive, and both err toward a false
+//! alarm rather than a miss. A local whose initializer merely *mentions* the
+//! page is treated as holding it, so mutating a vector derived from
+//! `completions` — a list of serialized values, say — after finalization would
+//! be reported. And a named carrier is matched on its last path segment, so an
+//! unrelated same-named type in another module would make its returning
+//! functions look like producers. Both would need type resolution to decide
+//! precisely; neither can hide a producer.
+//!
 //! The post-finalizer control walks an entry body in source order with one
 //! monotonic "have I passed the finalizer" flag rather than a control-flow
 //! graph. That conflates mutually exclusive branches: a body that finalizes
@@ -126,6 +135,11 @@ const CANDIDATE_BINDING: &str = "completions";
 /// implementation owner of a row, because "owned by the controller" is how a
 /// migration silently acquires no owner at all.
 const CONTROLLER_ISSUES: &[&str] = &["#8969", "#8963", "#9621"];
+
+/// Sentinel recorded for `use providers::*`, which makes sibling modules
+/// reachable by bare name. It matches no scan root and no delegation row, so
+/// its presence refuses the ledger by construction.
+const GLOB_PROVIDER_IMPORT: &str = "*";
 
 /// Candidate classes that are genuinely server-authored catalogues, and so may
 /// carry a reviewed stable identity instead of a semantic entity.
@@ -877,8 +891,14 @@ impl ProviderReferenceVisitor<'_> {
                 }
             }
             syn::UseTree::Glob(_) => {
-                // `use crate::providers::*` names no module of its own; the
-                // items it pulls in are reached by their own paths elsewhere.
+                // `use crate::providers::*` names no module, but it makes every
+                // sibling provider reachable by a bare identifier this scan
+                // cannot resolve. Recording a sentinel forces the ledger to
+                // refuse rather than silently losing the delegation plane: no
+                // scan root can cover it and no delegation row can name it.
+                if under_providers {
+                    self.modules.insert(GLOB_PROVIDER_IMPORT.to_string());
+                }
             }
         }
     }
@@ -1111,11 +1131,19 @@ impl<'a> SeamVisitor<'a> {
 }
 
 impl<'ast> Visit<'ast> for SeamVisitor<'_> {
+    /// Descend an inline module under its own name.
+    ///
+    /// Without this, two sibling `mod` blocks defining a same-named producer
+    /// share one id, and `merge_declarations` fuses them as if they were `cfg`
+    /// arms — so the second inherits the first's disposition.
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
         if has_cfg_test(&node.attrs) {
             return;
         }
+        let previous = self.module.clone();
+        self.module = format!("{}::{}", self.module, node.ident);
         syn::visit::visit_item_mod(self, node);
+        self.module = previous;
     }
 
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
@@ -1590,18 +1618,26 @@ impl<'ast> Visit<'ast> for EntryBodyVisitor<'_> {
     }
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
-        if let syn::Expr::Path(path) = node.func.as_ref()
-            && let Some(segment) = path.path.segments.last()
-        {
-            let name = segment.ident.to_string();
-            self.called.insert(name.clone());
-            if name == FINALIZER_CALL {
-                self.seen_finalizer = true;
-            } else {
-                self.note_producer_call(&name);
-            }
-        }
+        let finalizer = match node.func.as_ref() {
+            syn::Expr::Path(path) => path.path.segments.last().is_some_and(|segment| {
+                let name = segment.ident.to_string();
+                self.called.insert(name.clone());
+                if name != FINALIZER_CALL {
+                    self.note_producer_call(&name);
+                }
+                name == FINALIZER_CALL
+            }),
+            _ => false,
+        };
+
+        // Arguments are evaluated before the call, so they are visited before
+        // the flag is set. Otherwise `sort_and_cap_completions(vec![
+        // CompletionItem { .. }], cap)` would report its own argument as a
+        // post-finalizer construction.
         syn::visit::visit_expr_call(self, node);
+        if finalizer {
+            self.seen_finalizer = true;
+        }
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
@@ -1822,6 +1858,15 @@ fn validate_delegations(ledger: &Ledger, discovered: &Discovered) -> Result<()> 
     for (module, files) in &discovered.provider_references {
         if module_is_fully_scanned(module) {
             continue;
+        }
+        if module == GLOB_PROVIDER_IMPORT {
+            bail!(
+                "scanned completion source glob-imports `providers::*` ({}). A glob makes every \
+                 sibling provider reachable by a bare name this scan cannot resolve, so the \
+                 delegation plane cannot tell which modules are actually reached. Import the \
+                 modules you use by name.",
+                files.iter().cloned().collect::<Vec<_>>().join(", ")
+            );
         }
         let Some(row) = declared.get(module.as_str()) else {
             bail!(
@@ -2357,9 +2402,13 @@ pub fn render_markdown(ledger: &Ledger, discovered: &Discovered) -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "A producer is a function taking the shared `&mut Vec<CompletionItem>` append channel. \
-         A file that constructs candidates without exposing one must carry a `construction_only` \
-         row saying which producer owns its output."
+        "A producer is a function that carries candidates: it takes a `&mut Vec<Candidate>` \
+         append channel, returns a type containing `Vec<Candidate>`, or returns a named struct \
+         or enum carrier holding one — where a candidate is a `CompletionItem` or a \
+         `CompletionCandidate`. The `Seam` column says which. A file that constructs candidates \
+         without exposing such a function must carry a `construction_only` row naming the \
+         producer that owns its output, and a `providers::` module the surface reaches into but \
+         does not scan in full must carry a `delegations` row."
     );
     let _ = writeln!(out);
     let _ = writeln!(out, "| Population | Count |");
@@ -2564,9 +2613,10 @@ pub fn render_markdown(ledger: &Ledger, discovered: &Discovered) -> String {
     );
     let _ = writeln!(
         out,
-        "- Discovery is syntactic. A producer that returned candidates by value rather than \
-         taking the append channel would not appear as a producer row; the construction-only \
-         plane bounds that gap at file granularity."
+        "- Discovery is syntactic. Its three planes bound one another at function, file and \
+         module granularity, but a producer evading all three would not appear. The module \
+         header records the exact ceilings, including the post-finalizer control's source-order \
+         modelling."
     );
     let _ = writeln!(
         out,
@@ -3166,6 +3216,98 @@ mod tests {
         visitor.visit_file(&file);
         assert!(carriers.contains("Flow"), "an enum variant holding the page is a carrier");
         assert!(!carriers.contains("Unrelated"), "an unrelated enum must not widen the scan");
+    }
+
+    /// Arguments are evaluated before the call they belong to, so a candidate
+    /// literal handed *to* the finalizer is not a post-finalizer construction.
+    /// Without this the control would reject a legitimate entry point.
+    #[test]
+    fn a_candidate_in_the_finalizer_call_is_not_post_finalizer() {
+        let no_producers = BTreeSet::new();
+        let inline: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let (completions, is_incomplete) =
+                    sort_and_cap_completions(vec![CompletionItem { label: "ok".into() }], cap);
+            }
+        };
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
+        visitor.visit_block(&inline.block);
+        assert!(
+            !visitor.appended_after_finalizer,
+            "a candidate passed into the finalizer was reported as added after it"
+        );
+
+        // The same literal after the call must still be refused.
+        let after: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let (completions, is_incomplete) =
+                    sort_and_cap_completions(vec![CompletionItem { label: "ok".into() }], cap);
+                let extra = CompletionItem { label: "sneaky".into() };
+            }
+        };
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
+        visitor.visit_block(&after.block);
+        assert!(visitor.appended_after_finalizer, "a literal after the finalizer must be refused");
+    }
+
+    /// A glob makes every sibling provider reachable by a bare name this scan
+    /// cannot resolve, so the delegation plane cannot answer its own question.
+    #[test]
+    fn a_glob_provider_import_is_refused() {
+        let file: syn::File = syn::parse_quote! {
+            use crate::providers::*;
+        };
+        let mut modules = BTreeSet::new();
+        let mut visitor = ProviderReferenceVisitor { modules: &mut modules };
+        visitor.visit_file(&file);
+        assert!(
+            modules.contains(GLOB_PROVIDER_IMPORT),
+            "a provider glob must record the sentinel that refuses the ledger"
+        );
+        assert!(
+            !module_is_fully_scanned(GLOB_PROVIDER_IMPORT),
+            "no scan root may satisfy the glob sentinel"
+        );
+
+        let (mut ledger, mut discovered) = fixture();
+        discovered.provider_references.insert(
+            GLOB_PROVIDER_IMPORT.to_string(),
+            BTreeSet::from(["crates/perl-lsp-rs-core/src/providers/completion/mod.rs".to_string()]),
+        );
+        // Even a delegation row naming it must not rescue the glob.
+        ledger.delegations.push(DelegationRow {
+            module: GLOB_PROVIDER_IMPORT.to_string(),
+            reason: "attempted escape".to_string(),
+        });
+        refuses(&ledger, &discovered, "glob-imports `providers::*`");
+    }
+
+    /// Two sibling inline modules may each define a producer of the same name.
+    #[test]
+    fn inline_modules_keep_producer_identities_apart() {
+        let file: syn::File = syn::parse_quote! {
+            mod left {
+                pub fn add(completions: &mut Vec<CompletionItem>) {}
+            }
+            mod right {
+                pub fn add(completions: &mut Vec<CompletionItem>) {}
+            }
+        };
+        let carriers = BTreeSet::new();
+        let mut visitor = SeamVisitor::new(PROBE_FILE, &carriers);
+        visitor.visit_file(&file);
+        let merged = merge_declarations(visitor.producers).expect("distinct inline module paths");
+        assert_eq!(
+            merged.len(),
+            2,
+            "sibling inline modules fused: {:?}",
+            merged.iter().map(|p| &p.id).collect::<Vec<_>>()
+        );
+        assert!(
+            merged.iter().any(|p| p.id.contains("::left::add")),
+            "the inline module name must appear in the id: {:?}",
+            merged.iter().map(|p| &p.id).collect::<Vec<_>>()
+        );
     }
 
     /// Growing the finalized page is an append however it is spelled.

@@ -101,6 +101,10 @@ behavior, so neither is fixed here.
   returned a candidate vector would not appear as a row; the construction plane
   bounds that at file granularity and the delegation plane bounds it at module
   granularity, and the module documents the ceiling.
+- Two rules are deliberately over-inclusive: a local whose initializer mentions
+  the page is treated as holding it, and a named carrier is matched on its last
+  path segment. Both would need type resolution to decide precisely, and both
+  err toward a false alarm rather than a miss.
 - The post-finalizer control is source-order, not control-flow aware. It can
   raise a false alarm on a body that finalizes inside one branch and
   contributes on another; it cannot miss an append on that axis. Neither

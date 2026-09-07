@@ -57,7 +57,7 @@ The dispositions below were audited against this exact source. A change to any f
 
 ## Denominator
 
-A producer is a function taking the shared `&mut Vec<CompletionItem>` append channel. A file that constructs candidates without exposing one must carry a `construction_only` row saying which producer owns its output.
+A producer is a function that carries candidates: it takes a `&mut Vec<Candidate>` append channel, returns a type containing `Vec<Candidate>`, or returns a named struct or enum carrier holding one — where a candidate is a `CompletionItem` or a `CompletionCandidate`. The `Seam` column says which. A file that constructs candidates without exposing such a function must carry a `construction_only` row naming the producer that owns its output, and a `providers::` module the surface reaches into but does not scan in full must carry a `delegations` row.
 
 | Population | Count |
 | --- | --- |
@@ -252,5 +252,5 @@ flowchart LR
 
 - `reached_by` with `direct_call` evidence is reconciled against the entry-point call site. `provider_seam` evidence is declared: the producer is reached through the provider call, and this task does not prove that edge.
 - `legacy_unreported` completeness means the producer says nothing about whether it finished. While any reached row is `legacy_unreported`, a `Complete` completion outcome is not earned.
-- Discovery is syntactic. A producer that returned candidates by value rather than taking the append channel would not appear as a producer row; the construction-only plane bounds that gap at file granularity.
+- Discovery is syntactic. Its three planes bound one another at function, file and module granularity, but a producer evading all three would not appear. The module header records the exact ceilings, including the post-finalizer control's source-order modelling.
 - Inline completion and `completionItem/resolve` are outside this denominator. Neither contributes to a `textDocument/completion` candidate pool.
