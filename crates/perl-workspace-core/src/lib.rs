@@ -54,6 +54,7 @@ pub mod boundary;
 pub mod builder;
 pub mod carmel;
 pub mod dist;
+pub mod dist_authoring;
 pub mod effects;
 pub mod environment;
 pub mod error;
@@ -87,7 +88,20 @@ pub use carmel::{
     parse_mysetup_environment,
 };
 pub use dist::{DistMetadataFacts, DistMetadataSource, Prereq};
+pub use dist_authoring::{
+    AuthoringPrereq, DistAuthoringBuildTool, DistAuthoringConflict, DistAuthoringFacts,
+    DistAuthoringSource, DistDeclaration, DistDeclarationKind, DistFactAgreement,
+    DistFactComparison, DistProvidesEntry, DistResource, compare_authoring_with_meta,
+    parse_build_pl, parse_dist_authoring, parse_dist_ini, parse_makefile_pl,
+};
 pub use effects::CompileEffectFacts;
+pub use environment::builder::{
+    AmbientEnvironmentObservation, BuildSystemFactDeclaration, EnvironmentInputReceipt,
+    EnvironmentRejectionReason, EnvironmentSnapshotReceipts, EnvironmentSnapshotSlot,
+    IncludeRootDeclaration, InterpreterDeclaration, Perl5LibDeclaration,
+    RejectedIncludeEntryReceipt, SnapshotInstallOutcome, SystemIncDeclaration,
+    WorkspaceEnvironmentDeclaration, rejected_include_entries,
+};
 pub use environment::{
     BuildSystemFactRef, BuildSystemKind, EnvironmentBuildError, EnvironmentFingerprint,
     EnvironmentInput, EnvironmentInputAuthority, EnvironmentInputId, EnvironmentInputState,
