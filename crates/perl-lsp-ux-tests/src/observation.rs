@@ -288,15 +288,99 @@ impl Inbox {
     pub fn wait_for<T>(
         &self,
         timeout: Duration,
-        mut select: impl FnMut(&InboxSnapshot) -> Option<T>,
+        select: impl FnMut(&InboxSnapshot) -> Option<T>,
+    ) -> Result<T, WaitEnd> {
+        self.wait_projected(timeout, Self::snapshot_of, select)
+    }
+
+    /// Wait over the buffered **responses** only.
+    ///
+    /// Prefer this to [`Self::wait_for`] when the predicate only inspects
+    /// responses. Every observation wakes every waiter, and each wake copies
+    /// the buffers the waiter asked for — so a response wait that also copied
+    /// the event buffer would do work proportional to all unrelated
+    /// notifications received so far, on every one of them. That is quadratic
+    /// in notification count for a single wait, and it contends with the reader
+    /// thread that is trying to publish. Responses are consumed as they match,
+    /// so this view stays small.
+    ///
+    /// # Errors
+    ///
+    /// Returns the typed [`WaitEnd`].
+    pub fn wait_for_responses<T>(
+        &self,
+        timeout: Duration,
+        select: impl FnMut(&[(ObservationId, Value)]) -> Option<T>,
+    ) -> Result<T, WaitEnd> {
+        let mut select = select;
+        self.wait_projected(
+            timeout,
+            |state| state.responses.iter().cloned().collect::<Vec<_>>(),
+            move |responses: &Vec<(ObservationId, Value)>| select(responses),
+        )
+    }
+
+    /// Wait over the buffered server-initiated **events** only.
+    ///
+    /// The counterpart to [`Self::wait_for_responses`]; see its note on why a
+    /// wait copies only the buffer it actually inspects.
+    ///
+    /// # Errors
+    ///
+    /// Returns the typed [`WaitEnd`].
+    pub fn wait_for_raw_events<T>(
+        &self,
+        timeout: Duration,
+        select: impl FnMut(&[Value]) -> Option<T>,
+    ) -> Result<T, WaitEnd> {
+        let mut select = select;
+        self.wait_projected(
+            timeout,
+            |state| state.events.iter().map(|(_, value)| value.clone()).collect::<Vec<_>>(),
+            move |events: &Vec<Value>| select(events),
+        )
+    }
+
+    fn snapshot_of(state: &InboxState) -> InboxSnapshot {
+        InboxSnapshot {
+            seq: state.seq,
+            events: state.events.iter().map(|(_, value)| value.clone()).collect(),
+            responses: state.responses.iter().cloned().collect(),
+        }
+    }
+
+    /// The shared wait: copy only the requested view under the lock, evaluate
+    /// the predicate with no lock held, then block until something changes.
+    fn wait_projected<V, T>(
+        &self,
+        timeout: Duration,
+        mut project: impl FnMut(&InboxState) -> V,
+        mut select: impl FnMut(&V) -> Option<T>,
     ) -> Result<T, WaitEnd> {
         let deadline = Instant::now().checked_add(timeout).unwrap_or_else(Instant::now);
         loop {
-            let snapshot = self.snapshot();
-            if let Some(matched) = select(&snapshot) {
+            let (seq, view) = {
+                let state = self.lock();
+                (state.seq, project(&state))
+            };
+            if let Some(matched) = select(&view) {
                 return Ok(matched);
             }
-            self.wait_past(snapshot.seq, deadline, timeout)?;
+            // Bound this loop, not just the blocking step inside `wait_past`.
+            // Every new observation advances the sequence, and `wait_past`
+            // returns immediately when it has — so a steady stream of
+            // unrelated traffic would otherwise spin here forever and a
+            // "bounded" wait would never honour its bound.
+            //
+            // The predicate above always runs first on the freshest snapshot,
+            // so a match that genuinely arrived in time is still returned; and
+            // a terminal stream state still outranks the deadline.
+            if Instant::now() >= deadline {
+                return Err(self
+                    .stream_end()
+                    .map_or(WaitEnd::Deadline { timeout }, WaitEnd::Ended));
+            }
+            self.wait_past(seq, deadline, timeout)?;
         }
     }
 
@@ -514,6 +598,54 @@ mod tests {
         assert!(
             started.elapsed() >= Duration::from_millis(100),
             "the deadline is an outer bound and must actually be honoured"
+        );
+    }
+
+    /// Traffic that never stops must not outrun the bound.
+    ///
+    /// Every observation advances the sequence, and the lost-wakeup guard
+    /// returns immediately when it has — so a waiter fed a fresh unrelated
+    /// observation on each evaluation never blocks. Without a deadline check
+    /// on that path this spins forever and the "bounded" wait is unbounded.
+    #[test]
+    fn continuous_unrelated_traffic_cannot_outrun_the_deadline() {
+        let inbox = Inbox::new();
+        let publisher = inbox.clone();
+
+        let started = Instant::now();
+        let matched = inbox.wait_for(Duration::from_millis(150), |_snapshot| {
+            // Publish from inside the predicate, so the sequence has always
+            // moved by the time the waiter would otherwise block.
+            publisher.push_event(json!({"method": "window/logMessage"}));
+            None::<()>
+        });
+
+        assert!(
+            matches!(matched, Err(WaitEnd::Deadline { .. })),
+            "a never-matching wait under constant traffic must report its bound, got {matched:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the wait must honour its 150ms bound; took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A stream end still outranks the deadline on the bounded path above.
+    #[test]
+    fn a_stream_end_outranks_the_deadline_even_under_traffic() {
+        let inbox = Inbox::new();
+        let publisher = inbox.clone();
+        publisher.close(StreamEnd::ServerClosed);
+
+        let matched = inbox.wait_for(Duration::from_millis(120), move |_snapshot| {
+            publisher.push_event(json!({"method": "window/logMessage"}));
+            None::<()>
+        });
+
+        assert!(
+            matches!(matched, Err(WaitEnd::Ended(StreamEnd::ServerClosed))),
+            "the stream end must still win over the deadline, got {matched:?}"
         );
     }
 

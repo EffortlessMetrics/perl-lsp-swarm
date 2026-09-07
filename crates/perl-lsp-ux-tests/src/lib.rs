@@ -629,6 +629,9 @@ impl UxHarness {
     }
 
     /// Wait until a ready-index notification arrives after `already_seen` events.
+    ///
+    /// The wait is event-driven: it blocks on the notification rather than
+    /// sampling a counter on a timer.
     pub fn wait_for_index_ready_event_after(&self, already_seen: usize, timeout: Duration) -> bool {
         self.client
             .wait_for_events(timeout, |events| {

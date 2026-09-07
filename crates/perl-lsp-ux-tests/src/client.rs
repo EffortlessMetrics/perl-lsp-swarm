@@ -8,11 +8,11 @@
 // Test harness client — eprintln! echoes spawned server stderr for debugging.
 #![allow(clippy::print_stderr)]
 
-use crate::observation::{Inbox, InboxSnapshot, StreamEnd, WaitEnd};
+use crate::observation::{Inbox, StreamEnd, WaitEnd};
 use crate::{FakeWorkspace, ScenarioConfig};
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -72,9 +72,8 @@ impl EventSource for Inbox {
         timeout: Duration,
         mut select: impl FnMut(&[LspEvent]) -> Option<T>,
     ) -> Result<T, WaitEnd> {
-        self.wait_for(timeout, |snapshot: &InboxSnapshot| {
-            let decoded: Vec<LspEvent> =
-                snapshot.events().iter().cloned().map(decode_event).collect();
+        self.wait_for_raw_events(timeout, |events| {
+            let decoded: Vec<LspEvent> = events.iter().cloned().map(decode_event).collect();
             select(&decoded)
         })
     }
@@ -87,6 +86,37 @@ impl EventSource for UxClient {
         select: impl FnMut(&[LspEvent]) -> Option<T>,
     ) -> Result<T, WaitEnd> {
         self.wait_decoded(timeout, select)
+    }
+}
+
+/// Guarantees the stdout reader records *some* stream end when it stops.
+///
+/// The reader normally names the end itself. If it instead unwinds — a panic
+/// anywhere in the read path — this still closes the inbox, so waiters get a
+/// typed failure rather than an indefinite silence that only ever expires as a
+/// deadline. `Inbox::close` keeps the first end recorded, so the honest reason
+/// always wins over this fallback.
+struct ReaderExit {
+    inbox: Inbox,
+}
+
+impl ReaderExit {
+    const fn new(inbox: Inbox) -> Self {
+        Self { inbox }
+    }
+
+    /// Record the reader's own reason for stopping.
+    fn record(&mut self, end: StreamEnd) {
+        self.inbox.close(end);
+    }
+}
+
+impl Drop for ReaderExit {
+    fn drop(&mut self) {
+        // No-ops when `record` already ran; only an unwind reaches this first.
+        self.inbox.close(StreamEnd::TransportFailure {
+            detail: "the stdout reader thread stopped without reporting a reason".to_string(),
+        });
     }
 }
 
@@ -146,8 +176,12 @@ impl UxClient {
         let _stdout_thread = std::thread::Builder::new()
             .name("ux-lsp-stdout".into())
             .spawn(move || {
+                // Records the stream end even if this thread unwinds, so a
+                // waiter can never be left unable to distinguish a dead reader
+                // from a merely silent server.
+                let mut exit = ReaderExit::new(reader_inbox.clone());
                 let mut reader = BufReader::new(stdout);
-                let end = loop {
+                loop {
                     match read_one_frame(&mut reader) {
                         FrameRead::Message(msg) => {
                             let has_id = msg.get("id").is_some() && !msg["id"].is_null();
@@ -159,11 +193,12 @@ impl UxClient {
                                 reader_inbox.push_event(msg);
                             }
                         }
-                        FrameRead::EndOfStream => break StreamEnd::ServerClosed,
-                        FrameRead::Failed(detail) => break StreamEnd::TransportFailure { detail },
+                        FrameRead::EndOfStream => return exit.record(StreamEnd::ServerClosed),
+                        FrameRead::Failed(detail) => {
+                            return exit.record(StreamEnd::TransportFailure { detail });
+                        }
                     }
-                };
-                reader_inbox.close(end);
+                }
             })
             .context("Failed to spawn stdout reader thread")?;
 
@@ -421,9 +456,9 @@ impl UxClient {
     pub fn wait_for_raw_events<T>(
         &self,
         timeout: Duration,
-        mut select: impl FnMut(&[Value]) -> Option<T>,
+        select: impl FnMut(&[Value]) -> Option<T>,
     ) -> Result<T, WaitEnd> {
-        self.inbox.wait_for(timeout, |snapshot: &InboxSnapshot| select(snapshot.events()))
+        self.inbox.wait_for_raw_events(timeout, select)
     }
 
     /// Block until `select` matches over every buffered *decoded* event.
@@ -486,9 +521,8 @@ impl UxClient {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let observation = self
                 .inbox
-                .wait_for(remaining, |snapshot: &InboxSnapshot| {
-                    snapshot
-                        .responses()
+                .wait_for_responses(remaining, |responses| {
+                    responses
                         .iter()
                         .find(|(_, value)| value["id"] == wanted)
                         .map(|(observation, _)| *observation)
@@ -626,10 +660,24 @@ fn read_one_frame(reader: &mut impl BufRead) -> FrameRead {
             "LSP message header block carried no usable Content-Length".to_string(),
         );
     };
-    let mut body = vec![0u8; len];
-    if let Err(error) = reader.read_exact(&mut body) {
+    // Read the body incrementally rather than pre-allocating `len` bytes.
+    // `Content-Length` is untrusted input: a corrupted header near `usize::MAX`
+    // would make `vec![0u8; len]` panic on capacity overflow, and a merely huge
+    // one would abort the process on allocation failure. Either kills this
+    // reader thread without recording a stream end, which would leave every
+    // waiter unable to tell a dead reader from a silent server — exactly the
+    // ambiguity this module exists to remove. `take` caps the read at `len`
+    // and stops at EOF, so a bogus length becomes a truncated frame.
+    let mut body = Vec::new();
+    if let Err(error) = reader.take(len as u64).read_to_end(&mut body) {
         return FrameRead::Failed(format!(
             "stream ended or failed while reading a {len}-byte LSP body: {error}"
+        ));
+    }
+    if body.len() != len {
+        return FrameRead::Failed(format!(
+            "LSP message declared {len} body bytes but the stream ended after {}",
+            body.len()
         ));
     }
     match serde_json::from_slice(&body) {
@@ -689,6 +737,91 @@ fn build_command(binary_path: &str, config: &ScenarioConfig) -> Result<Command> 
     }
 
     Ok(cmd)
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::{FrameRead, ReaderExit, read_one_frame};
+    use crate::observation::{Inbox, StreamEnd};
+    use std::io::BufReader;
+
+    fn read(input: &str) -> FrameRead {
+        read_one_frame(&mut BufReader::new(input.as_bytes()))
+    }
+
+    /// A corrupted `Content-Length` must be reported, never allocated.
+    ///
+    /// `vec![0u8; len]` on this header panics with a capacity overflow (or
+    /// aborts the process on a merely huge value), killing the reader thread
+    /// without recording any stream end — which would leave every waiter
+    /// unable to tell a dead reader from a silent server.
+    #[test]
+    fn an_absurd_content_length_is_a_transport_failure_not_an_allocation() {
+        let outcome = read("Content-Length: 18446744073709551615\r\n\r\n{}");
+
+        let FrameRead::Failed(detail) = outcome else {
+            unreachable!("an undeliverable body length must fail the frame, got {outcome:?}");
+        };
+        assert!(
+            detail.contains("body bytes"),
+            "the failure must name the truncated body: {detail}"
+        );
+    }
+
+    /// The same guarantee for a large-but-plausible length: the frame is
+    /// truncated, so it is a transport failure, not an orderly close.
+    #[test]
+    fn a_body_shorter_than_its_declared_length_is_a_transport_failure() {
+        let outcome = read("Content-Length: 4096\r\n\r\n{\"a\":1}");
+
+        assert!(
+            matches!(outcome, FrameRead::Failed(_)),
+            "a short body must not be reported as an orderly close, got {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_well_formed_frame_still_parses() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":{}}"#;
+        let outcome = read(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
+
+        let FrameRead::Message(value) = outcome else {
+            unreachable!("a well-formed frame must parse, got {outcome:?}");
+        };
+        assert_eq!(value["id"], 1);
+    }
+
+    #[test]
+    fn a_clean_end_of_stream_is_not_a_failure() {
+        assert!(matches!(read(""), FrameRead::EndOfStream));
+    }
+
+    /// If the reader stops without naming a reason, waiters must still get a
+    /// typed stream end rather than silence that only expires as a deadline.
+    #[test]
+    fn an_unreported_reader_exit_still_closes_the_inbox() {
+        let inbox = Inbox::new();
+        drop(ReaderExit::new(inbox.clone()));
+
+        assert!(
+            matches!(inbox.stream_end(), Some(StreamEnd::TransportFailure { .. })),
+            "an unexplained reader exit must still record a stream end"
+        );
+    }
+
+    /// The reader's own reason outranks the fallback.
+    #[test]
+    fn a_reported_reason_wins_over_the_fallback() {
+        let inbox = Inbox::new();
+        let mut exit = ReaderExit::new(inbox.clone());
+        exit.record(StreamEnd::ServerClosed);
+        drop(exit);
+
+        assert!(
+            matches!(inbox.stream_end(), Some(StreamEnd::ServerClosed)),
+            "the honest reason must survive the drop fallback"
+        );
+    }
 }
 
 #[cfg(test)]
