@@ -101,7 +101,7 @@ ship). The reviewer's clean results are also recorded: no `HashMap` anywhere,
 byte-identical second generation, self-consistent digest, and no Mermaid node-id
 collision.
 
-Forty-one ledger falsifiers, each corrupting the reconciled checked-in ledger
+Forty-four ledger falsifiers, each corrupting the reconciled checked-in ledger
 along one axis and asserting the refusal names that axis:
 
 | Axis | Refused because |
@@ -147,6 +147,9 @@ along one axis and asserting the refusal names that axis:
 | an append through a destructured binding | struct, tuple-struct and slice patterns rebind the page |
 | an append channel spelled through a type alias | an alias is a spelling of the page, not another type |
 | a candidate shape the construction plane ignored | the migration target must enter the plane too |
+| a container holding the page through an alias | a field's type may name an alias declared elsewhere |
+| a container holding another carrier | carriers nest, and one pass cannot see the inner one yet |
+| a renamed `providers` namespace | `use crate::providers as p` leaves nothing spelled `providers::` |
 
 Plus positive controls: the checked-in ledger reconciles, the checked-in
 projection is current, generation is byte-identical on a second run, discovery
@@ -203,10 +206,21 @@ All were applied to product source, confirmed refused, and reverted.
    `pub type CandidatePage = Vec<CompletionItem>;` plus
    `fn add_aliased_completions(_: &mut CandidatePage)`. `check` exits 1 naming
    the function and the missing row.
+10. **Producer whose page is held by a struct through an alias.**
+    `struct HeldPage { items: AliasedPage }` returned by `build_held_page`.
+    Carrier decisions were made per container as it was visited, before the
+    alias was known, so the container was not a carrier and the function was
+    not a producer. The same eager decision missed a container holding another
+    carrier. Carriers now close by fixed point over aliases, struct fields and
+    enum variant fields together.
+11. **The `providers` namespace renamed.** `use crate::providers as prov;` then
+    `prov::color::detect_colors(..)` from a scanned file. Nothing is spelled
+    `providers::` for either arm of the delegation scan to match, so an
+    unscanned producer behind the alias needed no row. `check` exits 1 naming
+    `providers::color` and the file that reaches it.
 
-Mutations 7–9 were each run twice, against the same tree: once with the
-pre-review checker and once with the current one. In all three the pre-review
-checker, given the digest and a regenerated projection — the state an author
+Mutations 7–11 were each run twice, against the same tree: once with the
+pre-review checker and once with the current one. In every case the checker as it stood before that round, given the digest and a regenerated projection — the state an author
 reaches after re-auditing — exited **0** with *"valid and current: 58 producers
 across 18 classes, 0 construction-only files, 0 post-finalizer appends"* while
 `handle_completion` pushed a candidate after ranking. That green report on a

@@ -843,7 +843,10 @@ fn discover_provider_references(
         let parsed = syn::parse_file(&source)
             .wrap_err_with(|| format!("failed to parse {file} with syn"))?;
         let mut modules = BTreeSet::new();
-        let mut visitor = ProviderReferenceVisitor { modules: &mut modules };
+        // Aliases first: a `use` may sit below the code that uses it.
+        let mut aliases = BTreeSet::new();
+        ProviderAliasVisitor { aliases: &mut aliases }.visit_file(&parsed);
+        let mut visitor = ProviderReferenceVisitor { modules: &mut modules, aliases: &mut aliases };
         visitor.visit_file(&parsed);
         for module in modules {
             references.entry(module).or_default().insert(file.clone());
@@ -860,9 +863,22 @@ fn discover_provider_references(
 /// plane is exactly what the plane exists to prevent.
 struct ProviderReferenceVisitor<'a> {
     modules: &'a mut BTreeSet<String>,
+    /// Local names bound to the `providers` namespace itself.
+    ///
+    /// `use crate::providers as p;` renames the namespace rather than a module,
+    /// so nothing under it is spelled `providers::` again and both the use-tree
+    /// walk and the path scan would see an ordinary local name. Every unscanned
+    /// producer reached through the alias would then pass with no delegation
+    /// row. The alias is collected in a first pass and then treated exactly as
+    /// `providers` in both places.
+    aliases: &'a mut BTreeSet<String>,
 }
 
 impl ProviderReferenceVisitor<'_> {
+    fn names_providers(&self, segment: &str) -> bool {
+        segment == "providers" || self.aliases.contains(segment)
+    }
+
     /// Walk a use tree, noting every module named directly under `providers`.
     fn walk_use_tree(&mut self, tree: &syn::UseTree, under_providers: bool) {
         match tree {
@@ -873,7 +889,8 @@ impl ProviderReferenceVisitor<'_> {
                     // Deeper segments belong to that module, not to another.
                     return;
                 }
-                self.walk_use_tree(&path.tree, name == "providers");
+                let names = self.names_providers(&name);
+                self.walk_use_tree(&path.tree, names);
             }
             syn::UseTree::Group(group) => {
                 for item in &group.items {
@@ -886,7 +903,10 @@ impl ProviderReferenceVisitor<'_> {
                 }
             }
             syn::UseTree::Rename(rename) => {
-                if under_providers {
+                // `providers::{self as p}` renames the namespace, not a module
+                // in it; `providers as p` is the same thing spelled shorter and
+                // is collected in the alias pass.
+                if under_providers && rename.ident != "self" {
                     self.modules.insert(rename.ident.to_string());
                 }
             }
@@ -914,11 +934,54 @@ impl<'ast> Visit<'ast> for ProviderReferenceVisitor<'_> {
         let segments: Vec<String> =
             node.segments.iter().map(|segment| segment.ident.to_string()).collect();
         for window in segments.windows(2) {
-            if window[0] == "providers" {
+            if self.names_providers(&window[0]) {
                 self.modules.insert(window[1].clone());
             }
         }
         syn::visit::visit_path(self, node);
+    }
+}
+
+/// Collect local names bound to the `providers` namespace itself.
+///
+/// A separate pass because `use` is not required to precede the code that uses
+/// it — it is legal anywhere in a module or block — so a single ordered walk
+/// could scan a path before learning that its first segment is an alias.
+struct ProviderAliasVisitor<'a> {
+    aliases: &'a mut BTreeSet<String>,
+}
+
+impl ProviderAliasVisitor<'_> {
+    fn walk_use_tree(&mut self, tree: &syn::UseTree, under_providers: bool) {
+        match tree {
+            syn::UseTree::Path(path) => {
+                let names = path.ident == "providers";
+                if !under_providers {
+                    self.walk_use_tree(&path.tree, names);
+                }
+            }
+            syn::UseTree::Group(group) => {
+                for item in &group.items {
+                    self.walk_use_tree(item, under_providers);
+                }
+            }
+            // `use crate::providers as p;`
+            syn::UseTree::Rename(rename) if rename.ident == "providers" => {
+                self.aliases.insert(rename.rename.to_string());
+            }
+            // `use crate::providers::{self as p, htmx};`
+            syn::UseTree::Rename(rename) if under_providers && rename.ident == "self" => {
+                self.aliases.insert(rename.rename.to_string());
+            }
+            _ => {}
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for ProviderAliasVisitor<'_> {
+    fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
+        self.walk_use_tree(&node.tree, false);
+        syn::visit::visit_item_use(self, node);
     }
 }
 
@@ -1200,58 +1263,68 @@ const CANDIDATE_TYPES: &[&str] = &["CompletionItem", "CompletionCandidate"];
 /// scanned source first and the producer scan then treats a return of one as a
 /// candidate return.
 fn discover_candidate_carriers(root: &Path, files: &[String]) -> Result<BTreeSet<String>> {
-    let mut carriers = BTreeSet::new();
-    let mut aliases = Vec::new();
+    let mut containers = Vec::new();
     for file in files {
         let source = fs::read_to_string(root.join(file))
             .wrap_err_with(|| format!("failed to read {file}"))?;
         let parsed = syn::parse_file(&source)
             .wrap_err_with(|| format!("failed to parse {file} with syn"))?;
-        let mut visitor = CarrierVisitor { carriers: &mut carriers, aliases: &mut aliases };
+        let mut visitor = CarrierVisitor { containers: &mut containers };
         visitor.visit_file(&parsed);
     }
-    resolve_alias_carriers(&aliases, &mut carriers);
-    Ok(carriers)
+    Ok(resolve_carriers(&containers))
 }
 
-/// Fold type aliases that name a candidate vector into the carrier set.
+/// A named type and the types it holds: struct fields, enum variant fields, or
+/// the single right-hand side of a type alias.
+type Container = (String, Vec<syn::Type>);
+
+/// Close the carrier set over everything that can hold the candidate page.
 ///
-/// `type Items = Vec<CompletionItem>;` is a spelling of the page, not a
-/// different type, so `fn add(out: &mut Items)` is the same append channel as
-/// the one spelled out — but a scan that only matches `Vec<Candidate>`
-/// syntactically loses the producer, and with it the row, the owner, and the
-/// digest coverage.
+/// Nothing can be decided while reading a single file, because a name may be
+/// defined later, in another file, or in terms of a name that is:
 ///
-/// Chains resolve by fixed point (`type A = Vec<CompletionItem>; type B = A;`),
-/// which also bounds a cycle: the set only grows, so a pass that adds nothing
-/// ends the loop whatever the aliases point at.
-fn resolve_alias_carriers(aliases: &[(String, syn::Type)], carriers: &mut BTreeSet<String>) {
+/// - `type Items = Vec<CompletionItem>;` is a spelling of the page, so
+///   `fn add(out: &mut Items)` is the same append channel as the one spelled
+///   out;
+/// - `struct Page { items: Items }` holds the page through that alias;
+/// - `struct Outer { inner: Page }` holds it one level further down.
+///
+/// Deciding each container as it is visited answers all three "no", and the
+/// producer loses its row, its owner, and its digest coverage with it. So every
+/// container is collected first and the set is closed here by fixed point,
+/// which also bounds a cycle without a visited set: the set only grows, so a
+/// pass that adds nothing ends the loop whatever `type A = B; type B = A;`
+/// points at.
+fn resolve_carriers(containers: &[Container]) -> BTreeSet<String> {
+    let mut carriers = BTreeSet::new();
     loop {
         let before = carriers.len();
-        for (name, ty) in aliases {
+        for (name, held) in containers {
             if carriers.contains(name) {
                 continue;
             }
-            if mentions_candidate_vec(ty) || mentions_named_carrier(ty, carriers) {
+            if held
+                .iter()
+                .any(|ty| mentions_candidate_vec(ty) || mentions_named_carrier(ty, &carriers))
+            {
                 carriers.insert(name.clone());
             }
         }
         if carriers.len() == before {
-            return;
+            return carriers;
         }
     }
 }
 
 struct CarrierVisitor<'a> {
-    carriers: &'a mut BTreeSet<String>,
-    aliases: &'a mut Vec<(String, syn::Type)>,
+    containers: &'a mut Vec<Container>,
 }
 
 impl<'ast> Visit<'ast> for CarrierVisitor<'_> {
     fn visit_item_struct(&mut self, node: &'ast syn::ItemStruct) {
-        if node.fields.iter().any(|field| mentions_candidate_vec(&field.ty)) {
-            self.carriers.insert(node.ident.to_string());
-        }
+        let held = node.fields.iter().map(|field| field.ty.clone()).collect();
+        self.containers.push((node.ident.to_string(), held));
         syn::visit::visit_item_struct(self, node);
     }
 
@@ -1259,21 +1332,18 @@ impl<'ast> Visit<'ast> for CarrierVisitor<'_> {
     /// `CompletionFlow`, whose `Return` variant holds the page. A struct-only
     /// scan would label those seams append-only and understate what they do.
     fn visit_item_enum(&mut self, node: &'ast syn::ItemEnum) {
-        if node
+        let held = node
             .variants
             .iter()
-            .any(|variant| variant.fields.iter().any(|field| mentions_candidate_vec(&field.ty)))
-        {
-            self.carriers.insert(node.ident.to_string());
-        }
+            .flat_map(|variant| variant.fields.iter())
+            .map(|field| field.ty.clone())
+            .collect();
+        self.containers.push((node.ident.to_string(), held));
         syn::visit::visit_item_enum(self, node);
     }
 
-    /// Aliases are collected rather than decided here: one may name another
-    /// declared later, or in another file, so they resolve together once every
-    /// file has been read.
     fn visit_item_type(&mut self, node: &'ast syn::ItemType) {
-        self.aliases.push((node.ident.to_string(), (*node.ty).clone()));
+        self.containers.push((node.ident.to_string(), vec![(*node.ty).clone()]));
         syn::visit::visit_item_type(self, node);
     }
 }
@@ -3142,9 +3212,10 @@ mod tests {
                 pub names: Vec<String>,
             }
         };
-        let mut carriers = BTreeSet::new();
-        let mut visitor = CarrierVisitor { carriers: &mut carriers, aliases: &mut Vec::new() };
+        let mut containers = Vec::new();
+        let mut visitor = CarrierVisitor { containers: &mut containers };
         visitor.visit_file(&file);
+        let carriers = resolve_carriers(&containers);
         assert!(carriers.contains("Finalization"), "a struct holding the page is a carrier");
         assert!(!carriers.contains("Unrelated"), "an unrelated vector must not widen the scan");
 
@@ -3238,7 +3309,8 @@ mod tests {
             }
         };
         let mut modules = BTreeSet::new();
-        let mut visitor = ProviderReferenceVisitor { modules: &mut modules };
+        let mut visitor =
+            ProviderReferenceVisitor { modules: &mut modules, aliases: &mut BTreeSet::new() };
         visitor.visit_file(&file);
         for expected in ["file_completion", "htmx", "dancer2", "testing", "inline_completion"] {
             assert!(
@@ -3351,9 +3423,10 @@ mod tests {
                 Text(String),
             }
         };
-        let mut carriers = BTreeSet::new();
-        let mut visitor = CarrierVisitor { carriers: &mut carriers, aliases: &mut Vec::new() };
+        let mut containers = Vec::new();
+        let mut visitor = CarrierVisitor { containers: &mut containers };
         visitor.visit_file(&file);
+        let carriers = resolve_carriers(&containers);
         assert!(carriers.contains("Flow"), "an enum variant holding the page is a carrier");
         assert!(!carriers.contains("Unrelated"), "an unrelated enum must not widen the scan");
     }
@@ -3398,7 +3471,8 @@ mod tests {
             use crate::providers::*;
         };
         let mut modules = BTreeSet::new();
-        let mut visitor = ProviderReferenceVisitor { modules: &mut modules };
+        let mut visitor =
+            ProviderReferenceVisitor { modules: &mut modules, aliases: &mut BTreeSet::new() };
         visitor.visit_file(&file);
         assert!(
             modules.contains(GLOB_PROVIDER_IMPORT),
@@ -3772,11 +3846,10 @@ mod tests {
             pub type Chained = Items;
             pub type Unrelated = Vec<String>;
         };
-        let mut carriers = BTreeSet::new();
-        let mut aliases = Vec::new();
-        let mut visitor = CarrierVisitor { carriers: &mut carriers, aliases: &mut aliases };
+        let mut containers = Vec::new();
+        let mut visitor = CarrierVisitor { containers: &mut containers };
         visitor.visit_file(&file);
-        resolve_alias_carriers(&aliases, &mut carriers);
+        let carriers = resolve_carriers(&containers);
 
         assert!(carriers.contains("Items"), "an alias for the page is the page");
         assert!(carriers.contains("Chained"), "an alias chain resolves to the page");
@@ -3799,6 +3872,97 @@ mod tests {
         assert_eq!(seam.producers.len(), 1, "returning an alias is a candidate return");
     }
 
+    /// A container holding the page through an alias, or through another
+    /// carrier, is a carrier.
+    ///
+    /// Deciding each container as it is visited answered both of these "no",
+    /// because the alias and the inner carrier were not yet known.
+    #[test]
+    fn carriers_close_over_aliases_and_nesting() {
+        let file: syn::File = syn::parse_quote! {
+            pub type Items = Vec<CompletionItem>;
+            pub struct Page { pub items: Items }
+            pub struct Outer { pub page: Page }
+            pub enum Flow { Return(Page), Continue }
+            pub struct Unrelated { pub names: Vec<String> }
+        };
+        let mut containers = Vec::new();
+        let mut visitor = CarrierVisitor { containers: &mut containers };
+        visitor.visit_file(&file);
+        let carriers = resolve_carriers(&containers);
+
+        assert!(carriers.contains("Page"), "a field typed through an alias holds the page");
+        assert!(carriers.contains("Outer"), "a field typed as a carrier holds the page");
+        assert!(carriers.contains("Flow"), "an enum variant holding a carrier holds the page");
+        assert!(!carriers.contains("Unrelated"), "an unrelated vector must not widen the scan");
+
+        // The point of the closure is that the producer keeps its row.
+        let mut seam = SeamVisitor::new(PROBE_FILE, &carriers);
+        seam.visit_file(&syn::parse_quote! {
+            fn returns_nested() -> Outer { unimplemented!() }
+        });
+        assert_eq!(seam.producers.len(), 1, "returning a nested carrier is a candidate return");
+    }
+
+    /// The `providers` namespace can itself be renamed.
+    ///
+    /// `use crate::providers as p;` leaves nothing spelled `providers::` for
+    /// either arm to match, so every unscanned producer behind the alias
+    /// reached the client with no delegation row.
+    #[test]
+    fn a_renamed_provider_namespace_is_still_the_provider_namespace() {
+        for file in [
+            syn::parse_quote! {
+                use crate::providers as p;
+                fn call() { let _ = p::hover::something(); }
+            },
+            syn::parse_quote! {
+                use crate::providers::{self as p, htmx};
+                fn call() { let _ = p::symbols::something(); }
+            },
+        ] {
+            let file: syn::File = file;
+            let mut modules = BTreeSet::new();
+            let mut aliases = BTreeSet::new();
+            ProviderAliasVisitor { aliases: &mut aliases }.visit_file(&file);
+            let mut visitor =
+                ProviderReferenceVisitor { modules: &mut modules, aliases: &mut aliases };
+            visitor.visit_file(&file);
+            assert!(
+                modules.contains("hover") || modules.contains("symbols"),
+                "a provider reached through a namespace alias must still be recorded, got {modules:?}"
+            );
+            assert!(
+                !modules.contains("p"),
+                "the alias names the namespace, not a module in it, got {modules:?}"
+            );
+        }
+
+        // The alias is collected even when the `use` sits below its use site.
+        let late: syn::File = syn::parse_quote! {
+            fn call() { let _ = p::hover::something(); }
+            use crate::providers as p;
+        };
+        let mut modules = BTreeSet::new();
+        let mut aliases = BTreeSet::new();
+        ProviderAliasVisitor { aliases: &mut aliases }.visit_file(&late);
+        let mut visitor = ProviderReferenceVisitor { modules: &mut modules, aliases: &mut aliases };
+        visitor.visit_file(&late);
+        assert!(modules.contains("hover"), "the alias pass must not depend on item order");
+
+        // An ordinary local name is not a provider namespace.
+        let unrelated: syn::File = syn::parse_quote! {
+            use crate::parser as p;
+            fn call() { let _ = p::hover::something(); }
+        };
+        let mut modules = BTreeSet::new();
+        let mut aliases = BTreeSet::new();
+        ProviderAliasVisitor { aliases: &mut aliases }.visit_file(&unrelated);
+        let mut visitor = ProviderReferenceVisitor { modules: &mut modules, aliases: &mut aliases };
+        visitor.visit_file(&unrelated);
+        assert!(modules.is_empty(), "an unrelated alias must not widen the plane, got {modules:?}");
+    }
+
     /// A cyclic alias pair terminates instead of resolving forever.
     #[test]
     fn alias_resolution_terminates_on_a_cycle() {
@@ -3806,11 +3970,10 @@ mod tests {
             pub type A = B;
             pub type B = A;
         };
-        let mut carriers = BTreeSet::new();
-        let mut aliases = Vec::new();
-        let mut visitor = CarrierVisitor { carriers: &mut carriers, aliases: &mut aliases };
+        let mut containers = Vec::new();
+        let mut visitor = CarrierVisitor { containers: &mut containers };
         visitor.visit_file(&file);
-        resolve_alias_carriers(&aliases, &mut carriers);
+        let carriers = resolve_carriers(&containers);
         assert!(carriers.is_empty(), "a cycle naming no candidate resolves to nothing");
     }
 

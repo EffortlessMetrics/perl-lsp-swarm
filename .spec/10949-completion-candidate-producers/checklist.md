@@ -8,7 +8,7 @@ Mapped to #10949's acceptance criteria.
 - [x] A new hidden producer fails the check — proven by source mutation, not only by fixture; an untracked one now stops the run rather than reporting green, and one whose append channel is spelled through a type alias is refused by name.
 - [x] A post-finalizer append fails the check — proven by source mutation, including ones smuggled through a renamed binding, a destructuring pattern, and a finalizer called as a method on the entry points' own impl.
 - [x] Two same-named trait-impl producers in one file cannot fuse into a single row and inherit one disposition; the same holds for same-terminal-name self types and trait paths.
-- [x] A producer the scanned tree delegates to, in a module not scanned in full, fails the check — including behind a grouped or renamed import.
+- [x] A producer the scanned tree delegates to, in a module not scanned in full, fails the check — including behind a grouped import, a renamed module, or a renamed `providers` namespace.
 - [x] An ambiguous trailing function name that an entry point calls is refused rather than letting one row's reach ride on another's call site.
 - [x] Generated `list`, `explain` and `graph` outputs are deterministic and source-derived; second generation is byte-identical.
 - [x] Current-tree checked state drives validation. The task makes no network call and reads no issue status.
