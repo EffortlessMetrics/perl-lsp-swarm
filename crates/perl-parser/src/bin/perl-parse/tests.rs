@@ -81,38 +81,57 @@ fn help_identifies_legacy_and_unstable_surfaces() {
     assert!(help.contains("Unstable human-only Rust Debug output"));
 }
 
+fn check_line_col(
+    source: &str,
+    position: usize,
+    expected: (usize, usize),
+) -> Result<(), Box<dyn std::error::Error>> {
+    let actual = position_to_line_col(source, position);
+    if actual != expected {
+        return Err(format!(
+            "source {source:?}, byte offset {position}: expected {expected:?}, got {actual:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 #[test]
-fn position_to_line_col_preserves_ascii_boundaries() {
+fn position_to_line_col_preserves_ascii_boundaries() -> Result<(), Box<dyn std::error::Error>> {
     let source = "ab\ncd";
 
-    assert_eq!(position_to_line_col(source, 0), (1, 1));
-    assert_eq!(position_to_line_col(source, 2), (1, 3));
-    assert_eq!(position_to_line_col(source, 3), (2, 1));
-    assert_eq!(position_to_line_col(source, source.len()), (2, 3));
+    check_line_col(source, 0, (1, 1))?;
+    check_line_col(source, 2, (1, 3))?;
+    check_line_col(source, 3, (2, 1))?;
+    check_line_col(source, source.len(), (2, 3))?;
+    Ok(())
 }
 
 #[test]
-fn position_to_line_col_uses_utf8_byte_offsets() {
+fn position_to_line_col_uses_utf8_byte_offsets() -> Result<(), Box<dyn std::error::Error>> {
     let source = "é\n🙂x";
 
-    assert_eq!(position_to_line_col(source, 0), (1, 1));
-    assert_eq!(position_to_line_col(source, "é".len()), (1, 2));
-    assert_eq!(position_to_line_col(source, "é\n".len()), (2, 1));
-    assert_eq!(position_to_line_col(source, "é\n🙂".len()), (2, 2));
-    assert_eq!(position_to_line_col(source, source.len()), (2, 3));
+    check_line_col(source, 0, (1, 1))?;
+    check_line_col(source, "é".len(), (1, 2))?;
+    check_line_col(source, "é\n".len(), (2, 1))?;
+    check_line_col(source, "é\n🙂".len(), (2, 2))?;
+    check_line_col(source, source.len(), (2, 3))?;
+    Ok(())
 }
 
 #[test]
-fn position_to_line_col_handles_empty_source() {
-    assert_eq!(position_to_line_col("", 0), (1, 1));
+fn position_to_line_col_handles_empty_source() -> Result<(), Box<dyn std::error::Error>> {
+    check_line_col("", 0, (1, 1))
 }
 
 #[test]
-fn position_to_line_col_floors_offsets_inside_utf8_scalars() {
-    assert_eq!(position_to_line_col("é", 1), (1, 1));
-    assert_eq!(position_to_line_col("🙂", 1), (1, 1));
-    assert_eq!(position_to_line_col("🙂", 3), (1, 1));
-    assert_eq!(position_to_line_col("🙂", "🙂".len()), (1, 2));
+fn position_to_line_col_floors_offsets_inside_utf8_scalars()
+-> Result<(), Box<dyn std::error::Error>> {
+    check_line_col("é", 1, (1, 1))?;
+    check_line_col("🙂", 1, (1, 1))?;
+    check_line_col("🙂", 3, (1, 1))?;
+    check_line_col("🙂", "🙂".len(), (1, 2))?;
+    Ok(())
 }
 
 #[test]
