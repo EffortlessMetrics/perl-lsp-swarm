@@ -50,25 +50,25 @@ pub(crate) enum FieldTraitArgument {
     /// This is the only form that can name a generated *method*, because a
     /// method name must be a callable identifier.
     StaticName(String),
-    /// Static argument text that is not an identifier, as in `:param(foo-bar)`
-    /// or `:param(1bad)`.
+    /// Static argument text that is not an identifier, as in `:param(foo-bar)`,
+    /// `:param(1bad)`, or even `:param($dyn)`.
     ///
-    /// Perl accepts arbitrary literal text as a `:param` constructor key —
-    /// `class C { field $x :param(foo-bar); } C->new('foo-bar' => 1)` compiles
-    /// and runs on 5.38 — so this is a legitimate spelling for a key even
-    /// though it can never name a method. Families that generate methods
-    /// reject it; the `:param` family accepts it.
+    /// Perl takes a `:param` argument as literal constructor-key text, sigils
+    /// included — verified on 5.38.2, where a class declaring
+    /// `:param($dyn) :param(foo@arr) :param(foo%bar)` is constructed with
+    /// exactly those strings as keys, and the *value* of `$dyn` is rejected.
+    /// So this is a legitimate spelling for a key even though it can never
+    /// name a method. Families that generate methods reject it; the `:param`
+    /// family accepts it.
     LiteralText(String),
     /// Delimiters were present but the argument body was empty, as in
     /// `:reader()`.
     Empty,
-    /// The argument was unclosed, or its body is genuinely dynamic — for
-    /// example `:reader(` or `:param($dyn)`, where Perl evaluates the sigil
-    /// form as a variable rather than treating it as literal text.
+    /// The opening delimiter was never closed, as in `:reader(`.
     ///
-    /// This state stays explicit rather than degrading into either the bare
-    /// default or an invented static name.
-    MalformedOrDynamic,
+    /// The source proposition is incomplete, so this state stays explicit
+    /// rather than degrading into either the bare default or an invented name.
+    Unclosed,
 }
 
 /// One decoded `field` trait spelling.
@@ -100,7 +100,7 @@ impl DecodedFieldTrait {
                 let argument = match rest.strip_prefix('(').and_then(|body| body.strip_suffix(')'))
                 {
                     // Unclosed argument: the source proposition is incomplete.
-                    None => FieldTraitArgument::MalformedOrDynamic,
+                    None => FieldTraitArgument::Unclosed,
                     Some(body) => decode_argument_body(body),
                 };
                 (name, argument)
@@ -138,24 +138,11 @@ fn decode_argument_body(body: &str) -> FieldTraitArgument {
     if trimmed.is_empty() {
         return FieldTraitArgument::Empty;
     }
-    if is_dynamic(trimmed) {
-        return FieldTraitArgument::MalformedOrDynamic;
-    }
     if is_static_name(trimmed) {
         FieldTraitArgument::StaticName(trimmed.to_owned())
     } else {
         FieldTraitArgument::LiteralText(trimmed.to_owned())
     }
-}
-
-/// Return true when the argument body references a variable rather than
-/// spelling static text.
-///
-/// Perl really does evaluate the sigil form: `field $x :param($dyn)` fails to
-/// compile with "Global symbol `$dyn` requires explicit package name", so such
-/// a body is not a literal key and this path refuses to invent one from it.
-fn is_dynamic(body: &str) -> bool {
-    body.contains(['$', '@', '%'])
 }
 
 /// Return true when `name` is a static Perl method-name identifier.
@@ -250,9 +237,13 @@ mod tests {
             ("reader()", FieldTraitKind::Reader, FieldTraitArgument::Empty),
             ("writer(   )", FieldTraitKind::Writer, FieldTraitArgument::Empty),
             // Malformed and dynamic arguments never become static names.
-            ("reader(", FieldTraitKind::Reader, FieldTraitArgument::MalformedOrDynamic),
-            ("writer(write_name", FieldTraitKind::Writer, FieldTraitArgument::MalformedOrDynamic),
-            ("reader($dyn)", FieldTraitKind::Reader, FieldTraitArgument::MalformedOrDynamic),
+            ("reader(", FieldTraitKind::Reader, FieldTraitArgument::Unclosed),
+            ("writer(write_name", FieldTraitKind::Writer, FieldTraitArgument::Unclosed),
+            (
+                "reader($dyn)",
+                FieldTraitKind::Reader,
+                FieldTraitArgument::LiteralText("$dyn".to_owned()),
+            ),
             (
                 "reader(1bad)",
                 FieldTraitKind::Reader,
@@ -349,7 +340,7 @@ mod tests {
             .expect("a reader trait is present");
         assert_eq!(
             reader.argument,
-            FieldTraitArgument::MalformedOrDynamic,
+            FieldTraitArgument::Unclosed,
             "a malformed first spelling must not be repaired by a later duplicate"
         );
 

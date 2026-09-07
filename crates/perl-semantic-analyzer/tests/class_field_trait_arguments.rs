@@ -125,13 +125,13 @@ fn an_empty_argument_does_not_generate_the_bare_default() {
     assert_eq!(field.param_name, None);
 }
 
-/// Non-static arguments that the parser still retains as attributes.
+/// Arguments that are static text but not callable identifiers.
 ///
 /// An *unclosed* spelling such as `:reader(` never reaches the class model —
 /// the parser does not retain a field for it at all — so the decoder's
 /// handling of that form is pinned by its own unit tests rather than here.
 #[test]
-fn malformed_and_dynamic_arguments_stay_bounded() {
+fn non_identifier_arguments_never_name_a_generated_member() {
     for attribute in
         ["reader($dyn)", "reader(1bad)", "writer($dyn)", "accessor(a-b)", "mutator(get())"]
     {
@@ -146,15 +146,32 @@ fn malformed_and_dynamic_arguments_stay_bounded() {
         );
     }
 
-    // Only a genuinely dynamic body is refused. Perl evaluates the sigil form
-    // as a variable (`field $x :param($dyn)` fails to compile with "Global
-    // symbol \"$dyn\" requires explicit package name" on 5.38), so no literal
-    // key can be recovered from it.
-    for attribute in ["param($dyn)", "param(@list)", "param(%opts)"] {
-        let (_, field) = object_pad_field(attribute);
-        assert!(!field.param, "`{attribute}` must not admit a constructor input");
-        assert_eq!(field.param_name, None, "`{attribute}` must not invent a parameter name");
+    // A `:param` argument is never refused for its characters: Perl takes the
+    // text literally. Only an empty body leaves no key at all.
+    let (_, field) = object_pad_field("param()");
+    assert!(!field.param);
+}
+
+/// A sigil in a `:param` argument is part of the key, not a variable to read.
+///
+/// Verified on perl 5.38.2: a class declaring
+/// `:param($dyn) :param(foo@arr) :param(foo%bar) :param(a$dyn)` is constructed
+/// with exactly those four strings as keys, while the *value* of `$dyn` is
+/// rejected. Treating a sigil as evidence of evaluation dropped valid keys.
+#[test]
+fn a_sigil_in_a_param_argument_is_literal_key_text() {
+    for key in ["$dyn", "foo@arr", "foo%bar", "a$dyn"] {
+        let (model, field) = object_pad_field(&format!("param({key})"));
+        assert!(field.param, "`:param({key})` is a valid Perl constructor key");
+        assert_eq!(field.param_name.as_deref(), Some(key));
+        let constructor: Vec<&str> = model.object_pad_constructor_param_names().collect();
+        assert_eq!(constructor, vec![key]);
     }
+
+    // It still cannot name a method, because it is not a callable identifier.
+    let (model, field) = object_pad_field("reader($dyn)");
+    assert_eq!(field.reader, None);
+    assert!(model.methods.iter().all(|method| !method.synthetic));
 }
 
 /// A `:param` argument is a constructor *key*, not a method name.

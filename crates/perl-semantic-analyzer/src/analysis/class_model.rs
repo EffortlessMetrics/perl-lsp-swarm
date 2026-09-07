@@ -1527,7 +1527,7 @@ impl ClassModelBuilder {
             // text names no member even though it is a valid `:param` key.
             FieldTraitArgument::LiteralText(_)
             | FieldTraitArgument::Empty
-            | FieldTraitArgument::MalformedOrDynamic => None,
+            | FieldTraitArgument::Unclosed => None,
         }
     }
 
@@ -1589,7 +1589,7 @@ impl ClassModelBuilder {
             FieldTraitArgument::StaticName(name) | FieldTraitArgument::LiteralText(name) => {
                 (true, Some(name.clone()))
             }
-            FieldTraitArgument::Empty | FieldTraitArgument::MalformedOrDynamic => (false, None),
+            FieldTraitArgument::Empty | FieldTraitArgument::Unclosed => (false, None),
         }
     }
 
