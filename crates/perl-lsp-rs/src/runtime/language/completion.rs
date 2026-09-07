@@ -2553,8 +2553,13 @@ mod tests {
         let mut parser = perl_parser_core::Parser::new(source);
         let ast = parser.parse().expect("fixture must parse");
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
-        let activations =
-            file_activations(&ast, source, FileId(1), Some(&module), &SourceGeneration::known("g1"));
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("g1"),
+        );
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         let offset = source.find(needle).expect("fixture offset");
         let candidates =
