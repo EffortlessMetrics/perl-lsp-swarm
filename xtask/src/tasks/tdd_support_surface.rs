@@ -22,14 +22,11 @@
 //! that invariant instead of re-implementing rustc's reachability rules, and the
 //! lint is the negative control that keeps the assumption true.
 //!
-//! Granularity: one row governs one named public export — an item, a module, a
-//! re-export, or a Cargo feature (explicit or implicit-from-an-optional-dep).
-//! Associated-item signatures — a type's method signatures, its public field
-//! types, its trait impls — are governed only through the owning type's row, not
-//! individually. That is the right granularity for the disposition train, which
-//! moves, retires, or deletes whole items rather than methods; the umbrella
-//! #8144 tracks method- and field-level governance as a later step, and this
-//! module's `api_kind` vocabulary can carry it when that lands.
+//! Granularity: named public exports, re-exports and Cargo features have rows.
+//! Public inherent methods, fields and enum variants also have individual rows
+//! under their public owning type (including qualified impls and re-exports).
+//! Trait implementations remain governed through their trait contract rather
+//! than being counted as inherent members.
 //!
 //! Consumers are attributed at crate-root entry-segment granularity: the scanner
 //! records the first path segment a consumer names after `perl_tdd_support::`,
@@ -38,7 +35,10 @@
 //! honestly prove without a full type resolver, and it is enough for the
 //! `must*` migration #8605 acts on, where the entry segment is the symbol.
 //!
-//! This checker classifies. It deliberately does not decide: rows whose fate a
+//! Production versus test/dev consumer classification is authored judgment;
+//! the checker validates its compatibility with empty or nonempty consumer sets.
+//!
+//! This checker reconciles. It deliberately does not decide: rows whose fate a
 //! later slot owns carry that slot's issue number, not a disposition invented
 //! here.
 
