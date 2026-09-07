@@ -68,6 +68,11 @@ const SCAN_ROOTS: &[&str] = &[
     "crates/perl-lsp-rs-core/src/providers/completion/",
     "crates/perl-lsp-rs-core/src/providers/completion_item/",
     "crates/perl-lsp-rs-core/src/providers/dancer2/completion.rs",
+    // Reached through the inventoried `completion/completion/file_path.rs`
+    // facade, which delegates candidate production to them outright. A facade
+    // in the denominator does not put its delegates there.
+    "crates/perl-lsp-rs-core/src/providers/file_completion/",
+    "crates/perl-lsp-rs-core/src/providers/htmx/",
     "crates/perl-lsp-rs/src/runtime/language/completion.rs",
 ];
 
@@ -134,6 +139,8 @@ pub struct Ledger {
     pub producers: Vec<ProducerRow>,
     #[serde(default)]
     pub construction_only: Vec<ConstructionOnlyRow>,
+    #[serde(default)]
+    pub delegations: Vec<DelegationRow>,
 }
 
 /// One function that can put a candidate into the shared pool.
@@ -175,6 +182,21 @@ pub struct ProducerRow {
     /// What a reader must not infer from this row.
     pub limitations: String,
     pub note: String,
+}
+
+/// A `providers::` module the scanned surface reaches into but does not scan.
+///
+/// Candidate production delegated out of the scanned tree is how a live
+/// producer stays invisible while its facade sits in the denominator: the
+/// inventoried function returns candidates it did not build. Every such module
+/// is either brought into the scan roots or dispositioned here.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct DelegationRow {
+    /// Module name under `providers::`.
+    pub module: String,
+    /// Why reaching into it does not put a producer outside the denominator.
+    pub reason: String,
 }
 
 /// A file that constructs candidates but exposes no append-channel function.
@@ -563,6 +585,8 @@ pub struct Discovered {
     pub construction_files: BTreeSet<String>,
     /// Files carrying at least one discovered producer.
     pub producer_files: BTreeSet<String>,
+    /// `providers::` modules the scanned files reference, to the files doing so.
+    pub provider_references: BTreeMap<String, BTreeSet<String>>,
     /// Entry point to the functions it calls directly.
     pub entry_direct_calls: BTreeMap<String, BTreeSet<String>>,
     /// Entry points that append to the candidate binding after the finalizer.
@@ -712,11 +736,13 @@ pub fn discover(root: &Path) -> Result<Discovered> {
 
     let (entry_direct_calls, post_finalizer_appends) = discover_entry_routes(root)?;
     let source_digest = digest_files(root, &files)?;
+    let provider_references = discover_provider_references(root, &files)?;
 
     Ok(Discovered {
         producers,
         construction_files,
         producer_files,
+        provider_references,
         entry_direct_calls,
         post_finalizer_appends,
         source_files: files,
@@ -755,6 +781,41 @@ fn merge_declarations(producers: Vec<DiscoveredProducer>) -> Result<Vec<Discover
         }
     }
     Ok(merged.into_values().collect())
+}
+
+/// `providers::<module>` names the scanned files reach into, mapped to the
+/// files that reach.
+///
+/// Textual rather than resolved: the question is only which sibling provider
+/// modules this surface depends on at all, and a `use` or a fully qualified
+/// call are equally good evidence of that.
+fn discover_provider_references(
+    root: &Path,
+    files: &[String],
+) -> Result<BTreeMap<String, BTreeSet<String>>> {
+    let pattern = regex::Regex::new(r"(?:crate|perl_lsp_rs_core)::providers::([a-z_0-9]+)")
+        .wrap_err("failed to compile the provider-reference pattern")?;
+    let mut references: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for file in files {
+        let source = fs::read_to_string(root.join(file))
+            .wrap_err_with(|| format!("failed to read {file}"))?;
+        for capture in pattern.captures_iter(&source) {
+            let Some(module) = capture.get(1) else {
+                continue;
+            };
+            references.entry(module.as_str().to_string()).or_default().insert(file.clone());
+        }
+    }
+    Ok(references)
+}
+
+/// Is every file of this `providers::` module inside the scan roots?
+///
+/// A root naming a single file does not cover its module: the rest of that
+/// module is unscanned, and a producer there would be invisible.
+fn module_is_fully_scanned(module: &str) -> bool {
+    let directory = format!("crates/perl-lsp-rs-core/src/providers/{module}/");
+    SCAN_ROOTS.iter().any(|root| root.ends_with('/') && directory.starts_with(root))
 }
 
 /// Tracked Rust files under the scan roots, minus the declared test surfaces.
@@ -1338,8 +1399,19 @@ impl<'ast> Visit<'ast> for EntryBodyVisitor {
 ///
 /// `push`/`extend` are the shapes the tree uses; the rest are here so a
 /// rewritten append is still an append.
-const APPEND_METHODS: &[&str] =
-    &["push", "extend", "append", "insert", "splice", "extend_from_slice", "push_within_capacity"];
+const APPEND_METHODS: &[&str] = &[
+    "push",
+    "extend",
+    "append",
+    "insert",
+    "splice",
+    "extend_from_slice",
+    "push_within_capacity",
+    // `resize`/`resize_with` grow the page with cloned or constructed entries,
+    // which is an append however it is spelled.
+    "resize",
+    "resize_with",
+];
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -1386,6 +1458,7 @@ pub fn validate(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
 
     validate_producer_population(ledger, discovered)?;
     validate_construction_plane(ledger, discovered)?;
+    validate_delegations(ledger, discovered)?;
     validate_dispositions(ledger)?;
     validate_owners(ledger)?;
     validate_reachability(ledger, discovered)?;
@@ -1481,6 +1554,60 @@ fn validate_construction_plane(ledger: &Ledger, discovered: &Discovered) -> Resu
                 "{LEDGER_PATH} has a `construction_only` row for `{}` but that file now exposes \
                  an append-channel producer; it needs a producer row instead",
                 row.path
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Every provider module the scanned surface reaches into is either scanned in
+/// full or dispositioned.
+///
+/// This is the third discovery plane. The append-channel and construction
+/// planes both look inside the scanned tree; neither can see a producer the
+/// tree delegates to. A facade that returns candidates built elsewhere would
+/// otherwise satisfy the inventory while the real producer carried no
+/// disposition and no owner.
+fn validate_delegations(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
+    let declared: BTreeMap<&str, &DelegationRow> =
+        ledger.delegations.iter().map(|row| (row.module.as_str(), row)).collect();
+    if declared.len() != ledger.delegations.len() {
+        bail!("{LEDGER_PATH} declares a duplicate `delegations` module");
+    }
+
+    for (module, files) in &discovered.provider_references {
+        if module_is_fully_scanned(module) {
+            continue;
+        }
+        let Some(row) = declared.get(module.as_str()) else {
+            bail!(
+                "scanned completion source reaches into `providers::{module}` ({}), which is not \
+                 fully inside the scan roots and has no `[[delegations]]` row in {LEDGER_PATH}.\n\
+                 Candidate production delegated out of the scanned tree is invisible to this \
+                 inventory: the facade would carry a disposition while the producer carried \
+                 none. Add the module to the scan roots, or record why reaching into it does not \
+                 move a producer out of the denominator.",
+                files.iter().cloned().collect::<Vec<_>>().join(", ")
+            );
+        };
+        if row.reason.trim().is_empty() {
+            bail!("{LEDGER_PATH} delegation row `{module}` records an empty reason");
+        }
+    }
+
+    for row in &ledger.delegations {
+        if module_is_fully_scanned(&row.module) {
+            bail!(
+                "{LEDGER_PATH} has a `delegations` row for `providers::{}`, but that module is \
+                 now fully scanned; its producers carry rows, so remove the stale delegation",
+                row.module
+            );
+        }
+        if !discovered.provider_references.contains_key(&row.module) {
+            bail!(
+                "{LEDGER_PATH} has a `delegations` row for `providers::{}`, but no scanned file \
+                 reaches into it any more; remove the stale row",
+                row.module
             );
         }
     }
@@ -1996,6 +2123,7 @@ pub fn render_markdown(ledger: &Ledger, discovered: &Discovered) -> String {
     let _ = writeln!(out, "| producers | {} |", ledger.producers.len());
     let _ = writeln!(out, "| candidate classes | {} |", class_counts(ledger).len());
     let _ = writeln!(out, "| construction-only files | {} |", ledger.construction_only.len());
+    let _ = writeln!(out, "| delegated modules | {} |", ledger.delegations.len());
     let _ = writeln!(out, "| entry points | {} |", ENTRY_POINTS.len());
     let _ =
         writeln!(out, "| post-finalizer appends | {} |", discovered.post_finalizer_appends.len());
@@ -2092,6 +2220,28 @@ pub fn render_markdown(ledger: &Ledger, discovered: &Discovered) -> String {
                 cell(&row.consumed_by),
                 cell(&row.reason)
             );
+        }
+    }
+    let _ = writeln!(out);
+
+    let _ = writeln!(out, "## Delegated modules");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "`providers::` modules the scanned surface reaches into but does not scan in full. A \
+         facade that returned candidates built in an unscanned module would carry a disposition \
+         its producer did not, so each one is dispositioned here."
+    );
+    let _ = writeln!(out);
+    if ledger.delegations.is_empty() {
+        let _ = writeln!(out, "None. Every referenced provider module is scanned in full.");
+    } else {
+        let _ = writeln!(out, "| Module | Why it carries no unscanned producer |");
+        let _ = writeln!(out, "| --- | --- |");
+        let mut rows: Vec<&DelegationRow> = ledger.delegations.iter().collect();
+        rows.sort_by(|left, right| left.module.cmp(&right.module));
+        for row in rows {
+            let _ = writeln!(out, "| `providers::{}` | {} |", cell(&row.module), cell(&row.reason));
         }
     }
     let _ = writeln!(out);
@@ -2472,6 +2622,88 @@ mod tests {
             consumed_by: ledger.producers[0].id.clone(),
         });
         refuses(&ledger, &discovered, "needs a producer row instead");
+    }
+
+    /// The delegation plane. A producer the scanned tree hands off to is
+    /// invisible to the other two planes, which is how the htmx and
+    /// file-completion producers stayed out of the first ledger.
+    #[test]
+    fn refuses_an_undeclared_delegated_module() {
+        let (mut ledger, discovered) = fixture();
+        ledger.delegations.retain(|row| row.module != "dancer2");
+        refuses(&ledger, &discovered, "has no `[[delegations]]` row");
+    }
+
+    #[test]
+    fn refuses_a_delegation_row_for_a_scanned_module() {
+        let (mut ledger, discovered) = fixture();
+        ledger
+            .delegations
+            .push(DelegationRow { module: "htmx".to_string(), reason: "stale".to_string() });
+        refuses(&ledger, &discovered, "now fully scanned");
+    }
+
+    #[test]
+    fn refuses_a_delegation_row_nothing_reaches() {
+        let (mut ledger, discovered) = fixture();
+        ledger.delegations.push(DelegationRow {
+            module: "nonexistent_module".to_string(),
+            reason: "stale".to_string(),
+        });
+        refuses(&ledger, &discovered, "reaches into it any more");
+    }
+
+    /// A scan root naming one file does not cover the module around it.
+    #[test]
+    fn a_single_file_scan_root_does_not_cover_its_module() {
+        assert!(module_is_fully_scanned("htmx"), "a directory root covers its module");
+        assert!(module_is_fully_scanned("file_completion"));
+        assert!(
+            !module_is_fully_scanned("dancer2"),
+            "only dancer2/completion.rs is scanned, so the module is not covered"
+        );
+        assert!(!module_is_fully_scanned("testing"));
+    }
+
+    /// The producers Devin's review found outside the original scan roots.
+    /// They reach the client through an inventoried facade, so a regression
+    /// here would restore exactly the hole that review closed.
+    #[test]
+    fn delegated_producers_are_in_the_denominator() {
+        let (ledger, discovered) = fixture();
+        for id in [
+            "perl_lsp_rs_core::providers::file_completion::complete_file_paths",
+            "perl_lsp_rs_core::providers::htmx::complete_header_names",
+        ] {
+            assert!(
+                discovered.producers.iter().any(|producer| producer.id == id),
+                "discovery lost the delegated producer `{id}`"
+            );
+            assert!(
+                ledger.producers.iter().any(|row| row.id == id),
+                "the ledger lost the delegated producer `{id}`"
+            );
+        }
+    }
+
+    /// Growing the finalized page is an append however it is spelled.
+    #[test]
+    fn resize_after_finalization_is_an_append() {
+        for method in ["resize", "resize_with", "append", "insert", "splice"] {
+            let source = format!(
+                "fn entry() {{
+                    let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
+                    completions.{method}(extra);
+                }}"
+            );
+            let parsed: syn::ItemFn = syn::parse_str(&source).expect("fixture parses");
+            let mut visitor = EntryBodyVisitor::default();
+            visitor.visit_block(&parsed.block);
+            assert!(
+                visitor.appended_after_finalizer,
+                "`{method}` after the finalizer went undetected"
+            );
+        }
     }
 
     #[test]

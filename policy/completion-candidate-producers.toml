@@ -46,7 +46,16 @@ controlling_issue = "#10949"
 route_owner = "#10229"
 finalizer_owner = "#10914"
 outcome_owner = "#10230"
-source_digest = "sha256:a4191ca58529bec5b393084a1ef9de1756317178209048bd8674cd33f85ebef8"
+source_digest = "sha256:155573075c249a0fdfb6e3743b5e3b361a724d7096c9f65e20721bccc48e671b"
+
+[[delegations]]
+module = "dancer2"
+reason = "Only `dancer2/completion.rs` produces candidates and it is scanned. The rest of the module carries canonical framework facts, activation, diagnostics, hover, symbols and signature help — none of which returns or appends a completion candidate."
+
+[[delegations]]
+module = "testing"
+reason = "`request/test_frameworks.rs` consumes the reviewed Test2 export resolver for import semantics. The resolver answers questions about imports; it builds no completion candidates, so the candidates stay owned by the scanned producer."
+
 
 [[producers]]
 id = "perl_lsp_rs::runtime::language::completion::LspServer::add_dancer2_keyword_completions"
@@ -958,3 +967,55 @@ reached_by = ["handle_completion", "handle_completion_cancellable"]
 migration_owner = "#10914"
 limitations = "Pure merge and deterministic order over candidates already built."
 note = "Typed merge and stable ordering over the candidate pool."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::file_completion::complete_file_paths"
+package = "perl-lsp-rs-core"
+candidate_class = "file_path"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "bounded_fallback"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#10234"
+limitations = "The real file-path producer, reached through the `completion::completion::file_path` facade. Candidates describe the filesystem at scan time, not the document, and identity is the path label. Path security is enforced here rather than by the facade."
+note = "Secure filesystem path candidates; two mutually exclusive target-arch bodies."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::htmx::complete_header_names"
+package = "perl-lsp-rs-core"
+candidate_class = "key_or_constant"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "static_server_metadata"
+rank = "compatibility_with_exit"
+source_completeness = "complete_or_empty"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "provider_seam"
+reached_by = ["handle_completion", "handle_completion_cancellable"]
+migration_owner = "#15014"
+limitations = "The one producer that already reports completeness, and the report is discarded one hop later: `None` means the prefix is not htmx-shaped and another provider owns it, while `Some([])` means htmx owns the context and has no candidate. The `completion::completion::file_path` facade collapses both into a plain vector, so nothing reaches #10230. Do not read this row as evidence that a Complete outcome is earned."
+note = "Canonical htmx request and response header names inside a string literal."
+
+[[producers]]
+id = "perl_lsp_rs_core::providers::htmx::complete_attribute_names"
+package = "perl-lsp-rs-core"
+candidate_class = "key_or_constant"
+tier = "core_provider"
+identity = "legacy_label_compatibility"
+insertion_plan = "legacy_compatibility"
+evidence = "static_server_metadata"
+rank = "compatibility_with_exit"
+source_completeness = "legacy_unreported"
+finalizer_route = "compatibility_adapter_before_shared_finalizer"
+reach_evidence = "unreachable"
+reached_by = []
+migration_owner = "#15014"
+unreachable_reason = "Completes htmx attribute names in markup. Only the module's own tests call it; the Perl completion route reaches `complete_header_names` and nothing else in this module. Recorded because it sits beside a producer that is reached, which is where an attribute-completion fix would wrongly land."
+limitations = "Unreached from `textDocument/completion`. Nothing about live htmx attribute behavior can be read from this row."
+note = "htmx markup attribute-name catalogue, not wired into Perl completion."

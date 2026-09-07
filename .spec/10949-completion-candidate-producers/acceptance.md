@@ -5,28 +5,35 @@ Basis: main@30efa8a. All commands run from the repository root.
 ## Current inventory state
 
 ```text
-53 producers across 18 candidate classes
+56 producers across 18 candidate classes
  0 construction-only files
+ 2 delegated modules
  0 post-finalizer appends
-38 scanned source files
+41 scanned source files
  2 shipped entry points
 ```
 
 Every producer row currently carries `identity = legacy_label_compatibility`
-(routers and finalizer seams carry `not_applicable`) and
-`source_completeness = legacy_unreported`. That is the honest current state, not
+(routers and finalizer seams carry `not_applicable`), and every row but one
+carries `source_completeness = legacy_unreported`. That is the honest current state, not
 a placeholder: no live producer uses the semantic or source-anchored
 constructors PR #10145 landed, and no live producer reports whether it finished.
 The second fact is what stops #10230 claiming a `Complete` outcome for any
 request.
 
-Four rows are recorded unreachable from every shipped entry point:
+The exception is `htmx::complete_header_names`, which already distinguishes
+"not my context" from "mine, and empty" — and whose report the file-path facade
+discards one hop later, so nothing reaches #10230 anyway. That single row is the
+clearest statement of what the migration has to carry.
+
+Five rows are recorded unreachable from every shipped entry point:
 `CompletionProvider::get_completions` (test- and documentation-facing provider
 entry), `CompletionProvider::add_file_completions` (dead `#[allow(dead_code)]`
 compatibility wrapper), `CompletionProvider::add_file_completions_with_cancellation`
 (reachable only through that dead wrapper), and
-`workspace::add_use_module_completions` (superseded by the cached variant). Each
-names why. They are recorded rather than dropped because an unreached producer
+`workspace::add_use_module_completions` (superseded by the cached variant), and
+`htmx::complete_attribute_names` (markup attribute completion, called only by
+its module's own tests). Each names why. They are recorded rather than dropped because an unreached producer
 is the obvious wrong place for a future fix to land.
 
 The file-path pair is the clearest example of why that matters: together they
@@ -83,7 +90,7 @@ ship). The reviewer's clean results are also recorded: no `HashMap` anywhere,
 byte-identical second generation, self-consistent digest, and no Mermaid node-id
 collision.
 
-Twenty-two ledger falsifiers, each corrupting the reconciled checked-in ledger
+Twenty-six ledger falsifiers, each corrupting the reconciled checked-in ledger
 along one axis and asserting the refusal names that axis:
 
 | Axis | Refused because |
@@ -110,6 +117,10 @@ along one axis and asserting the refusal names that axis:
 | empty `limitations` | not a disposition |
 | append after finalization | candidate never ranked |
 | nondeterministic generation | second render differs |
+| undeclared delegated module | reaches a module the roots do not cover |
+| delegation row for a scanned module | stale once the module is scanned |
+| delegation row nothing reaches | stale reference |
+| a single-file scan root treated as module coverage | the rest of the module is unscanned |
 
 Plus positive controls: the checked-in ledger reconciles, the checked-in
 projection is current, generation is byte-identical on a second run, discovery
@@ -145,6 +156,12 @@ All were applied to product source, confirmed refused, and reverted.
 4. **Untracked producer file.** A new `.rs` file under a scan root, not
    `git add`-ed, carrying an append-channel function. This reported green before
    the review round and now exits 1 naming the untracked path.
+5. **Delegated producer removed from the denominator.** `providers/htmx/` taken
+   back out of the scan roots and its rows dropped, with the digest accepted so
+   the delegation plane is the only thing left to object. `check` exits 1 with
+   *"scanned completion source reaches into `providers::htmx` (…), which is not
+   fully inside the scan roots and has no `[[delegations]]` row"*. This is the
+   hole the PR review found, reproduced and closed.
 
 ## Limitations
 

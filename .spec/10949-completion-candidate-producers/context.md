@@ -39,7 +39,7 @@ Add one versioned, source-derived contract and the task that reconciles it.
 The task reads current source and checked contracts only. It never queries
 GitHub and never infers state from issue status.
 
-## Denominator and its two planes
+## Denominator and its three planes
 
 A **producer** is a function that carries candidates: it takes a
 `&mut Vec<Candidate>` append channel, or returns a type containing
@@ -47,26 +47,33 @@ A **producer** is a function that carries candidates: it takes a
 shape) or a `CompletionCandidate` (the migration target). Discovery is
 `syn`-based over the tracked completion source.
 
-One plane is not enough, so discovery reconciles two:
+One plane is not enough, so discovery reconciles three:
 
 - **channel** — the producer population above, authoritative for "what can
   append?";
 - **construction** — every file that builds a `CompletionItem`. A file that
   constructs candidates but exposes no producer must carry a
-  `[[construction_only]]` row naming the producer that owns its output.
+  `[[construction_only]]` row naming the producer that owns its output;
+- **delegation** — every `providers::` module the scanned surface reaches into.
+  A module not scanned in full must carry a `[[delegations]]` row.
 
 The second plane exists because a producer could otherwise hide behind a
-different signature; it bounds that gap at file granularity.
+different signature; it bounds that gap at file granularity. The third exists
+because neither of the first two can see outside the scanned tree at all: a
+facade inside the roots that returns candidates built in an unscanned module
+would satisfy both while the real producer carried no disposition and no owner.
+That is not hypothetical — it is how `htmx::complete_header_names` and
+`file_completion::complete_file_paths` stayed out of the first draft of this
+ledger, reached through the inventoried
+`completion::completion::file_path` facade.
 
 ## Proof strategy
 
 The checked-in ledger reconciled against the real tree is the valid fixture.
-Twenty-two unit fixtures corrupt it along one axis each and assert the validator
-refuses for that reason, so a green suite means the axis was exercised rather
-than that a synthetic fixture happened to be well formed. Two mutations were
-also run against real source and confirmed refused: a new append-channel
-function added to `builtins.rs`, and a `completions.push` inserted after
-`sort_and_cap_completions` in `handle_completion`.
+Unit fixtures corrupt it along one axis each and assert the validator refuses
+for that reason, so a green suite means the axis was exercised rather than that
+a synthetic fixture happened to be well formed. Mutations were also run against
+real source and confirmed refused; `acceptance.md` lists them.
 
 The route control is the load-bearing one. `reached_by` on a row whose function
 an entry point calls directly is reconciled against that call site, so a row
@@ -91,7 +98,8 @@ behavior, so neither is fixed here.
   runtime route change, no LSP serialization change, no provider promotion.
 - Discovery is syntactic. A producer that neither took the append channel nor
   returned a candidate vector would not appear as a row; the construction plane
-  bounds that at file granularity, and the module documents the ceiling.
+  bounds that at file granularity and the delegation plane bounds it at module
+  granularity, and the module documents the ceiling.
 - Reachability is proven only for rows an entry point calls directly. Rows
   reached through the provider call declare their reach, and every row records
   which of the two it is.

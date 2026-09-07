@@ -10,8 +10,8 @@ Controlling issue #10949. The one live application route is #10229, pure merge/r
 
 The dispositions below were audited against this exact source. A change to any file listed here invalidates the audit and `check` fails until the rows are re-checked.
 
-- Digest: `sha256:a4191ca58529bec5b393084a1ef9de1756317178209048bd8674cd33f85ebef8`
-- Files (38):
+- Digest: `sha256:155573075c249a0fdfb6e3743b5e3b361a724d7096c9f65e20721bccc48e671b`
+- Files (42):
   - `crates/perl-lsp-rs-core/src/providers/completion/completion.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins/catalog.rs`
@@ -49,6 +49,10 @@ The dispositions below were audited against this exact source. A change to any f
   - `crates/perl-lsp-rs-core/src/providers/completion_item/snippet.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion_item/stable_order.rs`
   - `crates/perl-lsp-rs-core/src/providers/dancer2/completion.rs`
+  - `crates/perl-lsp-rs-core/src/providers/file_completion/mod.rs`
+  - `crates/perl-lsp-rs-core/src/providers/htmx/catalog.rs`
+  - `crates/perl-lsp-rs-core/src/providers/htmx/markup.rs`
+  - `crates/perl-lsp-rs-core/src/providers/htmx/mod.rs`
   - `crates/perl-lsp-rs/src/runtime/language/completion.rs`
 
 ## Denominator
@@ -57,9 +61,10 @@ A producer is a function taking the shared `&mut Vec<CompletionItem>` append cha
 
 | Population | Count |
 | --- | --- |
-| producers | 53 |
+| producers | 56 |
 | candidate classes | 18 |
 | construction-only files | 0 |
+| delegated modules | 2 |
 | entry points | 2 |
 | post-finalizer appends | 0 |
 
@@ -93,9 +98,12 @@ A producer is a function taking the shared `&mut Vec<CompletionItem>` append cha
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_has_option_completions` | key_or_constant | append | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_has_type_completions` | key_or_constant | append | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_hash_key_completions` | key_or_constant | append | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #9478 |
+| `perl_lsp_rs_core::providers::htmx::complete_attribute_names` | key_or_constant | returned | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer |  | #15014 |
+| `perl_lsp_rs_core::providers::htmx::complete_header_names` | key_or_constant | returned | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | complete_or_empty | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_file_completions` | file_path | append ×2 | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer |  | #10234 |
 | `perl_lsp_rs_core::providers::completion::completion::CompletionProvider::add_file_completions_with_cancellation` | file_path | append ×2 | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer |  | #10234 |
 | `perl_lsp_rs_core::providers::completion::completion::file_path::complete_file_paths` | file_path | returned | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10234 |
+| `perl_lsp_rs_core::providers::file_completion::complete_file_paths` | file_path | returned ×2 | core_provider | legacy_label_compatibility | legacy_compatibility | bounded_fallback | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10234 |
 | `perl_lsp_rs_core::providers::completion::completion::regex_patterns::add_regex_completions` | regex_context | append | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
 | `perl_lsp_rs_core::providers::completion::completion::regex_patterns::add_regex_flag_completions` | regex_context | append | core_provider | legacy_label_compatibility | legacy_compatibility | static_server_metadata | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
 | `perl_lsp_rs_core::providers::completion::completion::request::test_frameworks::reconcile` | test_framework | append | core_provider | legacy_label_compatibility | legacy_compatibility | current_document_generation | compatibility_with_exit | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #15014 |
@@ -134,6 +142,15 @@ A producer reached by one shipped entry point and not another is a live differen
 ## Construction-only files
 
 None.
+
+## Delegated modules
+
+`providers::` modules the scanned surface reaches into but does not scan in full. A facade that returned candidates built in an unscanned module would carry a disposition its producer did not, so each one is dispositioned here.
+
+| Module | Why it carries no unscanned producer |
+| --- | --- |
+| `providers::dancer2` | Only `dancer2/completion.rs` produces candidates and it is scanned. The rest of the module carries canonical framework facts, activation, diagnostics, hover, symbols and signature help — none of which returns or appends a completion candidate. |
+| `providers::testing` | `request/test_frameworks.rs` consumes the reviewed Test2 export resolver for import semantics. The resolver answers questions about imports; it builds no completion candidates, so the candidates stay owned by the scanned producer. |
 
 ## Route
 
@@ -182,11 +199,11 @@ flowchart LR
   nhandle_completion --> nsnippet_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nsnippet_handle_completion_handle_completion_cancellable
   nsnippet_handle_completion_handle_completion_cancellable --> pool
-  nkey_or_constant_handle_completion_handle_completion_cancellable["key_or_constant ×3"]
+  nkey_or_constant_handle_completion_handle_completion_cancellable["key_or_constant ×4"]
   nhandle_completion --> nkey_or_constant_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nkey_or_constant_handle_completion_handle_completion_cancellable
   nkey_or_constant_handle_completion_handle_completion_cancellable --> pool
-  nfile_path_handle_completion_handle_completion_cancellable["file_path ×1"]
+  nfile_path_handle_completion_handle_completion_cancellable["file_path ×2"]
   nhandle_completion --> nfile_path_handle_completion_handle_completion_cancellable
   nhandle_completion_cancellable --> nfile_path_handle_completion_handle_completion_cancellable
   nfile_path_handle_completion_handle_completion_cancellable --> pool
@@ -223,6 +240,7 @@ flowchart LR
   final --> wire
   subgraph unreached ["reached by no entry point"]
     nunreached_module["module ×1"]
+    nunreached_key_or_constant["key_or_constant ×1"]
     nunreached_file_path["file_path ×2"]
     nunreached_router["router ×1"]
   end
