@@ -238,9 +238,11 @@ candidate.
 
 - one claim normally has one current candidate;
 - one writer mutates that candidate branch/worktree at a time;
-- immediately before mutation, use the current typed writer-preflight/admission
-  authority when available, or establish the exact candidate, head, and mutation owner
-  from live evidence; missing, stale, or contradictory evidence is `NOT_PROVEN`;
+- immediately before mutation, establish the exact candidate, head, and mutation owner
+  from live evidence, using typed checks applicable to the operation; new-candidate
+  admission does not substitute for an existing candidate's resume/reuse guidance and
+  current ownership check. An open PR alone does not establish another writer;
+  missing, stale, or contradictory evidence is `NOT_PROVEN`;
 - a context that establishes another current writer does not mutate that candidate; it
   may continue as a reviewer or move to another claim;
 - if commits from multiple contexts have already reached the branch, first establish

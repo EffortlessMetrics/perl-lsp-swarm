@@ -266,11 +266,12 @@ Otherwise detect, explain, repair, and continue.
 - never use `git stash`: `refs/stash` is a single repository-global stack shared by
   every worktree, so a concurrent agent's `pop` can silently take your entry into
   its own tree and drop the ref; use scoped restore or a WIP commit;
-- immediately before candidate mutation, use the current typed writer-preflight/
-  admission authority when available, or establish the exact candidate, head, and
-  mutation owner from live evidence; missing, stale, or contradictory ownership
-  evidence is `NOT_PROVEN`, while read-only research and review remain outside this
-  write-boundary check;
+- immediately before candidate mutation, establish the exact candidate, head, and
+  mutation owner from live evidence, using typed checks applicable to that operation;
+  new-candidate admission is not a resume check. For an existing candidate, use
+  applicable resume/reuse guidance and current ownership evidence; an open PR alone
+  does not establish another writer. Missing, stale, or contradictory ownership
+  evidence is `NOT_PROVEN`; read-only research and review need no writer admission;
 - if another current writer is established, stop mutating that candidate; continue as
   a reviewer or take a different claim;
 - rebase and force-push require a candidate's single writer and the applicable user and

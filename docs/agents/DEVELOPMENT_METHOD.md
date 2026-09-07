@@ -275,11 +275,14 @@ cannot inform the next reviewer; publication follows the existing root/worker au
 
 Do not gate reading. A claim ceremony, reservation, or persistent writer-liveness
 signal ahead of research or review serializes the cheap half of the work and goes stale.
-Mutation is different: immediately before a write, consume the current typed
-writer-preflight/admission authority when available, or establish the exact candidate,
-head, and mutation ownership from live evidence. Missing, stale, or contradictory
-writer evidence is `NOT_PROVEN`; an established second writer is a hard stop. This is a
-just-in-time write check, not durable coordination state.
+Mutation is different: immediately before a write, establish the exact candidate,
+head, and mutation ownership from live evidence, using typed checks applicable to the
+operation. `cargo xtask writer-admission` checks new-candidate creation; its open-PR
+collision result is not evidence of another current writer during repair of an
+existing candidate. For resume/reuse, consume the applicable guidance and verify the
+live head and writer. Missing, stale, or contradictory writer evidence is `NOT_PROVEN`;
+an established second writer is a hard stop. This is a just-in-time write check, not
+durable coordination state.
 
 If a collision is discovered only after commits from multiple contexts have reached the
 branch, first establish one writer. That writer preserves the commits by merging
