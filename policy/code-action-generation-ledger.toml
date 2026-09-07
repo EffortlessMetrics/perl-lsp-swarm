@@ -1,0 +1,426 @@
+# Machine-readable code-action provider-generation disposition ledger.
+#
+# Human-readable routing remains in:
+# docs/project/status/code_action_generation_ledger.md
+#
+# This policy freezes, per (generation, action family), the disposition that the
+# #8393 code-action convergence train must respect before it changes production
+# routing. It records what production does today. It does not select providers,
+# broaden code-action behavior, promote support tiers, or replace the #8068
+# provider contract or the #8392 provider-selection policy.
+#
+# Controlling issue: #9188 (this ledger + its parity corpus; no routing change)
+# Cutover consumer:  #9189 (canonical route selection)
+# Retirement:        #9190 (delete retired generations)
+
+schema_version = 1
+policy = "code-action-generation-ledger"
+owner = "perl-lsp maintainers"
+status = "advisory"
+updated = "2026-09-07"
+
+convergence_controller = "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8393"
+provider_contract = "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8068"
+selection_policy = "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8392"
+remediation_contract = "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4205"
+
+human_ledger = "docs/project/status/code_action_generation_ledger.md"
+orchestrator = "crates/perl-lsp-rs/src/runtime/language/code_actions.rs"
+parity_corpus = "crates/perl-lsp-rs/tests/code_action_generation_parity_corpus.rs"
+
+# The six-way disposition vocabulary fixed by #9188. A row's disposition states
+# what #9190 may do with it, not how good the implementation is.
+#
+#   canonical_candidate   - the generation #9189 should keep as the single
+#                           production publisher for this family.
+#   unique_behavior       - answers this family with behavior no other
+#                           generation currently reproduces; retiring it would
+#                           silently drop a capability.
+#   redundant_behavior    - duplicates a canonical answer for this family;
+#                           retirable once parity is proven.
+#   compatibility_only    - reachable only on a compatibility path (opt-in
+#                           engine, degraded no-AST path) and kept for that
+#                           path alone.
+#   shadow_only_candidate - reachable only when a preceding generation produced
+#                           nothing; not an independent production authority.
+#   retire_candidate      - carries no production behavior for this family and
+#                           can be deleted without parity evidence.
+disposition_states = [
+  "canonical_candidate",
+  "unique_behavior",
+  "redundant_behavior",
+  "compatibility_only",
+  "shadow_only_candidate",
+  "retire_candidate",
+]
+
+# Action families are user-visible capabilities, not module names, so that two
+# generations answering one family is visible as duplicate authority rather than
+# hidden behind two different keys. `none:unreachable_stub` exists so a
+# generation that answers nothing still carries an exact disposition.
+family_registry = [
+  "none:unreachable_stub",
+  "quickfix:critic_finding",
+  "quickfix:diagnostic_routed",
+  "quickfix:explain_diagnostic",
+  "quickfix:hardcoded_shebang",
+  "quickfix:pragma",
+  "refactor.extract:basic_fallback",
+  "refactor.extract:disabled_placeholder",
+  "refactor.extract:subroutine",
+  "refactor.extract:variable",
+  "refactor.rewrite:enhanced_transforms",
+  "refactor.rewrite:text_fallback",
+  "source.fixAll:aggregate",
+  "source.modernize:modernize",
+  "source:test_generation",
+]
+
+# Named reasons a non-canonical generation cannot be retired yet. Every
+# `unique_behavior` row must cite at least one.
+retirement_blocker_registry = [
+  "canonical_route_omits_diagnostic_association",
+  "canonical_route_has_no_degraded_path_equivalent",
+  "capability_gated_disabled_state_has_no_other_producer",
+  "opt_in_engine_has_no_canonical_equivalent",
+]
+
+# Every `.rs` file under these roots must be claimed by some generation row's
+# `modules`. This is the anti-staleness ratchet: a new code-action module cannot
+# land without an exact family disposition.
+owned_module_roots = [
+  "crates/perl-lsp-rs-core/src/providers/code_actions",
+  "crates/perl-lsp-rs/src/features/code_actions_provider",
+]
+
+# ---------------------------------------------------------------------------
+# Generations: the production-reachable code-action producers, in the exact
+# order `handle_code_action` invokes them.
+#
+# `production_anchor` is a literal that must occur in `orchestrator`; it fails
+# the check when a generation is rerouted or removed without updating this
+# ledger. Rows with `reachability = "unreachable_stub"` carry no anchor.
+# ---------------------------------------------------------------------------
+
+[[generation]]
+id = "explain_diagnostic"
+stage = 1
+path = "ast"
+reachability = "production"
+production_anchor = "self.add_explain_diagnostic_code_actions("
+modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
+summary = "Command-only 'Explain this diagnostic' action emitted inline by the orchestrator."
+
+[[generation]]
+id = "missing_pragmas"
+stage = 2
+path = "ast"
+reachability = "production"
+production_anchor = "crate::code_actions_pragmas::missing_pragmas_actions("
+modules = ["crates/perl-lsp-rs/src/features/code_actions_pragmas.rs"]
+summary = "Source-scanning use strict / use warnings quick fixes, deliberately ordered before the diagnostic-routed generations so source.fixAll prefers its insertion point."
+
+[[generation]]
+id = "native_critic"
+stage = 3
+path = "ast"
+reachability = "production"
+production_anchor = "perl_lsp_rs_core::config::CriticEngine::Native"
+modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
+summary = "Default native critic registry; only Safe non-empty fixes become quick fixes."
+
+[[generation]]
+id = "legacy_critic"
+stage = 4
+path = "ast"
+reachability = "production"
+production_anchor = "perl_lsp_rs_core::config::CriticEngine::Legacy"
+modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
+summary = "Opt-in BuiltInAnalyzer emulating Perl::Critic policy names; mutually exclusive with the native engine."
+
+[[generation]]
+id = "provider_v2"
+stage = 5
+path = "ast"
+reachability = "production"
+production_anchor = "CodeActionsProviderV2::new("
+modules = [
+  "crates/perl-lsp-rs/src/features/code_actions_provider/mod.rs",
+  "crates/perl-lsp-rs/src/features/code_actions_provider/fixes.rs",
+  "crates/perl-lsp-rs/src/features/code_actions_provider/parse_errors.rs",
+  "crates/perl-lsp-rs/src/features/code_actions_provider/source_utils.rs",
+  "crates/perl-lsp-rs/src/features/code_actions_provider/types.rs",
+]
+summary = "Diagnostic-based V2 generation. Uniquely populates CodeAction.diagnostics by matching each action back to the published diagnostic code and range."
+
+[[generation]]
+id = "provider_original"
+stage = 6
+path = "ast"
+reachability = "production"
+production_anchor = "CodeActionsProvider::new("
+modules = [
+  "crates/perl-lsp-rs-core/src/providers/code_actions/code_actions.rs",
+  "crates/perl-lsp-rs-core/src/providers/code_actions/diagnostic_routes.rs",
+  "crates/perl-lsp-rs-core/src/providers/code_actions/mod.rs",
+  "crates/perl-lsp-rs-core/src/providers/code_actions/modernize.rs",
+  "crates/perl-lsp-rs-core/src/providers/code_actions/quick_fixes.rs",
+  "crates/perl-lsp-rs-core/src/providers/code_actions/refactors.rs",
+  "crates/perl-lsp-rs-core/src/providers/code_actions/source_actions.rs",
+  "crates/perl-lsp-rs-core/src/providers/code_actions/types.rs",
+]
+summary = "Original AST-based generation. Routes diagnostic codes to quick fixes, adds source and modernize actions, and re-invokes the enhanced generation through refactors::get_refactoring_actions."
+
+[[generation]]
+id = "provider_enhanced"
+stage = 7
+path = "ast"
+reachability = "production"
+production_anchor = "EnhancedCodeActionsProvider::new("
+modules = [
+  "crates/perl-lsp-rs-core/src/providers/code_actions/enhanced/error_checking.rs",
+  "crates/perl-lsp-rs-core/src/providers/code_actions/enhanced/extract_subroutine.rs",
+  "crates/perl-lsp-rs-core/src/providers/code_actions/enhanced/extract_variable.rs",
+  "crates/perl-lsp-rs-core/src/providers/code_actions/enhanced/helpers.rs",
+  "crates/perl-lsp-rs-core/src/providers/code_actions/enhanced/loop_conversion.rs",
+  "crates/perl-lsp-rs-core/src/providers/code_actions/enhanced/mod.rs",
+  "crates/perl-lsp-rs-core/src/providers/code_actions/enhanced/postfix.rs",
+  "crates/perl-lsp-rs-core/src/providers/code_actions/enhanced/signature_actions.rs",
+]
+summary = "Enhanced AST refactorings. Runs twice per request: once nested inside provider_original and once directly from the orchestrator."
+
+[[generation]]
+id = "disabled_extract_placeholder"
+stage = 8
+path = "ast"
+reachability = "production"
+production_anchor = "self.maybe_push_disabled_extract_placeholder("
+modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
+summary = "Capability-gated disabled refactor.extract placeholder for zero-width selections."
+
+[[generation]]
+id = "test_generator"
+stage = 9
+path = "ast"
+reachability = "production"
+production_anchor = "TestGenerator::new("
+modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
+summary = "Command-only Test::More skeleton action per discovered subroutine."
+
+[[generation]]
+id = "source_fix_all_aggregate"
+stage = 10
+path = "ast"
+reachability = "production"
+production_anchor = "build_source_fix_all("
+modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
+summary = "Post-dedupe aggregation of collected quick fixes into one source.fixAll action."
+
+[[generation]]
+id = "text_fallback"
+stage = 11
+path = "no_ast"
+reachability = "production"
+production_anchor = "perl.addDebugPrint"
+modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
+summary = "Degraded text-oriented generation used when the request finds no AST for the current document generation. Malformed source does not reach it: the v3 parser recovers instead of yielding ast: None (#3760), so in practice it is reached only when the current generation has no published parse snapshot yet."
+
+[[generation]]
+id = "lsp_compat_stub"
+stage = 0
+path = "none"
+reachability = "unreachable_stub"
+modules = [
+  "crates/perl-lsp-rs-core/src/providers/lsp_compat/code_actions_pragmas.rs",
+  "crates/perl-lsp-rs-core/src/providers/lsp_compat/code_actions_provider.rs",
+]
+summary = "Deprecated migration stubs that are still publicly declared but contain no code and are referenced by nothing."
+
+# ---------------------------------------------------------------------------
+# Routes: one row per (generation, family) with its exact disposition.
+# ---------------------------------------------------------------------------
+
+[[route]]
+generation = "explain_diagnostic"
+family = "quickfix:explain_diagnostic"
+disposition = "canonical_candidate"
+notes = "Sole producer. Command-only action carrying no workspace edit."
+retirement_blockers = []
+parity_fixtures = ["cac-parity-explain-diagnostic-command-only"]
+
+[[route]]
+generation = "missing_pragmas"
+family = "quickfix:pragma"
+disposition = "canonical_candidate"
+notes = "Ordered first on purpose so its source-aware insertion point wins the source.fixAll aggregation."
+retirement_blockers = []
+parity_fixtures = [
+  "cac-parity-pragma-quickfix-single-edit",
+  "cac-parity-stale-superseded-document-version",
+]
+
+[[route]]
+generation = "provider_original"
+family = "quickfix:pragma"
+disposition = "redundant_behavior"
+notes = "diagnostic_routes routes PL100/PL101 to the same add_use_strict/add_use_warnings quick fixes the canonical generation already produced; dedupe_code_actions collapses the byte-identical result."
+retirement_blockers = []
+parity_fixtures = ["cac-parity-pragma-quickfix-single-edit"]
+
+[[route]]
+generation = "text_fallback"
+family = "quickfix:pragma"
+disposition = "compatibility_only"
+notes = "Reachable only when the request finds no AST for the current document generation, where none of the AST-path generations run."
+retirement_blockers = ["canonical_route_has_no_degraded_path_equivalent"]
+parity_fixtures = []
+proof_gap = "Not reachable from the LSP surface deterministically. Malformed source recovers onto the AST path (see cac-parity-parse-error-recovery-keeps-ast-path), and the remaining trigger — a generation whose parse snapshot has not been published yet — is a timing window a corpus fixture cannot pin without racing the parser. #9189 must not treat this row as parity-proven."
+
+[[route]]
+generation = "provider_original"
+family = "quickfix:diagnostic_routed"
+disposition = "canonical_candidate"
+notes = "Widest diagnostic-code coverage and the generation that also owns source and modernize families; the natural single publisher for #9189."
+retirement_blockers = []
+parity_fixtures = [
+  "cac-parity-diagnostic-routed-quickfix-edit",
+  "cac-parity-parse-error-recovery-keeps-ast-path",
+]
+
+[[route]]
+generation = "provider_v2"
+family = "quickfix:diagnostic_routed"
+disposition = "unique_behavior"
+notes = "Answers the same diagnostic codes as the canonical generation, but is the only generation that attaches the originating diagnostic to the emitted action. Retiring it before the canonical route emits CodeAction.diagnostics would silently break diagnostic-to-fix association for #4205 consumers."
+retirement_blockers = ["canonical_route_omits_diagnostic_association"]
+parity_fixtures = [
+  "cac-parity-v2-attaches-originating-diagnostic",
+  "cac-parity-parse-error-recovery-keeps-ast-path",
+]
+
+[[route]]
+generation = "native_critic"
+family = "quickfix:critic_finding"
+disposition = "canonical_candidate"
+notes = "Default engine. Only findings carrying a Safe non-empty fix become quick fixes."
+retirement_blockers = []
+parity_fixtures = ["cac-parity-critic-quickfix-safe-only"]
+
+[[route]]
+generation = "legacy_critic"
+family = "quickfix:critic_finding"
+disposition = "compatibility_only"
+notes = "Selected only by the opt-in Legacy engine and mutually exclusive with the native engine, so the two never publish together."
+retirement_blockers = ["opt_in_engine_has_no_canonical_equivalent"]
+parity_fixtures = ["cac-parity-critic-quickfix-safe-only"]
+
+[[route]]
+generation = "provider_original"
+family = "quickfix:hardcoded_shebang"
+disposition = "canonical_candidate"
+notes = "Sole producer, via source_actions, and only when the requested range covers the first line."
+retirement_blockers = []
+parity_fixtures = ["cac-parity-legitimate-empty-out-of-range-source-action"]
+
+[[route]]
+generation = "provider_enhanced"
+family = "refactor.extract:variable"
+disposition = "canonical_candidate"
+notes = "The implementation users actually receive."
+retirement_blockers = []
+parity_fixtures = ["cac-parity-extract-variable-requires-selection"]
+
+[[route]]
+generation = "provider_original"
+family = "refactor.extract:variable"
+disposition = "redundant_behavior"
+notes = "provider_original does not implement extraction itself; refactors::get_refactoring_actions constructs EnhancedCodeActionsProvider and makes the identical call the orchestrator makes at stage 7, so the enhanced generation executes twice per request and dedupe_code_actions hides the duplicate."
+retirement_blockers = []
+parity_fixtures = ["cac-parity-duplicate-authority-collapsed"]
+
+[[route]]
+generation = "provider_enhanced"
+family = "refactor.extract:subroutine"
+disposition = "canonical_candidate"
+notes = "Sole real implementation; reached twice for the same reason as extract:variable."
+retirement_blockers = []
+parity_fixtures = ["cac-parity-duplicate-authority-collapsed"]
+
+[[route]]
+generation = "provider_original"
+family = "refactor.extract:basic_fallback"
+disposition = "shadow_only_candidate"
+notes = "The literal 'Extract to variable' / 'Extract to function' arms in refactors.rs are guarded by `actions.is_empty()`, so they can only run when the nested enhanced generation returned nothing. They are not an independent production authority."
+retirement_blockers = []
+parity_fixtures = ["cac-parity-extract-variable-requires-selection"]
+
+[[route]]
+generation = "disabled_extract_placeholder"
+family = "refactor.extract:disabled_placeholder"
+disposition = "unique_behavior"
+notes = "Only producer of a disabled action. Emitted for a zero-width selection and only when the client declared codeAction.disabledSupport; both refactor.extract generations are skipped in exactly that case."
+retirement_blockers = ["capability_gated_disabled_state_has_no_other_producer"]
+parity_fixtures = [
+  "cac-parity-disabled-extract-requires-selection",
+  "cac-parity-refused-without-disabled-support",
+]
+
+[[route]]
+generation = "provider_enhanced"
+family = "refactor.rewrite:enhanced_transforms"
+disposition = "canonical_candidate"
+notes = "Loop conversion, postfix, error handling and signature transforms."
+retirement_blockers = []
+parity_fixtures = ["cac-parity-duplicate-authority-collapsed"]
+
+[[route]]
+generation = "provider_original"
+family = "refactor.rewrite:enhanced_transforms"
+disposition = "redundant_behavior"
+notes = "Same nested re-invocation as the extract families."
+retirement_blockers = []
+parity_fixtures = ["cac-parity-duplicate-authority-collapsed"]
+
+[[route]]
+generation = "text_fallback"
+family = "refactor.rewrite:text_fallback"
+disposition = "compatibility_only"
+notes = "Command-only debug-print and convert-globals actions offered only on the no-AST path."
+retirement_blockers = ["canonical_route_has_no_degraded_path_equivalent"]
+parity_fixtures = []
+proof_gap = "Same no-AST reachability gap as this generation's pragma row: no deterministic corpus fixture reaches it."
+
+[[route]]
+generation = "provider_original"
+family = "source.modernize:modernize"
+disposition = "canonical_candidate"
+notes = "Sole producer of source.modernize actions."
+retirement_blockers = []
+parity_fixtures = ["cac-parity-kind-filter-excludes-other-families"]
+
+[[route]]
+generation = "test_generator"
+family = "source:test_generation"
+disposition = "canonical_candidate"
+notes = "Sole producer. Command-only action carrying no workspace edit."
+retirement_blockers = []
+parity_fixtures = ["cac-parity-test-generation-command-only"]
+
+[[route]]
+generation = "source_fix_all_aggregate"
+family = "source.fixAll:aggregate"
+disposition = "canonical_candidate"
+notes = "Runs after dedupe_code_actions, so it aggregates the collapsed set rather than the raw per-generation output. Also owns the whole-response contract for a document the server never opened."
+retirement_blockers = []
+parity_fixtures = [
+  "cac-parity-source-fixall-aggregates-after-dedupe",
+  "cac-parity-unknown-document-is-empty-not-error",
+]
+
+[[route]]
+generation = "lsp_compat_stub"
+family = "none:unreachable_stub"
+disposition = "retire_candidate"
+notes = "Both modules contain no code and are referenced by nothing in or outside the workspace. No parity evidence is required before deletion."
+retirement_blockers = []
+parity_fixtures = []
