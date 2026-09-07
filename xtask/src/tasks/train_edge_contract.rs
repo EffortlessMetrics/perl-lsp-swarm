@@ -1518,6 +1518,8 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::must_some_with;
+    use serde_json::json;
 
     type TestResult<T = ()> = Result<T>;
 
@@ -1526,10 +1528,72 @@ mod tests {
     }
 
     fn eligibility(doc: &Value, profile: &str) -> Eligibility {
-        match profile_eligibility(doc, profile) {
-            Some(eligibility) => eligibility,
-            None => panic!("profile {profile} must resolve"),
-        }
+        must_some_with(
+            profile_eligibility(doc, profile),
+            format_args!("profile {profile} must resolve"),
+        )
+    }
+
+    fn requirements(doc: &Value, profile: &str) -> BTreeSet<String> {
+        must_some_with(
+            profile_requirements(doc, profile),
+            format_args!("profile {profile} requirements must resolve"),
+        )
+    }
+
+    fn required_array<'a>(value: &'a Value, key: &str, context: &str) -> &'a Vec<Value> {
+        must_some_with(value.get(key).and_then(Value::as_array), context)
+    }
+
+    fn required_array_mut<'a>(
+        value: &'a mut Value,
+        key: &str,
+        context: &str,
+    ) -> &'a mut Vec<Value> {
+        must_some_with(value.get_mut(key).and_then(Value::as_array_mut), context)
+    }
+
+    fn required_str<'a>(value: &'a Value, key: &str, context: &str) -> &'a str {
+        must_some_with(value.get(key).and_then(Value::as_str), context)
+    }
+
+    fn required_object<'a>(value: &'a Value, context: &str) -> &'a Map<String, Value> {
+        must_some_with(value.as_object(), context)
+    }
+
+    fn required_object_mut<'a>(value: &'a mut Value, context: &str) -> &'a mut Map<String, Value> {
+        must_some_with(value.as_object_mut(), context)
+    }
+
+    fn first_object_in_array_mut<'a>(
+        doc: &'a mut Value,
+        array_key: &str,
+        context: &str,
+    ) -> &'a mut Map<String, Value> {
+        must_some_with(
+            doc.get_mut(array_key)
+                .and_then(Value::as_array_mut)
+                .and_then(|array| array.first_mut())
+                .and_then(Value::as_object_mut),
+            context,
+        )
+    }
+
+    fn projection_states_mut<'a>(doc: &'a mut Value, key: &str) -> &'a mut Vec<Value> {
+        must_some_with(
+            doc.get_mut("projection")
+                .and_then(Value::as_object_mut)
+                .and_then(|projection| projection.get_mut(key))
+                .and_then(Value::as_array_mut),
+            format_args!("projection.{key} must be an array"),
+        )
+    }
+
+    fn first_external_stage_state(doc: &Value) -> &Map<String, Value> {
+        must_some_with(
+            doc.pointer("/projection/external_stage_states/0").and_then(as_str_map),
+            "first external stage state must be an object",
+        )
     }
 
     // Fixture 1: full-document v0.18 does not require atomic-ranged
@@ -1586,8 +1650,7 @@ mod tests {
             profile.reasons.get("external:ext_marketplace"),
             Some(&"pending_external_stage".to_string())
         );
-        let stage_state =
-            doc.pointer("/projection/external_stage_states/0").and_then(as_str_map).unwrap();
+        let stage_state = first_external_stage_state(&doc);
         assert_eq!(
             string_field(stage_state, "stage_reached"),
             Some("none"),
@@ -1604,9 +1667,12 @@ mod tests {
         // Core-adjacent profiles stay eligible while the sidecar is not proven.
         assert!(eligibility(&doc, "neovim_bounded_core").eligible);
         // No profile requirement set contains the sidecar.
-        let profiles = doc.get("claim_profiles").and_then(Value::as_array).unwrap();
+        let profiles = required_array(&doc, "claim_profiles", "claim_profiles must be an array");
         for profile in profiles {
-            let required = string_array(profile.as_object().unwrap(), "required");
+            let required = string_array(
+                required_object(profile, "claim profile must be an object"),
+                "required",
+            );
             assert!(
                 !required.contains(&"P_dap_sidecar".to_string()),
                 "sidecar must never enter a core requirement set"
@@ -1699,9 +1765,9 @@ mod tests {
     #[test]
     fn unqualified_normalization_would_change_requirements() -> TestResult {
         let doc = fixture("neovim_examples.v1.json")?;
-        let bounded = profile_requirements(&doc, "neovim_bounded_core").unwrap();
+        let bounded = requirements(&doc, "neovim_bounded_core");
         let mut normalized = doc.clone();
-        let edges = normalized.get_mut("edges").and_then(Value::as_array_mut).unwrap();
+        let edges = required_array_mut(&mut normalized, "edges", "fixture edges");
         for edge in edges.iter_mut() {
             if let Some(object) = edge.as_object_mut()
                 && object.get("kind").and_then(Value::as_str) == Some("consumes_if_available")
@@ -1712,7 +1778,7 @@ mod tests {
                 );
             }
         }
-        let inflated = profile_requirements(&normalized, "neovim_bounded_core").unwrap();
+        let inflated = requirements(&normalized, "neovim_bounded_core");
         assert!(inflated.len() > bounded.len());
         assert!(inflated.contains("P_parser_race_evidence"));
         Ok(())
@@ -1723,14 +1789,11 @@ mod tests {
     fn local_extension_fields_survive_validation() -> TestResult {
         let doc = fixture("neovim_examples.v1.json")?;
         let mut localized = doc.clone();
-        let proposition = localized
-            .get_mut("propositions")
-            .and_then(Value::as_array_mut)
-            .unwrap()
-            .first_mut()
-            .unwrap()
-            .as_object_mut()
-            .unwrap();
+        let proposition = first_object_in_array_mut(
+            &mut localized,
+            "propositions",
+            "first proposition must be an object",
+        );
         proposition.insert(
             "local_role".to_string(),
             Value::String("programme-local editor role".to_string()),
@@ -1755,26 +1818,23 @@ mod tests {
         let manifest =
             load_json(&root.join(".spec/11764-controller-train-graph/train.manifest.json"))?;
         let mut expected: Vec<(String, String)> = Vec::new();
-        for node in manifest.get("nodes").and_then(Value::as_array).unwrap() {
-            let source = node.get("node_id").and_then(Value::as_str).unwrap();
-            for dependency in node.get("dependencies").and_then(Value::as_array).unwrap() {
+        for node in required_array(&manifest, "nodes", "manifest nodes") {
+            let source = required_str(node, "node_id", "manifest node_id");
+            for dependency in required_array(node, "dependencies", "manifest node dependencies") {
                 expected.push((
-                    format!(
-                        "{source}|{}",
-                        dependency.get("target").and_then(Value::as_str).unwrap()
-                    ),
+                    format!("{source}|{}", required_str(dependency, "target", "dependency target")),
                     dependency.get("provenance").and_then(Value::as_str).unwrap_or("").to_string(),
                 ));
             }
         }
         let (adapted, _) = adapt_manifest(&manifest, "issue_controller_train.v1", &adaptations)?;
         let mut actual: Vec<(String, String)> = Vec::new();
-        for edge in adapted.get("edges").and_then(Value::as_array).unwrap() {
+        for edge in required_array(&adapted, "edges", "adapted edges") {
             actual.push((
                 format!(
                     "{}|{}",
-                    edge.get("source").and_then(Value::as_str).unwrap(),
-                    edge.get("target").and_then(Value::as_str).unwrap()
+                    required_str(edge, "source", "adapted edge source"),
+                    required_str(edge, "target", "adapted edge target")
                 ),
                 edge.get("provenance").and_then(Value::as_str).unwrap_or("").to_string(),
             ));
@@ -1815,7 +1875,7 @@ mod tests {
         let manifest = load_json(&root.join(".spec/10918-emacs-train-graph/train.manifest.json"))?;
         let mut mutated = manifest.clone();
         // Mutate the first dependency that exists on any node.
-        let nodes = mutated.get_mut("nodes").and_then(Value::as_array_mut).unwrap();
+        let nodes = required_array_mut(&mut mutated, "nodes", "emacs manifest nodes");
         let mut mutated_any = false;
         for node in nodes.iter_mut() {
             let Some(dependencies) = node
@@ -1845,14 +1905,7 @@ mod tests {
     fn mutable_state_is_rejected() -> TestResult {
         let doc = fixture("neovim_examples.v1.json")?;
         let mut mutated = doc.clone();
-        let edge = mutated
-            .get_mut("edges")
-            .and_then(Value::as_array_mut)
-            .unwrap()
-            .first_mut()
-            .unwrap()
-            .as_object_mut()
-            .unwrap();
+        let edge = first_object_in_array_mut(&mut mutated, "edges", "first edge must be an object");
         edge.insert("ci_status".to_string(), Value::String("success".to_string()));
         let violations = validate_document(&mutated);
         let codes = violation_codes(&violations);
@@ -1881,14 +1934,11 @@ mod tests {
             &project_root()?.join(FIXTURE_DIR).join("invalid").join("sidecar_in_core_spine.json"),
         )?;
         let mut core_only = doc.clone();
-        let profile = core_only
-            .get_mut("claim_profiles")
-            .and_then(Value::as_array_mut)
-            .unwrap()
-            .first_mut()
-            .unwrap()
-            .as_object_mut()
-            .unwrap();
+        let profile = first_object_in_array_mut(
+            &mut core_only,
+            "claim_profiles",
+            "first claim profile must be an object",
+        );
         profile.insert(
             "required".to_string(),
             Value::Array(vec![Value::String("P_lsp_core".to_string())]),
@@ -1900,14 +1950,11 @@ mod tests {
         );
         // And the sidecar source alone is still rejected.
         let mut sidecar_only = doc.clone();
-        let profile = sidecar_only
-            .get_mut("claim_profiles")
-            .and_then(Value::as_array_mut)
-            .unwrap()
-            .first_mut()
-            .unwrap()
-            .as_object_mut()
-            .unwrap();
+        let profile = first_object_in_array_mut(
+            &mut sidecar_only,
+            "claim_profiles",
+            "first claim profile must be an object",
+        );
         profile.insert(
             "required".to_string(),
             Value::Array(vec![Value::String("P_dap_sidecar".to_string())]),
@@ -1924,23 +1971,21 @@ mod tests {
     fn terminal_proposition_without_provenance_is_not_proven() -> TestResult {
         let doc = fixture("neovim_examples.v1.json")?;
         let mut mutated = doc.clone();
-        let states = mutated
-            .get_mut("projection")
-            .and_then(Value::as_object_mut)
-            .and_then(|projection| projection.get_mut("proposition_states"))
-            .and_then(Value::as_array_mut)
-            .unwrap();
-        let full_document = states
-            .iter_mut()
-            .find(|state| state.get("id").and_then(Value::as_str) == Some("P_full_document_v0_18"))
-            .unwrap()
-            .as_object_mut()
-            .unwrap();
-        full_document
-            .get_mut("proposition")
-            .and_then(Value::as_object_mut)
-            .unwrap()
-            .remove("derives_from");
+        let states = projection_states_mut(&mut mutated, "proposition_states");
+        let full_document = must_some_with(
+            states
+                .iter_mut()
+                .find(|state| {
+                    state.get("id").and_then(Value::as_str) == Some("P_full_document_v0_18")
+                })
+                .and_then(Value::as_object_mut),
+            "P_full_document_v0_18 projection state must be an object",
+        );
+        must_some_with(
+            full_document.get_mut("proposition").and_then(Value::as_object_mut),
+            "P_full_document_v0_18 proposition must be an object",
+        )
+        .remove("derives_from");
         let violations = validate_document(&mutated);
         let codes = violation_codes(&violations);
         assert!(codes.contains(&"missing_derives_from"), "{codes:?}");
@@ -1961,13 +2006,9 @@ mod tests {
     fn duplicate_projection_states_fail() -> TestResult {
         let doc = fixture("neovim_examples.v1.json")?;
         let mut duplicated = doc.clone();
-        let states = duplicated
-            .get_mut("projection")
-            .and_then(Value::as_object_mut)
-            .and_then(|projection| projection.get_mut("proposition_states"))
-            .and_then(Value::as_array_mut)
-            .unwrap();
-        let first = states.first().cloned().unwrap();
+        let states = projection_states_mut(&mut duplicated, "proposition_states");
+        let first =
+            must_some_with(states.first().cloned(), "proposition_states must have a first row");
         states.push(first);
         let violations = validate_document(&duplicated);
         let codes = violation_codes(&violations);
@@ -1985,7 +2026,7 @@ mod tests {
     fn root_level_mutable_state_is_rejected() -> TestResult {
         let doc = fixture("neovim_examples.v1.json")?;
         let mut mutated = doc.clone();
-        let root = mutated.as_object_mut().unwrap();
+        let root = required_object_mut(&mut mutated, "document root must be an object");
         root.insert("ci_status".to_string(), Value::String("success".to_string()));
         let violations = validate_document(&mutated);
         let codes = violation_codes(&violations);
@@ -2035,5 +2076,29 @@ mod tests {
         let codes = violation_codes(&violations);
         assert!(codes.contains(&"missing_reason_class"), "{codes:?}");
         Ok(())
+    }
+
+    // -------------------------------------------------------------------
+    // Conversion falsifiers: helpers still fail with named context
+    // -------------------------------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "must_some: profile missing must resolve:")]
+    fn train_edge_converted_option_assertion_still_fails_when_profile_is_absent() {
+        let _ = eligibility(&json!({}), "missing");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_some: empty edges array first object:")]
+    fn train_edge_converted_option_assertion_still_fails_when_array_object_is_absent() {
+        let mut doc = json!({"edges": []});
+        let _ = first_object_in_array_mut(&mut doc, "edges", "empty edges array first object");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_some: projection.missing must be an array:")]
+    fn train_edge_converted_option_assertion_still_fails_when_projection_array_is_absent() {
+        let mut doc = json!({"projection": {}});
+        let _ = projection_states_mut(&mut doc, "missing");
     }
 }
