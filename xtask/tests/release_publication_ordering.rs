@@ -303,17 +303,37 @@ fn parent_sha_is_bound_to_child_dispatch_and_child_subject() -> Result<()> {
     Ok(())
 }
 
+fn validate_no_release_trigger(document: &Value) -> Result<()> {
+    let events = document.get("on").context("publisher must declare events")?;
+    let has_release = match events {
+        Value::String(name) => name == "release",
+        Value::Sequence(names) => names.iter().any(|name| name.as_str() == Some("release")),
+        Value::Mapping(mapping) => mapping.contains_key(Value::String("release".into())),
+        _ => bail!("publisher event declaration must be a string, sequence or mapping"),
+    };
+    ensure!(!has_release, "release event can bypass the ordered graph");
+    Ok(())
+}
+
 #[test]
-fn crates_publisher_has_no_release_published_bypass() -> Result<()> {
-    let crates = rendered(&workflow("publish-crates.yml")?)?;
-    ensure!(
-        !crates.contains("types:\n- published"),
-        "release.published can bypass the ordered graph"
-    );
-    ensure!(
-        !crates.contains("event.release"),
-        "crates publisher still consumes release event authority"
-    );
+fn publishers_have_no_release_event_bypass() -> Result<()> {
+    for name in ["publish-crates.yml", "publish-extension.yml", "docker-publish.yml"] {
+        let document = workflow(name)?;
+        validate_no_release_trigger(&document)?;
+        ensure!(
+            !rendered(&document)?.contains("event.release"),
+            "{name} still consumes release event authority"
+        );
+        for events in ["release", "[workflow_dispatch, release]", "{release: {types: [published]}}"]
+        {
+            let mut mutant = document.clone();
+            mutant["on"] = serde_yaml_ng::from_str(events)?;
+            ensure!(
+                validate_no_release_trigger(&mutant).is_err(),
+                "{name} admitted release-event bypass in {events}"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -368,6 +388,103 @@ fn removing_publication_dependency_is_rejected() -> Result<()> {
     publishers.remove(Value::String("needs".to_string()));
     if validate_release_graph(&document).is_ok() {
         bail!("dependency-removal falsifier unexpectedly remained eligible");
+    }
+    Ok(())
+}
+
+// Replay the actual Linux gate scripts with controlled producer observations.
+// No workflow dispatch, artifact download, or publication occurs in this proof.
+#[cfg(target_os = "linux")]
+#[test]
+fn publisher_handoff_waits_for_exact_terminal_producer() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    let expected = "a".repeat(40);
+    for (workflow_name, job_name) in [
+        ("publish-crates.yml", "compute-order"),
+        ("publish-extension.yml", "resolve-trusted-anchor"),
+        ("docker-publish.yml", "verify-release-eligibility"),
+    ] {
+        let document = workflow(workflow_name)?;
+        let steps = job(&document, job_name)?
+            .get("steps")
+            .and_then(Value::as_sequence)
+            .context("publisher steps")?;
+        let script = steps
+            .iter()
+            .filter_map(|step| step.get("run").and_then(Value::as_str))
+            .find(|script| script.contains("gh run view"))
+            .context("producer admission script")?;
+        let (admission, _) =
+            script.split_once("gh run download").context("candidate download boundary")?;
+        for (case, states, admitted) in [
+            (
+                "delayed success",
+                vec![("in_progress", "", false), ("completed", "success", false)],
+                true,
+            ),
+            ("failure", vec![("completed", "failure", false)], false),
+            (
+                "cancellation",
+                vec![("in_progress", "", false), ("completed", "cancelled", false)],
+                false,
+            ),
+            ("timeout", vec![("in_progress", "", false)], false),
+            ("wrong subject", vec![("completed", "success", true)], false),
+        ] {
+            let dir = tempfile::tempdir()?;
+            let observations: Vec<_> = states.iter().map(|(status, conclusion, wrong)| serde_json::json!({
+                "workflowName": "Release", "headSha": if *wrong { "b".repeat(40) } else { expected.clone() },
+                "status": status, "conclusion": conclusion, "event": "workflow_dispatch",
+            })).collect();
+            std::fs::write(dir.path().join("states.json"), serde_json::to_vec(&observations)?)?;
+            let fake_gh = dir.path().join("gh");
+            std::fs::write(
+                &fake_gh,
+                r#"#!/usr/bin/env python3
+import json, os, pathlib, sys
+root = pathlib.Path(os.environ['TEST_STATE_DIR'])
+if sys.argv[1:4] != ['run', 'view', '123']:
+    sys.exit('unexpected gh command')
+count = root / 'count'
+n = int(count.read_text()) if count.exists() else 0
+states = json.loads((root / 'states.json').read_text())
+count.write_text(str(n + 1))
+print(json.dumps(states[min(n, len(states) - 1)]))
+"#,
+            )?;
+            std::fs::set_permissions(&fake_gh, std::fs::Permissions::from_mode(0o755))?;
+            let fake_sleep = dir.path().join("sleep");
+            std::fs::write(&fake_sleep, "#!/bin/sh\nexit 0\n")?;
+            std::fs::set_permissions(&fake_sleep, std::fs::Permissions::from_mode(0o755))?;
+            let inherited_path =
+                std::env::var_os("PATH").context("PATH required for shell proof")?;
+            let mut paths = vec![dir.path().to_path_buf()];
+            paths.extend(std::env::split_paths(&inherited_path));
+            let output = Command::new("bash")
+                .arg("-c")
+                .arg(admission)
+                .env("PATH", std::env::join_paths(paths)?)
+                .env("TEST_STATE_DIR", dir.path())
+                .env("GITHUB_SHA", &expected)
+                .env("EXPECTED_SHA", &expected)
+                .env("MANIFEST_SHA256", "c".repeat(64))
+                .env("CANDIDATE_RUN_ID", "123")
+                .env("GITHUB_REPOSITORY", "fixture/repository")
+                .env("GH_TOKEN", "")
+                .output()?;
+            ensure!(
+                output.status.success() == admitted,
+                "{workflow_name}: {case}: expected admission={admitted}, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let calls: usize = std::fs::read_to_string(dir.path().join("count"))?.parse()?;
+            if admitted {
+                ensure!(calls == 2, "admitted before observing delayed producer success");
+            }
+            ensure!(calls <= 36, "producer wait exceeded its finite observation bound");
+        }
     }
     Ok(())
 }

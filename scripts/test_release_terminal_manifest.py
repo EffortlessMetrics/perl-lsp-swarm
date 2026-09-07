@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 import tarfile
+import zipfile
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).with_name("release_terminal_manifest.py")
@@ -232,6 +233,17 @@ class ReleaseTerminalManifestTests(unittest.TestCase):
                     write_json(sbom_path, value)
                     with self.assertRaisesRegex(subject.ManifestError, "SPDX"):
                         subject.build_manifest(root, SOURCE, TAG)
+
+    def test_zip_member_digest_preserves_bytes_across_stream_chunks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "candidate.zip"
+            payload = b"x" * (1024 * 1024) + b"final member bytes"
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+                bundle.writestr("perllsp", payload)
+            self.assertEqual(
+                subject.archive_member_digest(archive, "perllsp"),
+                hashlib.sha256(payload).hexdigest(),
+            )
 
     def test_archive_member_drift_from_post_strip_evidence_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

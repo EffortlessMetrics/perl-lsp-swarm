@@ -74,8 +74,25 @@ jobs:
           printf '%s' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'
           printf '%s' "$MANIFEST_SHA256" | grep -Eq '^[0-9a-f]{64}$'
           printf '%s' "$CANDIDATE_RUN_ID" | grep -Eq '^[0-9]+$'
-          run_json="$(gh run view "$CANDIDATE_RUN_ID" --repo "$GITHUB_REPOSITORY" --json workflowName,headSha,status,conclusion,event)"
-          jq -e --arg expected "$EXPECTED_SHA" '.workflowName == "Release" and .headSha == $expected and .status == "completed" and .conclusion == "success" and .event == "workflow_dispatch"' <<< "$run_json" >/dev/null
+          # The dispatcher is this exact producer run. A child may start
+          # before its remaining dispatch steps settle; wait without admitting
+          # publication until the whole producer has completed successfully.
+          producer_succeeded=false
+          for observation in $(seq 1 36); do
+            run_json="$(gh run view "$CANDIDATE_RUN_ID" --repo "$GITHUB_REPOSITORY" --json workflowName,headSha,status,conclusion,event)"
+            jq -e --arg expected "$EXPECTED_SHA" '.workflowName == "Release" and .headSha == $expected and .event == "workflow_dispatch"' <<< "$run_json" >/dev/null
+            if jq -e '.status == "completed"' <<< "$run_json" >/dev/null; then
+              jq -e '.conclusion == "success"' <<< "$run_json" >/dev/null
+              producer_succeeded=true
+              break
+            fi
+            jq -e '.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending" or .status == "requested"' <<< "$run_json" >/dev/null
+            if [ "$observation" -lt 36 ]; then sleep 5; fi
+          done
+          if [ "$producer_succeeded" != true ]; then
+            echo "::error::Exact release producer did not complete within the bounded wait."
+            exit 1
+          fi
           gh run download "$CANDIDATE_RUN_ID" \
             --repo "$GITHUB_REPOSITORY" --name release-terminal-candidate --dir release-candidate
           test -s release-candidate/dist/release-terminal-manifest.json

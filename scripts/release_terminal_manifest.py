@@ -18,7 +18,7 @@ import tarfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 SCHEMA = "perl_lsp.release_terminal_manifest.v1"
 IDENTITY_SCHEMA = "perl_lsp.release_build_identity.v1"
@@ -37,12 +37,16 @@ class ManifestError(ValueError):
     """The candidate is incomplete, contradictory, or stale."""
 
 
-def digest(path: Path) -> str:
+def digest_stream(handle: BinaryIO) -> str:
     value = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            value.update(chunk)
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        value.update(chunk)
     return value.hexdigest()
+
+
+def digest(path: Path) -> str:
+    with path.open("rb") as handle:
+        return digest_stream(handle)
 
 
 def load_object(path: Path, label: str) -> dict[str, Any]:
@@ -287,7 +291,8 @@ def archive_member_digest(archive: Path, member_path: str) -> str:
     if archive.name.endswith(".zip"):
         with zipfile.ZipFile(archive) as bundle:
             try:
-                return digest_bytes(bundle.read(member_path))
+                with bundle.open(member_path) as handle:
+                    return digest_stream(handle)
             except KeyError as error:
                 raise ManifestError(f"archive member is missing: {member_path}") from error
     with tarfile.open(archive, "r:gz") as bundle:
@@ -298,7 +303,8 @@ def archive_member_digest(archive: Path, member_path: str) -> str:
         handle = bundle.extractfile(member)
         if handle is None:
             raise ManifestError(f"archive member is not a regular file: {member_path}")
-        return digest_bytes(handle.read())
+        with handle:
+            return digest_stream(handle)
 
 
 def validate_package_evidence(
