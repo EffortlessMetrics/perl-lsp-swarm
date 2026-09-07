@@ -7,6 +7,10 @@ on:
       - '.ci/dap/protocol-authority.json'
       - 'crates/perl-dap/**'
       - 'scripts/ci/dap_protocol_authority.py'
+      - 'scripts/ci/dap_nullability_inventory.py'
+      - 'scripts/tests/test_dap_nullability_inventory.py'
+      - '.ci/dap/upstream-debugAdapterProtocol.json'
+      - '.ci/dap/nullability-inventory.v1.json'
       - 'scripts/ci/dap_authority_*.py'
       - 'scripts/tests/test_dap_protocol_authority.py'
       - 'docs/reference/DAP_PROTOCOL_SCHEMA.md'
@@ -18,6 +22,10 @@ on:
       - '.ci/dap/protocol-authority.json'
       - 'crates/perl-dap/**'
       - 'scripts/ci/dap_protocol_authority.py'
+      - 'scripts/ci/dap_nullability_inventory.py'
+      - 'scripts/tests/test_dap_nullability_inventory.py'
+      - '.ci/dap/upstream-debugAdapterProtocol.json'
+      - '.ci/dap/nullability-inventory.v1.json'
       - 'scripts/ci/dap_authority_*.py'
       - 'scripts/tests/test_dap_protocol_authority.py'
       - 'docs/reference/DAP_PROTOCOL_SCHEMA.md'
@@ -65,6 +73,12 @@ jobs:
             --root . \
             --manifest .ci/dap/protocol-authority.json \
             --receipt target/receipts/dap-protocol-authority.json
+
+      - name: Run nullability-inventory falsifiers
+        run: python3 scripts/tests/test_dap_nullability_inventory.py
+
+      - name: Enforce the committed nullability inventory
+        run: python3 scripts/ci/dap_nullability_inventory.py --check
 
       - name: Publish authority summary
         shell: bash
