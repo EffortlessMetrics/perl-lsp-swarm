@@ -255,6 +255,9 @@ pub struct ScriptedLocks {
     /// Set to `true` when the harness drops the lease (the scripted
     /// release).
     pub released: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// `true` from lease acquisition until its drop, so tests can observe
+    /// the lease was HELD while other harness steps ran.
+    pub lease_alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ScriptedLocks {
@@ -263,6 +266,7 @@ impl ScriptedLocks {
             flock_available,
             acquire_wait_nanos,
             released: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            lease_alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -270,6 +274,7 @@ impl ScriptedLocks {
 struct ScriptedLease {
     wait_nanos: u64,
     released: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl LockLease for ScriptedLease {
@@ -280,6 +285,7 @@ impl LockLease for ScriptedLease {
 
 impl Drop for ScriptedLease {
     fn drop(&mut self) {
+        self.alive.store(false, std::sync::atomic::Ordering::SeqCst);
         self.released.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
@@ -294,9 +300,11 @@ impl LockPrimitiveProvider for ScriptedLocks {
 
     fn acquire(&self, primitive: LockPrimitive) -> Option<Box<dyn LockLease + '_>> {
         if self.available(primitive) {
+            self.lease_alive.store(true, std::sync::atomic::Ordering::SeqCst);
             Some(Box::new(ScriptedLease {
                 wait_nanos: self.acquire_wait_nanos,
                 released: std::sync::Arc::clone(&self.released),
+                alive: std::sync::Arc::clone(&self.lease_alive),
             }))
         } else {
             None

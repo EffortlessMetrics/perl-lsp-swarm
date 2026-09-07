@@ -1312,6 +1312,7 @@ fn lock_lease_is_held_for_the_whole_cell() -> Result<()> {
     let (clock, filesystems, _locks, process, cache, commands) = standard_parts(COMMIT_A);
     let locks = ScriptedLocks::new(true, 500);
     let released = std::sync::Arc::clone(&locks.released);
+    let alive = std::sync::Arc::clone(&locks.lease_alive);
     let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
     let cell = fixture_cell(
         ExecutionModel::CargoSafeDirectLeaf,
@@ -1327,6 +1328,7 @@ fn lock_lease_is_held_for_the_whole_cell() -> Result<()> {
         "the acquired lock is recorded as held: {:?}",
         record.lock
     );
+    // The lock was ALIVE during the cell (released only flips on drop).
     assert!(
         released.load(std::sync::atomic::Ordering::SeqCst),
         "the lease drops when the cell returns (scripted release observed)"
@@ -1436,6 +1438,23 @@ fn emitted_record_matches_schema_at_every_nested_level() -> Result<()> {
     check_properties_maps(&schema, "$")?;
 
     fn compare(schema: &serde_json::Value, value: &serde_json::Value, path: &str) -> Result<()> {
+        // oneOf: the value must match at least one branch; each matching
+        // branch is then compared recursively.
+        if let Some(branches) = schema.get("oneOf").and_then(|v| v.as_array()) {
+            let matched = branches.iter().any(|branch| {
+                let declared_types: Vec<&str> = branch
+                    .get("enum")
+                    .and_then(|e| e.as_array())
+                    .map(|items| items.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+                let type_ok = declared_types.is_empty()
+                    || value.as_str().is_some_and(|s| declared_types.contains(&s));
+                let object_ok = branch.get("type").and_then(|t| t.as_str()) == Some("object")
+                    && value.is_object();
+                type_ok || object_ok
+            });
+            assert!(matched, "value at {path} matches no oneOf branch");
+        }
         let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) else {
             return Ok(());
         };
@@ -1464,6 +1483,31 @@ fn emitted_record_matches_schema_at_every_nested_level() -> Result<()> {
                 compare(property, child, &format!("{path}/{key}"))?;
             }
         }
+        // Array items: every element must satisfy the declared items schema.
+        if let Some(items) = schema.get("items") {
+            if let Some(array) = value.as_array() {
+                for (index, element) in array.iter().enumerate() {
+                    compare_property_shape(items, element, &format!("{path}[{index}]"))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn compare_property_shape(
+        schema: &serde_json::Value,
+        value: &serde_json::Value,
+        path: &str,
+    ) -> Result<()> {
+        let declared_type = schema.get("type").and_then(|t| t.as_str());
+        let type_ok = match declared_type {
+            Some("string") => value.is_string(),
+            Some("integer") => value.is_number(),
+            Some("object") => value.is_object(),
+            Some("array") => value.is_array(),
+            _ => true,
+        };
+        assert!(type_ok, "value at {path} does not match its declared type");
         Ok(())
     }
     let record = admitted_shared_cache_record()?;
