@@ -99,6 +99,18 @@ retirement_blocker_registry = [
   "opt_in_engine_has_no_canonical_equivalent",
 ]
 
+# LSP CodeActionKind strings the orchestrator can serialize but that no
+# generation ever constructs, so no family can exist for them. Recorded rather
+# than ignored: the drift check requires every kind literal in the handler to be
+# either a registered family's kind or listed here, so a NEW kind cannot appear
+# without being classified. Both entries map InternalCodeActionKind variants
+# (Refactor, RefactorInline) that no producer builds — #9190 can drop the
+# variants and their match arms together.
+unreachable_kinds = [
+  "refactor",
+  "refactor.inline",
+]
+
 # Every `.rs` file under these roots must be claimed by some generation row's
 # `modules`. This is the anti-staleness ratchet: a new code-action module cannot
 # land without an exact family disposition.

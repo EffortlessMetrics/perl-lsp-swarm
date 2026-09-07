@@ -89,7 +89,7 @@ whose only occurrences are outside the handler.
 
 ## What the inventory found
 
-Five findings decide how much freedom #9189 and #9190 actually have.
+Six findings decide how much freedom #9189 and #9190 actually have.
 
 ### The enhanced generation runs twice per request
 
@@ -184,6 +184,31 @@ So this is the clearest user-visible duplicate authority in the inventory, and
 rather than asserting the tidier claim that the family answers once. When #9189
 resolves the duplication that fixture must fail, forcing this ledger to be
 updated alongside the routing change.
+
+### Two CodeActionKinds are serializable but unreachable
+
+`handle_code_action` maps `InternalCodeActionKind::Refactor` to `"refactor"`
+and `RefactorInline` to `"refactor.inline"`, but no producer anywhere in the
+workspace constructs either variant. Both kinds are dead mappings: reachable in
+the serializer, unreachable in practice.
+
+They are recorded in `unreachable_kinds` rather than left implicit, because the
+drift check requires every kind literal in the handler to be either a
+registered family's kind or an explicitly recorded exception. #9190 can drop
+the variants and their match arms together.
+
+## What this ledger cannot check
+
+The module ratchet catches a new code-action **module**, and the kind ratchet
+catches a new **CodeActionKind**. Neither catches a new *family* added inside a
+module and kind that already have rows — say, a second distinct quick fix added
+to `quick_fixes.rs` under the existing `quickfix` kind.
+
+That gap is real and inherent: a family is a user-visible capability, and
+deciding that two actions are different capabilities is the semantic judgment
+this ledger exists to record. No source scan supplies it. Reviewers adding a
+code-action behavior must add its row; the checks narrow how much can drift
+unnoticed, they do not remove the obligation.
 
 ## Parity corpus
 

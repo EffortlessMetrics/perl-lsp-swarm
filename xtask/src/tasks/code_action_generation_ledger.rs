@@ -55,6 +55,7 @@ struct Ledger {
     disposition_states: Vec<String>,
     family_registry: Vec<String>,
     retirement_blocker_registry: Vec<String>,
+    unreachable_kinds: Vec<String>,
     owned_module_roots: Vec<String>,
     #[serde(default)]
     generation: Vec<Generation>,
@@ -142,6 +143,7 @@ fn validate(root: &Path) -> Result<ValidationStats> {
     validate_generations(root, &ledger, &orchestrator_text, &mut violations);
     validate_routes(&ledger, &mut violations);
     validate_module_coverage(root, &ledger, &mut violations);
+    validate_kind_coverage(&ledger, &orchestrator_text, &mut violations);
     validate_parity_fixtures(&ledger, &corpus_text, &mut violations);
     validate_human_fixture_mentions(&ledger, &human_text, &mut violations);
     validate_human_table(&human_table, &mut violations);
@@ -221,6 +223,12 @@ fn validate_ledger_shape(ledger: &Ledger, violations: &mut Vec<String>) {
     );
     require_unique_non_empty(
         POLICY_PATH,
+        "unreachable_kinds",
+        &ledger.unreachable_kinds,
+        violations,
+    );
+    require_unique_non_empty(
+        POLICY_PATH,
         "owned_module_roots",
         &ledger.owned_module_roots,
         violations,
@@ -248,6 +256,11 @@ fn validate_generations(
     // helper, a test-only handler, or the test module is not production routing.
     let handler = handler_range(ledger, orchestrator_text, violations);
     let boundary = orchestrator_text.find(ledger.no_ast_boundary.as_str());
+    // Anchor search runs over a copy with comments blanked out, so a retired
+    // producer whose call text survives only in a comment no longer satisfies
+    // its row. Offsets are preserved, and the boundary/handler markers are
+    // resolved from the raw text above because the boundary IS a comment.
+    let executable_text = blank_comments(orchestrator_text);
     if boundary.is_none() {
         violations.push(format!(
             "{POLICY_PATH}: no_ast_boundary {:?} no longer occurs in {ORCHESTRATOR}",
@@ -327,7 +340,7 @@ fn validate_generations(
                         "{POLICY_PATH}: generation {id} is production-reachable but has no production_anchor"
                     )),
                     Some(anchor) => {
-                        let all = occurrences(orchestrator_text, anchor);
+                        let all = occurrences(&executable_text, anchor);
                         let offsets = match handler {
                             Some((start, end)) => all
                                 .iter()
@@ -382,6 +395,87 @@ fn validate_generations(
             ));
         }
     }
+}
+
+/// Replace every `//` and `/* */` comment with spaces, preserving length and
+/// therefore every byte offset.
+///
+/// String literals are deliberately left intact: one production anchor is a
+/// format string (`"Generate test for '{}'"`), which is executable code.
+fn blank_comments(source: &str) -> String {
+    #[derive(Clone, Copy, PartialEq)]
+    enum State {
+        Code,
+        LineComment,
+        BlockComment,
+        Str,
+        StrEscape,
+        Char,
+        CharEscape,
+    }
+
+    let bytes = source.as_bytes();
+    // Only ASCII comment bytes are overwritten with ASCII spaces, so the result
+    // stays valid UTF-8 and every byte offset is preserved.
+    let mut out_bytes = bytes.to_vec();
+    let mut state = State::Code;
+    let mut index = 0;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        let next = bytes.get(index + 1).copied();
+        match state {
+            State::Code => match (byte, next) {
+                (b'/', Some(b'/')) => {
+                    state = State::LineComment;
+                    out_bytes[index] = b' ';
+                }
+                (b'/', Some(b'*')) => {
+                    state = State::BlockComment;
+                    out_bytes[index] = b' ';
+                }
+                (b'"', _) => state = State::Str,
+                (b'\'', _) => state = State::Char,
+                _ => {}
+            },
+            State::LineComment => {
+                if byte == b'\n' {
+                    state = State::Code;
+                } else {
+                    out_bytes[index] = b' ';
+                }
+            }
+            State::BlockComment => {
+                if byte == b'*' && next == Some(b'/') {
+                    out_bytes[index] = b' ';
+                    if index + 1 < out_bytes.len() {
+                        out_bytes[index + 1] = b' ';
+                    }
+                    index += 2;
+                    state = State::Code;
+                    continue;
+                }
+                if byte != b'\n' {
+                    out_bytes[index] = b' ';
+                }
+            }
+            State::Str => match byte {
+                b'\\' => state = State::StrEscape,
+                b'"' => state = State::Code,
+                _ => {}
+            },
+            State::StrEscape => state = State::Str,
+            State::Char => match byte {
+                b'\\' => state = State::CharEscape,
+                b'\'' => state = State::Code,
+                _ => {}
+            },
+            State::CharEscape => state = State::Char,
+        }
+        index += 1;
+    }
+
+    String::from_utf8(out_bytes).unwrap_or_else(|_| source.to_string())
 }
 
 /// Byte range of `handle_code_action` in the orchestrator source.
@@ -574,6 +668,70 @@ fn validate_routes(ledger: &Ledger, violations: &mut Vec<String>) {
     }
 }
 
+/// Every LSP `CodeActionKind` literal the handler can serialize must be either
+/// a registered family's kind or an explicitly recorded unreachable kind.
+///
+/// This is the mechanically checkable half of family coverage. It catches a new
+/// kind appearing with no disposition. It cannot catch a new *family* added
+/// within a kind that already has one — that needs the semantic judgment this
+/// ledger exists to record, and the human page says so.
+fn validate_kind_coverage(ledger: &Ledger, orchestrator_text: &str, violations: &mut Vec<String>) {
+    let Some((start, end)) = (match (
+        orchestrator_text.find(ledger.handler_start.as_str()),
+        orchestrator_text.find(ledger.handler_end.as_str()),
+    ) {
+        (Some(start), Some(end)) if start < end => Some((start, end)),
+        _ => None,
+    }) else {
+        return;
+    };
+    let handler = blank_comments(&orchestrator_text[start..end]);
+
+    let family_kinds = ledger
+        .family_registry
+        .iter()
+        .filter_map(|family| family.split(':').next())
+        .filter(|kind| *kind != "none")
+        .collect::<BTreeSet<_>>();
+    let unreachable = ledger.unreachable_kinds.iter().map(String::as_str).collect::<BTreeSet<_>>();
+
+    for kind in &unreachable {
+        if family_kinds.contains(kind) {
+            violations.push(format!(
+                "{POLICY_PATH}: kind {kind:?} is listed in unreachable_kinds but a family also claims it"
+            ));
+        }
+        if !handler.contains(&format!("\"{kind}\"")) {
+            violations.push(format!(
+                "{POLICY_PATH}: unreachable_kinds entry {kind:?} no longer occurs in the handler"
+            ));
+        }
+    }
+
+    for kind in emitted_kinds(&handler) {
+        if !family_kinds.contains(kind.as_str()) && !unreachable.contains(kind.as_str()) {
+            violations.push(format!(
+                "{POLICY_PATH}: the handler can publish CodeActionKind {kind:?}, which no family claims and unreachable_kinds does not record"
+            ));
+        }
+    }
+}
+
+/// LSP kind literals appearing in the handler.
+fn emitted_kinds(handler: &str) -> BTreeSet<String> {
+    const ROOTS: [&str; 3] = ["quickfix", "refactor", "source"];
+    let mut kinds = BTreeSet::new();
+    for raw in handler.split('"').skip(1).step_by(2) {
+        let is_kind = ROOTS.iter().any(|root| {
+            raw == *root || raw.strip_prefix(root).is_some_and(|rest| rest.starts_with('.'))
+        }) && raw.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '.');
+        if is_kind {
+            kinds.insert(raw.to_string());
+        }
+    }
+    kinds
+}
+
 fn validate_module_coverage(root: &Path, ledger: &Ledger, violations: &mut Vec<String>) {
     let claimed = ledger
         .generation
@@ -619,6 +777,16 @@ fn validate_module_coverage(root: &Path, ledger: &Ledger, violations: &mut Vec<S
 
 fn validate_parity_fixtures(ledger: &Ledger, corpus_text: &str, violations: &mut Vec<String>) {
     let declared = ledger_fixture_ids(ledger);
+
+    // Surface a syntax error directly. Without this, an unparseable corpus
+    // binds nothing and the operator sees a wall of "missing fixture"
+    // violations instead of the one line that explains them.
+    if let Err(error) = syn::parse_file(corpus_text) {
+        violations.push(format!(
+            "{PARITY_CORPUS}: could not be parsed as Rust ({error}); no fixture binding is possible until it parses"
+        ));
+    }
+
     let fixtures = parse_corpus_fixtures(corpus_text);
 
     for fixture in &fixtures {
@@ -1096,6 +1264,7 @@ mod tests {
             retirement_blocker_registry: vec![
                 "canonical_route_omits_diagnostic_association".to_string(),
             ],
+            unreachable_kinds: vec!["refactor".to_string()],
             owned_module_roots: vec![
                 "crates/perl-lsp-rs-core/src/providers/code_actions".to_string(),
             ],
@@ -1477,6 +1646,81 @@ mod tests {
                 .iter()
                 .any(|violation| violation.contains("unreachable stub but declares path")),
             "expected stub/branch contradiction, got {violations:?}"
+        );
+    }
+
+    /// A retired producer whose call text survives only in a comment must not
+    /// keep its row alive.
+    #[test]
+    fn rejects_an_anchor_that_survives_only_in_a_comment() {
+        let ledger = ledger(
+            vec![generation("retired", Some("RETIRED_CALL"))],
+            vec![route("retired", "quickfix:diagnostic_routed", "canonical_candidate")],
+        );
+
+        let mut violations = Vec::new();
+        let source = handler(&format!("// RETIRED_CALL was removed here\n{NO_AST_MARKER}"));
+        validate_generations(&std::path::PathBuf::from("."), &ledger, &source, &mut violations);
+
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("does not occur inside handle_code_action")),
+            "expected comment-only anchor to be rejected, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn blanks_comments_while_preserving_offsets_and_strings() {
+        let source = "let a = CALL(); // CALL() in a comment\nlet s = \"CALL()\";\n";
+        let blanked = blank_comments(source);
+        assert_eq!(blanked.len(), source.len(), "offsets must be preserved");
+        assert_eq!(
+            occurrences(&blanked, "CALL()").len(),
+            2,
+            "code and string survive; comment does not"
+        );
+    }
+
+    /// A new CodeActionKind must be classified, not silently uninventoried.
+    #[test]
+    fn rejects_an_emitted_kind_that_no_family_or_exception_claims() {
+        let mut ledger = ledger(
+            vec![generation("gen", Some("THE_CALL"))],
+            vec![route("gen", "quickfix:diagnostic_routed", "canonical_candidate")],
+        );
+        ledger.unreachable_kinds = Vec::new();
+
+        let mut violations = Vec::new();
+        let source = handler(&format!(
+            "let _ = \"quickfix\"; let _ = \"source.brandNew\"; THE_CALL\n{NO_AST_MARKER}"
+        ));
+        validate_kind_coverage(&ledger, &source, &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("source.brandNew")),
+            "expected unclassified kind violation, got {violations:?}"
+        );
+    }
+
+    /// A recorded unreachable kind that no longer appears is stale.
+    #[test]
+    fn rejects_a_stale_unreachable_kind() {
+        let mut ledger = ledger(
+            vec![generation("gen", Some("THE_CALL"))],
+            vec![route("gen", "quickfix:diagnostic_routed", "canonical_candidate")],
+        );
+        ledger.unreachable_kinds = vec!["refactor.inline".to_string()];
+
+        let mut violations = Vec::new();
+        let source = handler(&format!("let _ = \"quickfix\"; THE_CALL\n{NO_AST_MARKER}"));
+        validate_kind_coverage(&ledger, &source, &mut violations);
+
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("no longer occurs in the handler")),
+            "expected stale unreachable kind violation, got {violations:?}"
         );
     }
 
