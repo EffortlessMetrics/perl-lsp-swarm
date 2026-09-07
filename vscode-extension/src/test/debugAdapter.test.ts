@@ -11,6 +11,7 @@ import {
   PerlDebugConfigurationProvider,
   buildDapExecutableArgs as productionBuildDapExecutableArgs,
   buildLaunchJsonContent,
+  debugConfigTemplateChoices,
   hasLaunchJson,
   offerDebugConfigOnFirstPerlOpen,
   parseDebugTestLaunchTarget,
@@ -28,6 +29,7 @@ import { managedNamespaceDir } from '../managedStorageIdentity';
 interface LaunchConfiguration {
   type: string;
   request: string;
+  name?: string;
   host?: string;
   port?: number;
   externalPeer?: string;
@@ -462,13 +464,93 @@ describe('buildLaunchJsonContent', () => {
     expect(cfg.port).toBe(13603);
   });
 
-  test('remote-ssh template produces attach config with configurable host', () => {
-    const content = buildLaunchJsonContent('remote-ssh');
+  test('remote-tcp-attach template produces a normal TCP attach config (#9868)', () => {
+    const content = buildLaunchJsonContent('remote-tcp-attach');
     const parsed = JSON.parse(content) as LaunchJson;
-    const cfg = required(parsed.configurations[0], 'remote-ssh configuration');
+    const cfg = required(parsed.configurations[0], 'remote-tcp-attach configuration');
     expect(cfg.type).toBe('perl');
     expect(cfg.request).toBe('attach');
-    expect(typeof cfg.host).toBe('string');
+    // Safe default endpoint compatible with an existing local port forward,
+    // not a placeholder remote SSH target.
+    expect(cfg.name).toBe('Perl: Remote TCP Attach');
+    expect(cfg.host).toBe('localhost');
+    expect(cfg.port).toBe(13603);
+  });
+
+  test('legacy remote-ssh selector aliases the same honest TCP attach config (#9868)', () => {
+    const legacy = buildLaunchJsonContent('remote-ssh');
+    expect(legacy).toBe(buildLaunchJsonContent('remote-tcp-attach'));
+  });
+
+  test('all template uses the corrected remote TCP attach name and copy (#9868)', () => {
+    const content = buildLaunchJsonContent('all');
+    const parsed = JSON.parse(content) as LaunchJson;
+    const names = parsed.configurations.map((config) => config.name);
+    expect(names).toContain('Perl: Remote TCP Attach');
+    expect(content).not.toContain('Remote (SSH)');
+    expect(content).not.toContain('remote-host');
+  });
+
+  test('wizard copy never claims built-in SSH or tunnel ownership (#9868)', () => {
+    const choices = debugConfigTemplateChoices();
+    expect(choices.length).toBeGreaterThan(0);
+    for (const choice of choices) {
+      const copy = `${choice.label} ${choice.description} ${choice.detail}`;
+      expect(copy).not.toMatch(/ssh/i);
+      expect(copy).not.toMatch(/\btunnel\b/i);
+    }
+    // Every generated configuration stays free of SSH/tunnel claims too.
+    const templates = [
+      'launch-script',
+      'attach-process',
+      'remote-tcp-attach',
+      'external-peer',
+      'all',
+    ];
+    for (const template of templates) {
+      expect(buildLaunchJsonContent(template)).not.toMatch(/ssh/i);
+      expect(buildLaunchJsonContent(template)).not.toMatch(/\btunnel\b/i);
+    }
+  });
+
+  test('remote TCP attach copy stays inside the accepted attach surface (#9868, #5257)', () => {
+    const choices = debugConfigTemplateChoices();
+    const remote = choices.find((choice) => choice.template === 'remote-tcp-attach');
+    expect(remote).toBeDefined();
+    const copy = `${required(remote, 'remote-tcp-attach choice').label} ${
+      required(remote, 'remote-tcp-attach choice').description
+    } ${required(remote, 'remote-tcp-attach choice').detail}`;
+    // Adapter validation resolves the host and refuses private/link-local
+    // addresses, so the copy must not invite a "direct" non-loopback endpoint.
+    expect(copy).not.toMatch(/\bdirect(ly)?\b/i);
+    // The supported remote route is a user-run port forward to loopback, and
+    // the non-loopback private-host refusal is stated, not implied.
+    expect(copy).toMatch(/port forward/i);
+    expect(copy).toMatch(/loopback/i);
+    expect(copy).toMatch(/private\/link-local/i);
+  });
+
+  test('remote-tcp-attach wizard default round-trips resolveDebugConfiguration unchanged (#9868)', () => {
+    const content = buildLaunchJsonContent('remote-tcp-attach');
+    const parsed = JSON.parse(content) as LaunchJson;
+    const config = asDebugConfiguration(
+      parsed.configurations[0] as unknown as Record<string, unknown>,
+    );
+    const provider = new PerlDebugConfigurationProvider();
+    const result = provider.resolveDebugConfiguration(undefined, config);
+    // The attach path must resolve synchronously to the same config object.
+    if (!result || typeof (result as { then?: unknown }).then === 'function') {
+      throw new Error('resolveDebugConfiguration must resolve synchronously for attach configs');
+    }
+    const resolved = result as vscode.DebugConfiguration;
+    // The wizard default is a loopback endpoint and the provider passes it
+    // through unchanged; any private-host refusal happens at the adapter
+    // boundary (pinned Rust-side by crates/perl-dap/tests/tcp_attach_tests.rs).
+    expect(resolved).toBe(config);
+    expect(resolved.type).toBe('perl');
+    expect(resolved.request).toBe('attach');
+    expect(resolved.host).toBe('localhost');
+    expect(resolved.port).toBe(13603);
   });
 
   test('all template produces multiple configurations', () => {

@@ -338,8 +338,6 @@ fn discovery_result_debug_format_is_not_empty() -> TestResult {
 
 #[test]
 fn discovery_method_eq_symmetry() {
-    assert_eq!(DiscoveryMethod::Git, DiscoveryMethod::Git);
-    assert_eq!(DiscoveryMethod::Walk, DiscoveryMethod::Walk);
     assert_ne!(DiscoveryMethod::Git, DiscoveryMethod::Walk);
     assert_ne!(DiscoveryMethod::Walk, DiscoveryMethod::Git);
 }

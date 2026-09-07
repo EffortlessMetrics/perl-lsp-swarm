@@ -64,7 +64,7 @@ Building from source (Rust 1.95+) works on any Rust-supported platform.
 
 ### Which Perl versions does perl-lsp support?
 
-The parser targets Perl 5.8 through 5.40. This includes:
+The parser targets Perl 5.8 through 5.42. This includes:
 
 - All core syntax from Perl 5.8+
 - Modern features: `say`, `given`/`when`, `state`, `fc`
@@ -72,7 +72,7 @@ The parser targets Perl 5.8 through 5.40. This includes:
 - `use v5.38; class ...` object syntax (partial support)
 - Moose, Moo, and common OO frameworks (detection-level support)
 
-This claim is backed by a visible CI workflow: [Perl Version Matrix](https://github.com/EffortlessMetrics/perl-lsp/actions/workflows/perl-version-matrix.yml). It runs version-gated Perl syntax probes on every Perl minor from 5.8 through 5.40, and also runs a Rust smoke test on both edge versions (5.8 and 5.40).
+This claim is backed by a visible CI workflow: [Perl Version Matrix](https://github.com/EffortlessMetrics/perl-lsp/actions/workflows/perl-version-matrix.yml). It runs version-gated Perl syntax probes on every Perl minor from 5.8 through 5.42, and also runs a Rust smoke test on 5.8 and 5.40.
 
 If you encounter a Perl construct that fails to parse, [report it](https://github.com/EffortlessMetrics/perl-lsp/issues) with a minimal example.
 

@@ -1,3 +1,5 @@
+mod disallowed_fields;
+
 use super::super::model::{LintLedger, RustVersion};
 use super::super::validate::{ensure_version_matches, validate_clippy_config_value};
 use super::ledger_with;

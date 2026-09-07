@@ -111,6 +111,62 @@ fn valid_receipt_reaches_public_aggregation_and_writes_json() -> TestResult {
 }
 
 #[test]
+fn contradictory_completed_timing_fails_publicly_without_overwriting_output() -> TestResult {
+    let receipts = TempDir::new()?;
+    let output = TempDir::new()?;
+    let output_path = output.path().join("editor_ux.json");
+    let sentinel = br#"{"sentinel":"preserve-semantic-timing"}
+"#;
+    fs::write(&output_path, sentinel)?;
+
+    // This receipt is structurally schema-valid: the operation has a completed
+    // measurement and no status. It is semantically impossible because the
+    // producer always copies the first completed operation to the top-level
+    // TTFR summary.
+    fs::write(
+        receipts.path().join("missing-top-level-timing.json"),
+        br#"{
+            "kind": "ux_scenario_run",
+            "schema_version": 1,
+            "measured_at": "2026-08-28T00:00:00Z",
+            "run_identity": {"sha": "abcdef12", "branch": "main"},
+            "workflow_id": "simple_file_smoke",
+            "scenario_file": "ux_scenario_01_simple_file.rs",
+            "test_name": "missing_top_level_timing",
+            "ci_tier": "pr",
+            "result": "pass",
+            "duration_ms": 10.0,
+            "operation_timings": [{
+                "operation": "completion",
+                "time_to_first_useful_result_ms": 5.0
+            }],
+            "assertions": {"passed": 1, "failed": 0, "basis": "instrumented"},
+            "canonical_repro": "cargo test -p perl-lsp-ux-tests missing_top_level_timing",
+            "friendly_repro": "just ux-tests"
+        }"#,
+    )?;
+
+    let process_output = run_with_temp_output(&receipts, &output)?;
+    let preserved_output = fs::read(&output_path)?;
+    let stderr = String::from_utf8_lossy(&process_output.stderr);
+
+    assert!(
+        !process_output.status.success(),
+        "semantically contradictory timing unexpectedly succeeded\nstdout: {}\nstderr: {stderr}",
+        String::from_utf8_lossy(&process_output.stdout)
+    );
+    assert!(
+        stderr.contains("top-level TTFR is absent"),
+        "public command did not report the semantic timing contradiction: {stderr}"
+    );
+    assert_eq!(
+        preserved_output, sentinel,
+        "semantic timing rejection overwrote the output artifact"
+    );
+    Ok(())
+}
+
+#[test]
 fn invalid_nested_timing_receipt_fails_publicly_without_overwriting_output() -> TestResult {
     let receipts = TempDir::new()?;
     let output = TempDir::new()?;

@@ -5,8 +5,7 @@
 [![docs.rs](https://docs.rs/perl-lsp-rs/badge.svg)](https://docs.rs/perl-lsp-rs)
 [![crates.io downloads](https://img.shields.io/crates/d/perl-lsp-rs.svg?label=crates.io%20downloads)](https://crates.io/crates/perl-lsp-rs)
 <!-- perl-lsp:vs-marketplace-installs-badge:start -->
-
-[![VS Marketplace installs](https://img.shields.io/badge/VS%20Marketplace-656%20installs-0078D4)](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs)
+[![VS Marketplace Installs (manual)](https://img.shields.io/badge/VS%20Marketplace-681%20installs-0078D4)](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs)
 <!-- perl-lsp:vs-marketplace-installs-badge:end -->
 
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/EffortlessMetrics/perl-lsp-rs?label=Open%20VSX%20downloads)](https://open-vsx.org/extension/EffortlessMetrics/perl-lsp-rs)
@@ -283,7 +282,7 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 
 | Command                       | Description                                                                                                        |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **Perl: Check Syntax**        | Run a `perl -c` syntax check on the active file                                                                    |
+| **Perl: Check Syntax**        | Run PATH `perl -c` on the saved active file (executes compile-phase code; not a native `perllsp --check`)          |
 | **Perl: Run Critic**          | Run the critic over the active file — native by default                                                            |
 | **Perl: Set Critic Severity** | Choose the minimum critic severity to report — `5` reports only the most severe violations, `1` reports everything |
 
