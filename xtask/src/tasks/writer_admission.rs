@@ -3,7 +3,8 @@
 //! Produces one typed `AdmissionVerdict` (`PASS` / `BLOCK` / `NOT_PROVEN`)
 //! for "is it safe to open a writer worktree/branch here?", with a
 //! per-check breakdown. **Read-only**: this module never mutates git state,
-//! the filesystem, or GitHub — it only gathers signals and reports.
+//! candidate files or GitHub — it only gathers signals and reports. Remote
+//! observation uses temporary output captures, removed when the query ends.
 //!
 //! It composes the semantics of the existing report-only tooling rather
 //! than reimplementing them:
@@ -60,8 +61,12 @@
 use color_eyre::eyre::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::tasks::git_context::git_stdout_with_worktree_fallback;
 
@@ -173,15 +178,14 @@ pub struct PrOwnershipInfo {
     pub error: Option<String>,
 }
 
-/// Resolves `refs/remotes/origin/<target_branch>` — does the target branch
+/// Observes `refs/heads/<target_branch>` directly on origin — does the target branch
 /// already exist on the remote, and if so, at what SHA? Feeds
 /// `AdmissionGuidance::remote_branch_sha` (the W2 RESUME signal): an
 /// existing remote branch must be resumed from its actual head, never
 /// recreated fresh off the requested base.
 ///
-/// A non-existent remote branch is a legitimate absence (mirrors
-/// `gather_head_info`'s `symbolic-ref -q` handling), not an instrument
-/// failure — `error` is reserved for a genuine spawn failure.
+/// Confirmed remote absence is distinct from transport, timeout, or tool
+/// failure. Cached remote-tracking refs cannot establish either remote fact.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RemoteBranchInfo {
     #[serde(default)]
@@ -300,13 +304,13 @@ pub struct AdmissionGuidance {
     /// invocation's own checkout is the root (the root is never a valid
     /// REUSE target — see `compute_guidance`'s doc comment).
     pub existing_worktree_path: Option<String>,
-    /// The resolved SHA of `refs/remotes/origin/<target_branch>` when the
+    /// The observed SHA of origin's `refs/heads/<target_branch>` when the
     /// target branch already exists on the remote. `None` for a genuinely
     /// new branch **or** when the lookup itself failed — check
     /// `remote_branch_lookup_error` to tell those two apart before treating
     /// a `None` here as "safe to ADMIT a fresh branch".
     pub remote_branch_sha: Option<String>,
-    /// Set when the `refs/remotes/origin/<target_branch>` lookup itself
+    /// Set when the direct remote `refs/heads/<target_branch>` lookup itself
     /// failed (a genuine `git` instrument failure, e.g. not a git
     /// repository, not a spawnable `git`), as opposed to a legitimate
     /// "branch doesn't exist yet" absence. A consumer must treat a non-null
@@ -678,7 +682,7 @@ fn check_remote_branch_identity(snapshot: &WriterAdmissionSnapshot) -> CheckResu
             name,
             status: CheckStatus::NotProven,
             reason: format!(
-                "could not resolve `refs/remotes/origin/{}`: {err}; CREATE versus RESUME is not proven",
+                "could not observe origin `refs/heads/{}`: {err}; CREATE versus RESUME is not proven",
                 snapshot.target_branch
             ),
         };
@@ -1106,41 +1110,95 @@ fn gather_pr_ownership(branch: &str, repo: Option<&str>) -> PrOwnershipInfo {
     }
 }
 
-/// Resolves `refs/remotes/origin/<branch>` — the W2 RESUME signal. A
-/// non-zero exit from `rev-parse -q --verify` with **empty** stderr
-/// legitimately means the branch doesn't exist on the remote yet (`-q`
-/// suppresses git's "no such ref" message, mirrors `gather_head_info`'s
-/// `symbolic-ref -q` handling); a non-zero exit that DID print to stderr
-/// (e.g. "fatal: not a git repository...") is a genuine instrument
-/// failure and must not be folded into that same silent absence — `-q`
-/// only suppresses the ref-not-found message, not earlier repository-
-/// level failures.
+/// Query the actual remote without fetching or updating local refs. Exit 2 is
+/// ls-remote's explicit no-match result; every other failure is NOT_PROVEN.
 fn gather_remote_branch_info(root: &Path, branch: &str) -> RemoteBranchInfo {
-    let output = Command::new("git")
-        .args(["rev-parse", "-q", "--verify", &format!("refs/remotes/origin/{branch}")])
+    match observe_remote_branch(root, branch, Duration::from_secs(20)) {
+        Ok(sha) => RemoteBranchInfo { sha, error: None },
+        Err(error) => RemoteBranchInfo { sha: None, error: Some(format!("{error:#}")) },
+    }
+}
+
+fn observe_remote_branch(root: &Path, branch: &str, timeout: Duration) -> Result<Option<String>> {
+    let remote_ref = format!("refs/heads/{branch}");
+    // Files avoid full-pipe deadlocks and do not wait for a transport descendant
+    // to close an inherited pipe after the parent deadline terminates git.
+    let mut stdout = tempfile::tempfile()?;
+    let mut command = Command::new("git");
+    command
+        .args(["ls-remote", "--exit-code", "--heads", "origin", &remote_ref])
+        .env("GIT_TERMINAL_PROMPT", "0")
         .current_dir(root)
-        .output();
-    match output {
-        Ok(out) if out.status.success() => {
-            let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            RemoteBranchInfo { sha: if sha.is_empty() { None } else { Some(sha) }, error: None }
-        }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            if stderr.is_empty() {
-                RemoteBranchInfo { sha: None, error: None }
-            } else {
-                RemoteBranchInfo {
-                    sha: None,
-                    error: Some(format!("git rev-parse --verify failed: {stderr}")),
+        .stdin(Stdio::null())
+        .stdout(stdout.try_clone()?)
+        // Transport errors may embed credential-bearing URLs. The status is
+        // sufficient to distinguish failure from confirmed remote absence.
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command.spawn().context("spawn git ls-remote")?;
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            observation => {
+                // End the owned transport tree as well as git: SSH/remote
+                // helpers must not outlive an admission query that timed out.
+                #[cfg(unix)]
+                let tree_kill = Command::new("kill")
+                    .args(["-KILL", "--", &format!("-{}", child.id())])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                #[cfg(windows)]
+                let tree_kill = Command::new("taskkill")
+                    .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                let kill = child.kill();
+                // Reap only after a successful kill, or after observing an exit
+                // that raced with it. Never wait on a known live failed kill.
+                if kill.is_ok() || matches!(child.try_wait(), Ok(Some(_))) {
+                    child.wait().context("reap git ls-remote")?;
                 }
+                #[cfg(any(unix, windows))]
+                if !tree_kill.context("terminate git ls-remote transport tree")?.success() {
+                    color_eyre::eyre::bail!("git ls-remote transport cleanup not confirmed");
+                }
+                if let Err(error) = kill
+                    && !matches!(child.try_wait(), Ok(Some(_)))
+                {
+                    return Err(error).context("terminate git ls-remote after observation failure");
+                }
+                if let Err(error) = observation {
+                    return Err(error).context("poll git ls-remote");
+                }
+                color_eyre::eyre::bail!("git ls-remote timed out after {} ms", timeout.as_millis());
             }
         }
-        Err(e) => RemoteBranchInfo {
-            sha: None,
-            error: Some(format!("failed to spawn git rev-parse: {e}")),
-        },
+    };
+    if status.code() == Some(2) {
+        return Ok(None);
     }
+    if !status.success() {
+        color_eyre::eyre::bail!("git ls-remote failed with {status}");
+    }
+    stdout.seek(SeekFrom::Start(0))?;
+    let mut text = String::new();
+    stdout.take(4096).read_to_string(&mut text)?;
+    let fields: Vec<_> = text.split_whitespace().collect();
+    if let [sha, observed_ref] = fields.as_slice()
+        && *observed_ref == remote_ref
+        && matches!(sha.len(), 40 | 64)
+        && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Ok(Some((*sha).to_string()));
+    }
+    color_eyre::eyre::bail!("git ls-remote returned no unique exact branch identity")
 }
 
 fn which_gh() -> Option<PathBuf> {
@@ -1797,7 +1855,7 @@ mod tests {
             "fixture",
         ])?;
         let sha = git(&["rev-parse", "HEAD"])?;
-        git(&["update-ref", "refs/remotes/origin/(detached)", &sha])?;
+        git(&["remote", "add", "origin", "."])?;
         let mut config = default_config();
         config.worktree = Some(dir.path().to_path_buf());
         // Reject the unrelated advisory PR lookup locally, without network access.
@@ -1856,17 +1914,117 @@ mod tests {
     }
 
     #[test]
-    fn gather_remote_branch_info_on_a_nonexistent_branch_is_none_not_an_error() -> Result<()> {
-        // `-q --verify` exiting non-zero for a ref that simply does not
-        // exist is a legitimate brand-new-branch absence. It must remain
-        // distinct from a repository/tool failure so CREATE stays valid.
+    fn remote_observation_ignores_absent_stale_and_deleted_tracking_refs() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let init = Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(dir.path())
-            .status()
-            .context("failed to spawn git init")?;
+        let remote = tempfile::tempdir()?;
+        let git = |root: &Path, args: &[&str]| -> Result<String> {
+            let output = Command::new("git").args(args).current_dir(root).output()?;
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            Ok(String::from_utf8(output.stdout)?.trim().to_string())
+        };
+        git(remote.path(), &["init", "--bare", "-q"])?;
+        git(dir.path(), &["init", "-q"])?;
+        git(dir.path(), &["remote", "add", "origin", &remote.path().to_string_lossy()])?;
+        git(
+            dir.path(),
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "first",
+            ],
+        )?;
+        let first = git(dir.path(), &["rev-parse", "HEAD"])?;
+        git(dir.path(), &["push", "-q", "origin", "HEAD:refs/heads/candidate"])?;
+        git(dir.path(), &["update-ref", "-d", "refs/remotes/origin/candidate"])?;
+        let absent_cache = gather_remote_branch_info(dir.path(), "candidate");
+        assert_eq!(absent_cache.sha.as_deref(), Some(first.as_str()));
+        assert_eq!(absent_cache.error, None);
+        // Read-only observation must not populate the cache as a fetch would.
+        assert!(git(dir.path(), &["for-each-ref", "refs/remotes/origin/candidate"])?.is_empty());
+
+        git(
+            dir.path(),
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "second",
+            ],
+        )?;
+        let second = git(dir.path(), &["rev-parse", "HEAD"])?;
+        git(dir.path(), &["push", "-q", "origin", "HEAD:refs/heads/candidate"])?;
+        git(dir.path(), &["update-ref", "refs/remotes/origin/candidate", &first])?;
+        let stale_cache = gather_remote_branch_info(dir.path(), "candidate");
+        assert_eq!(stale_cache.sha.as_deref(), Some(second.as_str()));
+        assert_eq!(stale_cache.error, None);
+        assert_eq!(git(dir.path(), &["rev-parse", "refs/remotes/origin/candidate"])?, first);
+
+        git(remote.path(), &["update-ref", "-d", "refs/heads/candidate"])?;
+        let deleted = gather_remote_branch_info(dir.path(), "candidate");
+        assert_eq!(deleted.sha, None, "a stale local ref cannot revive a deleted remote branch");
+        assert_eq!(deleted.error, None);
+        git(dir.path(), &["remote", "set-url", "origin", "missing-local-remote"])?;
+        let unavailable = gather_remote_branch_info(dir.path(), "candidate");
+        assert!(unavailable.error.is_some(), "transport failure cannot authorize CREATE");
+        assert_eq!(unavailable.sha, None);
+        let mut snapshot = base_snapshot();
+        snapshot.remote_branch = unavailable;
+        assert_eq!(check_remote_branch_identity(&snapshot).status, CheckStatus::NotProven);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_observation_deadline_is_not_reported_as_absence() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        for args in [
+            vec!["init", "-q"],
+            vec!["remote", "add", "origin", "."],
+            vec!["config", "remote.origin.uploadpack", "sleep 10; git-upload-pack"],
+        ] {
+            assert!(Command::new("git").args(args).current_dir(dir.path()).status()?.success());
+        }
+        let started = Instant::now();
+        let result = observe_remote_branch(dir.path(), "candidate", Duration::from_millis(100));
+        assert!(started.elapsed() < Duration::from_secs(3), "parent must bound the transport wait");
+        assert!(result.is_err(), "a stalled remote cannot authorize CREATE");
+        assert!(
+            format!(
+                "{:#}",
+                result.err().ok_or_else(|| color_eyre::eyre::eyre!("expected timeout"))?
+            )
+            .contains("timed out")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn gather_remote_branch_info_on_a_nonexistent_branch_is_none_not_an_error() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let init = Command::new("git").args(["init", "-q"]).current_dir(dir.path()).status()?;
         assert!(init.success(), "git init must succeed in the temp dir");
+        let remote = Command::new("git")
+            .args(["remote", "add", "origin", "."])
+            .current_dir(dir.path())
+            .status()?;
+        assert!(remote.success());
         let info = gather_remote_branch_info(dir.path(), "impl/9999-does-not-exist");
         assert_eq!(info.sha, None);
         assert_eq!(info.error, None, "a legitimate absence must never be reported as an error");
@@ -1875,7 +2033,7 @@ mod tests {
 
     #[test]
     fn gather_remote_branch_info_on_a_genuine_spawn_failure_reports_error() -> Result<()> {
-        // Not a git repository at all: rev-parse cannot establish remote-ref
+        // Not a git repository at all: ls-remote cannot establish remote-ref
         // identity, so this must surface as error rather than silently look
         // like "branch does not exist".
         let dir = tempfile::tempdir()?;

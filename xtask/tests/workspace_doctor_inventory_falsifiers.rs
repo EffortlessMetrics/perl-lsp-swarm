@@ -100,6 +100,16 @@ fn missing_authority_marker_is_not_clean() {
 }
 
 #[test]
+fn missing_candidate_presence_authority_marker_is_not_clean() {
+    let temp = fixture_root();
+    let path = temp.path().join("xtask/src/tasks/writer_admission.rs");
+    let text = fs::read_to_string(&path).expect("read writer admission");
+    fs::write(path, text.replace("check_candidate_presence(snapshot)", ""))
+        .expect("write writer admission");
+    assert!(build_inventory(temp.path()).is_err());
+}
+
+#[test]
 fn saved_inventory_becomes_stale_after_source_change() {
     let temp = fixture_root();
     let inventory = build_inventory(temp.path()).expect("build inventory");
