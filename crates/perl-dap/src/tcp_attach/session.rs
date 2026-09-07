@@ -234,7 +234,7 @@ mod tests {
 
         // Connection 1: capacity-1 queue takes the first output, sheds the
         // second once the reader admits it.
-        let deadline = std::time::Instant::now() + Duration::from_millis(2000);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while session.dropped_output_events_for_current_connection() == 0 {
             if std::time::Instant::now() > deadline {
                 return Err("connection 1 never recorded its own drop".into());
@@ -265,7 +265,7 @@ mod tests {
         // Connection 2 sheds its own first output: the notice total counts
         // only this connection's loss.
         session.start_reader()?;
-        let deadline = std::time::Instant::now() + Duration::from_millis(2000);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while session.dropped_output_events_for_current_connection() == 0 {
             if std::time::Instant::now() > deadline {
                 return Err("connection 2 never recorded its own drop".into());

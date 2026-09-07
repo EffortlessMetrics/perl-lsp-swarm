@@ -917,6 +917,46 @@ fn public_inherent_methods_are_governed_members() -> Result<()> {
 }
 
 #[test]
+fn qualified_inherent_owners_preserve_methods() -> Result<()> {
+    let source = r#"
+        pub mod api { pub struct Thing; }
+        impl api::Thing { pub fn bare() {} }
+        impl crate::api::Thing { pub fn absolute() {} }
+        impl self::api::Thing { pub fn relative() {} }
+        pub mod other {
+            impl super::api::Thing { pub fn parent() {} }
+            pub mod nested {
+                impl super::super::api::Thing { pub fn grandparent() {} }
+            }
+        }
+        struct Hidden;
+        impl self::Hidden { pub fn private_owner() {} }
+    "#;
+    let dir = fixture_root(source, MINIMAL_MANIFEST)?;
+    let discovered = discover_surface(dir.path())?;
+    for method in ["bare", "absolute", "relative", "parent", "grandparent"] {
+        let id = format!("method:perl_tdd_support::api::Thing::{method}");
+        if !discovered.iter().any(|item| item.id == id) {
+            bail!("qualified method missing: {id}");
+        }
+    }
+    if discovered.iter().any(|item| item.path.ends_with("::private_owner")) {
+        bail!("qualified private owner became public");
+    }
+    let without_methods = ledger(
+        discovered
+            .iter()
+            .filter(|item| item.api_kind != "method")
+            .map(|item| entry(&item.id, &item.api_kind, &item.path))
+            .collect(),
+    );
+    if reconcile(&discovered, &without_methods).is_ok() {
+        bail!("missing qualified method rows must fail reconciliation");
+    }
+    Ok(())
+}
+
+#[test]
 fn public_fields_and_variants_are_governed_members() -> Result<()> {
     let dir = fixture_root(MEMBER_FIXTURE, MINIMAL_MANIFEST)?;
     let ids = governed_ids(dir.path())?;
@@ -1084,6 +1124,37 @@ fn propose_still_writes_the_requested_receipt() -> Result<()> {
     if parsed.get("policy").and_then(serde_json::Value::as_str) != Some(POLICY_NAME) {
         bail!("receipt does not carry the policy name: {parsed}");
     }
+    assert_eq!(parsed["validation"], "not_evaluated");
+    // Reusing the requested path after failed validation must remove the
+    // previous authoring (or successful) receipt instead of leaving stale proof.
+    fs::write(&written, r#"{"validation":"pass"}"#)?;
+    assert!(run(dir.path(), false, false, false, Some(receipt)).is_err());
+    assert!(!written.exists());
+    // A valid minimal subject permits a checked receipt only after projection.
+    fs::write(dir.path().join(SUBJECT_CRATE_DIR).join("src/lib.rs"), "")?;
+    run(dir.path(), true, false, false, Some(receipt))?;
+    let checked: serde_json::Value = serde_json::from_slice(&fs::read(&written)?)?;
+    assert_eq!(checked["validation"], "pass");
+    fs::write(dir.path().join(PROJECTION_PATH), "stale projection")?;
+    assert!(run(dir.path(), false, false, false, Some(receipt)).is_err());
+    assert!(!written.exists());
+    run(dir.path(), false, false, true, Some(receipt))?;
+    let authoring: serde_json::Value = serde_json::from_slice(&fs::read(&written)?)?;
+    assert_eq!(authoring["validation"], "not_evaluated");
+    let valid_ledger = fs::read_to_string(&ledger_path)?;
+    fs::write(
+        &ledger_path,
+        valid_ledger.replace(
+            "consumer_class = \"self_only\"",
+            "consumers = [\"absent-consumer\"]\nconsumer_class = \"test_dev_workspace_consumer\"",
+        ),
+    )?;
+    let consumer_failure = run(dir.path(), true, false, false, Some(receipt));
+    expect_err(consumer_failure, "consumers are stale", "consumer validation before receipt")?;
+    assert!(!written.exists());
+    fs::write(&ledger_path, "invalid ledger")?;
+    assert!(run(dir.path(), false, false, false, Some(receipt)).is_err());
+    assert!(!written.exists());
     Ok(())
 }
 

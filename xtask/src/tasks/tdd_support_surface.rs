@@ -526,7 +526,7 @@ fn walk_fields(owner: &str, type_cfg: &str, fields: &syn::Fields, out: &mut Sink
 ///
 /// Trait impls are skipped: their methods are governed through the trait row
 /// (or the foreign trait's own contract), not as inherent surface of the type.
-/// The owning type is spelled under the module the `impl` block lives in;
+/// The owning type is resolved relative to the module the `impl` block lives in;
 /// [`discover_surface`] later drops methods whose owner is not a discovered
 /// public type at that path, so an `impl` of a private type is never surface.
 fn walk_impl(module_path: &[String], inherited_cfg: &str, node: &syn::ItemImpl, out: &mut Sink) {
@@ -534,8 +534,26 @@ fn walk_impl(module_path: &[String], inherited_cfg: &str, node: &syn::ItemImpl, 
         return;
     }
     let syn::Type::Path(type_path) = node.self_ty.as_ref() else { return };
-    let Some(last) = type_path.path.segments.last() else { return };
-    let owner = qualify(module_path, &last.ident.to_string());
+    let mut parts = module_path.to_vec();
+    let mut segments = type_path.path.segments.iter().peekable();
+    match segments.peek().map(|segment| segment.ident.to_string()).as_deref() {
+        Some("crate") => {
+            parts.clear();
+            segments.next();
+        }
+        Some("self") => {
+            segments.next();
+        }
+        _ => {}
+    }
+    while segments.peek().is_some_and(|segment| segment.ident == "super") {
+        if parts.pop().is_none() {
+            return;
+        }
+        segments.next();
+    }
+    parts.extend(segments.map(|segment| segment.ident.to_string()));
+    let owner = format!("{SUBJECT_ROOT_PATH}::{}", parts.join("::"));
     let impl_cfg = combine_cfg(inherited_cfg, &cfg_of(&node.attrs));
     for item in &node.items {
         let syn::ImplItem::Fn(method) = item else { continue };
@@ -1632,6 +1650,15 @@ pub fn run(
     emit_consumers_rows: bool,
     json: Option<&Path>,
 ) -> Result<()> {
+    // Refuse to leave a prior successful receipt behind on any failed attempt.
+    if let Some(path) = json {
+        let absolute = root.join(path);
+        match fs::remove_file(&absolute) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).wrap_err("failed to clear previous surface receipt"),
+        }
+    }
     let ledger_path = root.join(LEDGER_PATH);
     let ledger = load_ledger(&ledger_path)?;
     validate_ledger(&ledger, &ledger_path)?;
@@ -1639,11 +1666,11 @@ pub fn run(
     let discovered = discover_surface(root)?;
     let edges = discover_consumers(root)?;
 
-    // The receipt describes the ledger and edges as loaded, so it is written
-    // before any mode-specific early return: `--propose --json` and
-    // `--emit-consumers --json` must not silently drop the requested file.
-    if let Some(json_path) = json {
-        write_json_receipt(root, json_path, &ledger, &edges)?;
+    // Authoring output is deliberately unvalidated, never a check verdict.
+    if (propose_rows || emit_consumers_rows)
+        && let Some(json_path) = json
+    {
+        write_json_receipt(root, json_path, &ledger, &edges, "not_evaluated")?;
     }
 
     if propose_rows {
@@ -1678,6 +1705,9 @@ pub fn run(
         }
     }
 
+    if let Some(json_path) = json {
+        write_json_receipt(root, json_path, &ledger, &edges, "pass")?;
+    }
     println!(
         "{SUBJECT_CRATE} surface ledger current: {} governed row(s), {} consumer edge(s)",
         ledger.entry.len(),
@@ -1691,6 +1721,7 @@ fn write_json_receipt(
     json_path: &Path,
     ledger: &Ledger,
     edges: &[ConsumerEdge],
+    validation: &str,
 ) -> Result<()> {
     let rows: Vec<serde_json::Value> = ledger
         .entry
@@ -1725,6 +1756,7 @@ fn write_json_receipt(
         "schema_version": SCHEMA_VERSION,
         "policy": POLICY_NAME,
         "subject_crate": SUBJECT_CRATE,
+        "validation": validation,
         "entries": rows,
         "consumer_edges": edge_rows,
     });

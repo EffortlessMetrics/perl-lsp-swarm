@@ -60,6 +60,11 @@
 //! [`CheckOutcome::BlockingViolation`]; during the armed advisory soak it is
 //! an [`CheckOutcome::AdvisoryFinding`]; before any boundary it stays
 //! non-fatal (WARN only). Fragments absent from the tree never escalate.
+//! `--self-test` sample defects (unreadable, unparseable, or schema-invalid
+//! files under `.changes/samples/`) take that same [`boundary_state`] path
+//! (issue #14846). A missing samples directory, or a directory with no
+//! `*.yaml` files, is absence rather than a sample defect and stays a
+//! non-fatal WARN.
 //!
 //! Note on equivalence: this schema validation *approximates* renderer
 //! acceptance, it does not guarantee it. chrono's RFC 3339 parser (used here)
@@ -337,13 +342,16 @@ enum Disposition {
 /// instrument worked and produced a verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckOutcome {
-    /// A disposition was found, or none was expected yet (boundary not armed).
+    /// A disposition was found, none was expected yet (boundary not armed),
+    /// or `--self-test` found no sample defects (including a missing samples
+    /// directory).
     PolicySatisfied,
-    /// A disposition was expected (advisory boundary armed) and missing.
-    /// Reported as a finding; still exits 0.
+    /// A reported finding during the armed advisory soak: missing
+    /// disposition, malformed unreleased fragment, or malformed `--self-test`
+    /// sample. Still exits 0.
     AdvisoryFinding,
-    /// A disposition was required (blocking boundary reached) and missing.
-    /// The only outcome that should map to a non-zero (1) exit code.
+    /// A reported finding past the blocking boundary. The only outcome that
+    /// should map to a non-zero (1) exit code.
     BlockingViolation,
 }
 
@@ -708,9 +716,27 @@ fn check_fragment_file(root: &Path, rel: &str, cfg: &ChangieConfig, report: &mut
 /// ([`check_fragment_file`]) and the repo-wide render guard
 /// ([`on_disk_malformed_fragments`]) so both name defects identically.
 fn fragment_content_findings(content: &str, cfg: &ChangieConfig) -> Vec<String> {
+    match parsed_fragment_or_findings(content, cfg) {
+        Ok(_) => Vec::new(),
+        Err(findings) => findings,
+    }
+}
+
+/// Parse and schema-validate one fragment in a single pass. `Ok` is a
+/// schema-valid fragment (usable for render grouping); `Err` is the same
+/// finding list [`fragment_content_findings`] returns. `--self-test` uses
+/// this so sample defects and unreleased-fragment defects name the same
+/// schema authority (issue #14846).
+fn parsed_fragment_or_findings(
+    content: &str,
+    cfg: &ChangieConfig,
+) -> std::result::Result<Fragment, Vec<String>> {
     match serde_yaml_ng::from_str::<Fragment>(content) {
-        Ok(frag) => validate_fragment(&frag, cfg),
-        Err(e) => vec![format!("does not parse as YAML: {e}")],
+        Ok(frag) => {
+            let findings = validate_fragment(&frag, cfg);
+            if findings.is_empty() { Ok(frag) } else { Err(findings) }
+        }
+        Err(e) => Err(vec![format!("does not parse as YAML: {e}")]),
     }
 }
 
@@ -847,13 +873,22 @@ fn check_inner(
     report_policy(&policy);
 
     let mut report = Report::default();
+    let base = base.unwrap_or_else(|| "origin/main".to_string());
 
     if self_test {
-        run_self_test(&root, &cfg, &mut report).map_err(|e| eyre!(e))?;
-        return Ok((CheckOutcome::PolicySatisfied, report));
+        let findings = run_self_test(&root, &cfg, &mut report).map_err(|e| eyre!(e))?;
+        let outcome = outcome_for_findings(
+            !findings.is_empty(),
+            &root,
+            &policy,
+            &base,
+            &mut report,
+            "BLOCKING: malformed sample fragment(s) reported above and the \
+             enforcement boundary (`blocking_enforced_from`) has been reached \
+             for this tree. Repair the sample(s) under `.changes/samples/`.",
+        );
+        return Ok((outcome, report));
     }
-
-    let base = base.unwrap_or_else(|| "origin/main".to_string());
     let changed =
         read_changed_files(&root, changed_files.as_deref(), &base).map_err(|e| eyre!(e))?;
     let pr_body = match pr_body_file {
@@ -948,30 +983,21 @@ fn check_inner(
                     malformed.join(", ")
                 ));
             }
-            if malformed.is_empty() {
-                // This PR's fragments are schema-valid (a pre-existing
-                // on-disk fragment may still have forced the render skip, but
-                // it is not this PR's defect to escalate).
-                CheckOutcome::PolicySatisfied
-            } else {
-                // Verdict-bearing escalation, symmetric with `Disposition::
-                // Missing`: a malformed fragment past the blocking boundary is
-                // a BlockingViolation; during the armed advisory soak it is an
-                // AdvisoryFinding; before any boundary it stays non-fatal.
-                match boundary_state(&root, &policy, &base) {
-                    Boundary::Blocking => {
-                        report.warn(
-                            "BLOCKING: malformed Changie fragment(s) reported above and the \
-                             enforcement boundary (`blocking_enforced_from`) has been reached \
-                             for this PR's base. Repair or recreate the fragment(s) with \
-                             `changie new` (or `cargo change`).",
-                        );
-                        CheckOutcome::BlockingViolation
-                    }
-                    Boundary::Advisory => CheckOutcome::AdvisoryFinding,
-                    Boundary::NotArmed => CheckOutcome::PolicySatisfied,
-                }
-            }
+            // This PR's fragments are schema-valid when `malformed` is empty
+            // (a pre-existing on-disk fragment may still have forced the
+            // render skip, but it is not this PR's defect to escalate).
+            // Otherwise: same three-clock verdict as `--self-test` samples.
+            outcome_for_findings(
+                !malformed.is_empty(),
+                &root,
+                &policy,
+                &base,
+                &mut report,
+                "BLOCKING: malformed Changie fragment(s) reported above and the \
+                 enforcement boundary (`blocking_enforced_from`) has been reached \
+                 for this PR's base. Repair or recreate the fragment(s) with \
+                 `changie new` (or `cargo change`).",
+            )
         }
         Disposition::Exemption(reason) => {
             report.ok(format!("disposition: exemption — {reason}"));
@@ -1142,6 +1168,35 @@ fn head_tree_paths(root: &Path) -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// Map reported findings onto the three-clock verdict already used by
+/// malformed `Disposition::Fragment` entries: [`CheckOutcome::BlockingViolation`]
+/// past the blocking boundary, [`CheckOutcome::AdvisoryFinding`] during the
+/// armed soak, [`CheckOutcome::PolicySatisfied`] (WARN-only) before either.
+/// Callers write the per-item WARN lines first; this only adds the blocking
+/// summary and chooses the outcome. Shared by the fragment arm and
+/// `--self-test` (issue #14846) so sample defects cannot flatten to a pass
+/// while unreleased fragments escalate.
+fn outcome_for_findings(
+    findings_present: bool,
+    root: &Path,
+    policy: &ChangelogPolicy,
+    base: &str,
+    report: &mut Report,
+    blocking_warn: &str,
+) -> CheckOutcome {
+    if !findings_present {
+        return CheckOutcome::PolicySatisfied;
+    }
+    match boundary_state(root, policy, base) {
+        Boundary::Blocking => {
+            report.warn(blocking_warn);
+            CheckOutcome::BlockingViolation
+        }
+        Boundary::Advisory => CheckOutcome::AdvisoryFinding,
+        Boundary::NotArmed => CheckOutcome::PolicySatisfied,
+    }
+}
+
 /// Resolve which policy boundary (if any) applies to a PR whose diff base is
 /// `base`. Blocking is only reachable when `enforcement` is `Blocking` AND
 /// `blocking_enforced_from` is set AND that commit is at/before `base`.
@@ -1225,15 +1280,28 @@ fn report_category_hint(changed: &[String], changelog_paths: &[&str], report: &m
 
 /// `--self-test`: validate sample fragments and (if changie is present) render
 /// them in a throwaway workspace to prove the config + render pipeline.
+///
+/// Returns the sample defect lines (unreadable, unparseable, or
+/// schema-invalid). An empty vec is not a pass-by-flatten: it means no sample
+/// failed. A missing samples directory (`NotFound`) is a non-fatal WARN and
+/// returns an empty vec so the caller stays [`CheckOutcome::PolicySatisfied`].
+/// Any other `read_dir` failure (not a directory, permission denied) is an
+/// instrument error. Instrument failures remain `Err`.
 fn run_self_test(
     root: &Path,
     cfg: &ChangieConfig,
     report: &mut Report,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<Vec<String>, String> {
     let samples = root.join(SAMPLES_DIR);
-    let Ok(entries) = std::fs::read_dir(&samples) else {
-        report.warn(format!("no samples directory at {}", samples.display()));
-        return Ok(());
+    let entries = match std::fs::read_dir(&samples) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            report.warn(format!("no samples directory at {}", samples.display()));
+            return Ok(Vec::new());
+        }
+        Err(e) => {
+            return Err(format!("failed to read samples directory {}: {e}", samples.display()));
+        }
     };
     let mut sample_files: Vec<PathBuf> = entries
         .flatten()
@@ -1244,39 +1312,41 @@ fn run_self_test(
 
     if sample_files.is_empty() {
         report.warn("no sample fragments found");
-        return Ok(());
+        return Ok(Vec::new());
     }
 
+    let mut sample_findings: Vec<String> = Vec::new();
     let mut valid_by_project: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     for path in &sample_files {
         let rel = path.strip_prefix(root).unwrap_or(path).display().to_string();
         match std::fs::read_to_string(path) {
-            Ok(content) => match serde_yaml_ng::from_str::<Fragment>(&content) {
+            Ok(content) => match parsed_fragment_or_findings(&content, cfg) {
                 Ok(frag) => {
-                    let findings = validate_fragment(&frag, cfg);
-                    if findings.is_empty() {
-                        report.ok(format!("sample {rel} is schema-valid"));
-                        valid_by_project
-                            .entry(frag.project.clone())
-                            .or_default()
-                            .push(path.clone());
-                    } else {
-                        for f in findings {
-                            report.warn(format!("{rel}: {f}"));
-                        }
+                    report.ok(format!("sample {rel} is schema-valid"));
+                    valid_by_project.entry(frag.project.clone()).or_default().push(path.clone());
+                }
+                Err(findings) => {
+                    for f in findings {
+                        let line = format!("{rel}: {f}");
+                        report.warn(line.clone());
+                        sample_findings.push(line);
                     }
                 }
-                Err(e) => report.warn(format!("sample {rel} does not parse: {e}")),
             },
-            Err(e) => report.warn(format!("could not read sample {rel}: {e}")),
+            Err(e) => {
+                let line = format!("could not read sample {rel}: {e}");
+                report.warn(line.clone());
+                sample_findings.push(line);
+            }
         }
     }
 
     if !changie_available() {
         report.info("changie not on PATH; skipping sample render (advisory)");
-        return Ok(());
+        return Ok(sample_findings);
     }
-    render_samples_in_tempdir(root, &valid_by_project, report)
+    render_samples_in_tempdir(root, &valid_by_project, report)?;
+    Ok(sample_findings)
 }
 
 /// Copy the config + samples into a temp workspace and render each project.
@@ -1955,6 +2025,53 @@ changelog = "vscode-extension/CHANGELOG.md"
             ),
         )
         .map_err(|e| e.to_string())
+    }
+
+    fn seed_git_head(dir: &Path) -> std::result::Result<String, String> {
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "seed.txt"])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        run_git_output(dir, &["rev-parse", "HEAD"])
+    }
+
+    fn write_sample(dir: &Path, name: &str, body: &str) -> std::result::Result<(), String> {
+        let samples = dir.join(SAMPLES_DIR);
+        std::fs::create_dir_all(&samples).map_err(|e| e.to_string())?;
+        std::fs::write(samples.join(name), body).map_err(|e| e.to_string())
+    }
+
+    const VALID_SAMPLE: &str = r#"
+project: product
+component: Developer experience
+kind: Added
+body: A sufficiently long changelog sample body.
+time: 2026-08-30T00:00:00Z
+custom:
+  PR: "3768"
+  Breaking: "no"
+"#;
+
+    /// Parses as YAML but fails schema validation (empty `time:`).
+    const SCHEMA_INVALID_SAMPLE: &str = r#"
+project: product
+component: Developer experience
+kind: Added
+body: A sufficiently long changelog sample body.
+time:
+custom:
+  PR: "3768"
+  Breaking: "no"
+"#;
+
+    fn self_test_inner(
+        dir: &Path,
+        base: &str,
+    ) -> std::result::Result<(CheckOutcome, Report), String> {
+        check_inner(Some(base.to_string()), None, None, true, Some(dir.to_path_buf()))
+            .map_err(|e| e.to_string())
     }
 
     /// Regression test for a real bug this PR's Correction 2 surfaced: TOML
@@ -2982,6 +3099,327 @@ changelog = "vscode-extension/CHANGELOG.md"
             CheckOutcome::BlockingViolation,
             "an unresolvable fragment must escalate rather than pass unvalidated; \
              got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    // --- --self-test: sample findings must not flatten to PolicySatisfied (#14846) ---
+
+    /// Discriminator: a schema-invalid sample under an armed advisory policy
+    /// must be `AdvisoryFinding`, not the pre-#14846 flatten to
+    /// `PolicySatisfied`. This is the test that fails against current
+    /// `origin/main` while the self-test arm still returns
+    /// `PolicySatisfied` after writing WARNs.
+    #[test]
+    fn check_self_test_schema_invalid_sample_during_soak_is_advisory_finding()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        write_sample(dir, "bad.yaml", SCHEMA_INVALID_SAMPLE)?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "schema-invalid --self-test sample during the armed soak must be \
+             AdvisoryFinding, not PolicySatisfied (the pre-#14846 flatten); \
+             got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("bad.yaml") && rendered.contains("`time:`"),
+            "the report must name the sample and the schema defect; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn check_self_test_schema_invalid_sample_after_blocking_is_blocking_violation()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "blocking", Some(&sha), Some(&sha))?;
+        write_valid_changie(dir)?;
+        write_sample(dir, "bad.yaml", SCHEMA_INVALID_SAMPLE)?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::BlockingViolation,
+            "schema-invalid --self-test sample past a reached blocking boundary \
+             must be a BlockingViolation; got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("BLOCKING:") && rendered.contains("sample"),
+            "blocking escalation must name sample findings; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// Opposite clock: before any boundary, sample defects stay WARN-only
+    /// `PolicySatisfied` — the same NotArmed treatment Fragment uses. The
+    /// WARNs must still fire so this is not a silent pass.
+    #[test]
+    fn check_self_test_schema_invalid_sample_not_armed_is_policy_satisfied()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        write_policy(dir)?;
+        write_valid_changie(dir)?;
+        write_sample(dir, "bad.yaml", SCHEMA_INVALID_SAMPLE)?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "NotArmed self-test sample defects stay PolicySatisfied; got \
+             {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("bad.yaml"),
+            "NotArmed must still report the sample as WARN; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// Missing `.changes/samples` is absence, not a sample defect: WARN and
+    /// `PolicySatisfied` even under an armed policy.
+    #[test]
+    fn check_self_test_missing_samples_directory_stays_policy_satisfied_when_armed()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "a missing samples directory must not escalate; got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("no samples directory"),
+            "missing samples directory must be a WARN; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn check_self_test_empty_samples_directory_stays_policy_satisfied_when_armed()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        std::fs::create_dir_all(dir.join(SAMPLES_DIR)).map_err(|e| e.to_string())?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "an empty samples directory is absence, not a defect; got \
+             {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("no sample fragments found"),
+            "empty samples directory must be a WARN; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// Non-yaml files in the samples directory are not fragments: same
+    /// absence WARN as an empty directory, not a finding about those files.
+    #[test]
+    fn check_self_test_non_yaml_only_samples_dir_stays_policy_satisfied()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        let samples = dir.join(SAMPLES_DIR);
+        std::fs::create_dir_all(&samples).map_err(|e| e.to_string())?;
+        std::fs::write(samples.join("README.md"), "not a fragment").map_err(|e| e.to_string())?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "non-yaml files must not count as sample findings; got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("no sample fragments found"),
+            "non-yaml-only samples dir must report absence; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// Quiet-direction control: a schema-valid sample under an armed policy
+    /// stays `PolicySatisfied`. Without this, an implementation that always
+    /// returns `AdvisoryFinding` from `--self-test` would still pass the
+    /// invalid-sample discriminator.
+    #[test]
+    fn check_self_test_valid_sample_is_policy_satisfied_when_armed()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        write_sample(dir, "good.yaml", VALID_SAMPLE)?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "a schema-valid sample must not escalate; got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("good.yaml") && rendered.contains("schema-valid"),
+            "valid sample must be reported OK; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn check_self_test_unparseable_sample_during_soak_is_advisory_finding()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        write_sample(dir, "broken.yaml", ": this is not a fragment\n")?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "unparseable --self-test sample during soak must escalate like a \
+             schema finding; got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("broken.yaml") && rendered.to_ascii_lowercase().contains("parse"),
+            "the report must name the unparseable sample; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A directory named `*.yaml` exists and fails to read — the portable
+    /// unreadable-path trick used by the fragment tests (#13484 round 4).
+    #[test]
+    fn check_self_test_unreadable_sample_during_soak_is_advisory_finding()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        let unreadable = dir.join(SAMPLES_DIR).join("unreadable.yaml");
+        std::fs::create_dir_all(&unreadable).map_err(|e| e.to_string())?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "an unreadable sample is a finding, not absence; got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("could not read sample") && rendered.contains("unreadable.yaml"),
+            "the report must name the unreadable sample; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// One valid sample cannot wash out an invalid sibling: findings are
+    /// present, so the armed soak still escalates.
+    #[test]
+    fn check_self_test_valid_plus_invalid_sample_escalates() -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        write_sample(dir, "good.yaml", VALID_SAMPLE)?;
+        write_sample(dir, "bad.yaml", SCHEMA_INVALID_SAMPLE)?;
+        let (outcome, report) = self_test_inner(dir, "HEAD")?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::AdvisoryFinding,
+            "a valid sibling must not flatten invalid sample findings; got \
+             {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("good.yaml") && rendered.contains("bad.yaml"),
+            "both samples must appear in the report; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// Default `--base origin/main` must take the same unresolvable-ancestry
+    /// NotArmed path Fragment uses. A self-test that internally substituted
+    /// `HEAD` would escalate this fixture; Fragment would not.
+    #[test]
+    fn check_self_test_unresolvable_default_base_does_not_escalate()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        write_sample(dir, "bad.yaml", SCHEMA_INVALID_SAMPLE)?;
+        let (outcome, report) = check_inner(None, None, None, true, Some(dir.to_path_buf()))
+            .map_err(|e| e.to_string())?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::PolicySatisfied,
+            "default --base origin/main must NotArm when that ref is unresolvable, \
+             same as Fragment; got {outcome:?}:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("bad.yaml"),
+            "the sample defect must still be WARNed; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A path that exists at `.changes/samples` but is not a directory is not
+    /// "missing": `read_dir` fails with something other than `NotFound`, and
+    /// that must be an instrument failure (exit 2), not the missing-directory
+    /// WARN that would flatten to `PolicySatisfied` on origin/main.
+    #[test]
+    fn check_self_test_samples_path_that_is_not_a_directory_is_instrument_failure()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        let sha = seed_git_head(dir)?;
+        write_policy_with_clocks(dir, "advisory", Some(&sha), None)?;
+        write_valid_changie(dir)?;
+        std::fs::create_dir_all(dir.join(".changes")).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(SAMPLES_DIR), "not a directory").map_err(|e| e.to_string())?;
+        let result =
+            check_inner(Some("HEAD".to_string()), None, None, true, Some(dir.to_path_buf()));
+        let err = match result {
+            Ok((outcome, report)) => {
+                return Err(format!(
+                    "a samples path that exists but is not a directory must be an \
+                     instrument failure, not {outcome:?}:\n{}",
+                    report.lines.join("\n")
+                ));
+            }
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("samples"),
+            "instrument failure must name the samples path; got {err}"
         );
         Ok(())
     }
