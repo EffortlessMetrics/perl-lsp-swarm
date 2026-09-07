@@ -29,6 +29,7 @@ const SUCCESS_CRITIC_SAFE_ONLY: &str = "cac-parity-critic-quickfix-safe-only";
 const SUCCESS_FIX_ALL: &str = "cac-parity-source-fixall-aggregates-after-dedupe";
 const SUCCESS_ENHANCED_COMBINED_PRAGMA: &str = "cac-parity-enhanced-combined-pragma-fix";
 const SUCCESS_UTF8_PRAGMA: &str = "cac-parity-utf8-pragma-only-for-non-ascii-source";
+const SUCCESS_REWRITE_TRANSFORM: &str = "cac-parity-enhanced-rewrite-transform-publishes-an-edit";
 const IDENTITY_V2_DIAGNOSTIC: &str = "cac-parity-v2-attaches-originating-diagnostic";
 const IDENTITY_EXPLAIN: &str = "cac-parity-explain-diagnostic-command-only";
 const IDENTITY_TEST_GENERATION: &str = "cac-parity-test-generation-command-only";
@@ -440,6 +441,36 @@ fn source_fix_all_aggregates_after_dedupe() -> TestResult {
     Ok(())
 }
 
+/// The enhanced generation's rewrite transforms are a family of their own, and
+/// the duplicate-authority fixture never exercised them: selecting `2 + 3`
+/// yields an extract action, not a rewrite. This drives one directly.
+#[test]
+fn enhanced_rewrite_transform_publishes_an_edit() -> TestResult {
+    let uri = "file:///cac_parity_rewrite.pl";
+    let mut harness = harness_with(None)?;
+    harness.open(uri, "my $s = 1;\nprint $s;\n")?;
+    harness.barrier();
+
+    let actions = code_actions(&mut harness, uri, ((1, 0), (1, 8)), Some(&["refactor.rewrite"]))?;
+
+    let transform = actions.first().ok_or_else(|| {
+        format!("{SUCCESS_REWRITE_TRANSFORM}: the rewrite family published nothing")
+    })?;
+    assert_eq!(
+        kind(transform),
+        "refactor.rewrite",
+        "{SUCCESS_REWRITE_TRANSFORM}: wrong kind for {:?}",
+        title(transform)
+    );
+    assert!(
+        !edits_for(transform, uri).is_empty(),
+        "{SUCCESS_REWRITE_TRANSFORM}: rewrite action {:?} carried no edit",
+        title(transform)
+    );
+
+    Ok(())
+}
+
 // --- action identity without an edit ----------------------------------------
 
 /// The explain generation publishes a command-only action; it must never carry
@@ -628,6 +659,15 @@ fn zero_width_selection_publishes_nothing_without_disabled_support() -> TestResu
     assert!(
         actions.iter().all(|action| action.get("disabled").is_none()),
         "{REFUSED_NO_DISABLED_SUPPORT}: a disabled action was published to a client that did not declare disabledSupport: {:?}",
+        titles(&actions)
+    );
+
+    // An *enabled* extract action carries no `disabled` field either, so the
+    // assertion above alone would pass if the server started publishing one for
+    // a zero-width selection. The refusal is that no extract action appears.
+    assert!(
+        actions.iter().all(|action| kind(action) != "refactor.extract"),
+        "{REFUSED_NO_DISABLED_SUPPORT}: an extract action was published for a zero-width selection to a client without disabledSupport: {:?}",
         titles(&actions)
     );
 

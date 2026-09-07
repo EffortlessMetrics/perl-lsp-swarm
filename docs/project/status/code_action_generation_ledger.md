@@ -204,11 +204,16 @@ The corpus covers the outcome classes #9188 requires:
 
 | Class | Fixtures |
 | --- | --- |
-| successful | `cac-parity-diagnostic-routed-quickfix-edit`, `cac-parity-pragma-quickfix-single-edit`, `cac-parity-critic-quickfix-safe-only`, `cac-parity-source-fixall-aggregates-after-dedupe`, `cac-parity-enhanced-combined-pragma-fix`, `cac-parity-utf8-pragma-only-for-non-ascii-source` |
+| successful | `cac-parity-diagnostic-routed-quickfix-edit`, `cac-parity-pragma-duplicate-authority-is-user-visible`, `cac-parity-critic-quickfix-safe-only`, `cac-parity-source-fixall-aggregates-after-dedupe`, `cac-parity-enhanced-combined-pragma-fix`, `cac-parity-utf8-pragma-only-for-non-ascii-source` |
 | disabled / refused | `cac-parity-disabled-extract-requires-selection`, `cac-parity-refused-without-disabled-support` |
-| recorded gap (`NOT_PROVEN`) | `text_fallback` (both rows) and `legacy_critic` carry a `proof_gap` instead of a fixture |
+| recorded gap (`NOT_PROVEN`) | `text_fallback` (both rows), `legacy_critic`, `refactor.extract:subroutine`, and `refactor.extract:basic_fallback` carry a `proof_gap` instead of a fixture |
+
+Every `cac-parity-*` id named anywhere on this page is checked against the
+ledger's routes. The table above previously named a fixture that had been
+renamed, and nothing caught it — that check exists now because of it.
 | stale | `cac-parity-stale-superseded-document-version` |
 | ambiguous | `cac-parity-extract-variable-requires-selection`, `cac-parity-duplicate-authority-collapsed` |
+| refactor families | `cac-parity-enhanced-rewrite-transform-publishes-an-edit` |
 | malformed | `cac-parity-parse-error-recovery-keeps-ast-path` |
 | legitimate empty | `cac-parity-legitimate-empty-out-of-range-source-action`, `cac-parity-kind-filter-excludes-other-families`, `cac-parity-unknown-document-is-empty-not-error` |
 | identity without edit | `cac-parity-explain-diagnostic-command-only`, `cac-parity-test-generation-command-only`, `cac-parity-v2-attaches-originating-diagnostic` |

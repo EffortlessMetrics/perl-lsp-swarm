@@ -383,7 +383,8 @@ family = "refactor.extract:subroutine"
 disposition = "canonical_candidate"
 notes = "Sole real implementation; reached twice for the same reason as extract:variable."
 retirement_blockers = []
-parity_fixtures = ["cac-parity-duplicate-authority-collapsed"]
+parity_fixtures = []
+proof_gap = "No corpus fixture reaches it. Six range shapes were tried against the live server — whole sub body, sub braces, inner statement spans, if-block braces and body, and a for-block — and every one produced either an extract:variable action or nothing. The duplicate-authority fixture selects `2 + 3` and yields extract:variable, so citing it here would claim coverage this family does not have. #9190 must not treat subroutine extraction as parity-proven."
 
 [[route]]
 generation = "provider_original"
@@ -391,7 +392,8 @@ family = "refactor.extract:basic_fallback"
 disposition = "shadow_only_candidate"
 notes = "The literal 'Extract to variable' / 'Extract to function' arms in refactors.rs are guarded by `actions.is_empty()`, so they can only run when the nested enhanced generation returned nothing. They are not an independent production authority."
 retirement_blockers = []
-parity_fixtures = ["cac-parity-extract-variable-requires-selection"]
+parity_fixtures = []
+proof_gap = "Unreachable by construction from any fixture that also reaches the enhanced generation: the guard runs only when the nested enhanced call returned nothing, and on every selection that produces an extract action the enhanced generation answers first. Proving this arm needs a node shape the enhanced provider declines but refactors.rs accepts, which no corpus fixture has found. Being shadow_only_candidate, #9190 can delete it without parity evidence."
 
 [[route]]
 generation = "disabled_extract_placeholder"
@@ -410,7 +412,7 @@ family = "refactor.rewrite:enhanced_transforms"
 disposition = "canonical_candidate"
 notes = "Loop conversion, postfix, error handling and signature transforms."
 retirement_blockers = []
-parity_fixtures = ["cac-parity-duplicate-authority-collapsed"]
+parity_fixtures = ["cac-parity-enhanced-rewrite-transform-publishes-an-edit"]
 
 [[route]]
 generation = "provider_original"
@@ -418,7 +420,10 @@ family = "refactor.rewrite:enhanced_transforms"
 disposition = "redundant_behavior"
 notes = "Same nested re-invocation as the extract families."
 retirement_blockers = []
-parity_fixtures = ["cac-parity-duplicate-authority-collapsed"]
+parity_fixtures = [
+  "cac-parity-enhanced-rewrite-transform-publishes-an-edit",
+  "cac-parity-duplicate-authority-collapsed",
+]
 
 [[route]]
 generation = "text_fallback"

@@ -143,6 +143,7 @@ fn validate(root: &Path) -> Result<ValidationStats> {
     validate_routes(&ledger, &mut violations);
     validate_module_coverage(root, &ledger, &mut violations);
     validate_parity_fixtures(&ledger, &corpus_text, &mut violations);
+    validate_human_fixture_mentions(&ledger, &human_text, &mut violations);
     validate_human_table(&human_table, &mut violations);
     validate_ledger_matches_human(&ledger, &human_table, &mut violations);
 
@@ -645,6 +646,45 @@ fn validate_parity_fixtures(ledger: &Ledger, corpus_text: &str, violations: &mut
             "{PARITY_CORPUS}: parity fixture {unclaimed:?} is not claimed by any ledger route"
         ));
     }
+}
+
+/// Every `cac-parity-*` id named anywhere in the human page must be a real
+/// ledger fixture.
+///
+/// The page carries a by-outcome-class fixture table that nothing validated,
+/// so renaming a fixture left it pointing at an identity that no longer
+/// existed — which review caught rather than the check.
+fn validate_human_fixture_mentions(
+    ledger: &Ledger,
+    human_text: &str,
+    violations: &mut Vec<String>,
+) {
+    let declared = ledger_fixture_ids(ledger);
+    for mentioned in scan_fixture_ids(human_text) {
+        if !declared.contains(&mentioned) {
+            violations.push(format!(
+                "{HUMAN_LEDGER}: names parity fixture {mentioned:?}, which no ledger route claims"
+            ));
+        }
+    }
+}
+
+/// Loose scan for `cac-parity-*` identities in prose.
+fn scan_fixture_ids(text: &str) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    let mut rest = text;
+    while let Some(index) = rest.find(FIXTURE_PREFIX) {
+        let candidate = &rest[index..];
+        let end = candidate
+            .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+            .unwrap_or(candidate.len());
+        let id = &candidate[..end];
+        if id.len() > FIXTURE_PREFIX.len() && !id.ends_with('-') {
+            ids.insert(id.to_string());
+        }
+        rest = &candidate[end.max(1)..];
+    }
+    ids
 }
 
 fn ledger_fixture_ids(ledger: &Ledger) -> BTreeSet<String> {
