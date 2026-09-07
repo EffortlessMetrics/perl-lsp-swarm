@@ -674,61 +674,132 @@ struct CorpusFixture {
 /// only from a `const NAME: &str = "cac-parity-…";` declaration, and coverage
 /// additionally requires `NAME` to appear in the file's test region.
 fn parse_corpus_fixtures(corpus_text: &str) -> Vec<CorpusFixture> {
-    let bodies = test_bodies(corpus_text);
+    let Ok(file) = syn::parse_file(corpus_text) else {
+        // A corpus that does not parse cannot bind anything; the caller turns
+        // an empty result into "named by a route but absent" violations rather
+        // than silently accepting every claim.
+        return Vec::new();
+    };
 
-    let mut fixtures = Vec::new();
-    for line in corpus_text.lines() {
-        let trimmed = line.trim();
-        let Some(rest) = trimmed.strip_prefix("const ") else {
-            continue;
-        };
-        let Some((const_name, remainder)) = rest.split_once(':') else {
-            continue;
-        };
-        let const_name = const_name.trim();
-        let Some(value_start) = remainder.find('"') else {
-            continue;
-        };
-        let value = &remainder[value_start + 1..];
-        let Some(value_end) = value.find('"') else {
-            continue;
-        };
-        let id = &value[..value_end];
-        if !id.starts_with(FIXTURE_PREFIX) || id.len() == FIXTURE_PREFIX.len() {
-            continue;
-        }
+    let mut declarations = Vec::new();
+    let mut referenced = BTreeSet::new();
+    collect_fixture_bindings(&file.items, &mut declarations, &mut referenced);
 
-        fixtures.push(CorpusFixture {
-            id: id.to_string(),
-            const_name: const_name.to_string(),
-            bound_to_a_test: bodies.iter().any(|body| contains_word(body, const_name)),
-        });
-    }
-
-    fixtures
+    declarations
+        .into_iter()
+        .map(|(const_name, id)| CorpusFixture {
+            bound_to_a_test: referenced.contains(const_name.as_str()),
+            id,
+            const_name,
+        })
+        .collect()
 }
 
-/// The body of each `#[test]` function, from the attribute to the closing brace
-/// that rustfmt puts in column zero.
+/// Walk items, collecting `const NAME: &str = "cac-parity-…";` declarations and
+/// every identifier mentioned inside a `#[test]` function body.
 ///
-/// Scoping to test bodies rather than "anything after the first `#[test]`" is
-/// what stops a helper, a module-level comment, or dead code between tests from
-/// keeping a deleted fixture's coverage claim alive.
-fn test_bodies(corpus_text: &str) -> Vec<&str> {
-    const ATTRIBUTE: &str = "#[test]";
-    const TERMINATOR: &str = "\n}\n";
-
-    let mut bodies = Vec::new();
-    let mut from = 0;
-    while let Some(index) = corpus_text[from..].find(ATTRIBUTE) {
-        let start = from + index;
-        let end = corpus_text[start..]
-            .find(TERMINATOR)
-            .map_or(corpus_text.len(), |offset| start + offset + TERMINATOR.len());
-        bodies.push(&corpus_text[start..end]);
-        from = end.max(start + ATTRIBUTE.len());
+/// Using a real parse rather than scanning text is what makes the binding
+/// trustworthy: a comment, a doc string, or a helper defined beside the tests
+/// contributes no identifier here, and tests nested in a module are still
+/// found because recursion follows the module tree instead of guessing where a
+/// body ends from brace indentation.
+fn collect_fixture_bindings(
+    items: &[syn::Item],
+    declarations: &mut Vec<(String, String)>,
+    referenced: &mut BTreeSet<String>,
+) {
+    for item in items {
+        match item {
+            syn::Item::Const(constant) => {
+                if let syn::Expr::Lit(literal) = constant.expr.as_ref()
+                    && let syn::Lit::Str(value) = &literal.lit
+                {
+                    let id = value.value();
+                    if id.starts_with(FIXTURE_PREFIX) && id.len() > FIXTURE_PREFIX.len() {
+                        declarations.push((constant.ident.to_string(), id));
+                    }
+                }
+            }
+            syn::Item::Mod(module) => {
+                if let Some((_, nested)) = &module.content {
+                    collect_fixture_bindings(nested, declarations, referenced);
+                }
+            }
+            syn::Item::Fn(function) => {
+                let is_test =
+                    function.attrs.iter().any(|attribute| attribute.path().is_ident("test"));
+                if is_test {
+                    collect_identifiers(&function.block, referenced);
+                }
+            }
+            _ => {}
+        }
     }
-    bodies
+}
+
+/// Every identifier appearing in a test body, including those inside
+/// `format!`/`assert!` macro arguments and inline format captures, which is
+/// where fixture constants are actually used.
+fn collect_identifiers(block: &syn::Block, referenced: &mut BTreeSet<String>) {
+    struct Collector<'a> {
+        referenced: &'a mut BTreeSet<String>,
+    }
+
+    impl Collector<'_> {
+        fn walk_tokens(&mut self, stream: proc_macro2::TokenStream) {
+            for token in stream {
+                match token {
+                    proc_macro2::TokenTree::Ident(ident) => {
+                        self.referenced.insert(ident.to_string());
+                    }
+                    proc_macro2::TokenTree::Group(group) => self.walk_tokens(group.stream()),
+                    proc_macro2::TokenTree::Literal(literal) => {
+                        self.collect_format_captures(&literal.to_string());
+                    }
+                    proc_macro2::TokenTree::Punct(_) => {}
+                }
+            }
+        }
+
+        /// `"{SUCCESS_PRAGMA}: ..."` names its constant inside a string
+        /// literal, so the capture has to be recovered from the literal text.
+        fn collect_format_captures(&mut self, text: &str) {
+            let mut rest = text;
+            while let Some(open) = rest.find('{') {
+                rest = &rest[open + 1..];
+                let Some(close) = rest.find('}') else {
+                    break;
+                };
+                let capture =
+                    rest[..close].split([':', '?']).next().unwrap_or_default().trim().to_string();
+                if !capture.is_empty()
+                    && capture.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                {
+                    self.referenced.insert(capture);
+                }
+                rest = &rest[close + 1..];
+            }
+        }
+    }
+
+    impl<'ast> syn::visit::Visit<'ast> for Collector<'_> {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            self.referenced.insert(ident.to_string());
+        }
+
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            self.walk_tokens(mac.tokens.clone());
+            syn::visit::visit_macro(self, mac);
+        }
+
+        fn visit_lit_str(&mut self, literal: &'ast syn::LitStr) {
+            self.collect_format_captures(&literal.value());
+            syn::visit::visit_lit_str(self, literal);
+        }
+    }
+
+    let mut collector = Collector { referenced };
+    syn::visit::Visit::visit_block(&mut collector, block);
 }
 
 /// Whole-identifier containment, so `FOO` does not match `FOO_BAR`.
@@ -1202,6 +1273,51 @@ mod tests {
             .map(|fixture| fixture.id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(unbound, vec!["cac-parity-orphan-case"]);
+    }
+
+    /// Tests nested in a module are still found, and a helper sitting beside
+    /// them inside that module still does not count. A brace-scanning
+    /// heuristic got this wrong because rustfmt indents nested bodies.
+    #[test]
+    fn finds_tests_inside_a_nested_module_without_crediting_its_helpers() {
+        let fixtures = parse_corpus_fixtures(
+            r#"
+            const USED: &str = "cac-parity-used-in-nested-test";
+            const HELPER_ONLY: &str = "cac-parity-helper-inside-module";
+
+            mod inner {
+                use super::*;
+
+                fn helper() {
+                    let _ = HELPER_ONLY;
+                }
+
+                #[test]
+                fn nested() {
+                    assert!(true, "{USED}");
+                }
+            }
+            "#,
+        );
+
+        let bound = fixtures
+            .iter()
+            .filter(|fixture| fixture.bound_to_a_test)
+            .map(|fixture| fixture.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bound,
+            vec!["cac-parity-used-in-nested-test"],
+            "nested test binding wrong: {fixtures:?}"
+        );
+    }
+
+    /// A corpus that does not parse binds nothing, so every ledger claim
+    /// surfaces as a missing-fixture violation rather than passing silently.
+    #[test]
+    fn an_unparseable_corpus_binds_nothing() {
+        let fixtures = parse_corpus_fixtures("fn broken( {");
+        assert!(fixtures.is_empty(), "expected no bindings, got {fixtures:?}");
     }
 
     /// A reference from a helper — or any code outside a `#[test]` body — is
