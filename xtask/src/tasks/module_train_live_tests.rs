@@ -34,12 +34,22 @@ fn loaded() -> Result<LoadedManifest> {
     load_manifest()
 }
 
+fn probe() -> Result<(RepoTreeSource, Option<String>)> {
+    Ok((RepoTreeSource::from_project_root()?, Some(current_head()?)))
+}
+
+/// HEAD of the executing checkout, so a test can build a coherent probe.
+fn current_head() -> Result<String> {
+    Ok(tree_binding("HEAD")?.tree_head)
+}
+
 fn normalize_raw(raw: &RawObservation) -> Result<LiveSnapshot> {
-    normalize(raw, &loaded()?)
+    let (source, head) = probe()?;
+    normalize(raw, &loaded()?, &TreeProbe { source: &source, head })
 }
 
 fn normalize_text(text: &str) -> Result<LiveSnapshot> {
-    normalize(&raw_from_text(text)?, &loaded()?)
+    normalize_raw(&raw_from_text(text)?)
 }
 
 fn node<'a>(snapshot: &'a LiveSnapshot, node_id: &str) -> Result<&'a NodeLive> {
@@ -77,6 +87,65 @@ fn open_candidate() -> CandidateView {
         head_oid: "dddddddddddddddddddddddddddddddddddddddd".to_string(),
         ..CandidateView::default()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Probed-tree identity (#11626 review finding on #15094).
+// ---------------------------------------------------------------------------
+
+/// A stored fixture records a synthetic head, so its observation never
+/// describes the executing checkout. The join is still emitted, but every node
+/// must say the implementation states came from a different tree.
+#[test]
+fn a_fixture_observation_marks_its_states_as_probed_from_another_tree() -> Result<()> {
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    for node in &snapshot.semantic.nodes {
+        assert!(
+            node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE),
+            "node {} must record the probed-tree mismatch: {:?}",
+            node.node_id,
+            node.limitations
+        );
+    }
+    Ok(())
+}
+
+/// The opposite direction: when the observation's head IS the probed tree, no
+/// node carries the limitation. Without this the assertion above would pass on
+/// an implementation that always sets it.
+#[test]
+fn a_coherent_observation_carries_no_probed_tree_limitation() -> Result<()> {
+    let mut raw = raw_from_text(CORPUS_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
+    let snapshot = normalize_raw(&raw)?;
+    for node in &snapshot.semantic.nodes {
+        assert!(
+            !node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE),
+            "node {} must not claim a mismatch when heads agree: {:?}",
+            node.node_id,
+            node.limitations
+        );
+    }
+    Ok(())
+}
+
+/// An unestablishable probed head fails closed rather than silently claiming
+/// the observation and the tree agree.
+#[test]
+fn an_unknown_probed_head_fails_closed() -> Result<()> {
+    let mut raw = raw_from_text(CORPUS_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
+    let (source, _) = probe()?;
+    let snapshot = normalize(&raw, &loaded()?, &TreeProbe { source: &source, head: None })?;
+    assert!(
+        snapshot
+            .semantic
+            .nodes
+            .iter()
+            .all(|node| node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE)),
+        "an unknown probed head must not read as agreement"
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

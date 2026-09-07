@@ -274,3 +274,14 @@ pub(super) fn selector_anchors() -> Vec<(&'static str, &'static str)> {
     pairs.dedup();
     pairs
 }
+
+/// Node limitation recorded when implementation presence was probed from a
+/// tree other than the one an observation describes (#11626, raised by review
+/// on #15094).
+///
+/// The offline projection answers "what is implemented **on this tree**". A
+/// consumer that joins it to an observation of a different revision — a stored
+/// fixture, most obviously, whose recorded head is synthetic — would otherwise
+/// present actions from one revision beside implementation states from another
+/// with nothing marking the seam.
+pub const PROBED_FROM_A_DIFFERENT_TREE: &str = "c02_implementation_probed_from_a_different_tree";

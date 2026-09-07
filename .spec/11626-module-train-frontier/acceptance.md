@@ -98,6 +98,15 @@ CLI enum: `ModuleTrainCommand` in `xtask/src/main.rs`. No library surface.
 | 22 | a rename silently demotes a landed node to partial | `only_the_recorded_residual_anchors_are_missing_on_the_real_tree` (only C02's recorded residual anchors may be absent) |
 | 23 | a partial node hides its remaining edges | `a_partial_node_still_records_its_dependency_reasons` (dependency typing runs for every non-landed node; presence decides only the state) |
 
+| 24 | a snapshot joins one revision's actions to another's implementation states | `a_fixture_observation_marks_its_states_as_probed_from_another_tree` — `normalize` takes the probed tree explicitly and every node records `c02_implementation_probed_from_a_different_tree` when the observation's head is not the probed head |
+| 25 | the mismatch marker is set unconditionally | `a_coherent_observation_carries_no_probed_tree_limitation` (opposite direction) |
+| 26 | an unestablishable probed head reads as agreement | `an_unknown_probed_head_fails_closed` |
+
+Implementation presence is a property of a *tree*, so `LoadedManifest::node_statuses`
+requires the caller to name it. The #11627 live join therefore cannot silently
+inherit the executing checkout while describing some other revision — the seam
+is explicit and, when the two disagree, recorded on every node.
+
 Per-component negative controls exist for all five components:
 `c02_current_tree_probes_component_fails_without_its_projection`,
 `c02_offline_frontier_component_fails_without_its_renderer`,

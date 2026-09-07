@@ -39,7 +39,10 @@ use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::module_train::{LoadedManifest, NodeStaticFact, canonical_digest, load_manifest};
+use super::module_train::{
+    LoadedManifest, NodeStaticFact, PROBED_FROM_A_DIFFERENT_TREE, RepoTreeSource, TreeSource,
+    canonical_digest, load_manifest, tree_binding,
+};
 
 #[cfg(test)]
 #[path = "module_train_live_tests.rs"]
@@ -1974,12 +1977,35 @@ fn candidate_view(pr: &PrFacts) -> CandidateView {
     }
 }
 
+/// The tree whose files back the C02 implementation probes, plus its identity.
+///
+/// Named explicitly so a consumer cannot silently join an offline projection of
+/// the executing checkout to an observation of some other revision.
+pub struct TreeProbe<'a> {
+    pub source: &'a dyn TreeSource,
+    /// HEAD of the probed tree, when it can be established. `None` is treated
+    /// as "cannot be shown to match the observation" and fails closed.
+    pub head: Option<String>,
+}
+
 /// Normalize a raw observation into the immutable deterministic snapshot.
-pub fn normalize(raw: &RawObservation, loaded: &LoadedManifest) -> Result<LiveSnapshot> {
+pub fn normalize(
+    raw: &RawObservation,
+    loaded: &LoadedManifest,
+    probe: &TreeProbe<'_>,
+) -> Result<LiveSnapshot> {
     if raw.schema != RAW_SCHEMA_NAME {
         bail!("raw observation schema mismatch: expected {RAW_SCHEMA_NAME}, found {}", raw.schema);
     }
-    let statuses = loaded.node_statuses()?;
+    let statuses = loaded.node_statuses(probe.source)?;
+    // Implementation presence describes the probed tree. When the observation
+    // describes a different revision — a stored fixture's synthetic head, most
+    // obviously — the join is still emitted, but every node says so rather
+    // than presenting one revision's actions beside another's states.
+    let probed_a_different_tree = match (probe.head.as_deref(), raw.git_local.head.as_deref()) {
+        (Some(probed), Some(observed)) => probed != observed,
+        _ => true,
+    };
     let static_facts = loaded.node_static_facts();
     let static_by_issue: BTreeMap<u64, NodeStaticFact> =
         static_facts.iter().map(|fact| (fact.issue, fact.clone())).collect();
@@ -2183,6 +2209,12 @@ pub fn normalize(raw: &RawObservation, loaded: &LoadedManifest) -> Result<LiveSn
             merged_window_truncated: raw.github.merged_truncated,
         };
         let classified = classify(&node_facts);
+        let mut limitations = classified.limitations;
+        if probed_a_different_tree {
+            limitations.push(PROBED_FROM_A_DIFFERENT_TREE.to_string());
+            limitations.sort();
+            limitations.dedup();
+        }
         nodes.push(NodeLive {
             node_id: fact.node_id.clone(),
             issue: fact.issue,
@@ -2197,7 +2229,7 @@ pub fn normalize(raw: &RawObservation, loaded: &LoadedManifest) -> Result<LiveSn
             surfaces,
             action: classified.action.as_str().to_string(),
             action_reasons: classified.reasons,
-            limitations: classified.limitations,
+            limitations,
         });
     }
     nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
@@ -2836,7 +2868,9 @@ pub fn run_refresh(output: &Path, from_fixture: Option<&Path>) -> Result<()> {
         }
     };
     let loaded = load_manifest()?;
-    let snapshot = normalize(&raw, &loaded)?;
+    let source = RepoTreeSource::from_project_root()?;
+    let probe = TreeProbe { source: &source, head: Some(tree_binding("HEAD")?.tree_head) };
+    let snapshot = normalize(&raw, &loaded, &probe)?;
     if let Some(parent) = output.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).with_context(|| {
             format!("failed to create snapshot output directory {}", parent.display())

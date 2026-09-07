@@ -42,7 +42,7 @@ mod tests;
 #[path = "module_train_probes.rs"]
 mod probes;
 
-pub use probes::{RepoTreeSource, TreeSource};
+pub use probes::{PROBED_FROM_A_DIFFERENT_TREE, RepoTreeSource, TreeSource};
 
 /// Repository-relative location of the stable module train manifest (C01, #11625).
 pub const MANIFEST_RELATIVE_PATH: &str = ".spec/11625-module-train-graph/train.manifest.json";
@@ -448,8 +448,12 @@ impl LoadedManifest {
     /// Project every node into its typed current-tree state (the same
     /// deterministic projection the `status`/`next` commands render).
     /// Additive seam for the #11627 live join; no semantic change to C02.
-    pub fn node_statuses(&self) -> Result<Vec<NodeStatus>> {
-        project_states(&self.manifest, &RepoTreeSource::from_project_root()?)
+    /// The tree must be named by the caller. Implementation presence is a
+    /// property of a specific tree, so a consumer that joins this projection to
+    /// an observation of some *other* revision has to make that choice
+    /// explicitly rather than silently inherit the executing checkout.
+    pub fn node_statuses(&self, tree: &dyn TreeSource) -> Result<Vec<NodeStatus>> {
+        project_states(&self.manifest, tree)
     }
 
     /// Bounded static facts for the #11627 live explain addendum.
