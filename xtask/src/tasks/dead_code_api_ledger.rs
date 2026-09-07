@@ -489,12 +489,31 @@ fn collect_public_items(
                     });
                 }
             }
-            syn::Item::Macro(node) if node.attrs.iter().any(is_macro_export) => {
-                if let Some(ident) = node.ident.as_ref() {
-                    items.insert(SourceItem {
-                        id: format!("{prefix}{}", ident),
-                        kind: "exported_macro".to_string(),
-                    });
+            // A `macro_rules!` definition reaches the public surface only with
+            // `#[macro_export]`; without it the macro exports nothing. Anything
+            // else in item position is an *invocation*, and `syn` sees the call
+            // rather than the expansion — it may add public constants, types or
+            // functions that nothing here can enumerate, so it fails closed the
+            // same way an uninterpreted item does.
+            syn::Item::Macro(node) => {
+                let is_definition = node.mac.path.is_ident("macro_rules");
+                let is_exported = node.attrs.iter().any(is_macro_export);
+                match (is_definition, is_exported) {
+                    (true, true) => {
+                        if let Some(ident) = node.ident.as_ref() {
+                            items.insert(SourceItem {
+                                id: format!("{prefix}{ident}"),
+                                kind: "exported_macro".to_string(),
+                            });
+                        }
+                    }
+                    (true, false) => {}
+                    (false, _) => {
+                        items.insert(SourceItem {
+                            id: format!("{prefix}<unexpanded macro item #{}>", items.len()),
+                            kind: "unsupported_public_form".to_string(),
+                        });
+                    }
                 }
             }
             syn::Item::Impl(node) if node.trait_.is_none() => {
@@ -2387,6 +2406,31 @@ mod tests {
         assert!(
             !references_surface(unrooted, false).map_err(color_eyre::eyre::Report::msg)?,
             "another crate's own `dead_code` module must not be read as this surface"
+        );
+        Ok(())
+    }
+
+    #[test]
+    /// L1 — an item-macro invocation can expand to public items that `syn`
+    /// cannot see. It fails closed rather than being skipped, while a private
+    /// `macro_rules!` definition (which exports nothing) stays acceptable.
+    fn falsifier_l1_an_item_macro_invocation_fails_closed() -> Result<()> {
+        let expanded = parse_module_surface("declare_surface! { pub fn exposed() {} }")?;
+        assert!(
+            expanded.iter().any(|item| item.kind == "unsupported_public_form"),
+            "an item-macro invocation must fail closed: {expanded:?}"
+        );
+
+        let private_definition = parse_module_surface("macro_rules! helper { () => {}; }")?;
+        assert!(
+            private_definition.iter().all(|item| item.kind != "unsupported_public_form"),
+            "a private macro_rules! definition exports nothing: {private_definition:?}"
+        );
+
+        let exported = parse_module_surface("#[macro_export]\nmacro_rules! shouted { () => {}; }")?;
+        assert!(
+            exported.iter().any(|item| item.id == "shouted" && item.kind == "exported_macro"),
+            "an exported macro keeps its own row: {exported:?}"
         );
         Ok(())
     }
