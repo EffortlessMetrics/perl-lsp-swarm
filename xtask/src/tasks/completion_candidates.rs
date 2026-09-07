@@ -1102,7 +1102,7 @@ impl<'a> SeamVisitor<'a> {
     }
 
     fn record(&mut self, name: &str, sig: &syn::Signature) {
-        let appends = sig.inputs.iter().any(takes_append_channel);
+        let appends = sig.inputs.iter().any(|arg| takes_append_channel(arg, self.carriers));
         let returns = match &sig.output {
             syn::ReturnType::Type(_, ty) => {
                 mentions_candidate_vec(ty) || mentions_named_carrier(ty, self.carriers)
@@ -1172,8 +1172,15 @@ impl<'ast> Visit<'ast> for SeamVisitor<'_> {
         syn::visit::visit_impl_item_fn(self, node);
     }
 
+    /// Both candidate shapes count.
+    ///
+    /// The plane existed to catch a file that builds candidates but exposes no
+    /// producer, and it only recognised `CompletionItem` — so the very shape
+    /// this inventory tracks the migration *toward* would have built candidates
+    /// invisibly. `EntryBodyVisitor` already reads both; the two visitors
+    /// disagreeing about what a candidate is was the bug.
     fn visit_expr_struct(&mut self, node: &'ast syn::ExprStruct) {
-        if last_segment_is(&node.path, "CompletionItem") {
+        if CANDIDATE_TYPES.iter().any(|name| last_segment_is(&node.path, name)) {
             self.constructions += 1;
         }
         syn::visit::visit_expr_struct(self, node);
@@ -1194,19 +1201,50 @@ const CANDIDATE_TYPES: &[&str] = &["CompletionItem", "CompletionCandidate"];
 /// candidate return.
 fn discover_candidate_carriers(root: &Path, files: &[String]) -> Result<BTreeSet<String>> {
     let mut carriers = BTreeSet::new();
+    let mut aliases = Vec::new();
     for file in files {
         let source = fs::read_to_string(root.join(file))
             .wrap_err_with(|| format!("failed to read {file}"))?;
         let parsed = syn::parse_file(&source)
             .wrap_err_with(|| format!("failed to parse {file} with syn"))?;
-        let mut visitor = CarrierVisitor { carriers: &mut carriers };
+        let mut visitor = CarrierVisitor { carriers: &mut carriers, aliases: &mut aliases };
         visitor.visit_file(&parsed);
     }
+    resolve_alias_carriers(&aliases, &mut carriers);
     Ok(carriers)
+}
+
+/// Fold type aliases that name a candidate vector into the carrier set.
+///
+/// `type Items = Vec<CompletionItem>;` is a spelling of the page, not a
+/// different type, so `fn add(out: &mut Items)` is the same append channel as
+/// the one spelled out — but a scan that only matches `Vec<Candidate>`
+/// syntactically loses the producer, and with it the row, the owner, and the
+/// digest coverage.
+///
+/// Chains resolve by fixed point (`type A = Vec<CompletionItem>; type B = A;`),
+/// which also bounds a cycle: the set only grows, so a pass that adds nothing
+/// ends the loop whatever the aliases point at.
+fn resolve_alias_carriers(aliases: &[(String, syn::Type)], carriers: &mut BTreeSet<String>) {
+    loop {
+        let before = carriers.len();
+        for (name, ty) in aliases {
+            if carriers.contains(name) {
+                continue;
+            }
+            if mentions_candidate_vec(ty) || mentions_named_carrier(ty, carriers) {
+                carriers.insert(name.clone());
+            }
+        }
+        if carriers.len() == before {
+            return;
+        }
+    }
 }
 
 struct CarrierVisitor<'a> {
     carriers: &'a mut BTreeSet<String>,
+    aliases: &'a mut Vec<(String, syn::Type)>,
 }
 
 impl<'ast> Visit<'ast> for CarrierVisitor<'_> {
@@ -1230,17 +1268,32 @@ impl<'ast> Visit<'ast> for CarrierVisitor<'_> {
         }
         syn::visit::visit_item_enum(self, node);
     }
+
+    /// Aliases are collected rather than decided here: one may name another
+    /// declared later, or in another file, so they resolve together once every
+    /// file has been read.
+    fn visit_item_type(&mut self, node: &'ast syn::ItemType) {
+        self.aliases.push((node.ident.to_string(), (*node.ty).clone()));
+        syn::visit::visit_item_type(self, node);
+    }
 }
 
-/// Is this parameter a `&mut Vec<Candidate>` append channel?
-fn takes_append_channel(arg: &syn::FnArg) -> bool {
+/// Is this parameter an append channel — a `&mut` borrow of the candidate page?
+///
+/// The page may be spelled directly (`&mut Vec<CompletionItem>`), through an
+/// alias, or as a named carrier that holds it in a field. All three reach the
+/// client identically, so all three are the same channel; only the `&mut`
+/// borrow is load-bearing, which is why `&mut [CompletionItem]` (reorders in
+/// place, cannot grow) and `&Vec<CompletionItem>` (read-only) are not channels.
+fn takes_append_channel(arg: &syn::FnArg, carriers: &BTreeSet<String>) -> bool {
     let syn::FnArg::Typed(typed) = arg else {
         return false;
     };
     let syn::Type::Reference(reference) = typed.ty.as_ref() else {
         return false;
     };
-    reference.mutability.is_some() && is_candidate_vec(&reference.elem)
+    reference.mutability.is_some()
+        && (is_candidate_vec(&reference.elem) || mentions_named_carrier(&reference.elem, carriers))
 }
 
 /// Does this type carry a candidate vector anywhere in its shape?
@@ -1589,10 +1642,40 @@ impl<'ast> Visit<'ast> for CandidateMentionProbe<'_> {
 /// Names bound by a `let` pattern, so a rebinding can be tracked.
 fn pattern_idents(pat: &syn::Pat, out: &mut Vec<String>) {
     match pat {
-        syn::Pat::Ident(ident) => out.push(ident.ident.to_string()),
+        syn::Pat::Ident(ident) => {
+            out.push(ident.ident.to_string());
+            // `ref page @ Wrapper { .. }` binds the name *and* the subpattern.
+            if let Some((_, inner)) = &ident.subpat {
+                pattern_idents(inner, out);
+            }
+        }
         syn::Pat::Tuple(tuple) => {
             for elem in &tuple.elems {
                 pattern_idents(elem, out);
+            }
+        }
+        // Destructuring is a rename with extra steps: `let Wrapper { items } =
+        // finalized;` puts the page in `items` while naming no wrapper field
+        // and calling no method, so a binding scan that stops at plain idents
+        // loses the alias and every later append through it.
+        syn::Pat::Struct(structure) => {
+            for field in &structure.fields {
+                pattern_idents(&field.pat, out);
+            }
+        }
+        syn::Pat::TupleStruct(tuple) => {
+            for elem in &tuple.elems {
+                pattern_idents(elem, out);
+            }
+        }
+        syn::Pat::Slice(slice) => {
+            for elem in &slice.elems {
+                pattern_idents(elem, out);
+            }
+        }
+        syn::Pat::Or(or) => {
+            for case in &or.cases {
+                pattern_idents(case, out);
             }
         }
         syn::Pat::Type(typed) => pattern_idents(&typed.pat, out),
@@ -1640,14 +1723,34 @@ impl<'ast> Visit<'ast> for EntryBodyVisitor<'_> {
         }
     }
 
+    /// The finalizer counts however it is spelled.
+    ///
+    /// Both shipped entry points are `LspServer` methods, so moving the shared
+    /// finalizer onto the same impl is an ordinary refactor — and one that
+    /// would leave `visit_expr_call` unable to see it, silently disarming the
+    /// post-finalizer control while the check went on reporting green. A
+    /// control that can be walked past without saying so is worse than none.
+    ///
+    /// A finalizer reached through a callable binding (`let f =
+    /// sort_and_cap_completions; f(page, cap)`) still escapes both arms, but
+    /// not the suite: `discovery_finds_the_live_surface` asserts each entry
+    /// point's direct calls still name `sort_and_cap_completions`, so a rename
+    /// that disarms this control fails there instead.
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
         let method = node.method.to_string();
         self.called.insert(method.clone());
         if APPEND_METHODS.contains(&method.as_str()) && self.holds_candidates(&node.receiver) {
             self.note_append();
         }
-        self.note_producer_call(&method);
+        if method != FINALIZER_CALL {
+            self.note_producer_call(&method);
+        }
+        // Receiver and arguments are evaluated before the call, for the same
+        // reason they are visited first in `visit_expr_call`.
         syn::visit::visit_expr_method_call(self, node);
+        if method == FINALIZER_CALL {
+            self.seen_finalizer = true;
+        }
     }
 
     fn visit_expr_reference(&mut self, node: &'ast syn::ExprReference) {
@@ -1996,6 +2099,43 @@ fn validate_dispositions(ledger: &Ledger) -> Result<()> {
                 row.candidate_class.as_str(),
                 row.identity.as_str()
             );
+        }
+
+        // `not_applicable` is an honest answer only for a seam that produces no
+        // candidates of its own. On a real producer it is not a disposition at
+        // all — it erases one, and erasure is the failure mode this ledger is
+        // least able to survive: a row that says nothing reads as reviewed,
+        // keeps its owner and its digest coverage, and reports green while the
+        // classification a migration would act on is gone. Both directions are
+        // checked, so a seam cannot quietly acquire producer dispositions
+        // either.
+        let is_seam =
+            matches!(row.candidate_class, CandidateClass::Router | CandidateClass::Finalizer);
+        for (field, erased) in [
+            ("identity", row.identity == IdentityDisposition::NotApplicable),
+            ("insertion_plan", row.insertion_plan == InsertionDisposition::NotApplicable),
+            ("evidence", row.evidence == EvidenceDisposition::NotApplicable),
+            ("rank", row.rank == RankDisposition::NotApplicable),
+        ] {
+            if erased && !is_seam {
+                bail!(
+                    "{LEDGER_PATH} row `{}` is a `{}` producer carrying `{field} = \
+                     not_applicable`; only a router or the finalizer produces no candidates of \
+                     its own, so on this row the value erases a required classification rather \
+                     than recording one",
+                    row.id,
+                    row.candidate_class.as_str()
+                );
+            }
+            if !erased && is_seam {
+                bail!(
+                    "{LEDGER_PATH} row `{}` is a `{}` seam but carries a producer disposition \
+                     in `{field}`; a seam that contributes no candidates has no identity, \
+                     insertion, evidence, or rank of its own to record",
+                    row.id,
+                    row.candidate_class.as_str()
+                );
+            }
         }
 
         // The finalizer is the one row allowed to *be* the finalizer, and no
@@ -3003,7 +3143,7 @@ mod tests {
             }
         };
         let mut carriers = BTreeSet::new();
-        let mut visitor = CarrierVisitor { carriers: &mut carriers };
+        let mut visitor = CarrierVisitor { carriers: &mut carriers, aliases: &mut Vec::new() };
         visitor.visit_file(&file);
         assert!(carriers.contains("Finalization"), "a struct holding the page is a carrier");
         assert!(!carriers.contains("Unrelated"), "an unrelated vector must not widen the scan");
@@ -3212,7 +3352,7 @@ mod tests {
             }
         };
         let mut carriers = BTreeSet::new();
-        let mut visitor = CarrierVisitor { carriers: &mut carriers };
+        let mut visitor = CarrierVisitor { carriers: &mut carriers, aliases: &mut Vec::new() };
         visitor.visit_file(&file);
         assert!(carriers.contains("Flow"), "an enum variant holding the page is a carrier");
         assert!(!carriers.contains("Unrelated"), "an unrelated enum must not widen the scan");
@@ -3522,35 +3662,263 @@ mod tests {
 
     const PROBE_FILE: &str = "crates/perl-lsp-rs-core/src/providers/completion/completion/probe.rs";
 
+    /// The finalizer as a method still arms the control.
+    ///
+    /// Both shipped entry points are `LspServer` methods, so moving
+    /// `sort_and_cap_completions` onto that impl is an ordinary refactor — and
+    /// before this, one that disarmed the post-finalizer control silently.
+    #[test]
+    fn a_method_call_finalizer_is_recognized() {
+        let no_producers = BTreeSet::new();
+        let method_finalizer: syn::ItemFn = syn::parse_quote! {
+            fn entry(&self) {
+                let (completions, is_incomplete) = self.sort_and_cap_completions(completions, cap);
+                completions.push(sneaky());
+            }
+        };
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
+        visitor.visit_block(&method_finalizer.block);
+        assert!(
+            visitor.appended_after_finalizer,
+            "a push after a method-call finalizer reaches the client unranked"
+        );
+
+        // The evaluation-order guarantee holds for the method shape too: the
+        // receiver and arguments run before the call, so a candidate built
+        // inside them is not "after" anything.
+        let own_argument: syn::ItemFn = syn::parse_quote! {
+            fn entry(&self) {
+                let page = self.sort_and_cap_completions(vec![CompletionItem { label }], cap);
+            }
+        };
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
+        visitor.visit_block(&own_argument.block);
+        assert!(
+            !visitor.appended_after_finalizer,
+            "the method finalizer's own argument was mistaken for a post-finalizer construction"
+        );
+    }
+
+    /// Destructuring rebinds the page while naming no field and calling no
+    /// method — the same hole as a wrapper field, entered from the other side.
+    #[test]
+    fn destructured_candidate_bindings_are_tracked() {
+        let no_producers = BTreeSet::new();
+
+        let struct_pattern: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let finalized = sort_and_cap_completions(completions, cap);
+                let Page { items } = finalized;
+                items.push(sneaky());
+            }
+        };
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
+        visitor.visit_block(&struct_pattern.block);
+        assert!(
+            visitor.appended_after_finalizer,
+            "an append through a struct-pattern binding went undetected"
+        );
+
+        let tuple_struct_pattern: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let finalized = sort_and_cap_completions(completions, cap);
+                let Page(items) = finalized;
+                items.push(sneaky());
+            }
+        };
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
+        visitor.visit_block(&tuple_struct_pattern.block);
+        assert!(
+            visitor.appended_after_finalizer,
+            "an append through a tuple-struct-pattern binding went undetected"
+        );
+
+        let slice_pattern: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let finalized = sort_and_cap_completions(completions, cap);
+                let [items] = finalized;
+                items.push(sneaky());
+            }
+        };
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
+        visitor.visit_block(&slice_pattern.block);
+        assert!(
+            visitor.appended_after_finalizer,
+            "an append through a slice-pattern binding went undetected"
+        );
+
+        // A destructure whose initializer never carried the page must not arm
+        // the control.
+        let unrelated: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
+                let Telemetry { spans } = collect_timings();
+                spans.push(span());
+            }
+        };
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
+        visitor.visit_block(&unrelated.block);
+        assert!(
+            !visitor.appended_after_finalizer,
+            "an unrelated destructured vector was mistaken for the candidate page"
+        );
+    }
+
+    /// An alias is a spelling of the page, not a different type.
+    #[test]
+    fn candidate_type_aliases_are_carriers() {
+        let file: syn::File = syn::parse_quote! {
+            pub type Items = Vec<CompletionItem>;
+            pub type Chained = Items;
+            pub type Unrelated = Vec<String>;
+        };
+        let mut carriers = BTreeSet::new();
+        let mut aliases = Vec::new();
+        let mut visitor = CarrierVisitor { carriers: &mut carriers, aliases: &mut aliases };
+        visitor.visit_file(&file);
+        resolve_alias_carriers(&aliases, &mut carriers);
+
+        assert!(carriers.contains("Items"), "an alias for the page is the page");
+        assert!(carriers.contains("Chained"), "an alias chain resolves to the page");
+        assert!(!carriers.contains("Unrelated"), "an unrelated alias must not widen the scan");
+
+        // Both channels must see through the alias, or a producer keeps its
+        // signature and loses its row, its owner, and its digest coverage.
+        let appends: syn::ItemFn = syn::parse_quote! {
+            fn producer(completions: &mut Chained) {}
+        };
+        assert!(
+            appends.sig.inputs.iter().any(|arg| takes_append_channel(arg, &carriers)),
+            "`&mut Chained` is the append channel spelled through an alias"
+        );
+
+        let mut seam = SeamVisitor::new(PROBE_FILE, &carriers);
+        seam.visit_file(&syn::parse_quote! {
+            fn returns_alias() -> Items { Vec::new() }
+        });
+        assert_eq!(seam.producers.len(), 1, "returning an alias is a candidate return");
+    }
+
+    /// A cyclic alias pair terminates instead of resolving forever.
+    #[test]
+    fn alias_resolution_terminates_on_a_cycle() {
+        let file: syn::File = syn::parse_quote! {
+            pub type A = B;
+            pub type B = A;
+        };
+        let mut carriers = BTreeSet::new();
+        let mut aliases = Vec::new();
+        let mut visitor = CarrierVisitor { carriers: &mut carriers, aliases: &mut aliases };
+        visitor.visit_file(&file);
+        resolve_alias_carriers(&aliases, &mut carriers);
+        assert!(carriers.is_empty(), "a cycle naming no candidate resolves to nothing");
+    }
+
+    /// The construction plane tracks the migration target too.
+    #[test]
+    fn construction_plane_counts_both_candidate_shapes() {
+        let carriers = BTreeSet::new();
+
+        let item: syn::File = syn::parse_quote! {
+            fn build() { let _ = CompletionItem { label: label() }; }
+        };
+        let mut seam = SeamVisitor::new(PROBE_FILE, &carriers);
+        seam.visit_file(&item);
+        assert_eq!(seam.constructions, 1, "a `CompletionItem` construction enters the plane");
+
+        let candidate: syn::File = syn::parse_quote! {
+            fn build() { let _ = CompletionCandidate { label: label() }; }
+        };
+        let mut seam = SeamVisitor::new(PROBE_FILE, &carriers);
+        seam.visit_file(&candidate);
+        assert_eq!(
+            seam.constructions, 1,
+            "the migration target must enter the plane too, or the shape this inventory \
+             tracks toward builds candidates invisibly"
+        );
+
+        let unrelated: syn::File = syn::parse_quote! {
+            fn build() { let _ = Diagnostic { message: message() }; }
+        };
+        let mut seam = SeamVisitor::new(PROBE_FILE, &carriers);
+        seam.visit_file(&unrelated);
+        assert_eq!(seam.constructions, 0, "an unrelated struct is not a candidate");
+    }
+
+    /// `not_applicable` on a real producer erases a classification rather than
+    /// recording one, and an erased row still reads as reviewed.
+    #[test]
+    fn refuses_erasing_a_producer_disposition() {
+        let root = project_root().expect("project root");
+        let (_, discovered) = fixture();
+        for field in ["identity", "insertion_plan", "evidence", "rank"] {
+            let mut ledger = load(&root).expect("ledger parses");
+            let row = ledger
+                .producers
+                .iter_mut()
+                .find(|row| {
+                    !matches!(
+                        row.candidate_class,
+                        CandidateClass::Router | CandidateClass::Finalizer
+                    )
+                })
+                .expect("the ledger carries at least one candidate-producing row");
+            match field {
+                "identity" => row.identity = IdentityDisposition::NotApplicable,
+                "insertion_plan" => row.insertion_plan = InsertionDisposition::NotApplicable,
+                "evidence" => row.evidence = EvidenceDisposition::NotApplicable,
+                _ => row.rank = RankDisposition::NotApplicable,
+            }
+            refuses(&ledger, &discovered, &format!("`{field} = not_applicable`"));
+            refuses(&ledger, &discovered, "erases a required classification");
+        }
+    }
+
+    /// A seam contributes no candidates, so it has no producer disposition of
+    /// its own to record.
+    #[test]
+    fn refuses_a_seam_carrying_producer_dispositions() {
+        let (mut ledger, discovered) = fixture();
+        let row = ledger
+            .producers
+            .iter_mut()
+            .find(|row| row.candidate_class == CandidateClass::Router)
+            .expect("the ledger carries a router row");
+        row.identity = IdentityDisposition::LegacyLabelCompatibility;
+        refuses(&ledger, &discovered, "carries a producer disposition in `identity`");
+    }
+
     #[test]
     fn append_channel_predicate_matches_the_real_shapes() {
         let accepted: syn::ItemFn = syn::parse_quote! {
             fn producer(completions: &mut Vec<CompletionItem>) {}
         };
-        assert!(accepted.sig.inputs.iter().any(takes_append_channel));
+        assert!(accepted.sig.inputs.iter().any(|arg| takes_append_channel(arg, &BTreeSet::new())));
 
         let qualified: syn::ItemFn = syn::parse_quote! {
             fn producer(completions: &mut Vec<crate::completion::CompletionItem>) {}
         };
-        assert!(qualified.sig.inputs.iter().any(takes_append_channel));
+        assert!(qualified.sig.inputs.iter().any(|arg| takes_append_channel(arg, &BTreeSet::new())));
 
         // A shared slice reorders in place; it cannot add a candidate.
         let slice: syn::ItemFn = syn::parse_quote! {
             fn reorder(completions: &mut [CompletionItem]) {}
         };
-        assert!(!slice.sig.inputs.iter().any(takes_append_channel));
+        assert!(!slice.sig.inputs.iter().any(|arg| takes_append_channel(arg, &BTreeSet::new())));
 
         // Read-only access is not an append channel.
         let shared: syn::ItemFn = syn::parse_quote! {
             fn inspect(completions: &Vec<CompletionItem>) {}
         };
-        assert!(!shared.sig.inputs.iter().any(takes_append_channel));
+        assert!(!shared.sig.inputs.iter().any(|arg| takes_append_channel(arg, &BTreeSet::new())));
 
         // An unrelated vector must not widen the denominator.
         let unrelated: syn::ItemFn = syn::parse_quote! {
             fn unrelated(values: &mut Vec<String>) {}
         };
-        assert!(!unrelated.sig.inputs.iter().any(takes_append_channel));
+        assert!(
+            !unrelated.sig.inputs.iter().any(|arg| takes_append_channel(arg, &BTreeSet::new()))
+        );
     }
 
     #[test]

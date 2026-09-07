@@ -101,7 +101,7 @@ ship). The reviewer's clean results are also recorded: no `HashMap` anywhere,
 byte-identical second generation, self-consistent digest, and no Mermaid node-id
 collision.
 
-Thirty-five ledger falsifiers, each corrupting the reconciled checked-in ledger
+Forty-one ledger falsifiers, each corrupting the reconciled checked-in ledger
 along one axis and asserting the refusal names that axis:
 
 | Axis | Refused because |
@@ -141,6 +141,12 @@ along one axis and asserting the refusal names that axis:
 | an append through a tuple field | same, by index |
 | a candidate rebuilt into the page after finalization | construction after the finalizer is an append |
 | an enum variant carrying the page | `CompletionFlow::Return` holds candidates |
+| a producer disposition erased to `not_applicable` | only a router or the finalizer produces nothing of its own |
+| a seam carrying a producer disposition | a seam has no identity, insertion, evidence or rank to record |
+| a finalizer called as a method | the entry points are methods; moving it there is a refactor |
+| an append through a destructured binding | struct, tuple-struct and slice patterns rebind the page |
+| an append channel spelled through a type alias | an alias is a spelling of the page, not another type |
+| a candidate shape the construction plane ignored | the migration target must enter the plane too |
 
 Plus positive controls: the checked-in ledger reconciles, the checked-in
 projection is current, generation is byte-identical on a second run, discovery
@@ -186,12 +192,43 @@ All were applied to product source, confirmed refused, and reverted.
    added to the scanned file-path facade, digest accepted. `check` exits 1
    naming `providers::hover` and the file that reaches it — the textual scan it
    replaced would have matched nothing here.
+7. **Post-finalizer append through a destructuring pattern.**
+   `let Smuggle { page } = Smuggle { page: completions }; page.push(..);` after
+   the finalizer in `handle_completion`.
+8. **Finalizer moved onto the entry points' own impl.**
+   `self.sort_and_cap_completions(completions, cap)` followed by a push. Both
+   shipped entry points are `LspServer` methods, so this is an ordinary
+   refactor — and one that silently disarmed the whole post-finalizer control.
+9. **Producer whose append channel is spelled through a type alias.**
+   `pub type CandidatePage = Vec<CompletionItem>;` plus
+   `fn add_aliased_completions(_: &mut CandidatePage)`. `check` exits 1 naming
+   the function and the missing row.
+
+Mutations 7–9 were each run twice, against the same tree: once with the
+pre-review checker and once with the current one. In all three the pre-review
+checker, given the digest and a regenerated projection — the state an author
+reaches after re-auditing — exited **0** with *"valid and current: 58 producers
+across 18 classes, 0 construction-only files, 0 post-finalizer appends"* while
+`handle_completion` pushed a candidate after ranking. That green report on a
+mutated tree is the finding; the refusals above are its closure.
 
 ## Limitations
 
 - Discovery is syntactic, and its ceiling is documented in the module header and
   the projection. A producer using neither the append channel nor a candidate
-  return type would not appear as a row.
+  return type would not appear as a row. The append channel now sees through a
+  type alias and a named carrier, so the remaining gap is a producer that takes
+  neither and returns neither.
+- The construction plane recognizes struct literals of either candidate shape.
+  A candidate built by a constructor, a `From` conversion, or a macro does not
+  place its file in that plane. The channel and delegation planes still bound
+  that file, so the gap is which plane objects, not whether one does.
+- A finalizer reached through a callable binding (`let f =
+  sort_and_cap_completions; f(page, cap)`) escapes both call arms of the
+  post-finalizer control. It does not escape the suite:
+  `discovery_finds_the_live_surface` asserts each shipped entry point's direct
+  calls still name `sort_and_cap_completions`, so a rename that disarms the
+  control fails there instead.
 - Reachability is mechanically reconciled only for rows an entry point calls
   directly. Provider-seam rows declare their reach; the row records that it is
   declared.

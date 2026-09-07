@@ -3,10 +3,10 @@
 Mapped to #10949's acceptance criteria.
 
 - [x] Every standard completion candidate producer and append site is inventoried from current source (58 rows, `syn`-derived over 42 tracked files, across three discovery planes).
-- [x] Identity, insertion, evidence, rank, completeness, finalizer route and legacy status are explicit on every row, as closed vocabularies rejected by serde when unknown.
+- [x] Identity, insertion, evidence, rank, completeness, finalizer route and legacy status are explicit on every row, as closed vocabularies rejected by serde when unknown — and a real producer cannot erase one to `not_applicable`, nor a routing seam acquire one.
 - [x] Every nonterminal legacy row names one focused migration or retirement owner; a controller (`#8969`/`#8963`/`#9621`) is refused as an owner.
-- [x] A new hidden producer fails the check — proven by source mutation, not only by fixture; an untracked one now stops the run rather than reporting green.
-- [x] A post-finalizer append fails the check — proven by source mutation, including one smuggled through a renamed binding.
+- [x] A new hidden producer fails the check — proven by source mutation, not only by fixture; an untracked one now stops the run rather than reporting green, and one whose append channel is spelled through a type alias is refused by name.
+- [x] A post-finalizer append fails the check — proven by source mutation, including ones smuggled through a renamed binding, a destructuring pattern, and a finalizer called as a method on the entry points' own impl.
 - [x] Two same-named trait-impl producers in one file cannot fuse into a single row and inherit one disposition; the same holds for same-terminal-name self types and trait paths.
 - [x] A producer the scanned tree delegates to, in a module not scanned in full, fails the check — including behind a grouped or renamed import.
 - [x] An ambiguous trailing function name that an entry point calls is refused rather than letting one row's reach ride on another's call site.
