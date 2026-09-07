@@ -63,6 +63,11 @@ const UNQUOTED_BAREWORD: &str = "use strict;\nuse warnings;\nmy $x = SOMEBAREWOR
 /// answer. `NO_PRAGMAS` is its negative control: pure ASCII, no UTF-8 action.
 const NON_ASCII: &str = "my $s = \"caf\u{e9} na\u{ef}ve\";\nprint $s;\n";
 
+/// A hardcoded (non-portable) shebang, so the shebang source action has an
+/// answer when the requested range covers the first line.
+const HARDCODED_SHEBANG: &str =
+    "#!/usr/bin/perl\nuse strict;\nuse warnings;\nmy $v = 1;\nprint $v;\n";
+
 /// A subroutine plus an extractable binary expression.
 const EXTRACTABLE: &str =
     "use strict;\nuse warnings;\n\nsub compute {\n    my $total = 2 + 3;\n    return $total;\n}\n";
@@ -634,6 +639,18 @@ fn cursor_position_publishes_no_enabled_extract_action() -> TestResult {
     harness.open(uri, EXTRACTABLE)?;
     harness.barrier();
 
+    // Positive control first: the same document and the same expression DO
+    // yield an enabled extract once the selection is real. Without this, the
+    // absence assertion below would pass against a server that never offers
+    // extraction at all.
+    let selected =
+        code_actions(&mut harness, uri, ((4, 16), (4, 21)), Some(&["refactor.extract"]))?;
+    assert!(
+        selected.iter().any(|action| action.get("disabled").is_none()),
+        "{AMBIGUOUS_EXTRACT_SELECTION}: a real selection published no enabled extract action, so the zero-width case proves nothing: {:?}",
+        titles(&selected)
+    );
+
     let actions = code_actions(&mut harness, uri, ((4, 16), (4, 16)), Some(&["refactor.extract"]))?;
 
     for action in &actions {
@@ -658,6 +675,15 @@ fn overlapping_generations_publish_each_action_once() -> TestResult {
     harness.barrier();
 
     let actions = code_actions(&mut harness, uri, ((4, 16), (4, 21)), None)?;
+
+    // Precondition: the extract families both generations answer must actually
+    // be present, or "no duplicates" is satisfied by an empty response and this
+    // fixture stops being evidence for the redundant_behavior rows it backs.
+    assert!(
+        actions.iter().any(|action| kind(action).starts_with("refactor.")),
+        "{AMBIGUOUS_DUPLICATE_COLLAPSED}: no refactor action was published, so deduplication proves nothing here: {:?}",
+        titles(&actions)
+    );
 
     let mut identities = actions
         .iter()
@@ -748,12 +774,21 @@ fn parse_errors_stay_on_the_ast_path() -> TestResult {
 #[test]
 fn source_action_outside_its_range_is_legitimately_absent() -> TestResult {
     let uri = "file:///cac_parity_out_of_range.pl";
-    let source = "#!/usr/bin/perl\nuse strict;\nuse warnings;\n\nmy $value = 1;\nprint $value;\n";
     let mut harness = harness_with(None)?;
-    harness.open(uri, source)?;
+    harness.open(uri, HARDCODED_SHEBANG)?;
     harness.barrier();
 
-    let actions = code_actions(&mut harness, uri, ((5, 0), (5, 12)), None)?;
+    // Positive control: covering the first line DOES offer the fix. Without it
+    // the absence assertion below would pass against a server that never offers
+    // the shebang action at all.
+    let in_range = code_actions(&mut harness, uri, ((0, 0), (0, 15)), Some(&["quickfix"]))?;
+    assert!(
+        in_range.iter().any(|action| title(action).to_lowercase().contains("shebang")),
+        "{EMPTY_OUT_OF_RANGE_SOURCE}: no shebang action for a range covering the first line, so its absence elsewhere proves nothing: {:?}",
+        titles(&in_range)
+    );
+
+    let actions = code_actions(&mut harness, uri, ((4, 0), (4, 9)), None)?;
 
     assert!(
         actions.iter().all(|action| !title(action).to_lowercase().contains("shebang")),
@@ -775,6 +810,12 @@ fn kind_filter_excludes_every_other_family() -> TestResult {
 
     let modernize =
         code_actions(&mut harness, uri, ((0, 0), (1, 12)), Some(&["source.modernize"]))?;
+    // This fixture is the source.modernize route's evidence, so the family must
+    // be present, not merely unpolluted.
+    assert!(
+        !modernize.is_empty(),
+        "{EMPTY_KIND_FILTER}: the source.modernize family published nothing for a pragma-less source"
+    );
     for action in &modernize {
         assert_eq!(
             kind(action),

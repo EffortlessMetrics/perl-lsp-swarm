@@ -28,10 +28,16 @@ human_ledger = "docs/project/status/code_action_generation_ledger.md"
 orchestrator = "crates/perl-lsp-rs/src/runtime/language/code_actions.rs"
 parity_corpus = "crates/perl-lsp-rs/tests/code_action_generation_parity_corpus.rs"
 
-# Literal that marks where the orchestrator's no-AST branch begins. The drift
-# check requires every `path = "ast"` anchor to occur before it and every
-# `path = "no_ast"` anchor after it, so moving a producer between branches
-# cannot leave a stale `path` behind.
+# Literals bounding `handle_code_action` itself. Anchors are searched ONLY
+# inside this range: an occurrence elsewhere in the file — a helper, a
+# test-only handler, the test module — is not production routing and must not
+# satisfy a row. `handler_end` is the doc comment of the next item.
+handler_start = "pub(crate) fn handle_code_action("
+handler_end = "/// Cancellation-aware wrapper for `textDocument/codeAction`."
+
+# Literal that marks where the handler's no-AST branch begins. Every
+# `path = "ast"` anchor must occur before it and every `path = "no_ast"` anchor
+# after it, so moving a producer between branches cannot leave a stale `path`.
 no_ast_boundary = "// No AST (parse error), but we can still offer some actions"
 
 # The six-way disposition vocabulary fixed by #9188. A row's disposition states
@@ -122,11 +128,11 @@ summary = "Command-only 'Explain this diagnostic' action emitted inline by the o
 [[generation]]
 id = "missing_pragmas"
 stage = 2
-path = "both"
+path = "ast"
 reachability = "production"
 production_anchor = "crate::code_actions_pragmas::missing_pragmas_actions("
 modules = ["crates/perl-lsp-rs/src/features/code_actions_pragmas.rs"]
-summary = "Source-scanning use strict / use warnings quick fixes, deliberately ordered before the diagnostic-routed generations so source.fixAll prefers its insertion point. Called from BOTH orchestrator branches: the degraded no-AST branch calls it again after emitting its own inline pragma block."
+summary = "Source-scanning use strict / use warnings quick fixes, deliberately ordered before the diagnostic-routed generations so source.fixAll prefers its insertion point. AST path only: the other call to missing_pragmas_actions lives in handle_code_actions_pragmas, a separate #[allow(dead_code)] test-only handler, not in the no-AST branch."
 
 [[generation]]
 id = "native_critic"
@@ -166,7 +172,7 @@ id = "provider_original"
 stage = 6
 path = "ast"
 reachability = "production"
-production_anchor = "CodeActionsProvider::new("
+production_anchor = "let provider = CodeActionsProvider::new("
 modules = [
   "crates/perl-lsp-rs-core/src/providers/code_actions/code_actions.rs",
   "crates/perl-lsp-rs-core/src/providers/code_actions/diagnostic_routes.rs",
@@ -303,7 +309,7 @@ parity_fixtures = ["cac-parity-utf8-pragma-only-for-non-ascii-source"]
 generation = "text_fallback"
 family = "quickfix:pragma"
 disposition = "compatibility_only"
-notes = "The no-AST branch emits its own inline pragma block. It is not the only pragma producer there: the same branch also calls the canonical missing_pragmas generation, so this row duplicates it on the degraded path rather than being its sole answer."
+notes = "The no-AST branch emits its own inline pragma block and is the only pragma producer there: the canonical missing_pragmas generation runs on the AST path only."
 retirement_blockers = ["canonical_route_has_no_degraded_path_equivalent"]
 parity_fixtures = []
 proof_gap = "Not reachable from the LSP surface deterministically. Malformed source recovers onto the AST path (see cac-parity-parse-error-recovery-keeps-ast-path), and the remaining trigger — a generation whose parse snapshot has not been published yet — is a timing window a corpus fixture cannot pin without racing the parser. #9189 must not treat this row as parity-proven."

@@ -49,6 +49,8 @@ struct Ledger {
     human_ledger: String,
     orchestrator: String,
     parity_corpus: String,
+    handler_start: String,
+    handler_end: String,
     no_ast_boundary: String,
     disposition_states: Vec<String>,
     family_registry: Vec<String>,
@@ -191,8 +193,14 @@ fn validate_ledger_shape(ledger: &Ledger, violations: &mut Vec<String>) {
     require_field(POLICY_PATH, "human_ledger", &ledger.human_ledger, HUMAN_LEDGER, violations);
     require_field(POLICY_PATH, "orchestrator", &ledger.orchestrator, ORCHESTRATOR, violations);
     require_field(POLICY_PATH, "parity_corpus", &ledger.parity_corpus, PARITY_CORPUS, violations);
-    if ledger.no_ast_boundary.trim().is_empty() {
-        violations.push(format!("{POLICY_PATH}: no_ast_boundary must not be empty"));
+    for (field, value) in [
+        ("handler_start", &ledger.handler_start),
+        ("handler_end", &ledger.handler_end),
+        ("no_ast_boundary", &ledger.no_ast_boundary),
+    ] {
+        if value.trim().is_empty() {
+            violations.push(format!("{POLICY_PATH}: {field} must not be empty"));
+        }
     }
 
     require_exact_set(
@@ -235,11 +243,21 @@ fn validate_generations(
     let path_states = REQUIRED_PATHS.iter().copied().collect::<BTreeSet<_>>();
     let mut seen_ids = BTreeSet::new();
     let mut seen_stages: BTreeMap<u32, String> = BTreeMap::new();
+    // Anchors only count inside `handle_code_action` itself. An occurrence in a
+    // helper, a test-only handler, or the test module is not production routing.
+    let handler = handler_range(ledger, orchestrator_text, violations);
     let boundary = orchestrator_text.find(ledger.no_ast_boundary.as_str());
     if boundary.is_none() {
         violations.push(format!(
             "{POLICY_PATH}: no_ast_boundary {:?} no longer occurs in {ORCHESTRATOR}",
             ledger.no_ast_boundary
+        ));
+    }
+    if let (Some((start, end)), Some(boundary)) = (handler, boundary)
+        && !(start < boundary && boundary < end)
+    {
+        violations.push(format!(
+            "{POLICY_PATH}: no_ast_boundary does not lie inside the handler range [{start}, {end})"
         ));
     }
 
@@ -294,10 +312,24 @@ fn validate_generations(
                         "{POLICY_PATH}: generation {id} is production-reachable but has no production_anchor"
                     )),
                     Some(anchor) => {
-                        let offsets = occurrences(orchestrator_text, anchor);
+                        let all = occurrences(orchestrator_text, anchor);
+                        let offsets = match handler {
+                            Some((start, end)) => all
+                                .iter()
+                                .copied()
+                                .filter(|offset| *offset >= start && *offset < end)
+                                .collect::<Vec<_>>(),
+                            None => all.clone(),
+                        };
                         if offsets.is_empty() {
+                            let outside = all.len();
                             violations.push(format!(
-                                "{POLICY_PATH}: generation {id} production_anchor {anchor:?} no longer occurs in {ORCHESTRATOR}"
+                                "{POLICY_PATH}: generation {id} production_anchor {anchor:?} does not occur inside handle_code_action in {ORCHESTRATOR}{}",
+                                if outside > 0 {
+                                    format!(" (it occurs {outside} time(s) elsewhere in the file, which is not production routing)")
+                                } else {
+                                    String::new()
+                                }
                             ));
                         } else {
                             if let Some(boundary) = boundary {
@@ -333,6 +365,40 @@ fn validate_generations(
             violations.push(format!(
                 "{POLICY_PATH}: stage {earlier_stage} ({earlier_id}) is declared before stage {later_stage} ({later_id}), but its anchor occurs later in {ORCHESTRATOR}; the declared invocation order is stale"
             ));
+        }
+    }
+}
+
+/// Byte range of `handle_code_action` in the orchestrator source.
+fn handler_range(
+    ledger: &Ledger,
+    orchestrator_text: &str,
+    violations: &mut Vec<String>,
+) -> Option<(usize, usize)> {
+    let start = orchestrator_text.find(ledger.handler_start.as_str());
+    let end = orchestrator_text.find(ledger.handler_end.as_str());
+    match (start, end) {
+        (Some(start), Some(end)) if start < end => Some((start, end)),
+        (Some(start), Some(end)) => {
+            violations.push(format!(
+                "{POLICY_PATH}: handler_start occurs at {start} but handler_end occurs at {end}; the handler range is empty or inverted"
+            ));
+            None
+        }
+        _ => {
+            if start.is_none() {
+                violations.push(format!(
+                    "{POLICY_PATH}: handler_start {:?} no longer occurs in {ORCHESTRATOR}",
+                    ledger.handler_start
+                ));
+            }
+            if end.is_none() {
+                violations.push(format!(
+                    "{POLICY_PATH}: handler_end {:?} no longer occurs in {ORCHESTRATOR}",
+                    ledger.handler_end
+                ));
+            }
+            None
         }
     }
 }
@@ -833,6 +899,13 @@ mod tests {
     use super::*;
 
     const NO_AST_MARKER: &str = "// No AST (parse error), but we can still offer some actions";
+    const HANDLER_START: &str = "pub(crate) fn handle_code_action(";
+    const HANDLER_END: &str = "/// Cancellation-aware wrapper";
+
+    /// Wrap a handler body in the markers the validator uses to bound it.
+    fn handler(body: &str) -> String {
+        format!("{HANDLER_START}\n{body}\n{HANDLER_END}\n")
+    }
 
     fn generation(id: &str, anchor: Option<&str>) -> Generation {
         Generation {
@@ -865,6 +938,8 @@ mod tests {
             human_ledger: HUMAN_LEDGER.to_string(),
             orchestrator: ORCHESTRATOR.to_string(),
             parity_corpus: PARITY_CORPUS.to_string(),
+            handler_start: HANDLER_START.to_string(),
+            handler_end: HANDLER_END.to_string(),
             no_ast_boundary: NO_AST_MARKER.to_string(),
             disposition_states: REQUIRED_DISPOSITIONS
                 .iter()
@@ -1039,7 +1114,7 @@ mod tests {
 
         let mut violations = Vec::new();
         let root = std::path::PathBuf::from(".");
-        validate_generations(&root, &ledger, "fn handle_code_action() {}", &mut violations);
+        validate_generations(&root, &ledger, &handler("NOTHING_HERE"), &mut violations);
 
         assert!(
             violations.iter().any(|violation| violation.contains("no longer occurs in")),
@@ -1056,7 +1131,7 @@ mod tests {
 
         let mut violations = Vec::new();
         let root = std::path::PathBuf::from(".");
-        validate_generations(&root, &ledger, "anything", &mut violations);
+        validate_generations(&root, &ledger, &handler("anything"), &mut violations);
 
         assert!(
             violations.iter().any(|violation| violation.contains("has no production_anchor")),
@@ -1136,7 +1211,7 @@ mod tests {
         );
 
         let mut violations = Vec::new();
-        let source = format!("FIRST_CALL\nSECOND_CALL\n{NO_AST_MARKER}\n");
+        let source = handler(&format!("FIRST_CALL\nSECOND_CALL\n{NO_AST_MARKER}"));
         validate_generations(&std::path::PathBuf::from("."), &ledger, &source, &mut violations);
 
         assert!(
@@ -1144,6 +1219,32 @@ mod tests {
                 .iter()
                 .any(|violation| violation.contains("declared invocation order is stale")),
             "expected stage-order violation, got {violations:?}"
+        );
+    }
+
+    /// The exact defect review caught on the tracked ledger: an anchor whose
+    /// only occurrence lives in a different function is not production routing,
+    /// even though it sits after the no-AST boundary in the file.
+    #[test]
+    fn rejects_an_anchor_that_occurs_only_outside_the_handler() {
+        let ledger = ledger(
+            vec![generation("elsewhere", Some("HELPER_ONLY_CALL"))],
+            vec![route("elsewhere", "quickfix:diagnostic_routed", "canonical_candidate")],
+        );
+
+        let mut violations = Vec::new();
+        let source = format!(
+            "{}\nfn some_test_only_helper() {{ HELPER_ONLY_CALL }}\n",
+            handler(&NO_AST_MARKER.to_string())
+        );
+        validate_generations(&std::path::PathBuf::from("."), &ledger, &source, &mut violations);
+
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("does not occur inside handle_code_action")
+                    && violation.contains("elsewhere in the file")),
+            "expected out-of-handler violation, got {violations:?}"
         );
     }
 
@@ -1157,7 +1258,7 @@ mod tests {
         );
 
         let mut violations = Vec::new();
-        let source = format!("{NO_AST_MARKER}\nTHE_CALL\n");
+        let source = handler(&format!("{NO_AST_MARKER}\nTHE_CALL"));
         validate_generations(&std::path::PathBuf::from("."), &ledger, &source, &mut violations);
 
         assert!(
@@ -1178,7 +1279,7 @@ mod tests {
         );
 
         let mut violations = Vec::new();
-        let source = format!("THE_CALL\n{NO_AST_MARKER}\n");
+        let source = handler(&format!("THE_CALL\n{NO_AST_MARKER}"));
         validate_generations(&std::path::PathBuf::from("."), &ledger, &source, &mut violations);
 
         assert!(

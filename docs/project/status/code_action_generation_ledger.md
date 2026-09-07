@@ -28,7 +28,7 @@ order; when it does not, it falls through to a single degraded text generation.
 | Stage | Generation | Path | Reachability |
 | --- | --- | --- | --- |
 | 1 | `explain_diagnostic` | ast | production |
-| 2 | `missing_pragmas` | both | production |
+| 2 | `missing_pragmas` | ast | production |
 | 3 | `native_critic` | ast | production |
 | 4 | `legacy_critic` | ast | production |
 | 5 | `provider_v2` | ast | production |
@@ -43,10 +43,18 @@ order; when it does not, it falls through to a single degraded text generation.
 Stages 3 and 4 are mutually exclusive: the configured critic engine selects one
 of them, so they never publish together.
 
-Stages 2 and 8 are called from *both* branches — once on the AST path and once again in
-the degraded no-AST branch — so `text_fallback` is not the sole answer there.
-The drift check enforces that dual placement rather than taking the declared
-branch on trust; it is what caught both rows being mis-declared as `ast`.
+Stage 8 is called from *both* branches — once on the AST path and once again in
+the degraded no-AST branch — so it is the only generation besides
+`text_fallback` that still answers when the current generation has no published
+parse snapshot.
+
+Anchors are resolved **only inside `handle_code_action` itself**. That scoping
+is load-bearing rather than tidiness: `missing_pragmas_actions` is also called
+from `handle_code_actions_pragmas`, a separate `#[allow(dead_code)]` test-only
+handler that sits after the no-AST boundary in the file. A file-wide search made
+`missing_pragmas` look like a both-branch producer and briefly recorded fallback
+behavior that does not exist. Review caught it; the check now rejects an anchor
+whose only occurrences are outside the handler.
 
 ## Disposition ledger
 
