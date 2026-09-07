@@ -15,17 +15,19 @@ code is safe.
 
 ## Export paths
 
-3 public paths reach one module. The module is dispositioned once; the others
+4 public paths reach one module. The module is dispositioned once; the others
 are projections, not separate authorities.
 
 | Path | Role | Declared at |
 | --- | --- | --- |
 | `perl_parser::dead_code` | canonical | `crates/perl-parser/src/lib.rs` |
 | `perl_parser::dead_code_detector` | compatibility_alias | `crates/perl-parser/src/lib.rs` |
+| `perl_parser::compat::dead_code_detector` | compatibility_alias | `crates/perl-parser/src/compat.rs` |
 | `perl_parser::prelude` | prelude_reexport | `crates/perl-parser/src/prelude.rs` |
 
 - `perl_parser::dead_code` — Gated `#[cfg(not(target_arch = "wasm32"))]`; absent on wasm32.
-- `perl_parser::dead_code_detector` — Backwards-compatibility alias. `crates/perl-parser/src/compat.rs` re-exports the same alias.
+- `perl_parser::dead_code_detector` — Backwards-compatibility alias for the pre-rename path; same gate as the canonical route.
+- `perl_parser::compat::dead_code_detector` — Second alias, reached through the crate-wide `compat` shim rather than the crate root; same gate. Retiring the surface must retire this route too.
 - `perl_parser::prelude` — Re-exports the five public types, not the two free/associated functions.
 
 ## Item dispositions
@@ -176,7 +178,7 @@ checked for staleness:
 
 - **downstream-external-consumers** — *claim:* No consumer outside this repository depends on the surface. *Why NOT_PROVEN:* The check inventories this workspace only. `perl-parser` is published, so an external dependant cannot be excluded from repository evidence alone; semver policy, not this ledger, decides whether that permits removal.
 - **file-path-non-path-fallback** — *claim:* `DeadCode::file_path` can hold a raw URI string rather than a filesystem path. *Why NOT_PROVEN:* Read from source: `uri_to_fs_path(&sym.uri).unwrap_or_else(|| PathBuf::from(&sym.uri))`. No portable fixture drives the fallback branch, so the row is recorded as a source-read limitation rather than an executable control.
-- **commented-and-string-references** — *claim:* Whether any comment, doc comment, string literal or disabled example still names this surface. *Why NOT_PROVEN:* Consumer detection is import-structure-based, so a reference inside a comment or a string is deliberately not inventoried — that is what keeps an unrelated `CodeSmell::DeadCode` or a prelude mention inside a test fixture's string literal from forcing a false row. The cost is that a documentation dependency (for example the disabled `examples/workspace_refactor_demo.rs`, whose block comment names `dead_code_detector`) will not be found by this check and must be caught by grep at retirement time.
+- **commented-and-string-references** — *claim:* Whether any comment, doc comment, string literal or disabled example still names this surface. *Why NOT_PROVEN:* Detection is deliberately mixed and neither half settles this. The two rooted needles (`perl_parser::dead_code`, `perl_parser::dead_code_detector`) are a plain text match, so a comment or string carrying either spelling does force an inventory row — over-counting, in the fail-closed direction. Every other spelling — prelude globs, crate aliases, `use` trees — is import-structural, which is what keeps an unrelated `CodeSmell::DeadCode` or a prelude mention inside a fixture's string literal from forcing a false row, and which correspondingly cannot see a documentation-only dependency written that way. `crates/perl-parser/examples/workspace_refactor_demo.rs` is the concrete case: it is inside the scan roots, its disabled body names `dead_code_detector` inside a `/* */` block, and it matches neither half — the spelling is split across a grouped `use perl_parser::{ … }` so no needle matches contiguously, and a comment has no import structure. It carries no consumer row, which is why the check passes. Both halves are pinned by `comment_and_string_references_are_matched_only_by_the_rooted_needles`. A retirement sweep still needs grep, not this check alone.
 - **serialized-payloads-in-circulation** — *claim:* Whether any stored or transmitted payload carries `UnusedImport` / `UnusedExport`. *Why NOT_PROVEN:* Both variants derive `Serialize`/`Deserialize`, so a payload could exist outside the tree. Removal conditions for the two variants depend on this and it is not established here.
 
 ## Verification

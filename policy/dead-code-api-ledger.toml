@@ -113,6 +113,8 @@ governance_paths = [
 #   L8  the Markdown projection agrees with this file
 #   L9  every fixture a row cites exists in the compatibility corpus
 #   L10 every fixture in the corpus is cited by at least one row
+#   L11 every route to this surface the public-API baseline exposes has an
+#       `export_path` row, and no declared route is stale
 
 # --------------------------------------------------------------------------
 # Export paths. Three public paths reach one module; the module is dispositioned
@@ -129,7 +131,13 @@ note = "Gated `#[cfg(not(target_arch = \"wasm32\"))]`; absent on wasm32."
 path = "perl_parser::dead_code_detector"
 role = "compatibility_alias"
 declared_at = "crates/perl-parser/src/lib.rs"
-note = "Backwards-compatibility alias. `crates/perl-parser/src/compat.rs` re-exports the same alias."
+note = "Backwards-compatibility alias for the pre-rename path; same gate as the canonical route."
+
+[[export_path]]
+path = "perl_parser::compat::dead_code_detector"
+role = "compatibility_alias"
+declared_at = "crates/perl-parser/src/compat.rs"
+note = "Second alias, reached through the crate-wide `compat` shim rather than the crate root; same gate. Retiring the surface must retire this route too."
 
 [[export_path]]
 path = "perl_parser::prelude"
@@ -796,7 +804,7 @@ reason = "Read from source: `uri_to_fs_path(&sym.uri).unwrap_or_else(|| PathBuf:
 [[not_proven]]
 id = "commented-and-string-references"
 claim = "Whether any comment, doc comment, string literal or disabled example still names this surface."
-reason = "Consumer detection is import-structure-based, so a reference inside a comment or a string is deliberately not inventoried — that is what keeps an unrelated `CodeSmell::DeadCode` or a prelude mention inside a test fixture's string literal from forcing a false row. The cost is that a documentation dependency (for example the disabled `examples/workspace_refactor_demo.rs`, whose block comment names `dead_code_detector`) will not be found by this check and must be caught by grep at retirement time."
+reason = "Detection is deliberately mixed and neither half settles this. The two rooted needles (`perl_parser::dead_code`, `perl_parser::dead_code_detector`) are a plain text match, so a comment or string carrying either spelling does force an inventory row — over-counting, in the fail-closed direction. Every other spelling — prelude globs, crate aliases, `use` trees — is import-structural, which is what keeps an unrelated `CodeSmell::DeadCode` or a prelude mention inside a fixture's string literal from forcing a false row, and which correspondingly cannot see a documentation-only dependency written that way. `crates/perl-parser/examples/workspace_refactor_demo.rs` is the concrete case: it is inside the scan roots, its disabled body names `dead_code_detector` inside a `/* */` block, and it matches neither half — the spelling is split across a grouped `use perl_parser::{ … }` so no needle matches contiguously, and a comment has no import structure. It carries no consumer row, which is why the check passes. Both halves are pinned by `comment_and_string_references_are_matched_only_by_the_rooted_needles`. A retirement sweep still needs grep, not this check alone."
 
 [[not_proven]]
 id = "serialized-payloads-in-circulation"
