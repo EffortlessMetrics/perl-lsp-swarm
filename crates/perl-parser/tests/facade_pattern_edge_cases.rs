@@ -93,7 +93,7 @@ fn test_heredoc_antipatterns_facade_accessible() -> Result<(), Box<dyn std::erro
     let _pattern = heredoc_anti_patterns::AntiPattern::FormatHeredoc {
         location: heredoc_anti_patterns::Location { line: 1, column: 0, offset: 0 },
         format_name: "test".to_string(),
-        heredoc_delimiter: "END".to_string(),
+        heredoc_delimiter: heredoc_anti_patterns::HeredocDelimiter::Extracted("END".to_string()),
     };
 
     Ok(())

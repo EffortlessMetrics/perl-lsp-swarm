@@ -1104,14 +1104,15 @@ void test('a fully passing crash-recovery journey composes a pass verdict with b
   assert.equal(joined.negative_controls.failed_process_not_resurrected, true);
 });
 
-void test('an honestly not_proven watchdog row degrades only the overall verdict', () => {
+void test('an unexplained not_proven watchdog row degrades the overall verdict', () => {
+  // A capability-absence reason is typed pending (#15019); an unexplained
+  // not_proven remains an instrument gap and degrades the journey.
   const transient = passingTransientChild({
     observations: {
       ...passingTransientChild().observations,
       watchdog: {
         status: 'not_proven',
-        reason:
-          'host platform cannot safely suspend the installed server process; deterministic watchdog mechanism proof is owned by #7846',
+        reason: 'suspend failed: unexpected instrument error',
       },
     },
   });
@@ -1122,6 +1123,28 @@ void test('an honestly not_proven watchdog row degrades only the overall verdict
   assert.equal(joined.circuit_breaker.explicit_retry, 'pass');
   assert.equal(joined.cleanup, 'pass');
   assert.equal(joined.verdict, 'not_proven');
+});
+
+void test('an unexercised watchdog leg is typed pending and verdict-neutral', () => {
+  // #15019: on hosts whose transient leg emits no watchdog observation at
+  // all (capability absent), the row is a deliberate `pending` - visible in
+  // the receipt, but it must not degrade the journey to not_proven.
+  const transient = passingTransientChild({
+    observations: {
+      ...passingTransientChild().observations,
+      watchdog: {
+        status: 'pending',
+        reason:
+          'host platform cannot safely suspend the installed server process; deterministic watchdog mechanism proof is owned by #7846',
+      },
+    },
+  });
+  const joined = composeCrashRecoveryReceipt(crashComposeBase({ transient }));
+  assert.equal(joined.watchdog, 'pending');
+  assert.equal(joined.transient_crash.replay, 'pass');
+  assert.equal(joined.circuit_breaker.explicit_retry, 'pass');
+  assert.equal(joined.cleanup, 'pass');
+  assert.equal(joined.verdict, 'pass');
 });
 
 void test('a breaker that never exhausts fails the circuit-breaker rows', () => {
