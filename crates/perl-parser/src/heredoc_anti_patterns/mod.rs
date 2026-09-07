@@ -52,9 +52,10 @@
 //! against the masked view, which also fixes the pre-existing single-line form
 //! of that false positive.
 //!
-//! Known residual, unchanged by this decision: these patterns treat a left-shift
-//! `<<` as a heredoc marker. That imprecision is pre-existing on single lines
-//! and is a property of the `<<` token test, not of the newline horizon.
+//! Known residual, unchanged by this decision: the *detector patterns* treat a
+//! left-shift `<<` as a heredoc marker. That imprecision is pre-existing on
+//! single lines and is a property of the `<<` token test, not of the newline
+//! horizon. The body mask below does not share it — see the term-position rule.
 //!
 //! # Heredoc body mask (#14352)
 //!
@@ -67,11 +68,34 @@
 //!
 //! Blanking is itself the mechanism that hides constructs, so the mask is
 //! deliberately fail-safe: it blanks only bodies whose terminator line was
-//! actually found. A `<<WORD` that is not a heredoc — a left shift such as
-//! `1 << FOO`, or a genuinely unterminated declaration — then costs nothing
-//! instead of blinding the rest of the file. The same property makes the mask
-//! degrade rather than misfire on any delimiter spelling or line ending it
+//! actually found. A genuinely unterminated declaration then costs nothing
+//! instead of blinding the rest of the file, and the same property makes the
+//! mask degrade rather than misfire on any delimiter spelling or line ending it
 //! fails to recognise.
+//!
+//! The fail-safe is a backstop, not the primary guard against reading a left
+//! shift as a heredoc; it only helps when the operand never reappears as a line.
+//! Perl itself distinguishes the two by **position**, not by delimiter spelling,
+//! and the mask now applies that rule: `<<` after a complete term (a number, a
+//! variable, a closing bracket, a string) is the shift operator, while `<<`
+//! after an operator, separator, opener, or bareword function name starts a
+//! heredoc. Confirmed against `perl -c` 5.38, which compiles `1<<FOO`,
+//! `$y<<FOO` and `f()<<FOO` with no `FOO` line present but rejects `print
+//! <<FOO` and `my $t = <<FOO` with "Can't find string terminator". Errors here
+//! are asymmetric by design: declining to mask a real heredoc restores the
+//! pre-mask status quo, whereas masking a shift blanks live code.
+//!
+//! The mask's own traversal is monotone and indexed rather than line-walking.
+//! Walking lines and searching forward per declaration is quadratic on input
+//! this detector must survive — 4000 unterminated `print <<A;` lines cost ~53 ms
+//! that way against ~5 ms indexed, with the gap widening — and the `(?{<<`
+//! scaling input cannot catch it, since that input has no newline and no
+//! delimiter, so the mask returns immediately. `antip_body_mask_work_scales_linearly`
+//! covers the mask separately for that reason.
+//!
+//! `EvalHeredocDetector` consumes the same body mask for its origin check. It
+//! scans raw source, so without it an `eval '...<<...'` appearing as heredoc
+//! *text* reported PL805 for an eval that never executes.
 
 mod detectors;
 mod model;

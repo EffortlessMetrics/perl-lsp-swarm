@@ -200,6 +200,124 @@ fn antip_body_mask_handles_crlf_terminators() {
         "an indented CRLF heredoc body must be masked too; got {:?}",
         detect(indented).iter().map(|d| &d.message).collect::<Vec<_>>()
     );
+
+    // Exactly one CR is stripped, not a run of them. `M\r\r` is a body line,
+    // not the terminator. Ending the body there would leave the rest of the
+    // real body unmasked, so the brace *after* it — which is what makes this
+    // fixture discriminating — would again skew the block's brace depth.
+    let doubled = "qr/x(?{ print <<'M';\r\nplain text\r\nM\r\r\nhas { brace\r\nM\r\n})/;\r\n";
+    assert!(
+        has_regex_code_block(doubled),
+        "a line with two CRs must not terminate the heredoc; got {:?}",
+        detect(doubled).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Scan work in the *body-mask* pass must stay linear too.
+///
+/// `antip_scan_work_scales_linearly` cannot cover this: its `(?{<<` input has
+/// no newline and no delimiter, so `heredoc_body_ranges` returns immediately.
+/// The shape that stresses the mask is many declarations over many lines, and
+/// the worst case is declarations that never terminate — a line-walking
+/// implementation rescans to end of file for each one. Measured at 4000
+/// declarations, that walk costs ~53 ms against ~5 ms for the indexed
+/// traversal, and the gap widens with input size.
+#[test]
+fn antip_body_mask_work_scales_linearly() {
+    for (label, unit) in [("unterminated", "print <<A;\n"), ("terminated", "print <<A;\nx\nA\n")] {
+        let small = unit.repeat(1000);
+        let large = unit.repeat(4000);
+
+        let small_time = median_detect_time(&small).as_nanos().max(1);
+        let large_time = median_detect_time(&large).as_nanos().max(1);
+
+        let ratio = large_time / small_time;
+        assert!(
+            ratio <= 8,
+            "{label}: body-mask work grew {}x over a 4x input increase ({}ns -> {}ns); \
+             expected roughly linear",
+            ratio,
+            small_time,
+            large_time
+        );
+    }
+}
+
+#[test]
+fn antip_left_shift_is_not_a_heredoc_declaration() {
+    // Perl decides heredoc-vs-left-shift by *position*, not by how the
+    // delimiter is spelled. Verified against `perl -c` 5.38: `1<<FOO`,
+    // `$y<<FOO` and `f()<<FOO` all compile with no `FOO` line anywhere, while
+    // `print <<FOO` and `my $t = <<FOO` fail with "Can't find string
+    // terminator". So a `<<` after a complete term is a shift, and masking a
+    // body for it blanks live code.
+    //
+    // Each fixture puts a matching terminator line *after* a real diagnostic,
+    // which is the only shape where a wrong answer is observable: the fail-safe
+    // already covers a shift whose operand never reappears.
+    const BLOCK: &str = "qr/y(?{ print <<'N';\nok\nN\n})/;\n";
+    for (label, declaration, terminator) in [
+        ("adjacent bare", "my $x = 1<<FOO;\n", "FOO\n"),
+        ("spaced bare", "my $x = 1 << FOO;\n", "FOO\n"),
+        ("spaced single-quoted", "my $x = 1 << 'FOO';\n", "FOO\n"),
+        ("spaced backtick", "my $x = 1 << `date`;\n", "date\n"),
+        ("adjacent backslash", "my $x = 1 <<\\FOO;\n", "FOO\n"),
+        ("variable operand", "my $x = $y<<FOO;\n", "FOO\n"),
+        ("call result operand", "my $x = f()<<FOO;\n", "FOO\n"),
+        ("index result operand", "my $x = $a[0]<<FOO;\n", "FOO\n"),
+    ] {
+        let code = format!("{declaration}{BLOCK}{terminator}");
+        assert!(
+            has_regex_code_block(&code),
+            "{label}: a left shift must not mask the lines after it; got {:?}",
+            detect(&code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    // Opposite direction: term position really is still treated as a heredoc,
+    // so the check above cannot pass by disabling the mask altogether. Each of
+    // these carries a brace in its body that would suppress the diagnostic if
+    // the body were left unmasked.
+    for (label, code) in [
+        ("statement start", "print <<'M';\nhas { brace\nM\nqr/y(?{ print <<'N';\nok\nN\n})/;\n"),
+        ("after assignment", "qr/x(?{ my $t = <<'M';\nhas { brace\nM\n})/;\n"),
+        ("after a comma", "qr/x(?{ print $a, <<'M';\nhas { brace\nM\n})/;\n"),
+        ("inside a call", "qr/x(?{ f(<<'M');\nhas { brace\nM\n})/;\n"),
+    ] {
+        assert!(
+            has_regex_code_block(code),
+            "{label}: a term-position heredoc body must still be masked; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn antip_eval_inside_a_heredoc_body_does_not_seed_a_diagnostic() {
+    // PL805's detector scans raw source, and `mask_non_code_regions` does not
+    // blank heredoc bodies — this PR's own PL804 repair established that. So
+    // eval-shaped *data* in a heredoc body reached the eval origin check as if
+    // it were code, and reported an eval that never executes.
+    for (label, code) in [
+        ("single-line eval in body", "my $doc = <<'TEXT';\neval 'print <<EOF;';\nTEXT\n"),
+        (
+            "multi-line eval in body",
+            "my $doc = <<'TEXT';\neval 'print <<\"EOF\";\nbody\nEOF\n';\nTEXT\n",
+        ),
+        ("indented body", "my $doc = <<~'TEXT';\n  eval 'print <<EOF;';\n  TEXT\n"),
+    ] {
+        assert!(
+            !has_eval_string(code),
+            "{label}: heredoc text must not seed PL805; got {:?}",
+            detect(code).iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    // Control: a real eval string is still reported, before and after a body.
+    assert!(
+        has_eval_string("my $doc = <<'TEXT';\ndata\nTEXT\neval 'print <<\"E\";\nbody\nE\n';\n"),
+        "a real eval after a heredoc body must still be reported"
+    );
 }
 
 #[test]

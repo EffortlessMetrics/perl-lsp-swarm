@@ -1,5 +1,5 @@
 use regex::Regex;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use crate::heredoc_anti_patterns::model::{AntiPattern, Diagnostic, Location, Severity};
@@ -352,18 +352,73 @@ static HEREDOC_DECL_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     }
 });
 
+/// Whether the `<<` at `start` is in term position, where Perl reads a heredoc,
+/// rather than operator position, where it reads a left shift.
+///
+/// Perl decides this by what precedes the `<<`, not by how the delimiter is
+/// spelled — verified against `perl -c` 5.38, which accepts `1<<FOO`, `$y<<FOO`
+/// and `f()<<FOO` with no `FOO` line anywhere, but rejects `print <<FOO` and
+/// `my $t = <<FOO` with "Can't find string terminator". So a `<<` following a
+/// complete term (a number, a variable, a closing bracket, a string) is a shift,
+/// and one following an operator, separator, opener, or bareword function name
+/// is a heredoc.
+///
+/// Errors here are deliberately asymmetric. Answering `false` for a real heredoc
+/// only leaves its body unmasked, which is the pre-mask status quo; answering
+/// `true` for a shift blanks live code. Anything unrecognised therefore stays a
+/// heredoc only when the preceding context cannot end a term.
+fn heredoc_is_in_term_position(code: &str, start: usize) -> bool {
+    let prefix = code[..start].trim_end();
+    let Some(previous) = prefix.chars().next_back() else {
+        return true; // start of file: nothing to shift
+    };
+
+    if matches!(previous, ')' | ']' | '}' | '\'' | '"' | '`') {
+        return false;
+    }
+
+    if !(previous.is_alphanumeric() || previous == '_') {
+        return true; // an operator, separator, or opener
+    }
+
+    // A word: a bareword function name (`print <<EOF`) takes a term after it,
+    // but a number or a sigilled variable is itself a complete term.
+    let word_start = prefix
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !(ch.is_alphanumeric() || *ch == '_'))
+        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+    let word = &prefix[word_start..];
+
+    if word.starts_with(|ch: char| ch.is_ascii_digit()) {
+        return false;
+    }
+    !prefix[..word_start].ends_with(['$', '@', '%', '&'])
+}
+
 /// Byte ranges of heredoc *bodies* in `code`, terminator line included and the
 /// `<<DELIM` declaration excluded.
 ///
 /// `scan_code` is the masked view, used only to reject a declaration that
 /// begins inside a comment or string literal. Both views substitute
 /// byte-for-byte, so offsets index either identically.
+///
+/// The traversal is monotone and indexed, which is load-bearing rather than
+/// stylistic. Walking lines and searching forward for each terminator is
+/// quadratic on input this detector must survive: `print <<A;` repeated with no
+/// terminator anywhere makes every declaration scan to end of file. Instead each
+/// line is registered once in a terminator index, and the declarations — already
+/// in source order — are walked with pointers that never move backwards, so the
+/// pass is `O(n + d log n)` in lines `n` and declarations `d`.
 fn heredoc_body_ranges(code: &str, scan_code: &str) -> Vec<(usize, usize)> {
     let declarations: Vec<(usize, bool, &str)> = HEREDOC_DECL_PATTERN
         .captures_iter(code)
         .filter_map(|capture| {
             let whole = capture.get(0)?;
             if scan_code.get(whole.start()..whole.start() + 2) != Some("<<") {
+                return None;
+            }
+            if !heredoc_is_in_term_position(code, whole.start()) {
                 return None;
             }
             let indented = capture.get(1).is_some_and(|tilde| !tilde.as_str().is_empty());
@@ -389,63 +444,77 @@ fn heredoc_body_ranges(code: &str, scan_code: &str) -> Vec<(usize, usize)> {
         lines.push((line_start, code.len(), code.len()));
     }
 
+    // Terminator index: line text to the ascending line numbers carrying it.
+    // A plain heredoc ends on a line equal to its delimiter; a `<<~` heredoc
+    // ends on a line whose trimmed text equals it, so the two need separate
+    // keys — folding them into one map would let an indented line terminate a
+    // plain heredoc. Exactly one `\r` is stripped, not a run of them: a CRLF
+    // file ends the terminator line with one, and eating more would let
+    // `DELIM\r\r` close a heredoc it does not close.
+    let mut exact: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut trimmed: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (line, &(start, end, _)) in lines.iter().enumerate() {
+        let raw = &code[start..end];
+        let text = raw.strip_suffix('\r').unwrap_or(raw);
+        exact.entry(text).or_default().push(line);
+        trimmed.entry(text.trim()).or_default().push(line);
+    }
+
+    // First line at or after `from` whose text terminates `delimiter`.
+    let terminator_at = |indented: bool, delimiter: &str, from: usize| -> Option<usize> {
+        let index = if indented { &trimmed } else { &exact };
+        let lines = index.get(delimiter)?;
+        lines.get(lines.partition_point(|&line| line < from)).copied()
+    };
+
     let mut ranges = Vec::new();
-    let mut index = 0;
+    let mut declaration = 0;
+    let mut line = 0;
+    // First line not already known to sit inside a masked body. Declarations
+    // before it are heredoc *text*, not declarations.
+    let mut resume_line = 0;
 
-    while index < lines.len() {
-        let (start, end, after) = lines[index];
-        // Declarations on this line stack: their bodies follow in order.
-        let on_this_line: Vec<_> =
-            declarations.iter().filter(|(at, _, _)| *at >= start && *at < end).collect();
+    while declaration < declarations.len() {
+        let (at, _, _) = declarations[declaration];
+        while line + 1 < lines.len() && at >= lines[line].1 {
+            line += 1;
+        }
 
-        if on_this_line.is_empty() {
-            index += 1;
+        if line < resume_line {
+            declaration += 1;
             continue;
         }
 
-        let body_start = after;
-        let mut cursor = index + 1;
-        // Only bodies whose terminator was actually seen may be blanked. A
+        // Declarations on one line stack: their bodies follow in order.
+        let group_start = declaration;
+        while declaration < declarations.len() && declarations[declaration].0 < lines[line].1 {
+            declaration += 1;
+        }
+
+        let body_start = lines[line].2;
+        let mut cursor = line + 1;
+        // Only bodies whose terminator was actually found may be blanked. A
         // declaration that never terminates — an unterminated heredoc, or a
         // left shift such as `1 << FOO` that only looks like one — must not
         // blank the remainder of the file, because blanking is what hides
         // later constructs from the detector. Mis-reading `<<` then costs
         // nothing rather than blinding every subsequent line.
         let mut terminated_through = None;
-
-        for (_, indented, delimiter) in on_this_line {
-            let mut found = false;
-            while cursor < lines.len() {
-                let (body_line_start, body_line_end, _) = lines[cursor];
-                // A CRLF file ends each line with `\r`; the terminator is the
-                // delimiter alone, so compare against the line without it.
-                let text = code[body_line_start..body_line_end].trim_end_matches('\r');
-                let terminated =
-                    if *indented { text.trim() == *delimiter } else { text == *delimiter };
-                cursor += 1;
-                if terminated {
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
+        for &(_, indented, delimiter) in &declarations[group_start..declaration] {
+            let Some(terminator) = terminator_at(indented, delimiter, cursor) else {
                 break;
-            }
+            };
+            cursor = terminator + 1;
             terminated_through = Some(cursor);
         }
 
-        let resume = match terminated_through {
-            Some(cursor) => {
-                let body_end = lines[cursor - 1].2;
-                if body_end > body_start {
-                    ranges.push((body_start, body_end));
-                }
-                cursor
+        if let Some(end_line) = terminated_through {
+            let body_end = lines[end_line - 1].2;
+            if body_end > body_start {
+                ranges.push((body_start, body_end));
             }
-            None => index + 1,
-        };
-
-        index = resume.max(index + 1);
+            resume_line = end_line;
+        }
     }
 
     ranges
@@ -604,9 +673,15 @@ impl PatternDetector for EvalHeredocDetector {
 
         // This detector must scan raw source: masking blanks the contents of
         // the very quoted string it needs to look inside. So the mask is used
-        // only to reject matches that *begin* in a comment or string literal.
+        // only to reject matches that *begin* somewhere that is not code.
         // `mask_non_code_regions` substitutes byte-for-byte, so offsets align.
-        let scan_code = mask_non_code_regions(code);
+        //
+        // Heredoc bodies are part of "not code" here and `mask_non_code_regions`
+        // does not blank them, so an `eval '...<<...'` sitting in heredoc *text*
+        // would otherwise seed a real PL805 for an eval that never runs. The
+        // same body mask the regex detector uses closes that (#14352).
+        let masked = mask_non_code_regions(code);
+        let scan_code = blank_ranges(&masked, &heredoc_body_ranges(code, &masked));
 
         for cap in EVAL_HEREDOC_PATTERN.captures_iter(code) {
             if let Some(match_pos) = cap.get(0) {
