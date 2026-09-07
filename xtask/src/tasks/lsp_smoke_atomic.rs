@@ -1080,6 +1080,7 @@ pub fn run_cli(receipt_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::{must_some_with, must_with};
     use std::path::PathBuf;
 
     // ---------------------------------------------------------------------
@@ -1171,8 +1172,57 @@ mod tests {
     }
 
     fn read_receipt(path: &Path) -> ChildReceiptDoc {
-        let raw = fs::read_to_string(path).unwrap_or_else(|err| panic!("read receipt: {err}"));
-        serde_json::from_str(&raw).unwrap_or_else(|err| panic!("parse receipt: {err}"))
+        let raw = must_with(fs::read_to_string(path), "read receipt");
+        must_with(serde_json::from_str(&raw), "parse receipt")
+    }
+
+    fn run_suite_ok(path: &Path, executor: &mut ScriptedExecutor) -> SuiteOutcome {
+        must_with(run_suite(path, executor), "suite should run")
+    }
+
+    fn pinned_child_position(specs: &[ChildSpec], id: &str) -> usize {
+        must_some_with(
+            specs.iter().position(|spec| spec.id == id),
+            format_args!("pinned child {id} must exist"),
+        )
+    }
+
+    fn pinned_spec(id: &str) -> ChildSpec {
+        must_some_with(
+            child_specs().into_iter().find(|spec| spec.id == id),
+            format_args!("pinned child {id} must exist"),
+        )
+    }
+
+    fn first_behavior_spec() -> ChildSpec {
+        must_some_with(
+            child_specs().into_iter().find(|spec| spec.kind == ChildKind::Behavior),
+            "behavior child",
+        )
+    }
+
+    fn required_child<'a>(doc: &'a ChildReceiptDoc, id: &str) -> &'a ChildEntry {
+        must_some_with(
+            doc.children.iter().find(|child| child.id == id),
+            format_args!("child {id} retained"),
+        )
+    }
+
+    fn required_failure_summary(outcome: &RawOutcome, context: &str) -> String {
+        must_some_with(summarize_failure(outcome), context)
+    }
+
+    fn build_doc_ok(
+        sha: &str,
+        executed: &[ChildEntry],
+        specs: &[ChildSpec],
+        state: &PersistState<'_>,
+    ) -> ChildReceiptDoc {
+        must_with(build_doc(sha, executed, specs, state), "doc should build")
+    }
+
+    fn last_pinned_spec(specs: &[ChildSpec]) -> &ChildSpec {
+        must_some_with(specs.last(), "pinned child set is non-empty")
     }
 
     // ---------------------------------------------------------------------
@@ -1199,9 +1249,7 @@ mod tests {
             "the required child set is the #8063 minimum plus the registry group; \
              drift must be deliberate"
         );
-        let position = |id: &str| {
-            specs.iter().position(|spec| spec.id == id).expect("pinned child must exist")
-        };
+        let position = |id: &str| pinned_child_position(&specs, id);
         assert!(
             position("compile/lsp_api_contracts")
                 < position("lsp_api_contracts/textdocument_sync_camel_case"),
@@ -1229,10 +1277,7 @@ mod tests {
 
     #[test]
     fn behavior_command_passes_libtest_options_directly() {
-        let spec = child_specs()
-            .into_iter()
-            .find(|spec| spec.id == "semantic_definition/scalar_variable")
-            .expect("pinned behavior child must exist");
+        let spec = pinned_spec("semantic_definition/scalar_variable");
         assert_eq!(
             command_line(&spec, Some("target/debug/deps/semantic_definition-test")),
             "\"target/debug/deps/semantic_definition-test\" \
@@ -1313,7 +1358,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
             "compile/semantic_definition",
             behavior_outcome(0, false, "   Finished `test` profile in 0.1s"),
         );
-        let outcome = run_suite(&path, &mut executor).expect("suite should run");
+        let outcome = run_suite_ok(&path, &mut executor);
         assert_eq!(outcome.aggregate.status, "fail");
         assert!(
             outcome
@@ -1328,11 +1373,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
             "the behavior child must not execute without a resolved binary"
         );
         let doc = read_receipt(&path);
-        let child = doc
-            .children
-            .iter()
-            .find(|child| child.id == "semantic_definition/scalar_variable")
-            .expect("child retained");
+        let child = required_child(&doc, "semantic_definition/scalar_variable");
         assert_eq!(child.status, ChildStatus::InstrumentFailure);
         assert!(child.failure_summary.as_deref().is_some_and(|s| s.contains("no prebuilt")));
         // The API lane still executes: its compile resolved normally.
@@ -1427,14 +1468,13 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
             false,
             "test x ... FAILED\nthread panicked at a.rs:1:\nboom\ntest result: FAILED.\n",
         );
-        let summary = summarize_failure(&outcome).expect("summary for assertion failure");
+        let summary = required_failure_summary(&outcome, "summary for assertion failure");
         assert!(summary.contains("panicked at"), "summary retains the failure site");
 
-        let mut long_outcome = behavior_outcome(0, false, &String::new());
         let mut long = String::from("error: could not compile\n");
         long.push_str(&"x".repeat(10_000));
-        long_outcome.stdout = long;
-        let summary = summarize_failure(&long_outcome).expect("summary for compile failure");
+        let long_outcome = behavior_outcome(0, false, &long);
+        let summary = required_failure_summary(&long_outcome, "summary for compile failure");
         assert!(summary.len() <= MAX_FAILURE_SUMMARY_CHARS + 8);
     }
 
@@ -1446,7 +1486,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
     fn suite_all_pass_passes_and_writes_complete_receipt() {
         let path = temp_receipt_path("all-pass");
         let mut executor = all_pass_executor();
-        let outcome = run_suite(&path, &mut executor).expect("suite should run");
+        let outcome = run_suite_ok(&path, &mut executor);
         assert_eq!(outcome.aggregate.status, "pass");
         assert_eq!(outcome.aggregate.total, child_specs().len());
 
@@ -1503,7 +1543,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
                  assertion failed\ntest result: FAILED. 0 passed; 1 failed\n",
             ),
         );
-        let outcome = run_suite(&path, &mut executor).expect("suite should run");
+        let outcome = run_suite_ok(&path, &mut executor);
         assert_eq!(outcome.aggregate.status, "fail");
         assert_eq!(outcome.aggregate.non_success, vec!["semantic_definition/scalar_variable"]);
         assert_eq!(
@@ -1523,7 +1563,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
             "semantic_definition/package_qualified_call",
             behavior_outcome(124, true, "running 1 test\ntest pkg ... "),
         );
-        let outcome = run_suite(&path, &mut executor).expect("suite should run");
+        let outcome = run_suite_ok(&path, &mut executor);
         assert_eq!(outcome.aggregate.status, "fail");
         assert!(
             outcome
@@ -1536,11 +1576,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
             "API-contract child must execute regardless of semantic hang outcomes"
         );
         let doc = read_receipt(&path);
-        let hung = doc
-            .children
-            .iter()
-            .find(|child| child.id == "semantic_definition/package_qualified_call")
-            .expect("hung child retained");
+        let hung = required_child(&doc, "semantic_definition/package_qualified_call");
         assert_eq!(hung.status, ChildStatus::RequestTimeout);
         assert_eq!(hung.cleanup.as_deref(), Some("unobserved after timeout"));
         assert!(hung.failure_summary.as_deref().is_some_and(|s| !s.is_empty()));
@@ -1557,7 +1593,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
             "compile/semantic_definition",
             behavior_outcome(101, false, "error: could not compile `perl-lsp-rs`"),
         );
-        let outcome = run_suite(&path, &mut executor).expect("suite should run");
+        let outcome = run_suite_ok(&path, &mut executor);
         assert_eq!(outcome.aggregate.status, "fail");
         assert_eq!(
             outcome.aggregate.non_success,
@@ -1574,11 +1610,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
         assert!(!executor.executed.contains(&"semantic_definition/scalar_variable"));
         assert!(executor.executed.contains(&"lsp_api_contracts/textdocument_sync_camel_case"));
         let doc = read_receipt(&path);
-        let blocked = doc
-            .children
-            .iter()
-            .find(|child| child.id == "semantic_definition/scalar_variable")
-            .expect("blocked child retained");
+        let blocked = required_child(&doc, "semantic_definition/scalar_variable");
         assert_eq!(blocked.status, ChildStatus::NotProven);
         assert_eq!(blocked.execution_mark, "final");
         cleanup(&path);
@@ -1594,7 +1626,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
             "compile/lsp_api_contracts",
             behavior_outcome(101, false, "error: could not compile `perl-lsp-rs`"),
         );
-        let outcome = run_suite(&path, &mut executor).expect("suite should run");
+        let outcome = run_suite_ok(&path, &mut executor);
         assert_eq!(
             outcome.aggregate.non_success,
             vec!["compile/lsp_api_contracts", "lsp_api_contracts/textdocument_sync_camel_case",],
@@ -1613,7 +1645,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
         let path = temp_receipt_path("setup-fail");
         let mut executor = all_pass_executor();
         executor.set("setup/build_perllsp", behavior_outcome(124, true, "building perllsp"));
-        let outcome = run_suite(&path, &mut executor).expect("suite should run");
+        let outcome = run_suite_ok(&path, &mut executor);
         assert!(outcome.aggregate.status == "fail");
         assert_eq!(
             outcome.aggregate.non_success,
@@ -1627,11 +1659,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
             "a setup timeout blocks server-dependent behavior; the in-process API lane still runs"
         );
         let doc = read_receipt(&path);
-        let blocked = doc
-            .children
-            .iter()
-            .find(|child| child.id == "semantic_definition/scalar_variable")
-            .expect("blocked child retained");
+        let blocked = required_child(&doc, "semantic_definition/scalar_variable");
         assert_eq!(blocked.status, ChildStatus::NotProven);
         assert!(
             executor.executed.contains(&"lsp_api_contracts/textdocument_sync_camel_case"),
@@ -1658,7 +1686,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
                  camelCase\ntest result: FAILED.\n",
             ),
         );
-        let outcome = run_suite(&path, &mut executor).expect("suite should run");
+        let outcome = run_suite_ok(&path, &mut executor);
         assert_eq!(
             outcome.aggregate.non_success,
             vec!["lsp_api_contracts/textdocument_sync_camel_case"]
@@ -1673,14 +1701,10 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
         let mut executor = all_pass_executor();
         let timeout = behavior_outcome(124, true, "running 1 test\ntest x ... ");
         executor.set("lsp_api_contracts/textdocument_sync_camel_case", timeout);
-        let outcome = run_suite(&path, &mut executor).expect("suite should run");
+        let outcome = run_suite_ok(&path, &mut executor);
         assert_eq!(outcome.aggregate.status, "fail");
         let doc = read_receipt(&path);
-        let child = doc
-            .children
-            .iter()
-            .find(|child| child.id == "lsp_api_contracts/textdocument_sync_camel_case")
-            .expect("child retained");
+        let child = required_child(&doc, "lsp_api_contracts/textdocument_sync_camel_case");
         assert_eq!(child.attempt, 1);
         assert_eq!(child.attempts, 1, "behavior timeouts are never retried");
         assert!(child.attempt_history.is_empty());
@@ -1695,23 +1719,14 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
         let specs = child_specs();
         let executed: Vec<ChildEntry> = vec![placeholder(&specs[0], "final", sha)];
         let running = running_entry(&specs[1], sha, None, None);
-        let doc = build_doc(sha, &executed, &specs, &PersistState::Running(Some(&running)))
-            .expect("doc should build");
+        let doc = build_doc_ok(sha, &executed, &specs, &PersistState::Running(Some(&running)));
         assert_eq!(doc.suite_state, "running");
         assert!(doc.aggregate.is_none(), "no aggregate before the suite completes");
-        let running = doc
-            .children
-            .iter()
-            .find(|child| child.id == specs[1].id)
-            .expect("running child present");
+        let running = required_child(&doc, specs[1].id);
         assert_eq!(running.status, ChildStatus::Cancelled);
         assert_eq!(running.execution_mark, "running");
         assert_eq!(running.cleanup.as_deref(), Some("unobserved"));
-        let pending = doc
-            .children
-            .iter()
-            .find(|child| child.id == specs[2].id)
-            .expect("pending child present");
+        let pending = required_child(&doc, specs[2].id);
         assert_eq!(pending.status, ChildStatus::Cancelled);
         assert_eq!(pending.execution_mark, "pending");
         // Fail-closed: an incomplete table aggregates to fail.
@@ -1724,10 +1739,10 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
     fn aggregate_rejects_duplicate_substitution_for_missing_child() {
         let path = temp_receipt_path("duplicate-aggregate");
         let mut executor = all_pass_executor();
-        let _ = run_suite(&path, &mut executor).expect("suite should run");
+        let _ = run_suite_ok(&path, &mut executor);
         let doc = read_receipt(&path);
         let specs = child_specs();
-        let missing_id = specs.last().expect("pinned child set is non-empty").id;
+        let missing_id = last_pinned_spec(&specs).id;
         let mut entries = doc.children;
         entries.pop();
         entries.push(entries[0].clone());
@@ -1756,10 +1771,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
 
     #[test]
     fn running_snapshot_retains_resolved_execution_context() {
-        let spec = child_specs()
-            .into_iter()
-            .find(|spec| spec.kind == ChildKind::Behavior)
-            .expect("behavior child");
+        let spec = first_behavior_spec();
         let executable = Path::new("target/debug/deps/semantic_definition-deadbeef");
         let working_dir = Path::new("crates/perl-lsp-rs");
         let entry = running_entry(&spec, "deadbeef", Some(executable), Some(working_dir));
@@ -1791,7 +1803,7 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
             outcome.spawn_failed = true;
             executor.set(spec.id, outcome);
         }
-        let outcome = run_suite(&path, &mut executor).expect("suite should run");
+        let outcome = run_suite_ok(&path, &mut executor);
         assert_eq!(outcome.aggregate.status, "fail");
         assert_eq!(outcome.aggregate.non_success.len(), child_specs().len());
         let doc = read_receipt(&path);
@@ -1813,16 +1825,44 @@ tests/semantic_definition.rs (target/debug/deps/semantic_definition-e6b16757b69b
                 "test scoped ... ok\ntest result: ok. 1 passed; 0 failed\n",
             ),
         );
-        let outcome = run_suite(&path, &mut executor).expect("suite should run");
+        let outcome = run_suite_ok(&path, &mut executor);
         assert_eq!(outcome.aggregate.status, "fail");
         let doc = read_receipt(&path);
-        let child = doc
-            .children
-            .iter()
-            .find(|child| child.id == "semantic_definition/scoped_variable")
-            .expect("child retained");
+        let child = required_child(&doc, "semantic_definition/scoped_variable");
         assert_eq!(child.status, ChildStatus::TeardownTimeout);
         assert!(child.failure_summary.as_deref().is_some_and(|s| s.contains("teardown")));
         cleanup(&path);
+    }
+
+    // -------------------------------------------------------------------
+    // Conversion falsifiers: helpers still fail with named context
+    // -------------------------------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "must: read receipt:")]
+    fn lsp_smoke_converted_result_assertion_still_fails_when_receipt_is_unreadable() {
+        let path = temp_receipt_path("missing-receipt-file");
+        let _ = read_receipt(&path);
+    }
+
+    #[test]
+    #[should_panic(expected = "must_some: child absent/child retained:")]
+    fn lsp_smoke_converted_option_assertion_still_fails_when_child_is_absent() {
+        let doc = ChildReceiptDoc {
+            schema_version: RECEIPT_SCHEMA_VERSION,
+            gate: "lsp_smoke".to_string(),
+            subject_sha: "deadbeef".to_string(),
+            suite_state: "complete".to_string(),
+            children: Vec::new(),
+            aggregate: None,
+        };
+        let _ = required_child(&doc, "absent/child");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_some: summary for assertion failure:")]
+    fn lsp_smoke_converted_option_assertion_still_fails_when_failure_summary_is_absent() {
+        let outcome = behavior_outcome(0, false, "");
+        let _ = required_failure_summary(&outcome, "summary for assertion failure");
     }
 }
