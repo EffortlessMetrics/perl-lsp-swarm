@@ -1335,9 +1335,11 @@ pub fn non_rust_inventory(root: &Path) -> Result<()> {
 /// it never changes on `main` and can never conflict on merge (#14688). The
 /// generated inventory lives only under `target/policy/` and in the CI
 /// artifact the policy shard uploads. The merge check binds the tracked file
-/// to the selected baseline's pointer blob (this constant seeds the one-time freeze
-/// and the no-baseline local fallback) so a branch cannot reintroduce a
-/// generated body or change the pointer, even together with this constant.
+/// to the selected base tip's pointer blob after publication, independently of
+/// this constant. This constant proposes the initial publication while the base
+/// still contains the legacy counted document; that cutover requires review,
+/// since no preexisting frozen pointer authenticates its bytes. It also supplies
+/// the no-baseline local fallback. This is not isolation from checker edits.
 pub const NON_RUST_INVENTORY_POINTER: &str = r#"# Non-Rust File Inventory
 
 This file is a frozen pointer. It carries no counts and no rows, and it never
@@ -1395,8 +1397,9 @@ fn baseline_inventory_pointer(root: &Path, baseline: &str) -> Option<String> {
 /// carries (separate from the merge-base new-path delta), so a candidate cannot
 /// change the pointer even if it also changes
 /// the compiled constant. The compiled constant is used only for the one-time
-/// freeze (the baseline still carries the legacy counted document) and, outside
-/// CI, when no baseline resolves. In CI a missing baseline fails closed,
+/// publication (the baseline still carries the legacy counted document), whose
+/// initial bytes require cutover review rather than independent authentication,
+/// and, outside CI, when no baseline resolves. In CI a missing baseline fails closed,
 /// mirroring the newly-added-path ratchet.
 fn verify_frozen_inventory_publication(root: &Path, baseline: Option<&str>) -> Result<()> {
     verify_frozen_inventory_publication_against(root, baseline, NON_RUST_INVENTORY_POINTER)
@@ -1408,6 +1411,11 @@ fn verify_frozen_inventory_publication_against(
     fallback: &str,
 ) -> Result<()> {
     let path = root.join(NON_RUST_INVENTORY_POINTER_PATH);
+    let metadata = fs::symlink_metadata(&path)
+        .with_context(|| format!("inspecting the frozen inventory pointer {}", path.display()))?;
+    if !metadata.file_type().is_file() {
+        bail!("the frozen inventory pointer must be a regular file: {}", path.display());
+    }
     let actual = fs::read_to_string(&path)
         .with_context(|| format!("reading the frozen inventory pointer {}", path.display()))?
         .replace("\r\n", "\n");
@@ -1415,8 +1423,13 @@ fn verify_frozen_inventory_publication_against(
     let base = baseline.and_then(|baseline| baseline_inventory_pointer(root, baseline));
     let (expected, restore) = match base.as_deref() {
         Some(base) if base.contains(LEGACY_INVENTORY_MARKER) => {
-            // One-time freeze: the baseline still carries the retired counted
-            // publication; only the frozen pointer may replace it.
+            // No published pointer exists yet. Review establishes the initial
+            // content; this comparison checks consistency with that proposal.
+            eprintln!(
+                "notice: initial inventory pointer publication against a legacy baseline; \
+                 comparing with the proposed compiled pointer. Cutover review must approve \
+                 the initial content; no frozen base-tip blob exists yet"
+            );
             (fallback, "adopt the frozen pointer document".to_string())
         }
         Some(base) => (
@@ -4454,6 +4467,35 @@ review_after = "2026-11-13"
         // Restoring the base blob passes even when the compiled constant differs.
         write_fixture(temp.path(), NON_RUST_INVENTORY_POINTER_PATH, NON_RUST_INVENTORY_POINTER)?;
         verify_frozen_inventory_publication_against(temp.path(), Some("HEAD"), &edited)?;
+        Ok(())
+    }
+
+    #[test]
+    fn frozen_pointer_rejects_a_directory() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        fs::create_dir_all(temp.path().join(NON_RUST_INVENTORY_POINTER_PATH))?;
+        let error = verify_frozen_inventory_publication(temp.path(), None)
+            .err()
+            .ok_or_else(|| eyre!("a directory cannot be the frozen pointer"))?;
+        ensure!(error.to_string().contains("must be a regular file"), "{error}");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn frozen_pointer_rejects_a_symlink_with_matching_contents() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join(NON_RUST_INVENTORY_POINTER_PATH);
+        fs::create_dir_all(path.parent().ok_or_else(|| eyre!("pointer needs a parent"))?)?;
+        let target = temp.path().join("matching-pointer.md");
+        fs::write(&target, NON_RUST_INVENTORY_POINTER)?;
+        std::os::unix::fs::symlink(&target, &path)?;
+        let error = verify_frozen_inventory_publication(temp.path(), None)
+            .err()
+            .ok_or_else(|| eyre!("matching referent bytes cannot make a symlink a frozen file"))?;
+        ensure!(error.to_string().contains("must be a regular file"), "{error}");
+        ensure!(fs::symlink_metadata(&path)?.file_type().is_symlink());
+        ensure!(fs::read_to_string(&target)? == NON_RUST_INVENTORY_POINTER);
         Ok(())
     }
 

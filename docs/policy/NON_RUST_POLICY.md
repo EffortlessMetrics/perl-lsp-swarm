@@ -36,12 +36,19 @@ unclassified paths fail and remain named in the retained evidence.
 The tracked `docs/policy/NON_RUST_INVENTORY.md` is a frozen pointer, not
 policy input and not a publication. No command writes it and `main` never
 changes it, so it cannot conflict on merge (#14688). `inventory --check`
-requires it to match the frozen content and names the one-command restore
+requires a regular file matching the selected base-tip pointer content
+(normalizing CRLF) and names the one-command restore
 (`git checkout origin/main -- docs/policy/NON_RUST_INVENTORY.md`) when a
 branch has regenerated it. The policy shard retains both ignored projections
 when they are produced, including on a newly unclassified-path failure, and
 uploads them as the `non-rust-inventory-<sha>` artifact; the artifact from a
 `main` run is the default-branch reference.
+
+When the base still contains the legacy counted document, there is no frozen
+pointer to authenticate. The first publication is compared with the proposed
+compiled pointer and requires cutover review. Subsequent checks bind to the
+published base-tip blob; they do not isolate execution from candidate edits to
+the checker.
 
 ## Schema
 

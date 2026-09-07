@@ -32,9 +32,16 @@ paths relative to the resolved merge baseline.
 [`docs/policy/NON_RUST_INVENTORY.md`](policy/NON_RUST_INVENTORY.md) is a
 frozen pointer document. It carries no counts and no rows, no command writes
 it, and it never changes on `main`, so it cannot conflict on merge (#14688).
-The merge check requires it to stay byte-identical to `main`; a branch that
+After the initial publication, the merge check requires a regular file whose
+content matches the pointer at the selected base tip (normalizing CRLF); a branch that
 regenerated it restores it with
 `git checkout origin/main -- docs/policy/NON_RUST_INVENTORY.md`.
+
+The initial cutover from the legacy counted document has no preexisting pointer
+blob. That cutover compares against the proposed compiled pointer and requires
+review of the first publication; it does not independently authenticate those
+initial bytes. Once published, the base-tip blob owns the freeze. This check
+does not provide isolation from candidate changes to the checker itself.
 
 The inventory itself is evidence, not publication. The allowlist plus the
 current-tree evaluator own the verdict; the ignored
