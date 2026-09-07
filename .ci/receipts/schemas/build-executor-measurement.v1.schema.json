@@ -1,0 +1,351 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/.ci/receipts/schemas/build-executor-measurement.v1.schema.json",
+  "title": "Build Executor Measurement Record",
+  "description": "One declared executor-model experiment cell and its observed measurement, emitted by the xtask build_measurement harness (#11639, child of controller #9547). Fail-closed: every fact the harness could not actually observe reports null / an explicit unavailable-unobserved state, never zero or a borrowed value. Raw observed facts (command, environment, timings, admissions) and the normalized interpretation carry separate sha256 digests (recomputable via xtask::build_measurement::raw_facts_digest / normalized_digest) so the #11642 decision successor can challenge the interpretation without trusting the harness's model labels.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "cell",
+    "command",
+    "environment",
+    "timings",
+    "disk_admission",
+    "lock",
+    "process",
+    "cache",
+    "work",
+    "executed_subject_commit",
+    "raw_digest",
+    "normalized_digest"
+  ],
+  "properties": {
+    "protocol_version": {
+      "const": "build_executor_measurement.v1",
+      "description": "Records under different protocol versions are never matched pairs."
+    },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflow_class",
+        "execution_model",
+        "operation",
+        "subject",
+        "host",
+        "ordinal",
+        "growth_paths",
+        "lock_policy",
+        "capacity"
+      ],
+      "properties": {
+        "workflow_class": {
+          "enum": ["construction", "proof", "orchestration"],
+          "description": "Construction, proof, and orchestration remain distinct; no law collapses them."
+        },
+        "execution_model": {
+          "enum": [
+            "raw_private_worktree",
+            "cargo_safe_direct_leaf",
+            "cargo_safe_xtask_environment_only",
+            "separate_worktree_devplanes",
+            "forced_shared_devplane",
+            "private_target_shared_cargo_sccache",
+            "bounded_target_pool_shared_cache",
+            "private_target_shared_cache_host_capacity_pool"
+          ],
+          "description": "The three current cargo-safe shapes stay distinct rows; the five candidate models are separate rows so the #11642 decision can compare without Boolean collapse."
+        },
+        "operation": {
+          "enum": [
+            "metadata",
+            "check",
+            "clippy",
+            "test",
+            "exact_test",
+            "build",
+            "selected_nextest"
+          ]
+        },
+        "subject": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repository",
+            "commit",
+            "worktree",
+            "package",
+            "target_triple",
+            "features",
+            "default_features",
+            "toolchain",
+            "build_profile",
+            "test_runner_profile"
+          ],
+          "properties": {
+            "repository": { "type": "string" },
+            "commit": { "type": "string", "description": "Exact candidate/source identity (commit SHA)." },
+            "worktree": { "type": "string" },
+            "package": { "type": "string" },
+            "target_triple": { "type": "string" },
+            "features": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Order-independent; input order never changes canonical identity."
+            },
+            "default_features": { "type": "boolean" },
+            "toolchain": { "type": "string" },
+            "build_profile": { "type": "string", "description": "Cargo build profile, separate from the test-runner profile." },
+            "test_runner_profile": { "type": ["string", "null"] }
+          }
+        },
+        "host": {
+          "enum": ["native_windows", "native_posix", "wsl_or_git_bash", "unsupported"],
+          "description": "Profiles stay distinct; no profile inherits another's results."
+        },
+        "ordinal": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cold", "repetition"],
+          "properties": {
+            "cold": { "type": "boolean" },
+            "repetition": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "growth_paths": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role", "path", "filesystem"],
+            "properties": {
+              "role": {
+                "enum": ["target", "build_dir", "temp", "cargo_home", "sccache_cache", "lock_root"]
+              },
+              "path": { "type": "string" },
+              "filesystem": { "type": "string", "description": "Filesystem/volume identity the path is declared to resolve to." }
+            }
+          }
+        },
+        "lock_policy": {
+          "enum": ["whole_process_flock", "none"],
+          "description": "Declaring none is an honest fact for models that run unlocked; claiming a locked run without the primitive is refused at admission."
+        },
+        "capacity": {
+          "description": "Declared host-capacity policy (externally tagged).",
+          "oneOf": [
+            { "type": "string", "enum": ["candidate_private", "forced_shared_devplane", "host_capacity_pool", "unmanaged"] },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["bounded_pool"],
+              "properties": {
+                "bounded_pool": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["slots"],
+                  "properties": { "slots": { "type": "integer", "minimum": 0 } }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["program", "args", "effective_env"],
+      "properties": {
+        "program": { "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "effective_env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "The effective environment the invocation ran under."
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Unprobeable fields are null — fail-closed.",
+      "required": ["cargo_version", "rustc_version", "host_triple"],
+      "properties": {
+        "cargo_version": { "type": ["string", "null"] },
+        "rustc_version": { "type": ["string", "null"] },
+        "host_triple": { "type": ["string", "null"] }
+      }
+    },
+    "timings": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Monotonic phase decomposition; null phases make the record incomplete and NOT_PROVEN.",
+      "required": [
+        "preparation_nanos",
+        "admission_wait_nanos",
+        "execution_nanos",
+        "reporting_nanos",
+        "total_wall_nanos",
+        "tolerance_nanos"
+      ],
+      "properties": {
+        "preparation_nanos": { "type": ["integer", "null"], "minimum": 0 },
+        "admission_wait_nanos": { "type": ["integer", "null"], "minimum": 0, "description": "Queue/lock wait is work and stays inside the total." },
+        "execution_nanos": { "type": ["integer", "null"], "minimum": 0 },
+        "reporting_nanos": { "type": ["integer", "null"], "minimum": 0 },
+        "total_wall_nanos": { "type": ["integer", "null"], "minimum": 0 },
+        "tolerance_nanos": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "disk_admission": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["measurements", "declared_path_mismatches"],
+      "properties": {
+        "measurements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["filesystem", "free_bytes"],
+            "properties": {
+              "filesystem": { "type": "string" },
+              "free_bytes": { "type": ["integer", "null"], "minimum": 0, "description": "null means the measurement failed — never 'infinite'." }
+            }
+          }
+        },
+        "declared_path_mismatches": {
+          "type": "array",
+          "description": "Growth paths whose actual filesystem differs from the declared one (externally tagged refusal objects).",
+          "items": { "type": ["string", "object"] }
+        }
+      }
+    },
+    "lock": {
+      "description": "Observed lock state: {held:{primitive,wait_nanos}} (whole-cargo-process scope, never renamed into a compile lock), policy_declares_none, primitive_unavailable, or unobserved. The latter two are NOT_PROVEN, never a locked success.",
+      "oneOf": [
+        { "type": "string", "enum": ["policy_declares_none", "primitive_unavailable", "unobserved"] },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["held"],
+          "properties": {
+            "held": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["primitive", "wait_nanos"],
+              "properties": {
+                "primitive": { "enum": ["whole_process_flock", "file_lock"] },
+                "wait_nanos": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "process": {
+      "description": "Observed process tree or instrument_unavailable. An unavailable instrument is NOT_PROVEN, never zero descendants; a residual tree is NOT_PROVEN.",
+      "oneOf": [
+        { "type": "string", "enum": ["instrument_unavailable"] },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["observed"],
+          "properties": {
+            "observed": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["descendant_count", "terminality"],
+              "properties": {
+                "descendant_count": { "type": "integer", "minimum": 0 },
+                "terminality": { "enum": ["clean", "residual_descendants"] }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "server_identity",
+        "delta_server_identity",
+        "baseline",
+        "delta",
+        "foreign_users_observed",
+        "attribution"
+      ],
+      "properties": {
+        "server_identity": { "type": ["string", "null"], "description": "Exact server/process identity at the baseline snapshot." },
+        "delta_server_identity": { "type": ["string", "null"], "description": "Identity at the delta snapshot; a changed identity makes the interval unattributable." },
+        "baseline": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["requests", "hits", "misses", "non_cacheable"],
+          "properties": {
+            "requests": { "type": "integer", "minimum": 0 },
+            "hits": { "type": "integer", "minimum": 0 },
+            "misses": { "type": "integer", "minimum": 0 },
+            "non_cacheable": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "delta": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["requests", "hits", "misses", "non_cacheable"],
+          "properties": {
+            "requests": { "type": "integer", "minimum": 0 },
+            "hits": { "type": "integer", "minimum": 0 },
+            "misses": { "type": "integer", "minimum": 0 },
+            "non_cacheable": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "foreign_users_observed": { "type": ["integer", "null"], "minimum": 0, "description": "null means the foreign-user instrument was unavailable — isolation unobserved, never zero." },
+        "attribution": {
+          "description": "Attribution of the delta to this cell; environment variables such as SCCACHE_BASEDIRS never constitute reuse evidence.",
+          "oneOf": [
+            { "type": "string", "enum": ["attributed", "unobserved"] },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["unattributed"],
+              "properties": {
+                "unattributed": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["reason"],
+                  "properties": { "reason": { "type": "string" } }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_selected", "observed_selected", "exit_code"],
+      "properties": {
+        "expected_selected": { "type": ["integer", "null"], "minimum": 0 },
+        "observed_selected": { "type": ["integer", "null"], "minimum": 0, "description": "Proof cells require observed selected work matching expected and exceeding zero." },
+        "exit_code": { "type": ["integer", "null"], "description": "null is NOT_PROVEN; nonzero is a failed run, never an admitted row." }
+      }
+    },
+    "executed_subject_commit": {
+      "type": ["string", "null"],
+      "description": "Explicitly partial evidence: the exact candidate (commit) the cell actually executed, as proven by artifact/output identity metadata. No other subject dimension is claimed; null means never proven."
+    },
+    "raw_digest": {
+      "type": "string",
+      "description": "sha256-prefixed digest over the raw observed facts only (no model labels, no admission verdicts)."
+    },
+    "normalized_digest": {
+      "type": "string",
+      "description": "sha256-prefixed digest over the normalized interpretation (canonical cell identity, protocol version, admission verdict). Separate from raw_digest by construction."
+    }
+  }
+}
