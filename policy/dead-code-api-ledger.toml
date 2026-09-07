@@ -115,10 +115,13 @@ governance_paths = [
 #   L10 every fixture in the corpus is cited by at least one row
 #   L11 every route to this surface the public-API baseline exposes has an
 #       `export_path` row, and no declared route is stale
+#   L12 every item headed out of the surface is named by an unresolved
+#       NOT_PROVEN boundary, and no boundary names an item that does not exist
 
 # --------------------------------------------------------------------------
-# Export paths. Three public paths reach one module; the module is dispositioned
-# once and the other two are projections, not separate authorities.
+# Export paths. Four public routes reach one module; the module is dispositioned
+# once and the other three are projections, not separate authorities. L11 derives
+# this set from the public-API baseline, so a new alias cannot be added silently.
 # --------------------------------------------------------------------------
 
 [[export_path]]
@@ -793,6 +796,7 @@ note = "The LSP's user-visible dead-code diagnostics do NOT flow through this AP
 
 [[not_proven]]
 id = "downstream-external-consumers"
+blocks_removal_of = ["DeadCodeType::UnusedImport", "DeadCodeType::UnusedExport", "DeadCode::confidence", "DeadCodeAnalysis::files_analyzed", "DeadCodeStats::total_dead_lines", "DeadCodeDetector::add_entry_point"]
 claim = "No consumer outside this repository depends on the surface."
 reason = "The check inventories this workspace only. `perl-parser` is published, so an external dependant cannot be excluded from repository evidence alone; semver policy, not this ledger, decides whether that permits removal."
 
@@ -808,5 +812,6 @@ reason = "Detection is deliberately mixed and neither half settles this. The two
 
 [[not_proven]]
 id = "serialized-payloads-in-circulation"
+blocks_removal_of = ["DeadCodeType::UnusedImport", "DeadCodeType::UnusedExport"]
 claim = "Whether any stored or transmitted payload carries `UnusedImport` / `UnusedExport`."
 reason = "Both variants derive `Serialize`/`Deserialize`, so a payload could exist outside the tree. Removal conditions for the two variants depend on this and it is not established here."
