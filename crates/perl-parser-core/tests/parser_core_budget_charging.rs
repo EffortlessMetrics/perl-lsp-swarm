@@ -398,6 +398,85 @@ fn deferred_recovery_dimensions_remain_uncharged() {
     assert_eq!(usage.heredoc_scan_bytes, 0, "no heredoc in this source");
 }
 
+/// A nested sub-parse whose nodes are spliced into this AST is governed by
+/// *this* operation's budget.
+///
+/// The fused rvalue `*{ ... }` path runs a nested `Parser` with its own
+/// operation and tracker, then splices the resulting nodes into the outer
+/// tree. Without adoption the outer `nodes_constructed` under-reports and
+/// `max_nodes_constructed` does not bound them, so a custom node limit could
+/// admit — and under-report — work beyond its configured bound.
+#[test]
+fn nodes_adopted_from_a_nested_sub_parse_are_charged_to_the_adopting_operation() {
+    const FUSED: &str = "my $g = *{ $tmp; 'STDOUT' };";
+    const PLAIN: &str = "my $g = *STDOUT;";
+
+    let fused = usage_unlimited(FUSED).nodes_constructed;
+    let plain = usage_unlimited(PLAIN).nodes_constructed;
+    assert!(
+        fused > plain,
+        "the fused form splices nested nodes into this AST, so it must charge more than the \
+         plain form ({fused} vs {plain})"
+    );
+
+    // A node limit one below the fused requirement must refuse — which it can
+    // only do if the adopted nodes are counted against this operation.
+    let below =
+        parse_with_budget(FUSED, budget_with(ParseCoreDimension::NodesConstructed, fused - 1));
+    assert!(
+        matches!(
+            below.stop_cause(),
+            Some(ParseStopCause::CoreBudgetExhausted {
+                dimension: ParseCoreDimension::NodesConstructed,
+                ..
+            })
+        ),
+        "a node limit below the fused requirement must refuse; got {:?}",
+        below.stop_cause()
+    );
+
+    // At the requirement it is admitted exactly.
+    let at = parse_with_budget(FUSED, budget_with(ParseCoreDimension::NodesConstructed, fused));
+    assert_eq!(at.stop_cause(), None, "the exact requirement must be admitted");
+    assert_eq!(at.budget_usage.nodes_constructed, fused);
+}
+
+/// Diagnostics forwarded from a nested sub-parse go through the retention
+/// seam, so the configured `max_errors` governs them too.
+///
+/// Before this was routed, `self.errors.extend(...)` appended them directly:
+/// a zero limit still returned diagnostics while `errors_emitted` stayed at
+/// zero, and repeated fused dereferences grew the vector past its cap.
+#[test]
+fn diagnostics_forwarded_from_a_nested_sub_parse_honor_the_configured_limit() {
+    // The inner `$a +;` recovers inside the nested parse and forwards one
+    // diagnostic into this one.
+    const SOURCE: &str = "my $g = *{ $a +; 'X' };";
+
+    let unlimited = parse_with_budget(SOURCE, ParseBudget::unlimited());
+    assert!(
+        !unlimited.diagnostics.is_empty(),
+        "fixture must forward a nested diagnostic for this control to discriminate"
+    );
+    assert_eq!(
+        unlimited.budget_usage.errors_emitted,
+        unlimited.diagnostics.len(),
+        "a forwarded diagnostic must be charged, not appended behind the seam"
+    );
+
+    let capped = parse_with_budget(SOURCE, budget_with(ParseCoreDimension::DiagnosticsEmitted, 0));
+    assert_eq!(
+        capped.budget_usage.errors_emitted, 0,
+        "a zero diagnostic limit must charge nothing"
+    );
+    assert!(
+        capped.diagnostics.is_empty(),
+        "a zero diagnostic limit must retain nothing, including diagnostics forwarded from a \
+         nested sub-parse; got {:?}",
+        capped.diagnostics
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Recurrence controls
 // ---------------------------------------------------------------------------
@@ -483,6 +562,28 @@ fn node_construction_seam_is_unique() {
 #[test]
 fn diagnostic_retention_seam_is_unique() {
     assert_every_raw_use_is_annotated(".errors.push(", 2);
+}
+
+/// `push` is not the only way to grow the diagnostic vector.
+///
+/// A forwarded batch (`self.errors.extend(...)` in the fused `*{...}` path)
+/// bypassed the seam entirely: it neither charged `max_errors` nor recorded
+/// observation, so a zero limit still returned diagnostics. Guarding only
+/// `push` missed it, so every mutating access to the vector is guarded here.
+#[test]
+fn no_bulk_path_grows_the_diagnostic_vector_outside_the_seam() {
+    for mutator in [
+        ".errors.extend(",
+        ".errors.append(",
+        ".errors.insert(",
+        ".errors.extend_from_slice(",
+        ".errors.retain(",
+        ".errors.clear(",
+        ".errors.truncate(",
+        ".errors.drain(",
+    ] {
+        assert_every_raw_use_is_annotated(mutator, 0);
+    }
 }
 
 /// The pre-#8786 defect must not return: the diagnostic limit is charged

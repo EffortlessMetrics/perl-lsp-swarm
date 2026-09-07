@@ -434,6 +434,37 @@ impl BudgetTracker {
         *slot = slot.saturating_add(1);
     }
 
+    /// Check-then-charge `count` units of core work in `dimension` (#8786).
+    ///
+    /// Used where work was performed by a nested operation and is only
+    /// countable afterwards, so the whole batch is admitted or refused
+    /// together. `count == 0` is a no-op and always succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::CoreBudgetExhausted`] when charging `count` more
+    /// units would exceed the configured limit; nothing is charged in that
+    /// case.
+    pub fn authorize_core_batch(
+        &mut self,
+        budget: &ParseBudget,
+        dimension: ParseCoreDimension,
+        count: usize,
+    ) -> ParseResult<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        let limit = budget.core_limit(dimension);
+        let usage = self.core_usage(dimension);
+        if usage.saturating_add(count) > limit {
+            return Err(ParseError::CoreBudgetExhausted { dimension, limit, usage });
+        }
+        for _ in 0..count {
+            self.charge_core(dimension);
+        }
+        Ok(())
+    }
+
     /// Check-then-charge one unit of core work in `dimension` (#8786).
     ///
     /// This is the single charge-before-work authority for the admitted core

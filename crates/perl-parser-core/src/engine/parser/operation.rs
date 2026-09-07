@@ -275,6 +275,29 @@ impl ParserOperationContext {
         self.tracker.authorize_core(&self.config.budget(), dimension)
     }
 
+    /// Charge the outer operation for nodes an inner sub-parse constructed and
+    /// handed back into this AST (#8786).
+    ///
+    /// `parse_inline_expression` runs a nested `Parser` with its own operation
+    /// and tracker, but its nodes are spliced into *this* tree. Without this
+    /// the outer `nodes_constructed` would under-report and
+    /// `max_nodes_constructed` would not govern them. The charge is necessarily
+    /// after the fact, so the overshoot is exactly the nested parse's own node
+    /// count, itself bounded by that parse's configuration.
+    pub(crate) fn authorize_adopted_nodes(&mut self, count: usize) -> ParseResult<()> {
+        self.tracker.authorize_core_batch(
+            &self.config.budget(),
+            ParseCoreDimension::NodesConstructed,
+            count,
+        )
+    }
+
+    /// Nodes charged so far in this operation, for handing a nested parse's
+    /// usage back to its adopting parent.
+    pub(crate) fn charged_nodes(&self) -> usize {
+        self.tracker.core_usage(ParseCoreDimension::NodesConstructed)
+    }
+
     /// Note that the parser detected a diagnostic-worthy condition, whether or
     /// not the diagnostic was retained.
     ///

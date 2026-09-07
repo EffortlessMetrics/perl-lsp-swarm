@@ -472,8 +472,16 @@ impl<'a> Parser<'a> {
             && self.peek_kind() != Some(TokenKind::Assign)
         {
             let inner_text = &name[1..name.len() - 1];
-            let (operand, diagnostics) = parse_inline_expression(inner_text, token.start() + 2)?;
-            self.errors.extend(diagnostics);
+            let (operand, diagnostics, adopted_nodes) =
+                parse_inline_expression(inner_text, token.start() + 2)?;
+            // The nested parse owns its own operation, but its nodes are
+            // spliced into this AST and its diagnostics are reported as this
+            // parse's own: both must therefore be governed by this operation's
+            // budget rather than the nested one's (#8786).
+            self.operation.authorize_adopted_nodes(adopted_nodes)?;
+            for diagnostic in diagnostics {
+                self.record_error(diagnostic);
+            }
             let end = token.end();
             let node = self.charge_node(
                 NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(operand) },
@@ -1673,7 +1681,15 @@ impl<'a> Parser<'a> {
 
 /// Parse an expression captured inside the lexer's single `*{...}` token and
 /// restore its source offsets relative to the containing source file.
-fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<(Node, Vec<ParseError>)> {
+/// Parse an expression captured inside a single `*{...}` token.
+///
+/// Returns the node, the offset-adjusted diagnostics, and the number of AST
+/// nodes the nested operation charged, so the adopting parser can charge them
+/// against its own budget (#8786).
+fn parse_inline_expression(
+    source: &str,
+    offset: usize,
+) -> ParseResult<(Node, Vec<ParseError>, usize)> {
     let mut parser = Parser::new(source);
     let ast = parser.parse().map_err(|error| offset_parse_error(error, offset))?;
     let diagnostics = parser
@@ -1704,9 +1720,11 @@ fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<(Node, Ve
         shift_node_locations(&mut expression, offset);
         expressions.push(expression);
     }
-    // The inline sub-parse owns its own operation, so these assembly
-    // nodes are charged there rather than to the enclosing parse (#8786).
-    Ok((build_deref_body(&mut parser, expressions, offset)?, diagnostics))
+    // Assembly nodes are charged to the nested operation, then reported so the
+    // adopting parser charges the whole nested total against its own budget.
+    let body = build_deref_body(&mut parser, expressions, offset)?;
+    let adopted_nodes = parser.operation.charged_nodes();
+    Ok((body, diagnostics, adopted_nodes))
 }
 
 /// Assemble a `*{...}` dereference body from its already-parsed expressions.
@@ -1866,7 +1884,7 @@ mod inline_expression_tests {
 
     #[test]
     fn multi_statement_inline_expression_preserves_every_expression() -> ParseResult<()> {
-        let (node, _) = parse_inline_expression("$tmp; 'STDOUT'", 17)?;
+        let (node, _, _) = parse_inline_expression("$tmp; 'STDOUT'", 17)?;
 
         let NodeKind::Block { statements } = node.into_parts().0 else {
             return Err(ParseError::syntax(
@@ -1881,7 +1899,7 @@ mod inline_expression_tests {
     #[test]
     fn inline_expression_forwards_recoverable_diagnostics() -> ParseResult<()> {
         let source = r#""abab" =~ /(?:[^b]*(?=(b)|(a))ab)*/"#;
-        let (_, diagnostics) = parse_inline_expression(source, 17)?;
+        let (_, diagnostics, _) = parse_inline_expression(source, 17)?;
         if !diagnostics.iter().any(|diagnostic| {
             matches!(diagnostic, ParseError::Advisory { message, .. }
                 if message.contains("Nested quantifiers detected"))
