@@ -647,24 +647,31 @@ fn git_protected_paths(
 /// derived from state only this clone has. It is only reachable once a
 /// deviation is declared; an empty table never consults protection at all.
 fn reject_untracked_attribute_overrides(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
+    // Ask git where the file lives rather than joining a path onto the git
+    // directory. In a linked worktree `--absolute-git-dir` is
+    // `.git/worktrees/<name>`, while `info/attributes` stays in the common
+    // directory and is still honoured — so a hand-built path would look in the
+    // wrong place and miss the override entirely. `--git-path` applies git's
+    // own per-worktree/common resolution.
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(workspace_root)
-        .args(["rev-parse", "--absolute-git-dir"])
+        .args(["rev-parse", "--path-format=absolute", "--git-path", "info/attributes"])
         .output()
-        .map_err(|error| contract_error(format!("locating the git directory: {error}")))?;
+        .map_err(|error| {
+            contract_error(format!("locating the git attributes override path: {error}"))
+        })?;
 
     if !output.status.success() {
         return Err(contract_error(format!(
-            "could not locate the git directory to check for per-clone attribute \
+            "could not locate the git attributes override path to check for per-clone \
              overrides: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         ))
         .into());
     }
 
-    let git_dir = PathBuf::from(String::from_utf8(output.stdout)?.trim());
-    let overrides = git_dir.join("info").join("attributes");
+    let overrides = PathBuf::from(String::from_utf8(output.stdout)?.trim());
     if overrides.exists() {
         return Err(contract_error(format!(
             "{} exists, so git's text attribute for a declared deviation cannot be proved \
@@ -1489,6 +1496,78 @@ mod tests {
         // With nothing declared, protection is never consulted, so the same
         // clone-local file is irrelevant.
         assert!(git_protected_paths(root, &[])?.is_empty());
+        Ok(())
+    }
+
+    /// A linked worktree must not hide a per-clone override.
+    ///
+    /// `--absolute-git-dir` in a linked worktree is `.git/worktrees/<name>`,
+    /// but `info/attributes` lives in the common directory and git still
+    /// honours it. Building the path by hand would look in the worktree
+    /// directory, find nothing, and report clone-local protection as
+    /// repository-wide — in exactly the worktree-per-claim layout this
+    /// repository mandates.
+    #[test]
+    fn a_linked_worktree_still_sees_the_common_attributes_override() -> Result<(), Box<dyn Error>> {
+        let scratch = tempdir()?;
+        let primary = scratch.path().join("primary");
+        let linked = scratch.path().join("linked");
+        fs::create_dir_all(&primary)?;
+
+        let git = |cwd: &Path, args: &[&str]| -> Result<(), Box<dyn Error>> {
+            let output =
+                std::process::Command::new("git").arg("-C").arg(cwd).args(args).output()?;
+            if !output.status.success() {
+                return Err(contract_error(format!(
+                    "git {args:?} failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ))
+                .into());
+            }
+            Ok(())
+        };
+
+        git(&primary, &["init", "--quiet"])?;
+        fs::write(primary.join("fixture.pl"), b"my $x = 1;\r\n")?;
+        fs::write(primary.join(".gitattributes"), "fixture.pl -text\n")?;
+        git(&primary, &["add", "-A"])?;
+        git(
+            &primary,
+            &["-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-qm", "init"],
+        )?;
+        git(
+            &primary,
+            &["worktree", "add", "--quiet", linked.to_str().unwrap_or_default(), "-b", "wt"],
+        )?;
+
+        let declared = [ByteExactDeviation {
+            path: "fixture.pl",
+            newline_style: NewlineStyle::CrLf,
+            final_newline: true,
+            byte_order_mark: false,
+            reason: "CRLF position fixture",
+        }];
+
+        assert!(
+            git_protected_paths(&linked, &declared)?.contains("fixture.pl"),
+            "the tracked rule is provable protection from the worktree too"
+        );
+
+        // The override lives in the COMMON git directory, not the worktree's.
+        let info = primary.join(".git").join("info");
+        fs::create_dir_all(&info)?;
+        fs::write(info.join("attributes"), "fixture.pl -text\n")?;
+
+        let error = git_protected_paths(&linked, &declared)
+            .err()
+            .ok_or_else(|| {
+                contract_error("a common-directory override must block a verdict from a worktree")
+            })?
+            .to_string();
+        assert!(
+            error.contains("info/attributes"),
+            "the failure must name the override even from a linked worktree: {error}"
+        );
         Ok(())
     }
 
