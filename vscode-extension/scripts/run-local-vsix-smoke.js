@@ -1029,31 +1029,20 @@ function composeCrashRecoveryReceipt({
     ),
   );
 
-  // Typed pending (#15019): the child leg always writes a watchdog
-  // observation. When its verdict is not_proven FOR THE DOCUMENTED
-  // capability/environment reasons (host cannot suspend; no running server
-  // process to exercise), the row is a deliberate `pending` — visible in
-  // the receipt and verdict-neutral, so the journey's pass/fail signal
-  // stays actionable on hosts that cannot exercise the leg. A malformed
-  // observation or an unexplained not_proven remains an instrument gap and
-  // still degrades the journey.
+  // Typed pending (#15019): the child producer emits `pending` for a
+  // capability-absent watchdog leg (host cannot suspend), and the driver
+  // stays fail-closed for everything else — a malformed observation or an
+  // unexplained not_proven remains an instrument gap that degrades the
+  // journey.
   const watchdogObservation = transientObservations.watchdog;
   const watchdogStatus =
     watchdogObservation && typeof watchdogObservation.status === 'string'
       ? watchdogObservation.status
-      : null;
-  const watchdogCapabilityAbsence =
-    watchdogStatus === 'not_proven' &&
-    typeof watchdogObservation?.reason === 'string' &&
-    /cannot safely suspend|owned by #7846|no running server process/.test(
-      watchdogObservation.reason,
-    );
+      : 'not_proven';
   const watchdogRow = boundRow(
-    watchdogStatus === null
-      ? 'not_proven'
-      : watchdogCapabilityAbsence
-        ? 'pending'
-        : watchdogStatus,
+    ['pass', 'failed', 'not_proven', 'pending'].includes(watchdogStatus)
+      ? watchdogStatus
+      : 'not_proven',
   );
 
   const legsExitedCleanly = legExitCodes.transient === 0 && legExitCodes.breaker === 0;

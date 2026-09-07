@@ -1133,7 +1133,7 @@ void test('an unexercised watchdog leg is typed pending and verdict-neutral', ()
     observations: {
       ...passingTransientChild().observations,
       watchdog: {
-        status: 'not_proven',
+        status: 'pending',
         reason:
           'host platform cannot safely suspend the installed server process; deterministic watchdog mechanism proof is owned by #7846',
       },
