@@ -52,6 +52,11 @@ import { registerGherkinProviders } from './gherkinProviders';
 import { registerGherkinStepDefinitionSupport } from './gherkinStepDefinitions';
 import { registerDocumentFeatureGroup } from './documentFeatureGroup';
 import { StreamingCompletionController } from './streamingCompletion';
+import {
+  awaitServerProcessExit,
+  serverProcessOf,
+  type ServerProcessLike,
+} from './serverProcessTermination';
 import { InlineCompletionOwner } from './inlineCompletionRouting';
 import {
   runAllTestsWithProve,
@@ -343,6 +348,11 @@ const MAX_AUTO_RESTART_ATTEMPTS = 3;
 const STABLE_RUN_GRACE_MS = 30_000;
 const WATCHDOG_INTERVAL_MS = 30_000;
 const WATCHDOG_TIMEOUT_MS = 10_000;
+// vscode-languageclient schedules `checkProcessDied()` two seconds after
+// `stop()` settles and only then terminates a still-running server. Wait a
+// little past that for the exit event; the lifecycle's own stop bound (5 s)
+// caps the whole terminal check.
+const SERVER_PROCESS_EXIT_GRACE_MS = 4_000;
 const crashRecoveryArbiter = new CrashRecoveryArbiter(
   MAX_AUTO_RESTART_ATTEMPTS,
   STABLE_RUN_GRACE_MS,
@@ -1925,6 +1935,17 @@ function createLanguageClientLifecycle(
       const message = error instanceof Error ? error.message : String(error);
       outputChannel.error(`[lifecycle] ${phase} callback failed: ${message}`);
     },
+    // vscode-languageclient can settle `stop()` successfully or with a
+    // handshake rejection before the node transport terminates its server.
+    // Require Stopped plus exit of the process captured before `stop()` for
+    // either settlement before admitting a replacement (#14155).
+    captureStopWitness: (client) => serverProcessOf(client),
+    isClientTerminal: async (client, witness) =>
+      client.state === LanguageClientState.Stopped &&
+      (await awaitServerProcessExit(
+        witness as ServerProcessLike | undefined,
+        SERVER_PROCESS_EXIT_GRACE_MS,
+      )),
   });
 }
 
