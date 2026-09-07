@@ -646,6 +646,7 @@ impl DebugAdapter {
                             .to_string(),
                     );
                 }
+                self.operation_broker.open_session();
 
                 // Apply any function breakpoints configured before launch.
                 self.apply_stored_function_breakpoints();
@@ -783,7 +784,14 @@ impl DebugAdapter {
         let tcp_session = self.tcp_session.clone();
         let attached_pid = self.attached_pid.clone();
         let termination_state = self.termination_state.clone();
+        let operation_broker = self.operation_broker.clone();
         let session_generation = self.current_session_generation();
+        // The reader's session epoch in the broker's own id space. The
+        // launch-failure/EOF/read-error settles below are gated on it, so a
+        // stale reader still draining its pipe after a restart or attach
+        // replacement cannot settle the replacement session's pending
+        // operations (#8564 review).
+        let broker_session_generation = operation_broker.current_session_generation();
 
         thread::spawn(move || {
             // Perl's debugger prompt and evaluation output are emitted on stderr.
@@ -810,6 +818,9 @@ impl DebugAdapter {
                 tracing::warn!(
                     "No debugger output stream available - output reader thread exiting"
                 );
+                // Launch effectively failed for framed operations (#8564):
+                // settle only while this reader still owns the live session.
+                operation_broker.settle_all_if_current("launch_failed", broker_session_generation);
                 if let Some(ref sender) = sender {
                     emit_terminated_event(
                         sender,
@@ -855,6 +866,15 @@ impl DebugAdapter {
                 match reader.read_line(&mut line) {
                     Ok(0) => {
                         tracing::debug!("Perl debugger process terminated");
+                        // Settle every pending framed operation first (#8564):
+                        // waiters must observe SessionGone, not spin to their
+                        // timeout against a dead session. Gated on the reader's
+                        // spawn generation: a stale reader draining its pipe
+                        // after a restart or attach replacement must not clear
+                        // the replacement session's pending table (#8564
+                        // review).
+                        operation_broker
+                            .settle_all_if_current("debugger_eof", broker_session_generation);
                         // The debuggee exited mid-query: emit the logpoint with
                         // whatever values arrived rather than dropping it.
                         if let Some(pending) = pending_logpoint.take() {
@@ -1463,6 +1483,12 @@ impl DebugAdapter {
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "Error reading from debugger");
+                        // Same contract as the EOF arm above (#8564): settle
+                        // pending operations so waiters observe SessionGone —
+                        // gated on the reader's spawn generation for the same
+                        // stale-reader reason.
+                        operation_broker
+                            .settle_all_if_current("read_error", broker_session_generation);
                         // Same contract as the EOF arm above: a read failure during a
                         // framed value query must still surface the logpoint with
                         // whatever values arrived, not swallow it.
@@ -1514,7 +1540,9 @@ impl DebugAdapter {
         let seq = self.seq.clone();
         let sender = self.event_sender.clone();
         let termination_state = self.termination_state.clone();
+        let operation_broker = self.operation_broker.clone();
         let session_generation = self.current_session_generation();
+        let broker_session_generation = operation_broker.current_session_generation();
         let timeout = Duration::from_secs(timeout_secs);
 
         thread::spawn(move || {
@@ -1568,18 +1596,38 @@ impl DebugAdapter {
                 "Debuggee watchdog: killing hung perl -d process after wall-clock timeout"
             );
 
-            // Reserve the timeout termination *before* kill so the output reader's
-            // EOF path cannot race in and emit `debugger_eof` first (#5149 review).
-            // Kill still runs before the blocking event send so a stalled client
-            // cannot leave the debuggee alive.
-            if !reserve_terminated_event(&termination_state, Some(session_generation)) {
+            // Settle framed-query waiters before killing the process. The EOF
+            // reader will also observe the death, but it may be blocked on a
+            // partial frame; broker waiters must not remain pending until that
+            // path drains. If another reader already settled this generation,
+            // it owns the terminal reason and the watchdog must not reserve a
+            // timeout event over it.
+            let settled_by_watchdog = operation_broker
+                .settle_all_if_current("debuggee_timeout", broker_session_generation);
+
+            // Reserve the timeout termination before kill only when this
+            // watchdog performed the settlement. Kill still runs before the
+            // blocking event send so a stalled client cannot leave the
+            // debuggee alive.
+            let owns_timeout_event = settled_by_watchdog
+                && reserve_terminated_event(&termination_state, Some(session_generation));
+
+            // Keep the termination-state lock while acquiring the session lock
+            // and killing. Replacement teardown takes these locks in the same
+            // order, so a replacement cannot advance the generation between
+            // the check above and selection of the process to kill.
+            let termination_guard =
+                lock_or_recover(&termination_state, "debug_adapter.termination_state");
+            if termination_guard.generation != session_generation {
                 tracing::debug!(
-                    "Debuggee watchdog: termination already reserved/emitted, skipping kill"
+                    session_generation,
+                    current_generation = termination_guard.generation,
+                    "Debuggee watchdog: session replaced before process kill"
                 );
                 return;
             }
 
-            // Kill the debuggee process.  The output reader will see EOF and
+            // Kill the debuggee process. The output reader will see EOF and
             // clean up session state via clear_active_session_state_for_generation.
             let killed = {
                 let Ok(mut guard) = session.lock() else {
@@ -1591,6 +1639,7 @@ impl DebugAdapter {
                     true // already gone
                 }
             };
+            drop(termination_guard);
 
             if !killed {
                 tracing::error!("Debuggee watchdog: failed to kill hung debuggee process");
@@ -1602,7 +1651,8 @@ impl DebugAdapter {
             // must not leak into a newer client conversation (#12092 review).
             // Blocking send is OK: the debuggee is already dead; the emitted
             // flag was set at reserve time.
-            if let Some(ref sender) = sender
+            if owns_timeout_event
+                && let Some(ref sender) = sender
                 && terminated_delivery_is_current(&termination_state, Some(session_generation))
             {
                 let _ = emit_event_safe(
@@ -1852,6 +1902,7 @@ impl DebugAdapter {
                         if let Ok(mut guard) = self.tcp_session.lock() {
                             *guard = Some(session);
                         }
+                        self.operation_broker.open_session();
 
                         // Start the generation-aware forwarder for TCP events.
                         // Events are published only while the attach's session
@@ -2059,11 +2110,14 @@ impl DebugAdapter {
         let _args: Option<DisconnectArguments> =
             arguments.and_then(|v| serde_json::from_value(v).ok());
 
+        // Settle broker waiters before terminating the child so EOF cannot
+        // win the race and replace the client-requested disconnect reason.
+        self.operation_broker.settle_all("disconnect");
         if let Some(ref sender) = self.event_sender {
             emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
         }
         self.clear_active_session_state();
-        self.close_terminal_session_generation();
+        self.close_terminal_session_generation("disconnect");
 
         DapMessage::Response {
             seq,
@@ -2088,6 +2142,9 @@ impl DebugAdapter {
         let restart = args.and_then(|a| a.restart);
 
         let terminated_body = restart.map(|restart| json!({ "restart": restart }));
+        // Settle broker waiters before terminating the child so EOF cannot
+        // win the race and replace the client-requested terminate reason.
+        self.operation_broker.settle_all("terminated");
         if let Some(ref sender) = self.event_sender {
             emit_terminated_event(
                 sender,
@@ -2098,7 +2155,7 @@ impl DebugAdapter {
             );
         }
         self.clear_active_session_state();
-        self.close_terminal_session_generation();
+        self.close_terminal_session_generation("terminated");
 
         DapMessage::Response {
             seq,
@@ -3430,6 +3487,7 @@ mod tests {
         use std::time::Duration;
 
         use super::{DebugSession, DebugState, ResumeMode, VariableCache, lock_or_recover};
+        use crate::debug_adapter::operation_broker::{BrokerOperationSpec, OperationClass};
 
         let mut cmd = if cfg!(windows) {
             let mut c = Command::new("ping");
@@ -3457,6 +3515,18 @@ mod tests {
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(sender);
         adapter.initialized.store(true, std::sync::atomic::Ordering::Release);
+        let operation = adapter
+            .operation_broker
+            .submit(BrokerOperationSpec {
+                class: OperationClass::Query,
+                session_generation: adapter.operation_broker.current_session_generation(),
+                suspension_generation: None,
+                timeout: Duration::from_secs(2),
+                cancellation: None,
+            })
+            .map_err(|error| {
+                format!("watchdog regression operation must be admitted: {error:?}")
+            })?;
 
         let session = DebugSession {
             process: child,
@@ -3471,6 +3541,26 @@ mod tests {
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 
         adapter.start_debuggee_watchdog(1);
+
+        // The watchdog must settle brokered waiters before attempting the kill.
+        // No output reader is started in this fixture, so EOF cannot mask a
+        // missing pre-kill settlement.
+        let terminal = adapter.operation_broker.await_framed_payload(
+            &operation,
+            "never-begin",
+            "never-end",
+            &adapter.recent_output,
+            &adapter.cancel_requested,
+        );
+        if terminal
+            != crate::debug_adapter::operation_broker::BrokerTerminal::SessionGone(
+                "debuggee_timeout",
+            )
+        {
+            return Err(format!(
+                "watchdog must settle a pending query before kill, got {terminal:?}"
+            ));
+        }
 
         // Bounded-timeout poll: with the fix, the kill runs before the (permanently
         // blocked) event send, so the process dies well within this deadline.
