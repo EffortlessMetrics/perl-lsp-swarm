@@ -1022,7 +1022,10 @@ impl MeasurementRecord {
         // somewhere in the command line - `cargo test --x check` cannot
         // admit a Check cell (#14739 review).
         if let Some(expected) = self.cell.expected_command_token() {
-            let subcommand_ok = self.command.args.first().is_some_and(|first| first == expected);
+            // The subcommand may sit at position one when a toolchain pin
+            // (`+nightly`) leads the line; anything deeper is not the
+            // subcommand (#14739 review).
+            let subcommand_ok = self.command.args.iter().take(2).any(|token| token == expected);
             if !subcommand_ok {
                 reasons.push(NotProvenReason::OperationCommandMismatch {
                     operation: format!("{:?}", self.cell.operation),
