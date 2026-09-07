@@ -336,6 +336,26 @@ fn a_bare_param_on_an_underscore_field_uses_the_public_constructor_key() {
     );
 }
 
+/// The core `class` feature does **not** strip the leading underscore, so the
+/// two frameworks must not share one default.
+///
+/// Verified on perl 5.38.2: for `class C { field $_secret :param = 0; }`,
+/// `C->new(_secret => 1)` is accepted and `C->new(secret => 1)` is rejected —
+/// the exact opposite of Object::Pad. Applying the Object::Pad rule here would
+/// advertise a constructor key Perl refuses.
+#[test]
+fn a_native_class_bare_param_keeps_the_underscore_the_source_wrote() {
+    let source = "use v5.38;\nclass Native {\n    field $_secret :param;\n    field $_explicit :param(_kept);\n}\n";
+    let model = model_for(source, "Native");
+
+    let constructor: Vec<&str> = model.object_pad_constructor_param_names().collect();
+    assert_eq!(
+        constructor,
+        vec!["_secret", "_kept"],
+        "a native bare :param keeps the underscore; an explicit name is still used exactly"
+    );
+}
+
 #[test]
 fn a_named_param_is_not_admitted_by_decoding_a_non_param_trait() {
     // Negative control: decoding an argument must not turn a non-`:param`

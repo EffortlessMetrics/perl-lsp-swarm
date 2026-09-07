@@ -319,11 +319,33 @@ impl ClassModel {
 
     /// Return the constructor parameter names this class accepts.
     ///
-    /// A bare `:param` contributes the field's own name; `:param(external)`
-    /// contributes `external` instead of, not in addition to, the field name.
+    /// An explicit `:param(external)` contributes `external` instead of, not in
+    /// addition to, the field name, in every framework.
+    ///
+    /// The *default* for a bare `:param` is framework-specific, and the two
+    /// frameworks genuinely disagree:
+    ///
+    /// - Object::Pad removes a single leading `_` — "the name of the field is
+    ///   used. A single prefix character `_` will be removed if present";
+    /// - the core `class` feature does not, through at least 5.42. On 5.38.2,
+    ///   `class C { field $_secret :param = 0; }` accepts `_secret` and
+    ///   *rejects* `secret`.
+    ///
+    /// Core has since taken the Object::Pad rule (perldelta "skipped `_` in
+    /// default `:param`/`:reader` names"), but that lands after the versions
+    /// this model gates on, so applying it to a native class here would
+    /// advertise a key current Perl rejects. Gate it on the release once that
+    /// version is established.
     pub fn object_pad_constructor_param_names(&self) -> impl Iterator<Item = &str> {
-        self.fields.iter().filter(|field| field.param).map(|field| {
-            field.param_name.as_deref().unwrap_or_else(|| object_pad_public_name(&field.name))
+        let strips_leading_underscore = matches!(self.framework, Framework::ObjectPad);
+        self.fields.iter().filter(|field| field.param).map(move |field| {
+            field.param_name.as_deref().unwrap_or_else(|| {
+                if strips_leading_underscore {
+                    object_pad_public_name(&field.name)
+                } else {
+                    field.name.as_str()
+                }
+            })
         })
     }
 }
