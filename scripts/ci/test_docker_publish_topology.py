@@ -134,30 +134,34 @@ def _steps(job_body: list[str]) -> list[dict[str, object]]:
     return steps
 
 
-def _enclosing_step(lines: list[str], index: int) -> list[tuple[int, str]]:
-    """Return the (index, line) pairs of the workflow step containing `index`.
+def _enclosing_job(lines: list[str], index: int) -> list[tuple[int, str]]:
+    """Return the (index, line) pairs of the workflow job containing `index`.
 
-    A step begins at a `- ` list marker and ends before the next marker at the
-    same indentation or the first line indented less than the marker. Used to
-    scan a whole step rather than one line, so a value hoisted into the step's
-    `env:` block is still in scope.
+    Scanning the whole job, rather than the single step that names the
+    builder Dockerfile, is deliberate. A two-step job can build the
+    toolchain under a safe tag and then re-label it under the product name
+    in a *separate* step:
+
+        - run: docker build -t perl-lsp-ci:$SHA -f .docker/rust/Dockerfile .
+        - run: docker tag perl-lsp-ci:$SHA perl-lsp:$SHA
+
+    The second step contains no `.docker/rust` substring, so a step-scoped
+    scan never looks at it and the retired identity comes back undetected.
+    The job is the smallest enclosure that still holds both halves.
     """
-    marker = re.compile(r"^(\s*)- ")
-    start = index
-    while start >= 0 and not marker.match(lines[start]):
-        start -= 1
-    if start < 0:
+    header = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
+    jobs_key = next(
+        (i for i, line in enumerate(lines) if re.match(r"^jobs:\s*$", line)),
+        None,
+    )
+    if jobs_key is None or index <= jobs_key:
         return [(index, lines[index])]
 
-    indent = len(marker.match(lines[start]).group(1))  # type: ignore[union-attr]
-    end = start + 1
-    while end < len(lines):
-        line = lines[end]
-        if line.strip():
-            current = len(line) - len(line.lstrip())
-            if current < indent or (current == indent and marker.match(line)):
-                break
-        end += 1
+    starts = [i for i, line in enumerate(lines) if i > jobs_key and header.match(line)]
+    start = max((i for i in starts if i <= index), default=None)
+    if start is None:
+        return [(index, lines[index])]
+    end = next((i for i in starts if i > start), len(lines))
     return [
         (i, lines[i])
         for i in range(start, end)
@@ -435,17 +439,18 @@ class RustBuilderIsNotAProduct(unittest.TestCase):
         # to mean the builder: a local `docker build -t perl-lsp:<sha>` for a
         # security scan asserts the same false identity inside CI.
         #
-        # The whole enclosing step is scanned, not the `docker build` line, so
-        # that hoisting the tag into `env:` — which the workflow-security
-        # ratchet requires for expressions in run source — cannot launder a
-        # product name past this control.
+        # The whole enclosing job is scanned, not the `docker build` line, so
+        # that neither hoisting the tag into `env:` — which the
+        # workflow-security ratchet requires for expressions in run source —
+        # nor re-tagging in a later step can launder a product name past this
+        # control. See `_enclosing_job`.
         offenders: list[str] = []
         for workflow in self.workflows:
             lines = workflow.read_text(encoding="utf-8").splitlines()
             for index, line in _noncomment_lines(lines):
                 if BUILDER_DOCKERFILE_DIR not in line:
                     continue
-                for offset, step_line in _enclosing_step(lines, index):
+                for offset, step_line in _enclosing_job(lines, index):
                     for reference in re.findall(r"[\w./-]+:[\w${}.-]+", step_line):
                         repository = reference.split(":", 1)[0].rsplit("/", 1)[-1]
                         if repository in PRODUCT_IMAGE_REPOSITORIES:

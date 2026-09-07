@@ -211,7 +211,7 @@ After all workflows complete, verify:
 4. **Docker Images**
    - Verify images are pushed to ghcr.io
    - Verify images are pushed to Docker Hub
-   - Test `docker run effortlessmetrics/perl-lsp`
+   - Test `docker run effortlessmetrics/perl-lsp:latest-perl --version`
 
 5. **Package Managers**
    - Monitor Homebrew PR status
