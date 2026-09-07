@@ -16,7 +16,7 @@ schema_version = 1
 policy = "non-rust-allowlist"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-08-24"
+updated = "2026-09-07"
 
 [defaults]
 rust_is_default = true
@@ -57,7 +57,7 @@ reason = "Generated Shields endpoint JSON for public README badges."
 generated_by = "python3 scripts/generate-badges.py"
 covered_by = ["python3 scripts/generate-badges.py --check"]
 created = "2026-05-13"
-review_after = "2026-08-13"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-docs-tree"
@@ -73,7 +73,7 @@ covered_by = [
 ]
 broad_glob_reason = "Docs are intentionally tree-shaped and non-executable. The executable, generated, process, and network companion ledgers cover risky drift."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-crate-features-sot"
@@ -226,7 +226,7 @@ covered_by = [
 ]
 broad_glob_reason = "Markdown is non-executable prose and non-Rust by definition. The glob is written `**/*.md` because that is the breadth this entry has always had: until #9994 the checker let a single `*` cross `/`, so the previous `*.md` already matched markdown at every depth. Narrowing this entry back to repository-root governance docs, with explicit entries for the 259 files across 21 trees it currently absorbs, is #14583 and is deliberately not a silent side effect of the matcher fix."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-lsp4ij-template"
@@ -280,7 +280,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-github-actions"
@@ -297,7 +297,7 @@ covered_by = [
 ]
 broad_glob_reason = "Composite Actions are by-convention a tree of action.yml + helper scripts; cover the entire dir."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-github-policy"
@@ -313,7 +313,7 @@ covered_by = [
 ]
 broad_glob_reason = "GitHub-required metadata location. Workflow trigger and policy lints cover the executable subset."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-ci-config"
@@ -330,7 +330,7 @@ covered_by = [
 ]
 broad_glob_reason = ".ci is a governed policy/config tree. Companion workflow, dependency, process, and network checks cover risky drift."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Policy ledgers
@@ -352,7 +352,7 @@ covered_by = [
 ]
 broad_glob_reason = "Policy ledgers are intentionally a tree of TOML files; broad coverage is the policy stack itself."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Control-plane authority contract
@@ -526,7 +526,7 @@ covered_by = [
 ]
 broad_glob_reason = "tree-sitter generates a tree of C sources, headers, queries, and grammar tests; the entire crate is the artifact."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-tree-sitter-grammar"
@@ -542,7 +542,7 @@ covered_by = [
 ]
 broad_glob_reason = "Tree-sitter shared crate is a tree of grammar/queries/corpus by tree-sitter convention."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # VS Code extension
@@ -580,7 +580,7 @@ covered_by = [
 ]
 broad_glob_reason = "Editor extension is a first-class shipped artifact; TypeScript, package.json, esbuild config, and extension docs all live together."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Build / release tooling
@@ -599,7 +599,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-justfiles-tree"
@@ -615,7 +615,7 @@ covered_by = [
 ]
 broad_glob_reason = "Modular justfile fragments live under a single tree."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-flake-nix"
@@ -630,7 +630,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-flake-lock"
@@ -646,7 +646,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-dist-workspace"
@@ -661,7 +661,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-cliff-toml"
@@ -676,7 +676,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-deny-toml"
@@ -692,7 +692,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-codecov-yml"
@@ -707,7 +707,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-ripr-toml"
@@ -722,7 +722,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-features-toml"
@@ -738,7 +738,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-bacon-toml"
@@ -753,7 +753,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-rust-analyzer-toml"
@@ -768,7 +768,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-clippy-toml"
@@ -785,7 +785,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-cargo-config"
@@ -801,7 +801,7 @@ covered_by = [
 ]
 broad_glob_reason = ".cargo/config.toml family lives in a single tree."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-cargo-semver-checks"
@@ -816,7 +816,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Test fixtures and snapshots
@@ -869,23 +869,7 @@ covered_by = [
 ]
 broad_glob_reason = "cargo-insta writes snapshot files alongside tests across all crates; **/*.snap is the canonical match."
 created = "2026-05-07"
-review_after = "2026-08-07"
-
-[[allow]]
-id = "non-rust-insta-pending-snapshots"
-glob = "**/*.snap.new"
-kind = "test_snapshot"
-language = "yaml"
-surface = "fixtures"
-classification = "test"
-owner = "parser/snapshots"
-reason = "cargo-insta pending snapshot review files."
-covered_by = [
-  "cargo insta accept",
-]
-broad_glob_reason = "Pending snapshots co-locate with accepted ones across the tree."
-created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-proptest-regressions"
@@ -901,7 +885,7 @@ covered_by = [
 ]
 broad_glob_reason = "proptest writes regression files alongside the failing test, always under crate `proptest-regressions/`."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-proptest-default-layout-regressions"
@@ -970,11 +954,10 @@ covered_by = [
   "cargo xtask check-file-policy",
   "cargo xtask check-executable-files",
   "cargo xtask check-process-policy",
-  "cargo xtask check-network-policy",
 ]
-broad_glob_reason = "scripts/ contains legacy and compatibility helpers being progressively migrated to xtask. The executable, process, and network companion policies constrain risky behavior."
+broad_glob_reason = "scripts/ contains legacy and compatibility helpers being progressively migrated to xtask. The executable, process, and file-policy companion checks constrain risky behavior."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-install-shell"
@@ -990,7 +973,7 @@ covered_by = [
   "cargo xtask check-network-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-install-powershell"
@@ -1005,7 +988,7 @@ covered_by = [
   "cargo xtask check-network-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Editor / IDE / agent configuration
@@ -1025,7 +1008,7 @@ covered_by = [
 ]
 broad_glob_reason = "Workspace VS Code config is a tree (settings, tasks, launch)."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-claude-config"
@@ -1041,7 +1024,7 @@ covered_by = [
 ]
 broad_glob_reason = "Agent runtime config is structurally a tree of agent files, prompts, and orchestrator state."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-spec-tree"
@@ -1057,7 +1040,7 @@ covered_by = [
 ]
 broad_glob_reason = "Spec-planner artifacts are a tree (acceptance grids, checklists, context bundles)."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-roo"
@@ -1136,7 +1119,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Developer / repo metadata
@@ -1186,7 +1169,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-cspell"
@@ -1201,7 +1184,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-trivyignore"
@@ -1216,7 +1199,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-tokeignore"
@@ -1231,7 +1214,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-pre-commit-hooks"
@@ -1246,7 +1229,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-perl-lsp-example-config"
@@ -1262,7 +1245,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Container / packaging
@@ -1283,7 +1266,7 @@ covered_by = [
 ]
 broad_glob_reason = "Docker build context is a tree of Dockerfiles, scripts, and supporting files."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-docker-compose"
@@ -1298,7 +1281,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-homebrew-formula"
@@ -1315,7 +1298,7 @@ covered_by = [
 ]
 broad_glob_reason = "Homebrew formulas live in a single Formula/ directory."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Release topology contract
@@ -1422,7 +1405,7 @@ covered_by = [
 ]
 broad_glob_reason = ".receipts/ holds CI gate receipts as a tree of JSON files."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-ops-tree"
@@ -1438,7 +1421,7 @@ covered_by = [
 ]
 broad_glob_reason = "Swarm ops directory holds heterogeneous operational state by design."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-config-tree"
@@ -1454,7 +1437,7 @@ covered_by = [
 ]
 broad_glob_reason = ".config/ holds per-tool XDG-style config as a tree."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Sublime Text helper package
