@@ -384,9 +384,17 @@ fn heredoc_injection_language(text: &str) -> Option<&'static str> {
 /// A single-line span yields exactly one segment whose length equals the old
 /// `end_character - start_character`, so same-line tokens keep their existing
 /// geometry.
-/// Segmenting is metered through `traversal`: one admission per emitted
-/// segment, so a cancellation or work budget interrupts a very large multiline
+/// Segmenting is metered through `traversal`: one admission per line the span
+/// covers, so a cancellation or work budget interrupts a very large multiline
 /// token instead of materializing every one of its lines first.
+///
+/// A line that emits nothing — a blank interior line, or the empty tail after a
+/// terminal newline — is charged too, because scanning and position-mapping it
+/// is the work the budget exists to bound. Charging only emitting lines would
+/// let a span of many blank lines iterate unmetered, which is exactly the hole
+/// this metering closes. This matches the surrounding convention: the lexer
+/// loop admits once per token and the AST walk once per node, both regardless
+/// of whether that iteration ends up emitting anything.
 fn push_line_contained_segments(
     text: &str,
     start: usize,
@@ -3315,7 +3323,7 @@ print "ok" foreach @ys;
     }
 
     #[test]
-    fn segmentation_is_metered_by_the_traversal_budget() {
+    fn segmentation_is_metered_by_the_traversal_budget() -> Result<(), Box<dyn std::error::Error>> {
         // Segmenting a large multiline token must remain interruptible: without
         // metering, a small budget or a cancellation is ignored until every
         // line has been materialized.
@@ -3335,8 +3343,30 @@ print "ok" foreach @ys;
             &mut traversal,
         );
         assert_eq!(result, Err(TraversalStop::BudgetExhausted));
-        assert_eq!(traversal.work_done, 3, "each emitted segment charges exactly one admission");
+        assert_eq!(traversal.work_done, 3, "each covered line charges exactly one admission");
         assert!(out.len() <= 3, "no segment may be produced past the budget: {out:?}");
+
+        // Lines that emit nothing are charged too, and deliberately so: metering
+        // only emitting lines would let a span of blank lines iterate unmetered.
+        // "a\n\n\nb" covers four lines and emits two tokens, so it owes four
+        // admissions, not two.
+        let blank_heavy = "a\n\n\nb";
+        let unlimited = SemanticTokensTraversalControl::unlimited();
+        let mut blank_traversal = TraversalState { control: &unlimited, work_done: 0 };
+        let mut blank_out = Vec::new();
+        push_line_contained_segments(
+            blank_heavy,
+            0,
+            blank_heavy.len(),
+            &|offset| pos16(blank_heavy, offset),
+            7,
+            0,
+            &mut blank_out,
+            &mut blank_traversal,
+        )
+        .map_err(|_| "unlimited budget must not stop")?;
+        assert_eq!(blank_out.len(), 2, "only the two nonempty lines emit: {blank_out:?}");
+        assert_eq!(blank_traversal.work_done, 4, "every covered line is metered, emitting or not");
 
         // The same span stops immediately under cancellation.
         let always_cancelled = || true;
@@ -3355,6 +3385,7 @@ print "ok" foreach @ys;
         );
         assert_eq!(cancelled, Err(TraversalStop::Cancelled));
         assert!(cancelled_out.is_empty(), "cancellation must stop before any segment");
+        Ok(())
     }
 
     #[test]
