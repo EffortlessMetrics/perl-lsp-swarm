@@ -289,6 +289,9 @@ pub enum QuickOrmTypeParamEffect {
     DerivedFromArgumentSource,
     /// Row identity is erased to plain data.
     ErasedToPlainData,
+    /// The effect depends on the argument's value rather than on the call, so
+    /// it cannot be resolved from the call site alone.
+    DeterminedByArgumentValue,
     /// The case carries no source/row type parameter.
     NotApplicable,
 }
@@ -301,6 +304,7 @@ impl QuickOrmTypeParamEffect {
             Self::TransformedToJoinRow => "transformed_to_join_row",
             Self::DerivedFromArgumentSource => "derived_from_argument_source",
             Self::ErasedToPlainData => "erased_to_plain_data",
+            Self::DeterminedByArgumentValue => "determined_by_argument_value",
             Self::NotApplicable => "not_applicable",
         }
     }
@@ -382,6 +386,11 @@ impl QuickOrmBoundary {
 }
 
 /// Where a row was read in reviewed upstream source.
+///
+/// `Serialize` only, by construction: the fields are `&'static str` borrowed
+/// from the compiled-in table, which cannot be deserialized into. The registry
+/// is compiled-in reference data, never persisted and read back, so there is no
+/// round trip to support — a consumer reads [`QUICKORM_API_CASES`] directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct QuickOrmEvidence {
     /// Path relative to the upstream distribution root.
@@ -566,13 +575,13 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         receiver_constraints: NO_CONSTRAINTS,
         arguments: A::Required,
         return_class: C::BooleanOrCount,
-        multiplicity: N::One,
+        multiplicity: N::ZeroOrOne,
         type_params: T::NotApplicable,
         mode: M::SyncOnly,
         void_context: V::Permitted,
         boundary: B::Exact,
         evidence: QuickOrmEvidence { file: CONN, line: 1001 },
-        notes: "Delegates to the sync-only handle count.",
+        notes: "Delegates to the sync-only handle count, which may be undef.",
     },
     QuickOrmApiCase {
         api_case_id: "conn.db",
@@ -1052,13 +1061,13 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         receiver_constraints: NO_CONSTRAINTS,
         arguments: A::Optional,
         return_class: C::BooleanOrCount,
-        multiplicity: N::One,
+        multiplicity: N::ZeroOrOne,
         type_params: T::NotApplicable,
         mode: M::SyncOnly,
         void_context: V::Permitted,
         boundary: B::Exact,
         evidence: QuickOrmEvidence { file: HANDLE, line: 3313 },
-        notes: "Croaks on an async handle. Returns a count, never a row.",
+        notes: "Croaks on an async handle. Returns a count, never a row, and undef when the select yields no row at all (Handle.pm:3324) — reachable when an inherited offset suppresses the aggregate row.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.cross_join",
@@ -1102,12 +1111,12 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         arguments: A::ValueSetter,
         return_class: C::DataOnlyTransition,
         multiplicity: N::One,
-        type_params: T::ErasedToPlainData,
+        type_params: T::DeterminedByArgumentValue,
         mode: M::SyncAsyncAsideForked,
         void_context: V::Croaks,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: HANDLE, line: 1102 },
-        notes: "The argument value decides the effect: a truthy value erases row identity, while `data_only(0)` clones with the mode cleared and restores blessed rows (Handle.pm:1102-1105). A consumer must read the argument, not just the call.",
+        notes: "A truthy value erases row identity; `data_only(0)` clones with the mode cleared and restores blessed-row terminals (Handle.pm:1102-1105). The effect follows the argument's truthiness, so a consumer must read the value, not just the call.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.delete",
@@ -1513,12 +1522,28 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         notes: "Argument form clones with a new limit.",
     },
     QuickOrmApiCase {
-        api_case_id: "handle.new",
+        api_case_id: "handle.new.copy",
         package: PKG_HANDLE,
         method: "new",
         receiver: R::Handle,
         receiver_constraints: NO_CONSTRAINTS,
-        arguments: A::Optional,
+        arguments: A::NoSourceArgument,
+        return_class: C::PreserveHandleSourceRow,
+        multiplicity: N::One,
+        type_params: T::PreservedFromReceiver,
+        mode: M::SyncAsyncAsideForked,
+        void_context: V::Permitted,
+        boundary: B::Exact,
+        evidence: QuickOrmEvidence { file: HANDLE, line: 761 },
+        notes: "Upstream documents new, handle and clone as interchangeable aliases usable on an existing instance or on the class (Handle.pm:486-490); new is `$proto->handle(@_)`. Called on an existing handle with no source or row argument it is a preserving copy, exactly like clone.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "handle.new.rebind",
+        package: PKG_HANDLE,
+        method: "new",
+        receiver: R::Handle,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::SourceOrRowRebinding,
         return_class: C::TransformHandleSourceRow,
         multiplicity: N::One,
         type_params: T::DerivedFromArgumentSource,
@@ -1526,7 +1551,7 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: HANDLE, line: 761 },
-        notes: "Constructor spelling of the same body: `$proto->handle(@_)`. Called on a class there is no receiver source to preserve, so the result's source comes from the arguments.",
+        notes: "Upstream documents new, handle and clone as interchangeable aliases usable on an existing instance or on the class (Handle.pm:486-490); new is `$proto->handle(@_)`. Called on the class, or with a source or row argument, the result's source comes from the arguments.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.no_auto_refresh",
@@ -1744,14 +1769,14 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         receiver: R::Handle,
         receiver_constraints: NO_CONSTRAINTS,
         arguments: A::ValueSetter,
-        return_class: C::PreserveHandleSourceRow,
+        return_class: C::TransformHandleSourceRow,
         multiplicity: N::One,
-        type_params: T::PreservedFromReceiver,
+        type_params: T::DerivedFromArgumentSource,
         mode: M::SyncAsyncAsideForked,
         void_context: V::Croaks,
-        boundary: B::Exact,
+        boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: HANDLE, line: 1308 },
-        notes: "Binding a row clears the where clause; row and where are mutually exclusive.",
+        notes: "Binding a row clears the where clause, and it also replaces the source: the consistency croak is guarded by `if ($set{+SOURCE})`, which only tracks a source passed in the same call, so `row($other)` takes the else branch and overwrites the inherited source with the row's own (Handle.pm:833-840). The receiver's row type does not survive.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.source.get",
@@ -3512,12 +3537,18 @@ mod tests {
     /// Mutation control 5: `data_only` must not be a blessed row.
     #[test]
     fn data_only_erases_row_identity() {
-        for id in ["handle.data_only.enable", "handle.data_only.set"] {
-            let case = case_by_id(id);
-            assert_eq!(case.return_class, QuickOrmReturnClass::DataOnlyTransition);
-            assert_eq!(case.type_params, QuickOrmTypeParamEffect::ErasedToPlainData);
-            assert_ne!(case.return_class, QuickOrmReturnClass::SingleOptionalRow);
-        }
+        // The bare call erases row identity outright.
+        let enable = case_by_id("handle.data_only.enable");
+        assert_eq!(enable.return_class, QuickOrmReturnClass::DataOnlyTransition);
+        assert_eq!(enable.type_params, QuickOrmTypeParamEffect::ErasedToPlainData);
+        assert_eq!(enable.boundary, QuickOrmBoundary::Exact);
+
+        // `data_only(0)` restores blessed rows, so the value-bearing form must
+        // not assert erasure; its effect follows the argument.
+        let set = case_by_id("handle.data_only.set");
+        assert_eq!(set.return_class, QuickOrmReturnClass::DataOnlyTransition);
+        assert_eq!(set.type_params, QuickOrmTypeParamEffect::DeterminedByArgumentValue);
+        assert_eq!(set.boundary, QuickOrmBoundary::RuntimeResolved);
         // `data_only(0)` clears the mode and restores blessed rows, so the
         // value-bearing form cannot be statically resolved from the call alone.
         assert_eq!(case_by_id("handle.data_only.set").boundary, QuickOrmBoundary::RuntimeResolved);
@@ -3736,6 +3767,52 @@ mod tests {
             let case = case_by_id(id);
             assert_eq!(case.return_class, QuickOrmReturnClass::PreserveHandleSourceRow);
             assert_eq!(case.void_context, QuickOrmVoidContext::Croaks);
+        }
+    }
+
+    /// Binding a row also rebinds the source, because the consistency croak
+    /// only fires for a source passed in the same call.
+    #[test]
+    fn binding_a_row_rebinds_the_source() {
+        let case = case_by_id("handle.row.set");
+        assert_eq!(case.return_class, QuickOrmReturnClass::TransformHandleSourceRow);
+        assert_eq!(case.type_params, QuickOrmTypeParamEffect::DerivedFromArgumentSource);
+        // The reading form still just returns the bound row, if any.
+        assert_eq!(
+            case_by_id("handle.row.get").return_class,
+            QuickOrmReturnClass::MetadataOrScalar
+        );
+    }
+
+    /// `new`, `clone` and `handle` are documented interchangeable aliases, so
+    /// each must carry both the copying and the rebinding form.
+    #[test]
+    fn constructor_aliases_share_both_forms() {
+        for method in ["new", "clone", "handle"] {
+            let cohorts: BTreeSet<QuickOrmArgumentCohort> =
+                quickorm_api_cases_for_method(PKG_HANDLE, method)
+                    .filter(|c| c.receiver == QuickOrmReceiver::Handle)
+                    .map(|c| c.arguments)
+                    .collect();
+            assert!(
+                cohorts.contains(&QuickOrmArgumentCohort::NoSourceArgument)
+                    && cohorts.contains(&QuickOrmArgumentCohort::SourceOrRowRebinding),
+                "`{method}` is an alias of the same body and needs both forms"
+            );
+        }
+    }
+
+    /// `count` yields undef when the select returns no aggregate row.
+    #[test]
+    fn count_is_optional() {
+        for id in ["handle.count", "conn.count"] {
+            let case = case_by_id(id);
+            assert_eq!(case.return_class, QuickOrmReturnClass::BooleanOrCount);
+            assert_eq!(
+                case.multiplicity,
+                QuickOrmMultiplicity::ZeroOrOne,
+                "`{id}` returns undef when no row arrives"
+            );
         }
     }
 

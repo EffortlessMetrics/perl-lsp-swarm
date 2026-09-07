@@ -20,7 +20,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 | `conn.async` | `DBIx::QuickORM::Connection` | `async` | connection | required | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | permitted | exact | — | `lib/DBIx/QuickORM/Connection.pm:992` |
 | `conn.by_id` | `DBIx::QuickORM::Connection` | `by_id` | connection | required | single_optional_row | zero_or_one | derived_from_argument_source | sync_with_async_row_result | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Connection.pm:1004` |
 | `conn.by_ids` | `DBIx::QuickORM::Connection` | `by_ids` | connection | required | multiple_rows | arrayref_of_zero_or_more | derived_from_argument_source | sync_with_async_row_result | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Connection.pm:1043` |
-| `conn.count` | `DBIx::QuickORM::Connection` | `count` | connection | required | boolean_or_count | one | not_applicable | sync_only | permitted | exact | — | `lib/DBIx/QuickORM/Connection.pm:1001` |
+| `conn.count` | `DBIx::QuickORM::Connection` | `count` | connection | required | boolean_or_count | zero_or_one | not_applicable | sync_only | permitted | exact | — | `lib/DBIx/QuickORM/Connection.pm:1001` |
 | `conn.db` | `DBIx::QuickORM::Connection` | `db` | connection | none | metadata_or_scalar | one | not_applicable | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Connection.pm:433` |
 | `conn.delete` | `DBIx::QuickORM::Connection` | `delete` | connection | required | mutation_or_side_effect_result | zero_or_one | not_applicable | sync_async_aside_forked | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Connection.pm:1002` |
 | `conn.find_or_insert` | `DBIx::QuickORM::Connection` | `find_or_insert` | connection | trailing_data_hashref | single_optional_row | one | derived_from_argument_source | sync_with_async_row_result | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Connection.pm:1011` |
@@ -50,10 +50,10 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 | `handle.clone.rebind` | `DBIx::QuickORM::Handle` | `clone` | handle | source_or_row_rebinding | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Handle.pm:763` |
 | `handle.connection.get` | `DBIx::QuickORM::Handle` | `connection` | handle | zero_arg_getter | metadata_or_scalar | one | not_applicable | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Handle.pm:1294` |
 | `handle.connection.set` | `DBIx::QuickORM::Handle` | `connection` | handle | value_setter | preserve_handle_source_row | one | preserved_from_receiver | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Handle.pm:1294` |
-| `handle.count` | `DBIx::QuickORM::Handle` | `count` | handle | optional | boolean_or_count | one | not_applicable | sync_only | permitted | exact | — | `lib/DBIx/QuickORM/Handle.pm:3313` |
+| `handle.count` | `DBIx::QuickORM::Handle` | `count` | handle | optional | boolean_or_count | zero_or_one | not_applicable | sync_only | permitted | exact | — | `lib/DBIx/QuickORM/Handle.pm:3313` |
 | `handle.cross_join` | `DBIx::QuickORM::Handle` | `cross_join` | handle | required | transform_handle_source_row | one | transformed_to_join_row | sync_async_aside_forked | croaks | runtime_resolved | — | `lib/DBIx/QuickORM/Handle.pm:391` |
 | `handle.data_only.enable` | `DBIx::QuickORM::Handle` | `data_only` | handle | none | data_only_transition | one | erased_to_plain_data | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Handle.pm:1099` |
-| `handle.data_only.set` | `DBIx::QuickORM::Handle` | `data_only` | handle | value_setter | data_only_transition | one | erased_to_plain_data | sync_async_aside_forked | croaks | runtime_resolved | — | `lib/DBIx/QuickORM/Handle.pm:1102` |
+| `handle.data_only.set` | `DBIx::QuickORM::Handle` | `data_only` | handle | value_setter | data_only_transition | one | determined_by_argument_value | sync_async_aside_forked | croaks | runtime_resolved | — | `lib/DBIx/QuickORM/Handle.pm:1102` |
 | `handle.delete` | `DBIx::QuickORM::Handle` | `delete` | handle | optional | mutation_or_side_effect_result | zero_or_one | not_applicable | sync_async_aside_forked | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Handle.pm:2430` |
 | `handle.dialect` | `DBIx::QuickORM::Handle` | `dialect` | handle | none | metadata_or_scalar | one | not_applicable | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Handle.pm:202` |
 | `handle.distinct` | `DBIx::QuickORM::Handle` | `distinct` | handle | optional | preserve_handle_source_row | one | preserved_from_receiver | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Handle.pm:1113` |
@@ -79,7 +79,8 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 | `handle.left_join` | `DBIx::QuickORM::Handle` | `left_join` | handle | required | transform_handle_source_row | one | transformed_to_join_row | sync_async_aside_forked | croaks | runtime_resolved | — | `lib/DBIx/QuickORM/Handle.pm:387` |
 | `handle.limit.get` | `DBIx::QuickORM::Handle` | `limit` | handle | zero_arg_getter | metadata_or_scalar | zero_or_one | not_applicable | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Handle.pm:1341` |
 | `handle.limit.set` | `DBIx::QuickORM::Handle` | `limit` | handle | value_setter | preserve_handle_source_row | one | preserved_from_receiver | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Handle.pm:1341` |
-| `handle.new` | `DBIx::QuickORM::Handle` | `new` | handle | optional | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Handle.pm:761` |
+| `handle.new.copy` | `DBIx::QuickORM::Handle` | `new` | handle | no_source_argument | preserve_handle_source_row | one | preserved_from_receiver | sync_async_aside_forked | permitted | exact | — | `lib/DBIx/QuickORM/Handle.pm:761` |
+| `handle.new.rebind` | `DBIx::QuickORM::Handle` | `new` | handle | source_or_row_rebinding | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Handle.pm:761` |
 | `handle.no_auto_refresh` | `DBIx::QuickORM::Handle` | `no_auto_refresh` | handle | none | preserve_handle_source_row | one | preserved_from_receiver | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Handle.pm:1064` |
 | `handle.no_internal_transactions` | `DBIx::QuickORM::Handle` | `no_internal_transactions` | handle | optional | preserve_handle_source_row | one | preserved_from_receiver | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Handle.pm:1143` |
 | `handle.no_internal_txns` | `DBIx::QuickORM::Handle` | `no_internal_txns` | handle | optional | preserve_handle_source_row | one | preserved_from_receiver | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Handle.pm:1134` |
@@ -93,7 +94,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 | `handle.order_by.set` | `DBIx::QuickORM::Handle` | `order_by` | handle | value_setter | preserve_handle_source_row | one | preserved_from_receiver | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Handle.pm:1369` |
 | `handle.right_join` | `DBIx::QuickORM::Handle` | `right_join` | handle | required | transform_handle_source_row | one | transformed_to_join_row | sync_async_aside_forked | croaks | runtime_resolved | — | `lib/DBIx/QuickORM/Handle.pm:388` |
 | `handle.row.get` | `DBIx::QuickORM::Handle` | `row` | handle | zero_arg_getter | metadata_or_scalar | zero_or_one | not_applicable | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Handle.pm:1308` |
-| `handle.row.set` | `DBIx::QuickORM::Handle` | `row` | handle | value_setter | preserve_handle_source_row | one | preserved_from_receiver | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Handle.pm:1308` |
+| `handle.row.set` | `DBIx::QuickORM::Handle` | `row` | handle | value_setter | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | croaks | runtime_resolved | — | `lib/DBIx/QuickORM/Handle.pm:1308` |
 | `handle.source.get` | `DBIx::QuickORM::Handle` | `source` | handle | zero_arg_getter | metadata_or_scalar | one | not_applicable | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Handle.pm:1301` |
 | `handle.source.set` | `DBIx::QuickORM::Handle` | `source` | handle | value_setter | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | croaks | runtime_resolved | — | `lib/DBIx/QuickORM/Handle.pm:1301` |
 | `handle.sql_builder.get` | `DBIx::QuickORM::Handle` | `sql_builder` | handle | zero_arg_getter | metadata_or_scalar | one | not_applicable | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Handle.pm:1284` |
@@ -199,7 +200,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 - `conn.async`: Builds a handle from the argument source, then marks it async.
 - `conn.by_id`: Trailing argument is the id; delegates to the handle terminal.
 - `conn.by_ids`: Returns an arrayref, not a flat list.
-- `conn.count`: Delegates to the sync-only handle count.
+- `conn.count`: Delegates to the sync-only handle count, which may be undef.
 - `conn.db`: Returns the DB object backing the connection.
 - `conn.delete`: Delegates to the handle write; undef when synchronous.
 - `conn.find_or_insert`: one($arg) // insert($arg): the branch taken is runtime state, so the row comes from either a select or a write.
@@ -229,10 +230,10 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 - `handle.clone.rebind`: Upstream clone, new, and handle are one code path: clone is `$self->handle(@_)` (Handle.pm:763) and new is `$proto->handle(@_)` (Handle.pm:761). An argument doing Role::Source or Role::Row overwrites SOURCE or ROW on the clone (Handle.pm:797-843), so the receiver's row type does not survive.
 - `handle.connection.get`: Zero-argument form returns the stored connection.
 - `handle.connection.set`: Argument form clones with a new connection.
-- `handle.count`: Croaks on an async handle. Returns a count, never a row.
+- `handle.count`: Croaks on an async handle. Returns a count, never a row, and undef when the select yields no row at all (Handle.pm:3324) — reachable when an inherited offset suppresses the aggregate row.
 - `handle.cross_join`: Clone whose source is the resulting join; the original row type does not survive.
 - `handle.data_only.enable`: The no-argument form clones with data-only set, so later terminals yield plain hashes instead of blessed rows.
-- `handle.data_only.set`: The argument value decides the effect: a truthy value erases row identity, while `data_only(0)` clones with the mode cleared and restores blessed rows (Handle.pm:1102-1105). A consumer must read the argument, not just the call.
+- `handle.data_only.set`: A truthy value erases row identity; `data_only(0)` clones with the mode cleared and restores blessed-row terminals (Handle.pm:1102-1105). The effect follows the argument's truthiness, so a consumer must read the value, not just the call.
 - `handle.delete`: Returns the statement handle on a non-sync handle and undef when synchronous (Handle.pm:2525-2528); never a row. A forked bulk delete requires a bound row.
 - `handle.dialect`: Dialect metadata for the handle's connection.
 - `handle.distinct`: Config clone; returns self when already distinct. A falsy argument clears the flag without changing row identity.
@@ -258,7 +259,8 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 - `handle.left_join`: Clone whose source is the resulting join.
 - `handle.limit.get`: Zero-argument form returns the stored limit.
 - `handle.limit.set`: Argument form clones with a new limit.
-- `handle.new`: Constructor spelling of the same body: `$proto->handle(@_)`. Called on a class there is no receiver source to preserve, so the result's source comes from the arguments.
+- `handle.new.copy`: Upstream documents new, handle and clone as interchangeable aliases usable on an existing instance or on the class (Handle.pm:486-490); new is `$proto->handle(@_)`. Called on an existing handle with no source or row argument it is a preserving copy, exactly like clone.
+- `handle.new.rebind`: Upstream documents new, handle and clone as interchangeable aliases usable on an existing instance or on the class (Handle.pm:486-490); new is `$proto->handle(@_)`. Called on the class, or with a source or row argument, the result's source comes from the arguments.
 - `handle.no_auto_refresh`: Config clone; returns self when already unset.
 - `handle.no_internal_transactions`: Config clone with inverted argument sense.
 - `handle.no_internal_txns`: Alias; upstream delegates to no_internal_transactions.
@@ -272,7 +274,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 - `handle.order_by.set`: Several arguments are collected into an arrayref.
 - `handle.right_join`: Clone whose source is the resulting join.
 - `handle.row.get`: Zero-argument form returns the bound row, if any.
-- `handle.row.set`: Binding a row clears the where clause; row and where are mutually exclusive.
+- `handle.row.set`: Binding a row clears the where clause, and it also replaces the source: the consistency croak is guarded by `if ($set{+SOURCE})`, which only tracks a source passed in the same call, so `row($other)` takes the else branch and overwrites the inherited source with the row's own (Handle.pm:833-840). The receiver's row type does not survive.
 - `handle.source.get`: Zero-argument form returns the source object, not a row.
 - `handle.source.set`: Replacing the source replaces the handle's row identity.
 - `handle.sql_builder.get`: Zero-argument form returns the builder, resolving and caching it if unset.
