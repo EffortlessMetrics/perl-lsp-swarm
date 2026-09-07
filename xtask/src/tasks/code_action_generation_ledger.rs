@@ -660,8 +660,7 @@ struct CorpusFixture {
 /// only from a `const NAME: &str = "cac-parity-…";` declaration, and coverage
 /// additionally requires `NAME` to appear in the file's test region.
 fn parse_corpus_fixtures(corpus_text: &str) -> Vec<CorpusFixture> {
-    let test_region_start = corpus_text.find("#[test]").unwrap_or(corpus_text.len());
-    let test_region = &corpus_text[test_region_start..];
+    let bodies = test_bodies(corpus_text);
 
     let mut fixtures = Vec::new();
     for line in corpus_text.lines() {
@@ -688,11 +687,34 @@ fn parse_corpus_fixtures(corpus_text: &str) -> Vec<CorpusFixture> {
         fixtures.push(CorpusFixture {
             id: id.to_string(),
             const_name: const_name.to_string(),
-            bound_to_a_test: contains_word(test_region, const_name),
+            bound_to_a_test: bodies.iter().any(|body| contains_word(body, const_name)),
         });
     }
 
     fixtures
+}
+
+/// The body of each `#[test]` function, from the attribute to the closing brace
+/// that rustfmt puts in column zero.
+///
+/// Scoping to test bodies rather than "anything after the first `#[test]`" is
+/// what stops a helper, a module-level comment, or dead code between tests from
+/// keeping a deleted fixture's coverage claim alive.
+fn test_bodies(corpus_text: &str) -> Vec<&str> {
+    const ATTRIBUTE: &str = "#[test]";
+    const TERMINATOR: &str = "\n}\n";
+
+    let mut bodies = Vec::new();
+    let mut from = 0;
+    while let Some(index) = corpus_text[from..].find(ATTRIBUTE) {
+        let start = from + index;
+        let end = corpus_text[start..]
+            .find(TERMINATOR)
+            .map_or(corpus_text.len(), |offset| start + offset + TERMINATOR.len());
+        bodies.push(&corpus_text[start..end]);
+        from = end.max(start + ATTRIBUTE.len());
+    }
+    bodies
 }
 
 /// Whole-identifier containment, so `FOO` does not match `FOO_BAR`.
@@ -1166,6 +1188,21 @@ mod tests {
             .map(|fixture| fixture.id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(unbound, vec!["cac-parity-orphan-case"]);
+    }
+
+    /// A reference from a helper — or any code outside a `#[test]` body — is
+    /// not executable evidence either.
+    #[test]
+    fn a_reference_outside_a_test_body_is_not_coverage() {
+        let fixtures = parse_corpus_fixtures(
+            "const A: &str = \"cac-parity-helper-only\";\n\nfn helper() {\n    let _ = A;\n}\n\n#[test]\nfn unrelated() {\n    assert!(true);\n}\n",
+        );
+
+        assert_eq!(fixtures.len(), 1);
+        assert!(
+            !fixtures[0].bound_to_a_test,
+            "a helper reference must not bind the fixture, got {fixtures:?}"
+        );
     }
 
     /// Deleting a test but leaving its id behind in a comment must not keep the
