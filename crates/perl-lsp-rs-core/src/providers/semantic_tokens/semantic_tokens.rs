@@ -372,8 +372,113 @@ fn heredoc_injection_language(text: &str) -> Option<&'static str> {
     }
 }
 
+/// Emit one semantic token per source line that the span `start..end` covers.
+///
+/// An LSP semantic token cannot describe a span crossing a line boundary: the
+/// wire format carries a single `length`, measured from the token's start on
+/// its own line. A multiline span is therefore normalized into ordered,
+/// nonempty, line-contained segments (#1850). Line terminators are excluded
+/// from every segment, and a line the span meets only through its terminator
+/// contributes no segment.
+///
+/// A single-line span yields exactly one segment whose length equals the old
+/// `end_character - start_character`, so same-line tokens keep their existing
+/// geometry.
+fn push_line_contained_segments(
+    text: &str,
+    start: usize,
+    end: usize,
+    to_pos16: &impl Fn(usize) -> (u32, u32),
+    kind: u32,
+    modifiers: u32,
+    out: &mut Vec<RawSemanticToken>,
+) {
+    let Some(span) = text.get(start..end) else {
+        // Not on character boundaries, reversed, or past the end of the source:
+        // there is no representable geometry. Fail closed rather than clamp the
+        // span into a plausible-looking token.
+        return;
+    };
+
+    let mut segment_start = start;
+    for (offset, _) in span.match_indices('\n') {
+        let line_end = start.saturating_add(offset);
+        push_one_line_segment(text, segment_start, line_end, to_pos16, kind, modifiers, out);
+        segment_start = line_end.saturating_add(1);
+    }
+    push_one_line_segment(text, segment_start, end, to_pos16, kind, modifiers, out);
+}
+
+/// Emit a construct *anchor* token only when it already fits on one line.
+///
+/// Some AST arms fall back to the whole construct's `node.location` because no
+/// narrower name span is available — a subroutine or class anchor covers its
+/// entire body. Normalizing those into per-line segments would paint the whole
+/// body as one token class, and the longer-wins rule in
+/// `remove_overlapping_tokens` would then discard every narrower token inside
+/// it. Painting nothing, as today, is the honest result until these anchors
+/// carry real name spans; that narrowing belongs to the semantic-classification
+/// work, not to this geometry repair.
+fn push_single_line_anchor(
+    start: usize,
+    end: usize,
+    to_pos16: &impl Fn(usize) -> (u32, u32),
+    kind: u32,
+    modifiers: u32,
+    out: &mut Vec<RawSemanticToken>,
+) {
+    let (line, start_character) = to_pos16(start);
+    let (end_line, end_character) = to_pos16(end);
+    // Subtracting columns that live on different lines is meaningless, so a
+    // multiline anchor emits nothing rather than a fabricated length.
+    if line != end_line {
+        return;
+    }
+    let length = end_character.saturating_sub(start_character);
+    if length > 0 {
+        out.push((line, start_character, length, kind, modifiers));
+    }
+}
+
+/// Emit a single token for a span expected to lie within one line.
+///
+/// The segment is dropped when it is empty, when a CRLF carriage return is all
+/// that remains, or when the position mapping still reports two different lines
+/// — an invalid token is never emitted merely to make the vector look populated.
+fn push_one_line_segment(
+    text: &str,
+    start: usize,
+    end: usize,
+    to_pos16: &impl Fn(usize) -> (u32, u32),
+    kind: u32,
+    modifiers: u32,
+    out: &mut Vec<RawSemanticToken>,
+) {
+    // Splitting on '\n' leaves the carriage return of a CRLF pair at the end of
+    // the segment; excluding it keeps the length equal to the line's content.
+    let end = match end.checked_sub(1) {
+        Some(previous) if previous >= start && text.as_bytes().get(previous) == Some(&b'\r') => {
+            previous
+        }
+        _ => end,
+    };
+    if end <= start {
+        return;
+    }
+    let (line, start_character) = to_pos16(start);
+    let (end_line, end_character) = to_pos16(end);
+    if line != end_line {
+        return;
+    }
+    let length = end_character.saturating_sub(start_character);
+    if length > 0 {
+        out.push((line, start_character, length, kind, modifiers));
+    }
+}
+
 /// Emit semantic tokens for SQL keyword matches inside a heredoc body.
 fn tokenize_sql_body(
+    text: &str,
     body: &str,
     body_start: usize,
     to_pos16: &impl Fn(usize) -> (u32, u32),
@@ -397,12 +502,7 @@ fn tokenize_sql_body(
             continue;
         }
         let offset = body_start + start;
-        let (sl, sc) = to_pos16(offset);
-        let (el, ec) = to_pos16(body_start + index);
-        let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-        if len > 0 {
-            out.push((sl, sc, len, kind, 0));
-        }
+        push_line_contained_segments(text, offset, body_start + index, to_pos16, kind, 0, out);
     }
     Ok(())
 }
@@ -475,6 +575,7 @@ fn is_sql_keyword(word: &str) -> bool {
 
 /// Emit semantic tokens for JSON key matches inside a heredoc body.
 fn tokenize_json_body(
+    text: &str,
     body: &str,
     body_start: usize,
     to_pos16: &impl Fn(usize) -> (u32, u32),
@@ -540,18 +641,14 @@ fn tokenize_json_body(
         let key_end_offset = cursor;
         let key_start = body_start + key_start_offset;
         let key_end = body_start + key_end_offset;
-        let (sl, sc) = to_pos16(key_start);
-        let (el, ec) = to_pos16(key_end);
-        let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-        if len > 0 {
-            out.push((sl, sc, len, kind, 0));
-        }
+        push_line_contained_segments(text, key_start, key_end, to_pos16, kind, 0, out);
     }
     Ok(())
 }
 
 /// Dispatch to the appropriate body tokenizer based on the injection language.
 fn tokenize_heredoc_body(
+    text: &str,
     body: &str,
     body_start: usize,
     lang: &str,
@@ -561,8 +658,8 @@ fn tokenize_heredoc_body(
     traversal: &mut TraversalState<'_, '_>,
 ) -> Result<(), TraversalStop> {
     match lang {
-        "sql" => tokenize_sql_body(body, body_start, to_pos16, leg, out, traversal),
-        "json" => tokenize_json_body(body, body_start, to_pos16, leg, out, traversal),
+        "sql" => tokenize_sql_body(text, body, body_start, to_pos16, leg, out, traversal),
+        "json" => tokenize_json_body(text, body, body_start, to_pos16, leg, out, traversal),
         _ => Ok(()),
     }
 }
@@ -924,10 +1021,6 @@ pub fn collect_semantic_tokens_controlled(
         let Some(tok) = lexer.next_token() else {
             break;
         };
-        let (sl, sc) = to_pos16(tok.start);
-        let (el, ec) = to_pos16(tok.end);
-        let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-
         // Map token types to semantic token kinds
         // Note: The lexer's TokenType enum is simpler than what we're matching
         let kind = match &tok.token_type {
@@ -952,7 +1045,7 @@ pub fn collect_semantic_tokens_controlled(
                 // This avoids the "longer wins" overlap-removal rule that would
                 // silently discard variable sub-tokens if we also pushed a
                 // whole-string token spanning the entire interpolated string.
-                if len > 0 {
+                if tok.end > tok.start {
                     let text_bytes = tok.text.as_bytes();
                     let mut cursor: usize = 1; // skip opening quote char
                     for part in parts {
@@ -967,18 +1060,15 @@ pub fn collect_semantic_tokens_controlled(
                                 )) {
                                     let part_start = tok.start + rel;
                                     let part_end = part_start + lit.len();
-                                    let (psl, psc) = to_pos16(part_start);
-                                    let (pel, pec) = to_pos16(part_end);
-                                    let plen = if psl == pel { pec.saturating_sub(psc) } else { 0 };
-                                    if plen > 0 {
-                                        lexer_tokens.push((
-                                            psl,
-                                            psc,
-                                            plen,
-                                            kind_idx(&leg, "string"),
-                                            0,
-                                        ));
-                                    }
+                                    push_line_contained_segments(
+                                        text,
+                                        part_start,
+                                        part_end,
+                                        to_pos16,
+                                        kind_idx(&leg, "string"),
+                                        0,
+                                        &mut lexer_tokens,
+                                    );
                                     cursor = rel + lit.len();
                                 }
                             }
@@ -991,18 +1081,15 @@ pub fn collect_semantic_tokens_controlled(
                                 )) {
                                     let part_start = tok.start + rel;
                                     let part_end = part_start + var.len();
-                                    let (psl, psc) = to_pos16(part_start);
-                                    let (pel, pec) = to_pos16(part_end);
-                                    let plen = if psl == pel { pec.saturating_sub(psc) } else { 0 };
-                                    if plen > 0 {
-                                        lexer_tokens.push((
-                                            psl,
-                                            psc,
-                                            plen,
-                                            kind_idx(&leg, "variable"),
-                                            0,
-                                        ));
-                                    }
+                                    push_line_contained_segments(
+                                        text,
+                                        part_start,
+                                        part_end,
+                                        to_pos16,
+                                        kind_idx(&leg, "variable"),
+                                        0,
+                                        &mut lexer_tokens,
+                                    );
                                     cursor = rel + var.len();
                                 }
                             }
@@ -1039,7 +1126,9 @@ pub fn collect_semantic_tokens_controlled(
                 {
                     let body_end = tok.end.min(text.len());
                     let body = &text[tok.start.min(body_end)..body_end];
+                    let before_injection = lexer_tokens.len();
                     controlled_value!(tokenize_heredoc_body(
+                        text,
                         body,
                         tok.start,
                         lang,
@@ -1048,6 +1137,15 @@ pub fn collect_semantic_tokens_controlled(
                         &mut lexer_tokens,
                         &mut traversal,
                     ));
+                    if lexer_tokens.len() > before_injection {
+                        // The injected language painted this body. Emitting the
+                        // body as whole-line string segments as well would let
+                        // the "longer wins" rule in remove_overlapping_tokens
+                        // silently discard those narrower keyword/key tokens —
+                        // the same hazard the InterpolatedString arm avoids by
+                        // emitting only its parts.
+                        continue;
+                    }
                 }
                 "string"
             }
@@ -1071,9 +1169,15 @@ pub fn collect_semantic_tokens_controlled(
             _ => continue,
         };
 
-        if len > 0 {
-            lexer_tokens.push((sl, sc, len, kind_idx(&leg, kind), 0));
-        }
+        push_line_contained_segments(
+            text,
+            tok.start,
+            tok.end,
+            to_pos16,
+            kind_idx(&leg, kind),
+            0,
+            &mut lexer_tokens,
+        );
     }
 
     let const_fast_enabled = controlled_value!(ast_uses_const_fast(ast, &mut traversal));
@@ -1098,48 +1202,39 @@ pub fn collect_semantic_tokens_controlled(
             // For nodes with name_span, use the precise span for better highlighting
             match &node.kind {
                 NodeKind::Package { name_span, .. } => {
-                    let (sl, sc) = to_pos16(name_span.start);
-                    let (el, ec) = to_pos16(name_span.end);
-                    let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                    if len > 0 {
-                        ast_tokens.push((
-                            sl,
-                            sc,
-                            len,
-                            kind_idx(&leg, "namespace"),
-                            1, /*declaration*/
-                        ));
-                    }
+                    push_line_contained_segments(
+                        text,
+                        name_span.start,
+                        name_span.end,
+                        to_pos16,
+                        kind_idx(&leg, "namespace"),
+                        1, /*declaration*/
+                        &mut ast_tokens,
+                    );
                     return Ok(true);
                 }
                 NodeKind::Subroutine { name: Some(_), name_span: Some(span), .. } => {
-                    let (sl, sc) = to_pos16(span.start);
-                    let (el, ec) = to_pos16(span.end);
-                    let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                    if len > 0 {
-                        ast_tokens.push((
-                            sl,
-                            sc,
-                            len,
-                            kind_idx(&leg, "function"),
-                            1 | 2, /*declaration|definition*/
-                        ));
-                    }
+                    push_line_contained_segments(
+                        text,
+                        span.start,
+                        span.end,
+                        to_pos16,
+                        kind_idx(&leg, "function"),
+                        1 | 2, /*declaration|definition*/
+                        &mut ast_tokens,
+                    );
                     return Ok(true);
                 }
                 NodeKind::Subroutine { name: Some(_), .. } => {
-                    let (sl, sc) = to_pos16(node.location.start);
-                    let (el, ec) = to_pos16(node.location.end);
-                    let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                    if len > 0 {
-                        ast_tokens.push((
-                            sl,
-                            sc,
-                            len,
-                            kind_idx(&leg, "function"),
-                            1, /*declaration*/
-                        ));
-                    }
+                    // Whole-construct anchor: see push_single_line_anchor.
+                    push_single_line_anchor(
+                        node.location.start,
+                        node.location.end,
+                        to_pos16,
+                        kind_idx(&leg, "function"),
+                        1, /*declaration*/
+                        &mut ast_tokens,
+                    );
                     return Ok(true);
                 }
                 NodeKind::Method { name, .. } => {
@@ -1150,42 +1245,40 @@ pub fn collect_semantic_tokens_controlled(
                         name,
                     )
                     .unwrap_or((node.location.start, node.location.end));
-                    let (sl, sc) = to_pos16(start);
-                    let (el, ec) = to_pos16(end);
-                    let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                    if len > 0 {
-                        ast_tokens.push((
-                            sl,
-                            sc,
-                            len,
-                            kind_idx(&leg, "method"),
-                            1 | 2, /*declaration|definition*/
-                        ));
-                    }
+                    // The located name is single-line; the fallback is a
+                    // whole-construct anchor. See push_single_line_anchor.
+                    push_single_line_anchor(
+                        start,
+                        end,
+                        to_pos16,
+                        kind_idx(&leg, "method"),
+                        1 | 2, /*declaration|definition*/
+                        &mut ast_tokens,
+                    );
                     return Ok(true);
                 }
                 NodeKind::Class { .. } => {
-                    let (sl, sc) = to_pos16(node.location.start);
-                    let (el, ec) = to_pos16(node.location.end);
-                    let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                    if len > 0 {
-                        ast_tokens.push((
-                            sl,
-                            sc,
-                            len,
-                            kind_idx(&leg, "class"),
-                            1, /*declaration*/
-                        ));
-                    }
+                    // Whole-construct anchor: see push_single_line_anchor.
+                    push_single_line_anchor(
+                        node.location.start,
+                        node.location.end,
+                        to_pos16,
+                        kind_idx(&leg, "class"),
+                        1, /*declaration*/
+                        &mut ast_tokens,
+                    );
                     return Ok(true);
                 }
                 NodeKind::PhaseBlock { phase_span: Some(span), .. } => {
-                    let (sl, sc) = to_pos16(span.start);
-                    let (el, ec) = to_pos16(span.end);
-                    let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                    if len > 0 {
-                        ast_tokens.push((sl, sc, len, kind_idx(&leg, "macro"), 0));
-                    }
+                    push_line_contained_segments(
+                        text,
+                        span.start,
+                        span.end,
+                        to_pos16,
+                        kind_idx(&leg, "macro"),
+                        0,
+                        &mut ast_tokens,
+                    );
                     return Ok(true);
                 }
                 NodeKind::LabeledStatement { label, .. } => {
@@ -1199,18 +1292,15 @@ pub fn collect_semantic_tokens_controlled(
                         label,
                     )
                     .unwrap_or((node.location.start, fallback_end));
-                    let (sl, sc) = to_pos16(start);
-                    let (el, ec) = to_pos16(end);
-                    let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                    if len > 0 {
-                        ast_tokens.push((
-                            sl,
-                            sc,
-                            len,
-                            kind_idx(&leg, "label"),
-                            1, /*declaration*/
-                        ));
-                    }
+                    push_line_contained_segments(
+                        text,
+                        start,
+                        end,
+                        to_pos16,
+                        kind_idx(&leg, "label"),
+                        1, /*declaration*/
+                        &mut ast_tokens,
+                    );
                     return Ok(true);
                 }
                 NodeKind::LoopControl { op, label: Some(label) } => {
@@ -1221,12 +1311,15 @@ pub fn collect_semantic_tokens_controlled(
                         op,
                         label,
                     ) {
-                        let (sl, sc) = to_pos16(start);
-                        let (el, ec) = to_pos16(end);
-                        let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                        if len > 0 {
-                            ast_tokens.push((sl, sc, len, kind_idx(&leg, "label"), 0));
-                        }
+                        push_line_contained_segments(
+                            text,
+                            start,
+                            end,
+                            to_pos16,
+                            kind_idx(&leg, "label"),
+                            0,
+                            &mut ast_tokens,
+                        );
                     }
                     return Ok(true);
                 }
@@ -1238,12 +1331,15 @@ pub fn collect_semantic_tokens_controlled(
                     if let Some((method_name_start, method_name_end)) =
                         method_call_name_offsets(text, object.location.end, method)
                     {
-                        let (sl, sc) = to_pos16(method_name_start);
-                        let (el, ec) = to_pos16(method_name_end);
-                        let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                        if len > 0 {
-                            ast_tokens.push((sl, sc, len, kind_idx(&leg, "method"), 0));
-                        }
+                        push_line_contained_segments(
+                            text,
+                            method_name_start,
+                            method_name_end,
+                            to_pos16,
+                            kind_idx(&leg, "method"),
+                            0,
+                            &mut ast_tokens,
+                        );
                     }
                     // If this is a SQL-bearing DBI method, classify the first string arg as sql_string.
                     let is_sql_method = matches!(
@@ -1266,12 +1362,15 @@ pub fn collect_semantic_tokens_controlled(
                         && let Some(first_arg) = args.first()
                         && matches!(first_arg.kind, NodeKind::String { .. })
                     {
-                        let (asl, asc) = to_pos16(first_arg.location.start);
-                        let (ael, aec) = to_pos16(first_arg.location.end);
-                        let alen = if asl == ael { aec.saturating_sub(asc) } else { 0 };
-                        if alen > 0 {
-                            ast_tokens.push((asl, asc, alen, kind_idx(&leg, "sql_string"), 0));
-                        }
+                        push_line_contained_segments(
+                            text,
+                            first_arg.location.start,
+                            first_arg.location.end,
+                            to_pos16,
+                            kind_idx(&leg, "sql_string"),
+                            0,
+                            &mut ast_tokens,
+                        );
                     }
                     return Ok(true);
                 }
@@ -1279,9 +1378,6 @@ pub fn collect_semantic_tokens_controlled(
             }
 
             let (s, e) = (node.location.start, node.location.end);
-            let (sl, sc) = to_pos16(s);
-            let (el, ec) = to_pos16(e);
-            let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
 
             let (kind, mods): (&str, u32) = match &node.kind {
                 NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
@@ -1365,9 +1461,9 @@ pub fn collect_semantic_tokens_controlled(
                 _ => return Ok(true),
             };
 
-            if len > 0 {
-                ast_tokens.push((sl, sc, len, kind_idx(&leg, kind), mods));
-            }
+            // Generic node span: an expression or declaration anchor that may
+            // cover a whole multiline construct. See push_single_line_anchor.
+            push_single_line_anchor(s, e, to_pos16, kind_idx(&leg, kind), mods, &mut ast_tokens);
             Ok(true)
         },
     ));
@@ -1929,6 +2025,7 @@ mod tests {
         let mut tokens = Vec::new();
         let json_result = tokenize_json_body(
             r#"{"a-very-long-key": 1}"#,
+            r#"{"a-very-long-key": 1}"#,
             0,
             &|offset| (0, offset as u32),
             &legend(),
@@ -1947,6 +2044,7 @@ mod tests {
         let mut json_tokens = Vec::new();
         tokenize_json_body(
             r#""key"   : 1, "a\"b": 2, "not-key""#,
+            r#""key"   : 1, "a\"b": 2, "not-key""#,
             0,
             &|offset| (0, offset as u32),
             &legend(),
@@ -1958,6 +2056,7 @@ mod tests {
 
         let mut recovered_tokens = Vec::new();
         tokenize_json_body(
+            "\"unterminated\n{\"valid\": 1}",
             "\"unterminated\n{\"valid\": 1}",
             0,
             &|offset| (0, offset as u32),
@@ -1983,6 +2082,7 @@ mod tests {
         let mut bomb_tokens = Vec::new();
         tokenize_json_body(
             &escaped_bomb,
+            &escaped_bomb,
             0,
             &|offset| (0, offset as u32),
             &legend(),
@@ -2001,6 +2101,7 @@ mod tests {
 
         let mut sql_tokens = Vec::new();
         tokenize_sql_body(
+            "éSELECT SELECTé select notselect",
             "éSELECT SELECTé select notselect",
             0,
             &|offset| (0, offset as u32),
@@ -3123,5 +3224,220 @@ print "ok" foreach @ys;
             DECLARATION_BIT,
             "nested local inside Readonly RHS must still be a declaration, got mods={tmp_mods}"
         );
+    }
+
+    /// Collect the (line, start, length) geometry a span normalizes into.
+    ///
+    /// Uses the real `pos16` mapping so UTF-16 counting is exercised rather
+    /// than assumed.
+    fn segments_of(source: &str, start: usize, end: usize) -> Vec<(u32, u32, u32)> {
+        let mut out = Vec::new();
+        push_line_contained_segments(
+            source,
+            start,
+            end,
+            &|offset| pos16(source, offset),
+            7,
+            0,
+            &mut out,
+        );
+        out.into_iter().map(|(line, start, length, _, _)| (line, start, length)).collect()
+    }
+
+    #[test]
+    fn multiline_span_becomes_nonempty_line_contained_segments() {
+        // "abc\ndef\nghi": a span from inside line 0 to inside line 2 must be
+        // three separate tokens, not one zero-length token (#1850).
+        let source = "abc\ndef\nghi";
+        assert_eq!(segments_of(source, 1, 10), vec![(0, 1, 2), (1, 0, 3), (2, 0, 2)]);
+    }
+
+    #[test]
+    fn single_line_span_keeps_its_previous_exact_length() {
+        // Control: the overwhelmingly common case must be byte-for-byte what
+        // the old `ec.saturating_sub(sc)` produced.
+        let source = "my $x = 1;\n";
+        assert_eq!(segments_of(source, 3, 5), vec![(0, 3, 2)]);
+    }
+
+    #[test]
+    fn crlf_segments_exclude_the_carriage_return() {
+        // Without the CR strip a CRLF file over-counts every segment by one,
+        // pushing the token past the end of its own line.
+        let source = "abc\r\ndef\r\n";
+        assert_eq!(segments_of(source, 0, 10), vec![(0, 0, 3), (1, 0, 3)]);
+    }
+
+    #[test]
+    fn a_line_touched_only_by_its_terminator_contributes_no_segment() {
+        // The blank interior line must not produce an empty token.
+        let source = "ab\n\ncd";
+        assert_eq!(segments_of(source, 0, 6), vec![(0, 0, 2), (2, 0, 2)]);
+    }
+
+    #[test]
+    fn segments_are_counted_in_utf16_units_not_bytes() {
+        // U+1D11E is 4 UTF-8 bytes but 2 UTF-16 code units. A byte count would
+        // report 5 for the first line instead of 3.
+        let source = "\u{1D11E}x\ny";
+        assert_eq!(segments_of(source, 0, 7), vec![(0, 0, 3), (1, 0, 1)]);
+    }
+
+    #[test]
+    fn spans_without_representable_geometry_emit_nothing() {
+        let source = "abc\ndef";
+        // Reversed, past the end, and off a character boundary must all fail
+        // closed rather than clamp into a plausible-looking token.
+        assert!(segments_of(source, 5, 2).is_empty(), "reversed span must emit nothing");
+        assert!(segments_of(source, 2, 99).is_empty(), "out-of-bounds span must emit nothing");
+        let multibyte = "\u{1D11E}";
+        assert!(segments_of(multibyte, 1, 3).is_empty(), "split char boundary must emit nothing");
+    }
+
+    /// Decode the provider's delta stream into absolute (line, start, length).
+    fn painted_geometry(source: &str) -> Result<Vec<(u32, u32, u32)>, Box<dyn std::error::Error>> {
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let mut line = 0u32;
+        let mut character = 0u32;
+        let mut out = Vec::new();
+        for [delta_line, delta_character, length, _kind, _mods] in
+            collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset))
+        {
+            if delta_line == 0 {
+                character = character.saturating_add(delta_character);
+            } else {
+                line = line.saturating_add(delta_line);
+                character = delta_character;
+            }
+            out.push((line, character, length));
+        }
+        Ok(out)
+    }
+
+    #[test]
+    fn multiline_constructs_emit_only_valid_nonzero_tokens()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Every one of these carries at least one span that crosses a line
+        // boundary. Before #1850 each such span computed length 0 and was
+        // dropped by an `if len > 0` guard, so the construct was invisible.
+        // POD is deliberately absent: this provider emits no token for it at
+        // all today, so it cannot discriminate a geometry change (#1850 covers
+        // geometry, not token production).
+        let sources = [
+            "my $s = \"first line\nsecond line\";\n",
+            "my $t = <<END;\nplain heredoc body\nmore body\nEND\n",
+            "sub outer {\n    my $x = 1;\n    return $x;\n}\n",
+        ];
+
+        for source in sources {
+            let painted = painted_geometry(source)?;
+            let lines: Vec<&str> = source.split('\n').collect();
+            assert!(!painted.is_empty(), "no tokens emitted for source: {source:?}");
+            for (line, start, length) in painted {
+                assert!(length > 0, "zero-length token at {line}:{start} in {source:?}");
+                let line_text =
+                    lines.get(line as usize).ok_or("token points past the last source line")?;
+                let line_units: u32 = line_text.chars().map(|c| c.len_utf16() as u32).sum::<u32>();
+                assert!(
+                    start.saturating_add(length) <= line_units,
+                    "token {line}:{start}+{length} escapes its line ({line_units} units) in {source:?}",
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn multiline_string_is_painted_on_each_line_it_covers() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // The defect's user-visible shape: a string spanning two lines used to
+        // contribute nothing at all. It must now paint both lines.
+        let source = "my $s = \"alpha\nbeta\";\n";
+        let painted = painted_geometry(source)?;
+        assert!(
+            painted.iter().any(|(line, _, _)| *line == 0),
+            "string must still paint its opening line: {painted:?}"
+        );
+        assert!(
+            painted.iter().any(|(line, _, _)| *line == 1),
+            "string must paint its continuation line: {painted:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_multiline_construct_anchor_does_not_paint_its_body()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Regression guard for the geometry repair itself. The class arm
+        // anchors on the whole construct because no narrower name span is
+        // available. Segmenting that anchor would paint every body line as a
+        // "class" token, and the longer-wins rule in remove_overlapping_tokens
+        // would then discard the tokens inside the body.
+        let source = "class Foo {\n    field $x;\n    method go { return 1; }\n}\n";
+        let anchor_kind = *legend().map.get("class").ok_or("class missing from legend")?;
+        let painted = {
+            let mut parser = Parser::new(source);
+            let ast = parser.parse()?;
+            let mut line = 0u32;
+            let mut character = 0u32;
+            let mut out = Vec::new();
+            for [delta_line, delta_character, length, token_type, _mods] in
+                collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset))
+            {
+                if delta_line == 0 {
+                    character = character.saturating_add(delta_character);
+                } else {
+                    line = line.saturating_add(delta_line);
+                    character = delta_character;
+                }
+                out.push((line, character, length, token_type));
+            }
+            out
+        };
+
+        assert!(
+            !painted.iter().any(|(line, _, _, token_type)| *line > 0 && *token_type == anchor_kind),
+            "a class anchor must not paint its body lines as class: {painted:?}"
+        );
+        assert!(
+            painted.iter().any(|(line, _, _, _)| *line == 1),
+            "tokens inside the body must survive: {painted:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn injected_heredoc_keywords_survive_body_painting() -> Result<(), Box<dyn std::error::Error>> {
+        // Painting the heredoc body as line segments must not let the
+        // longer-wins overlap rule swallow the injected SQL keywords.
+        let source = "my $sql = <<SQL;\nSELECT id FROM users;\nSQL\n";
+        let keyword = *legend()
+            .map
+            .get("sql_heredoc_keyword")
+            .ok_or("sql_heredoc_keyword missing from legend")?;
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let mut line = 0u32;
+        let mut character = 0u32;
+        let mut keywords = Vec::new();
+        for [delta_line, delta_character, length, token_type, _mods] in
+            collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset))
+        {
+            if delta_line == 0 {
+                character = character.saturating_add(delta_character);
+            } else {
+                line = line.saturating_add(delta_line);
+                character = delta_character;
+            }
+            if token_type == keyword {
+                keywords.push((line, character, length));
+            }
+        }
+        assert!(
+            keywords.len() >= 2,
+            "injected SQL keywords must survive body painting, got {keywords:?}"
+        );
+        Ok(())
     }
 }
