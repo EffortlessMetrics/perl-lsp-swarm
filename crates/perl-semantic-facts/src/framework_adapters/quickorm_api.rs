@@ -73,6 +73,7 @@ pub const QUICKORM_EVIDENCE_FILES: &[&str] = &[
     "lib/DBIx/QuickORM/Iterator.pm",
     "lib/DBIx/QuickORM/ORM.pm",
     "lib/DBIx/QuickORM/Role/Handle.pm",
+    "lib/DBIx/QuickORM/Role/Row.pm",
     "lib/DBIx/QuickORM/Role/Source.pm",
     "lib/DBIx/QuickORM/Row.pm",
 ];
@@ -141,8 +142,11 @@ pub enum QuickOrmArgumentCohort {
     /// No argument names a new source or row, so the result is a plain copy of
     /// the receiver.
     NoSourceArgument,
-    /// An argument that does `Role::Source` or `Role::Row` replaces the
-    /// receiver's source or row on the result.
+    /// An argument that names or is a source or row replaces the receiver's
+    /// source or row on the result. This covers a `Role::Source` or `Role::Row`
+    /// object and a bare table-name string, which upstream defers and resolves
+    /// through the connection before setting it as the source
+    /// (Handle.pm:930-948).
     SourceOrRowRebinding,
 }
 
@@ -432,6 +436,9 @@ const ROLE_HANDLE: &str = "lib/DBIx/QuickORM/Role/Handle.pm";
 /// `Handle.pm:29` composes this role; a handle answers its interface when it is
 /// used as a derived-table source.
 const ROLE_SOURCE: &str = "lib/DBIx/QuickORM/Role/Source.pm";
+/// `Row.pm:24` composes this role, which supplies most of the row surface —
+/// including every link-following method — outside `Row.pm` itself.
+const ROLE_ROW: &str = "lib/DBIx/QuickORM/Role/Row.pm";
 
 const PKG_HANDLE: &str = "DBIx::QuickORM::Handle";
 const PKG_ROW: &str = "DBIx::QuickORM::Row";
@@ -846,6 +853,22 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         notes: "Clone selecting every field and clearing omit.",
     },
     QuickOrmApiCase {
+        api_case_id: "handle.and",
+        package: PKG_HANDLE,
+        method: "and",
+        receiver: R::Handle,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::Required,
+        return_class: C::PreserveHandleSourceRow,
+        multiplicity: N::One,
+        type_params: T::PreservedFromReceiver,
+        mode: M::SyncAsyncAsideForked,
+        void_context: V::Croaks,
+        boundary: B::Exact,
+        evidence: QuickOrmEvidence { file: HANDLE, line: 1153 },
+        notes: "Installed as a named closure in a glob block (Handle.pm:1151-1163). Clones with the existing where combined through `qorm_and`; source and row are untouched.",
+    },
+    QuickOrmApiCase {
         api_case_id: "handle.any",
         package: PKG_HANDLE,
         method: "any",
@@ -1055,20 +1078,36 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
          survive.",
     },
     QuickOrmApiCase {
-        api_case_id: "handle.data_only",
+        api_case_id: "handle.data_only.enable",
         package: PKG_HANDLE,
         method: "data_only",
         receiver: R::Handle,
         receiver_constraints: NO_CONSTRAINTS,
-        arguments: A::Optional,
+        arguments: A::None,
+        return_class: C::DataOnlyTransition,
+        multiplicity: N::One,
+        type_params: T::ErasedToPlainData,
+        mode: M::SyncAsyncAsideForked,
+        void_context: V::Croaks,
+        boundary: B::Exact,
+        evidence: QuickOrmEvidence { file: HANDLE, line: 1099 },
+        notes: "The no-argument form clones with data-only set, so later terminals yield plain hashes instead of blessed rows.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "handle.data_only.set",
+        package: PKG_HANDLE,
+        method: "data_only",
+        receiver: R::Handle,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::ValueSetter,
         return_class: C::DataOnlyTransition,
         multiplicity: N::One,
         type_params: T::ErasedToPlainData,
         mode: M::SyncAsyncAsideForked,
         void_context: V::Croaks,
         boundary: B::RuntimeResolved,
-        evidence: QuickOrmEvidence { file: HANDLE, line: 1099 },
-        notes: "Later terminals on this handle yield plain hashes, not blessed rows. The argument value is load-bearing: `data_only(0)` clones with the mode cleared and restores blessed-row identity (Handle.pm:1102-1105), so a consumer must read the argument, not just the call.",
+        evidence: QuickOrmEvidence { file: HANDLE, line: 1102 },
+        notes: "The argument value decides the effect: a truthy value erases row identity, while `data_only(0)` clones with the mode cleared and restores blessed rows (Handle.pm:1102-1105). A consumer must read the argument, not just the call.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.delete",
@@ -1617,6 +1656,22 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         evidence: QuickOrmEvidence { file: HANDLE, line: 3212 },
         notes: "Returns undef when nothing matches, a plain hash under data_only, or an \
          async row placeholder. It is not unconditionally a row.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "handle.or",
+        package: PKG_HANDLE,
+        method: "or",
+        receiver: R::Handle,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::Required,
+        return_class: C::PreserveHandleSourceRow,
+        multiplicity: N::One,
+        type_params: T::PreservedFromReceiver,
+        mode: M::SyncAsyncAsideForked,
+        void_context: V::Croaks,
+        boundary: B::Exact,
+        evidence: QuickOrmEvidence { file: HANDLE, line: 1159 },
+        notes: "Installed as a named closure in a glob block (Handle.pm:1151-1163). Clones with the existing where combined through `qorm_or`; source and row are untouched.",
     },
     QuickOrmApiCase {
         api_case_id: "handle.order_by.get",
@@ -2409,6 +2464,22 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         notes: "Delegates to `_stored_handle->cas`. Handle::cas croaks on a forked handle, but a row builds its own handle from the connection.",
     },
     QuickOrmApiCase {
+        api_case_id: "row.check_pk",
+        package: PKG_ROW,
+        method: "check_pk",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::None,
+        return_class: C::SingleOptionalRow,
+        multiplicity: N::One,
+        type_params: T::PreservedFromReceiver,
+        mode: M::NotApplicable,
+        void_context: V::Permitted,
+        boundary: B::Exact,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 183 },
+        notes: "Returns the receiving row when its source has a primary key, otherwise croaks (Role/Row.pm:183-187).",
+    },
+    QuickOrmApiCase {
         api_case_id: "row.check_sync",
         package: PKG_ROW,
         method: "check_sync",
@@ -2439,6 +2510,22 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: ROW, line: 147 },
         notes: "Produces another row of the same source identity.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "row.conflate_args",
+        package: PKG_ROW,
+        method: "conflate_args",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::Required,
+        return_class: C::OpenHashOrHashSequence,
+        multiplicity: N::Hash,
+        type_params: T::NotApplicable,
+        mode: M::NotApplicable,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 156 },
+        notes: "Returns the flat inflate/deflate argument list for one field: field, value, source, dialect and affinity (Role/Row.pm:156-162).",
     },
     QuickOrmApiCase {
         api_case_id: "row.connection",
@@ -2489,6 +2576,22 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         notes: "Reads the DESYNC slot directly (Row.pm:118), so it is undef unless the row is desynced.",
     },
     QuickOrmApiCase {
+        api_case_id: "row.dialect",
+        package: PKG_ROW,
+        method: "dialect",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::None,
+        return_class: C::MetadataOrScalar,
+        multiplicity: N::One,
+        type_params: T::NotApplicable,
+        mode: M::NotApplicable,
+        void_context: V::Permitted,
+        boundary: B::Exact,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 97 },
+        notes: "Delegates to the connection's dialect.",
+    },
+    QuickOrmApiCase {
         api_case_id: "row.discard",
         package: PKG_ROW,
         method: "discard",
@@ -2503,6 +2606,22 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         boundary: B::Exact,
         evidence: QuickOrmEvidence { file: ROW, line: 287 },
         notes: "Clears pending and desync state and returns the same row.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "row.display",
+        package: PKG_ROW,
+        method: "display",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::None,
+        return_class: C::MetadataOrScalar,
+        multiplicity: N::One,
+        type_params: T::NotApplicable,
+        mode: M::NotApplicable,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 138 },
+        notes: "Human-readable source name plus primary-key values; a string, never a row.",
     },
     QuickOrmApiCase {
         api_case_id: "row.field",
@@ -2520,6 +2639,22 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         evidence: QuickOrmEvidence { file: ROW, line: 436 },
         notes: "Inflated single field value. This is the ordinary column accessor; named \
          per-column accessors are an autorow feature and are not modeled here.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "row.field_affinity",
+        package: PKG_ROW,
+        method: "field_affinity",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::Required,
+        return_class: C::MetadataOrScalar,
+        multiplicity: N::One,
+        type_params: T::NotApplicable,
+        mode: M::NotApplicable,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 100 },
+        notes: "Delegates to the source, passing the row's dialect.",
     },
     QuickOrmApiCase {
         api_case_id: "row.field_is_desynced",
@@ -2554,6 +2689,22 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         notes: "Inflated field map merged from pending over stored.",
     },
     QuickOrmApiCase {
+        api_case_id: "row.follow",
+        package: PKG_ROW,
+        method: "follow",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::Required,
+        return_class: C::TransformHandleSourceRow,
+        multiplicity: N::One,
+        type_params: T::DerivedFromArgumentSource,
+        mode: M::SyncAsyncAsideForked,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 333 },
+        notes: "Resolves the link and returns a handle on the link's *other* table (Role/Row.pm:344), so the receiver's row type does not survive.",
+    },
+    QuickOrmApiCase {
         api_case_id: "row.force_sync",
         package: PKG_ROW,
         method: "force_sync",
@@ -2568,6 +2719,38 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: ROW, line: 269 },
         notes: "Clears the desync flag and returns the same row (Row.pm:269-273).",
+    },
+    QuickOrmApiCase {
+        api_case_id: "row.handle",
+        package: PKG_ROW,
+        method: "handle",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::Optional,
+        return_class: C::TransformHandleSourceRow,
+        multiplicity: N::One,
+        type_params: T::PreservedFromReceiver,
+        mode: M::SyncAsyncAsideForked,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 121 },
+        notes: "Returns a handle scoped to this row's own source and row, then passes trailing arguments through Handle::handle, which may rebind the source.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "row.has_field",
+        package: PKG_ROW,
+        method: "has_field",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::Required,
+        return_class: C::BooleanOrCount,
+        multiplicity: N::One,
+        type_params: T::NotApplicable,
+        mode: M::NotApplicable,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 99 },
+        notes: "Delegates to the source; croaks without a field name.",
     },
     QuickOrmApiCase {
         api_case_id: "row.has_pending",
@@ -2600,6 +2783,54 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         boundary: B::Exact,
         evidence: QuickOrmEvidence { file: ROW, line: 123 },
         notes: "State predicate.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "row.insert",
+        package: PKG_ROW,
+        method: "insert",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::Optional,
+        return_class: C::SingleOptionalRow,
+        multiplicity: N::One,
+        type_params: T::PreservedFromReceiver,
+        mode: M::NotApplicable,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 239 },
+        notes: "Writes through the connection and returns the same row (Role/Row.pm:248). Croaks when already stored or when nothing is pending.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "row.insert_or_save",
+        package: PKG_ROW,
+        method: "insert_or_save",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::Optional,
+        return_class: C::SingleOptionalRow,
+        multiplicity: N::One,
+        type_params: T::PreservedFromReceiver,
+        mode: M::NotApplicable,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 230 },
+        notes: "Dispatches to save when stored and insert when pending; both return the row. Croaks when there is nothing to write.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "row.insert_related",
+        package: PKG_ROW,
+        method: "insert_related",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::Required,
+        return_class: C::SingleOptionalRow,
+        multiplicity: N::One,
+        type_params: T::DerivedFromArgumentSource,
+        mode: M::NotApplicable,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 358 },
+        notes: "Inserts into the link's other table with the local values copied in, so the result belongs to that table, not the receiver's source.",
     },
     QuickOrmApiCase {
         api_case_id: "row.is_desynced",
@@ -2666,6 +2897,22 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         notes: "State predicate.",
     },
     QuickOrmApiCase {
+        api_case_id: "row.obtain",
+        package: PKG_ROW,
+        method: "obtain",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::Required,
+        return_class: C::SingleOptionalRow,
+        multiplicity: N::ZeroOrOne,
+        type_params: T::DerivedFromArgumentSource,
+        mode: M::SyncWithAsyncRowResult,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 348 },
+        notes: "follow($link)->one, so it may be undef. Croaks unless the link is unique.",
+    },
+    QuickOrmApiCase {
         api_case_id: "row.pending_data",
         package: PKG_ROW,
         method: "pending_data",
@@ -2712,6 +2959,70 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: ROW, line: 449 },
         notes: "Inflated pending field map.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "row.primary_key_field_list",
+        package: PKG_ROW,
+        method: "primary_key_field_list",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::None,
+        return_class: C::MetadataOrScalar,
+        multiplicity: N::ListOfZeroOrMore,
+        type_params: T::NotApplicable,
+        mode: M::NotApplicable,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 103 },
+        notes: "Flat list of primary-key field names, empty when the source has no primary key.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "row.primary_key_hash",
+        package: PKG_ROW,
+        method: "primary_key_hash",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::None,
+        return_class: C::OpenHashOrHashSequence,
+        multiplicity: N::Hash,
+        type_params: T::NotApplicable,
+        mode: M::NotApplicable,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 105 },
+        notes: "Flat field/value hash sequence built from raw stored values; croaks through check_pk without a primary key.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "row.primary_key_hashref",
+        package: PKG_ROW,
+        method: "primary_key_hashref",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::None,
+        return_class: C::OpenHashOrHashSequence,
+        multiplicity: N::Hash,
+        type_params: T::NotApplicable,
+        mode: M::NotApplicable,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 106 },
+        notes: "The same pairs as a hashref.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "row.primary_key_value_list",
+        package: PKG_ROW,
+        method: "primary_key_value_list",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::None,
+        return_class: C::MetadataOrScalar,
+        multiplicity: N::ListOfZeroOrMore,
+        type_params: T::NotApplicable,
+        mode: M::NotApplicable,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 104 },
+        notes: "Raw stored primary-key values in field order; croaks through check_pk without a primary key.",
     },
     QuickOrmApiCase {
         api_case_id: "row.raw_field",
@@ -2856,6 +3167,38 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         boundary: B::Exact,
         evidence: QuickOrmEvidence { file: ROW, line: 113 },
         notes: "Row-data object itself.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "row.save",
+        package: PKG_ROW,
+        method: "save",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::Optional,
+        return_class: C::SingleOptionalRow,
+        multiplicity: N::One,
+        type_params: T::PreservedFromReceiver,
+        mode: M::NotApplicable,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 250 },
+        notes: "Returns the same row on every path, including the early return when nothing is pending (Role/Row.pm:256-262).",
+    },
+    QuickOrmApiCase {
+        api_case_id: "row.siblings",
+        package: PKG_ROW,
+        method: "siblings",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::Required,
+        return_class: C::TransformHandleSourceRow,
+        multiplicity: N::One,
+        type_params: T::PreservedFromReceiver,
+        mode: M::SyncAsyncAsideForked,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 373 },
+        notes: "Returns a handle on the receiver's own source filtered to rows sharing the link's local values; includes the original row.",
     },
     QuickOrmApiCase {
         api_case_id: "row.source",
@@ -3169,10 +3512,16 @@ mod tests {
     /// Mutation control 5: `data_only` must not be a blessed row.
     #[test]
     fn data_only_erases_row_identity() {
-        let case = case_by_id("handle.data_only");
-        assert_eq!(case.return_class, QuickOrmReturnClass::DataOnlyTransition);
-        assert_eq!(case.type_params, QuickOrmTypeParamEffect::ErasedToPlainData);
-        assert_ne!(case.return_class, QuickOrmReturnClass::SingleOptionalRow);
+        for id in ["handle.data_only.enable", "handle.data_only.set"] {
+            let case = case_by_id(id);
+            assert_eq!(case.return_class, QuickOrmReturnClass::DataOnlyTransition);
+            assert_eq!(case.type_params, QuickOrmTypeParamEffect::ErasedToPlainData);
+            assert_ne!(case.return_class, QuickOrmReturnClass::SingleOptionalRow);
+        }
+        // `data_only(0)` clears the mode and restores blessed rows, so the
+        // value-bearing form cannot be statically resolved from the call alone.
+        assert_eq!(case_by_id("handle.data_only.set").boundary, QuickOrmBoundary::RuntimeResolved);
+        assert_eq!(case_by_id("handle.data_only.enable").boundary, QuickOrmBoundary::Exact);
     }
 
     /// Mutation control 6: sync-only terminals must not claim async support.
@@ -3277,9 +3626,15 @@ mod tests {
 
     #[test]
     fn void_context_croak_is_recorded_for_refining_methods() {
-        for id in
-            ["handle.auto_refresh", "handle.data_only", "handle.where.set", "handle.left_join"]
-        {
+        for id in [
+            "handle.auto_refresh",
+            "handle.data_only.enable",
+            "handle.data_only.set",
+            "handle.where.set",
+            "handle.left_join",
+            "handle.and",
+            "handle.or",
+        ] {
             assert_eq!(
                 case_by_id(id).void_context,
                 QuickOrmVoidContext::Croaks,
@@ -3326,6 +3681,61 @@ mod tests {
                 "`{}` is a write and cannot produce a join row",
                 case.api_case_id
             );
+        }
+    }
+
+    /// A method supplied by a composed role must cite that role, not the
+    /// package body. Reading only `Handle.pm` is what produced the withdrawn
+    /// "Connection::any is unsupported" row.
+    #[test]
+    fn role_supplied_methods_cite_their_role() {
+        for (id, file) in [
+            ("handle.any", ROLE_HANDLE),
+            ("conn.any", ROLE_HANDLE),
+            ("handle_source.cachable", ROLE_SOURCE),
+            ("row.follow", ROLE_ROW),
+            ("row.obtain", ROLE_ROW),
+            ("row.siblings", ROLE_ROW),
+            ("row.save", ROLE_ROW),
+            ("row.insert", ROLE_ROW),
+            ("row.check_pk", ROLE_ROW),
+            ("row.primary_key_hashref", ROLE_ROW),
+        ] {
+            assert_eq!(
+                case_by_id(id).evidence.file,
+                file,
+                "`{id}` comes from a composed role and must cite it"
+            );
+        }
+    }
+
+    /// A link method that crosses to another table must not claim the
+    /// receiver's row type, and one that stays on the source must.
+    #[test]
+    fn row_link_methods_separate_other_table_from_own_source() {
+        for id in ["row.follow", "row.obtain", "row.insert_related"] {
+            assert_eq!(
+                case_by_id(id).type_params,
+                QuickOrmTypeParamEffect::DerivedFromArgumentSource,
+                "`{id}` resolves a link to another table"
+            );
+        }
+        for id in ["row.siblings", "row.handle"] {
+            assert_eq!(
+                case_by_id(id).type_params,
+                QuickOrmTypeParamEffect::PreservedFromReceiver,
+                "`{id}` stays on the receiver's own source"
+            );
+        }
+    }
+
+    /// `and`/`or` combine the where clause; they never touch source or row.
+    #[test]
+    fn where_combinators_preserve_the_handle() {
+        for id in ["handle.and", "handle.or"] {
+            let case = case_by_id(id);
+            assert_eq!(case.return_class, QuickOrmReturnClass::PreserveHandleSourceRow);
+            assert_eq!(case.void_context, QuickOrmVoidContext::Croaks);
         }
     }
 
