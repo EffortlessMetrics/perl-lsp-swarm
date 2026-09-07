@@ -123,6 +123,20 @@ completeness/inputs decoding, and serde round-trips for every enum variant.
   `EvidenceSubject`, `ClaimBoundary`, `Limitation`, or `InputReference` must
   also add it to `EnvelopeFingerprint::of`'s field walk, or the new field
   becomes silently unfingerprinted.
+- Enum-valued fields are fingerprinted by their `fingerprint_tag()` string,
+  never by `self as u8`. The discriminant is declaration-order dependent, and
+  these enums are `#[non_exhaustive]` specifically so variants can be inserted
+  — so discriminant hashing would let a pure source reorder silently change
+  the fingerprint of already-produced evidence whose JSON is byte-identical.
+  A `fingerprint_tag` string is part of the durable identity contract:
+  renaming one is a breaking change, not a rewording.
+- `fingerprint_is_stable_for_a_known_envelope` pins the exact fingerprint of a
+  fully-populated envelope. It is the only test that catches a change applied
+  *uniformly* to the walk (reordering the walk, renaming a tag, inserting an
+  enum variant, adding a fingerprinted field) — the determinism and
+  order-independence tests all compare fingerprints only to each other and
+  stay green through every one of those. If it fails, establish that the
+  identity change is intended before updating the constant.
 - `Completeness`/`inputs` stay required, never `#[serde(default)]`: relaxing
   either to a default reopens the exact silent-completeness failure mode this
   crate exists to close.

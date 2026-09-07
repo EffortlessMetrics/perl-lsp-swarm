@@ -88,12 +88,6 @@ impl FingerprintHasher {
         self
     }
 
-    /// Append a single tag byte (e.g. an enum discriminant).
-    fn push_tag(&mut self, tag: u8) -> &mut Self {
-        self.0.update([tag]);
-        self
-    }
-
     fn finish(self) -> [u8; 32] {
         self.0.finalize().into()
     }
@@ -141,14 +135,20 @@ impl EnvelopeFingerprint {
         h.push_optional(envelope.subject.head_ref.as_deref());
         h.push_optional(envelope.subject.candidate_ref.as_deref());
         h.push_optional(envelope.subject.artifact_ref.as_deref());
-        h.push_tag(envelope.subject.run.source as u8);
+        h.push_field(envelope.subject.run.source.fingerprint_tag().as_bytes());
         h.push_field(envelope.subject.run.run_id.as_bytes());
         h.push_u32(envelope.subject.run.attempt);
 
         // 6. Completeness / redaction / retention.
-        h.push_tag(envelope.completeness as u8);
-        h.push_tag(envelope.redaction_class as u8);
-        h.push_tag(envelope.retention_class as u8);
+        //
+        //    Hashed by their stable textual tags, never by `as u8`: these enums
+        //    are `#[non_exhaustive]`, so a variant inserted anywhere but the end
+        //    would shift every later discriminant and silently change the
+        //    fingerprint of already-produced evidence whose wire form is
+        //    unchanged. The tags are pinned by `fingerprint_is_stable_for_a_known_envelope`.
+        h.push_field(envelope.completeness.fingerprint_tag().as_bytes());
+        h.push_field(envelope.redaction_class.fingerprint_tag().as_bytes());
+        h.push_field(envelope.retention_class.fingerprint_tag().as_bytes());
 
         // 7. Claim boundary — both lists are canonically sorted so element
         //    insertion order never affects the fingerprint.
@@ -251,6 +251,103 @@ mod tests {
             content_digest.as_wire(),
             "identical material hashed under two domains must not collide"
         );
+    }
+
+    /// A fully-populated envelope whose every field is non-default, so the
+    /// golden vector below actually covers the whole field walk.
+    fn golden_envelope() -> EvidenceEnvelope {
+        use crate::claim::{ClaimBoundary, Limitation};
+        use crate::classification::{RedactionClass, RetentionClass};
+        use crate::completeness::Completeness;
+        use crate::envelope::EvidenceEnvelopeSchemaVersion;
+        use crate::input::InputReference;
+        use crate::payload::PayloadIdentity;
+        use crate::producer::ProducerIdentity;
+        use crate::receipt::ReceiptId;
+        use crate::subject::{EvidenceSubject, RunIdentity, RunSource};
+        use perl_source_identity::ProjectId;
+
+        EvidenceEnvelope {
+            schema_version: EvidenceEnvelopeSchemaVersion::V1,
+            receipt_id: ReceiptId::from_canonical_key("golden-receipt"),
+            payload: PayloadIdentity::new(
+                "golden-kind",
+                7,
+                ContentDigest::of_bytes(b"golden payload bytes"),
+            ),
+            producer: ProducerIdentity::new("golden-producer", "1.2.3", "deadbeef", "build-9"),
+            subject: EvidenceSubject::new(
+                ProjectId::from_canonical_name("acme/golden"),
+                Some("base-ref".to_string()),
+                Some("head-ref".to_string()),
+                Some("candidate-ref".to_string()),
+                Some("artifact-ref".to_string()),
+                RunIdentity::new(RunSource::Workflow, "run-42", 2),
+            ),
+            completeness: Completeness::Partial,
+            redaction_class: RedactionClass::Redacted,
+            retention_class: RetentionClass::Extended,
+            claim_boundary: ClaimBoundary::new(
+                vec!["established-a".to_string(), "established-b".to_string()],
+                vec!["not-established-a".to_string()],
+            ),
+            limitations: vec![
+                Limitation::general("general limitation"),
+                Limitation::scoped("scoped limitation", "established-a"),
+            ],
+            inputs: vec![
+                InputReference::new(
+                    ReceiptId::from_canonical_key("input-1"),
+                    ContentDigest::of_bytes(b"input one"),
+                ),
+                InputReference::new(
+                    ReceiptId::from_canonical_key("input-2"),
+                    ContentDigest::of_bytes(b"input two"),
+                ),
+            ],
+        }
+    }
+
+    /// Golden vector pinning the exact fingerprint of a fully-populated
+    /// envelope.
+    ///
+    /// This is the crate's protection against *silent* identity drift. The
+    /// determinism and order-independence tests only compare fingerprints to
+    /// each other, so they stay green under any change that is applied
+    /// uniformly — reordering the field walk, renaming a
+    /// `fingerprint_tag`, inserting an `#[non_exhaustive]` enum variant ahead
+    /// of an existing one, or adding a field to the walk. Every one of those
+    /// invalidates already-persisted fingerprints, so every one of them must
+    /// fail here and be acknowledged as a breaking change rather than merged
+    /// as a refactor.
+    ///
+    /// If this test fails, do not "fix" it by pasting in the new value until
+    /// you have confirmed the change to envelope identity is intended.
+    #[test]
+    fn fingerprint_is_stable_for_a_known_envelope() {
+        assert_eq!(
+            golden_envelope().fingerprint().as_wire(),
+            "envfp:sha256:764bb508f274c6e5157a2381d43dac8ad5dccc0f31476ed04b577c96bdc4a84a",
+            "envelope fingerprint changed; see this test's doc comment before updating it"
+        );
+    }
+
+    /// The golden envelope must exercise every branch the walk can take, or
+    /// the vector above pins less than it appears to. In particular every
+    /// `Option` subject field is `Some` and both `Limitation` shapes
+    /// (general and scoped) are present.
+    #[test]
+    fn golden_envelope_exercises_every_optional_branch() {
+        let e = golden_envelope();
+        assert!(e.subject.base_ref.is_some());
+        assert!(e.subject.head_ref.is_some());
+        assert!(e.subject.candidate_ref.is_some());
+        assert!(e.subject.artifact_ref.is_some());
+        assert!(e.limitations.iter().any(|l| l.affected_claim.is_none()), "general limitation");
+        assert!(e.limitations.iter().any(|l| l.affected_claim.is_some()), "scoped limitation");
+        assert!(!e.claim_boundary.established.is_empty());
+        assert!(!e.claim_boundary.not_established.is_empty());
+        assert!(!e.inputs.is_empty());
     }
 
     #[test]

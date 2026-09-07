@@ -35,18 +35,26 @@ impl RedactionClass {
     pub fn is_publicly_shareable(&self) -> bool {
         matches!(self, Self::Public)
     }
-}
 
-impl std::fmt::Display for RedactionClass {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
+    /// The stable textual tag used when hashing this value into an
+    /// [`crate::EnvelopeFingerprint`]. See
+    /// [`crate::Completeness::fingerprint_tag`] for why the discriminant is
+    /// deliberately not used.
+    #[must_use]
+    pub const fn fingerprint_tag(&self) -> &'static str {
+        match self {
             Self::Public => "public",
             Self::Internal => "internal",
             Self::Redacted => "redacted",
             Self::SensitiveUnredacted => "sensitive-unredacted",
             Self::Unknown => "unknown",
-        };
-        f.write_str(s)
+        }
+    }
+}
+
+impl std::fmt::Display for RedactionClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.fingerprint_tag())
     }
 }
 
@@ -68,17 +76,27 @@ pub enum RetentionClass {
     Unknown,
 }
 
-impl std::fmt::Display for RetentionClass {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
+impl RetentionClass {
+    /// The stable textual tag used when hashing this value into an
+    /// [`crate::EnvelopeFingerprint`]. See
+    /// [`crate::Completeness::fingerprint_tag`] for why the discriminant is
+    /// deliberately not used.
+    #[must_use]
+    pub const fn fingerprint_tag(&self) -> &'static str {
+        match self {
             Self::Ephemeral => "ephemeral",
             Self::ShortTerm => "short-term",
             Self::Standard => "standard",
             Self::Extended => "extended",
             Self::Permanent => "permanent",
             Self::Unknown => "unknown",
-        };
-        f.write_str(s)
+        }
+    }
+}
+
+impl std::fmt::Display for RetentionClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.fingerprint_tag())
     }
 }
 

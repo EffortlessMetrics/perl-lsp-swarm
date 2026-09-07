@@ -47,19 +47,36 @@ impl Completeness {
     pub fn is_complete(&self) -> bool {
         matches!(self, Self::Complete)
     }
-}
 
-impl std::fmt::Display for Completeness {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
+    /// The stable textual tag used when hashing this value into an
+    /// [`crate::EnvelopeFingerprint`].
+    ///
+    /// # Why not the discriminant
+    ///
+    /// Hashing `self as u8` would bind the fingerprint to *declaration order*.
+    /// This enum is `#[non_exhaustive]` precisely so variants can be added, and
+    /// a variant inserted anywhere but the end shifts every later
+    /// discriminant — silently changing the fingerprint of already-produced
+    /// evidence whose JSON form did not change at all. These tags are part of
+    /// the durable fingerprint contract: renaming or reordering them is a
+    /// breaking change, and the golden-vector test in `fingerprint.rs` fails
+    /// loudly if one moves.
+    #[must_use]
+    pub const fn fingerprint_tag(&self) -> &'static str {
+        match self {
             Self::Complete => "complete",
             Self::Partial => "partial",
             Self::NotApplicable => "not-applicable",
             Self::StructurallyUnavailable => "structurally-unavailable",
             Self::Stale => "stale",
             Self::Invalid => "invalid",
-        };
-        f.write_str(s)
+        }
+    }
+}
+
+impl std::fmt::Display for Completeness {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.fingerprint_tag())
     }
 }
 

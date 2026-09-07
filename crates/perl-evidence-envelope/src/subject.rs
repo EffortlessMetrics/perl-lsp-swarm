@@ -14,12 +14,23 @@ pub enum RunSource {
     Local,
 }
 
-impl std::fmt::Display for RunSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl RunSource {
+    /// The stable textual tag used when hashing this value into an
+    /// [`crate::EnvelopeFingerprint`]. See
+    /// [`crate::Completeness::fingerprint_tag`] for why the discriminant is
+    /// deliberately not used.
+    #[must_use]
+    pub const fn fingerprint_tag(&self) -> &'static str {
+        match self {
             Self::Workflow => "workflow",
             Self::Local => "local",
-        })
+        }
+    }
+}
+
+impl std::fmt::Display for RunSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.fingerprint_tag())
     }
 }
 
