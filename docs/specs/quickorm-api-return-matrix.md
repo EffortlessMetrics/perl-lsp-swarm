@@ -142,7 +142,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 | `row.check_pk` | `DBIx::QuickORM::Row` | `check_pk` | row | none | single_optional_row | one | preserved_from_receiver | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Role/Row.pm:183` |
 | `row.check_sync` | `DBIx::QuickORM::Row` | `check_sync` | row | optional | single_optional_row | one | preserved_from_receiver | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:186` |
 | `row.clone` | `DBIx::QuickORM::Row` | `clone` | row | optional | single_optional_row | one | preserved_from_receiver | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:147` |
-| `row.conflate_args` | `DBIx::QuickORM::Row` | `conflate_args` | row | required | open_hash_or_hash_sequence | hash | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:156` |
+| `row.conflate_args` | `DBIx::QuickORM::Row` | `conflate_args` | row | required | open_hash_or_hash_sequence | key_value_sequence | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:156` |
 | `row.connection` | `DBIx::QuickORM::Row` | `connection` | row | none | metadata_or_scalar | one | not_applicable | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Row.pm:111` |
 | `row.delete` | `DBIx::QuickORM::Row` | `delete` | row | none | mutation_or_side_effect_result | nothing | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:296` |
 | `row.desynced_data` | `DBIx::QuickORM::Row` | `desynced_data` | row | none | open_hash_or_hash_sequence | optional_hash | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:118` |
@@ -172,7 +172,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 | `row.pending_field` | `DBIx::QuickORM::Row` | `pending_field` | row | required | metadata_or_scalar | zero_or_one | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:443` |
 | `row.pending_fields` | `DBIx::QuickORM::Row` | `pending_fields` | row | none | open_hash_or_hash_sequence | hash | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:449` |
 | `row.primary_key_field_list` | `DBIx::QuickORM::Row` | `primary_key_field_list` | row | none | metadata_or_scalar | list_of_zero_or_more | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:103` |
-| `row.primary_key_hash` | `DBIx::QuickORM::Row` | `primary_key_hash` | row | none | open_hash_or_hash_sequence | hash | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:105` |
+| `row.primary_key_hash` | `DBIx::QuickORM::Row` | `primary_key_hash` | row | none | open_hash_or_hash_sequence | key_value_sequence | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:105` |
 | `row.primary_key_hashref` | `DBIx::QuickORM::Row` | `primary_key_hashref` | row | none | open_hash_or_hash_sequence | hash | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:106` |
 | `row.primary_key_value_list` | `DBIx::QuickORM::Row` | `primary_key_value_list` | row | none | metadata_or_scalar | list_of_zero_or_more | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:104` |
 | `row.raw_field` | `DBIx::QuickORM::Row` | `raw_field` | row | required | metadata_or_scalar | zero_or_one | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:437` |
@@ -323,7 +323,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 - `row.check_pk`: Returns the receiving row when its source has a primary key, otherwise croaks (Role/Row.pm:183-187).
 - `row.check_sync`: Returns `_check_stale`, which returns the receiving row (Row.pm:513-516) or croaks. It is not a boolean.
 - `row.clone`: Produces another row of the same source identity.
-- `row.conflate_args`: Returns the flat inflate/deflate argument list for one field: field, value, source, dialect and affinity (Role/Row.pm:156-162).
+- `row.conflate_args`: Returns a flat key/value list — field, value, source, dialect, affinity (Role/Row.pm:160) — not a hash container.
 - `row.connection`: Connection behind the row's data object.
 - `row.delete`: Delegates to `_stored_handle->delete`. That handle comes from `connection->handle($self)` and is synchronous, so Handle::delete always takes its `return undef` branch (Handle.pm:2525-2528) — there is no statement handle to observe.
 - `row.desynced_data`: Reads the DESYNC slot directly (Row.pm:118), so it is undef unless the row is desynced.
@@ -353,8 +353,8 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 - `row.pending_field`: Inflated pending value for one field.
 - `row.pending_fields`: Inflated pending field map.
 - `row.primary_key_field_list`: Flat list of primary-key field names, empty when the source has no primary key.
-- `row.primary_key_hash`: Flat field/value hash sequence built from raw stored values; croaks through check_pk without a primary key.
-- `row.primary_key_hashref`: The same pairs as a hashref.
+- `row.primary_key_hash`: A `map` producing a flat key/value list (Role/Row.pm:105), not a hashref; `primary_key_hashref` is the reference form. Croaks through check_pk without a primary key.
+- `row.primary_key_hashref`: The same pairs wrapped as a hashref (Role/Row.pm:106).
 - `row.primary_key_value_list`: Raw stored primary-key values in field order; croaks through check_pk without a primary key.
 - `row.raw_field`: Uninflated single field value.
 - `row.raw_fields`: Uninflated field map; this is what by_id returns under data_only.

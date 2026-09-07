@@ -257,6 +257,9 @@ pub enum QuickOrmMultiplicity {
     /// A hashref of field values that is `undef` when the backing state slot
     /// is absent.
     OptionalHash,
+    /// A flat key/value list in list context, not a hash container. A caller
+    /// assigning it to a scalar gets the last value, not a reference.
+    KeyValueSequence,
     /// No meaningful return value.
     Nothing,
 }
@@ -272,6 +275,7 @@ impl QuickOrmMultiplicity {
             Self::IteratorOfZeroOrMore => "iterator_of_zero_or_more",
             Self::Hash => "hash",
             Self::OptionalHash => "optional_hash",
+            Self::KeyValueSequence => "key_value_sequence",
             Self::Nothing => "nothing",
         }
     }
@@ -2544,13 +2548,13 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         receiver_constraints: NO_CONSTRAINTS,
         arguments: A::Required,
         return_class: C::OpenHashOrHashSequence,
-        multiplicity: N::Hash,
+        multiplicity: N::KeyValueSequence,
         type_params: T::NotApplicable,
         mode: M::NotApplicable,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: ROLE_ROW, line: 156 },
-        notes: "Returns the flat inflate/deflate argument list for one field: field, value, source, dialect and affinity (Role/Row.pm:156-162).",
+        notes: "Returns a flat key/value list — field, value, source, dialect, affinity (Role/Row.pm:160) — not a hash container.",
     },
     QuickOrmApiCase {
         api_case_id: "row.connection",
@@ -3025,13 +3029,13 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         receiver_constraints: NO_CONSTRAINTS,
         arguments: A::None,
         return_class: C::OpenHashOrHashSequence,
-        multiplicity: N::Hash,
+        multiplicity: N::KeyValueSequence,
         type_params: T::NotApplicable,
         mode: M::NotApplicable,
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: ROLE_ROW, line: 105 },
-        notes: "Flat field/value hash sequence built from raw stored values; croaks through check_pk without a primary key.",
+        notes: "A `map` producing a flat key/value list (Role/Row.pm:105), not a hashref; `primary_key_hashref` is the reference form. Croaks through check_pk without a primary key.",
     },
     QuickOrmApiCase {
         api_case_id: "row.primary_key_hashref",
@@ -3047,7 +3051,7 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: ROLE_ROW, line: 106 },
-        notes: "The same pairs as a hashref.",
+        notes: "The same pairs wrapped as a hashref (Role/Row.pm:106).",
     },
     QuickOrmApiCase {
         api_case_id: "row.primary_key_value_list",
@@ -4037,9 +4041,26 @@ mod tests {
             assert_eq!(
                 case_by_id(id).multiplicity,
                 QuickOrmMultiplicity::Hash,
-                "`{id}` is built by `_fields` and is always a map"
+                "`{id}` is built by `_fields`, which returns `\\%out` (Row.pm:591)"
             );
         }
+
+        // A flat key/value list is not a hash container: assigning it to a
+        // scalar yields the last value, not a reference. Upstream returns a
+        // bare list from `conflate_args` and `primary_key_hash`, while
+        // `primary_key_hashref` wraps the same pairs.
+        for id in ["row.conflate_args", "row.primary_key_hash"] {
+            assert_eq!(
+                case_by_id(id).multiplicity,
+                QuickOrmMultiplicity::KeyValueSequence,
+                "`{id}` returns a flat list upstream, not a hash"
+            );
+        }
+        assert_eq!(
+            case_by_id("row.primary_key_hashref").multiplicity,
+            QuickOrmMultiplicity::Hash,
+            "the hashref form is the one that really is a container"
+        );
     }
 
     // ------------------------------------------------- cross-cutting coherence
@@ -4068,7 +4089,9 @@ mod tests {
             // Hash multiplicities belong to the hash-returning class and nowhere else.
             let hashish = matches!(
                 case.multiplicity,
-                QuickOrmMultiplicity::Hash | QuickOrmMultiplicity::OptionalHash
+                QuickOrmMultiplicity::Hash
+                    | QuickOrmMultiplicity::OptionalHash
+                    | QuickOrmMultiplicity::KeyValueSequence
             );
             assert_eq!(
                 hashish,
