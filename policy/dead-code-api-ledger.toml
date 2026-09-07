@@ -1,0 +1,794 @@
+
+# Disposition ledger for the bounded `perl_parser::dead_code` compatibility
+# surface (#9777, C00 under the #8062 reachability programme).
+#
+# This ledger is the canonical record. `docs/project/status/dead_code_api_ledger.md`
+# is a projection of it and is not hand-edited; `cargo xtask check-dead-code-api-ledger`
+# fails when the two disagree, when the ledger disagrees with the module source or
+# the public-API baseline, or when a declared claim has no bound fixture.
+#
+# What this ledger is NOT: it is not a specification of desired behavior, not an
+# implementation plan, and not authority to change analysis. It records, item by
+# item, what the surface does today, what it cannot represent, which authority
+# owns the replacement, and what must be true before an item may move.
+
+schema_version = 1
+policy = "policy/dead-code-api-ledger.toml"
+human_ledger = "docs/project/status/dead_code_api_ledger.md"
+module_source = "crates/perl-parser/src/dead_code/mod.rs"
+public_api_baseline = ".ci/public-api-baselines/perl-parser.txt"
+compat_corpus = "crates/perl-parser/tests/dead_code_api_compat.rs"
+canonical_path = "perl_parser::dead_code"
+controlling_issue = "#9777"
+compatibility_controller = "#8135"
+
+# --------------------------------------------------------------------------
+# Closed vocabularies. The validator rejects any value outside these sets, so
+# a new state cannot be introduced by prose alone.
+# --------------------------------------------------------------------------
+
+semantic_classes = [
+  "local_cfg",
+  "workspace_liveness",
+  "configuration",
+  "presentation_report",
+  "compatibility_heuristic",
+  "obsolete",
+]
+
+dispositions = [
+  "retain_projection",
+  "typed_replacement",
+  "deprecate",
+  "remove",
+  "internalize",
+]
+
+# Whether any current code path constructs or consults this item.
+#   produced       — a current producer constructs it
+#   never_produced — advertised by the type/serde surface, constructed by nothing
+#   inert          — accepted and stored, but never read by any code path
+#   structural     — a container/definition that is not itself produced
+producer_states = ["produced", "never_produced", "inert", "structural"]
+
+# The strongest proposition an item's value can support. `none` means the value
+# carries no proof at all and may not be read as evidence of anything.
+proof_ceilings = ["index_reference_count", "heuristic_text_scan", "none"]
+
+# How a result state is representable through this surface.
+representations = [
+  "represented",
+  "represented_lossy",
+  "indistinguishable_from_complete",
+  "indistinguishable_from_clean_empty",
+  "not_reachable",
+]
+
+# Representations that mean a real state is being hidden. A result-state row
+# using one of these must name a defect and an owner; the validator enforces it.
+defect_representations = [
+  "indistinguishable_from_complete",
+  "indistinguishable_from_clean_empty",
+]
+
+consumer_classes = ["production", "test", "reexport", "dormant", "independent_implementation"]
+
+# Paths that name the surface because they *govern* it rather than consume it:
+# the subject module itself and this ledger's own tooling. They are listed here,
+# in the ledger, rather than hidden in the checker, so the exemption is
+# reviewable and cannot quietly grow to cover a real consumer.
+governance_paths = [
+  "crates/perl-parser/src/dead_code/mod.rs",
+  "xtask/src/tasks/dead_code_api_ledger.rs",
+  "xtask/src/main.rs",
+]
+
+# --------------------------------------------------------------------------
+# Governing laws, restated here because the validator enforces each one and the
+# error messages point back at these names.
+# --------------------------------------------------------------------------
+#
+#   L1  every public item in the module source has exactly one row, and every
+#       row names a public item that exists
+#   L2  every `perl_parser::dead_code` declaration in the public-API baseline is
+#       covered by a row
+#   L3  a `never_produced` item may not be dispositioned as if it worked, and
+#       must carry a negative-control fixture
+#   L4  no item carries edit authority; `edit_authority` is `none` everywhere
+#   L5  all twelve result states are dispositioned, and every collapse is
+#       recorded as a defect with an owner
+#   L6  the entry-point API is recorded as inert and as non-root-identity
+#   L7  the declared consumer inventory matches the tree; no undeclared
+#       production consumer may appear
+#   L8  the Markdown projection agrees with this file
+#   L9  every fixture a row cites exists in the compatibility corpus
+#   L10 every fixture in the corpus is cited by at least one row
+
+# --------------------------------------------------------------------------
+# Export paths. Three public paths reach one module; the module is dispositioned
+# once and the other two are projections, not separate authorities.
+# --------------------------------------------------------------------------
+
+[[export_path]]
+path = "perl_parser::dead_code"
+role = "canonical"
+declared_at = "crates/perl-parser/src/lib.rs"
+note = "Gated `#[cfg(not(target_arch = \"wasm32\"))]`; absent on wasm32."
+
+[[export_path]]
+path = "perl_parser::dead_code_detector"
+role = "compatibility_alias"
+declared_at = "crates/perl-parser/src/lib.rs"
+note = "Backwards-compatibility alias. `crates/perl-parser/src/compat.rs` re-exports the same alias."
+
+[[export_path]]
+path = "perl_parser::prelude"
+role = "prelude_reexport"
+declared_at = "crates/perl-parser/src/prelude.rs"
+note = "Re-exports the five public types, not the two free/associated functions."
+
+# --------------------------------------------------------------------------
+# Item dispositions.
+# --------------------------------------------------------------------------
+
+[[item]]
+id = "dead_code"
+kind = "module"
+semantic_class = "compatibility_heuristic"
+disposition = "retain_projection"
+producer = "structural"
+proof_ceiling = "none"
+replacement_owner = "#8062"
+edit_authority = "none"
+lossiness = "The module's own doc comment calls it a stub. It owns a text-line scanner and an index reference count; it owns no canonical CFG, graph, root, policy, profile or currentness authority, and under #8135 it may not acquire one."
+removal_condition = "Retire under #10979/#10990 once local findings route through #8118 and workspace findings through #10935, and the consumer inventory below is empty."
+fixtures = ["dcapi-export-paths-resolve-to-one-module"]
+
+[[item]]
+id = "DeadCodeType"
+kind = "enum"
+semantic_class = "compatibility_heuristic"
+disposition = "retain_projection"
+producer = "structural"
+proof_ceiling = "none"
+replacement_owner = "#8142"
+edit_authority = "none"
+lossiness = "One flat vocabulary spans two incompatible proof classes: local text-scan findings and index-reference-count findings. The variant does not say which class produced it, so a consumer cannot tell a scan guess from an index observation."
+removal_condition = "Replaced by the neutral diagnostic code/proof vocabulary owned by #8142."
+fixtures = ["dcapi-variant-producer-partition"]
+
+[[item]]
+id = "DeadCodeType::UnusedSubroutine"
+kind = "variant"
+semantic_class = "workspace_liveness"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "index_reference_count"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "Derived from `WorkspaceIndex::find_unused_symbols`, i.e. absence of an indexed reference. Absence of a reference is not unreachability and is not proof that removal is safe: dynamic dispatch, string-eval, exporter machinery and open-world callers are invisible to it."
+removal_condition = "Superseded when #10935 root-based liveness becomes the promoted workspace authority under #9763."
+fixtures = ["dcapi-variant-producer-partition", "dcapi-confidence-is-a-constant"]
+
+[[item]]
+id = "DeadCodeType::UnusedVariable"
+kind = "variant"
+semantic_class = "workspace_liveness"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "index_reference_count"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "Same index-reference-count basis as `UnusedSubroutine`; carries no scope, root or production/test distinction."
+removal_condition = "Superseded when #10935 root-based liveness becomes the promoted workspace authority under #9763."
+fixtures = ["dcapi-variant-producer-partition"]
+
+[[item]]
+id = "DeadCodeType::UnusedConstant"
+kind = "variant"
+semantic_class = "workspace_liveness"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "index_reference_count"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "Same index-reference-count basis as `UnusedSubroutine`."
+removal_condition = "Superseded when #10935 root-based liveness becomes the promoted workspace authority under #9763."
+fixtures = ["dcapi-variant-producer-partition"]
+
+[[item]]
+id = "DeadCodeType::UnusedPackage"
+kind = "variant"
+semantic_class = "workspace_liveness"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "index_reference_count"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "Same index-reference-count basis as `UnusedSubroutine`. A package reachable only through a runtime `require` or a plugin registry reads as unused."
+removal_condition = "Superseded when #10935 root-based liveness becomes the promoted workspace authority under #9763."
+fixtures = ["dcapi-variant-producer-partition"]
+
+[[item]]
+id = "DeadCodeType::UnreachableCode"
+kind = "variant"
+semantic_class = "local_cfg"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "heuristic_text_scan"
+replacement_owner = "#8118"
+edit_authority = "none"
+lossiness = "Produced by a line-oriented scanner that counts braces and matches leading keywords. It does not parse, so strings, heredocs, POD and regex bodies are scanned as code; it stops at the first finding per file (`break`), so a file reports at most one unreachable statement."
+removal_condition = "Superseded by the typed local flow summaries landed under #8118; retire the scanner when the PL406 projection covers this variant."
+fixtures = ["dcapi-variant-producer-partition", "dcapi-confidence-is-a-constant"]
+
+[[item]]
+id = "DeadCodeType::DeadBranch"
+kind = "variant"
+semantic_class = "local_cfg"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "heuristic_text_scan"
+replacement_owner = "#8118"
+edit_authority = "none"
+lossiness = "Recognises only single-line constant conditions in a fixed idiom set. Multi-line conditions are skipped by design, and `} elsif (0) {` on one line is not matched because the scanner tests a line-start prefix."
+removal_condition = "Superseded by the typed local flow summaries landed under #8118."
+fixtures = ["dcapi-variant-producer-partition"]
+
+[[item]]
+id = "DeadCodeType::UnusedImport"
+kind = "variant"
+semantic_class = "obsolete"
+disposition = "deprecate"
+producer = "never_produced"
+proof_ceiling = "none"
+replacement_owner = "#8142"
+edit_authority = "none"
+lossiness = "Advertised by the enum and by the serde representation, constructed by nothing in the workspace. `DeadCodeStats` has no counter for it and `generate_report` cannot render it, so even a hand-constructed value is invisible in the report body. Documenting this variant as implemented would be an overclaim."
+removal_condition = "Remove once no serialized payload in circulation carries the name; import findings belong to the import-cleanup programme (#8277), not to this surface."
+fixtures = ["dcapi-import-export-never-produced", "dcapi-report-cannot-render-import-export", "dcapi-variant-producer-partition"]
+
+[[item]]
+id = "DeadCodeType::UnusedExport"
+kind = "variant"
+semantic_class = "obsolete"
+disposition = "deprecate"
+producer = "never_produced"
+proof_ceiling = "none"
+replacement_owner = "#10905"
+edit_authority = "none"
+lossiness = "Advertised and never constructed, exactly as `UnusedImport`. Interface exposure is a separate proposition owned by #10905; this variant cannot stand in for it."
+removal_condition = "Remove once no serialized payload in circulation carries the name."
+fixtures = ["dcapi-import-export-never-produced", "dcapi-report-cannot-render-import-export", "dcapi-variant-producer-partition"]
+
+[[item]]
+id = "DeadCode"
+kind = "struct"
+semantic_class = "compatibility_heuristic"
+disposition = "retain_projection"
+producer = "structural"
+proof_ceiling = "none"
+replacement_owner = "#8142"
+edit_authority = "none"
+lossiness = "Carries no root, project, component, SCC or document-generation identity, so two findings at the same relative path under two roots are distinguishable only by an absolute path prefix. It cannot express production/test separation, interface retention, a dynamic blocker, or a partial result."
+removal_condition = "Replaced by the neutral diagnostic item owned by #8142."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCode::code_type"
+kind = "field"
+semantic_class = "compatibility_heuristic"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "none"
+replacement_owner = "#8142"
+edit_authority = "none"
+lossiness = "Names the finding class but not the proof class that produced it."
+removal_condition = "Replaced by the neutral diagnostic code owned by #8142."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCode::name"
+kind = "field"
+semantic_class = "workspace_liveness"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "none"
+replacement_owner = "#10860"
+edit_authority = "none"
+lossiness = "A bare symbol name with no package, root or occurrence-owner qualification, so same-named symbols in different packages or roots are indistinguishable. `None` for every local-scan finding."
+removal_condition = "Replaced by the occurrence execution-owner identity owned by #10860."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCode::file_path"
+kind = "field"
+semantic_class = "configuration"
+disposition = "typed_replacement"
+producer = "produced"
+proof_ceiling = "none"
+replacement_owner = "#10871"
+edit_authority = "none"
+lossiness = "A path is not root identity. For workspace symbol findings the value falls back to the raw URI string wrapped in a `PathBuf` when URI-to-path conversion fails, so the field is not guaranteed to be a filesystem path at all."
+removal_condition = "Replaced by canonical static root ownership under #10871."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCode::start_line"
+kind = "field"
+semantic_class = "compatibility_heuristic"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "none"
+replacement_owner = "#8142"
+edit_authority = "none"
+lossiness = "One-based line only: no column, no byte offset, no UTF-16 unit, and therefore no position that an editor edit could be anchored to."
+removal_condition = "Replaced by the neutral diagnostic item owned by #8142."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCode::end_line"
+kind = "field"
+semantic_class = "compatibility_heuristic"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "none"
+replacement_owner = "#8142"
+edit_authority = "none"
+lossiness = "Same line-only limitation as `start_line`. For scanner findings it equals `start_line`; for dead branches it is a brace-counted guess that falls back to end-of-file when braces are unbalanced."
+removal_condition = "Replaced by the neutral diagnostic item owned by #8142."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCode::reason"
+kind = "field"
+semantic_class = "presentation_report"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "none"
+replacement_owner = "#8142"
+edit_authority = "none"
+lossiness = "Free English prose. It is not a machine-readable proof record and must not be parsed by a consumer."
+removal_condition = "Replaced by the typed proof data owned by #8142."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCode::confidence"
+kind = "field"
+semantic_class = "presentation_report"
+disposition = "deprecate"
+producer = "produced"
+proof_ceiling = "none"
+replacement_owner = "#8142"
+edit_authority = "none"
+lossiness = "Typed as a graded 0.0-1.0 score, but every current producer stamps the same literal 0.9 — including producers on the two different proof classes. The number therefore distinguishes nothing and carries no information. A consumer must not read it as proof strength, and no threshold over it authorizes an edit."
+removal_condition = "Remove with the neutral proof vocabulary under #8142; do not replace with another numeric score."
+fixtures = ["dcapi-confidence-is-a-constant", "dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCode::suggestion"
+kind = "field"
+semantic_class = "presentation_report"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "none"
+replacement_owner = "#8142"
+edit_authority = "none"
+lossiness = "Advisory prose such as \"Remove or use this symbol\". It carries no range, no replacement text and no applicability, so it is not an edit and confers no deletion authority under #4205/#4208."
+removal_condition = "Replaced by the report-only remediation class owned by #8142."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCodeAnalysis"
+kind = "struct"
+semantic_class = "compatibility_heuristic"
+disposition = "typed_replacement"
+producer = "structural"
+proof_ceiling = "none"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "Four fields, none of which can hold an outcome. There is no field for a partial, cancelled, deadline, resource, stale, product-failure or instrument-failure state, so every such state must arrive as an ordinary-looking result."
+removal_condition = "Replaced by the bounded workspace query result owned by #10935 under the operation contract #11553."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCodeAnalysis::dead_code"
+kind = "field"
+semantic_class = "compatibility_heuristic"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "none"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "An unordered accumulation with no completeness marker: an empty vector means \"nothing found\", \"nothing analysable\" and \"analysis failed for every file\" alike."
+removal_condition = "Replaced by the bounded workspace query result owned by #10935."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCodeAnalysis::stats"
+kind = "field"
+semantic_class = "presentation_report"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "none"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "Derived counters only. They cannot disagree with `dead_code` for the six counted variants and cannot see the two uncounted ones."
+removal_condition = "Replaced by the bounded workspace query result owned by #10935."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCodeAnalysis::files_analyzed"
+kind = "field"
+semantic_class = "compatibility_heuristic"
+disposition = "deprecate"
+producer = "produced"
+proof_ceiling = "none"
+replacement_owner = "#11553"
+edit_authority = "none"
+lossiness = "Counts documents visited, not documents successfully analysed. `analyze_workspace` discards every per-file error, so a file that failed to analyse still increments this counter. The name therefore overstates what the number proves."
+removal_condition = "Replaced by the typed work dimensions owned by the operation contract #11553."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCodeAnalysis::total_lines"
+kind = "field"
+semantic_class = "presentation_report"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "none"
+replacement_owner = "#11553"
+edit_authority = "none"
+lossiness = "A newline count over visited documents. It is a display quantity, not a coverage denominator."
+removal_condition = "Replaced by the typed work dimensions owned by the operation contract #11553."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCodeStats"
+kind = "struct"
+semantic_class = "presentation_report"
+disposition = "retain_projection"
+producer = "structural"
+proof_ceiling = "none"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "Seven counters covering six of the eight `DeadCodeType` variants. `UnusedImport` and `UnusedExport` have no counter, so the counting `match` in `analyze_workspace` drops them through a wildcard arm."
+removal_condition = "Replaced by the bounded workspace query result owned by #10935."
+fixtures = ["dcapi-result-shape-cannot-represent-failure", "dcapi-report-cannot-render-import-export"]
+
+[[item]]
+id = "DeadCodeStats::unused_subroutines"
+kind = "field"
+semantic_class = "presentation_report"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "index_reference_count"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "A count of index-reference-count findings; it inherits every limitation of `DeadCodeType::UnusedSubroutine`."
+removal_condition = "Replaced by the bounded workspace query result owned by #10935."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCodeStats::unused_variables"
+kind = "field"
+semantic_class = "presentation_report"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "index_reference_count"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "Inherits every limitation of `DeadCodeType::UnusedVariable`."
+removal_condition = "Replaced by the bounded workspace query result owned by #10935."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCodeStats::unused_constants"
+kind = "field"
+semantic_class = "presentation_report"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "index_reference_count"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "Inherits every limitation of `DeadCodeType::UnusedConstant`."
+removal_condition = "Replaced by the bounded workspace query result owned by #10935."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCodeStats::unused_packages"
+kind = "field"
+semantic_class = "presentation_report"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "index_reference_count"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "Inherits every limitation of `DeadCodeType::UnusedPackage`."
+removal_condition = "Replaced by the bounded workspace query result owned by #10935."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCodeStats::unreachable_statements"
+kind = "field"
+semantic_class = "presentation_report"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "heuristic_text_scan"
+replacement_owner = "#8118"
+edit_authority = "none"
+lossiness = "Bounded above by one per file, because the per-file scanner stops at its first finding. The count is therefore closer to \"files with an unreachable statement\" than to a statement count."
+removal_condition = "Superseded by the typed local flow summaries landed under #8118."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCodeStats::dead_branches"
+kind = "field"
+semantic_class = "presentation_report"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "heuristic_text_scan"
+replacement_owner = "#8118"
+edit_authority = "none"
+lossiness = "Counts only single-line constant-condition matches, and skips branches nested inside an already-dead branch."
+removal_condition = "Superseded by the typed local flow summaries landed under #8118."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCodeStats::total_dead_lines"
+kind = "field"
+semantic_class = "presentation_report"
+disposition = "deprecate"
+producer = "produced"
+proof_ceiling = "none"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "Sums per-finding line spans without de-duplicating overlaps, so a line covered by two findings is counted twice. It is not a measure of removable lines and must not be read as one."
+removal_condition = "Remove with the compatibility report; do not reintroduce a single-number quality score."
+fixtures = ["dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCodeDetector"
+kind = "struct"
+semantic_class = "configuration"
+disposition = "retain_projection"
+producer = "structural"
+proof_ceiling = "none"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "Holds a `WorkspaceIndex` and a set of entry-point paths. It has no public fields. Under #8135 it may own compatibility configuration and presentation state only; it may not acquire a parser, source scanner, AST walker, value evaluator, graph, root, policy, profile, currentness or retry system."
+removal_condition = "Retire once the workspace query facade owned by #10935 is the promoted authority under #9763."
+fixtures = ["dcapi-entry-point-is-inert"]
+
+[[item]]
+id = "DeadCodeDetector::new"
+kind = "method"
+semantic_class = "configuration"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "none"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "Takes a `WorkspaceIndex` by value, so the detector observes one snapshot and cannot be told that the snapshot went stale. There is no configuration, profile or limit input."
+removal_condition = "Replaced by a canonical facade constructor owned by #10935."
+fixtures = ["dcapi-entry-point-is-inert"]
+
+[[item]]
+id = "DeadCodeDetector::add_entry_point"
+kind = "method"
+semantic_class = "configuration"
+disposition = "deprecate"
+producer = "inert"
+proof_ceiling = "none"
+replacement_owner = "#10871"
+edit_authority = "none"
+root_identity = false
+lossiness = "The stored set is never read by any code path, so declaring entry points cannot change a single finding. The method also performs no validation: a path in no root, and a bare relative path that cannot identify a root at all, are both accepted silently. It is configuration the surface advertises and does not honour."
+removal_condition = "Remove rather than map: canonical static root ownership is #10871's, and a path is not root identity. Removing it changes no result by construction."
+fixtures = ["dcapi-entry-point-is-inert", "dcapi-entry-point-accepts-unresolvable-path"]
+
+[[item]]
+id = "DeadCodeDetector::analyze_file"
+kind = "method"
+semantic_class = "local_cfg"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "heuristic_text_scan"
+replacement_owner = "#8118"
+edit_authority = "none"
+lossiness = "Reads the indexed document text and scans it line by line; it never parses. Its `Err` is an untyped `String`, so a missing document, a URI conversion failure and a genuine analysis failure are indistinguishable, as are product and instrument failures. A successful return is silently local-only: nothing in the value says the workspace tier was not consulted."
+removal_condition = "Superseded by the typed local flow summaries landed under #8118."
+fixtures = ["dcapi-import-export-never-produced", "dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "DeadCodeDetector::analyze_workspace"
+kind = "method"
+semantic_class = "workspace_liveness"
+disposition = "typed_replacement"
+producer = "produced"
+proof_ceiling = "index_reference_count"
+replacement_owner = "#10935"
+edit_authority = "none"
+lossiness = "Discards every per-file `analyze_file` error, so a file that failed to analyse contributes exactly what a clean file contributes: nothing. It walks every document with no limit, deadline or cancellation, and returns a value that cannot report a partial or terminal outcome. Its unused-symbol half is an index reference count, not reachability."
+removal_condition = "Replaced by the bounded workspace queries owned by #10935 under the operation contract #11553; production selection moves under #9763."
+fixtures = ["dcapi-import-export-never-produced", "dcapi-entry-point-is-inert", "dcapi-confidence-is-a-constant", "dcapi-result-shape-cannot-represent-failure"]
+
+[[item]]
+id = "generate_report"
+kind = "function"
+semantic_class = "presentation_report"
+disposition = "retain_projection"
+producer = "produced"
+proof_ceiling = "none"
+replacement_owner = "#8142"
+edit_authority = "none"
+lossiness = "Renders the seven counters and three totals as plain text. It cannot render `UnusedImport` or `UnusedExport`, which survive only inside the untyped `Dead code items:` total. It has no truncation, no terminal-outcome rendering and no unsupported-family notice, and it must never gain wording that says a finding is safe to remove."
+removal_condition = "Replaced by the report-only remediation projection owned by #8142."
+fixtures = ["dcapi-report-cannot-render-import-export"]
+
+# --------------------------------------------------------------------------
+# Result-state mapping. Every state the reachability programme distinguishes is
+# dispositioned for both public entry points. A collapse is recorded as a defect
+# with an owner; it is never silently accepted.
+# --------------------------------------------------------------------------
+
+[[result_state]]
+id = "complete_canonical_local"
+analyze_file = "represented_lossy"
+analyze_workspace = "represented_lossy"
+defect = ""
+owner = ""
+note = "Findings are returned, but they are text-scan heuristics rather than canonical local flow facts, and carry no generation or currentness identity."
+
+[[result_state]]
+id = "complete_canonical_workspace"
+analyze_file = "not_reachable"
+analyze_workspace = "represented_lossy"
+defect = ""
+owner = ""
+note = "`analyze_workspace` returns a whole-workspace value, but with no root, component, SCC, production/test or interface identity. `analyze_file` has no workspace tier at all."
+
+[[result_state]]
+id = "complete_local_only_workspace_deferred"
+analyze_file = "indistinguishable_from_complete"
+analyze_workspace = "not_reachable"
+defect = "`analyze_file` returns a local-only result with no marker saying the workspace tier was not consulted, so a caller cannot tell a local-only answer from a complete one."
+owner = "#10941"
+note = "Complete result identity is #10941's; this surface has no tier field to carry it."
+
+[[result_state]]
+id = "partial_or_degraded"
+analyze_file = "not_reachable"
+analyze_workspace = "indistinguishable_from_clean_empty"
+defect = "Per-file errors are discarded by `analyze_workspace`, so a partially analysed workspace is byte-identical to a fully analysed one with fewer findings."
+owner = "#10935"
+note = "`files_analyzed` counts visited documents, not successful ones, so it cannot recover the difference."
+
+[[result_state]]
+id = "cancelled"
+analyze_file = "not_reachable"
+analyze_workspace = "not_reachable"
+defect = ""
+owner = ""
+note = "The API is synchronous and takes no cancellation token, so the state cannot be entered. It is absent, not hidden."
+
+[[result_state]]
+id = "deadline_exceeded"
+analyze_file = "not_reachable"
+analyze_workspace = "not_reachable"
+defect = ""
+owner = ""
+note = "No deadline input exists. A host-level timeout kills the caller without producing a value."
+
+[[result_state]]
+id = "resource_exhausted"
+analyze_file = "not_reachable"
+analyze_workspace = "not_reachable"
+defect = ""
+owner = ""
+note = "No limit or profile input exists; `analyze_workspace` walks every document unbounded. Finite product profiles are #11590's."
+
+[[result_state]]
+id = "stale_or_superseded"
+analyze_file = "indistinguishable_from_complete"
+analyze_workspace = "indistinguishable_from_complete"
+defect = "The detector owns one `WorkspaceIndex` snapshot taken at construction, and the returned values carry no generation or version, so a result computed from a stale snapshot is indistinguishable from a current one."
+owner = "#10957"
+note = "Currentness and result-ID eligibility are #10957's."
+
+[[result_state]]
+id = "product_failure"
+analyze_file = "represented_lossy"
+analyze_workspace = "indistinguishable_from_clean_empty"
+defect = "`analyze_workspace` drops the error entirely. `analyze_file` reports one, but as an untyped `String` with no typed reason."
+owner = "#10935"
+note = ""
+
+[[result_state]]
+id = "instrument_failure"
+analyze_file = "represented_lossy"
+analyze_workspace = "indistinguishable_from_clean_empty"
+defect = "Nothing separates an instrument failure from a product failure: both arrive as the same untyped `String` from `analyze_file`, and as silence from `analyze_workspace`."
+owner = "#10935"
+note = "Missing instrument evidence must not read as zero findings; today it does."
+
+[[result_state]]
+id = "complete_semantics_bounded_view"
+analyze_file = "not_reachable"
+analyze_workspace = "not_reachable"
+defect = ""
+owner = ""
+note = "No truncation or bounded-view mechanism exists; output is unbounded. Bounded views are #10935's."
+
+[[result_state]]
+id = "incomplete_semantic_computation"
+analyze_file = "indistinguishable_from_complete"
+analyze_workspace = "indistinguishable_from_complete"
+defect = "An incomplete computation returns the same shape as a complete one. This is the collapse the programme forbids: a consumer cannot refuse an incomplete result because it cannot see that it is incomplete."
+owner = "#10935"
+note = "Complete bounded view and incomplete semantics must stay distinct; this surface distinguishes neither."
+
+# --------------------------------------------------------------------------
+# Consumer inventory. The validator rejects any undeclared production consumer
+# found in the tree, so this API cannot be wired into a product path without a
+# deliberate ledger change.
+# --------------------------------------------------------------------------
+
+[[consumer]]
+path = "crates/perl-parser/src/lib.rs"
+class = "reexport"
+note = "Declares `pub mod dead_code` and the `dead_code_detector` alias, both gated off wasm32."
+
+[[consumer]]
+path = "crates/perl-parser/src/prelude.rs"
+class = "reexport"
+note = "Re-exports the five public types."
+
+[[consumer]]
+path = "crates/perl-parser/src/compat.rs"
+class = "reexport"
+note = "Re-exports the module under the `dead_code_detector` compatibility alias."
+
+[[consumer]]
+path = "crates/perl-parser/tests/dead_code_detector.rs"
+class = "test"
+note = "Pre-existing behavioral tests reached through the compatibility alias."
+
+[[consumer]]
+path = "crates/perl-parser/tests/dead_code_api_compat.rs"
+class = "test"
+note = "The compatibility corpus that binds this ledger's claims to executable proof."
+
+[[consumer]]
+path = "crates/perl-parser/tests/wave4_completion_absorption_tests.rs"
+class = "test"
+note = "Absorption tests that assert the canonical path, the `dead_code_detector` alias and the alias identity. They pin the export surface itself, so retiring an export path breaks them deliberately."
+
+[[consumer]]
+path = "crates/perl-parser/examples/workspace_refactor_demo.rs"
+class = "dormant"
+note = "References `dead_code_detector` only inside a block comment; the example's `main` is a disabled stub. Not a live consumer and not evidence of demand."
+
+[[consumer]]
+path = "crates/perl-lsp-rs-core/src/providers/diagnostics/dead_code.rs"
+class = "independent_implementation"
+note = "The LSP's user-visible dead-code diagnostics do NOT flow through this API. `detect_dead_code` reaches `WorkspaceIndex::find_unused_symbols` directly and shares no type with this module, so retiring this surface does not by itself change any diagnostic a user sees — and improving this surface does not improve that one."
+
+# --------------------------------------------------------------------------
+# Boundaries this PR does not resolve. Recorded rather than implied.
+# --------------------------------------------------------------------------
+
+[[not_proven]]
+id = "downstream-external-consumers"
+claim = "No consumer outside this repository depends on the surface."
+reason = "The check inventories this workspace only. `perl-parser` is published, so an external dependant cannot be excluded from repository evidence alone; semver policy, not this ledger, decides whether that permits removal."
+
+[[not_proven]]
+id = "file-path-non-path-fallback"
+claim = "`DeadCode::file_path` can hold a raw URI string rather than a filesystem path."
+reason = "Read from source: `uri_to_fs_path(&sym.uri).unwrap_or_else(|| PathBuf::from(&sym.uri))`. No portable fixture drives the fallback branch, so the row is recorded as a source-read limitation rather than an executable control."
+
+[[not_proven]]
+id = "serialized-payloads-in-circulation"
+claim = "Whether any stored or transmitted payload carries `UnusedImport` / `UnusedExport`."
+reason = "Both variants derive `Serialize`/`Deserialize`, so a payload could exist outside the tree. Removal conditions for the two variants depend on this and it is not established here."
