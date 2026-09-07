@@ -619,6 +619,11 @@ fn git_protected_paths(
     workspace_root: &Path,
     deviations: &[ByteExactDeviation],
 ) -> Result<BTreeSet<String>, Box<dyn Error>> {
+    if deviations.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    reject_untracked_attribute_overrides(workspace_root)?;
+
     let mut protected = BTreeSet::new();
     for deviation in deviations {
         if git_text_attribute(workspace_root, deviation.path)? == TextAttribute::Unset {
@@ -626,6 +631,52 @@ fn git_protected_paths(
         }
     }
     Ok(protected)
+}
+
+/// Refuse to judge protection while an untracked per-clone attributes file
+/// could be supplying it.
+///
+/// `$GIT_DIR/info/attributes` is untracked and clone-local, and git honours it
+/// above the committed `.gitattributes`. No invocation can exclude it —
+/// `--source=<tree>`, `GIT_ATTR_NOSYSTEM`, and `core.attributesFile` were each
+/// verified not to suppress it. A local rule could therefore make a deviation
+/// look protected here while every other clone, and CI, normalizes the bytes.
+///
+/// The contract's subject is repository-wide protection, so the honest answer
+/// when that file exists is a named instrument failure rather than a verdict
+/// derived from state only this clone has. It is only reachable once a
+/// deviation is declared; an empty table never consults protection at all.
+fn reject_untracked_attribute_overrides(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["rev-parse", "--absolute-git-dir"])
+        .output()
+        .map_err(|error| contract_error(format!("locating the git directory: {error}")))?;
+
+    if !output.status.success() {
+        return Err(contract_error(format!(
+            "could not locate the git directory to check for per-clone attribute \
+             overrides: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+        .into());
+    }
+
+    let git_dir = PathBuf::from(String::from_utf8(output.stdout)?.trim());
+    let overrides = git_dir.join("info").join("attributes");
+    if overrides.exists() {
+        return Err(contract_error(format!(
+            "{} exists, so git's text attribute for a declared deviation cannot be proved \
+             to hold outside this clone. That file is untracked and overrides the committed \
+             .gitattributes, and no `git check-attr` invocation can exclude it. Remove it, or \
+             move the rule into the repository-root .gitattributes where every clone sees it.",
+            overrides.display()
+        ))
+        .into());
+    }
+
+    Ok(())
 }
 
 fn collect_gold_members(
@@ -717,10 +768,10 @@ fn check_member_byte_fidelity(
         {
             return Err(format!(
                 "{repository_path} has {fidelity}, but an undeclared gold member must be \
-                 newlines={newline_style}, final newline={final_newline}, \
-                 BOM={byte_order_mark}. Restore the bytes, or declare the deviation in \
-                 BYTE_EXACT_DEVIATIONS and give the path a literal `-text` entry in \
-                 .gitattributes."
+                 newlines={}, final newline={final_newline}, BOM={byte_order_mark}. \
+                 Restore the bytes, or declare the deviation in BYTE_EXACT_DEVIATIONS \
+                 and give the path a literal `-text` entry in .gitattributes.",
+                newline_style.as_str()
             ));
         }
         return Ok(());
@@ -743,7 +794,7 @@ fn check_member_byte_fidelity(
         return Err(format!(
             "{repository_path} is declared as newlines={}, final newline={}, BOM={} ({}), \
              but has {fidelity}. The declared bytes were rewritten.",
-            declared.newline_style,
+            declared.newline_style.as_str(),
             declared.final_newline,
             declared.byte_order_mark,
             declared.reason
@@ -1156,7 +1207,7 @@ mod tests {
             &BTreeSet::new(),
         )?;
         assert!(
-            message.contains("newlines=CRLF"),
+            message.contains("newlines=crlf"),
             "message must name the observed class: {message}"
         );
         Ok(())
@@ -1213,7 +1264,7 @@ mod tests {
     fn rejects_a_declared_deviation_that_git_may_normalize() -> Result<(), Box<dyn Error>> {
         let declared = [ByteExactDeviation {
             path: "test_corpus/gold/crlf_positions/fixture.pl",
-            newline_style: NewlineStyle::Crlf,
+            newline_style: NewlineStyle::CrLf,
             final_newline: true,
             byte_order_mark: false,
             reason: "CRLF position fixture",
@@ -1237,7 +1288,7 @@ mod tests {
     fn admits_a_declared_deviation_that_git_cannot_normalize() -> Result<(), Box<dyn Error>> {
         let declared = [ByteExactDeviation {
             path: "test_corpus/gold/crlf_positions/fixture.pl",
-            newline_style: NewlineStyle::Crlf,
+            newline_style: NewlineStyle::CrLf,
             final_newline: true,
             byte_order_mark: false,
             reason: "CRLF position fixture",
@@ -1261,7 +1312,7 @@ mod tests {
     fn rejects_a_declared_crlf_member_whose_bytes_arrived_as_lf() -> Result<(), Box<dyn Error>> {
         let declared = [ByteExactDeviation {
             path: "test_corpus/gold/crlf_positions/fixture.pl",
-            newline_style: NewlineStyle::Crlf,
+            newline_style: NewlineStyle::CrLf,
             final_newline: true,
             byte_order_mark: false,
             reason: "CRLF position fixture",
@@ -1274,7 +1325,7 @@ mod tests {
             &protected(&["test_corpus/gold/crlf_positions/fixture.pl"]),
         )?;
         assert!(
-            message.contains("declared as newlines=CRLF") && message.contains("newlines=LF"),
+            message.contains("declared as newlines=crlf") && message.contains("newlines=lf"),
             "message must contrast declared and observed bytes: {message}"
         );
         Ok(())
@@ -1390,11 +1441,62 @@ mod tests {
         Ok(())
     }
 
+    /// A per-clone attributes file must not be able to supply protection.
+    ///
+    /// `$GIT_DIR/info/attributes` is untracked and overrides the committed
+    /// `.gitattributes`, so a local rule would make a deviation look protected
+    /// here while every other clone normalizes the bytes.
+    #[test]
+    fn an_untracked_per_clone_attributes_file_blocks_a_protection_verdict()
+    -> Result<(), Box<dyn Error>> {
+        let repository = tempdir()?;
+        let root = repository.path();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["init", "--quiet"])
+            .status()?;
+        assert!(status.success(), "git init failed");
+
+        let declared = [ByteExactDeviation {
+            path: "fixture.pl",
+            newline_style: NewlineStyle::CrLf,
+            final_newline: true,
+            byte_order_mark: false,
+            reason: "CRLF position fixture",
+        }];
+
+        fs::write(root.join(".gitattributes"), "fixture.pl -text\n")?;
+        assert!(
+            git_protected_paths(root, &declared)?.contains("fixture.pl"),
+            "a tracked -text rule is provable protection"
+        );
+
+        // The same protection, supplied only to this clone, must not count.
+        let info = root.join(".git").join("info");
+        fs::create_dir_all(&info)?;
+        fs::write(info.join("attributes"), "fixture.pl -text\n")?;
+
+        let error = git_protected_paths(root, &declared)
+            .err()
+            .ok_or_else(|| contract_error("a per-clone attributes file must block a verdict"))?
+            .to_string();
+        assert!(
+            error.contains("info/attributes") && error.contains("outside this clone"),
+            "the failure must name the untracked override: {error}"
+        );
+
+        // With nothing declared, protection is never consulted, so the same
+        // clone-local file is irrelevant.
+        assert!(git_protected_paths(root, &[])?.is_empty());
+        Ok(())
+    }
+
     #[test]
     fn a_path_declared_twice_is_a_contract_error_not_a_silent_shadow() {
         let first = ByteExactDeviation {
             path: "test_corpus/gold/crlf_positions/fixture.pl",
-            newline_style: NewlineStyle::Crlf,
+            newline_style: NewlineStyle::CrLf,
             final_newline: true,
             byte_order_mark: false,
             reason: "CRLF position fixture",

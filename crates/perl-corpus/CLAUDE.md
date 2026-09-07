@@ -115,7 +115,10 @@ part of the contract, not an implementation detail.
 
 - `byte_fidelity::ByteFidelity::classify` reads raw bytes only. It never decodes,
   normalizes, or replaces; invalid UTF-8 is reported with the offset of the first
-  undecodable byte.
+  undecodable byte. Newline classification reuses `loading`'s `NewlineStyle` and its
+  detector rather than restating them: `\r` and `\n` cannot occur inside a multi-byte
+  UTF-8 sequence, so that detector is valid on raw bytes and needs no second
+  implementation for the pre-decode case.
 - `tests/gold_repository_contract.rs` classifies every gold member and requires the
   default class: LF terminators, a final newline, no BOM, valid UTF-8. That check runs
   before any decoded (`String`) view, so an undecodable member is named by path and
@@ -132,4 +135,10 @@ part of the contract, not an implementation detail.
   `-text` lines would call a path protected even after a later rule restored `text`, and
   so would admit a member git is free to rewrite. An unavailable or unparseable answer
   is an instrument failure, never a silent pass.
+- An existing `$GIT_DIR/info/attributes` blocks a protection verdict outright. That file
+  is untracked, clone-local, and overrides the committed `.gitattributes`, and no
+  `git check-attr` invocation excludes it — `--source=<tree>`, `GIT_ATTR_NOSYSTEM`, and
+  `core.attributesFile` were each verified not to. Since the contract's subject is
+  repository-wide protection, a verdict derived from state only one clone has would be
+  dishonest. Only a declared deviation reaches this check.
 - The `gen` module is written as `r#gen` in Rust source.

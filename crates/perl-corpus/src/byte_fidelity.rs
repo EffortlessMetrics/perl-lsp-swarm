@@ -11,43 +11,14 @@
 //! reported with the offset of the first offending byte instead of being
 //! replaced with `U+FFFD`.
 
+use crate::loading::detect_newline_style;
 use std::fmt;
+
+#[doc(inline)]
+pub use crate::loading::NewlineStyle;
 
 /// UTF-8 byte-order mark.
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
-
-/// How a member's line terminators are represented in its raw bytes.
-///
-/// The classification is over the terminators that are actually present. A
-/// member with no terminator at all is [`NewlineStyle::None`]; a member that
-/// mixes representations is [`NewlineStyle::Mixed`], which is never the same
-/// as any single style.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NewlineStyle {
-    /// The member contains no line terminator.
-    None,
-    /// Every terminator is a bare line feed (`\n`).
-    Lf,
-    /// Every terminator is a carriage return + line feed pair (`\r\n`).
-    Crlf,
-    /// Every terminator is a bare carriage return (`\r`).
-    Cr,
-    /// More than one terminator representation is present.
-    Mixed,
-}
-
-impl fmt::Display for NewlineStyle {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = match self {
-            Self::None => "none",
-            Self::Lf => "LF",
-            Self::Crlf => "CRLF",
-            Self::Cr => "CR",
-            Self::Mixed => "mixed",
-        };
-        formatter.write_str(name)
-    }
-}
 
 /// Whether a member's raw bytes decode as UTF-8.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -77,7 +48,7 @@ impl fmt::Display for Encoding {
 }
 
 /// The byte-level identity of one corpus member.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ByteFidelity {
     /// Terminator representation used by the member.
     pub newline_style: NewlineStyle,
@@ -100,7 +71,7 @@ impl ByteFidelity {
     #[must_use]
     pub fn classify(bytes: &[u8]) -> Self {
         Self {
-            newline_style: classify_newline_style(bytes),
+            newline_style: detect_newline_style(bytes),
             final_newline: matches!(bytes.last(), Some(b'\n' | b'\r')),
             byte_order_mark: bytes.starts_with(&UTF8_BOM),
             encoding: classify_encoding(bytes),
@@ -119,43 +90,11 @@ impl fmt::Display for ByteFidelity {
         write!(
             formatter,
             "newlines={}, final newline={}, BOM={}, encoding={}",
-            self.newline_style, self.final_newline, self.byte_order_mark, self.encoding
+            self.newline_style.as_str(),
+            self.final_newline,
+            self.byte_order_mark,
+            self.encoding
         )
-    }
-}
-
-/// Count each terminator representation and reduce it to one style.
-fn classify_newline_style(bytes: &[u8]) -> NewlineStyle {
-    let mut saw_lf = false;
-    let mut saw_crlf = false;
-    let mut saw_cr = false;
-
-    let mut index = 0usize;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'\r' => {
-                if bytes.get(index + 1) == Some(&b'\n') {
-                    saw_crlf = true;
-                    index += 2;
-                } else {
-                    saw_cr = true;
-                    index += 1;
-                }
-            }
-            b'\n' => {
-                saw_lf = true;
-                index += 1;
-            }
-            _ => index += 1,
-        }
-    }
-
-    match (saw_lf, saw_crlf, saw_cr) {
-        (false, false, false) => NewlineStyle::None,
-        (true, false, false) => NewlineStyle::Lf,
-        (false, true, false) => NewlineStyle::Crlf,
-        (false, false, true) => NewlineStyle::Cr,
-        _ => NewlineStyle::Mixed,
     }
 }
 
@@ -196,7 +135,7 @@ mod tests {
 
         assert!(lf_utf8(lf));
         assert!(!lf_utf8(crlf), "a CRLF conversion must not satisfy the LF class");
-        assert_eq!(ByteFidelity::classify(crlf).newline_style, NewlineStyle::Crlf);
+        assert_eq!(ByteFidelity::classify(crlf).newline_style, NewlineStyle::CrLf);
         assert_ne!(ByteFidelity::classify(lf), ByteFidelity::classify(crlf));
     }
 
@@ -241,7 +180,7 @@ mod tests {
     fn crlf_is_one_terminator_not_a_cr_next_to_an_lf() {
         // The naive reading counts `\r\n` as both a bare CR and a bare LF and
         // therefore reports mixed newlines for an ordinary CRLF file.
-        assert_eq!(ByteFidelity::classify(b"a\r\nb\r\n").newline_style, NewlineStyle::Crlf);
+        assert_eq!(ByteFidelity::classify(b"a\r\nb\r\n").newline_style, NewlineStyle::CrLf);
     }
 
     #[test]
@@ -309,7 +248,7 @@ mod tests {
         let representatives: [(&[u8], NewlineStyle); 5] = [
             (b"no terminator", NewlineStyle::None),
             (b"a\nb\n", NewlineStyle::Lf),
-            (b"a\r\nb\r\n", NewlineStyle::Crlf),
+            (b"a\r\nb\r\n", NewlineStyle::CrLf),
             (b"a\rb\r", NewlineStyle::Cr),
             (b"a\nb\r\n", NewlineStyle::Mixed),
         ];
@@ -317,8 +256,12 @@ mod tests {
         let mut observed = Vec::new();
         for (bytes, expected) in representatives {
             let style = ByteFidelity::classify(bytes).newline_style;
-            assert_eq!(style, expected, "{bytes:?} must classify as {expected}");
-            assert!(!observed.contains(&style), "{style} was produced by two different inputs");
+            assert_eq!(style, expected, "{bytes:?} must classify as {}", expected.as_str());
+            assert!(
+                !observed.contains(&style),
+                "{} was produced by two different inputs",
+                style.as_str()
+            );
             observed.push(style);
         }
 
