@@ -912,8 +912,14 @@ fn clause_claims_postfix_completion(clause: &str) -> bool {
 }
 
 fn directly_negated_before(prefix: &str) -> bool {
-    let prefix = prefix.trim_end();
-    prefix.ends_with("not") || prefix.ends_with("n't")
+    let mut rest = prefix.trim_end();
+    for adverb in ["currently", "yet"] {
+        if let Some(stripped) = rest.strip_suffix(adverb) {
+            rest = stripped.trim_end();
+            break;
+        }
+    }
+    rest.ends_with("not") || rest.ends_with("n't")
 }
 
 fn table_overclaim(line: &str, view: &CapabilityView) -> Result<Option<String>> {
@@ -1310,6 +1316,74 @@ mod tests {
             report.contains("no designated surface claims completion"),
             "direct negation of a postfix completion phrase must remain an honest open statement: {report}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn qualified_not_yet_negation_is_not_a_completion_claim() -> Result<()> {
+        let (ledger, mut matrix) = committed()?;
+        apply_full_looking_hir(postfix_req(&mut matrix)?);
+        let view = derive_postfix_capability(&ledger, &matrix)?;
+        let docs = [(
+            "docs/project/status/perl_compiler_concepts.md",
+            "Postfix statement modifiers are not yet fully supported.\n",
+        )];
+        let report = evaluate_closure_gate(&view, &ledger, &matrix, &docs)?;
+        assert!(
+            report.contains("no designated surface claims completion"),
+            "qualified not-yet negation must remain an honest open statement: {report}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn qualified_not_currently_negation_is_not_a_completion_claim() -> Result<()> {
+        let (ledger, mut matrix) = committed()?;
+        apply_full_looking_hir(postfix_req(&mut matrix)?);
+        let view = derive_postfix_capability(&ledger, &matrix)?;
+        let docs = [(
+            "docs/project/status/perl_compiler_concepts.md",
+            "Postfix statement modifiers are not currently fully supported.\n",
+        )];
+        let report = evaluate_closure_gate(&view, &ledger, &matrix, &docs)?;
+        assert!(
+            report.contains("no designated surface claims completion"),
+            "qualified not-currently negation must remain an honest open statement: {report}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn earlier_clause_negation_does_not_cancel_postfix_completion() -> Result<()> {
+        let (ledger, mut matrix) = committed()?;
+        apply_full_looking_hir(postfix_req(&mut matrix)?);
+        let view = derive_postfix_capability(&ledger, &matrix)?;
+        let docs = [(
+            "docs/project/status/perl_compiler_concepts.md",
+            "Regex is not yet complete; postfix statement modifiers are fully supported.\n",
+        )];
+        let error = evaluate_closure_gate(&view, &ledger, &matrix, &docs)
+            .expect_err("earlier-clause negation must not cancel a postfix completion claim");
+        let message = error.to_string();
+        assert!(message.contains("semantic"), "narrowest reason missing: {message}");
+        assert!(message.contains("fully supported"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn currently_without_negation_is_still_a_completion_claim() -> Result<()> {
+        let (ledger, mut matrix) = committed()?;
+        apply_full_looking_hir(postfix_req(&mut matrix)?);
+        let view = derive_postfix_capability(&ledger, &matrix)?;
+        let docs = [(
+            "docs/project/status/perl_compiler_concepts.md",
+            "Postfix statement modifiers are currently fully supported.\n",
+        )];
+        let error = evaluate_closure_gate(&view, &ledger, &matrix, &docs)
+            .expect_err("currently without not remains a completion claim");
+        let message = error.to_string();
+        assert!(message.contains("semantic"), "narrowest reason missing: {message}");
+        assert!(message.contains("fully supported"), "{message}");
         Ok(())
     }
 
