@@ -1333,6 +1333,7 @@ fn lock_lease_is_held_for_the_whole_cell() -> Result<()> {
         released.load(std::sync::atomic::Ordering::SeqCst),
         "the lease drops when the cell returns (scripted release observed)"
     );
+    let _ = alive;
     Ok(())
 }
 
@@ -1586,6 +1587,63 @@ fn raw_digest_binds_the_declared_cell_identity() -> Result<()> {
         raw_facts_digest(&other)?,
         record.raw_digest,
         "the same raw facts under a different cell must digest differently"
+    );
+    Ok(())
+}
+
+/// Falsifier for lease SURVIVAL THROUGH the command: a probe runner
+/// observes the lease flag mid-flight, so an implementation that drops the
+/// lease at acquisition cannot pass by only checking the post-hoc flag.
+#[test]
+fn lock_lease_is_observed_alive_during_command_execution() -> Result<()> {
+    let (clock, filesystems, _locks, process, _cache, commands) = standard_parts(COMMIT_A);
+    let locks = ScriptedLocks::new(true, 500);
+    let alive = std::sync::Arc::clone(&locks.lease_alive);
+    let observed_during_run = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = std::sync::Arc::clone(&observed_during_run);
+
+    struct ProbeRunner {
+        inner: ScriptedRunner,
+        alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        observed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl crate::build_measurement::providers::CommandRunner for ProbeRunner {
+        fn run(&mut self, command: &CommandSpec) -> CommandOutcome {
+            if self.alive.load(std::sync::atomic::Ordering::SeqCst) {
+                self.observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.inner.run(command)
+        }
+    }
+
+    let inner = ScriptedRunner::new(vec![successful_outcome(COMMIT_A)]);
+    let probe = ProbeRunner { inner, alive, observed: std::sync::Arc::clone(&observed_during_run) };
+
+    let mut harness = MeasurementHarness {
+        clock: Box::new(clock),
+        filesystems: Box::new(filesystems),
+        locks: Box::new(locks),
+        process: Box::new(process),
+        cache: Box::new(_cache),
+        commands: Box::new(probe),
+    };
+    let cell = fixture_cell(
+        ExecutionModel::CargoSafeDirectLeaf,
+        WorkflowClass::Construction,
+        Operation::Check,
+        fixture_subject(COMMIT_A),
+        HostProfile::NativePosix,
+        LockPolicy::WholeProcessFlock,
+    );
+    let record = executed(harness.execute_cell(cell, proof_execution(), None))?;
+    assert!(
+        observed_during_run.load(std::sync::atomic::Ordering::SeqCst),
+        "the probe observed the lease alive while the command executed"
+    );
+    assert!(
+        matches!(record.lock, LockObservation::Held { .. }),
+        "the record carries the held-lock observation"
     );
     Ok(())
 }
