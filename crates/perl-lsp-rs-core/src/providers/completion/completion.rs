@@ -1577,7 +1577,8 @@ impl CompletionProvider {
             ),
         };
 
-        for field_name in model.object_pad_param_field_names() {
+        // `:param(external_name)` accepts `external_name`, not the field name.
+        for field_name in model.object_pad_constructor_param_names() {
             if !prefix.is_empty() && !field_name.starts_with(prefix) {
                 continue;
             }
