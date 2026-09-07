@@ -1048,7 +1048,9 @@ local function apply_selected_completion(item, rstate)
   if edit_applied then
     rstate.applied = true
   end
-  return edit_applied
+  -- The second result is permission for the editor's plain fallback, not a
+  -- synonym for "nothing was inserted". Every early refusal leaves it absent.
+  return edit_applied, dv ~= nil and not effective.textEdit and not effective.insertText
 end
 
 ---Terminal handling of one completionItem/resolve response for its item
@@ -1176,9 +1178,9 @@ end
 ---@param index integer
 ---@param item table
 local function autocomplete_onselect(index, item)
-  -- Lite XL uses item.text as its fallback insertion bytes. A suffixed
-  -- internal key must therefore always be claimed here, including synchronous
-  -- refusal paths, so the private identity never reaches the document.
+  -- Lite XL uses item.text as fallback insertion bytes. Refusal must claim
+  -- every row; only an admitted plain unsuffixed item may use that fallback.
+  -- A suffixed internal key must always stay inside this callback.
   local owns_internal_key = item.data and item.data.internal_key_suffixed == true
   -- Local patch (#11108): a completion edit computed for one accepted
   -- document state is revalidated against its stored subject at the
@@ -1190,7 +1192,7 @@ local function autocomplete_onselect(index, item)
       core.log_quiet(
         "[LSP] completion edit refused (%s)", disposition or "stale"
       )
-      return owns_internal_key or false
+      return true
     end
   end
 
@@ -1201,8 +1203,9 @@ local function autocomplete_onselect(index, item)
   -- once regardless of repeated callbacks.
   local rstate = item.data.resolve
   if not rstate then
-    local applied = apply_selected_completion(item, { state = "not_needed", applied = false })
-    return applied or owns_internal_key or false
+    local applied, plain_fallback = apply_selected_completion(
+      item, { state = "not_needed", applied = false })
+    return applied or owns_internal_key or not plain_fallback
   end
   if rstate.applied then
     return true
@@ -1215,11 +1218,11 @@ local function autocomplete_onselect(index, item)
     or rstate.state == "timed_out"
     or rstate.state == "stale"
   then
-    local applied = apply_selected_completion(item, rstate)
+    local applied, plain_fallback = apply_selected_completion(item, rstate)
     -- A resolving item owns the selection even when its terminal refuses to
     -- mutate (for example a stale or failed label-only result). Returning
     -- false would make Lite XL insert the internal menu key as a fallback.
-    return applied or owns_internal_key or rstate.supported
+    return applied or owns_internal_key or rstate.supported or not plain_fallback
   end
   if rstate.state == "in_flight" then
     rstate.pending_apply = true
@@ -1233,9 +1236,9 @@ local function autocomplete_onselect(index, item)
   begin_completion_resolve(item, rstate)
   if not rstate.pending_apply then
     -- The operation terminated synchronously (typed queue rejection or a
-    -- missing session): its guarded terminal already fell back or refused,
-    -- so selection surfaces that real outcome instead of a deferral.
-    return rstate.applied or owns_internal_key or false
+    -- missing session): its guarded terminal already applied or refused.
+    -- Both outcomes consume the selection; false would bypass the refusal.
+    return true
   end
   -- The asynchronous terminal performs the sole document mutation.
   return true

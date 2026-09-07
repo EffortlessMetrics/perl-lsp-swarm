@@ -856,6 +856,41 @@ local function buffer_doc(lines, carets)
   return doc
 end
 
+-- A refusal owns the selection independently of whether its label needed a
+-- synthetic key. Drive the consumer fallback against real buffer bytes.
+for _, key in ipairs({ "foo", "foo#2" }) do
+  for _, refusal in ipairs({ "stale", "no_session", "not_queued", "plain_stale", "other_document" }) do
+    local lsp = fresh_module_load()
+    local caps = (refusal == "plain_stale" or refusal == "other_document")
+      and PLAIN_COMPLETION_CAPS or resolve_caps()
+    local server = make_server("perllsp", caps)
+    register(lsp, "perllsp", server)
+    local doc = buffer_doc({ "x: fo;\n" }, { { 1, 6, 1, 6 } })
+    local source = { { label = "foo" } }
+    if key == "foo#2" then source[2] = { label = "foo" } end
+    local items = open_completion(lsp, server, doc, source)
+    activate(setmetatable({ doc = doc }, require "core.docview"))
+    local active_doc = doc
+    if refusal == "other_document" then
+      active_doc = buffer_doc({ "x: fo;\n" }, { { 1, 6, 1, 6 } })
+      activate(setmetatable({ doc = active_doc }, require "core.docview"))
+    elseif refusal == "stale" or refusal == "plain_stale" then
+      lsp.terminate_document_session(doc, server)
+      doc.lsp_open = false
+    elseif refusal == "no_session" then
+      lsp.make_request_subject = function() return nil end
+    else
+      server.push_request = function() return "not_queued" end
+    end
+    ok(plugin_select(key, items[key]) == true,
+      "refusal: " .. key .. " claims " .. refusal)
+    ok(doc.lines[1] == "x: fo;\n",
+      "refusal: " .. key .. " leaves buffer intact for " .. refusal)
+    ok(active_doc.lines[1] == "x: fo;\n",
+      "refusal: " .. key .. " leaves active buffer intact for " .. refusal)
+  end
+end
+
 for _, mode in ipairs({ "suffixed", "explicit", "legacy" }) do
   local explicit = mode == "explicit"
   for _, multiple in ipairs({ false, true }) do

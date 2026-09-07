@@ -987,8 +987,8 @@ do
     { label = "q_bare", kind = 3 },
   })
   local item2 = items2["q_bare"]
-  ok(item2.onselect(1, item2) == false,
-    "caseL: queue-rejected resolve refuses a non-self-complete original explicitly")
+  ok(item2.onselect(1, item2) == true,
+    "caseL: queue-rejected resolve consumes selection without unsafe plugin fallback")
   ok(count_edits(doc) == edits_before, "caseL: refusal mutated nothing")
 end
 
