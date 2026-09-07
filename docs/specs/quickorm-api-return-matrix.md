@@ -16,8 +16,8 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `conn.all` | `DBIx::QuickORM::Connection` | `all` | connection | required | multiple_rows | list_of_zero_or_more | derived_from_argument_source | sync_only | permitted | exact | — | `lib/DBIx/QuickORM/Connection.pm:996` |
 | `conn.any` | `DBIx::QuickORM::Connection` | `any` | connection | required | single_optional_row | zero_or_one | derived_from_argument_source | sync_with_async_row_result | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Handle.pm:107` |
-| `conn.aside` | `DBIx::QuickORM::Connection` | `aside` | connection | required | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | permitted | exact | — | `lib/DBIx/QuickORM/Connection.pm:993` |
-| `conn.async` | `DBIx::QuickORM::Connection` | `async` | connection | required | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | permitted | exact | — | `lib/DBIx/QuickORM/Connection.pm:992` |
+| `conn.aside` | `DBIx::QuickORM::Connection` | `aside` | connection | required | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Connection.pm:993` |
+| `conn.async` | `DBIx::QuickORM::Connection` | `async` | connection | required | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Connection.pm:992` |
 | `conn.by_id` | `DBIx::QuickORM::Connection` | `by_id` | connection | required | single_optional_row | zero_or_one | derived_from_argument_source | sync_with_async_row_result | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Connection.pm:1004` |
 | `conn.by_ids` | `DBIx::QuickORM::Connection` | `by_ids` | connection | required | multiple_rows | arrayref_of_zero_or_more | derived_from_argument_source | sync_with_async_row_result | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Connection.pm:1043` |
 | `conn.count` | `DBIx::QuickORM::Connection` | `count` | connection | required | boolean_or_count | zero_or_one | not_applicable | sync_only | permitted | exact | — | `lib/DBIx/QuickORM/Connection.pm:1001` |
@@ -25,7 +25,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 | `conn.delete` | `DBIx::QuickORM::Connection` | `delete` | connection | required | mutation_or_side_effect_result | zero_or_one | not_applicable | sync_async_aside_forked | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Connection.pm:1002` |
 | `conn.find_or_insert` | `DBIx::QuickORM::Connection` | `find_or_insert` | connection | trailing_data_hashref | single_optional_row | one | derived_from_argument_source | sync_with_async_row_result | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Connection.pm:1011` |
 | `conn.first` | `DBIx::QuickORM::Connection` | `first` | connection | required | single_optional_row | zero_or_one | derived_from_argument_source | sync_with_async_row_result | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Connection.pm:999` |
-| `conn.forked` | `DBIx::QuickORM::Connection` | `forked` | connection | required | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | permitted | exact | — | `lib/DBIx/QuickORM/Connection.pm:994` |
+| `conn.forked` | `DBIx::QuickORM::Connection` | `forked` | connection | required | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | croaks | exact | — | `lib/DBIx/QuickORM/Connection.pm:994` |
 | `conn.handle` | `DBIx::QuickORM::Connection` | `handle` | connection | required | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Connection.pm:928` |
 | `conn.insert` | `DBIx::QuickORM::Connection` | `insert` | connection | trailing_data_hashref | single_optional_row | one | derived_from_argument_source | sync_with_async_row_result | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Connection.pm:1006` |
 | `conn.iterate` | `DBIx::QuickORM::Connection` | `iterate` | connection | trailing_coderef | mutation_or_side_effect_result | nothing | not_applicable | sync_only | permitted | exact | — | `lib/DBIx/QuickORM/Connection.pm:1005` |
@@ -155,7 +155,8 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 | `row.fields` | `DBIx::QuickORM::Row` | `fields` | row | none | open_hash_or_hash_sequence | hash | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:439` |
 | `row.follow` | `DBIx::QuickORM::Row` | `follow` | row | required | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:333` |
 | `row.force_sync` | `DBIx::QuickORM::Row` | `force_sync` | row | optional | single_optional_row | one | preserved_from_receiver | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Row.pm:269` |
-| `row.handle` | `DBIx::QuickORM::Row` | `handle` | row | optional | transform_handle_source_row | one | preserved_from_receiver | sync_async_aside_forked | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:121` |
+| `row.handle.copy` | `DBIx::QuickORM::Row` | `handle` | row | no_source_argument | transform_handle_source_row | one | preserved_from_receiver | sync_async_aside_forked | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:121` |
+| `row.handle.rebind` | `DBIx::QuickORM::Row` | `handle` | row | source_or_row_rebinding | transform_handle_source_row | one | derived_from_argument_source | sync_async_aside_forked | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:121` |
 | `row.has_field` | `DBIx::QuickORM::Row` | `has_field` | row | required | boolean_or_count | one | not_applicable | not_applicable | permitted | runtime_resolved | — | `lib/DBIx/QuickORM/Role/Row.pm:99` |
 | `row.has_pending` | `DBIx::QuickORM::Row` | `has_pending` | row | none | boolean_or_count | one | not_applicable | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Row.pm:126` |
 | `row.in_storage` | `DBIx::QuickORM::Row` | `in_storage` | row | none | boolean_or_count | one | not_applicable | not_applicable | permitted | exact | — | `lib/DBIx/QuickORM/Row.pm:123` |
@@ -196,8 +197,8 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 
 - `conn.all`: Delegates to handle(@_)->all; inherits the handle terminal's sync-only rule.
 - `conn.any`: Delegates to the handle's `any`, which `Role::Handle` (composed at Handle.pm:28) defines as `shift->first(@_)`. It is an alias for first, not an unsupported method.
-- `conn.aside`: Builds a handle from the argument source, then marks it aside.
-- `conn.async`: Builds a handle from the argument source, then marks it async.
+- `conn.aside`: Builds a handle from the argument source, then marks it aside. Implemented as a tail call `$self->handle(@_)->aside` (Connection.pm:992-994), so Perl propagates the caller's context and the handle refiner's `defined wantarray` guard croaks in void context.
+- `conn.async`: Builds a handle from the argument source, then marks it async. Implemented as a tail call `$self->handle(@_)->async` (Connection.pm:992-994), so Perl propagates the caller's context and the handle refiner's `defined wantarray` guard croaks in void context.
 - `conn.by_id`: Trailing argument is the id; delegates to the handle terminal.
 - `conn.by_ids`: Returns an arrayref, not a flat list.
 - `conn.count`: Delegates to the sync-only handle count, which may be undef.
@@ -205,7 +206,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 - `conn.delete`: Delegates to the handle write; undef when synchronous.
 - `conn.find_or_insert`: one($arg) // insert($arg): the branch taken is runtime state, so the row comes from either a select or a write.
 - `conn.first`: Row terminal on a connection; distinct from Iterator::first.
-- `conn.forked`: Builds a handle from the argument source, then marks it forked.
+- `conn.forked`: Builds a handle from the argument source, then marks it forked. Implemented as a tail call `$self->handle(@_)->forked` (Connection.pm:992-994), so Perl propagates the caller's context and the handle refiner's `defined wantarray` guard croaks in void context.
 - `conn.handle`: Croaks on undef. A handle passed here is consumed as a derived table, not refined in place.
 - `conn.insert`: Delegates to the handle write, which returns the inserted row.
 - `conn.iterate`: Callback-driven; returns nothing.
@@ -335,7 +336,8 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 - `row.fields`: Inflated field map merged from pending over stored.
 - `row.follow`: Resolves the link and returns a handle on the link's *other* table (Role/Row.pm:344), so the receiver's row type does not survive.
 - `row.force_sync`: Clears the desync flag and returns the same row (Row.pm:269-273).
-- `row.handle`: Returns a handle scoped to this row's own source and row, then passes trailing arguments through Handle::handle, which may rebind the source.
+- `row.handle.copy`: Role/Row.pm:121-124 builds a handle scoped to the row's own source and row, then passes the trailing arguments through Handle::handle. With no source or row argument the result stays on the receiver's own source.
+- `row.handle.rebind`: Role/Row.pm:121-124 builds a handle scoped to the row's own source and row, then passes the trailing arguments through Handle::handle. A source or row argument reaches Handle::handle and replaces that source, so the result can be a handle on another table.
 - `row.has_field`: Delegates to the source; croaks without a field name.
 - `row.has_pending`: State predicate.
 - `row.in_storage`: State predicate.

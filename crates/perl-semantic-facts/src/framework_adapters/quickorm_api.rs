@@ -514,10 +514,10 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         multiplicity: N::One,
         type_params: T::DerivedFromArgumentSource,
         mode: M::SyncAsyncAsideForked,
-        void_context: V::Permitted,
+        void_context: V::Croaks,
         boundary: B::Exact,
         evidence: QuickOrmEvidence { file: CONN, line: 993 },
-        notes: "Builds a handle from the argument source, then marks it aside.",
+        notes: "Builds a handle from the argument source, then marks it aside. Implemented as a tail call `$self->handle(@_)->aside` (Connection.pm:992-994), so Perl propagates the caller's context and the handle refiner's `defined wantarray` guard croaks in void context.",
     },
     QuickOrmApiCase {
         api_case_id: "conn.async",
@@ -530,10 +530,10 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         multiplicity: N::One,
         type_params: T::DerivedFromArgumentSource,
         mode: M::SyncAsyncAsideForked,
-        void_context: V::Permitted,
+        void_context: V::Croaks,
         boundary: B::Exact,
         evidence: QuickOrmEvidence { file: CONN, line: 992 },
-        notes: "Builds a handle from the argument source, then marks it async.",
+        notes: "Builds a handle from the argument source, then marks it async. Implemented as a tail call `$self->handle(@_)->async` (Connection.pm:992-994), so Perl propagates the caller's context and the handle refiner's `defined wantarray` guard croaks in void context.",
     },
     QuickOrmApiCase {
         api_case_id: "conn.by_id",
@@ -658,10 +658,10 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         multiplicity: N::One,
         type_params: T::DerivedFromArgumentSource,
         mode: M::SyncAsyncAsideForked,
-        void_context: V::Permitted,
+        void_context: V::Croaks,
         boundary: B::Exact,
         evidence: QuickOrmEvidence { file: CONN, line: 994 },
-        notes: "Builds a handle from the argument source, then marks it forked.",
+        notes: "Builds a handle from the argument source, then marks it forked. Implemented as a tail call `$self->handle(@_)->forked` (Connection.pm:992-994), so Perl propagates the caller's context and the handle refiner's `defined wantarray` guard croaks in void context.",
     },
     QuickOrmApiCase {
         api_case_id: "conn.handle",
@@ -2746,12 +2746,12 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         notes: "Clears the desync flag and returns the same row (Row.pm:269-273).",
     },
     QuickOrmApiCase {
-        api_case_id: "row.handle",
+        api_case_id: "row.handle.copy",
         package: PKG_ROW,
         method: "handle",
         receiver: R::Row,
         receiver_constraints: NO_CONSTRAINTS,
-        arguments: A::Optional,
+        arguments: A::NoSourceArgument,
         return_class: C::TransformHandleSourceRow,
         multiplicity: N::One,
         type_params: T::PreservedFromReceiver,
@@ -2759,7 +2759,23 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: ROLE_ROW, line: 121 },
-        notes: "Returns a handle scoped to this row's own source and row, then passes trailing arguments through Handle::handle, which may rebind the source.",
+        notes: "Role/Row.pm:121-124 builds a handle scoped to the row's own source and row, then passes the trailing arguments through Handle::handle. With no source or row argument the result stays on the receiver's own source.",
+    },
+    QuickOrmApiCase {
+        api_case_id: "row.handle.rebind",
+        package: PKG_ROW,
+        method: "handle",
+        receiver: R::Row,
+        receiver_constraints: NO_CONSTRAINTS,
+        arguments: A::SourceOrRowRebinding,
+        return_class: C::TransformHandleSourceRow,
+        multiplicity: N::One,
+        type_params: T::DerivedFromArgumentSource,
+        mode: M::SyncAsyncAsideForked,
+        void_context: V::Permitted,
+        boundary: B::RuntimeResolved,
+        evidence: QuickOrmEvidence { file: ROLE_ROW, line: 121 },
+        notes: "Role/Row.pm:121-124 builds a handle scoped to the row's own source and row, then passes the trailing arguments through Handle::handle. A source or row argument reaches Handle::handle and replaces that source, so the result can be a handle on another table.",
     },
     QuickOrmApiCase {
         api_case_id: "row.has_field",
@@ -3751,7 +3767,7 @@ mod tests {
                 "`{id}` resolves a link to another table"
             );
         }
-        for id in ["row.siblings", "row.handle"] {
+        for id in ["row.siblings", "row.handle.copy"] {
             assert_eq!(
                 case_by_id(id).type_params,
                 QuickOrmTypeParamEffect::PreservedFromReceiver,
@@ -3814,6 +3830,54 @@ mod tests {
                 "`{id}` returns undef when no row arrives"
             );
         }
+    }
+
+    /// A proxy that tail-calls a void-croaking refiner inherits the croak,
+    /// because Perl propagates the caller's context through the final
+    /// expression of the sub.
+    #[test]
+    fn tail_call_proxies_inherit_the_void_context_croak() {
+        for (proxy, target) in [
+            ("conn.async", "handle.async"),
+            ("conn.aside", "handle.aside"),
+            ("conn.forked", "handle.forked"),
+        ] {
+            assert_eq!(
+                case_by_id(target).void_context,
+                QuickOrmVoidContext::Croaks,
+                "{target} is the refiner that croaks"
+            );
+            assert_eq!(
+                case_by_id(proxy).void_context,
+                QuickOrmVoidContext::Croaks,
+                "`{proxy}` tail-calls `{target}`, so the croak reaches the caller"
+            );
+        }
+    }
+
+    /// Every method that forwards trailing arguments into `Handle::handle` can
+    /// be rebound by them, so each must carry both cohorts rather than claiming
+    /// one unconditional effect.
+    #[test]
+    fn handle_forwarding_methods_carry_both_cohorts() {
+        for (pkg, method) in [
+            (PKG_HANDLE, "clone"),
+            (PKG_HANDLE, "handle"),
+            (PKG_HANDLE, "new"),
+            (PKG_ROW, "handle"),
+        ] {
+            let cohorts: BTreeSet<QuickOrmArgumentCohort> =
+                quickorm_api_cases_for_method(pkg, method).map(|c| c.arguments).collect();
+            assert!(
+                cohorts.contains(&QuickOrmArgumentCohort::NoSourceArgument)
+                    && cohorts.contains(&QuickOrmArgumentCohort::SourceOrRowRebinding),
+                "`{pkg}::{method}` forwards into Handle::handle and needs both forms"
+            );
+        }
+        assert_eq!(
+            case_by_id("row.handle.rebind").type_params,
+            QuickOrmTypeParamEffect::DerivedFromArgumentSource
+        );
     }
 
     #[test]
