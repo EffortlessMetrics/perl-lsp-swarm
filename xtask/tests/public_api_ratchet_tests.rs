@@ -18,6 +18,51 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
+#[test]
+fn nightly_reports_require_successful_nonempty_baseline() -> Result<(), Box<dyn std::error::Error>>
+{
+    let workflow = fs::read_to_string(project_root().join(".github/workflows/ci-nightly.yml"))?
+        .replace("\r\n", "\n");
+    for step in ["Generate breaking changes report", "Upload breaking changes report"] {
+        let marker = format!("      - name: {step}\n");
+        let guard = workflow
+            .split(&marker)
+            .nth(1)
+            .and_then(|rest| rest.lines().next())
+            .and_then(|line| line.trim().strip_prefix("if: ${{ "))
+            .and_then(|line| line.strip_suffix(" }}"))
+            .ok_or("missing nightly report guard")?;
+        // Evaluate the restricted conjunction used by these steps; unknown syntax
+        // fails the proof instead of silently acquiring guessed semantics.
+        for cancelled in [false, true] {
+            for outcome in ["success", "failure", "skipped", "cancelled"] {
+                for baseline in ["", "none", "v0.17.0"] {
+                    let mut actual = true;
+                    for term in guard.split(" && ") {
+                        actual &= match term {
+                            "!cancelled()" => !cancelled,
+                            "steps.baseline.outcome == 'success'" => outcome == "success",
+                            "steps.baseline.outputs.baseline != ''" => !baseline.is_empty(),
+                            "steps.baseline.outputs.baseline != 'none'" => baseline != "none",
+                            _ => {
+                                return Err(format!("unsupported report guard term: {term}").into());
+                            }
+                        };
+                    }
+                    let expected = !cancelled
+                        && outcome == "success"
+                        && !baseline.is_empty()
+                        && baseline != "none";
+                    if actual != expected {
+                        return Err(format!("{step}: cancelled={cancelled}, outcome={outcome}, baseline={baseline:?}: selected={actual}").into());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn project_root() -> PathBuf {
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     dir.pop();

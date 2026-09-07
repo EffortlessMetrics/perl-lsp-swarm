@@ -917,7 +917,7 @@ jobs:
       # report is generated or uploaded: an artifact produced against the
       # `none` sentinel would look like evidence while comparing nothing.
       - name: Generate breaking changes report
-        if: ${{ !cancelled() && steps.baseline.outputs.baseline != 'none' }}
+        if: ${{ !cancelled() && steps.baseline.outcome == 'success' && steps.baseline.outputs.baseline != '' && steps.baseline.outputs.baseline != 'none' }}
         env:
           SEMVER_BASELINE: ${{ steps.baseline.outputs.baseline }}
         run: |
@@ -927,7 +927,7 @@ jobs:
             --output-format json > target/semver-reports/breaking-changes.json || true
 
       - name: Upload breaking changes report
-        if: ${{ !cancelled() && steps.baseline.outputs.baseline != 'none' }}
+        if: ${{ !cancelled() && steps.baseline.outcome == 'success' && steps.baseline.outputs.baseline != '' && steps.baseline.outputs.baseline != 'none' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: semver-breaking-changes-report
