@@ -1029,19 +1029,31 @@ function composeCrashRecoveryReceipt({
     ),
   );
 
-  // Typed pending (#15019): when the transient leg emits NO watchdog
-  // observation, the leg was never exercised on this host (capability
-  // absent) — that is a deliberate pending state, verdict-neutral, and
-  // stays visible in the receipt. An observation that EXISTS but could not
-  // establish its verdict remains not_proven (an instrument gap), which
+  // Typed pending (#15019): the child leg always writes a watchdog
+  // observation. When its verdict is not_proven FOR THE DOCUMENTED
+  // capability/environment reasons (host cannot suspend; no running server
+  // process to exercise), the row is a deliberate `pending` — visible in
+  // the receipt and verdict-neutral, so the journey's pass/fail signal
+  // stays actionable on hosts that cannot exercise the leg. A malformed
+  // observation or an unexplained not_proven remains an instrument gap and
   // still degrades the journey.
-  const watchdogExercised =
-    transientObservations.watchdog && typeof transientObservations.watchdog.status === 'string';
-  const watchdogStatus = watchdogExercised ? transientObservations.watchdog.status : 'pending';
+  const watchdogObservation = transientObservations.watchdog;
+  const watchdogStatus =
+    watchdogObservation && typeof watchdogObservation.status === 'string'
+      ? watchdogObservation.status
+      : null;
+  const watchdogCapabilityAbsence =
+    watchdogStatus === 'not_proven' &&
+    typeof watchdogObservation?.reason === 'string' &&
+    /cannot safely suspend|owned by #7846|no running server process/.test(
+      watchdogObservation.reason,
+    );
   const watchdogRow = boundRow(
-    ['pass', 'failed', 'not_proven', 'pending'].includes(watchdogStatus)
-      ? watchdogStatus
-      : 'not_proven',
+    watchdogStatus === null
+      ? 'not_proven'
+      : watchdogCapabilityAbsence
+        ? 'pending'
+        : watchdogStatus,
   );
 
   const legsExitedCleanly = legExitCodes.transient === 0 && legExitCodes.breaker === 0;
@@ -1120,10 +1132,11 @@ function composeCrashRecoveryReceipt({
     cleanupRow,
   ];
   let verdict;
-  const verdictRows = rows.filter((row) => row !== 'pending');
-  if (observedChildFailure || verdictRows.includes('failed')) {
+  // `pending` rows are neither failed nor not_proven, so they are
+  // naturally verdict-neutral here.
+  if (observedChildFailure || rows.includes('failed')) {
     verdict = 'failed';
-  } else if (verdictRows.includes('not_proven')) {
+  } else if (rows.includes('not_proven')) {
     verdict = 'not_proven';
   } else {
     verdict = 'pass';
