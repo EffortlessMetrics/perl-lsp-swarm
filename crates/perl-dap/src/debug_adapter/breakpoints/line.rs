@@ -197,8 +197,7 @@ impl DebugAdapter {
         let mut rejected_results = rejected.into_iter().peekable();
         let mut body_breakpoints: Vec<Value> = Vec::with_capacity(input_len);
         for index in 0..input_len {
-            if let Some((_, line, column, message)) = rejected_results.next_if(|(i, ..)| *i == index)
-            {
+            if let Some((_, line, column, message)) = rejected_results.next_if(|(i, ..)| *i == index) {
                 let mut entry = json!({
                     "verified": false,
                     "line": line,
