@@ -101,7 +101,7 @@ ship). The reviewer's clean results are also recorded: no `HashMap` anywhere,
 byte-identical second generation, self-consistent digest, and no Mermaid node-id
 collision.
 
-Fifty-two ledger falsifiers, each corrupting the reconciled checked-in ledger
+Fifty-three ledger falsifiers, each corrupting the reconciled checked-in ledger
 along one axis and asserting the refusal names that axis:
 
 | Axis | Refused because |
@@ -158,6 +158,7 @@ along one axis and asserting the refusal names that axis:
 | a test-only type entering the carrier set | the set is global, so a `#[cfg(test)]` name widens production discovery |
 | a test-only provider import demanding a delegation row | a dependency that never ships is not a live delegation |
 | a `construction_only` row with a blank reason | an exception with no stated reason reads as reviewed |
+| a `super::` path inside an inline module | the module is one level deeper than its file |
 
 Plus positive controls: the checked-in ledger reconciles, the checked-in
 projection is current, generation is byte-identical on a second run, discovery

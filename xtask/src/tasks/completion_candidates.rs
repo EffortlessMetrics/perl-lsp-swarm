@@ -1020,9 +1020,17 @@ impl<'ast> Visit<'ast> for ProviderReferenceVisitor<'_> {
         self.scopes.pop();
     }
 
-    /// An inline module is its own scope for the same reason — and a
-    /// test-only one is skipped entirely, so its imports never become live
-    /// delegations.
+    /// An inline module opens a scope *and* a module path.
+    ///
+    /// Both matter and for the same reason: an inline `mod` is one level
+    /// deeper than its file, so a `super::` inside it starts from there.
+    /// Resolving it against the file-level path pops one segment too few —
+    /// which can drop a real delegation or invent one that is not there,
+    /// depending on the depth. This is the alias-scope push and pop already
+    /// here, extended to the thing the scope is nested inside.
+    ///
+    /// A test-only module is skipped entirely, so its imports never become
+    /// live delegations.
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
         if has_cfg_test(&node.attrs) {
             return;
@@ -1037,7 +1045,17 @@ impl<'ast> Visit<'ast> for ProviderReferenceVisitor<'_> {
         if let Some(aliases) = declared {
             self.scopes.push(aliases);
         }
+        // Only an inline module adds depth; `mod foo;` names another file,
+        // which is scanned separately under its own path.
+        let outer = opened.then(|| {
+            let outer = self.module.clone();
+            self.module = format!("{}::{}", self.module, node.ident);
+            outer
+        });
         syn::visit::visit_item_mod(self, node);
+        if let Some(outer) = outer {
+            self.module = outer;
+        }
         if opened {
             self.scopes.pop();
         }
@@ -4506,6 +4524,61 @@ mod tests {
         ledger.construction_only.clear();
         ledger.construction_only.push(row);
         refuses(&ledger, &discovered, "records no `reason`");
+    }
+
+    /// An inline module adds a level, so `super::` starts one deeper.
+    ///
+    /// The depth is the whole point: from `providers::completion::completion::
+    /// probe` it takes three `super`s to stand in `providers`, and from an
+    /// inline `mod inner` inside that file it takes four. Resolving the inner
+    /// path against the file's own module would pop one segment too few and
+    /// record `completion` instead of the sibling — a delegation silently
+    /// misattributed rather than refused.
+    #[test]
+    fn an_inline_module_shifts_relative_resolution() {
+        let record = |file: &syn::File| {
+            let mut modules = BTreeSet::new();
+            let mut visitor = ProviderReferenceVisitor {
+                modules: &mut modules,
+                scopes: vec![BTreeSet::new()],
+                module: module_path_for(PROBE_FILE),
+            };
+            visitor.visit_file(file);
+            modules
+        };
+
+        // Four `super`s from inside `mod inner` reach `providers`.
+        let nested = record(&syn::parse_quote! {
+            mod inner {
+                fn call() { let _ = super::super::super::super::hover::something(); }
+            }
+        });
+        assert!(nested.contains("hover"), "an inline module is one level deeper, got {nested:?}");
+
+        // Three from inside `mod inner` land in `providers::completion` —
+        // correct, and not a sibling delegation.
+        let shallower = record(&syn::parse_quote! {
+            mod inner {
+                fn call() { let _ = super::super::super::hover::something(); }
+            }
+        });
+        assert!(
+            !shallower.contains("hover"),
+            "one level shallower must not reach the sibling, got {shallower:?}"
+        );
+
+        // The depth is restored on the way out: the same three `super`s at
+        // file level *do* reach the sibling.
+        let restored = record(&syn::parse_quote! {
+            mod inner {
+                fn call() { let _ = super::super::super::super::hover::something(); }
+            }
+            fn call() { let _ = super::super::super::symbols::something(); }
+        });
+        assert!(
+            restored.contains("symbols") && restored.contains("hover"),
+            "the module path must be popped when the inline module ends, got {restored:?}"
+        );
     }
 
     /// A cyclic alias pair terminates instead of resolving forever.
