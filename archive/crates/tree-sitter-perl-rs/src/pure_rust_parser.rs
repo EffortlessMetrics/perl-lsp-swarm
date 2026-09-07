@@ -3,6 +3,8 @@
 //! This module provides a complete Rust-native implementation of the Perl parser
 //! using Pest for grammar parsing, without any dependency on tree-sitter's C code.
 
+use crate::error::ParseError;
+use crate::outcome::{ParserFailure, StrictParseError};
 use crate::pratt_parser::PrattParser;
 use pest::{
     Parser,
@@ -322,6 +324,87 @@ pub enum AstNode {
     },
 }
 
+/// One substitution performed by a normalization pass, in byte offsets.
+///
+/// `input_start..input_end` is the span replaced in that pass's input;
+/// `output_start..output_end` is the span it became in that pass's output.
+#[derive(Debug, Clone, Copy)]
+struct RewriteEdit {
+    input_start: usize,
+    input_end: usize,
+    output_start: usize,
+    output_end: usize,
+}
+
+/// Translates a byte offset in the normalized text back to the caller's source.
+///
+/// Passes are stored in application order and unwound in reverse.
+#[derive(Debug, Clone, Default)]
+struct NormalizationMap {
+    passes: Vec<Vec<RewriteEdit>>,
+}
+
+impl NormalizationMap {
+    /// A map for text that was not rewritten at all.
+    fn identity() -> Self {
+        Self { passes: Vec::new() }
+    }
+
+    /// Map an offset in the final normalized text back to the original source.
+    ///
+    /// An offset that lands inside a replacement resolves to the start of the
+    /// span that replacement came from: the rewritten bytes have no
+    /// finer-grained original to point at, and the span start is the token the
+    /// caller actually wrote.
+    fn to_source_offset(&self, normalized_offset: usize) -> usize {
+        self.passes.iter().rev().fold(normalized_offset, |offset, edits| {
+            let mut shift: isize = 0;
+            for edit in edits {
+                if offset < edit.output_start {
+                    break;
+                }
+                if offset < edit.output_end {
+                    return edit.input_start;
+                }
+                shift += (edit.output_end - edit.output_start) as isize
+                    - (edit.input_end - edit.input_start) as isize;
+            }
+            usize::try_from(offset as isize - shift).unwrap_or(0)
+        })
+    }
+}
+
+/// Apply `regex` to `input`, rendering each match with `render`, and record the
+/// byte spans involved so the substitution can be unwound later.
+fn rewrite_tracking_offsets(
+    input: &str,
+    regex: &Regex,
+    render: impl Fn(&regex::Captures<'_>) -> String,
+) -> (String, Vec<RewriteEdit>) {
+    let mut output = String::with_capacity(input.len());
+    let mut edits = Vec::new();
+    let mut consumed = 0usize;
+
+    for caps in regex.captures_iter(input) {
+        let Some(whole) = caps.get(0) else {
+            continue;
+        };
+        output.push_str(&input[consumed..whole.start()]);
+        let output_start = output.len();
+        output.push_str(&render(&caps));
+        edits.push(RewriteEdit {
+            input_start: whole.start(),
+            input_end: whole.end(),
+            output_start,
+            output_end: output.len(),
+        });
+        consumed = whole.end();
+    }
+    output.push_str(&input[consumed..]);
+
+    (output, edits)
+}
+
 /// Pure Rust Perl parser implementation
 pub struct PureRustPerlParser {
     _pratt_parser: PrattParser,
@@ -332,20 +415,30 @@ impl PureRustPerlParser {
         Self { _pratt_parser: PrattParser::new() }
     }
 
+    /// Parse `source` into an [`AstNode`].
+    ///
+    /// `source` is rewritten by an internal normalization pass before Pest sees
+    /// it (see [`Self::normalize_source_mapped`]). Pest's byte offsets therefore index
+    /// the rewritten buffer, and are translated back before they reach
+    /// [`ParseError::Rejected`], so a rejection's [`crate::SourceRange`] is
+    /// always an offset into `source` as the caller supplied it — which is what
+    /// [`StrictParseError`] documents.
     #[inline(always)]
-    pub fn parse(&mut self, source: &str) -> Result<AstNode, Box<dyn std::error::Error>> {
-        let normalized = Self::normalize_source(source);
+    pub fn parse(&mut self, source: &str) -> Result<AstNode, ParseError> {
+        let (normalized, normalization) = Self::normalize_source_mapped(source);
 
         match <PerlParser as Parser<Rule>>::parse(Rule::program, &normalized) {
             Ok(pairs) => self.build_ast(pairs),
             Err(e) => {
                 // Attempt partial parsing by trying to parse individual statements
-                self.parse_with_recovery(&normalized, e)
+                self.parse_with_recovery(&normalized, source, &normalization, e)
             }
         }
     }
 
-    fn normalize_source(source: &str) -> String {
+    /// Normalize `source` and retain enough information to translate a byte
+    /// offset in the normalized text back to the equivalent offset in `source`.
+    fn normalize_source_mapped(source: &str) -> (String, NormalizationMap) {
         static SIMPLE_SCALAR_DEREF_RE: LazyLock<Option<Regex>> =
             LazyLock::new(|| Regex::new(r"\$\$(?P<name>[A-Za-z_][A-Za-z0-9_:]*)").ok());
         static ASSIGN_BITNOT_RE: LazyLock<Option<Regex>> =
@@ -354,31 +447,38 @@ impl PureRustPerlParser {
         // These are fixed patterns; if one ever fails to compile, skip normalization
         // rather than panicking inside production parser code.
         let Some(scalar_deref_re) = SIMPLE_SCALAR_DEREF_RE.as_ref() else {
-            return source.to_string();
+            return (source.to_string(), NormalizationMap::identity());
         };
         let Some(assign_bitnot_re) = ASSIGN_BITNOT_RE.as_ref() else {
-            return source.to_string();
+            return (source.to_string(), NormalizationMap::identity());
         };
 
-        let normalized_derefs = scalar_deref_re
-            .replace_all(source, |caps: &regex::Captures<'_>| {
+        let (normalized_derefs, deref_edits) =
+            rewrite_tracking_offsets(source, scalar_deref_re, |caps| {
                 let variable = format!("${}", &caps["name"]);
                 format!("${{{}}}", variable)
-            })
-            .into_owned();
+            });
 
-        assign_bitnot_re
-            .replace_all(&normalized_derefs, |caps: &regex::Captures<'_>| {
+        let (normalized, bitnot_edits) =
+            rewrite_tracking_offsets(&normalized_derefs, assign_bitnot_re, |caps| {
                 format!("= bitnot({})", &caps["expr"])
-            })
-            .into_owned()
+            });
+
+        (normalized, NormalizationMap { passes: vec![deref_edits, bitnot_edits] })
     }
 
+    /// `normalized` must be the exact text Pest attempted to parse (and that
+    /// produced `original_error`); `caller_source` is the untouched text the
+    /// caller supplied, and `normalization` translates offsets between them, so
+    /// a rejection reports a range into `caller_source`.
     fn parse_with_recovery(
         &mut self,
-        source: &str,
+        normalized: &str,
+        caller_source: &str,
+        normalization: &NormalizationMap,
         original_error: pest::error::Error<Rule>,
-    ) -> Result<AstNode, Box<dyn std::error::Error>> {
+    ) -> Result<AstNode, ParseError> {
+        let source = normalized;
         let mut statements = Vec::new();
         let lines: Vec<&str> = source.lines().collect();
         let mut current_block = String::new();
@@ -430,8 +530,18 @@ impl PureRustPerlParser {
                     {
                         for pair in pairs {
                             for inner_pair in pair.into_inner() {
-                                if let Some(node) = self.build_node(inner_pair).unwrap_or(None) {
-                                    statements.push(node);
+                                // Skipping an unparseable fragment is what recovery is
+                                // for, so a parser-domain rejection stays skippable. An
+                                // operational failure must not be: collapsing it here
+                                // would let an AST-builder invariant violation resurface
+                                // as a `Rejected` below (or as an `Ok` when another
+                                // statement happened to survive), which is exactly the
+                                // conflation this contract forbids.
+                                match self.build_node(inner_pair) {
+                                    Ok(Some(node)) => statements.push(node),
+                                    Ok(None) => {}
+                                    Err(failure @ ParseError::Failed(_)) => return Err(failure),
+                                    Err(ParseError::Rejected(_)) => {}
                                 }
                             }
                         }
@@ -453,7 +563,22 @@ impl PureRustPerlParser {
         }
 
         if statements.is_empty() {
-            Err(Box::new(original_error))
+            // Pest's offsets index `normalized`, so translate them back before
+            // they are bound: `StrictParseError` documents its range as an
+            // offset into the caller's original source, and storing a
+            // normalized offset there would quietly contradict that. This is a
+            // parser-domain rejection, not an instrument failure —
+            // `original_error` came directly from a failed Pest parse.
+            let mapped =
+                StrictParseError::from_pest_mapped(&original_error, caller_source, |offset| {
+                    normalization.to_source_offset(offset)
+                });
+            match mapped {
+                Ok(rejection) => Err(ParseError::Rejected(rejection)),
+                Err(outcome_error) => Err(ParseError::Failed(ParserFailure::instrument(format!(
+                    "failed to bind pest rejection to the caller source: {outcome_error}"
+                )))),
+            }
         } else {
             Ok(AstNode::Program(statements))
         }
@@ -483,7 +608,7 @@ impl PureRustPerlParser {
         groups
     }
 
-    pub fn build_ast(&mut self, pairs: Pairs<Rule>) -> Result<AstNode, Box<dyn std::error::Error>> {
+    pub fn build_ast(&mut self, pairs: Pairs<Rule>) -> Result<AstNode, ParseError> {
         let mut nodes = Vec::new();
         for pair in pairs {
             if let Some(node) = self.build_node(pair)? {
@@ -491,7 +616,9 @@ impl PureRustPerlParser {
             }
         }
         if nodes.len() == 1 {
-            nodes.pop().ok_or_else(|| "Empty nodes".into())
+            // `nodes.len() == 1` was just checked, so this is an internal
+            // invariant violation, not a source-domain rejection.
+            nodes.pop().ok_or_else(|| ParseError::Failed(ParserFailure::instrument("Empty nodes")))
         } else {
             Ok(AstNode::Program(nodes))
         }
@@ -502,10 +629,7 @@ impl PureRustPerlParser {
     /// This remains public so bridge consumers (for example `tree-sitter-perl-rs`
     /// with `v2-pest-microcrate`) can continue calling internal v2 build paths.
     #[inline]
-    pub fn build_node(
-        &mut self,
-        pair: Pair<Rule>,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    pub fn build_node(&mut self, pair: Pair<Rule>) -> Result<Option<AstNode>, ParseError> {
         // Use stacker to grow stack if needed, with 512KB red zone
         const STACK_RED_ZONE: usize = 512 * 1024; // 512KB
         const STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB growth
@@ -514,10 +638,7 @@ impl PureRustPerlParser {
 
     /// Actual implementation of build_node
     #[inline]
-    fn build_node_impl(
-        &mut self,
-        pair: Pair<Rule>,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    fn build_node_impl(&mut self, pair: Pair<Rule>) -> Result<Option<AstNode>, ParseError> {
         match pair.as_rule() {
             // Fast-path rules
             Rule::simple_assignment => {
@@ -2169,10 +2290,7 @@ impl PureRustPerlParser {
         }
     }
 
-    fn build_expression(
-        &mut self,
-        pair: Pair<Rule>,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    fn build_expression(&mut self, pair: Pair<Rule>) -> Result<Option<AstNode>, ParseError> {
         let inner = pair.into_inner().next().ok_or("Empty expression")?;
         match inner.as_rule() {
             Rule::assignment_expression => self.build_node(inner),
@@ -2185,7 +2303,7 @@ impl PureRustPerlParser {
     fn build_ternary_expression(
         &mut self,
         pair: Pair<Rule>,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<AstNode>, ParseError> {
         let inner: Vec<_> = pair.into_inner().collect();
         if inner.len() == 1 {
             // No ternary, just pass through
@@ -2215,7 +2333,7 @@ impl PureRustPerlParser {
         &mut self,
         pair: Pair<Rule>,
         _op_rule: Rule,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<AstNode>, ParseError> {
         let inner: Vec<_> = pair.into_inner().collect();
         if inner.len() == 1 {
             let first = inner.into_iter().next().ok_or("Expected exactly one element")?;
@@ -2232,7 +2350,7 @@ impl PureRustPerlParser {
     fn build_binary_expr_with_precedence(
         &mut self,
         pairs: Vec<Pair<Rule>>,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<AstNode>, ParseError> {
         if pairs.is_empty() {
             return Ok(None);
         }
@@ -2261,10 +2379,7 @@ impl PureRustPerlParser {
         AstNode::BinaryOp { op, left: Box::new(left), right: Box::new(right) }
     }
 
-    fn parse_arg_list(
-        &mut self,
-        pair: Pair<Rule>,
-    ) -> Result<Vec<AstNode>, Box<dyn std::error::Error>> {
+    fn parse_arg_list(&mut self, pair: Pair<Rule>) -> Result<Vec<AstNode>, ParseError> {
         let mut args = Vec::new();
         for arg in pair.into_inner() {
             if let Some(node) = self.build_node(arg)? {
@@ -2278,7 +2393,7 @@ impl PureRustPerlParser {
         &mut self,
         pair: Pair<Rule>,
         deref_type: &'static str,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<AstNode>, ParseError> {
         let mut inner = pair.into_inner();
         let expr = if let Some(inner_pair) = inner.next() {
             match inner_pair.as_rule() {
