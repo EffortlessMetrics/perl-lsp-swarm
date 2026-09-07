@@ -3,7 +3,8 @@ use perl_lsp_rs_core::providers::formatting::{
 };
 use perl_lsp_rs_core::tooling::perltidy::FormatterMode;
 use perl_lsp_rs_core::tooling::perltidy::native::{
-    FormatContext, FormatDisposition, FormatEngine, FormatReasonCode, FormatRequestTarget,
+    FormatContext, FormatDisposition, FormatEngine, FormatLineEndingDisposition, FormatReasonCode,
+    FormatRequestTarget,
 };
 use perl_lsp_rs_core::tooling::{SubprocessError, SubprocessOutput, SubprocessRuntime};
 use std::sync::{
@@ -693,6 +694,12 @@ fn assert_envelope_is_consistent(
             assert_eq!(
                 change.source_bytes_changed, 0,
                 "a withheld decision carries no applied-change summary for {source:?}"
+            );
+            assert_eq!(
+                decision.outcome.safety.line_endings,
+                FormatLineEndingDisposition::Preserved,
+                "a withheld decision returns the source untouched, so it cannot report a \
+                 changed line-ending convention for {source:?}"
             );
         }
     }

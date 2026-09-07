@@ -482,14 +482,20 @@ fn classify_external_envelope(content: &str, document: &mut FormattedDocument) -
     ExternalEnvelope::Applied
 }
 
-/// Retain the source and strip any intermediate change evidence.
+/// Retain the source and strip every piece of intermediate render evidence.
 ///
-/// A refused, failed, or not-proven decision returns no edits, so it carries no
-/// applied-change summary. The engine's intermediate summary describes a
-/// rendered result that was never admitted, and must not survive into a
-/// withheld outcome (#7585).
+/// A refused, failed, or not-proven decision returns the source unchanged and no
+/// edits, so all terminal evidence is derived from `(content, content)`. Both
+/// the change summary and the line-ending disposition otherwise describe a
+/// rendered result that was never admitted: the engine computes them over its
+/// own output, so a withheld decision could report changed bytes, or a changed
+/// line-ending convention, for a document the caller never receives (#7585).
+///
+/// Disposition, reason, and `next_action` are preserved — they are what makes a
+/// refusal or not-proven outcome distinguishable from a legitimate no-change.
 fn withheld_decision(mut outcome: FormatOutcome, content: &str) -> FormattingDecision {
     outcome.change = change_summary(content, content, &[]);
+    outcome.safety.line_endings = line_ending_disposition(content, content);
     FormattingDecision { document: unchanged_document(content), outcome }
 }
 
@@ -1107,9 +1113,51 @@ mod decision_projection_tests {
                 parse_after: FormatEvidenceState::Proven,
                 literal_preservation: FormatEvidenceState::Proven,
                 utf8: FormatEvidenceState::Proven,
-                line_endings: FormatLineEndingDisposition::NotChecked,
+                // Seeded as changed so a terminal path that forwards the
+                // engine's render evidence instead of deriving its own is
+                // caught rather than accidentally matching (#7585).
+                line_endings: FormatLineEndingDisposition::ChangedByFormatter,
             },
             next_action: None,
+        }
+    }
+
+    /// Negative control for #7585: a withheld decision cannot carry line-ending
+    /// evidence from the render containment rejected.
+    ///
+    /// `FormatLineEndingDisposition` is defined over source versus rendered
+    /// output, and the engine computes it over its own render. A withheld
+    /// decision returns the source untouched, so forwarding that verdict would
+    /// tell the caller their unchanged document changed line-ending convention.
+    /// Removing the `line_endings` recomputation in `withheld_decision` fails
+    /// this test, because `stale_outcome` seeds `ChangedByFormatter`.
+    #[test]
+    fn a_withheld_decision_cannot_report_line_endings_from_the_rejected_render() {
+        for source in ["my $x = 1;\n", "my $x = 1;\r\n", "my $x = 1;\r", "my $x = 1;"] {
+            let mut outcome = stale_outcome();
+            outcome.disposition = FormatDisposition::FailedOrNotProven;
+            outcome.reason = FormatReasonCode::InstrumentFailure;
+            outcome.next_action = Some("retain the unchanged source".to_string());
+
+            let decision = withheld_decision(outcome, source);
+
+            assert_eq!(
+                decision.outcome.safety.line_endings,
+                FormatLineEndingDisposition::Preserved,
+                "withholding the render must report the source's own line endings for {source:?}"
+            );
+            assert_eq!(decision.document.text, source);
+            assert!(decision.document.edits.is_empty());
+            assert_eq!(decision.outcome.change.edit_count, 0);
+            assert_eq!(decision.outcome.change.source_bytes_changed, 0);
+            // The distinction a withheld outcome exists to record survives.
+            assert_eq!(decision.outcome.disposition, FormatDisposition::FailedOrNotProven);
+            assert_eq!(decision.outcome.reason, FormatReasonCode::InstrumentFailure);
+            assert_eq!(
+                decision.outcome.next_action.as_deref(),
+                Some("retain the unchanged source"),
+                "next action must survive the evidence reset"
+            );
         }
     }
 
