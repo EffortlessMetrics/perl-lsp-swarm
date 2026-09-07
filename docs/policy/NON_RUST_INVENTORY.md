@@ -6,8 +6,8 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12855 |
-| Rust-family files | 4056 |
+| Total tracked files | 12849 |
+| Rust-family files | 4050 |
 | Non-Rust files | 8799 |
 | Allowlisted | 6562 |
 | Unclassified | 2237 |
@@ -16,12 +16,12 @@
 
 | Category | Count |
 |---|---|
-| config | 518 |
-| documentation | 2874 |
+| config | 519 |
+| documentation | 2871 |
 | generated | 2 |
 | production | 361 |
 | test | 2118 |
-| tooling | 689 |
+| tooling | 691 |
 | unclassified | 2237 |
 
 ## Unclassified files
@@ -2632,7 +2632,9 @@
 | `.ci/cpan-top-1000-distributions.txt` | config | `non-rust-ci-config` | release/ci |
 | `.ci/cpan-top-50-distributions.txt` | config | `non-rust-ci-config` | release/ci |
 | `.ci/dap/editor-transport-inventory.v1.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/dap/nullability-inventory.v1.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/dap/protocol-authority.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/dap/upstream-debugAdapterProtocol.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/dead-code-baseline.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/debt-ledger.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/editor-clients/emacs-subjects.v1.json` | config | `non-rust-ci-config` | release/ci |
@@ -2762,7 +2764,6 @@
 | `.ci/receipts/schemas/agent-receipt.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/agent-task.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/aggregator-receipt.schema.json` | config | `non-rust-ci-config` | release/ci |
-| `.ci/receipts/schemas/build-executor-measurement.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/common-gate-receipt.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/droid-live-run.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/failure-classifier.schema.json` | config | `non-rust-ci-config` | release/ci |
@@ -3254,9 +3255,6 @@
 | `.spec/11627-module-train-live/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11627-module-train-live/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11627-module-train-live/context.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `.spec/11639-build-executor-measurement/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `.spec/11639-build-executor-measurement/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `.spec/11639-build-executor-measurement/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11649-clippy-repair-falsifier-corpus/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6610,6 +6608,7 @@
 | `scripts/ci/dap_editor_transport_scan.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_editor_transport_schema.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_editor_transport_security.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/dap_nullability_inventory.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_protocol_authority.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_scorecard_model.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_scorecard_packet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -7002,6 +7001,7 @@
 | `scripts/tests/test-worktree-manager.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_editor_transport_inventory.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_editor_transport_security.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test_dap_nullability_inventory.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_protocol_authority.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_scorecard_packet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test_dap_scorecard_runtime.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
