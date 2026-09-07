@@ -201,6 +201,16 @@ fn antip_body_mask_handles_crlf_terminators() {
         detect(indented).iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
+    // `<<~` permits indentation before the terminator but nothing after it.
+    // `perl -c` 5.38 rejects `  M   ` as a terminator, so this line is body
+    // text; ending the body there would expose the brace that follows.
+    let trailing = "qr/x(?{ print <<~'M';\n  body\n  M   \n  has { brace\n  M\n})/;\n";
+    assert!(
+        has_regex_code_block(trailing),
+        "trailing space after an indented delimiter must not terminate the body; got {:?}",
+        detect(trailing).iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
     // Exactly one CR is stripped, not a run of them. `M\r\r` is a body line,
     // not the terminator. Ending the body there would leave the rest of the
     // real body unmasked, so the brace *after* it — which is what makes this
@@ -265,6 +275,14 @@ fn antip_left_shift_is_not_a_heredoc_declaration() {
         ("variable operand", "my $x = $y<<FOO;\n", "FOO\n"),
         ("call result operand", "my $x = f()<<FOO;\n", "FOO\n"),
         ("index result operand", "my $x = $a[0]<<FOO;\n", "FOO\n"),
+        // Qualified and dereferencing operands. `perl -c` 5.38 reads every one
+        // of these as a shift: a qualified name resolves to a value rather than
+        // opening an argument list, and a method call is a complete term.
+        ("qualified variable", "my $x = $Foo::bar<<FOO;\n", "FOO\n"),
+        ("qualified bareword", "my $x = Foo::CONST<<FOO;\n", "FOO\n"),
+        ("method call", "my $x = $obj->method<<FOO;\n", "FOO\n"),
+        ("class method call", "my $x = Foo->m<<FOO;\n", "FOO\n"),
+        ("hash deref operand", "my $x = $obj->{k}<<FOO;\n", "FOO\n"),
     ] {
         let code = format!("{declaration}{BLOCK}{terminator}");
         assert!(

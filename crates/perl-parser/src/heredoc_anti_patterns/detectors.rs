@@ -363,10 +363,18 @@ static HEREDOC_DECL_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 /// and one following an operator, separator, opener, or bareword function name
 /// is a heredoc.
 ///
-/// Errors here are deliberately asymmetric. Answering `false` for a real heredoc
-/// only leaves its body unmasked, which is the pre-mask status quo; answering
-/// `true` for a shift blanks live code. Anything unrecognised therefore stays a
-/// heredoc only when the preceding context cannot end a term.
+/// Errors here are deliberately asymmetric, which is what makes a lexical rule
+/// acceptable at all. Answering `false` for a real heredoc only leaves its body
+/// unmasked, which is the pre-mask status quo; answering `true` for a shift
+/// blanks live code. Every uncertain case therefore resolves to `false`.
+///
+/// The residual is the unqualified bareword, and it is not fixable lexically:
+/// Perl consults the symbol table. `perl -c` 5.38 reads `somefunc<<FOO` as a
+/// shift when no such sub is declared, but `Foo::bar<<FOO` as a *heredoc* when
+/// `Foo::bar` is defined. A mask that cannot see declarations cannot reproduce
+/// that, so barewords stay term position — matching `print`, `say`, `return`
+/// and `warn`, which are what actually precede a heredoc — and the fail-safe
+/// backstops the rest, since an unmatched operand masks nothing.
 fn heredoc_is_in_term_position(code: &str, start: usize) -> bool {
     let prefix = code[..start].trim_end();
     let Some(previous) = prefix.chars().next_back() else {
@@ -381,19 +389,27 @@ fn heredoc_is_in_term_position(code: &str, start: usize) -> bool {
         return true; // an operator, separator, or opener
     }
 
-    // A word: a bareword function name (`print <<EOF`) takes a term after it,
-    // but a number or a sigilled variable is itself a complete term.
-    let word_start = prefix
+    // A word, possibly a `::`-qualified path. A bareword function name
+    // (`print <<EOF`) takes a term after it, but a number, a sigilled variable,
+    // a method call, or a qualified name is itself a complete term.
+    let path_start = prefix
         .char_indices()
         .rev()
-        .find(|(_, ch)| !(ch.is_alphanumeric() || *ch == '_'))
+        .find(|(_, ch)| !(ch.is_alphanumeric() || *ch == '_' || *ch == ':'))
         .map_or(0, |(idx, ch)| idx + ch.len_utf8());
-    let word = &prefix[word_start..];
+    let path = &prefix[path_start..];
 
-    if word.starts_with(|ch: char| ch.is_ascii_digit()) {
+    if path.starts_with(|ch: char| ch.is_ascii_digit()) {
         return false;
     }
-    !prefix[..word_start].ends_with(['$', '@', '%', '&'])
+    // `Foo::CONST << FOO` and `$Foo::bar << FOO` are shifts; a qualified name
+    // resolves to a value rather than opening an argument list. `Foo::bar <<EOF`
+    // with `Foo::bar` a declared sub is the one heredoc this gives up, and
+    // giving it up only costs masking.
+    if path.contains("::") {
+        return false;
+    }
+    !prefix[..path_start].ends_with(['$', '@', '%', '&']) && !prefix[..path_start].ends_with("->")
 }
 
 /// Byte ranges of heredoc *bodies* in `code`, terminator line included and the
@@ -457,7 +473,12 @@ fn heredoc_body_ranges(code: &str, scan_code: &str) -> Vec<(usize, usize)> {
         let raw = &code[start..end];
         let text = raw.strip_suffix('\r').unwrap_or(raw);
         exact.entry(text).or_default().push(line);
-        trimmed.entry(text.trim()).or_default().push(line);
+        // `<<~` permits indentation *before* the terminator and nothing after
+        // it, so only leading whitespace is removed. `perl -c` 5.38 rejects
+        // `  EOF   ` as a terminator ("Can't find string terminator"), and
+        // accepting it here would end the body on a line Perl treats as text,
+        // exposing the rest of the real body to the brace scan.
+        trimmed.entry(text.trim_start()).or_default().push(line);
     }
 
     // First line at or after `from` whose text terminates `delimiter`.
