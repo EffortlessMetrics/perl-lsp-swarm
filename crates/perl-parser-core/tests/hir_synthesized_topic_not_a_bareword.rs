@@ -9,10 +9,20 @@
 //! `High` confidence) — the strongest assertion the model can make, about a name
 //! that no Perl source can produce and over a range covering no text.
 //!
-//! The guard is stated on the *name*, not on the regex families: a bareword never
-//! carries a sigil. These tests pin both halves — the fabrication is dropped, and
-//! every genuinely written bareword still round-trips — so a regression in either
-//! direction fails.
+//! The guard is stated on the *node*, not on the regex families: the fabrication
+//! is identified by a span containing no source text (zero-width) whose name
+//! could not be a bareword anyway (it carries a sigil).
+//!
+//! The zero-width half is the load-bearing one. The sigil alone is **not**
+//! sufficient, and an earlier revision that relied on it was wrong: `new $class`
+//! is a legal dynamic indirect constructor whose *written* receiver the parser
+//! records as a real, nonzero-width `Identifier` named `"$class"`, which that
+//! revision silently discarded.
+//!
+//! These tests pin three directions — the fabrication is dropped, every written
+//! bareword still round-trips, and a source-backed sigil-prefixed name is
+//! preserved — and separately *state the limit* that the sigil half is defence in
+//! depth rather than a discriminator provable today.
 
 use perl_ast::ast::{Node, NodeKind};
 use perl_parser_core::Parser;
@@ -175,15 +185,7 @@ fn pir_receipt_no_longer_counts_a_phantom_bareword() {
 // The premise the guard rests on.
 // ---------------------------------------------------------------------------
 
-/// The guard is only as safe as its premise: that a sigil-prefixed
-/// `NodeKind::Identifier` is *always* a parser fabrication and never scanned
-/// source. This walks the AST of the forms most likely to falsify that —
-/// symbolic dereferences, globs, `goto`, hash keys, interpolation — and pins
-/// that the only sigil-prefixed identifiers produced are zero-width `$_`
-/// topics. If the parser ever starts emitting a real one, this fails and the
-/// guard must be revisited before it silently swallows a genuine name.
-#[test]
-fn no_written_source_yields_a_sigil_prefixed_identifier() {
+fn sigil_prefixed_identifiers(source: &str) -> Vec<(String, usize, usize)> {
     fn walk(node: &Node, found: &mut Vec<(String, usize, usize)>) {
         if let NodeKind::Identifier { name } = &node.kind
             && name.chars().next().is_some_and(|c| matches!(c, '$' | '@' | '%' | '&' | '*'))
@@ -192,7 +194,159 @@ fn no_written_source_yields_a_sigil_prefixed_identifier() {
         }
         node.for_each_child(|child| walk(child, found));
     }
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+    let mut found = Vec::new();
+    walk(&output.ast, &mut found);
+    found
+}
 
+/// **The sigil alone does not identify a fabrication.**
+///
+/// `new $class` is a legal dynamic indirect constructor, and the parser records
+/// its *written* receiver as a real `Identifier { name: "$class" }` spanning the
+/// characters the author typed. An earlier revision of this guard keyed on the
+/// sigil alone and silently discarded that source-backed fact; the defect was
+/// caught in review by Codex, and this test is the control that was missing.
+///
+/// The receiver keeps exactly the behavior it had before this PR — recorded, as
+/// an `IndirectObject`. Whether a sigil-prefixed name should be a *bareword* at
+/// all is a separate defect (#15031), deliberately not changed here.
+#[test]
+fn a_written_dynamic_constructor_receiver_is_preserved() {
+    for (source, name, start, end) in [
+        ("new $class;", "$class", 4usize, 10usize),
+        ("my $o = new $class;", "$class", 12, 18),
+        ("my $o = new $class(@args);", "$class", 12, 18),
+        ("new $class::Foo;", "$class::Foo", 4, 15),
+    ] {
+        // The node really is source-backed: sigil-prefixed but *not* zero-width.
+        assert_eq!(
+            sigil_prefixed_identifiers(source),
+            vec![(name.to_string(), start, end)],
+            "{source:?} no longer yields a source-backed sigil-prefixed Identifier",
+        );
+
+        let file = lower(source);
+        assert!(
+            file.bareword_table.facts.iter().any(|fact| fact.name == name
+                && fact.range.start == start
+                && fact.range.end == end
+                && fact.role == BarewordRole::IndirectObject),
+            "{source:?} lost its written receiver {name:?}; the guard must not discard a \
+             source-backed name. Recorded: {:?}",
+            file.bareword_table.facts.iter().map(|f| (&f.name, f.role)).collect::<Vec<_>>(),
+        );
+    }
+}
+
+/// The premise the guard actually rests on: the fabricated operand is
+/// distinguishable from written source by being **zero-width**, not merely by
+/// carrying a sigil.
+#[test]
+fn the_fabrication_is_zero_width_and_written_names_are_not() {
+    assert_eq!(
+        sigil_prefixed_identifiers("s/a/b/;"),
+        vec![("$_".to_string(), 0, 0)],
+        "the parser no longer fabricates a zero-width `$$_` operand; this suite's subject is gone",
+    );
+
+    for (source, _) in [("new $class;", ()), ("my $o = new $class;", ())] {
+        for (name, start, end) in sigil_prefixed_identifiers(source) {
+            assert_ne!(
+                start, end,
+                "{source:?} yielded a zero-width written name {name:?}; the guard's \
+                 discriminator would misclassify it as synthesized",
+            );
+        }
+    }
+}
+
+/// **A stated limit, not a passing claim.**
+///
+/// `is_synthesized_operand` requires *both* an empty range and a sigil. Only the
+/// empty-range half is falsifiable by test today: mutating the guard to drop the
+/// sigil condition breaks nothing, because no zero-width `Identifier` with a
+/// non-sigil name is currently reachable.
+///
+/// This test measures that fact instead of asserting the sigil half is
+/// load-bearing when it is not. It probes malformed and recovery-path inputs —
+/// where a synthesized placeholder is most likely to appear — and pins that every
+/// zero-width `Identifier` produced anywhere is the `"$_"` topic. If recovery
+/// ever synthesizes a zero-width node named like an ordinary bareword, this fails
+/// and the sigil condition becomes a real, testable guard rather than defence in
+/// depth.
+#[test]
+fn the_sigil_condition_is_defence_in_depth_not_a_proven_discriminator() {
+    fn zero_width_identifiers(source: &str) -> Vec<String> {
+        fn walk(node: &Node, found: &mut Vec<String>) {
+            if let NodeKind::Identifier { name } = &node.kind
+                && node.location.start == node.location.end
+            {
+                found.push(name.clone());
+            }
+            node.for_each_child(|child| walk(child, found));
+        }
+        let mut parser = Parser::new(source);
+        let output = parser.parse_with_recovery();
+        let mut found = Vec::new();
+        walk(&output.ast, &mut found);
+        found
+    }
+
+    let recovery_inputs = [
+        "foo(",
+        "foo(;",
+        "my $x = ;",
+        "sub {",
+        "if (",
+        "use ;",
+        "require ;",
+        "$h{",
+        "@{",
+        "${",
+        "Foo->",
+        "->bar;",
+        "package ;",
+        "new ;",
+        "sort ;",
+        "1 +",
+        "}",
+        "{",
+        "sub foo {",
+        "while (",
+        "for (",
+        "s/a/",
+        "tr/a/",
+        "qw(",
+        "Foo::",
+        "::bar;",
+        "&;",
+        "*;",
+        "%;",
+        "@;",
+    ];
+    for source in recovery_inputs {
+        let names = zero_width_identifiers(source);
+        assert!(
+            names.iter().all(|name| name == "$_"),
+            "{source:?} produced zero-width Identifier(s) {names:?} with a non-sigil name. The \
+             sigil half of `is_synthesized_operand` is now load-bearing and must be given a \
+             discriminating test rather than left as defence in depth.",
+        );
+    }
+
+    // Positive control: the probe can see zero-width nodes at all.
+    assert_eq!(zero_width_identifiers("s/a/b/;"), vec!["$_".to_string()]);
+}
+
+/// The remaining half of the premise: for these forms the parser emits no
+/// sigil-prefixed `Identifier` at all, so the guard never sees them. This is a
+/// falsification attempt over the shapes most likely to produce one —
+/// dereferences, globs, `goto`, hash keys, interpolation — not a proof of
+/// impossibility. A new counterexample fails here first.
+#[test]
+fn these_written_forms_yield_no_sigil_prefixed_identifier() {
     let sources = [
         "${foo};",
         "${$x};",
@@ -219,6 +373,7 @@ fn no_written_source_yields_a_sigil_prefixed_identifier() {
         "Foo::Bar->new;",
         "print STDERR \"x\";",
         "new Foo(1);",
+        "new $class(1);",
         "require Foo::Bar;",
         "my $s = \"$x and @y\";",
         "sort { $a <=> $b } @x;",
@@ -230,26 +385,11 @@ fn no_written_source_yields_a_sigil_prefixed_identifier() {
     ];
 
     for source in sources {
-        let mut parser = Parser::new(source);
-        let output = parser.parse_with_recovery();
-        let mut found = Vec::new();
-        walk(&output.ast, &mut found);
         assert!(
-            found.is_empty(),
-            "{source:?} produced sigil-prefixed Identifier node(s) {found:?} from written \
-             source; `is_sigil_prefixed` would now discard a real name",
+            sigil_prefixed_identifiers(source).is_empty(),
+            "{source:?} produced sigil-prefixed Identifier node(s) {:?}; if any is zero-width \
+             the guard would now discard it — add it to the preserved-name control instead",
+            sigil_prefixed_identifiers(source),
         );
     }
-
-    // The converse: the fabrication really is present in the AST, so the tests
-    // above are dropping something rather than asserting over an empty set.
-    let mut parser = Parser::new("s/a/b/;");
-    let output = parser.parse_with_recovery();
-    let mut found = Vec::new();
-    walk(&output.ast, &mut found);
-    assert_eq!(
-        found,
-        vec![("$_".to_string(), 0, 0)],
-        "the parser no longer fabricates a zero-width `$$_` operand; this suite's subject is gone",
-    );
 }
