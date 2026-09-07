@@ -60,16 +60,12 @@ export interface LifecycleHooks<TClient extends LifecycleClient<TEvent>, TEvent 
    * Report whether the client and everything it owned have reached a
    * terminal state.
    *
-   * Consulted only when `stop()` settles with a rejection. A language client
-   * whose server hangs (the watchdog case) rejects `stop()` with a shutdown
-   * timeout after it has finished its own cleanup; that rejection is a failed
-   * graceful handshake, not incomplete client cleanup, and must not block the
-   * replacement once the server process has actually exited. The client's
-   * `State.Stopped` alone is not proof of that: the node client reaches it
-   * before it schedules process termination. Implementations may wait
-   * (bounded by `stopTimeoutMs`) for the process captured by
-   * `captureStopWitness` to exit. A `stop()` that never settles is still
-   * incomplete regardless of what this reports.
+   * Consulted after every settled `stop()`, including successful stops:
+   * vscode-languageclient can reach `State.Stopped` before its server exits.
+   * Implementations may wait (bounded by `stopTimeoutMs`) for the process
+   * captured by `captureStopWitness` to exit. A stop that never settles is
+   * incomplete regardless of what this reports. Without this hook, only a
+   * successful stop establishes cleanup completion.
    */
   isClientTerminal?(client: TClient, witness: unknown): boolean | Promise<boolean>;
 }
@@ -423,10 +419,10 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
 
     const witness = this.captureStopWitness(active.client);
     const stopResult = await this.runBounded('stop', () => active.client.stop());
-    if (
-      !stopResult.completed &&
-      !(await this.stopSettledTerminal(active.client, stopResult, witness))
-    ) {
+    const stopCleanupComplete = this.hooks.isClientTerminal
+      ? await this.stopSettledTerminal(active.client, stopResult, witness)
+      : stopResult.completed;
+    if (!stopCleanupComplete) {
       firstError ??= stopResult.error;
       clientCleanupComplete = false;
     }
@@ -452,12 +448,10 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
   }
 
   /**
-   * A rejected (not hung) `stop()` from a client that reports itself terminal
-   * has completed its cleanup: the graceful shutdown handshake failed, which
-   * is exactly what a hung server produces, but nothing client-owned remains
-   * live. Only a settled rejection qualifies; a stop that outlived the bound
-   * proves nothing about the client's state. The terminal check is itself
-   * bounded by `stopTimeoutMs`: a check that hangs or throws is not proof.
+   * A settled stop establishes cleanup only when the external resources are
+   * terminal. Neither successful settlement nor a rejected handshake proves
+   * process exit. A stop that outlived the bound proves nothing; the terminal
+   * check is also bounded, and a check that hangs or throws is not proof.
    */
   private async stopSettledTerminal(
     client: TClient,

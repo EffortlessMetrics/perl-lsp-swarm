@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 14155,
-  "reason": "Accept the #14857 lifecycle process-exit repair, including conservative PID-probe error handling. The actual VSIX retains 29 payload files; out/extension.js changes from 1675187 to 1678637 bytes, with 1856595 total payload bytes. Generated from the archive; installed recovery is a separate proof surface.",
+  "reason": "Accept the #14857 lifecycle repair requiring captured process exit after every settled stop, with conservative PID-probe error handling. The actual VSIX retains 29 payload files; out/extension.js changes from 1675187 to 1678515 bytes, with 1856473 total payload bytes. Generated from the archive; installed recovery is a separate proof surface.",
   "base_baseline_file_sha256": "9b80146ec2f0f4a7ef38522b127429dfc612aa01d1c8e6d4e33e37c768e6de26",
-  "candidate_baseline_file_sha256": "0d493b677db25d9e1bb0b2be1d8ed09bb8470b6f0318c9f7e73bf3242dd638e0",
+  "candidate_baseline_file_sha256": "a0ff6132d090487820a562be18de96e17a9e0b6f1c22c5304386519490aac8c5",
   "base_inventory_sha256": "1a42390c7e64fd313065bd959fdcd1db6885894b838ac35be42996652edf4aeb",
-  "candidate_inventory_sha256": "8917f8333f3b1268dd653db180da6a2c23c7eb95e107b3055bf1478582c9b487"
+  "candidate_inventory_sha256": "58b0b7699290c02ba693c03393cc5fc7771c687386499ebd1d426ac3850b1b02"
 }
