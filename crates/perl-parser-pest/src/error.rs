@@ -1,16 +1,36 @@
 //! Canonical error union for `perl-parser-pest`'s public parsing API.
 //!
-//! [`ParseError`] is the single fallible-return error type for this crate. It
-//! has exactly two arms, and the two are never interconvertible by type:
+//! [`ParseError`] is the single error type returned by this crate's *parsing*
+//! APIs — every fallible function in [`crate::pure_rust_parser`] and
+//! [`crate::pratt_parser`]. It has exactly two arms, and the two are never
+//! interconvertible by type:
 //!
 //! - [`ParseError::Rejected`] wraps [`crate::StrictParseError`] — a
 //!   parser-domain rejection. Pest declined the input; this is not an
 //!   instrument failure.
 //! - [`ParseError::Failed`] wraps [`crate::ParserFailure`] — an
-//!   operational/instrument failure (parser panic, invalid UTF-8, or an
-//!   internal AST-builder invariant violation). Never a parser-domain
-//!   rejection, and never produced by malformed-but-otherwise-well-formed
-//!   Perl source on its own.
+//!   operational/instrument failure. Never a parser-domain rejection, and
+//!   never produced by malformed-but-otherwise-well-formed Perl source on
+//!   its own.
+//!
+//! It is deliberately not the crate's *only* error type. Vocabulary
+//! construction — [`crate::SourceRange`], [`crate::ParseOutcome`], and
+//! [`crate::StrictParseError::from_pest`] — returns [`crate::OutcomeError`],
+//! which reports an invalid request to build a value and is not a parse
+//! result at all. Parsing errors and vocabulary-construction errors stay
+//! separate types on purpose.
+//!
+//! # Which failure kinds `parse()` can actually produce
+//!
+//! [`crate::ParserFailureKind`] also models `Panic` and `InvalidUtf8`, but
+//! [`crate::PureRustPerlParser::parse`] produces neither. It takes `&str`, so
+//! its input is already valid UTF-8, and it does not catch unwinds — a
+//! panic in the parser unwinds past this type rather than becoming a
+//! `Failed` value, and callers that need to contain one (such as
+//! `perl-parser-comparison`'s harness) still wrap the call in
+//! [`std::panic::catch_unwind`] themselves. In practice every `Failed` that
+//! `parse()` returns carries [`crate::ParserFailureKind::Instrument`],
+//! reporting an internal AST-builder invariant violation.
 //!
 //! Both wrapped types are schema-versioned (`#[serde(deny_unknown_fields)]`
 //! plus an explicit schema-string check on deserialize), so an old or

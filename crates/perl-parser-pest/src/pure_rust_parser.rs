@@ -443,8 +443,18 @@ impl PureRustPerlParser {
                     {
                         for pair in pairs {
                             for inner_pair in pair.into_inner() {
-                                if let Some(node) = self.build_node(inner_pair).unwrap_or(None) {
-                                    statements.push(node);
+                                // Skipping an unparseable fragment is what recovery is
+                                // for, so a parser-domain rejection stays skippable. An
+                                // operational failure must not be: collapsing it here
+                                // would let an AST-builder invariant violation resurface
+                                // as a `Rejected` below (or as an `Ok` when another
+                                // statement happened to survive), which is exactly the
+                                // conflation this contract forbids.
+                                match self.build_node(inner_pair) {
+                                    Ok(Some(node)) => statements.push(node),
+                                    Ok(None) => {}
+                                    Err(failure @ ParseError::Failed(_)) => return Err(failure),
+                                    Err(ParseError::Rejected(_)) => {}
                                 }
                             }
                         }
