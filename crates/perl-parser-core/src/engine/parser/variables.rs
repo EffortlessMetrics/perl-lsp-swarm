@@ -52,7 +52,7 @@ impl<'a> Parser<'a> {
                 || self.previous_position(),
                 |node| node.location.end.max(self.previous_position()),
             );
-            let node = Node::new(
+            let node = self.charge_node(
                 NodeKind::VariableListDeclaration {
                     declarator,
                     variables,
@@ -60,7 +60,7 @@ impl<'a> Parser<'a> {
                     initializer,
                 },
                 SourceLocation { start, end },
-            );
+            )?;
             Ok(node)
         } else {
             // Single variable declaration
@@ -163,14 +163,17 @@ impl<'a> Parser<'a> {
                 } else {
                     let var_clone = variable.clone();
                     let assign_end = rhs.location.end;
-                    Some(Box::new(Node::new(
+                    // Charged before the enclosing node so the charge order matches
+                    // the original construction order.
+                    let charged_operand = self.charge_node(
                         NodeKind::Assignment {
                             op: op.to_string(),
                             lhs: Box::new(var_clone),
                             rhs: Box::new(rhs),
                         },
                         SourceLocation { start: variable.location.start, end: assign_end },
-                    )))
+                    )?;
+                    Some(Box::new(charged_operand))
                 }
             } else {
                 None
@@ -187,7 +190,7 @@ impl<'a> Parser<'a> {
                 .as_ref()
                 .map_or(variable.location.end, |node| node.location.end)
                 .max(self.previous_position());
-            let node = Node::new(
+            let node = self.charge_node(
                 NodeKind::VariableDeclaration {
                     declarator,
                     variable: Box::new(variable),
@@ -195,7 +198,7 @@ impl<'a> Parser<'a> {
                     initializer,
                 },
                 SourceLocation { start, end },
-            );
+            )?;
             Ok(node)
         }
     }
@@ -205,10 +208,10 @@ impl<'a> Parser<'a> {
         match self.peek_kind() {
             Some(TokenKind::Undef) => {
                 let undef_token = self.consume_token()?;
-                Ok(Node::new(
+                Ok(self.charge_node(
                     NodeKind::Undef,
                     SourceLocation { start: undef_token.start(), end: undef_token.end() },
-                ))
+                )?)
             }
             Some(TokenKind::LeftParen) => {
                 let start = self.current_position();
@@ -230,19 +233,19 @@ impl<'a> Parser<'a> {
                 // Single-item group: return the item directly for backward compatibility.
                 // Multi-item group: wrap in NestedVariableList.
                 match items.len() {
-                    0 => Ok(Node::new(NodeKind::Undef, SourceLocation { start, end })),
+                    0 => Ok(self.charge_node(NodeKind::Undef, SourceLocation { start, end })?),
                     1 => {
                         // Safe: we just checked len == 1
                         let mut it = items.into_iter();
                         match it.next() {
                             Some(only) => Ok(only),
-                            None => Ok(Node::new(NodeKind::Undef, SourceLocation { start, end })), // LCOV_EXCL_LINE
+                            None => Ok(self.charge_node(NodeKind::Undef, SourceLocation { start, end })?), // LCOV_EXCL_LINE
                         }
                     }
-                    _ => Ok(Node::new(
+                    _ => Ok(self.charge_node(
                         NodeKind::NestedVariableList { items },
                         SourceLocation { start, end },
-                    )),
+                    )?),
                 }
             }
             _ => self.parse_ternary(),
@@ -264,13 +267,13 @@ impl<'a> Parser<'a> {
         }
         let start = var.location.start;
         let end = self.previous_position();
-        Ok(Node::new(
+        Ok(self.charge_node(
             NodeKind::VariableWithAttributes {
                 variable: Box::new(var),
                 attributes: var_attributes,
             },
             SourceLocation { start, end },
-        ))
+        )?)
     }
 
     /// Consume an optional legacy type constraint in lexical declarations.
@@ -340,7 +343,7 @@ impl<'a> Parser<'a> {
             .as_ref()
             .map_or(variable.location.end, |node| node.location.end)
             .max(self.previous_position());
-        let node = Node::new(
+        let node = self.charge_node(
             NodeKind::VariableDeclaration {
                 declarator,
                 variable,
@@ -348,7 +351,7 @@ impl<'a> Parser<'a> {
                 initializer,
             },
             SourceLocation { start, end },
-        );
+        )?;
         Ok(node)
     }
 
@@ -378,10 +381,10 @@ impl<'a> Parser<'a> {
         let text = &token.text;
 
         if let Some(name) = Self::simple_braced_scalar_token_name(text) {
-            return Ok(Node::new(
+            return Ok(self.charge_node(
                 NodeKind::Variable { sigil: String::from("$"), name: name.to_string() },
                 SourceLocation { start: token.start(), end: token.end() },
-            ));
+            )?);
         }
 
         // `${Foo::bar}` (no internal whitespace): the lexer's braced-variable
@@ -389,10 +392,10 @@ impl<'a> Parser<'a> {
         // token (issue #3593). Fold to the scalar `$Foo::bar`, matching
         // perlref's "Not-so-symbolic references" rule.
         if let Some(name) = Self::qualified_braced_scalar_token_name(text) {
-            return Ok(Node::new(
+            return Ok(self.charge_node(
                 NodeKind::Variable { sigil: String::from("$"), name: name.to_string() },
                 SourceLocation { start: token.start(), end: token.end() },
-            ));
+            )?);
         }
 
         // Special handling for @{, %{, and ${ (array/hash/scalar dereference)
@@ -429,10 +432,10 @@ impl<'a> Parser<'a> {
             }
 
             let op = format!("{}{{}}", sigil);
-            return Ok(Node::new(
+            return Ok(self.charge_node(
                 NodeKind::Unary { op, operand: Box::new(expr) },
                 SourceLocation { start, end },
-            ));
+            )?);
         }
 
         // Special handling for &{ (code dereference)
@@ -472,10 +475,10 @@ impl<'a> Parser<'a> {
             let (operand, diagnostics) = parse_inline_expression(inner_text, token.start() + 2)?;
             self.errors.extend(diagnostics);
             let end = token.end();
-            let node = Node::new(
+            let node = self.charge_node(
                 NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(operand) },
                 SourceLocation { start: token.start(), end },
-            );
+            )?;
             return self.parse_postfix_chain(node);
         }
 
@@ -504,10 +507,10 @@ impl<'a> Parser<'a> {
             }
 
             let op = format!("{}{{}}", sigil);
-            return Ok(Node::new(
+            return Ok(self.charge_node(
                 NodeKind::Unary { op, operand: Box::new(expr) },
                 SourceLocation { start: token.start(), end },
-            ));
+            )?);
         }
 
         // Handle sigil + partial deref: when the lexer produces e.g. `%{shift` as one
@@ -533,20 +536,20 @@ impl<'a> Parser<'a> {
             {
                 self.expect(TokenKind::RightBrace)?;
                 let end = self.previous_position();
-                return Ok(Node::new(
+                return Ok(self.charge_node(
                     NodeKind::Variable { sigil: "$".to_string(), name: inner_name.to_string() },
                     SourceLocation { start: token.start(), end },
-                ));
+                )?);
             }
 
             let mut inner = if sigil == "$" && self.peek_kind() == Some(TokenKind::DoubleColon) {
                 self.parse_qualified_scalar_tail(inner_name.to_string(), inner_start, inner_end)?
             } else {
                 // Create an identifier node for the captured name
-                let inner = Node::new(
+                let inner = self.charge_node(
                     NodeKind::Identifier { name: inner_name.to_string() },
                     SourceLocation { start: inner_start, end: inner_end },
-                );
+                )?;
 
                 // Parse postfix chain (handles function call parens, method calls, etc.)
                 self.parse_postfix_chain(inner)?
@@ -562,10 +565,10 @@ impl<'a> Parser<'a> {
             let end = self.previous_position();
 
             let op = format!("{}{{}}", sigil);
-            return Ok(Node::new(
+            return Ok(self.charge_node(
                 NodeKind::Unary { op, operand: Box::new(inner) },
                 SourceLocation { start: token.start(), end },
-            ));
+            )?);
         }
 
         // Check if the variable name is followed by :: for package-qualified variables
@@ -581,10 +584,10 @@ impl<'a> Parser<'a> {
                 // $#$ref — parse the inner variable and wrap
                 let inner = self.parse_variable()?;
                 let inner_end = inner.location.end;
-                return Ok(Node::new(
+                return Ok(self.charge_node(
                     NodeKind::Unary { op: "$#".to_string(), operand: Box::new(inner) },
                     SourceLocation { start: token.start(), end: inner_end },
-                ));
+                )?);
             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                 // $#{expr} — last index via block dereference
                 self.advance_token()?; // consume {
@@ -592,10 +595,10 @@ impl<'a> Parser<'a> {
                 self.consume_deref_body_terminators()?;
                 self.expect(TokenKind::RightBrace)?;
                 let brace_end = self.previous_position();
-                return Ok(Node::new(
+                return Ok(self.charge_node(
                     NodeKind::Unary { op: "$#".to_string(), operand: Box::new(inner) },
                     SourceLocation { start: token.start(), end: brace_end },
-                ));
+                )?);
             }
         }
 
@@ -640,30 +643,30 @@ impl<'a> Parser<'a> {
 
         if sigil == "*" {
             let name = normalize_dynamic_typeglob_name(&full_name);
-            Ok(Node::new(
+            Ok(self.charge_node(
                 NodeKind::Typeglob { name },
                 SourceLocation { start: token.start(), end },
-            ))
+            )?)
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
             && Self::is_unbraced_scalar_deref_name(&full_name)
         {
             // Unbraced dereference: $$ref, @$ref, %$ref — equivalent to ${$ref}, @{$ref}, %{$ref}.
             // The `full_name` here is e.g. "$ref"; strip the leading `$` to get the inner name.
             let inner_name = full_name[1..].to_string();
-            let inner = Node::new(
+            let inner = self.charge_node(
                 NodeKind::Variable { sigil: "$".to_string(), name: inner_name },
                 SourceLocation { start: token.start() + sigil.len(), end },
-            );
+            )?;
             let op = format!("{}{{}}", sigil);
-            Ok(Node::new(
+            Ok(self.charge_node(
                 NodeKind::Unary { op, operand: Box::new(inner) },
                 SourceLocation { start: token.start(), end },
-            ))
+            )?)
         } else {
-            Ok(Node::new(
+            Ok(self.charge_node(
                 NodeKind::Variable { sigil, name: full_name },
                 SourceLocation { start: token.start(), end },
-            ))
+            )?)
         }
     }
 
@@ -711,10 +714,10 @@ impl<'a> Parser<'a> {
             && self.tokens.peek_second()?.kind() == TokenKind::RightBrace
         {
             let name_token = self.advance_token()?;
-            return Ok(Some(Node::new(
+            return Ok(Some(self.charge_node(
                 NodeKind::Variable { sigil: "$".to_string(), name: name_token.text.to_string() },
                 SourceLocation { start: name_token.start(), end: name_token.end() },
-            )));
+            )?));
         }
 
         Ok(None)
@@ -764,10 +767,10 @@ impl<'a> Parser<'a> {
         }
 
         let name_token = self.advance_token()?;
-        Ok(Some(Node::new(
+        Ok(Some(self.charge_node(
             NodeKind::Variable { sigil: String::from("$"), name: name_token.text.to_string() },
             SourceLocation { start: name_token.start(), end: name_token.end() },
-        )))
+        )?))
     }
 
     fn simple_braced_scalar_token_name(text: &str) -> Option<&str> {
@@ -815,10 +818,10 @@ impl<'a> Parser<'a> {
             end = ident.end();
         }
 
-        Ok(Some(Node::new(
+        Ok(Some(self.charge_node(
             NodeKind::Variable { sigil: String::from("$"), name },
             SourceLocation { start: caret_token.start(), end },
-        )))
+        )?))
     }
 
     fn parse_qualified_scalar_tail(
@@ -843,10 +846,10 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let variable = Node::new(
+        let variable = self.charge_node(
             NodeKind::Variable { sigil: "$".to_string(), name: full_name },
             SourceLocation { start, end },
-        );
+        )?;
 
         self.parse_postfix_chain(variable)
     }
@@ -875,7 +878,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        build_deref_body(expressions, body_start)
+        build_deref_body(self, expressions, body_start)
     }
 
     /// Parse a variable when we have a sigil token first
@@ -1021,13 +1024,13 @@ impl<'a> Parser<'a> {
                                 let inner = self.parse_variable()?;
                                 let end = inner.location.end;
                                 // Wrap in a Unary $#() node
-                                let node = Node::new(
+                                let node = self.charge_node(
                                     NodeKind::Unary {
                                         op: "$#".to_string(),
                                         operand: Box::new(inner),
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                                 return Ok(node);
                             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // $#{expr} — last index of dereferenced array via block
@@ -1035,13 +1038,13 @@ impl<'a> Parser<'a> {
                                 let inner = self.parse_expression()?;
                                 self.expect(TokenKind::RightBrace)?;
                                 let end = self.previous_position();
-                                let node = Node::new(
+                                let node = self.charge_node(
                                     NodeKind::Unary {
                                         op: "$#".to_string(),
                                         operand: Box::new(inner),
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                                 return Ok(node);
                             } else {
                                 // Just $# by itself
@@ -1096,12 +1099,12 @@ impl<'a> Parser<'a> {
                 let name = normalize_dynamic_typeglob_name(&String::from_utf8_lossy(
                     &self.src_bytes[body_start..end.saturating_sub(1)],
                 ));
-                return Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }));
+                return Ok(self.charge_node(NodeKind::Typeglob { name }, SourceLocation { start, end })?);
             }
-            let node = Node::new(
+            let node = self.charge_node(
                 NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(expr) },
                 SourceLocation { start, end },
-            );
+            )?;
             return self.parse_postfix_chain(node);
         }
 
@@ -1133,10 +1136,10 @@ impl<'a> Parser<'a> {
             }
 
             let op = format!("{}{{}}", sigil);
-            return Ok(Node::new(
+            return Ok(self.charge_node(
                 NodeKind::Unary { op, operand: Box::new(expr) },
                 SourceLocation { start, end },
-            ));
+            )?);
         }
 
         // Special handling for & sigil followed by { - code dereference: &{expr}(args)
@@ -1158,10 +1161,10 @@ impl<'a> Parser<'a> {
                 vec![]
             };
 
-            Ok(Node::new(NodeKind::AmperCall { name, args }, SourceLocation { start, end }))
+            Ok(self.charge_node(NodeKind::AmperCall { name, args }, SourceLocation { start, end })?)
         } else if sigil == "*" {
             let name = normalize_dynamic_typeglob_name(&name);
-            Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }))
+            Ok(self.charge_node(NodeKind::Typeglob { name }, SourceLocation { start, end })?)
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
             && Self::is_unbraced_scalar_deref_name(&name)
         {
@@ -1169,17 +1172,17 @@ impl<'a> Parser<'a> {
             // `@` + `$ref`, `%` + `$ref`, or `$` (ScalarSigil) + `$ref`.
             // Equivalent to @{$ref}, %{$ref}, ${$ref}.
             let inner_name = name[1..].to_string();
-            let inner = Node::new(
+            let inner = self.charge_node(
                 NodeKind::Variable { sigil: "$".to_string(), name: inner_name },
                 SourceLocation { start: start + sigil.len(), end },
-            );
+            )?;
             let op = format!("{}{{}}", sigil);
-            Ok(Node::new(
+            Ok(self.charge_node(
                 NodeKind::Unary { op, operand: Box::new(inner) },
                 SourceLocation { start, end },
-            ))
+            )?)
         } else {
-            Ok(Node::new(NodeKind::Variable { sigil, name }, SourceLocation { start, end }))
+            Ok(self.charge_node(NodeKind::Variable { sigil, name }, SourceLocation { start, end })?)
         }
     }
 
@@ -1211,10 +1214,10 @@ impl<'a> Parser<'a> {
         self.consume_deref_body_terminators()?;
         self.expect(TokenKind::RightBrace)?;
         let deref_end = self.previous_position();
-        let deref_node = Node::new(
+        let deref_node = self.charge_node(
             NodeKind::Unary { op: "&{}".to_string(), operand: Box::new(inner_expr) },
             SourceLocation { start, end: deref_end },
-        );
+        )?;
 
         if self.peek_kind() == Some(TokenKind::LeftParen) {
             self.consume_token()?;
@@ -1222,10 +1225,10 @@ impl<'a> Parser<'a> {
             let call_end = self.previous_position();
             let mut all = vec![deref_node];
             all.extend(args);
-            return Ok(Node::new(
+            return Ok(self.charge_node(
                 NodeKind::FunctionCall { name: "&{}".to_string(), args: all },
                 SourceLocation { start, end: call_end },
-            ));
+            )?);
         }
 
         Ok(deref_node)
@@ -1289,7 +1292,7 @@ impl<'a> Parser<'a> {
 
                     if sigil == "@" {
                         if seen_slurpy_pct {
-                            self.errors.push(ParseError::syntax(
+                            self.record_error(ParseError::syntax(
                                 "Signature cannot have both @ and % slurpy parameters",
                                 param.location.start,
                             ));
@@ -1297,7 +1300,7 @@ impl<'a> Parser<'a> {
                         seen_slurpy_at = true;
                     } else if sigil == "%" {
                         if seen_slurpy_at {
-                            self.errors.push(ParseError::syntax(
+                            self.record_error(ParseError::syntax(
                                 "Signature cannot have both @ and % slurpy parameters",
                                 param.location.start,
                             ));
@@ -1306,7 +1309,7 @@ impl<'a> Parser<'a> {
                     }
 
                     if !is_last {
-                        self.errors.push(ParseError::syntax(
+                        self.record_error(ParseError::syntax(
                             "Slurpy parameter must be the last parameter in the signature",
                             param.location.start,
                         ));
@@ -1316,7 +1319,7 @@ impl<'a> Parser<'a> {
                     seen_optional = true;
                 }
                 NodeKind::MandatoryParameter { .. } if seen_optional => {
-                    self.errors.push(ParseError::syntax(
+                    self.record_error(ParseError::syntax(
                         "Mandatory parameter cannot follow an optional parameter in signature",
                         param.location.start,
                     ));
@@ -1428,7 +1431,7 @@ impl<'a> Parser<'a> {
             NodeKind::MandatoryParameter { variable: Box::new(variable) }
         };
 
-        Ok(Node::new(param_kind, SourceLocation { start, end }))
+        Ok(self.charge_node(param_kind, SourceLocation { start, end })?)
     }
 
     fn consume_signature_param_attributes(&mut self, mut end: usize) -> ParseResult<usize> {
@@ -1650,7 +1653,7 @@ impl<'a> Parser<'a> {
             .collect();
 
         if !invalid_chars.is_empty() {
-            self.errors.push(ParseError::SyntaxError {
+            self.record_error(ParseError::SyntaxError {
                 message: format!(
                     "Invalid prototype character(s) '{}' — valid characters are: \
                     $, @, %, &, *, \\, ;, +, _ (see perlsub)",
@@ -1701,10 +1704,21 @@ fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<(Node, Ve
         shift_node_locations(&mut expression, offset);
         expressions.push(expression);
     }
-    Ok((build_deref_body(expressions, offset)?, diagnostics))
+    // The inline sub-parse owns its own operation, so these assembly
+    // nodes are charged there rather than to the enclosing parse (#8786).
+    Ok((build_deref_body(&mut parser, expressions, offset)?, diagnostics))
 }
 
-fn build_deref_body(mut expressions: Vec<Node>, body_start: usize) -> ParseResult<Node> {
+/// Assemble a `*{...}` dereference body from its already-parsed expressions.
+///
+/// Takes the parser explicitly because it is a free function shared by the
+/// ordinary parse path and by [`parse_inline_expression`]: the nodes it builds
+/// are charged to whichever operation is assembling them (#8786).
+fn build_deref_body(
+    parser: &mut Parser<'_>,
+    mut expressions: Vec<Node>,
+    body_start: usize,
+) -> ParseResult<Node> {
     if expressions.is_empty() {
         return Err(ParseError::syntax("Expected an expression", body_start));
     }
@@ -1720,13 +1734,13 @@ fn build_deref_body(mut expressions: Vec<Node>, body_start: usize) -> ParseResul
         .into_iter()
         .map(|expression| {
             let location = expression.location;
-            Node::new(
+            parser.charge_node(
                 NodeKind::ExpressionStatement { expression: Box::new(expression) },
                 location,
             )
         })
-        .collect();
-    Ok(Node::new(NodeKind::Block { statements }, SourceLocation { start, end }))
+        .collect::<ParseResult<Vec<Node>>>()?;
+    parser.charge_node(NodeKind::Block { statements }, SourceLocation { start, end })
 }
 
 fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {

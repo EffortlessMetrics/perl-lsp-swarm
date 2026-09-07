@@ -123,7 +123,7 @@ impl<'a> Parser<'a> {
                     )
                 };
                 let position = self.current_position();
-                self.errors.push(ParseError::syntax(message, position));
+                self.record_error(ParseError::syntax(message, position));
             }
         } else {
             // For non-balanced delimiters, just scan for the closing char.
@@ -191,40 +191,40 @@ impl<'a> Parser<'a> {
         match op {
             "qq" => {
                 // Double-quoted string with interpolation
-                Ok(Node::new(
+                Ok(self.charge_node(
                     NodeKind::String { value: format!("\"{}\"", content), interpolated: true },
                     SourceLocation { start, end },
-                ))
+                )?)
             }
             "q" => {
                 // Single-quoted string without interpolation
-                Ok(Node::new(
+                Ok(self.charge_node(
                     NodeKind::String { value: format!("'{}'", content), interpolated: false },
                     SourceLocation { start, end },
-                ))
+                )?)
             }
             "qw" => {
                 // Word list - split on whitespace
                 let words: Vec<Node> = content
                     .split_whitespace()
                     .map(|word| {
-                        Node::new(
+                        self.charge_node(
                             NodeKind::String { value: format!("'{}'", word), interpolated: false },
                             SourceLocation { start, end },
                         )
                     })
-                    .collect();
+                    .collect::<ParseResult<Vec<Node>>>()?;
 
-                Ok(Node::new(
+                Ok(self.charge_node(
                     NodeKind::ArrayLiteral { elements: words },
                     SourceLocation { start, end },
-                ))
+                )?)
             }
             "qr" => {
                 // Regular expression
                 let has_embedded_code = self.analyze_regex_body_for_ast(&content, start)?;
 
-                Ok(Node::new(
+                Ok(self.charge_node(
                     NodeKind::Regex {
                         pattern: format!("{}{}{}", opening_delim, content, closing_delim),
                         replacement: None,
@@ -232,14 +232,14 @@ impl<'a> Parser<'a> {
                         has_embedded_code,
                     },
                     SourceLocation { start, end },
-                ))
+                )?)
             }
             "qx" => {
                 // Backticks/command execution
-                Ok(Node::new(
+                Ok(self.charge_node(
                     NodeKind::String { value: format!("`{}`", content), interpolated: true },
                     SourceLocation { start, end },
-                ))
+                )?)
             }
             "m" => {
                 // Match operator with pattern
@@ -268,7 +268,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 end = self.previous_position();
-                Ok(Node::new(
+                Ok(self.charge_node(
                     NodeKind::Regex {
                         pattern: format!("{}{}{}", opening_delim, content, closing_delim),
                         replacement: None,
@@ -276,7 +276,7 @@ impl<'a> Parser<'a> {
                         has_embedded_code,
                     },
                     SourceLocation { start, end },
-                ))
+                )?)
             }
             "s" => {
                 let replacement = self.parse_quote_operator_substitution_replacement(
@@ -290,12 +290,15 @@ impl<'a> Parser<'a> {
                     || modifiers.contains('e');
                 end = self.previous_position();
 
-                Ok(Node::new(
+                // Charged before the enclosing node so construction order, and
+                // therefore charge order, matches the original nesting.
+                let implicit_topic = self.charge_node(
+                    NodeKind::Identifier { name: String::from("$_") },
+                    SourceLocation { start, end: start },
+                )?;
+                Ok(self.charge_node(
                     NodeKind::Substitution {
-                        expr: Box::new(Node::new(
-                            NodeKind::Identifier { name: String::from("$_") },
-                            SourceLocation { start, end: start },
-                        )),
+                        expr: Box::new(implicit_topic),
                         pattern: content,
                         replacement,
                         modifiers,
@@ -303,7 +306,7 @@ impl<'a> Parser<'a> {
                         negated: false,
                     },
                     SourceLocation { start, end },
-                ))
+                )?)
             }
             _ => Err(ParseError::syntax(format!("Unknown quote operator: {}", op), start)),
         }
@@ -510,23 +513,23 @@ impl<'a> Parser<'a> {
         while self.peek_kind() != Some(close_delim) && !self.tokens.is_eof() {
             if let Some(TokenKind::Identifier) = self.peek_kind() {
                 let token = self.advance_token()?;
-                words.push(Node::new(
+                words.push(self.charge_node(
                     NodeKind::String {
                         value: format!("'{}'", token.text), // qw produces single-quoted strings
                         interpolated: false,
                     },
                     SourceLocation { start: token.start(), end: token.end() },
-                ));
+                )?);
             } else if self.peek_kind() == Some(TokenKind::String) {
                 // Also allow string tokens in qw lists
                 let token = self.advance_token()?;
-                words.push(Node::new(
+                words.push(self.charge_node(
                     NodeKind::String {
                         value: format!("'{}'", token.text.trim_matches(|c| c == '"' || c == '\'')),
                         interpolated: false,
                     },
                     SourceLocation { start: token.start(), end: token.end() },
-                ));
+                )?);
             } else {
                 // Skip other tokens (might be separators or special chars)
                 self.advance_token()?;
@@ -613,3 +616,4 @@ mod modifier_tests {
         );
     }
 }
+

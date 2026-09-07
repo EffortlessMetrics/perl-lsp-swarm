@@ -439,9 +439,9 @@ impl<'a> Parser<'a> {
                     if s.peek_kind() == Some(TokenKind::FatArrow)
                         && let Some(arg) = args.last_mut()
                     {
-                        Self::auto_quote_bareword_before_fat_comma(arg);
+                        s.auto_quote_bareword_before_fat_comma(arg)?;
                     }
-                    s.tokens.next()?;
+                    s.advance_token()?;
                 } else if Self::is_statement_terminator(s.peek_kind())
                     || s.is_statement_modifier_keyword()
                 {
@@ -451,7 +451,7 @@ impl<'a> Parser<'a> {
 
             let end =
                 args.last().map(|arg| arg.location.end).unwrap_or_else(|| s.previous_position());
-            Ok(Node::new(NodeKind::FunctionCall { name, args }, SourceLocation { start, end }))
+            Ok(s.charge_node(NodeKind::FunctionCall { name, args }, SourceLocation { start, end })?)
         })
     }
 
@@ -484,10 +484,10 @@ impl<'a> Parser<'a> {
                 && self.peek_kind() == Some(TokenKind::Try)
             {
                 let token = self.consume_token()?;
-                Node::new(
+                self.charge_node(
                     NodeKind::Identifier { name: token.text.to_string() },
                     SourceLocation { start: token.start(), end: token.end() },
-                )
+                )?
             } else {
                 self.parse_primary()?
             };
@@ -595,10 +595,10 @@ impl<'a> Parser<'a> {
         };
 
         // Return as an indirect call node (using MethodCall with a flag or separate node)
-        Ok(Node::new(
+        Ok(self.charge_node(
             NodeKind::IndirectCall { method, object: Box::new(object), args },
             SourceLocation { start, end },
-        ))
+        )?)
     }
 
     /// Parse an assignment expression or a variable declaration.
@@ -707,7 +707,7 @@ impl<'a> Parser<'a> {
                 .as_ref()
                 .map_or(variable.location.end, |node| node.location.end)
                 .max(self.previous_position());
-            Ok(Node::new(
+            Ok(self.charge_node(
                 NodeKind::VariableDeclaration {
                     declarator,
                     variable: Box::new(variable),
@@ -715,7 +715,7 @@ impl<'a> Parser<'a> {
                     initializer,
                 },
                 SourceLocation { start, end },
-            ))
+            )?)
         // Check if we have a list declaration like `my ($x, $y)`
         } else if self.peek_kind() == Some(TokenKind::LeftParen) {
             self.consume_token()?; // consume (
@@ -753,7 +753,7 @@ impl<'a> Parser<'a> {
             };
 
             let end = self.previous_position();
-            Ok(Node::new(
+            Ok(self.charge_node(
                 NodeKind::VariableListDeclaration {
                     declarator,
                     variables,
@@ -761,7 +761,7 @@ impl<'a> Parser<'a> {
                     initializer,
                 },
                 SourceLocation { start, end },
-            ))
+            )?)
         } else {
             // Single variable declaration
             let variable = if declarator == "local" {
@@ -789,7 +789,7 @@ impl<'a> Parser<'a> {
                 .as_ref()
                 .map_or(variable.location.end, |node| node.location.end)
                 .max(self.previous_position());
-            Ok(Node::new(
+            Ok(self.charge_node(
                 NodeKind::VariableDeclaration {
                     declarator,
                     variable: Box::new(variable),
@@ -797,7 +797,7 @@ impl<'a> Parser<'a> {
                     initializer,
                 },
                 SourceLocation { start, end },
-            ))
+            )?)
         }
     }
 
@@ -846,10 +846,10 @@ impl<'a> Parser<'a> {
                     if s.peek_kind() == Some(TokenKind::FatArrow)
                         && let Some(arg) = args.last_mut()
                     {
-                        Self::auto_quote_bareword_before_fat_comma(arg);
+                        s.auto_quote_bareword_before_fat_comma(arg)?;
                     }
                     if matches!(s.peek_kind(), Some(TokenKind::Comma) | Some(TokenKind::FatArrow)) {
-                        s.tokens.next()?;
+                        s.advance_token()?;
                     }
                     if s.peek_kind() == Some(TokenKind::RightParen) {
                         break;
@@ -866,12 +866,12 @@ impl<'a> Parser<'a> {
                 while s.peek_kind() != Some(TokenKind::RightParen) && !s.tokens.is_eof() {
                     let mut arg = s.parse_assignment_or_declaration()?;
                     if s.peek_kind() == Some(TokenKind::FatArrow) {
-                        Self::auto_quote_bareword_before_fat_comma(&mut arg);
+                        s.auto_quote_bareword_before_fat_comma(&mut arg)?;
                     }
                     args.push(arg);
                     match s.peek_kind() {
                         Some(TokenKind::Comma) | Some(TokenKind::FatArrow) => {
-                            s.tokens.next()?;
+                            s.advance_token()?;
                         }
                         _ => break,
                     }
@@ -898,11 +898,11 @@ impl<'a> Parser<'a> {
 
                 // A fat comma auto-quotes a bare identifier on its left.
                 if s.peek_kind() == Some(TokenKind::FatArrow) {
-                    Self::auto_quote_bareword_before_fat_comma(&mut arg);
+                    s.auto_quote_bareword_before_fat_comma(&mut arg)?;
                     args.push(arg);
-                    s.tokens.next()?; // consume =>
+                    s.advance_token()?; // consume =>
                     if s.peek_kind() == Some(TokenKind::FatArrow) {
-                        s.tokens.next()?; // consume redundant chained =>
+                        s.advance_token()?; // consume redundant chained =>
                     }
                     // Continue to parse more arguments (the value after =>)
                     continue;

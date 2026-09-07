@@ -33,14 +33,14 @@ impl<'a> Parser<'a> {
                     let start = expr.location.start;
                     let end = right.location.end;
 
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Binary {
                             op: op_token.text.to_string(),
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
                 _ => break,
             }
@@ -69,14 +69,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -86,15 +86,15 @@ impl<'a> Parser<'a> {
     fn parse_word_not_expr(&mut self) -> ParseResult<Node> {
         self.with_recursion_guard(|s| {
             if s.peek_kind() == Some(TokenKind::WordNot) {
-                let op_token = s.tokens.next()?;
+                let op_token = s.advance_token()?;
                 let start = op_token.start();
                 let operand = s.parse_word_not_expr()?;
                 let end = operand.location.end;
 
-                return Ok(Node::new(
+                return Ok(s.charge_node(
                     NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
                     SourceLocation { start, end },
-                ));
+                )?);
             }
 
             // The right side of a word operator should be a full expression
@@ -143,10 +143,10 @@ impl<'a> Parser<'a> {
             ) && self.is_keyword_before_fat_arrow()
             {
                 let token = self.advance_token()?;
-                return Ok(Node::new(
+                return Ok(self.charge_node(
                     NodeKind::Identifier { name: token.text.to_string() },
                     SourceLocation { start: token.start(), end: token.end() },
-                ));
+                )?);
             }
 
             // Check if we have a 'not' operator first
@@ -176,14 +176,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = rhs.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Assignment {
                     lhs: Box::new(expr),
                     rhs: Box::new(rhs),
                     op: op.to_string(),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -220,14 +220,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = else_expr.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Ternary {
                     condition: Box::new(expr),
                     then_expr: Box::new(then_expr),
                     else_expr: Box::new(else_expr),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -248,14 +248,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = else_expr.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Ternary {
                     condition: Box::new(expr),
                     then_expr: Box::new(then_expr),
                     else_expr: Box::new(else_expr),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -292,7 +292,7 @@ impl<'a> Parser<'a> {
             if let NodeKind::Identifier { ref name } = elements[0].kind {
                 let loc = elements[0].location;
                 elements[0] =
-                    Node::new(NodeKind::String { value: name.clone(), interpolated: false }, loc);
+                    self.charge_node(NodeKind::String { value: name.clone(), interpolated: false }, loc)?;
             }
             self.advance_token()?; // consume =>
             if !matches!(
@@ -334,10 +334,10 @@ impl<'a> Parser<'a> {
                 if let Some(last) = elements.last_mut()
                     && let NodeKind::Identifier { ref name } = last.kind
                 {
-                    *last = Node::new(
+                    *last = self.charge_node(
                         NodeKind::String { value: name.clone(), interpolated: false },
                         last.location,
-                    );
+                    )?;
                 }
             }
 
@@ -359,10 +359,10 @@ impl<'a> Parser<'a> {
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 saw_fat_arrow = true;
                 if let NodeKind::Identifier { ref name } = elem.kind {
-                    elem = Node::new(
+                    elem = self.charge_node(
                         NodeKind::String { value: name.clone(), interpolated: false },
                         elem.location,
-                    );
+                    )?;
                 }
                 self.advance_token()?; // consume =>
                 elements.push(elem);
@@ -388,7 +388,7 @@ impl<'a> Parser<'a> {
             .ok_or_else(|| ParseError::syntax("Empty ternary branch list", start))?
             .location
             .end;
-        Ok(Self::build_list_or_hash(elements, saw_fat_arrow, start, end))
+        self.build_list_or_hash(elements, saw_fat_arrow, start, end)
     }
 
     /// Apply all binary operators below assignment precedence to an already-parsed
@@ -482,14 +482,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -506,14 +506,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -530,14 +530,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -554,14 +554,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -587,14 +587,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -611,14 +611,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)
@@ -641,14 +641,14 @@ impl<'a> Parser<'a> {
                         let start = expr.location.start;
                         let end = right.location.end;
 
-                        expr = Node::new(
+                        expr = self.charge_node(
                             NodeKind::Binary {
                                 op: op_token.text.to_string(),
                                 left: Box::new(expr),
                                 right: Box::new(right),
                             },
                             SourceLocation { start, end },
-                        );
+                        )?;
                     } else {
                         break;
                     }
@@ -664,14 +664,14 @@ impl<'a> Parser<'a> {
                     let start = expr.location.start;
                     let end = right.location.end;
 
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Binary {
                             op: op_token.text.to_string(),
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
                 TokenKind::Equal
                 | TokenKind::NotEqual
@@ -698,7 +698,7 @@ impl<'a> Parser<'a> {
                         } = &right.kind
                         {
                             let negated = matches!(op_token.kind(), TokenKind::NotMatch);
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::Substitution {
                                     expr: Box::new(expr),
                                     pattern: pattern.clone(),
@@ -708,13 +708,13 @@ impl<'a> Parser<'a> {
                                     negated,
                                 },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if let NodeKind::Transliteration {
                             search, replace, modifiers, ..
                         } = &right.kind
                         {
                             let negated = matches!(op_token.kind(), TokenKind::NotMatch);
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::Transliteration {
                                     expr: Box::new(expr),
                                     search: search.clone(),
@@ -723,7 +723,7 @@ impl<'a> Parser<'a> {
                                     negated,
                                 },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         } else if let NodeKind::Regex {
                             pattern,
                             replacement,
@@ -738,7 +738,7 @@ impl<'a> Parser<'a> {
                                 } else {
                                     pattern.clone()
                                 };
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::Substitution {
                                         expr: Box::new(expr),
                                         pattern: pat,
@@ -748,9 +748,9 @@ impl<'a> Parser<'a> {
                                         negated,
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                             } else {
-                                expr = Node::new(
+                                expr = self.charge_node(
                                     NodeKind::Match {
                                         expr: Box::new(expr),
                                         pattern: pattern.clone(),
@@ -759,27 +759,27 @@ impl<'a> Parser<'a> {
                                         negated,
                                     },
                                     SourceLocation { start, end },
-                                );
+                                )?;
                             }
                         } else {
-                            expr = Node::new(
+                            expr = self.charge_node(
                                 NodeKind::Binary {
                                     op: op_token.text.to_string(),
                                     left: Box::new(expr),
                                     right: Box::new(right),
                                 },
                                 SourceLocation { start, end },
-                            );
+                            )?;
                         }
                     } else {
-                        expr = Node::new(
+                        expr = self.charge_node(
                             NodeKind::Binary {
                                 op: op_token.text.to_string(),
                                 left: Box::new(expr),
                                 right: Box::new(right),
                             },
                             SourceLocation { start, end },
-                        );
+                        )?;
                     }
                 }
                 _ => break,
@@ -823,14 +823,14 @@ impl<'a> Parser<'a> {
                 };
                 let start = lhs.location.start;
                 let end = right.location.end;
-                lhs = Node::new(
+                lhs = self.charge_node(
                     NodeKind::Binary {
                         op: op_token.text.to_string(),
                         left: Box::new(lhs),
                         right: Box::new(right),
                     },
                     SourceLocation { start, end },
-                );
+                )?;
             } else if matches!(peek_text.as_str(), "lt" | "le" | "gt" | "ge") {
                 // fall through to chained-relational handling below
             } else {
@@ -855,14 +855,14 @@ impl<'a> Parser<'a> {
         if !self.peek_is_relational_op() {
             let start = lhs.location.start;
             let end = rhs1.location.end;
-            return Ok(Node::new(
+            return Ok(self.charge_node(
                 NodeKind::Binary {
                     op: op1.text.to_string(),
                     left: Box::new(lhs),
                     right: Box::new(rhs1),
                 },
                 SourceLocation { start, end },
-            ));
+            )?);
         }
 
         // Chain mode: two or more consecutive relational comparisons.
@@ -883,7 +883,7 @@ impl<'a> Parser<'a> {
         }
 
         let end = operands.last().map_or(start, |n| n.location.end);
-        Ok(Node::new(NodeKind::ChainedComparison { operands, ops }, SourceLocation { start, end }))
+        Ok(self.charge_node(NodeKind::ChainedComparison { operands, ops }, SourceLocation { start, end })?)
     }
 
     /// Parse shift expression
@@ -926,14 +926,14 @@ impl<'a> Parser<'a> {
                     let start = expr.location.start;
                     let end = right.location.end;
 
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Binary {
                             op: op_token.text.to_string(),
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
                 _ => break,
             }
@@ -956,14 +956,14 @@ impl<'a> Parser<'a> {
                     let start = expr.location.start;
                     let end = right.location.end;
 
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Binary {
                             op: op_token.text.to_string(),
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
                 _ => break,
             }
@@ -1057,14 +1057,14 @@ impl<'a> Parser<'a> {
                     let start = expr.location.start;
                     let end = right.location.end;
 
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Binary {
                             op: op_token.text.to_string(),
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
                 TokenKind::Identifier => {
                     let peeked = self.tokens.peek()?;
@@ -1081,20 +1081,20 @@ impl<'a> Parser<'a> {
                         let num_str = op_token.text[1..].to_string();
                         let num_start = op_token.start() + 1;
                         let num_end = op_token.end();
-                        let right = Node::new(
+                        let right = self.charge_node(
                             NodeKind::Number { value: num_str },
                             SourceLocation { start: num_start, end: num_end },
-                        );
+                        )?;
                         let start = expr.location.start;
                         let end = right.location.end;
-                        expr = Node::new(
+                        expr = self.charge_node(
                             NodeKind::Binary {
                                 op: "x".to_string(),
                                 left: Box::new(expr),
                                 right: Box::new(right),
                             },
                             SourceLocation { start, end },
-                        );
+                        )?;
                         continue;
                     }
                     if peeked_text != "x" {
@@ -1120,14 +1120,14 @@ impl<'a> Parser<'a> {
                     let start = expr.location.start;
                     let end = right.location.end;
 
-                    expr = Node::new(
+                    expr = self.charge_node(
                         NodeKind::Binary {
                             op: op_token.text.to_string(),
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
                         SourceLocation { start, end },
-                    );
+                    )?;
                 }
                 _ => break,
             }
@@ -1147,14 +1147,14 @@ impl<'a> Parser<'a> {
             let start = expr.location.start;
             let end = right.location.end;
 
-            expr = Node::new(
+            expr = self.charge_node(
                 NodeKind::Binary {
                     op: op_token.text.to_string(),
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
                 SourceLocation { start, end },
-            );
+            )?;
         }
 
         Ok(expr)

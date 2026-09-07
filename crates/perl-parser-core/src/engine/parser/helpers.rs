@@ -516,10 +516,10 @@ impl<'a> Parser<'a> {
         let start = expr.location.start;
         let end = rhs.location.end;
 
-        Ok(Node::new(
+        Ok(self.charge_node(
             NodeKind::Assignment { lhs: Box::new(expr), rhs: Box::new(rhs), op: op.to_string() },
             SourceLocation { start, end },
-        ))
+        )?)
     }
 
     fn is_explicit_sub_sigil_argument_start(&mut self) -> bool {
@@ -618,20 +618,21 @@ impl<'a> Parser<'a> {
     /// Utility to build either a HashLiteral or ArrayLiteral based on whether
     /// fat arrow (=>) was seen and we have an even number of elements
     fn build_list_or_hash(
+        &mut self,
         elements: Vec<Node>,
         saw_fat_arrow: bool,
         start: usize,
         end: usize,
-    ) -> Node {
+    ) -> ParseResult<Node> {
         if saw_fat_arrow && elements.len().is_multiple_of(2) {
             // Convert to HashLiteral
             let mut pairs = Vec::with_capacity(elements.len() / 2);
             for chunk in elements.chunks(2) {
                 pairs.push((chunk[0].clone(), chunk[1].clone()));
             }
-            Node::new(NodeKind::HashLiteral { pairs }, SourceLocation { start, end })
+            self.charge_node(NodeKind::HashLiteral { pairs }, SourceLocation { start, end })
         } else {
-            Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })
+            self.charge_node(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })
         }
     }
 
@@ -639,13 +640,18 @@ impl<'a> Parser<'a> {
     /// Apply Perl's implicit string conversion to a bareword immediately left
     /// of a fat comma. `=>` is a comma synonym, but unlike a plain comma it
     /// also auto-quotes an otherwise bare identifier.
-    pub(crate) fn auto_quote_bareword_before_fat_comma(node: &mut Node) {
+    pub(crate) fn auto_quote_bareword_before_fat_comma(
+        &mut self,
+        node: &mut Node,
+    ) -> ParseResult<()> {
         if let NodeKind::Identifier { ref name } = node.kind {
-            *node = Node::new(
+            let quoted = self.charge_node(
                 NodeKind::String { value: name.clone(), interpolated: false },
                 node.location,
-            );
+            )?;
+            *node = quoted;
         }
+        Ok(())
     }
 
     /// Continue parsing a comma / fat-arrow separated list when the first
@@ -669,7 +675,7 @@ impl<'a> Parser<'a> {
         if self.peek_kind() == Some(TokenKind::FatArrow) {
             saw_fat_arrow = true;
             if let Some(last) = expressions.last_mut() {
-                Self::auto_quote_bareword_before_fat_comma(last);
+                self.auto_quote_bareword_before_fat_comma(last)?;
             }
             self.consume_token()?; // consume =>
             if self.peek_kind() == Some(TokenKind::FatArrow) {
@@ -701,7 +707,7 @@ impl<'a> Parser<'a> {
                 saw_fat_arrow = true;
                 if !was_comma
                     && let Some(last) = expressions.last_mut() {
-                        Self::auto_quote_bareword_before_fat_comma(last);
+                        self.auto_quote_bareword_before_fat_comma(last)?;
                     }
                 self.consume_token()?; // consume =>
             }
@@ -723,7 +729,7 @@ impl<'a> Parser<'a> {
 
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 saw_fat_arrow = true;
-                Self::auto_quote_bareword_before_fat_comma(&mut elem);
+                self.auto_quote_bareword_before_fat_comma(&mut elem)?;
                 self.consume_token()?; // consume =>
                 expressions.push(elem);
 
@@ -741,7 +747,7 @@ impl<'a> Parser<'a> {
         }
 
         let end = expressions.last().map(|expr| expr.location.end).unwrap_or(start);
-        Ok(Self::build_list_or_hash(expressions, saw_fat_arrow, start, end))
+        self.build_list_or_hash(expressions, saw_fat_arrow, start, end)
     }
 
     /// Record a parse error for later retrieval.
@@ -765,6 +771,13 @@ impl<'a> Parser<'a> {
             return;
         }
         self.errors.push(error);
+    }
+
+    /// Construct one AST node: the single production node-construction seam
+    /// (#8786). Charges before construction; a refused node is never built.
+    fn charge_node(&mut self, kind: NodeKind, location: SourceLocation) -> ParseResult<Node> {
+        self.operation.authorize_node_construct()?;
+        Ok(Node::new(kind, location))
     }
 
     /// Consume the next token: the single production token-advance seam
@@ -964,12 +977,14 @@ impl<'a> Parser<'a> {
         if !self.is_infix_rhs_absent() {
             return None;
         }
-        self.errors.push(ParseError::Recovered {
+        self.record_error(ParseError::Recovered {
             site: RecoverySite::InfixRhs,
             kind: RecoveryKind::MissingOperand,
             location: op_pos,
         });
         let pos = op_pos;
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension.
         Some(Node::new(NodeKind::MissingExpression, SourceLocation { start: pos, end: pos }))
     }
 
@@ -1003,7 +1018,7 @@ impl<'a> Parser<'a> {
     fn record_inserted_closer(&mut self, kind: TokenKind) {
         let pos = self.current_position();
         let site = Self::recovery_site_for_closer(kind);
-        self.errors.push(ParseError::Recovered {
+        self.record_error(ParseError::Recovered {
             site,
             kind: RecoveryKind::InsertedCloser,
             location: pos,
@@ -1147,6 +1162,8 @@ impl<'a> Parser<'a> {
         let end = self.current_position();
         let found_token = self.tokens.peek().ok().cloned();
 
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension.
         Node::new(
             NodeKind::Error { message, expected: vec![], found: found_token, partial: None },
             SourceLocation { start: location, end },
@@ -1193,6 +1210,8 @@ impl<'a> Parser<'a> {
         let start = self.current_position();
         let found = self.tokens.peek().ok().cloned();
 
+        // #8786: not charged. Synthetic recovery node — recovery-node
+        // accounting is #7074's dimension, not an admitted core dimension.
         Node::new(
             NodeKind::Error { message, expected, found, partial: None },
             SourceLocation { start, end: start },
@@ -1285,13 +1304,16 @@ impl<'a> Parser<'a> {
     /// with `tokens.next()`, which leaves `previous_position()` stale.
     fn parse_flattened_qw_list_argument(&mut self) -> ParseResult<(Vec<Node>, SourceLocation)> {
         let node = self.parse_assignment_or_declaration()?;
-        Ok(Self::flatten_qw_list_argument(node))
+        self.flatten_qw_list_argument(node)
     }
 
-    fn flatten_qw_list_argument(node: Node) -> (Vec<Node>, SourceLocation) {
+    fn flatten_qw_list_argument(
+        &mut self,
+        node: Node,
+    ) -> ParseResult<(Vec<Node>, SourceLocation)> {
         match node.into_parts() {
-            (NodeKind::ArrayLiteral { elements }, location) => (elements, location),
-            (kind, location) => (vec![Node::new(kind, location)], location),
+            (NodeKind::ArrayLiteral { elements }, location) => Ok((elements, location)),
+            (kind, location) => Ok((vec![self.charge_node(kind, location)?], location)),
         }
     }
 

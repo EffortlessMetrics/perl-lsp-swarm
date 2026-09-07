@@ -302,19 +302,19 @@ impl<'a> Parser<'a> {
                 // Parse as prototype
                 let proto_start = self.current_position();
                 let proto_content = self.parse_prototype()?;
-                let proto_node = Node::new(
+                let proto_node = self.charge_node(
                     NodeKind::Prototype { content: proto_content },
                     SourceLocation { start: proto_start, end: self.previous_position() },
-                );
+                )?;
                 (Some(Box::new(proto_node)), None)
             } else {
                 // Parse as signature
                 let sig_start = self.current_position();
                 let params = self.parse_signature()?;
-                let sig_node = Node::new(
+                let sig_node = self.charge_node(
                     NodeKind::Signature { parameters: params },
                     SourceLocation { start: sig_start, end: self.previous_position() },
-                );
+                )?;
                 (None, Some(Box::new(sig_node)))
             }
         } else {
@@ -331,16 +331,16 @@ impl<'a> Parser<'a> {
         let body = if self.peek_kind() == Some(TokenKind::Semicolon) {
             // Forward declaration — return an empty block as the body
             let pos = self.current_position();
-            Node::new(
+            self.charge_node(
                 NodeKind::Block { statements: vec![] },
                 SourceLocation { start: pos, end: pos },
-            )
+            )?
         } else {
             self.parse_block()?
         };
 
         let end = self.previous_position();
-        Ok(Node::new(
+        Ok(self.charge_node(
             NodeKind::Subroutine {
                 name,
                 name_span,
@@ -351,7 +351,7 @@ impl<'a> Parser<'a> {
                 body: Box::new(body),
             },
             SourceLocation { start, end },
-        ))
+        )?)
     }
 
     fn parse_subroutine_name(&mut self) -> ParseResult<(String, SourceLocation)> {
@@ -493,10 +493,10 @@ impl<'a> Parser<'a> {
         let body = self.within_class_grammar(ClassGrammarForm::Block, Self::parse_block)?;
 
         let end = self.previous_position();
-        Ok(Node::new(
+        Ok(self.charge_node(
             NodeKind::Class { name, name_span: Some(name_span), parents, body: Box::new(body) },
             SourceLocation { start, end },
-        ))
+        )?)
     }
 
     /// Parse method declaration (Perl 5.38+)
@@ -517,10 +517,13 @@ impl<'a> Parser<'a> {
         let signature = if self.peek_kind() == Some(TokenKind::LeftParen) {
             let sig_start = self.current_position();
             let params = self.parse_signature()?;
-            Some(Box::new(Node::new(
+            // Charged before the enclosing node so the charge order matches
+            // the original construction order.
+            let charged_operand = self.charge_node(
                 NodeKind::Signature { parameters: params },
                 SourceLocation { start: sig_start, end: self.previous_position() },
-            )))
+            )?;
+            Some(Box::new(charged_operand))
         } else {
             None
         };
@@ -535,10 +538,10 @@ impl<'a> Parser<'a> {
         let body = self.parse_block()?;
 
         let end = self.previous_position();
-        Ok(Node::new(
+        Ok(self.charge_node(
             NodeKind::Method { name, name_span, signature, attributes, body: Box::new(body) },
             SourceLocation { start, end },
-        ))
+        )?)
     }
 
     /// Parse an Object::Pad `ADJUST` block as a method-like class body node.
@@ -549,7 +552,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_block()?;
 
         let end = self.previous_position();
-        Ok(Node::new(
+        Ok(self.charge_node(
             NodeKind::Method {
                 name: "ADJUST".to_string(),
                 name_span: None,
@@ -558,7 +561,7 @@ impl<'a> Parser<'a> {
                 body: Box::new(body),
             },
             SourceLocation { start, end },
-        ))
+        )?)
     }
 
     /// Parse format declaration
@@ -599,10 +602,10 @@ impl<'a> Parser<'a> {
                 start: token.start(),
                 end: token.start() + assign_index,
             });
-            return Ok(Node::new(
+            return Ok(self.charge_node(
                 NodeKind::Format { name, name_span, body },
                 SourceLocation { start, end },
-            ));
+            )?);
         }
 
         if self.tokens.peek().ok().is_some_and(|token| {
@@ -626,14 +629,14 @@ impl<'a> Parser<'a> {
                 start: name_token.start(),
                 end: name_token.end(),
             });
-            return Ok(Node::new(
+            return Ok(self.charge_node(
                 NodeKind::Format {
                     name: name_token.text.trim_start_matches('\'').to_string(),
                     name_span,
                     body,
                 },
                 SourceLocation { start, end },
-            ));
+            )?);
         }
 
         // Parse format name (optional - can be anonymous)
@@ -709,7 +712,7 @@ impl<'a> Parser<'a> {
         };
 
         let end = self.previous_position();
-        Ok(Node::new(NodeKind::Format { name, name_span, body }, SourceLocation { start, end }))
+        Ok(self.charge_node(NodeKind::Format { name, name_span, body }, SourceLocation { start, end })?)
     }
 
     /// Parse package declaration
@@ -768,7 +771,7 @@ impl<'a> Parser<'a> {
         };
 
         let end = self.previous_position();
-        Ok(Node::new(NodeKind::Package { name, name_span, block }, SourceLocation { start, end }))
+        Ok(self.charge_node(NodeKind::Package { name, name_span, block }, SourceLocation { start, end })?)
     }
 
     /// Parse use statement
@@ -913,10 +916,10 @@ impl<'a> Parser<'a> {
             }
             let end = self.previous_position();
             let has_filter_risk = Self::is_filter_module(&module);
-            return Ok(Node::new(
+            return Ok(self.charge_node(
                 NodeKind::Use { module, args: cond_args, has_filter_risk },
                 SourceLocation { start, end },
-            ));
+            )?);
         }
 
         // Parse optional import list
@@ -1326,10 +1329,10 @@ impl<'a> Parser<'a> {
 
         let end = self.previous_position();
         let has_filter_risk = Self::is_filter_module(&module);
-        Ok(Node::new(
+        Ok(self.charge_node(
             NodeKind::Use { module, args, has_filter_risk },
             SourceLocation { start, end },
-        ))
+        )?)
     }
 
     /// Parse special block (AUTOLOAD, DESTROY, etc.)
@@ -1345,7 +1348,7 @@ impl<'a> Parser<'a> {
         let end = block.location.end;
 
         // Treat as a special subroutine
-        Ok(Node::new(
+        Ok(self.charge_node(
             NodeKind::Subroutine {
                 name: Some(name),
                 name_span,
@@ -1356,7 +1359,7 @@ impl<'a> Parser<'a> {
                 body: Box::new(block),
             },
             SourceLocation { start, end },
-        ))
+        )?)
     }
 
     /// Parse phase block (BEGIN, END, CHECK, INIT, UNITCHECK)
@@ -1380,10 +1383,10 @@ impl<'a> Parser<'a> {
         let end = block.location.end;
 
         // Create a special node for phase blocks
-        Ok(Node::new(
+        Ok(self.charge_node(
             NodeKind::PhaseBlock { phase, phase_span, block: Box::new(block) },
             SourceLocation { start, end },
-        ))
+        )?)
     }
 
     /// Parse data section (__DATA__ or __END__)
@@ -1412,10 +1415,10 @@ impl<'a> Parser<'a> {
 
         // Create a data section node. The whole-node span stays exactly as
         // before so existing consumers of the node's own location do not shift.
-        Ok(Node::new(
+        Ok(self.charge_node(
             NodeKind::DataSection { marker, marker_span, body, body_span },
             SourceLocation { start, end },
-        ))
+        )?)
     }
 
     /// Parse no statement (similar to use but disables pragmas/modules)
@@ -1500,10 +1503,10 @@ impl<'a> Parser<'a> {
             }
             let end = self.previous_position();
             let has_filter_risk = Self::is_filter_module(&module);
-            return Ok(Node::new(
+            return Ok(self.charge_node(
                 NodeKind::No { module, args: cond_args, has_filter_risk },
                 SourceLocation { start, end },
-            ));
+            )?);
         }
 
         // Parse optional arguments list
@@ -1650,7 +1653,7 @@ impl<'a> Parser<'a> {
 
         let end = self.previous_position();
         let has_filter_risk = Self::is_filter_module(&module);
-        Ok(Node::new(NodeKind::No { module, args, has_filter_risk }, SourceLocation { start, end }))
+        Ok(self.charge_node(NodeKind::No { module, args, has_filter_risk }, SourceLocation { start, end })?)
     }
 
     /// Consume a value expression on the right-hand side of `=>` inside a `use`
