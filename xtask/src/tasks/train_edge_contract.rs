@@ -18,6 +18,7 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
+use xtask::schema_apply::validate_payload_against_schema;
 
 const SCHEMA_PATH: &str = "schemas/train_edge_contract.v1.schema.json";
 const SCHEMA_ID: &str =
@@ -1382,6 +1383,7 @@ pub fn run() -> Result<()> {
         failures.push(format!("{SCHEMA_PATH}: {violation}"));
     }
 
+    let schema = load_json(&root.join(SCHEMA_PATH))?;
     let fixture_dir = root.join(FIXTURE_DIR);
     let valid_documents = ["neovim_examples.v1.json", "external_stages.v1.json"];
     for name in valid_documents {
@@ -1391,6 +1393,17 @@ pub fn run() -> Result<()> {
             failures
                 .push(format!("{name}: expected a valid contract document, got {violations:?}"));
         }
+        // `validate_document` is the Rust-side reader of the contract, and
+        // `validate_schema_file` only proves the schema still declares the
+        // pinned vocabulary. Applying the compiled schema to the document is
+        // what binds a schema-only consumer to `additionalProperties`, the
+        // `required` lists, and every nested `$defs` constraint (#14268).
+        failures.extend(validate_payload_against_schema(
+            &schema,
+            SCHEMA_PATH,
+            &doc,
+            &format!("{FIXTURE_DIR}/{name}"),
+        )?);
     }
 
     // Deterministic profile eligibility for the reviewed examples: the run
@@ -1530,6 +1543,72 @@ mod tests {
             Some(eligibility) => eligibility,
             None => panic!("profile {profile} must resolve"),
         }
+    }
+
+    fn schema() -> TestResult<Value> {
+        load_json(&project_root()?.join(SCHEMA_PATH))
+    }
+
+    /// The committed documents must satisfy the published schema, not only
+    /// the Rust reader. Without this the schema is documentation.
+    #[test]
+    fn committed_documents_satisfy_the_published_schema() -> TestResult {
+        let schema = schema()?;
+        for name in ["neovim_examples.v1.json", "external_stages.v1.json"] {
+            let violations =
+                validate_payload_against_schema(&schema, SCHEMA_PATH, &fixture(name)?, name)?;
+            assert!(violations.is_empty(), "{name}: {violations:?}");
+        }
+        Ok(())
+    }
+
+    /// Discriminating controls for #14268.
+    ///
+    /// The Rust reader is thorough about unknown keys and missing fields, so
+    /// the gap the apply step closes is the *value* constraints it never
+    /// looks at: `claim_profile.version` is only checked for being an
+    /// integer (never against `minimum: 1`), and `claim_profile.required` is
+    /// collected into a set, so a duplicate entry is silently deduplicated
+    /// rather than refused. Both documents passed the task before the apply
+    /// step while violating the published contract.
+    #[test]
+    fn schema_rejects_values_the_rust_reader_never_constrains() -> TestResult {
+        let cases: &[(&str, fn(&mut Value))] = &[
+            ("version below the schema minimum", |doc| {
+                doc["claim_profiles"][0]["version"] = Value::from(0);
+            }),
+            ("duplicate required proposition", |doc| {
+                let first = doc["claim_profiles"][0]["required"][0].clone();
+                if let Some(required) = doc["claim_profiles"][0]["required"].as_array_mut() {
+                    required.push(first);
+                }
+            }),
+        ];
+
+        for (label, mutate) in cases {
+            let mut doc = fixture("neovim_examples.v1.json")?;
+            mutate(&mut doc);
+
+            // Negative control: the Rust reader accepts every one of these.
+            let reader_violations = validate_document(&doc);
+            assert!(
+                reader_violations.is_empty(),
+                "{label}: the Rust reader is not expected to catch this: {:?}",
+                violation_codes(&reader_violations)
+            );
+
+            let violations = validate_payload_against_schema(
+                &schema()?,
+                SCHEMA_PATH,
+                &doc,
+                "neovim_examples.v1.json",
+            )?;
+            assert!(
+                !violations.is_empty(),
+                "{label}: the applied schema must reject this document"
+            );
+        }
+        Ok(())
     }
 
     // Fixture 1: full-document v0.18 does not require atomic-ranged
