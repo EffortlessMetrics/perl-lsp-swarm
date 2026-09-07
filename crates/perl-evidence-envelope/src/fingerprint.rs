@@ -168,11 +168,14 @@ impl EnvelopeFingerprint {
             h.push_field(item.as_bytes());
         }
 
-        // 8. Limitations — canonically sorted (order-independent).
-        let mut limitations: Vec<_> = envelope.limitations.clone();
+        // 8. Limitations — canonically sorted (order-independent). Sorting
+        //    borrowed references avoids cloning every `Limitation` and its
+        //    strings; `Ord` on `&Limitation` delegates to `Limitation`, so the
+        //    resulting order — and therefore the fingerprint — is unchanged.
+        let mut limitations: Vec<&crate::claim::Limitation> = envelope.limitations.iter().collect();
         limitations.sort();
-        h.push_field((limitations.len() as u32).to_be_bytes().as_slice());
-        for limitation in &limitations {
+        h.push_field(&(limitations.len() as u32).to_be_bytes());
+        for limitation in limitations {
             h.push_field(limitation.detail.as_bytes());
             h.push_optional(limitation.affected_claim.as_deref());
         }
@@ -327,7 +330,7 @@ mod tests {
     fn fingerprint_is_stable_for_a_known_envelope() {
         assert_eq!(
             golden_envelope().fingerprint().as_wire(),
-            "envfp:sha256:764bb508f274c6e5157a2381d43dac8ad5dccc0f31476ed04b577c96bdc4a84a",
+            "envfp:sha256:170b7ffc54da9618aa4a1a2436bcdf58c471e7fc6b76286bd8ad785873780acb",
             "envelope fingerprint changed; see this test's doc comment before updating it"
         );
     }
