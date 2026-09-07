@@ -383,11 +383,15 @@ struct QuoteState {
     escaped: bool,
     single_end: bool,
     plain: bool,
+    flow_depth: usize,
 }
 
 impl QuoteState {
     /// Consume one character; true means it is unquoted punctuation/content.
-    fn outside(&mut self, c: char) -> bool {
+    /// Quotes start only at scalar admission: line start, a separated mapping
+    /// colon/sequence dash, or a delimiter of an actual flow collection.
+    /// Punctuation embedded in a block plain scalar never opens a new scalar.
+    fn outside(&mut self, c: char, next: Option<char>) -> bool {
         if self.double {
             if self.escaped {
                 self.escaped = false;
@@ -420,11 +424,24 @@ impl QuoteState {
                 self.plain = true;
                 false
             }
-            ':' | '[' | '{' | ',' => {
+            ':' if next.is_none_or(char::is_whitespace) => {
                 self.plain = false;
                 true
             }
-            '-' if !self.plain => true,
+            '[' | '{' if !self.plain => {
+                self.flow_depth += 1;
+                true
+            }
+            ']' | '}' if self.flow_depth > 0 => {
+                self.flow_depth -= 1;
+                self.plain = true;
+                true
+            }
+            ',' if self.flow_depth > 0 => {
+                self.plain = false;
+                true
+            }
+            '-' if !self.plain && next.is_none_or(char::is_whitespace) => true,
             c if c.is_whitespace() => true,
             _ => {
                 self.plain = true;
@@ -441,7 +458,10 @@ fn token_present(line: &str, marker: &str) -> bool {
     for (i, c) in line.char_indices() {
         let boundary =
             previous.is_none_or(|p: char| p.is_whitespace() || matches!(p, '[' | '{' | ','));
-        if quotes.outside(c) && boundary && line[i..].starts_with(marker) {
+        if quotes.outside(c, line[i + c.len_utf8()..].chars().next())
+            && boundary
+            && line[i..].starts_with(marker)
+        {
             return true;
         }
         previous = Some(c);
@@ -488,7 +508,10 @@ fn strip_comment(line: &str) -> std::borrow::Cow<'_, str> {
     let mut quotes = QuoteState::default();
     let mut previous = None;
     for (i, c) in line.char_indices() {
-        if quotes.outside(c) && c == '#' && previous.is_none_or(|p: char| p.is_whitespace()) {
+        if quotes.outside(c, line[i + c.len_utf8()..].chars().next())
+            && c == '#'
+            && previous.is_none_or(|p: char| p.is_whitespace())
+        {
             return std::borrow::Cow::Borrowed(line[..i].trim_end());
         }
         previous = Some(c);
@@ -881,7 +904,7 @@ fn split_key(text: &str, line: usize) -> Result<Option<(String, String)>, MetaYm
     let mut quotes = QuoteState::default();
     let mut depth = 0usize;
     for (i, c) in text.char_indices() {
-        if !quotes.outside(c) {
+        if !quotes.outside(c, text[i + c.len_utf8()..].chars().next()) {
             continue;
         }
         match c {
@@ -984,10 +1007,11 @@ impl Yaml {
 fn split_flow(text: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut depth = 0usize;
-    let mut quotes = QuoteState::default();
+    // The supplied text is already inside a flow collection.
+    let mut quotes = QuoteState { flow_depth: 1, ..QuoteState::default() };
     let mut start = 0;
     for (i, c) in text.char_indices() {
-        if !quotes.outside(c) {
+        if !quotes.outside(c, text[i + c.len_utf8()..].chars().next()) {
             continue;
         }
         match c {
@@ -1148,6 +1172,27 @@ mod tests {
         assert!(matches!(&result, Ok(Yaml::Map(root)) if matches!(&root[0].1,
             Yaml::Seq(items) if matches!(&items[0], Yaml::Map(entries)
                 if matches!(&entries[0].1, Yaml::Seq(values) if values.len() == 2)))));
+    }
+
+    #[test]
+    fn plain_scalar_punctuation_does_not_open_quotes() {
+        for name in ["foo,'x", "foo:'x", "-'x", "foo['x", "foo{'x", "foo,\"x", "foo:\"x", "-\"x"] {
+            let input = format!("name: {name} # comment");
+            let parsed = parse_meta_yml(fid(), &input);
+            assert_eq!(parsed.state, MetaYmlParseState::Parsed, "{input}: {:?}", parsed.findings);
+            assert_eq!(parsed.facts.and_then(|f| f.name), Some(name.to_string()), "{input}");
+        }
+        for input in [
+            "license: ['a # quoted', 'b'] # comment",
+            "license:\n  - 'a # quoted'\n  - 'b' # comment",
+        ] {
+            let parsed = parse_meta_yml(fid(), input);
+            assert_eq!(parsed.state, MetaYmlParseState::Parsed, "{input}: {:?}", parsed.findings);
+            assert_eq!(
+                parsed.facts.map(|f| f.licenses),
+                Some(vec!["a # quoted".into(), "b".into()])
+            );
+        }
     }
 
     #[test]
