@@ -1289,8 +1289,23 @@ fn evaluate_self_hosted_isolation(
         return;
     }
     let workflow_ref = format!(".github/workflows/{workflow_file}");
+    let jobs = workflow.get("jobs").and_then(Value::as_mapping);
 
     for (job_id, target) in self_hosted_jobs(workflow) {
+        // A mixed-trigger workflow can carry jobs that a candidate cannot
+        // reach. Reuse the existing static-exclusion authority rather than
+        // parsing conditions again: it proves exclusion only for `schedule`,
+        // `workflow_dispatch`, and `push` anchors, and answers "not excluded"
+        // for an absent or unclassifiable condition, so the fail-closed
+        // default survives.
+        if jobs
+            .and_then(|jobs| jobs.get(Value::String(job_id.clone())))
+            .and_then(Value::as_mapping)
+            .is_some_and(job_is_statically_excluded_from_pr)
+        {
+            continue;
+        }
+
         let (pool, descriptor) = match target {
             RunnerTarget::Unresolved(reason) => {
                 issues.push(LintIssue {
@@ -2553,6 +2568,82 @@ review_after = "2099-01-01"
             let issues = evaluate(&workflow, &[])?;
             assert!(issues.is_empty(), "`runs-on: {runs_on}` must stay out of scope: {issues:?}");
         }
+        Ok(())
+    }
+
+    /// Mixed-trigger workflow: `pull_request` plus a manual trigger, with the
+    /// self-hosted job guarded by a job-level `if:`.
+    fn mixed_trigger_workflow(job_condition: &str) -> Result<Value> {
+        let yaml = format!(
+            "name: candidate\n\
+             on:\n  \
+             pull_request:\n  \
+             workflow_dispatch: {{}}\n\
+             jobs:\n  \
+             build:\n    \
+             if: {job_condition}\n    \
+             runs-on:\n      \
+             group: em-ci-small\n      \
+             labels: [self-hosted, linux, x64, em-ci, cx53, rust-small, trusted-pr]\n    \
+             steps:\n      \
+             - run: cargo test\n"
+        );
+        serde_yaml_ng::from_str(&yaml).with_context(|| format!("parsing fixture:\n{yaml}"))
+    }
+
+    /// A job a candidate cannot reach carries no candidate trust obligation.
+    #[test]
+    fn manual_only_job_in_a_mixed_trigger_workflow_needs_no_profile() -> Result<()> {
+        for condition in [
+            "github.event_name == 'workflow_dispatch'",
+            "${{ github.event_name == 'workflow_dispatch' }}",
+            "github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'",
+        ] {
+            let workflow = mixed_trigger_workflow(condition)?;
+            let issues = evaluate(&workflow, &[])?;
+            assert!(
+                issues.is_empty(),
+                "`if: {condition}` keeps the job off every PR-controlled trigger: {issues:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The exclusion is only honoured when it is *proven*. A condition that does
+    /// not statically exclude candidate events keeps the obligation, so the
+    /// fail-closed default survives the narrowing above.
+    #[test]
+    fn unprovable_or_pr_reachable_conditions_still_require_a_profile() -> Result<()> {
+        for condition in [
+            // Reachable from a pull request.
+            "github.event_name == 'pull_request'",
+            // Not an event anchor at all — unclassifiable.
+            "github.event.inputs.mode == 'manual'",
+            "always()",
+            // One branch is anchored, the other is not.
+            "github.event_name == 'workflow_dispatch' || github.actor == 'someone'",
+        ] {
+            let workflow = mixed_trigger_workflow(condition)?;
+            let issues = evaluate(&workflow, &[])?;
+            assert_eq!(
+                codes(&issues),
+                vec!["SELF_HOSTED_ISOLATION_UNDECLARED"],
+                "`if: {condition}` must not clear the obligation"
+            );
+        }
+        Ok(())
+    }
+
+    /// A declared profile for a manual-only self-hosted job is not orphaned: the
+    /// job still routes to self-hosted capacity, so keeping its declaration is
+    /// useful rather than stale.
+    #[test]
+    fn manual_only_self_hosted_job_is_not_reported_orphaned() -> Result<()> {
+        let workflow = mixed_trigger_workflow("github.event_name == 'workflow_dispatch'")?;
+        assert!(
+            self_hosted_jobs(&workflow).iter().any(|(job, _)| job == "build"),
+            "the job is still self-hosted capacity for the orphan walk"
+        );
         Ok(())
     }
 
