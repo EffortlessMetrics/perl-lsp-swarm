@@ -7,7 +7,7 @@
 //! content digest, so an edit immediately changes the generation and a
 //! stale exact answer cannot survive a re-query.
 
-use super::activation::Dancer2FileActivations;
+use super::activation::{Dancer2FileActivations, Dancer2TwoXPackageActivation};
 use perl_parser_core::Node;
 use perl_semantic_analyzer::analysis::dancer2_hooks::extract_dancer2_hook_declarations;
 use perl_semantic_analyzer::analysis::dancer2_routes::extract_dancer2_route_contexts;
@@ -40,6 +40,16 @@ pub struct CanonicalDancer2FileFacts {
     /// retained for bounded diagnostics (excluded keywords mint no fact but
     /// remain source observations).
     pub extracted_routes:
+        Vec<perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration>,
+    /// Exact 2.x activations for this document (#14989). Comparison-only
+    /// output (the 2.x adapter stays Shadow); consumers must render the
+    /// route-handler scope honestly and never treat this as publication
+    /// authority.
+    pub two_x: Vec<Dancer2TwoXPackageActivation>,
+    /// Source-extracted route declarations inside exact 2.x packages, kept
+    /// separate from the 1.x `extracted_routes` so the two contracts never
+    /// conflate (#14989).
+    pub two_x_extracted_routes:
         Vec<perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration>,
 }
 
@@ -207,6 +217,20 @@ pub fn canonical_file_facts(
             package,
             &hook_declarations,
         ));
+    }
+    // 2.x activations (#14989): exact packages only, plus their
+    // source-level route declarations kept contract-separated.
+    for activation in &activations.two_x_packages {
+        if !activation.facts.is_exact() {
+            continue;
+        }
+        facts.two_x.push(activation.clone());
+        let package = Some(activation.package.as_str());
+        for declaration in &route_contexts.routes {
+            if declaration.package.as_deref() == package {
+                facts.two_x_extracted_routes.push(declaration.clone());
+            }
+        }
     }
     facts
 }
