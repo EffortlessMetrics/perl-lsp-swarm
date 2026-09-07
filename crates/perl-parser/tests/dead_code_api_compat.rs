@@ -544,6 +544,7 @@ fn dcapi_report_cannot_render_import_export() {
 /// separate authorities.
 #[test]
 fn dcapi_export_paths_resolve_to_one_module() {
+    /// Accepts only the canonical type, so every path below must resolve to it.
     fn takes_canonical(_: perl_parser::dead_code::DeadCodeType) {}
 
     // Alias path and prelude path both feed the canonical parameter type, which
