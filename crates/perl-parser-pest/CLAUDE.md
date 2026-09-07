@@ -52,10 +52,16 @@ compatibility decision and its evidence belong to #9214; benchmark and corpus ev
 must identify this provider/package and the grammar/projection revision needed to
 reproduce the observation.
 
-`parse()` remains the operative parser API. Typed outcome, attempt, diagnostic, failure,
-and source-range types are substrate until a current production path and discriminating
-tests prove integration. Do not turn type presence or re-export into an integration
-claim, and do not claim complete source spans where the AST does not carry them.
+`parse()` remains the operative parser API. Its error path is integrated with the typed
+contract: `ParseError` (`src/error.rs`) is a two-arm union over `StrictParseError`
+(parser-domain rejection) and `ParserFailure` (operational/instrument failure), and every
+fallible function in `pure_rust_parser.rs`/`pratt_parser.rs` returns it. `StrictParseError`
+ranges from `parse()` describe byte offsets into the *normalized* source `parse()` hands to
+Pest (see `src/error.rs` module docs), not necessarily the caller's original source. The
+success side of `parse()` is unaffected: it still returns `AstNode`, and `ParseOutcome`,
+`ParseAttempt`, and `ParseCompleteness` remain substrate — not wired into `parse()`, and
+still no `parse_strict`. Do not turn this error-path integration into a claim about
+success-side source accounting, Tree-sitter compatibility, or production-parser status.
 
 ## Fixture evidence
 

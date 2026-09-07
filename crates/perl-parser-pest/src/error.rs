@@ -1,200 +1,118 @@
-//! Error types for tree-sitter Perl parser
+//! Canonical error union for `perl-parser-pest`'s public parsing API.
+//!
+//! [`ParseError`] is the single fallible-return error type for this crate. It
+//! has exactly two arms, and the two are never interconvertible by type:
+//!
+//! - [`ParseError::Rejected`] wraps [`crate::StrictParseError`] — a
+//!   parser-domain rejection. Pest declined the input; this is not an
+//!   instrument failure.
+//! - [`ParseError::Failed`] wraps [`crate::ParserFailure`] — an
+//!   operational/instrument failure (parser panic, invalid UTF-8, or an
+//!   internal AST-builder invariant violation). Never a parser-domain
+//!   rejection, and never produced by malformed-but-otherwise-well-formed
+//!   Perl source on its own.
+//!
+//! Both wrapped types are schema-versioned (`#[serde(deny_unknown_fields)]`
+//! plus an explicit schema-string check on deserialize), so an old or
+//! unrecognized serialized payload fails loudly on deserialization rather
+//! than being silently misread as the wrong arm.
+//!
+//! # Normalization and ranges
+//!
+//! [`crate::PureRustPerlParser::parse`] rewrites the caller-supplied source
+//! before Pest ever sees it (for example `$$name` becomes `${$name}`, and
+//! `= ~expr` becomes `= bitnot(expr)`). Pest parses that *normalized* string,
+//! not the caller's original source, so every [`crate::StrictParseError`]
+//! produced by `parse()` carries a [`crate::SourceRange`] into the normalized
+//! text. That range coincides with an offset into the caller's original
+//! source only when normalization was a no-op for the affected region. Do not
+//! treat a `Rejected` range from `parse()` as a caller-source byte offset
+//! without first confirming normalization did not shift it.
 
-use thiserror::Error;
+use crate::outcome::{ParserFailure, StrictParseError};
+use serde::{Deserialize, Serialize};
 
-/// Kinds of parse errors
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParseErrorKind {
-    UnexpectedToken,
-    UnexpectedEndOfInput,
-    InvalidSyntax,
-    InvalidNumber,
-    InvalidString,
-    InvalidRegex,
-    InvalidVariable,
-    MissingToken(String),
-    InvalidOperator,
-    InvalidIdentifier,
-}
-
-/// Error types for tree-sitter Perl parser
-#[derive(Error, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Single fallible-return error type for this crate's public parsing API.
+///
+/// See the [module docs](self) for the normalization/range caveat that
+/// applies to `Rejected` values produced by
+/// [`crate::PureRustPerlParser::parse`].
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
 pub enum ParseError {
-    /// Failed to parse the input
-    #[error("Failed to parse input")]
-    ParseFailed,
-
-    /// Failed to serialize scanner state
-    #[error("Failed to serialize scanner state")]
-    SerializationFailed,
-
-    /// Failed to deserialize scanner state
-    #[error("Failed to deserialize scanner state")]
-    DeserializationFailed,
-
-    /// Invalid token encountered
-    #[error("Invalid token: {0}")]
-    InvalidToken(String),
-
-    /// Unexpected end of input
-    #[error("Unexpected end of input")]
-    UnexpectedEof,
-
-    /// Invalid Unicode sequence
-    #[error("Invalid Unicode sequence")]
-    InvalidUnicode,
-
-    /// Invalid UTF-8 sequence encountered
-    #[error("Invalid UTF-8: {0}")]
-    InvalidUtf8(String),
-
-    /// Scanner error occurred
-    #[error("Scanner error: {0}")]
-    ScannerError(String),
-
-    /// Language loading failed
-    #[error("Failed to load language")]
-    LanguageLoadFailed,
+    /// Parser-domain rejection. Not an instrument failure.
+    ///
+    /// When produced by [`crate::PureRustPerlParser::parse`], the carried
+    /// range refers to the *normalized* source Pest actually parsed; see the
+    /// [module docs](self).
+    #[error(transparent)]
+    Rejected(StrictParseError),
+    /// Operational/instrument failure. Never a parser-domain rejection.
+    #[error(transparent)]
+    Failed(ParserFailure),
 }
 
-/// Result type for parsing operations
-pub type ParseResult<T> = Result<T, ParseError>;
-
-/// Errors that can occur during scanning
-#[derive(Error, Debug, Clone, PartialEq)]
-pub enum ScannerError {
-    /// Invalid character encountered
-    #[error("Invalid character: {0}")]
-    InvalidCharacter(char),
-
-    /// Unterminated string
-    #[error("Unterminated string")]
-    UnterminatedString,
-
-    /// Unterminated comment
-    #[error("Unterminated comment")]
-    UnterminatedComment,
-
-    /// Invalid escape sequence
-    #[error("Invalid escape sequence: {0}")]
-    InvalidEscape(String),
-
-    /// Invalid Unicode sequence
-    #[error("Invalid Unicode sequence: {0}")]
-    InvalidUnicode(String),
-
-    /// Scanner state error
-    #[error("Scanner state error: {0}")]
-    StateError(String),
-}
-
-/// Errors that can occur during Unicode processing
-#[derive(Error, Debug, Clone, PartialEq)]
-pub enum UnicodeError {
-    /// Invalid Unicode code point
-    #[error("Invalid Unicode code point: {0}")]
-    InvalidCodePoint(u32),
-
-    /// Invalid UTF-8 sequence
-    #[error("Invalid UTF-8 sequence")]
-    InvalidUtf8,
-
-    /// Unicode normalization failed
-    #[error("Unicode normalization failed: {0}")]
-    NormalizationFailed(String),
-}
-
-impl From<ScannerError> for ParseError {
-    fn from(err: ScannerError) -> Self {
-        ParseError::ScannerError(err.to_string())
+impl From<StrictParseError> for ParseError {
+    fn from(error: StrictParseError) -> Self {
+        Self::Rejected(error)
     }
 }
 
-impl From<UnicodeError> for ParseError {
-    fn from(err: UnicodeError) -> Self {
-        ParseError::ScannerError(err.to_string())
+impl From<ParserFailure> for ParseError {
+    fn from(failure: ParserFailure) -> Self {
+        Self::Failed(failure)
     }
 }
 
-impl From<std::str::Utf8Error> for ParseError {
-    fn from(err: std::str::Utf8Error) -> Self {
-        ParseError::InvalidUtf8(err.to_string())
+impl From<&str> for ParseError {
+    /// Route a bare diagnostic string into a typed instrument failure.
+    ///
+    /// Every internal callsite that reaches this conversion (AST-builder
+    /// helpers reporting a shape they did not expect from a Pest parse tree
+    /// that already succeeded) is an internal invariant violation, never a
+    /// source-domain rejection — so it is always classified as
+    /// [`ParseError::Failed`].
+    fn from(message: &str) -> Self {
+        Self::Failed(ParserFailure::instrument(message))
     }
 }
 
-impl From<std::string::FromUtf8Error> for ParseError {
-    fn from(err: std::string::FromUtf8Error) -> Self {
-        ParseError::InvalidUtf8(err.to_string())
-    }
-}
-
-impl From<std::io::Error> for ParseError {
-    fn from(err: std::io::Error) -> Self {
-        ParseError::ScannerError(format!("I/O error: {}", err))
+impl From<String> for ParseError {
+    /// Route a bare diagnostic string into a typed instrument failure. See
+    /// the `impl From<&str> for ParseError` docs above.
+    fn from(message: String) -> Self {
+        Self::Failed(ParserFailure::instrument(message))
     }
 }
 
 impl ParseError {
-    /// Create a new parse error
-    pub fn new(kind: ParseErrorKind, position: usize, message: String) -> Self {
-        let error_msg = match kind {
-            ParseErrorKind::UnexpectedToken => {
-                format!("Unexpected token at position {}: {}", position, message)
-            }
-            ParseErrorKind::UnexpectedEndOfInput => {
-                format!("Unexpected end of input at position {}: {}", position, message)
-            }
-            ParseErrorKind::InvalidSyntax => {
-                format!("Invalid syntax at position {}: {}", position, message)
-            }
-            ParseErrorKind::InvalidNumber => {
-                format!("Invalid number at position {}: {}", position, message)
-            }
-            ParseErrorKind::InvalidString => {
-                format!("Invalid string at position {}: {}", position, message)
-            }
-            ParseErrorKind::InvalidRegex => {
-                format!("Invalid regex at position {}: {}", position, message)
-            }
-            ParseErrorKind::InvalidVariable => {
-                format!("Invalid variable at position {}: {}", position, message)
-            }
-            ParseErrorKind::MissingToken(ref token) => {
-                format!("Missing {} at position {}: {}", token, position, message)
-            }
-            ParseErrorKind::InvalidOperator => {
-                format!("Invalid operator at position {}: {}", position, message)
-            }
-            ParseErrorKind::InvalidIdentifier => {
-                format!("Invalid identifier at position {}: {}", position, message)
-            }
-        };
-        ParseError::InvalidToken(error_msg)
+    /// Construct a parser-domain rejection.
+    #[must_use]
+    pub fn rejected(error: StrictParseError) -> Self {
+        Self::Rejected(error)
     }
 
-    /// Create an error for unterminated string literals
-    pub fn unterminated_string(position: (usize, usize)) -> Self {
-        ParseError::ScannerError(format!(
-            "Unterminated string literal at line {}, column {}",
-            position.0, position.1
-        ))
+    /// Construct an operational/instrument failure.
+    #[must_use]
+    pub fn failed(failure: ParserFailure) -> Self {
+        Self::Failed(failure)
     }
 
-    /// Create an error for invalid tokens
-    pub fn invalid_token(token: String, position: (usize, usize)) -> Self {
-        ParseError::InvalidToken(format!(
-            "Invalid token '{}' at line {}, column {}",
-            token, position.0, position.1
-        ))
+    /// The rejection, when this error is a parser-domain rejection.
+    #[must_use]
+    pub const fn as_rejected(&self) -> Option<&StrictParseError> {
+        match self {
+            Self::Rejected(error) => Some(error),
+            Self::Failed(_) => None,
+        }
     }
 
-    /// Create an error for Unicode-related issues
-    pub fn unicode_error(_message: &str) -> Self {
-        ParseError::InvalidUnicode
-    }
-
-    /// Create a simple scanner error
-    pub fn scanner_error_simple(message: &str) -> Self {
-        ParseError::ScannerError(message.to_string())
+    /// The failure, when this error is an operational/instrument failure.
+    #[must_use]
+    pub const fn as_failed(&self) -> Option<&ParserFailure> {
+        match self {
+            Self::Failed(failure) => Some(failure),
+            Self::Rejected(_) => None,
+        }
     }
 }

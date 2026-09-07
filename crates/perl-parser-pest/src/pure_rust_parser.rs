@@ -3,6 +3,8 @@
 //! This module provides a complete Rust-native implementation of the Perl parser
 //! using Pest for grammar parsing, without any dependency on tree-sitter's C code.
 
+use crate::error::ParseError;
+use crate::outcome::{ParserFailure, StrictParseError};
 use crate::pratt_parser::PrattParser;
 use pest::{
     Parser,
@@ -332,8 +334,16 @@ impl PureRustPerlParser {
         Self { _pratt_parser: PrattParser::new() }
     }
 
+    /// Parse `source` into an [`AstNode`].
+    ///
+    /// `source` is rewritten by an internal normalization pass before Pest
+    /// parses it (see [`Self::normalize_source`]). When parsing fails,
+    /// [`ParseError::Rejected`] carries a [`crate::SourceRange`] into that
+    /// *normalized* text, not into `source` itself — the two coincide only
+    /// where normalization made no change. See the [`crate::error`] module
+    /// docs for the full caveat.
     #[inline(always)]
-    pub fn parse(&mut self, source: &str) -> Result<AstNode, Box<dyn std::error::Error>> {
+    pub fn parse(&mut self, source: &str) -> Result<AstNode, ParseError> {
         let normalized = Self::normalize_source(source);
 
         match <PerlParser as Parser<Rule>>::parse(Rule::program, &normalized) {
@@ -374,11 +384,14 @@ impl PureRustPerlParser {
             .into_owned()
     }
 
+    /// `source` must be the exact text Pest attempted to parse (and that
+    /// produced `original_error`), since a failed recovery maps
+    /// `original_error` back onto `source` via [`StrictParseError::from_pest`].
     fn parse_with_recovery(
         &mut self,
         source: &str,
         original_error: pest::error::Error<Rule>,
-    ) -> Result<AstNode, Box<dyn std::error::Error>> {
+    ) -> Result<AstNode, ParseError> {
         let mut statements = Vec::new();
         let lines: Vec<&str> = source.lines().collect();
         let mut current_block = String::new();
@@ -453,7 +466,17 @@ impl PureRustPerlParser {
         }
 
         if statements.is_empty() {
-            Err(Box::new(original_error))
+            // `source` is the exact text Pest parsed to produce
+            // `original_error`, so binding is over the string Pest actually
+            // saw. This is a parser-domain rejection, not an instrument
+            // failure: `original_error` came directly from a failed Pest
+            // parse of well-formed-instrument input.
+            match StrictParseError::from_pest(&original_error, source) {
+                Ok(rejection) => Err(ParseError::Rejected(rejection)),
+                Err(outcome_error) => Err(ParseError::Failed(ParserFailure::instrument(format!(
+                    "failed to bind pest rejection to the parsed source: {outcome_error}"
+                )))),
+            }
         } else {
             Ok(AstNode::Program(statements))
         }
@@ -483,7 +506,7 @@ impl PureRustPerlParser {
         groups
     }
 
-    pub fn build_ast(&mut self, pairs: Pairs<Rule>) -> Result<AstNode, Box<dyn std::error::Error>> {
+    pub fn build_ast(&mut self, pairs: Pairs<Rule>) -> Result<AstNode, ParseError> {
         let mut nodes = Vec::new();
         for pair in pairs {
             if let Some(node) = self.build_node(pair)? {
@@ -491,7 +514,9 @@ impl PureRustPerlParser {
             }
         }
         if nodes.len() == 1 {
-            nodes.pop().ok_or_else(|| "Empty nodes".into())
+            // `nodes.len() == 1` was just checked, so this is an internal
+            // invariant violation, not a source-domain rejection.
+            nodes.pop().ok_or_else(|| ParseError::Failed(ParserFailure::instrument("Empty nodes")))
         } else {
             Ok(AstNode::Program(nodes))
         }
@@ -502,10 +527,7 @@ impl PureRustPerlParser {
     /// This remains public so bridge consumers (for example `tree-sitter-perl-rs`
     /// with `v2-pest-microcrate`) can continue calling internal v2 build paths.
     #[inline]
-    pub fn build_node(
-        &mut self,
-        pair: Pair<Rule>,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    pub fn build_node(&mut self, pair: Pair<Rule>) -> Result<Option<AstNode>, ParseError> {
         // Use stacker to grow stack if needed, with 512KB red zone
         const STACK_RED_ZONE: usize = 512 * 1024; // 512KB
         const STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB growth
@@ -514,10 +536,7 @@ impl PureRustPerlParser {
 
     /// Actual implementation of build_node
     #[inline]
-    fn build_node_impl(
-        &mut self,
-        pair: Pair<Rule>,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    fn build_node_impl(&mut self, pair: Pair<Rule>) -> Result<Option<AstNode>, ParseError> {
         match pair.as_rule() {
             // Fast-path rules
             Rule::simple_assignment => {
@@ -2169,10 +2188,7 @@ impl PureRustPerlParser {
         }
     }
 
-    fn build_expression(
-        &mut self,
-        pair: Pair<Rule>,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    fn build_expression(&mut self, pair: Pair<Rule>) -> Result<Option<AstNode>, ParseError> {
         let inner = pair.into_inner().next().ok_or("Empty expression")?;
         match inner.as_rule() {
             Rule::assignment_expression => self.build_node(inner),
@@ -2185,7 +2201,7 @@ impl PureRustPerlParser {
     fn build_ternary_expression(
         &mut self,
         pair: Pair<Rule>,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<AstNode>, ParseError> {
         let inner: Vec<_> = pair.into_inner().collect();
         if inner.len() == 1 {
             // No ternary, just pass through
@@ -2215,7 +2231,7 @@ impl PureRustPerlParser {
         &mut self,
         pair: Pair<Rule>,
         _op_rule: Rule,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<AstNode>, ParseError> {
         let inner: Vec<_> = pair.into_inner().collect();
         if inner.len() == 1 {
             let first = inner.into_iter().next().ok_or("Expected exactly one element")?;
@@ -2232,7 +2248,7 @@ impl PureRustPerlParser {
     fn build_binary_expr_with_precedence(
         &mut self,
         pairs: Vec<Pair<Rule>>,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<AstNode>, ParseError> {
         if pairs.is_empty() {
             return Ok(None);
         }
@@ -2261,10 +2277,7 @@ impl PureRustPerlParser {
         AstNode::BinaryOp { op, left: Box::new(left), right: Box::new(right) }
     }
 
-    fn parse_arg_list(
-        &mut self,
-        pair: Pair<Rule>,
-    ) -> Result<Vec<AstNode>, Box<dyn std::error::Error>> {
+    fn parse_arg_list(&mut self, pair: Pair<Rule>) -> Result<Vec<AstNode>, ParseError> {
         let mut args = Vec::new();
         for arg in pair.into_inner() {
             if let Some(node) = self.build_node(arg)? {
@@ -2278,7 +2291,7 @@ impl PureRustPerlParser {
         &mut self,
         pair: Pair<Rule>,
         deref_type: &'static str,
-    ) -> Result<Option<AstNode>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<AstNode>, ParseError> {
         let mut inner = pair.into_inner();
         let expr = if let Some(inner_pair) = inner.next() {
             match inner_pair.as_rule() {
