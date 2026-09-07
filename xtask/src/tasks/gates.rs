@@ -3435,6 +3435,9 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
+    use perl_tdd_support::{must_err_with, must_some_with, must_with};
+    use serde::Serialize;
+    use serde::de::DeserializeOwned;
     use tempfile::tempdir;
 
     use super::{
@@ -3518,6 +3521,34 @@ mod tests {
             flake_policy: None,
             audit: None,
         }
+    }
+
+    fn write_gate_log(path: &Path, contents: impl AsRef<[u8]>) {
+        must_with(std::fs::write(path, contents), "write gate log");
+    }
+
+    fn required_test_metrics(output: &str) -> GateMetrics {
+        must_some_with(parse_test_metrics(output), "cargo test summary should parse")
+    }
+
+    fn required_first_failure(output: &str, exit_code: i32, context: &str) -> FirstFailure {
+        must_some_with(parse_first_failure(output, exit_code), context)
+    }
+
+    fn deserialize_json<T: DeserializeOwned>(json: &str, context: &str) -> T {
+        must_with(serde_json::from_str(json), context)
+    }
+
+    fn serialize_json<T: Serialize>(value: &T, context: &str) -> String {
+        must_with(serde_json::to_string(value), context)
+    }
+
+    fn compare_receipts_ok(baseline: &Receipt, current: &Receipt) -> DiffResult {
+        must_with(compare_receipts(baseline, current), "compare receipts should succeed")
+    }
+
+    fn required_metric_change<'a>(diff: &'a DiffResult, name: &str) -> &'a MetricChange {
+        must_some_with(metric_change_for(diff, name), format_args!("{name} metric should exist"))
     }
 
     fn package_pr_gate(name: &str, packages: Vec<String>) -> GateDefinition {
@@ -4846,7 +4877,7 @@ gates:
         let output =
             "test result: FAILED. 7 passed; 2 failed; 3 ignored; 0 measured; 0 filtered out";
 
-        let metrics = parse_test_metrics(output).expect("cargo test summary should parse");
+        let metrics = required_test_metrics(output);
 
         assert_eq!(metrics.tests_passed, Some(7));
         assert_eq!(metrics.tests_failed, Some(2));
@@ -4965,9 +4996,9 @@ gates:
         }
         body.push_str(marker_line);
         body.push_str(&filler.repeat(4));
-        let tmp = tempdir().expect("test tempdir");
+        let tmp = must_with(tempdir(), "test tempdir");
         let log_path = tmp.path().join("gate.log");
-        std::fs::write(&log_path, &body).expect("write gate log");
+        write_gate_log(&log_path, &body);
         assert!(
             body.len() > MAX_GATE_OUTPUT_BYTES as usize,
             "precondition: the fixture must exceed the retained-tail bound"
@@ -4978,7 +5009,7 @@ gates:
             "a preamble outside the 4 MiB tail still proves the binary ran"
         );
         let compile_only = "   Compiling perl-lsp-rs-core v0.17.0\n".repeat(64);
-        std::fs::write(&log_path, compile_only).expect("rewrite gate log");
+        write_gate_log(&log_path, compile_only);
         assert_eq!(
             log_reaches_test_execution(CARGO_COMMAND, &log_path).ok().flatten(),
             Some(false),
@@ -4997,9 +5028,9 @@ gates:
 
     #[test]
     fn log_reaches_test_execution_scans_env_wrapped_commands() {
-        let tmp = tempdir().expect("test tempdir");
+        let tmp = must_with(tempdir(), "test tempdir");
         let log_path = tmp.path().join("lsp_smoke.log");
-        std::fs::write(&log_path, "running 3 tests\n").expect("write gate log");
+        write_gate_log(&log_path, "running 3 tests\n");
         assert_eq!(
             log_reaches_test_execution(
                 "cargo build -p perllsp --locked && env -u RUSTC_WRAPPER cargo test",
@@ -5132,8 +5163,7 @@ gates:
             "test precondition failed: command must NOT be a cargo test invocation"
         );
         assert!(
-            result.metrics.is_none()
-                || result.metrics.as_ref().unwrap().test_execution_reached.is_none(),
+            result.metrics.as_ref().is_none_or(|metrics| metrics.test_execution_reached.is_none()),
             "non-cargo-test gate must not carry a test_execution_reached claim; got {:?}",
             result.metrics,
         );
@@ -5146,8 +5176,10 @@ gates:
             pr_gate("scoped-tests", GatePlanningRole::RustScoped, "cargo test {package_args}");
         let policy = policy_with_gates(vec![gate.clone()]);
         let tmp = tempdir()?;
-        let err = run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)
-            .expect_err("unresolved package args must fail before command execution");
+        let err = must_err_with(
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None),
+            "unresolved package args must fail before command execution",
+        );
         let message = format!("{err:#}");
 
         assert!(message.contains("scoped-tests"), "gate name should be in error: {message}");
@@ -5201,7 +5233,7 @@ gates:
         assert_eq!(result.exit_code, Some(0));
         assert_eq!(result.log_path.as_deref(), Some("logs/unit-smoke.log"));
         assert_eq!(result.artifacts, Some(vec!["target/receipts/unit-smoke.json".to_string()]));
-        let metrics = result.metrics.expect("test-tagged gate should expose test metrics");
+        let metrics = must_some_with(result.metrics, "test-tagged gate should expose test metrics");
         assert_eq!(metrics.tests_passed, Some(3));
         assert_eq!(metrics.tests_failed, Some(0));
         assert_eq!(metrics.tests_ignored, Some(2));
@@ -5237,7 +5269,7 @@ gates:
         assert_eq!(loaded.gates.len(), 1);
         assert_eq!(loaded.gates[0].gate_name, "tests");
         let missing = tmp.path().join("missing.json");
-        let err = load_receipt(&missing).expect_err("missing baseline should be reported");
+        let err = must_err_with(load_receipt(&missing), "missing baseline should be reported");
         assert!(
             format!("{err:#}").contains("Failed to read baseline receipt"),
             "missing-file context should be actionable"
@@ -6145,7 +6177,8 @@ gates:
         // and that values survive the serde round-trip unchanged.
         // Uses Option<AgentReceipt> to confirm old receipts without the field
         // still deserialize successfully (backward compat).
-        let receipt: Receipt = serde_json::from_str(r#"{
+        let receipt: Receipt = deserialize_json(
+            r#"{
             "schema_version": "1.0.0",
             "metadata": {
                 "timestamp": "2026-04-23T00:00:00Z",
@@ -6182,11 +6215,15 @@ gates:
                 "failures": [{"lane":"clippy","summary":"clippy found 3 warnings","repro":"cargo clippy -p xtask"}],
                 "suggested_next_actions": ["fix clippy warnings", "rerun gate"]
             }
-        }"#)
-        .expect("phase-1 agent receipt shape should deserialize");
+        }"#,
+            "phase-1 agent receipt shape should deserialize",
+        );
 
         // agent_receipt must be present (Some, not None)
-        let ar = receipt.agent_receipt.expect("agent_receipt should be Some when present in JSON");
+        let ar = must_some_with(
+            receipt.agent_receipt,
+            "agent_receipt should be Some when present in JSON",
+        );
 
         // Verify field values, not just key presence — these would fail if
         // a field were silently dropped or misnamed in the struct definition.
@@ -6206,7 +6243,7 @@ gates:
         assert_eq!(ar.suggested_next_actions.len(), 2);
 
         // Confirm backward compatibility: a receipt WITHOUT agent_receipt deserializes to None.
-        let old_receipt: Receipt = serde_json::from_str(
+        let old_receipt: Receipt = deserialize_json(
             r#"{
             "schema_version": "1.0.0",
             "metadata": {
@@ -6229,8 +6266,8 @@ gates:
                 "overall_status": "pass"
             }
         }"#,
-        )
-        .expect("receipt without agent_receipt should deserialize for backward compat");
+            "receipt without agent_receipt should deserialize for backward compat",
+        );
         assert!(
             old_receipt.agent_receipt.is_none(),
             "receipt without agent_receipt field must deserialize to None"
@@ -6272,7 +6309,7 @@ gates:
         // EnvironmentInfo, AgentReceipt, …) by hand.  compare_receipts only
         // reads receipt.gates and receipt.metadata.timestamp, so the rest can
         // be placeholder values.
-        let mut receipt: Receipt = serde_json::from_str(
+        let mut receipt: Receipt = deserialize_json(
             r#"{
             "schema_version": "1",
             "metadata": {
@@ -6304,8 +6341,8 @@ gates:
                 "suggested_next_actions": []
             }
         }"#,
-        )
-        .expect("minimal receipt JSON is valid");
+            "minimal receipt JSON is valid",
+        );
         receipt.gates.push(GateResult {
             gate_name: "tests".to_string(),
             tier: "pr_fast".to_string(),
@@ -6346,7 +6383,7 @@ gates:
             ..GateMetrics::default()
         });
 
-        let diff = compare_receipts(&baseline, &current).expect("compare receipts should succeed");
+        let diff = compare_receipts_ok(&baseline, &current);
         assert!(
             metric_change_for(&diff, "tests_total").is_some(),
             "tests_total change should be recorded"
@@ -6380,9 +6417,8 @@ gates:
             ..GateMetrics::default()
         });
 
-        let diff = compare_receipts(&baseline, &current).expect("compare receipts should succeed");
-        let warning_change =
-            metric_change_for(&diff, "warnings_count").expect("warnings_count metric should exist");
+        let diff = compare_receipts_ok(&baseline, &current);
+        let warning_change = required_metric_change(&diff, "warnings_count");
         assert_eq!(warning_change.delta_percent, 100.0);
         assert!(!warning_change.delta_percent.is_nan());
         assert!(!warning_change.delta_percent.is_infinite());
@@ -6447,8 +6483,11 @@ error: aborting due to previous error
 
     #[test]
     fn parse_first_failure_extracts_test_name_site_and_message_new_style() {
-        let ff = parse_first_failure(CARGO_TEST_FAILURE_NEW_STYLE, 101)
-            .expect("should find failure in new-style output");
+        let ff = required_first_failure(
+            CARGO_TEST_FAILURE_NEW_STYLE,
+            101,
+            "should find failure in new-style output",
+        );
 
         assert_eq!(
             ff.test.as_deref(),
@@ -6473,8 +6512,11 @@ error: aborting due to previous error
 
     #[test]
     fn parse_first_failure_extracts_site_old_style() {
-        let ff = parse_first_failure(CARGO_TEST_FAILURE_OLD_STYLE, 101)
-            .expect("should find failure in old-style output");
+        let ff = required_first_failure(
+            CARGO_TEST_FAILURE_OLD_STYLE,
+            101,
+            "should find failure in old-style output",
+        );
 
         assert_eq!(
             ff.test.as_deref(),
@@ -6506,8 +6548,8 @@ error: aborting due to previous error
 
     #[test]
     fn parse_first_failure_exit_code_is_preserved() {
-        let ff = parse_first_failure(CARGO_TEST_FAILURE_NEW_STYLE, 42)
-            .expect("should find failure markers");
+        let ff =
+            required_first_failure(CARGO_TEST_FAILURE_NEW_STYLE, 42, "should find failure markers");
         assert_eq!(ff.exit_code, 42, "exit_code should match what was passed in");
     }
 
@@ -6515,8 +6557,7 @@ error: aborting due to previous error
     fn parse_first_failure_prefers_failed_line_over_stdout_section() {
         // When both `... FAILED` and `---- ... stdout ----` are present,
         // the test name from `... FAILED` should win (it appears first).
-        let ff =
-            parse_first_failure(CARGO_TEST_FAILURE_NEW_STYLE, 101).expect("should find failure");
+        let ff = required_first_failure(CARGO_TEST_FAILURE_NEW_STYLE, 101, "should find failure");
         // The `... FAILED` line should be chosen
         assert_eq!(
             ff.test.as_deref(),
@@ -6535,8 +6576,8 @@ error: aborting due to previous error
             message: Some("assertion failed".to_string()),
             exit_code: 101,
         };
-        let json = serde_json::to_string(&ff).expect("should serialize");
-        let roundtripped: FirstFailure = serde_json::from_str(&json).expect("should deserialize");
+        let json = serialize_json(&ff, "should serialize");
+        let roundtripped: FirstFailure = deserialize_json(&json, "should deserialize");
         assert_eq!(ff, roundtripped);
     }
 
@@ -6544,7 +6585,7 @@ error: aborting due to previous error
     fn first_failure_skips_serializing_none_fields() {
         // None fields should be omitted from JSON (skip_serializing_if = "Option::is_none")
         let ff = FirstFailure { test: None, site: None, message: None, exit_code: 1 };
-        let json = serde_json::to_string(&ff).expect("should serialize");
+        let json = serialize_json(&ff, "should serialize");
         assert!(!json.contains("\"test\""), "None test field should be omitted from JSON");
         assert!(!json.contains("\"site\""), "None site field should be omitted from JSON");
         assert!(!json.contains("\"message\""), "None message field should be omitted from JSON");
@@ -6631,9 +6672,12 @@ error: aborting due to previous error
                 exit_code: 101,
             }),
         };
-        let json = serde_json::to_string(&result).expect("should serialize");
-        let roundtripped: GateResult = serde_json::from_str(&json).expect("should deserialize");
-        let ff = roundtripped.first_failure.expect("first_failure should be Some after roundtrip");
+        let json = serialize_json(&result, "should serialize");
+        let roundtripped: GateResult = deserialize_json(&json, "should deserialize");
+        let ff = must_some_with(
+            roundtripped.first_failure,
+            "first_failure should be Some after roundtrip",
+        );
         assert_eq!(ff.test.as_deref(), Some("parser::tests::test_foo"));
         assert_eq!(ff.site.as_deref(), Some("src/lib.rs:99"));
         assert_eq!(ff.exit_code, 101);
@@ -6650,7 +6694,7 @@ error: aborting due to previous error
             "duration_ms": 500,
             "command": "cargo test -p perl-parser"
         }"#;
-        let result: GateResult = serde_json::from_str(json).expect("backward compat deserialize");
+        let result: GateResult = deserialize_json(json, "backward compat deserialize");
         assert!(result.first_failure.is_none(), "first_failure must be None when absent from JSON");
     }
 
@@ -7085,5 +7129,32 @@ error: aborting due to previous error
         );
 
         Ok(())
+    }
+
+    // -------------------------------------------------------------------
+    // Conversion falsifiers: helpers still fail with named context
+    // -------------------------------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "must_some: cargo test summary should parse:")]
+    fn gates_converted_option_assertion_still_fails_when_cargo_summary_is_absent() {
+        let _ = required_test_metrics("no cargo summary here");
+    }
+
+    #[test]
+    #[should_panic(expected = "must: phase-1 agent receipt shape should deserialize:")]
+    fn gates_converted_result_assertion_still_fails_when_receipt_json_is_invalid() {
+        let _: Receipt =
+            deserialize_json("{not json}", "phase-1 agent receipt shape should deserialize");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: missing baseline should be reported:")]
+    fn gates_converted_err_assertion_still_fails_when_receipt_exists() {
+        let tmp = must_with(tempdir(), "test tempdir");
+        let path = tmp.path().join("receipt.json");
+        let receipt = test_receipt_with_metrics(GateMetrics::default());
+        must_with(write_receipt(&receipt, &path), "write receipt for err-assertion falsifier");
+        let _ = must_err_with(load_receipt(&path), "missing baseline should be reported");
     }
 }
