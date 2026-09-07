@@ -884,29 +884,36 @@ fn line_mentions_postfix(line: &str) -> bool {
         || lower.contains("statement modifier")
 }
 
+const COMPLETION_PHRASES: [&str; 7] = [
+    "is complete",
+    "are complete",
+    "fully supported",
+    "full support",
+    "capability closed",
+    "umbrella is complete",
+    "marked complete",
+];
+
 fn positive_completion_phrase(line: &str) -> bool {
-    let lower = line.to_ascii_lowercase();
-    if lower.contains("not complete")
-        || lower.contains("incomplete")
-        || lower.contains("complete: `false`")
-        || lower.contains("inventory complete: `false`")
-        || lower.contains("cannot")
-        || lower.contains("remain")
-        || lower.contains("missing")
-    {
+    line.split(';').any(clause_claims_postfix_completion)
+}
+
+fn clause_claims_postfix_completion(clause: &str) -> bool {
+    if !line_mentions_postfix(clause) {
         return false;
     }
-    [
-        "is complete",
-        "are complete",
-        "fully supported",
-        "full support",
-        "capability closed",
-        "umbrella is complete",
-        "marked complete",
-    ]
-    .iter()
-    .any(|phrase| lower.contains(phrase))
+    let lower = clause.to_ascii_lowercase();
+    COMPLETION_PHRASES.iter().copied().any(|phrase| {
+        let Some(idx) = lower.find(phrase) else {
+            return false;
+        };
+        !directly_negated_before(&lower[..idx])
+    })
+}
+
+fn directly_negated_before(prefix: &str) -> bool {
+    let prefix = prefix.trim_end();
+    prefix.ends_with("not") || prefix.ends_with("n't")
 }
 
 fn table_overclaim(line: &str, view: &CapabilityView) -> Result<Option<String>> {
@@ -1282,6 +1289,41 @@ mod tests {
         )];
         let error = evaluate_closure_gate(&view, &ledger, &matrix, &docs)
             .expect_err("doc completion claim must fail");
+        let message = error.to_string();
+        assert!(message.contains("semantic"), "narrowest reason missing: {message}");
+        assert!(message.contains("missing"), "{message}");
+        assert!(message.contains("fully supported"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn direct_negation_is_not_a_completion_claim() -> Result<()> {
+        let (ledger, mut matrix) = committed()?;
+        apply_full_looking_hir(postfix_req(&mut matrix)?);
+        let view = derive_postfix_capability(&ledger, &matrix)?;
+        let docs = [(
+            "docs/project/status/perl_compiler_concepts.md",
+            "Postfix statement modifiers are not fully supported.\n",
+        )];
+        let report = evaluate_closure_gate(&view, &ledger, &matrix, &docs)?;
+        assert!(
+            report.contains("no designated surface claims completion"),
+            "direct negation of a postfix completion phrase must remain an honest open statement: {report}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unrelated_clause_polarity_does_not_cancel_postfix_completion() -> Result<()> {
+        let (ledger, mut matrix) = committed()?;
+        apply_full_looking_hir(postfix_req(&mut matrix)?);
+        let view = derive_postfix_capability(&ledger, &matrix)?;
+        let docs = [(
+            "docs/project/status/perl_compiler_concepts.md",
+            "Postfix statement modifiers are fully supported; regex support remains missing.\n",
+        )];
+        let error = evaluate_closure_gate(&view, &ledger, &matrix, &docs)
+            .expect_err("unrelated negative clause must not cancel a postfix completion claim");
         let message = error.to_string();
         assert!(message.contains("semantic"), "narrowest reason missing: {message}");
         assert!(message.contains("missing"), "{message}");
