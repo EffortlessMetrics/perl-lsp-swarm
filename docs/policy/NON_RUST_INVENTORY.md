@@ -6,20 +6,20 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12825 |
-| Rust-family files | 4038 |
-| Non-Rust files | 8787 |
-| Allowlisted | 6550 |
+| Total tracked files | 12855 |
+| Rust-family files | 4056 |
+| Non-Rust files | 8799 |
+| Allowlisted | 6562 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 516 |
-| documentation | 2868 |
+| config | 518 |
+| documentation | 2874 |
 | generated | 2 |
-| production | 357 |
+| production | 361 |
 | test | 2118 |
 | tooling | 689 |
 | unclassified | 2237 |
@@ -2358,6 +2358,7 @@
 | `.changes/unreleased/product-13500-Fixed-043011.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13796-Fixed-174500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13890-Fixed-225841.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13929-Fixed-093000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13985-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14076-Fixed-024700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14162-Fixed-062000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2374,7 +2375,9 @@
 | `.changes/unreleased/product-14890-Fixed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14909-Fixed-022000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14930-Fixed-044100.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14939-Fixed-063000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14943-Fixed-format-body-prepass.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14978-Fixed-223000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2759,6 +2762,7 @@
 | `.ci/receipts/schemas/agent-receipt.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/agent-task.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/aggregator-receipt.schema.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/receipts/schemas/build-executor-measurement.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/common-gate-receipt.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/droid-live-run.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/receipts/schemas/failure-classifier.schema.json` | config | `non-rust-ci-config` | release/ci |
@@ -2971,6 +2975,7 @@
 | `.github/workflows/installer-termux-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/legacy-authority-banners.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/lsp-318-claim-guard.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/main-history-event.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/merge-gate-target.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/methodology-gate.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/non-rust-policy.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3249,6 +3254,9 @@
 | `.spec/11627-module-train-live/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11627-module-train-live/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11627-module-train-live/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11639-build-executor-measurement/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11639-build-executor-measurement/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11639-build-executor-measurement/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11649-clippy-repair-falsifier-corpus/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11661-cargo-executor-command/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -8546,6 +8554,8 @@
 | `vscode-extension/src/coexistenceDetector.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/coexistenceRegistry.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/commandResults.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/configurationMigrationHost.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/configurationMigrationLive.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/configurationMigrationRegistry.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/configurationMigrationRuntime.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/configurationOwnership.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8632,6 +8642,8 @@
 | `vscode-extension/src/test/commandResults.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/commands.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/configuration.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/configurationMigrationHost.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/configurationMigrationLive.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/configurationMigrationRegistry.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/configurationMigrationRuntime.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/configurationOwnership.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
