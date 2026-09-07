@@ -384,6 +384,9 @@ fn heredoc_injection_language(text: &str) -> Option<&'static str> {
 /// A single-line span yields exactly one segment whose length equals the old
 /// `end_character - start_character`, so same-line tokens keep their existing
 /// geometry.
+/// Segmenting is metered through `traversal`: one admission per emitted
+/// segment, so a cancellation or work budget interrupts a very large multiline
+/// token instead of materializing every one of its lines first.
 fn push_line_contained_segments(
     text: &str,
     start: usize,
@@ -392,34 +395,60 @@ fn push_line_contained_segments(
     kind: u32,
     modifiers: u32,
     out: &mut Vec<RawSemanticToken>,
-) {
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
     let Some(span) = text.get(start..end) else {
         // Not on character boundaries, reversed, or past the end of the source:
         // there is no representable geometry. Fail closed rather than clamp the
         // span into a plausible-looking token.
-        return;
+        return Ok(());
     };
 
     let mut segment_start = start;
     for (offset, _) in span.match_indices('\n') {
+        traversal.admit_work()?;
         let line_end = start.saturating_add(offset);
-        push_one_line_segment(text, segment_start, line_end, to_pos16, kind, modifiers, out);
+        // Drop only the carriage return that pairs with *this* '\n'. Under the
+        // LF-only coordinate contract a bare CR is ordinary addressable content
+        // (`perl-position-tracking/src/line_index.rs`), so stripping every
+        // trailing CR would shorten a span that genuinely ends in one.
+        let content_end = match line_end.checked_sub(1) {
+            Some(previous)
+                if previous >= segment_start && text.as_bytes().get(previous) == Some(&b'\r') =>
+            {
+                previous
+            }
+            _ => line_end,
+        };
+        push_line_contained_token(segment_start, content_end, to_pos16, kind, modifiers, out);
         segment_start = line_end.saturating_add(1);
     }
-    push_one_line_segment(text, segment_start, end, to_pos16, kind, modifiers, out);
+    traversal.admit_work()?;
+    // The trailing segment ends at the span's own end, not at a separator, so
+    // no carriage return is removed here.
+    push_line_contained_token(segment_start, end, to_pos16, kind, modifiers, out);
+    Ok(())
 }
 
-/// Emit a construct *anchor* token only when it already fits on one line.
+/// Emit one token for a span, and only when that span lies within a single line.
 ///
-/// Some AST arms fall back to the whole construct's `node.location` because no
-/// narrower name span is available — a subroutine or class anchor covers its
-/// entire body. Normalizing those into per-line segments would paint the whole
-/// body as one token class, and the longer-wins rule in
-/// `remove_overlapping_tokens` would then discard every narrower token inside
-/// it. Painting nothing, as today, is the honest result until these anchors
-/// carry real name spans; that narrowing belongs to the semantic-classification
-/// work, not to this geometry repair.
-fn push_single_line_anchor(
+/// Two callers rely on the same rule for different reasons.
+///
+/// Segmentation calls it per segment, where single-line containment is already
+/// guaranteed and the check is a backstop.
+///
+/// Construct *anchors* call it directly as a deliberate policy. Some AST arms
+/// fall back to the whole construct's `node.location` because no narrower name
+/// span is available — a subroutine or class anchor covers its entire body.
+/// Normalizing those into per-line segments would paint the whole body as one
+/// token class, and the longer-wins rule in `remove_overlapping_tokens` would
+/// then discard every narrower token inside it. Painting nothing, as today, is
+/// the honest result until those anchors carry real name spans; that narrowing
+/// belongs to the semantic-classification work, not to this geometry repair.
+///
+/// Subtracting columns that live on different lines is meaningless, so a span
+/// that still crosses a line emits nothing rather than a fabricated length.
+fn push_line_contained_token(
     start: usize,
     end: usize,
     to_pos16: &impl Fn(usize) -> (u32, u32),
@@ -427,41 +456,6 @@ fn push_single_line_anchor(
     modifiers: u32,
     out: &mut Vec<RawSemanticToken>,
 ) {
-    let (line, start_character) = to_pos16(start);
-    let (end_line, end_character) = to_pos16(end);
-    // Subtracting columns that live on different lines is meaningless, so a
-    // multiline anchor emits nothing rather than a fabricated length.
-    if line != end_line {
-        return;
-    }
-    let length = end_character.saturating_sub(start_character);
-    if length > 0 {
-        out.push((line, start_character, length, kind, modifiers));
-    }
-}
-
-/// Emit a single token for a span expected to lie within one line.
-///
-/// The segment is dropped when it is empty, when a CRLF carriage return is all
-/// that remains, or when the position mapping still reports two different lines
-/// — an invalid token is never emitted merely to make the vector look populated.
-fn push_one_line_segment(
-    text: &str,
-    start: usize,
-    end: usize,
-    to_pos16: &impl Fn(usize) -> (u32, u32),
-    kind: u32,
-    modifiers: u32,
-    out: &mut Vec<RawSemanticToken>,
-) {
-    // Splitting on '\n' leaves the carriage return of a CRLF pair at the end of
-    // the segment; excluding it keeps the length equal to the line's content.
-    let end = match end.checked_sub(1) {
-        Some(previous) if previous >= start && text.as_bytes().get(previous) == Some(&b'\r') => {
-            previous
-        }
-        _ => end,
-    };
     if end <= start {
         return;
     }
@@ -502,7 +496,16 @@ fn tokenize_sql_body(
             continue;
         }
         let offset = body_start + start;
-        push_line_contained_segments(text, offset, body_start + index, to_pos16, kind, 0, out);
+        push_line_contained_segments(
+            text,
+            offset,
+            body_start + index,
+            to_pos16,
+            kind,
+            0,
+            out,
+            traversal,
+        )?;
     }
     Ok(())
 }
@@ -641,7 +644,7 @@ fn tokenize_json_body(
         let key_end_offset = cursor;
         let key_start = body_start + key_start_offset;
         let key_end = body_start + key_end_offset;
-        push_line_contained_segments(text, key_start, key_end, to_pos16, kind, 0, out);
+        push_line_contained_segments(text, key_start, key_end, to_pos16, kind, 0, out, traversal)?;
     }
     Ok(())
 }
@@ -1060,7 +1063,7 @@ pub fn collect_semantic_tokens_controlled(
                                 )) {
                                     let part_start = tok.start + rel;
                                     let part_end = part_start + lit.len();
-                                    push_line_contained_segments(
+                                    controlled_value!(push_line_contained_segments(
                                         text,
                                         part_start,
                                         part_end,
@@ -1068,7 +1071,8 @@ pub fn collect_semantic_tokens_controlled(
                                         kind_idx(&leg, "string"),
                                         0,
                                         &mut lexer_tokens,
-                                    );
+                                        &mut traversal,
+                                    ));
                                     cursor = rel + lit.len();
                                 }
                             }
@@ -1081,7 +1085,7 @@ pub fn collect_semantic_tokens_controlled(
                                 )) {
                                     let part_start = tok.start + rel;
                                     let part_end = part_start + var.len();
-                                    push_line_contained_segments(
+                                    controlled_value!(push_line_contained_segments(
                                         text,
                                         part_start,
                                         part_end,
@@ -1089,7 +1093,8 @@ pub fn collect_semantic_tokens_controlled(
                                         kind_idx(&leg, "variable"),
                                         0,
                                         &mut lexer_tokens,
-                                    );
+                                        &mut traversal,
+                                    ));
                                     cursor = rel + var.len();
                                 }
                             }
@@ -1169,7 +1174,7 @@ pub fn collect_semantic_tokens_controlled(
             _ => continue,
         };
 
-        push_line_contained_segments(
+        controlled_value!(push_line_contained_segments(
             text,
             tok.start,
             tok.end,
@@ -1177,7 +1182,8 @@ pub fn collect_semantic_tokens_controlled(
             kind_idx(&leg, kind),
             0,
             &mut lexer_tokens,
-        );
+            &mut traversal,
+        ));
     }
 
     let const_fast_enabled = controlled_value!(ast_uses_const_fast(ast, &mut traversal));
@@ -1210,7 +1216,8 @@ pub fn collect_semantic_tokens_controlled(
                         kind_idx(&leg, "namespace"),
                         1, /*declaration*/
                         &mut ast_tokens,
-                    );
+                        traversal,
+                    )?;
                     return Ok(true);
                 }
                 NodeKind::Subroutine { name: Some(_), name_span: Some(span), .. } => {
@@ -1222,12 +1229,13 @@ pub fn collect_semantic_tokens_controlled(
                         kind_idx(&leg, "function"),
                         1 | 2, /*declaration|definition*/
                         &mut ast_tokens,
-                    );
+                        traversal,
+                    )?;
                     return Ok(true);
                 }
                 NodeKind::Subroutine { name: Some(_), .. } => {
                     // Whole-construct anchor: see push_single_line_anchor.
-                    push_single_line_anchor(
+                    push_line_contained_token(
                         node.location.start,
                         node.location.end,
                         to_pos16,
@@ -1247,7 +1255,7 @@ pub fn collect_semantic_tokens_controlled(
                     .unwrap_or((node.location.start, node.location.end));
                     // The located name is single-line; the fallback is a
                     // whole-construct anchor. See push_single_line_anchor.
-                    push_single_line_anchor(
+                    push_line_contained_token(
                         start,
                         end,
                         to_pos16,
@@ -1259,7 +1267,7 @@ pub fn collect_semantic_tokens_controlled(
                 }
                 NodeKind::Class { .. } => {
                     // Whole-construct anchor: see push_single_line_anchor.
-                    push_single_line_anchor(
+                    push_line_contained_token(
                         node.location.start,
                         node.location.end,
                         to_pos16,
@@ -1278,7 +1286,8 @@ pub fn collect_semantic_tokens_controlled(
                         kind_idx(&leg, "macro"),
                         0,
                         &mut ast_tokens,
-                    );
+                        traversal,
+                    )?;
                     return Ok(true);
                 }
                 NodeKind::LabeledStatement { label, .. } => {
@@ -1300,7 +1309,8 @@ pub fn collect_semantic_tokens_controlled(
                         kind_idx(&leg, "label"),
                         1, /*declaration*/
                         &mut ast_tokens,
-                    );
+                        traversal,
+                    )?;
                     return Ok(true);
                 }
                 NodeKind::LoopControl { op, label: Some(label) } => {
@@ -1319,7 +1329,8 @@ pub fn collect_semantic_tokens_controlled(
                             kind_idx(&leg, "label"),
                             0,
                             &mut ast_tokens,
-                        );
+                            traversal,
+                        )?;
                     }
                     return Ok(true);
                 }
@@ -1339,7 +1350,8 @@ pub fn collect_semantic_tokens_controlled(
                             kind_idx(&leg, "method"),
                             0,
                             &mut ast_tokens,
-                        );
+                            traversal,
+                        )?;
                     }
                     // If this is a SQL-bearing DBI method, classify the first string arg as sql_string.
                     let is_sql_method = matches!(
@@ -1360,17 +1372,37 @@ pub fn collect_semantic_tokens_controlled(
                     );
                     if is_sql_method
                         && let Some(first_arg) = args.first()
-                        && matches!(first_arg.kind, NodeKind::String { .. })
+                        && let NodeKind::String { interpolated, .. } = first_arg.kind
                     {
-                        push_line_contained_segments(
-                            text,
-                            first_arg.location.start,
-                            first_arg.location.end,
-                            to_pos16,
-                            kind_idx(&leg, "sql_string"),
-                            0,
-                            &mut ast_tokens,
-                        );
+                        if interpolated {
+                            // An interpolated argument is also painted by the
+                            // lexer as literal/variable parts. Segmenting the
+                            // whole argument would cover those narrower tokens
+                            // on every line, and longer-wins in
+                            // remove_overlapping_tokens would discard them —
+                            // the same hazard handled for heredoc injection.
+                            // Keep the pre-existing single-line-only reach so
+                            // no continuation line loses its variable token.
+                            push_line_contained_token(
+                                first_arg.location.start,
+                                first_arg.location.end,
+                                to_pos16,
+                                kind_idx(&leg, "sql_string"),
+                                0,
+                                &mut ast_tokens,
+                            );
+                        } else {
+                            push_line_contained_segments(
+                                text,
+                                first_arg.location.start,
+                                first_arg.location.end,
+                                to_pos16,
+                                kind_idx(&leg, "sql_string"),
+                                0,
+                                &mut ast_tokens,
+                                traversal,
+                            )?;
+                        }
                     }
                     return Ok(true);
                 }
@@ -1463,7 +1495,7 @@ pub fn collect_semantic_tokens_controlled(
 
             // Generic node span: an expression or declaration anchor that may
             // cover a whole multiline construct. See push_single_line_anchor.
-            push_single_line_anchor(s, e, to_pos16, kind_idx(&leg, kind), mods, &mut ast_tokens);
+            push_line_contained_token(s, e, to_pos16, kind_idx(&leg, kind), mods, &mut ast_tokens);
             Ok(true)
         },
     ));
@@ -3231,8 +3263,10 @@ print "ok" foreach @ys;
     /// Uses the real `pos16` mapping so UTF-16 counting is exercised rather
     /// than assumed.
     fn segments_of(source: &str, start: usize, end: usize) -> Vec<(u32, u32, u32)> {
+        let control = SemanticTokensTraversalControl::unlimited();
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
         let mut out = Vec::new();
-        push_line_contained_segments(
+        let _ = push_line_contained_segments(
             source,
             start,
             end,
@@ -3240,6 +3274,7 @@ print "ok" foreach @ys;
             7,
             0,
             &mut out,
+            &mut traversal,
         );
         out.into_iter().map(|(line, start, length, _, _)| (line, start, length)).collect()
     }
@@ -3266,6 +3301,60 @@ print "ok" foreach @ys;
         // pushing the token past the end of its own line.
         let source = "abc\r\ndef\r\n";
         assert_eq!(segments_of(source, 0, 10), vec![(0, 0, 3), (1, 0, 3)]);
+    }
+
+    #[test]
+    fn a_bare_carriage_return_is_content_not_a_terminator() {
+        // `perl-position-tracking`'s LF-only contract: "CRLF is one separator
+        // and a bare CR is ordinary source content". Only the CR paired with a
+        // '\n' may be dropped, so a span ending in a bare CR keeps its full
+        // length.
+        let source = "ab\rcd\nef";
+        assert_eq!(segments_of(source, 0, 3), vec![(0, 0, 3)], "trailing bare CR is content");
+        assert_eq!(segments_of(source, 0, 5), vec![(0, 0, 5)], "interior bare CR is content");
+    }
+
+    #[test]
+    fn segmentation_is_metered_by_the_traversal_budget() {
+        // Segmenting a large multiline token must remain interruptible: without
+        // metering, a small budget or a cancellation is ignored until every
+        // line has been materialized.
+        let source = "a\nb\nc\nd\ne\nf\n";
+        let never_cancelled = || false;
+        let control = SemanticTokensTraversalControl::new(&never_cancelled, Some(3));
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut out = Vec::new();
+        let result = push_line_contained_segments(
+            source,
+            0,
+            source.len(),
+            &|offset| pos16(source, offset),
+            7,
+            0,
+            &mut out,
+            &mut traversal,
+        );
+        assert_eq!(result, Err(TraversalStop::BudgetExhausted));
+        assert_eq!(traversal.work_done, 3, "each emitted segment charges exactly one admission");
+        assert!(out.len() <= 3, "no segment may be produced past the budget: {out:?}");
+
+        // The same span stops immediately under cancellation.
+        let always_cancelled = || true;
+        let cancel_control = SemanticTokensTraversalControl::new(&always_cancelled, None);
+        let mut cancel_traversal = TraversalState { control: &cancel_control, work_done: 0 };
+        let mut cancelled_out = Vec::new();
+        let cancelled = push_line_contained_segments(
+            source,
+            0,
+            source.len(),
+            &|offset| pos16(source, offset),
+            7,
+            0,
+            &mut cancelled_out,
+            &mut cancel_traversal,
+        );
+        assert_eq!(cancelled, Err(TraversalStop::Cancelled));
+        assert!(cancelled_out.is_empty(), "cancellation must stop before any segment");
     }
 
     #[test]
@@ -3403,6 +3492,40 @@ print "ok" foreach @ys;
         assert!(
             painted.iter().any(|(line, _, _, _)| *line == 1),
             "tokens inside the body must survive: {painted:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_multiline_interpolated_sql_argument_keeps_its_variable_tokens()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A DBI SQL argument is classified `sql_string` over the whole
+        // argument, while the lexer separately paints the interpolated
+        // `$table` as a `variable`. Segmenting the classification would cover
+        // the variable on its line and longer-wins would discard it.
+        let source = "my $dbh; my $table = 'users';\n$dbh->prepare(\"SELECT *\nFROM $table\nWHERE id=1\");\n";
+        let variable = *legend().map.get("variable").ok_or("variable missing from legend")?;
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let mut line = 0u32;
+        let mut character = 0u32;
+        let mut variables = Vec::new();
+        for [delta_line, delta_character, length, token_type, _mods] in
+            collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset))
+        {
+            if delta_line == 0 {
+                character = character.saturating_add(delta_character);
+            } else {
+                line = line.saturating_add(delta_line);
+                character = delta_character;
+            }
+            if token_type == variable {
+                variables.push((line, character, length));
+            }
+        }
+        assert!(
+            variables.iter().any(|(line, _, _)| *line == 2),
+            "the interpolated $table on the continuation line must survive: {variables:?}"
         );
         Ok(())
     }
