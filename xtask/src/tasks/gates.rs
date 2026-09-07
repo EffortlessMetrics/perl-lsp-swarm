@@ -3523,30 +3523,37 @@ mod tests {
         }
     }
 
-    fn write_gate_log(path: &Path, contents: impl AsRef<[u8]>) {
-        must_with(std::fs::write(path, contents), "write gate log");
+    #[track_caller]
+    fn write_gate_log(path: &Path, contents: impl AsRef<[u8]>, context: &str) {
+        must_with(std::fs::write(path, contents), context);
     }
 
+    #[track_caller]
     fn required_test_metrics(output: &str) -> GateMetrics {
         must_some_with(parse_test_metrics(output), "cargo test summary should parse")
     }
 
+    #[track_caller]
     fn required_first_failure(output: &str, exit_code: i32, context: &str) -> FirstFailure {
         must_some_with(parse_first_failure(output, exit_code), context)
     }
 
+    #[track_caller]
     fn deserialize_json<T: DeserializeOwned>(json: &str, context: &str) -> T {
         must_with(serde_json::from_str(json), context)
     }
 
+    #[track_caller]
     fn serialize_json<T: Serialize>(value: &T, context: &str) -> String {
         must_with(serde_json::to_string(value), context)
     }
 
+    #[track_caller]
     fn compare_receipts_ok(baseline: &Receipt, current: &Receipt) -> DiffResult {
         must_with(compare_receipts(baseline, current), "compare receipts should succeed")
     }
 
+    #[track_caller]
     fn required_metric_change<'a>(diff: &'a DiffResult, name: &str) -> &'a MetricChange {
         must_some_with(metric_change_for(diff, name), format_args!("{name} metric should exist"))
     }
@@ -4998,7 +5005,7 @@ gates:
         body.push_str(&filler.repeat(4));
         let tmp = must_with(tempdir(), "test tempdir");
         let log_path = tmp.path().join("gate.log");
-        write_gate_log(&log_path, &body);
+        write_gate_log(&log_path, &body, "write gate log");
         assert!(
             body.len() > MAX_GATE_OUTPUT_BYTES as usize,
             "precondition: the fixture must exceed the retained-tail bound"
@@ -5009,7 +5016,7 @@ gates:
             "a preamble outside the 4 MiB tail still proves the binary ran"
         );
         let compile_only = "   Compiling perl-lsp-rs-core v0.17.0\n".repeat(64);
-        write_gate_log(&log_path, compile_only);
+        write_gate_log(&log_path, compile_only, "rewrite gate log");
         assert_eq!(
             log_reaches_test_execution(CARGO_COMMAND, &log_path).ok().flatten(),
             Some(false),
@@ -5030,7 +5037,7 @@ gates:
     fn log_reaches_test_execution_scans_env_wrapped_commands() {
         let tmp = must_with(tempdir(), "test tempdir");
         let log_path = tmp.path().join("lsp_smoke.log");
-        write_gate_log(&log_path, "running 3 tests\n");
+        write_gate_log(&log_path, "running 3 tests\n", "write gate log");
         assert_eq!(
             log_reaches_test_execution(
                 "cargo build -p perllsp --locked && env -u RUSTC_WRAPPER cargo test",
@@ -7133,6 +7140,42 @@ error: aborting due to previous error
     // -------------------------------------------------------------------
     // Conversion falsifiers: helpers still fail with named context
     // -------------------------------------------------------------------
+
+    #[test]
+    fn gates_converted_must_wrappers_carry_track_caller() {
+        let src = include_str!("gates.rs");
+        let mut failures = Vec::new();
+        for helper in [
+            "fn write_gate_log(",
+            "fn required_test_metrics(",
+            "fn required_first_failure(",
+            "fn deserialize_json<",
+            "fn serialize_json<",
+            "fn compare_receipts_ok(",
+            "fn required_metric_change<",
+        ] {
+            let Some(idx) = src.find(helper) else {
+                failures.push(format!("missing wrapper {helper}"));
+                continue;
+            };
+            let preceding = src.get(..idx).unwrap_or("");
+            let last_attr_line =
+                preceding.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("");
+            if last_attr_line.trim() != "#[track_caller]" {
+                failures.push(format!(
+                    "{helper} is not immediately preceded by #[track_caller] (found {last_attr_line:?})"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    #[should_panic(expected = "must: rewrite gate log:")]
+    fn gates_converted_write_helper_preserves_site_specific_context() {
+        let tmp = must_with(tempdir(), "test tempdir");
+        write_gate_log(&tmp.path().join("missing").join("gate.log"), b"x", "rewrite gate log");
+    }
 
     #[test]
     #[should_panic(expected = "must_some: cargo test summary should parse:")]
