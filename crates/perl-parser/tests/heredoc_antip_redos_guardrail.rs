@@ -283,6 +283,12 @@ fn antip_left_shift_is_not_a_heredoc_declaration() {
         ("method call", "my $x = $obj->method<<FOO;\n", "FOO\n"),
         ("class method call", "my $x = Foo->m<<FOO;\n", "FOO\n"),
         ("hash deref operand", "my $x = $obj->{k}<<FOO;\n", "FOO\n"),
+        // The negative controls for the filehandle and `CORE::` admissions
+        // below: a brace group or a qualified name only reaches term position
+        // through a list operator, never on its own.
+        ("hash subscript operand", "my $x = $h{k}<<FOO;\n", "FOO\n"),
+        ("grouped operand", "my $x = ($y)<<FOO;\n", "FOO\n"),
+        ("nullary CORE builtin", "my $x = CORE::time<<FOO;\n", "FOO\n"),
     ] {
         let code = format!("{declaration}{BLOCK}{terminator}");
         assert!(
@@ -296,11 +302,25 @@ fn antip_left_shift_is_not_a_heredoc_declaration() {
     // so the check above cannot pass by disabling the mask altogether. Each of
     // these carries a brace in its body that would suppress the diagnostic if
     // the body were left unmasked.
+    //
+    // The filehandle and `CORE::` rows are the ones that distinguish a rule
+    // keyed on syntax from one keyed on what Perl actually does: `perl -c` 5.38
+    // reads `print $fh <<M`, `print {$fh} <<M` and `CORE::print <<M` as
+    // heredocs even though the token before `<<` is a variable, a `}`, and a
+    // qualified name respectively — the three shapes the shift rows above
+    // reject.
     for (label, code) in [
         ("statement start", "print <<'M';\nhas { brace\nM\nqr/y(?{ print <<'N';\nok\nN\n})/;\n"),
         ("after assignment", "qr/x(?{ my $t = <<'M';\nhas { brace\nM\n})/;\n"),
         ("after a comma", "qr/x(?{ print $a, <<'M';\nhas { brace\nM\n})/;\n"),
         ("inside a call", "qr/x(?{ f(<<'M');\nhas { brace\nM\n})/;\n"),
+        ("indirect filehandle", "qr/x(?{ print $fh <<'M';\nhas { brace\nM\n})/;\n"),
+        ("block filehandle", "qr/x(?{ print {$fh} <<'M';\nhas { brace\nM\n})/;\n"),
+        ("printf filehandle", "qr/x(?{ printf $fh <<'M';\nhas { brace\nM\n})/;\n"),
+        ("say filehandle", "qr/x(?{ say $fh <<'M';\nhas { brace\nM\n})/;\n"),
+        ("bareword filehandle", "qr/x(?{ print STDERR <<'M';\nhas { brace\nM\n})/;\n"),
+        ("CORE-qualified list op", "qr/x(?{ CORE::print <<'M';\nhas { brace\nM\n})/;\n"),
+        ("CORE::say", "qr/x(?{ CORE::say <<'M';\nhas { brace\nM\n})/;\n"),
     ] {
         assert!(
             has_regex_code_block(code),

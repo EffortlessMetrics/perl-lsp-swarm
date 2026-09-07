@@ -381,8 +381,16 @@ fn heredoc_is_in_term_position(code: &str, start: usize) -> bool {
         return true; // start of file: nothing to shift
     };
 
-    if matches!(previous, ')' | ']' | '}' | '\'' | '"' | '`') {
+    if matches!(previous, ')' | ']' | '\'' | '"' | '`') {
         return false;
+    }
+
+    // `print {$fh} <<EOF` is a heredoc, `$h{k} << FOO` a shift. The brace group
+    // is an indirect filehandle only when a list operator introduces it.
+    if previous == '}' {
+        return matching_open_brace(prefix)
+            .and_then(|open| trailing_bareword(&prefix[..open]))
+            .is_some_and(|word| FILEHANDLE_OPERATORS.contains(&word));
     }
 
     if !(previous.is_alphanumeric() || previous == '_') {
@@ -390,8 +398,8 @@ fn heredoc_is_in_term_position(code: &str, start: usize) -> bool {
     }
 
     // A word, possibly a `::`-qualified path. A bareword function name
-    // (`print <<EOF`) takes a term after it, but a number, a sigilled variable,
-    // a method call, or a qualified name is itself a complete term.
+    // (`print <<EOF`) takes a term after it, but a number, a method call, or a
+    // qualified name that is not a builtin is itself a complete term.
     let path_start = prefix
         .char_indices()
         .rev()
@@ -402,14 +410,79 @@ fn heredoc_is_in_term_position(code: &str, start: usize) -> bool {
     if path.starts_with(|ch: char| ch.is_ascii_digit()) {
         return false;
     }
+
+    let before = &prefix[..path_start];
+
+    // A sigilled variable is a complete term — `$y << FOO` shifts — unless a
+    // list operator precedes it, which makes it an indirect filehandle and puts
+    // the `<<` back in argument position: `print $fh <<EOF`.
+    if let Some(without_sigil) = before.strip_suffix(['$', '@', '%', '&']) {
+        return trailing_bareword(without_sigil)
+            .is_some_and(|word| FILEHANDLE_OPERATORS.contains(&word));
+    }
+
+    if before.ends_with("->") {
+        return false;
+    }
+
+    // `CORE::print <<EOF` is a heredoc but `CORE::time << FOO` is a shift: the
+    // list operators take an argument, the nullary builtins are terms. Only the
+    // former are admitted, so an unlisted builtin costs masking rather than
+    // blanking code.
+    if let Some(builtin) = path.strip_prefix("CORE::") {
+        return TERM_TAKING_OPERATORS.contains(&builtin);
+    }
     // `Foo::CONST << FOO` and `$Foo::bar << FOO` are shifts; a qualified name
     // resolves to a value rather than opening an argument list. `Foo::bar <<EOF`
     // with `Foo::bar` a declared sub is the one heredoc this gives up, and
     // giving it up only costs masking.
-    if path.contains("::") {
-        return false;
+    !path.contains("::")
+}
+
+/// Perl list operators that take an argument list, so a `<<` after one opens a
+/// heredoc. Nullary builtins are deliberately absent: `perl -c` 5.38 reads
+/// `CORE::time <<M` as a shift because `CORE::time` is already a complete term.
+const TERM_TAKING_OPERATORS: [&str; 9] =
+    ["print", "printf", "say", "warn", "die", "return", "push", "join", "sprintf"];
+
+/// The operators that also accept an indirect filehandle before their
+/// arguments, as `print $fh <<EOF` and `print {$fh} <<EOF`.
+const FILEHANDLE_OPERATORS: [&str; 3] = ["print", "printf", "say"];
+
+/// The identifier ending `prefix`, ignoring trailing whitespace.
+fn trailing_bareword(prefix: &str) -> Option<&str> {
+    let prefix = prefix.trim_end();
+    let start = prefix
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !(ch.is_alphanumeric() || *ch == '_'))
+        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+    (start < prefix.len()).then(|| &prefix[start..])
+}
+
+/// Offset of the `{` matching the `}` that ends `prefix`.
+///
+/// The search stops at the start of that line. Perl's indirect-filehandle block
+/// sits next to its operator, so nothing valid is lost, and the bound keeps this
+/// from becoming a backwards scan over the whole file at every candidate.
+fn matching_open_brace(prefix: &str) -> Option<usize> {
+    let line_start = prefix.rfind('\n').map_or(0, |idx| idx + 1);
+    let bytes = prefix.as_bytes();
+    let mut depth = 0usize;
+
+    for idx in (line_start..bytes.len()).rev() {
+        match bytes[idx] {
+            b'}' => depth += 1,
+            b'{' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
     }
-    !prefix[..path_start].ends_with(['$', '@', '%', '&']) && !prefix[..path_start].ends_with("->")
+    None
 }
 
 /// Byte ranges of heredoc *bodies* in `code`, terminator line included and the

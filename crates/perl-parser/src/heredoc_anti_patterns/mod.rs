@@ -85,6 +85,20 @@
 //! are asymmetric by design: declining to mask a real heredoc restores the
 //! pre-mask status quo, whereas masking a shift blanks live code.
 //!
+//! "Complete term" is not decidable from the token alone, which is why the rule
+//! carries three explicit admissions rather than one predicate. A list operator
+//! puts what follows back into argument position, so `print $fh <<EOF` and
+//! `print {$fh} <<EOF` are heredocs even though a variable and a `}` precede
+//! the `<<`, and `CORE::print <<EOF` is one even though a qualified name does —
+//! while `$y << FOO`, `$h{k} << FOO` and `CORE::time << FOO` remain shifts.
+//! Every row there is a `perl -c` result, not a reading of the grammar.
+//!
+//! The unqualified bareword stays irreducible: Perl consults the symbol table,
+//! reading `somefunc<<FOO` as a shift when no such sub is declared and
+//! `Foo::bar<<FOO` as a heredoc when `Foo::bar` is defined. A mask that cannot
+//! see declarations cannot reproduce that, so barewords are admitted and the
+//! fail-safe absorbs the rest.
+//!
 //! The mask's own traversal is monotone and indexed rather than line-walking.
 //! Walking lines and searching forward per declaration is quadratic on input
 //! this detector must survive — 4000 unterminated `print <<A;` lines cost ~53 ms
