@@ -14,6 +14,8 @@
 (require 'subr-x)
 
 (defconst perl-lsp-root-probe-schema-version "emacs_eglot_project_root_observations.v1")
+(defconst perl-lsp-root-probe-shutdown-deadline 15
+  "Maximum seconds for each shutdown request and post-request exit wait.")
 
 (defun perl-lsp-root-probe--required-environment (name)
   "Return required environment variable NAME or signal an error."
@@ -69,9 +71,14 @@ assumed."
       (cons t (match-string 1 text)))
      (t nil))))
 
-(defun perl-lsp-root-probe--live-server-count (server)
-  "Return one only when this case's exact server process is still live."
-  (if (and server (process-live-p (jsonrpc--process server))) 1 0))
+(defun perl-lsp-root-probe--live-server-count (process)
+  "Return one when captured PROCESS survives the bounded post-shutdown wait.
+A settled shutdown request does not prove process exit.  Observe the process
+captured before shutdown, even when the request rejected or changed the client."
+  (let ((limit (+ (float-time) perl-lsp-root-probe-shutdown-deadline)))
+    (while (and process (process-live-p process) (< (float-time) limit))
+      (accept-process-output nil (min 0.1 (max 0 (- limit (float-time)))))))
+  (if (and process (process-live-p process)) 1 0))
 
 (defun perl-lsp-root-probe-run ()
   "Run one stock project.el/Eglot root observation and write its receipt."
@@ -98,7 +105,7 @@ assumed."
          ;; Captured while BUFFER is certainly live; the cleanup step below
          ;; may close it before the receipt is written.
          (opened-mode (symbol-name (buffer-local-value 'major-mode buffer))))
-    (let* ((server nil)
+    (let* ((server-process nil)
            (session-result
             ;; Stock behavior ends here when no server program is supplied:
             ;; there is nothing to contact, so the receipt records the
@@ -106,24 +113,23 @@ assumed."
             (if candidate
                 (condition-case err
                     (let ((connected
-                           (setq server
-                                 (with-current-buffer buffer
-                                   (let ((eglot-sync-connect 30)
-                                         (eglot-autoreconnect nil)
-                                         (eglot-autoshutdown t))
-                                     ;; Mirror the landed bundled adapter:
-                                     ;; this is exactly what stock
-                                     ;; `eglot-contact' runs, so the observed
-                                     ;; selection stays stock behavior end to
-                                     ;; end.
-                                     (eglot--connect
-                                      (list major-mode)
-                                      (eglot--current-project)
-                                      'eglot-lsp-server
-                                      (list candidate "--stdio")
-                                      '("perl")))))))
-                      (if (and connected
-                               (process-live-p (jsonrpc--process connected)))
+                           (with-current-buffer buffer
+                             (let ((eglot-sync-connect 30)
+                                   (eglot-autoreconnect nil)
+                                   (eglot-autoshutdown t))
+                               ;; Mirror the landed bundled adapter:
+                               ;; this is exactly what stock
+                               ;; `eglot-contact' runs, so the observed
+                               ;; selection stays stock behavior end to
+                               ;; end.
+                               (eglot--connect
+                                (list major-mode)
+                                (eglot--current-project)
+                                'eglot-lsp-server
+                                (list candidate "--stdio")
+                                '("perl"))))))
+                      (setq server-process (and connected (jsonrpc--process connected)))
+                      (if (and connected (process-live-p server-process))
                           (let* ((extracted
                                   (perl-lsp-root-probe--initialize-request-root-uri
                                    connected))
@@ -143,7 +149,7 @@ assumed."
                             ;; only; final cleanup verification stays with
                             ;; the single post-run cleanup phase below.
                             (condition-case _shutdown
-                                (eglot-shutdown connected nil 15 t)
+                                (eglot-shutdown connected nil perl-lsp-root-probe-shutdown-deadline t)
                               (error nil))
                             (append observed
                                     '((session_established . t))))
@@ -162,7 +168,7 @@ assumed."
            (cleanup-buffer-dead (not (buffer-live-p buffer))))
       ;; Post-cleanup verification drives the receipt: cleanup is proven,
       ;; never asserted while optimism was still possible.
-      (setq cleanup-live-servers (perl-lsp-root-probe--live-server-count server))
+      (setq cleanup-live-servers (perl-lsp-root-probe--live-server-count server-process))
       (when (buffer-live-p buffer)
         ;; Batch Emacs has no one to answer a prompt: killing a buffer that
         ;; something marked modified would block on `yes-or-no-p' and hang

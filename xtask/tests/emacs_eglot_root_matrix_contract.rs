@@ -217,7 +217,10 @@ fn root_probe_driver_refuses_to_pass_without_cleanup_proof() -> Result<(), Box<d
     // Cleanup verification happens after shutdown and drives the receipt:
     // live processes fail closed, and both cleanup slots are always present.
     assert!(
-        driver.contains("process-live-p") && driver.contains("--live-server-count server"),
+        driver.contains("process-live-p")
+            && driver
+                .contains("(setq server-process (and connected (jsonrpc--process connected)))")
+            && driver.contains("--live-server-count server-process)"),
         "driver must verify server liveness during cleanup"
     );
     assert!(
