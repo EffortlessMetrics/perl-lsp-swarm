@@ -302,5 +302,8 @@ fn reason_text(reason: &NotProvenReason) -> String {
         NotProvenReason::DeclaredPathsUnmeasurable { detail } => {
             format!("declared growth paths are unmeasurable: {detail}")
         }
+        NotProvenReason::HostEnvironmentAmbiguous { detail } => {
+            format!("host environment ambiguous: {detail}")
+        }
     }
 }

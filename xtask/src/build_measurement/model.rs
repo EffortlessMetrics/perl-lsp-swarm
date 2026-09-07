@@ -804,6 +804,12 @@ pub enum NotProvenReason {
     DeclaredPathsUnmeasurable {
         detail: String,
     },
+    /// A windows triple cannot distinguish Git Bash from native Windows,
+    /// so a WslOrGitBash row carries an explicit ambiguity boundary
+    /// instead of claiming the environment was proven (#14739 review).
+    HostEnvironmentAmbiguous {
+        detail: String,
+    },
 }
 
 /// The complete measurement record for one declared cell: raw facts plus
@@ -954,6 +960,19 @@ impl MeasurementRecord {
                     observed_triple: triple.clone(),
                 });
             }
+        }
+
+        // A windows triple cannot distinguish Git Bash from native
+        // Windows: a WslOrGitBash row carried on a windows triple keeps its
+        // evidence but wears an explicit ambiguity boundary instead of
+        // claiming proven Git Bash evidence (#14739 review).
+        if self.cell.host == HostProfile::WslOrGitBash
+            && self.environment.host_triple.as_deref().is_some_and(|t| t.contains("windows"))
+        {
+            reasons.push(NotProvenReason::HostEnvironmentAmbiguous {
+                detail: "a windows triple cannot distinguish Git Bash from native Windows; the                          WslOrGitBash row needs linux-triple (WSL) evidence or an explicit                          bash-environment marker"
+                    .to_string(),
+            });
         }
 
         // A growth-path-free model that declares growth paths contradicts
