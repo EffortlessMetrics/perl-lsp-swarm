@@ -1,7 +1,7 @@
 project: product
 component: Language intelligence
 kind: Fixed
-body: "Scope diagnostics defer new `my` and `state` bindings until the whole modified statement ends. Both `print $x if my $x = 1;` and `my $x = 1 if $x;` now report `UndeclaredVariable` under `use strict`, matching Perl. Existing and outer bindings remain visible, `our` retains immediate visibility, and completed nested blocks expose only their own declarations. The deferred bindings become available to following statements while retaining redeclaration, shadowing, and unused-variable diagnostics."
+body: "Scope diagnostics defer new `my` and `state` bindings until the whole modified statement ends. Both `print $x if my $x = 1;` and `my $x = 1 if $x;` now report `UndeclaredVariable` under `use strict`, matching Perl. Existing and outer bindings remain visible, and completed nested blocks expose only their own declarations. The two halves are still analyzed in evaluation order, so a match in the condition still sets `$1` for the statement. `our` is not deferred and is still reported by its own condition — a pre-existing source-order alias boundary tracked separately. The deferred bindings become available to following statements while retaining redeclaration, shadowing, and unused-variable diagnostics."
 time: 2026-09-05T00:00:00Z
 custom:
   PR: "14840"

@@ -238,11 +238,23 @@ fn our_in_a_modifier_statement_is_a_known_source_order_gap() -> TestResult {
 /// guards, so these four must follow evaluation order, not source order. Statement-first
 /// traversal inverts all four; they are the reason this arm keeps the condition first.
 ///
-/// Oracle, perl 5.38.2 (runtime, `perl -we`):
+/// Oracle, perl 5.38.2 (runtime, `perl -we`), exact programs:
 /// ```text
-/// $_="ax"; print "[$1]" if /a(.)/;   -> [x]        the match sets $1 for the statement
-/// $_="ax"; /a(.)/ if $1;             -> "Use of uninitialized value $1"
+/// $_="ax"; print "[$1]\n" if /a(.)/;        -> [x]
+/// $_="ax"; /a(.)/ if print "[$1]\n";        -> Use of uninitialized value $1 in concatenation
 /// ```
+///
+/// The second program deliberately puts `$1` in *string* context, because that is what makes
+/// the ordering observable. The minimal shape `$_="ax"; /a(.)/ if $1;` exits 0 with empty
+/// output: Perl does not warn about an undefined value used in a boolean test, so it cannot
+/// substantiate the ordering claim on its own.
+///
+/// The analyzer row below nevertheless uses that boolean shape, because the analyzer's
+/// capture-variable check does not reach `$1` inside an interpolated string — verified with no
+/// statement modifier present at all: `use strict; print $1;` reports
+/// `CaptureVarWithoutRegexMatch` while `use strict; print "[$1]";` does not. That is a
+/// pre-existing interpolation limitation, unrelated to this claim, so the two halves of this
+/// row are proven by different programs and neither is stretched to cover the other.
 #[test]
 fn modifier_children_are_analyzed_in_runtime_order() -> TestResult {
     // Capture state, both directions.
