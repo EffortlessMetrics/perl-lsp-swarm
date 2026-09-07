@@ -1,7 +1,19 @@
 project: product
 component: Developer experience
 kind: Added
-body: "Add a new Tier-1 leaf crate, perl-operation-trace, owning the versioned operation_trace.v1 contract: ephemeral, session-scoped operation identity (SessionId, OperationId, OperationIdAllocator) that deliberately never uses perl-source-identity's sha256: durable-identity wire prefix and depends on no hash function at all; closed OperationKind and OperationEventKind vocabularies that fail closed on unknown wire input; OperationContext, the one value a caller threads across a call/async/background boundary instead of a hand-wired (OperationId, parent) pair -- bundling an operation's id, optional parent (root()/child() constructors, where child always derives its parent from the context it is called on so an unrelated parent cannot be passed by mistake), OperationKind, and up to MAX_ATTACHED_IDENTITY_REFS opaque IdentityRefs tagged by the closed IdentityRefKind (Source/Environment/Fact/Process/Receipt/Generation); a three-tier privacy model (Public, Private redacted-with-length, Secret redacted-with-nothing) modeled on perl-subprocess-runtime's process-identity module; an EventRegistry validating required/allowed fields and their declared privacy tier; and an in-memory OperationRecorder, keyed on &OperationContext, enforcing exactly-one-terminal-event, no-event-after-terminal, no self-parent, no parent cycle, one kind and one parent per operation (KindConflict/ParentConflict reject disagreement rather than silently overwriting), and explicit observable truncation markers on RecorderBounds violation instead of silent drops -- including a deliberate, tested rule that a Terminal event arriving at the max_events cap is truncated like any other event rather than given priority. No subsystem is instrumented by this PR: the five independent operation-identity vocabularies already on main (perl-subprocess-runtime's OperationId, perl-parser-core's ParserOperationId, perl-workspace's WorkspaceRuntimeOperationId, perl-semantic-facts's ReachabilityOperationKind, and perl-dap's wire operationId) are unchanged; this crate only defines the vocabulary they could later be correlated through."
+body: >-
+  Add perl-operation-trace, a leaf crate owning the versioned operation_trace.v1
+  correlation contract: ephemeral session-scoped operation identity that never
+  uses the sha256: durable-identity prefix and depends on no hash function,
+  an OperationContext threaded across call and background boundaries, closed
+  operation/event/identity-reference vocabularies that fail closed on unknown
+  input, a three-tier privacy model (public, private redacted with length,
+  secret redacted with nothing), a field registry enforcing each field's
+  declared tier, and a bounded in-memory recorder that rejects duplicate
+  terminals, conflicting parents or kinds, and parent cycles, and marks
+  truncation explicitly rather than dropping events silently. Nothing is
+  instrumented yet: this defines the vocabulary the existing per-subsystem
+  operation identities can later be correlated through.
 time: 2026-09-07T00:00:00Z
 custom:
   PR: "15021"
