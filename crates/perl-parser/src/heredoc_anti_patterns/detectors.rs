@@ -1,5 +1,5 @@
 use regex::Regex;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use crate::heredoc_anti_patterns::model::{AntiPattern, Diagnostic, Location, Severity};
@@ -226,7 +226,13 @@ impl PatternDetector for BeginTimeHeredocDetector {
 // Dynamic delimiter detector
 struct DynamicDelimiterDetector;
 
-/// Pattern for identifying dynamic heredoc delimiters
+/// Pattern for identifying dynamic heredoc delimiters.
+///
+/// Deliberately keeps the newline horizon that #3597 removed from the regex
+/// code block and eval patterns. Those two constructs must span newlines to
+/// reach a terminator; a dynamic delimiter has no such need, so widening this
+/// one would only add false positives on multi-line left shifts such as
+/// `1 << ${\nfoo}` without recovering any real detection.
 static DYNAMIC_DELIMITER_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| match Regex::new(r"<<\s*\$\{[^}\n]+\}|<<\s*\$\w+|<<\s*`[^`\n]+`") {
         Ok(re) => re,
@@ -332,12 +338,354 @@ impl PatternDetector for SourceFilterDetector {
 // Regex heredoc detector
 struct RegexHeredocDetector;
 
-/// Pattern for identifying heredocs inside regex code blocks
-static REGEX_HEREDOC_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r"\(\?\{[^}\n]*<<[^}\n]*\}") {
+/// A heredoc declaration: `<<EOF`, `<<'EOF'`, `<<"EOF"`, ``<<`CMD` ``,
+/// `<<\EOF`, and the `<<~` indented forms. A bare or backslash delimiter must
+/// be adjacent to `<<` — whitespace before an unquoted word makes it a left
+/// shift, not a heredoc — while the quoted forms may be separated. Perl has no
+/// `<<-` heredoc; that spelling is shell and is deliberately not matched.
+static HEREDOC_DECL_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    match Regex::new(
+        r#"<<(~?)(?:\s*'([^'\n]*)'|\s*"([^"\n]*)"|\s*`([^`\n]*)`|\\([A-Za-z_]\w*)|([A-Za-z_]\w*))"#,
+    ) {
         Ok(re) => re,
-        Err(_) => unreachable!("REGEX_HEREDOC_PATTERN regex failed to compile"),
-    });
+        Err(_) => unreachable!("HEREDOC_DECL_PATTERN regex failed to compile"),
+    }
+});
+
+/// Whether the `<<` at `start` is in term position, where Perl reads a heredoc,
+/// rather than operator position, where it reads a left shift.
+///
+/// Perl decides this by what precedes the `<<`, not by how the delimiter is
+/// spelled — verified against `perl -c` 5.38, which accepts `1<<FOO`, `$y<<FOO`
+/// and `f()<<FOO` with no `FOO` line anywhere, but rejects `print <<FOO` and
+/// `my $t = <<FOO` with "Can't find string terminator". So a `<<` following a
+/// complete term (a number, a variable, a closing bracket, a string) is a shift,
+/// and one following an operator, separator, opener, or bareword function name
+/// is a heredoc.
+///
+/// Errors here are deliberately asymmetric, which is what makes a lexical rule
+/// acceptable at all. Answering `false` for a real heredoc only leaves its body
+/// unmasked, which is the pre-mask status quo; answering `true` for a shift
+/// blanks live code. Every uncertain case therefore resolves to `false`.
+///
+/// The residual is the unqualified bareword, and it is not fixable lexically:
+/// Perl consults the symbol table. `perl -c` 5.38 reads `somefunc<<FOO` as a
+/// shift when no such sub is declared, but `Foo::bar<<FOO` as a *heredoc* when
+/// `Foo::bar` is defined. A mask that cannot see declarations cannot reproduce
+/// that, so barewords stay term position — matching `print`, `say`, `return`
+/// and `warn`, which are what actually precede a heredoc — and the fail-safe
+/// backstops the rest, since an unmatched operand masks nothing.
+fn heredoc_is_in_term_position(code: &str, start: usize) -> bool {
+    let prefix = code[..start].trim_end();
+    let Some(previous) = prefix.chars().next_back() else {
+        return true; // start of file: nothing to shift
+    };
+
+    if matches!(previous, ')' | ']' | '\'' | '"' | '`') {
+        return false;
+    }
+
+    // `print {$fh} <<EOF` and `print ${fh} <<EOF` are heredocs, `$h{k} << FOO`
+    // a shift. A brace group is an indirect filehandle only when a list
+    // operator introduces it — directly for the block form, or through the
+    // sigil for the braced-scalar form.
+    if previous == '}' {
+        let Some(open) = matching_open_brace(prefix) else {
+            return false;
+        };
+        let before_brace = &prefix[..open];
+        let introducer = before_brace.strip_suffix('$').unwrap_or(before_brace);
+        return trailing_bareword(introducer)
+            .is_some_and(|word| FILEHANDLE_OPERATORS.contains(&word));
+    }
+
+    if !(previous.is_alphanumeric() || previous == '_') {
+        return true; // an operator, separator, or opener
+    }
+
+    // A word, possibly a `::`-qualified path. A bareword function name
+    // (`print <<EOF`) takes a term after it, but a number, a method call, or a
+    // qualified name that is not a builtin is itself a complete term.
+    let path_start = prefix
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !(ch.is_alphanumeric() || *ch == '_' || *ch == ':'))
+        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+    let path = &prefix[path_start..];
+
+    if path.starts_with(|ch: char| ch.is_ascii_digit()) {
+        return false;
+    }
+
+    let before = &prefix[..path_start];
+
+    // A sigilled variable is a complete term — `$y << FOO` shifts — unless a
+    // list operator precedes it, which makes it an indirect filehandle and puts
+    // the `<<` back in argument position: `print $fh <<EOF`.
+    //
+    // Only `$` qualifies. An indirect filehandle slot holds a scalar, a block or
+    // a bareword, never an array, hash or code sigil, and `perl -c` 5.38 reads
+    // `print @a <<FOO`, `print %h <<FOO` and `print &f <<FOO` as shifts.
+    if let Some(without_sigil) = before.strip_suffix('$') {
+        return trailing_bareword(without_sigil)
+            .is_some_and(|word| FILEHANDLE_OPERATORS.contains(&word));
+    }
+    if before.ends_with(['@', '%', '&']) {
+        return false;
+    }
+
+    if before.ends_with("->") {
+        return false;
+    }
+
+    // `CORE::print <<EOF` is a heredoc but `CORE::time << FOO` is a shift: the
+    // list operators take an argument, the nullary builtins are terms. Only the
+    // former are admitted, so an unlisted builtin costs masking rather than
+    // blanking code.
+    if let Some(builtin) = path.strip_prefix("CORE::") {
+        return TERM_TAKING_OPERATORS.contains(&builtin);
+    }
+    // `Foo::CONST << FOO` and `$Foo::bar << FOO` are shifts; a qualified name
+    // resolves to a value rather than opening an argument list. `Foo::bar <<EOF`
+    // with `Foo::bar` a declared sub is the one heredoc this gives up, and
+    // giving it up only costs masking.
+    !path.contains("::")
+}
+
+/// Perl list operators that take an argument list, so a `<<` after one opens a
+/// heredoc. Nullary builtins are deliberately absent: `perl -c` 5.38 reads
+/// `CORE::time <<M` as a shift because `CORE::time` is already a complete term.
+const TERM_TAKING_OPERATORS: [&str; 9] =
+    ["print", "printf", "say", "warn", "die", "return", "push", "join", "sprintf"];
+
+/// The operators that also accept an indirect filehandle before their
+/// arguments, as `print $fh <<EOF` and `print {$fh} <<EOF`.
+const FILEHANDLE_OPERATORS: [&str; 3] = ["print", "printf", "say"];
+
+/// How far back a filehandle block may be matched from its closing brace.
+///
+/// A block used as a filehandle holds an expression yielding a handle, so it is
+/// short even when written across lines; 256 bytes covers `{$fh}` through
+/// `{ $self->{handles}{err} }` with room to spare. Anything longer is not a
+/// filehandle block, and declining to mask costs only coverage.
+const FILEHANDLE_BLOCK_BUDGET: usize = 256;
+
+/// The identifier ending `prefix`, ignoring trailing whitespace.
+fn trailing_bareword(prefix: &str) -> Option<&str> {
+    let prefix = prefix.trim_end();
+    let start = prefix
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !(ch.is_alphanumeric() || *ch == '_'))
+        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+    (start < prefix.len()).then(|| &prefix[start..])
+}
+
+/// Offset of the `{` matching the `}` that ends `prefix`.
+///
+/// The search is capped at [`FILEHANDLE_BLOCK_BUDGET`] bytes rather than at the
+/// start of the line: a filehandle block may be written across lines, but it is
+/// always short. A fixed budget keeps the cost `O(1)` per candidate, which the
+/// bound exists for — an unbounded backwards scan from every `}` that precedes a
+/// `<<` is quadratic on adversarial input.
+fn matching_open_brace(prefix: &str) -> Option<usize> {
+    let floor = prefix.len().saturating_sub(FILEHANDLE_BLOCK_BUDGET);
+    let bytes = prefix.as_bytes();
+    let mut depth = 0usize;
+
+    for idx in (floor..bytes.len()).rev() {
+        match bytes[idx] {
+            b'}' => depth += 1,
+            b'{' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Byte ranges of heredoc *bodies* in `code`, terminator line included and the
+/// `<<DELIM` declaration excluded.
+///
+/// `scan_code` is the masked view, used only to reject a declaration that
+/// begins inside a comment or string literal. Both views substitute
+/// byte-for-byte, so offsets index either identically.
+///
+/// The traversal is monotone and indexed, which is load-bearing rather than
+/// stylistic. Walking lines and searching forward for each terminator is
+/// quadratic on input this detector must survive: `print <<A;` repeated with no
+/// terminator anywhere makes every declaration scan to end of file. Instead each
+/// line is registered once in a terminator index, and the declarations — already
+/// in source order — are walked with pointers that never move backwards, so the
+/// pass is `O(n + d log n)` in lines `n` and declarations `d`.
+fn heredoc_body_ranges(code: &str, scan_code: &str) -> Vec<(usize, usize)> {
+    let declarations: Vec<(usize, bool, &str)> = HEREDOC_DECL_PATTERN
+        .captures_iter(code)
+        .filter_map(|capture| {
+            let whole = capture.get(0)?;
+            if scan_code.get(whole.start()..whole.start() + 2) != Some("<<") {
+                return None;
+            }
+            if !heredoc_is_in_term_position(code, whole.start()) {
+                return None;
+            }
+            let indented = capture.get(1).is_some_and(|tilde| !tilde.as_str().is_empty());
+            let delimiter = (2..=6).find_map(|group| capture.get(group))?.as_str();
+            (!delimiter.is_empty()).then_some((whole.start(), indented, delimiter))
+        })
+        .collect();
+
+    if declarations.is_empty() {
+        return Vec::new();
+    }
+
+    // (start, end-without-newline, end-with-newline) for each line.
+    let mut lines = Vec::new();
+    let mut line_start = 0;
+    for (idx, byte) in code.bytes().enumerate() {
+        if byte == b'\n' {
+            lines.push((line_start, idx, idx + 1));
+            line_start = idx + 1;
+        }
+    }
+    if line_start <= code.len() {
+        lines.push((line_start, code.len(), code.len()));
+    }
+
+    // Terminator index: line text to the ascending line numbers carrying it.
+    // A plain heredoc ends on a line equal to its delimiter; a `<<~` heredoc
+    // ends on a line whose trimmed text equals it, so the two need separate
+    // keys — folding them into one map would let an indented line terminate a
+    // plain heredoc. Exactly one `\r` is stripped, not a run of them: a CRLF
+    // file ends the terminator line with one, and eating more would let
+    // `DELIM\r\r` close a heredoc it does not close.
+    let mut exact: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut trimmed: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (line, &(start, end, _)) in lines.iter().enumerate() {
+        let raw = &code[start..end];
+        let text = raw.strip_suffix('\r').unwrap_or(raw);
+        exact.entry(text).or_default().push(line);
+        // `<<~` permits indentation *before* the terminator and nothing after
+        // it, so only leading whitespace is removed. `perl -c` 5.38 rejects
+        // `  EOF   ` as a terminator ("Can't find string terminator"), and
+        // accepting it here would end the body on a line Perl treats as text,
+        // exposing the rest of the real body to the brace scan.
+        trimmed.entry(text.trim_start()).or_default().push(line);
+    }
+
+    // First line at or after `from` whose text terminates `delimiter`.
+    let terminator_at = |indented: bool, delimiter: &str, from: usize| -> Option<usize> {
+        let index = if indented { &trimmed } else { &exact };
+        let lines = index.get(delimiter)?;
+        lines.get(lines.partition_point(|&line| line < from)).copied()
+    };
+
+    let mut ranges = Vec::new();
+    let mut declaration = 0;
+    let mut line = 0;
+    // First line not already known to sit inside a masked body. Declarations
+    // before it are heredoc *text*, not declarations.
+    let mut resume_line = 0;
+
+    while declaration < declarations.len() {
+        let (at, _, _) = declarations[declaration];
+        while line + 1 < lines.len() && at >= lines[line].1 {
+            line += 1;
+        }
+
+        if line < resume_line {
+            declaration += 1;
+            continue;
+        }
+
+        // Declarations on one line stack: their bodies follow in order.
+        let group_start = declaration;
+        while declaration < declarations.len() && declarations[declaration].0 < lines[line].1 {
+            declaration += 1;
+        }
+
+        let body_start = lines[line].2;
+        let mut cursor = line + 1;
+        // Only bodies whose terminator was actually found may be blanked. A
+        // declaration that never terminates — an unterminated heredoc, or a
+        // left shift such as `1 << FOO` that only looks like one — must not
+        // blank the remainder of the file, because blanking is what hides
+        // later constructs from the detector. Mis-reading `<<` then costs
+        // nothing rather than blinding every subsequent line.
+        let mut terminated_through = None;
+        for &(_, indented, delimiter) in &declarations[group_start..declaration] {
+            let Some(terminator) = terminator_at(indented, delimiter, cursor) else {
+                break;
+            };
+            cursor = terminator + 1;
+            terminated_through = Some(cursor);
+        }
+
+        if let Some(end_line) = terminated_through {
+            let body_end = lines[end_line - 1].2;
+            if body_end > body_start {
+                ranges.push((body_start, body_end));
+            }
+            resume_line = end_line;
+        }
+    }
+
+    ranges
+}
+
+/// Blank `ranges` in `scan_code`, preserving newlines and byte length so the
+/// result still indexes identically to the source.
+fn blank_ranges(scan_code: &str, ranges: &[(usize, usize)]) -> String {
+    if ranges.is_empty() {
+        return scan_code.to_string();
+    }
+
+    let mut bytes = scan_code.as_bytes().to_vec();
+    for &(start, end) in ranges {
+        let end = end.min(bytes.len());
+        if start >= end {
+            continue;
+        }
+        for byte in &mut bytes[start..end] {
+            if *byte != b'\n' {
+                *byte = b' ';
+            }
+        }
+    }
+
+    // Ranges are line-aligned, so no multi-byte character is split and every
+    // replacement byte is ASCII; the fallback keeps this total regardless.
+    String::from_utf8(bytes).unwrap_or_else(|_| scan_code.to_string())
+}
+
+fn regex_code_block_matches(scan_code: &str) -> Vec<usize> {
+    let mut matches = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(relative_start) = scan_code[search_from..].find("(?{") {
+        let start = search_from + relative_start;
+        let opening_brace = start + 2;
+
+        // A malformed outer block cannot contain a complete diagnostic. Stop
+        // here rather than rescanning the same suffix from every nested
+        // candidate and turning malformed input into quadratic work.
+        let Some(closing_brace) = find_matching_brace(scan_code, opening_brace) else {
+            break;
+        };
+
+        if scan_code[opening_brace + 1..closing_brace].contains("<<") {
+            matches.push(start);
+        }
+
+        search_from = closing_brace + 1;
+    }
+
+    matches
+}
 
 impl PatternDetector for RegexHeredocDetector {
     fn detect(
@@ -346,21 +694,22 @@ impl PatternDetector for RegexHeredocDetector {
         offset: usize,
         line_starts: &[usize],
     ) -> Vec<(AntiPattern, Location)> {
-        let mut results = Vec::new();
-        let scan_code = mask_non_code_regions(code);
-
-        for cap in REGEX_HEREDOC_PATTERN.captures_iter(&scan_code) {
-            if let Some(match_pos) = cap.get(0) {
-                let location = location_from_start(line_starts, offset, match_pos.start());
-
-                results.push((
-                    AntiPattern::RegexCodeBlockHeredoc { location: location.clone() },
-                    location,
-                ));
-            }
-        }
-
-        results
+        // Braces in heredoc *text* are data, not Perl block structure, and
+        // `mask_non_code_regions` does not blank heredoc bodies. Without this
+        // second pass an unmatched `{` in a body suppresses the diagnostic —
+        // and, because the scan stops at an unmatched outer block, every later
+        // one too — while a `}` in a body can fabricate a block boundary that
+        // was never there. Masking locally keeps the shared mask, which feeds
+        // all seven detectors, unchanged (#14352).
+        let masked = mask_non_code_regions(code);
+        let scan_code = blank_ranges(&masked, &heredoc_body_ranges(code, &masked));
+        regex_code_block_matches(&scan_code)
+            .into_iter()
+            .map(|start| {
+                let location = location_from_start(line_starts, offset, start);
+                (AntiPattern::RegexCodeBlockHeredoc { location: location.clone() }, location)
+            })
+            .collect()
     }
 
     fn diagnose(&self, pattern: &AntiPattern) -> Option<Diagnostic> {
@@ -382,12 +731,53 @@ impl PatternDetector for RegexHeredocDetector {
 // Eval heredoc detector
 struct EvalHeredocDetector;
 
-/// Pattern for identifying heredocs inside eval strings
+/// The keyword every [`EVAL_HEREDOC_PATTERN`] match starts with, used to check a
+/// match origin against the masked view of the source.
+const EVAL_KEYWORD: &str = "eval";
+
+/// Pattern for identifying heredocs inside eval strings.
+///
+/// An `eval` string that declares a heredoc must span newlines to reach its
+/// terminator, so the class is bounded by the closing quote alone rather than by
+/// a newline horizon. See the module docs for the governing measurement (#3597).
 static EVAL_HEREDOC_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r#"eval\s+(?:'[^\n']*<<[^\n']*'|"[^\n"]*<<[^\n"]*")"#) {
+    LazyLock::new(|| match Regex::new(r#"\beval\s+(?:'[^']*<<[^']*'|"[^"]*<<[^"]*")"#) {
         Ok(re) => re,
         Err(_) => unreachable!("EVAL_HEREDOC_PATTERN regex failed to compile"),
     });
+
+/// Whether the `eval` matched at `start` is the builtin rather than a lookalike.
+///
+/// `scan_code` is the masked view, which substitutes byte-for-byte, so `start`
+/// indexes it and the raw source identically. Two lookalikes are rejected:
+///
+/// * a match seeded inside a comment or string literal — masking blanks those,
+///   so the keyword no longer reads as `eval` at this offset;
+/// * a package-qualified call such as `Foo::eval`, which the pattern's leading
+///   `\b` admits because `:` is not a word character.
+///
+/// `CORE::eval` is the one qualified spelling that stays: it explicitly names
+/// the builtin and bypasses any override. `CORE::GLOBAL::eval` deliberately does
+/// *not* — that package is the override slot, so calling it by name invokes a
+/// user-defined replacement, which is the same "some other function" case as
+/// `Foo::eval`.
+fn eval_match_is_builtin(scan_code: &str, start: usize) -> bool {
+    if scan_code.get(start..start + EVAL_KEYWORD.len()) != Some(EVAL_KEYWORD) {
+        return false;
+    }
+
+    let prefix = &scan_code[..start];
+    let path_start = prefix
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !(ch.is_alphanumeric() || *ch == '_' || *ch == ':'))
+        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+
+    match prefix[path_start..].strip_suffix("::") {
+        None => true,
+        Some(qualifier) => qualifier == "CORE",
+    }
+}
 
 impl PatternDetector for EvalHeredocDetector {
     fn detect(
@@ -398,9 +788,26 @@ impl PatternDetector for EvalHeredocDetector {
     ) -> Vec<(AntiPattern, Location)> {
         let mut results = Vec::new();
 
+        // This detector must scan raw source: masking blanks the contents of
+        // the very quoted string it needs to look inside. So the mask is used
+        // only to reject matches that *begin* somewhere that is not code.
+        // `mask_non_code_regions` substitutes byte-for-byte, so offsets align.
+        //
+        // Heredoc bodies are part of "not code" here and `mask_non_code_regions`
+        // does not blank them, so an `eval '...<<...'` sitting in heredoc *text*
+        // would otherwise seed a real PL805 for an eval that never runs. The
+        // same body mask the regex detector uses closes that (#14352).
+        let masked = mask_non_code_regions(code);
+        let scan_code = blank_ranges(&masked, &heredoc_body_ranges(code, &masked));
+
         for cap in EVAL_HEREDOC_PATTERN.captures_iter(code) {
             if let Some(match_pos) = cap.get(0) {
-                let location = location_from_start(line_starts, offset, match_pos.start());
+                let start = match_pos.start();
+                if !eval_match_is_builtin(&scan_code, start) {
+                    continue;
+                }
+
+                let location = location_from_start(line_starts, offset, start);
 
                 results.push((
                     AntiPattern::EvalStringHeredoc { location: location.clone() },
