@@ -323,7 +323,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 - `row.check_pk`: Returns the receiving row when its source has a primary key, otherwise croaks (Role/Row.pm:183-187).
 - `row.check_sync`: Returns `_check_stale`, which returns the receiving row (Row.pm:513-516) or croaks. It is not a boolean.
 - `row.clone`: Produces another row of the same source identity.
-- `row.conflate_args`: Returns a flat key/value list — field, value, source, dialect, affinity (Role/Row.pm:160) — not a hash container.
+- `row.conflate_args`: Returns a flat key/value list — field, value, source, dialect, affinity (Role/Row.pm:160) — not a hash container. It is a parenthesized list, so in scalar context the comma operator yields its last element.
 - `row.connection`: Connection behind the row's data object.
 - `row.delete`: Delegates to `_stored_handle->delete`. That handle comes from `connection->handle($self)` and is synchronous, so Handle::delete always takes its `return undef` branch (Handle.pm:2525-2528) — there is no statement handle to observe.
 - `row.desynced_data`: Reads the DESYNC slot directly (Row.pm:118), so it is undef unless the row is desynced.
@@ -353,7 +353,7 @@ Receiver identity and argument cohort are both load-bearing: the same method nam
 - `row.pending_field`: Inflated pending value for one field.
 - `row.pending_fields`: Inflated pending field map.
 - `row.primary_key_field_list`: Flat list of primary-key field names, empty when the source has no primary key.
-- `row.primary_key_hash`: A `map` producing a flat key/value list (Role/Row.pm:105), not a hashref; `primary_key_hashref` is the reference form. Croaks through check_pk without a primary key.
+- `row.primary_key_hash`: A `map` producing a flat key/value list (Role/Row.pm:105), not a hashref; `primary_key_hashref` is the reference form. In scalar context `map` yields the number of elements it produced, not a value — unlike the parenthesized list in conflate_args. Croaks through check_pk without a primary key.
 - `row.primary_key_hashref`: The same pairs wrapped as a hashref (Role/Row.pm:106).
 - `row.primary_key_value_list`: Raw stored primary-key values in field order; croaks through check_pk without a primary key.
 - `row.raw_field`: Uninflated single field value.

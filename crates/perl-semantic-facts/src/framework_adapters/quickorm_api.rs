@@ -257,8 +257,13 @@ pub enum QuickOrmMultiplicity {
     /// A hashref of field values that is `undef` when the backing state slot
     /// is absent.
     OptionalHash,
-    /// A flat key/value list in list context, not a hash container. A caller
-    /// assigning it to a scalar gets the last value, not a reference.
+    /// A flat key/value list in list context, not a hash container.
+    ///
+    /// Scalar context is deliberately *not* specified here: it follows the
+    /// producing construct, not the shape. A parenthesized list yields its last
+    /// element, while a `map` expression yields the number of elements it
+    /// produced. Each row records which of those applies, so a consumer must
+    /// read the row rather than assume one behavior for the class.
     KeyValueSequence,
     /// No meaningful return value.
     Nothing,
@@ -2554,7 +2559,7 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: ROLE_ROW, line: 156 },
-        notes: "Returns a flat key/value list — field, value, source, dialect, affinity (Role/Row.pm:160) — not a hash container.",
+        notes: "Returns a flat key/value list — field, value, source, dialect, affinity (Role/Row.pm:160) — not a hash container. It is a parenthesized list, so in scalar context the comma operator yields its last element.",
     },
     QuickOrmApiCase {
         api_case_id: "row.connection",
@@ -3035,7 +3040,7 @@ pub const QUICKORM_API_CASES: &[QuickOrmApiCase] = &[
         void_context: V::Permitted,
         boundary: B::RuntimeResolved,
         evidence: QuickOrmEvidence { file: ROLE_ROW, line: 105 },
-        notes: "A `map` producing a flat key/value list (Role/Row.pm:105), not a hashref; `primary_key_hashref` is the reference form. Croaks through check_pk without a primary key.",
+        notes: "A `map` producing a flat key/value list (Role/Row.pm:105), not a hashref; `primary_key_hashref` is the reference form. In scalar context `map` yields the number of elements it produced, not a value — unlike the parenthesized list in conflate_args. Croaks through check_pk without a primary key.",
     },
     QuickOrmApiCase {
         api_case_id: "row.primary_key_hashref",
@@ -4045,10 +4050,11 @@ mod tests {
             );
         }
 
-        // A flat key/value list is not a hash container: assigning it to a
-        // scalar yields the last value, not a reference. Upstream returns a
+        // A flat key/value list is not a hash container. Upstream returns a
         // bare list from `conflate_args` and `primary_key_hash`, while
-        // `primary_key_hashref` wraps the same pairs.
+        // `primary_key_hashref` wraps the same pairs. Their scalar-context
+        // behavior differs by construct (last element vs. element count), so
+        // each row records its own; the class does not assert one.
         for id in ["row.conflate_args", "row.primary_key_hash"] {
             assert_eq!(
                 case_by_id(id).multiplicity,
