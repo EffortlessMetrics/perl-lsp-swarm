@@ -711,6 +711,10 @@ fn normalize_newlines(text: &str) -> String {
 pub fn discover(root: &Path) -> Result<Discovered> {
     let files = scanned_files(root)?;
 
+    // Carriers first: the producer scan needs to know which named types hold a
+    // candidate vector before it can judge a return type.
+    let carriers = discover_candidate_carriers(root, &files)?;
+
     let mut producers = Vec::new();
     let mut construction_files = BTreeSet::new();
     let mut producer_files = BTreeSet::new();
@@ -721,7 +725,7 @@ pub fn discover(root: &Path) -> Result<Discovered> {
         let parsed = syn::parse_file(&source)
             .wrap_err_with(|| format!("failed to parse {file} with syn"))?;
 
-        let mut visitor = SeamVisitor::new(file);
+        let mut visitor = SeamVisitor::new(file, &carriers);
         visitor.visit_file(&parsed);
 
         if visitor.constructions > 0 {
@@ -734,7 +738,10 @@ pub fn discover(root: &Path) -> Result<Discovered> {
     }
     let producers = merge_declarations(producers)?;
 
-    let (entry_direct_calls, post_finalizer_appends) = discover_entry_routes(root)?;
+    let producer_names: BTreeSet<String> =
+        producers.iter().map(|producer| producer.function.clone()).collect();
+    let (entry_direct_calls, post_finalizer_appends) =
+        discover_entry_routes(root, &producer_names)?;
     let source_digest = digest_files(root, &files)?;
     let provider_references = discover_provider_references(root, &files)?;
 
@@ -966,6 +973,7 @@ fn digest_files(root: &Path, files: &[String]) -> Result<String> {
 
 /// Collects append-channel functions and candidate constructions in one file.
 struct SeamVisitor<'a> {
+    carriers: &'a BTreeSet<String>,
     file: &'a str,
     module: String,
     package: &'static str,
@@ -975,8 +983,9 @@ struct SeamVisitor<'a> {
 }
 
 impl<'a> SeamVisitor<'a> {
-    fn new(file: &'a str) -> Self {
+    fn new(file: &'a str, carriers: &'a BTreeSet<String>) -> Self {
         Self {
+            carriers,
             file,
             module: module_path_for(file),
             package: package_for(file),
@@ -989,7 +998,9 @@ impl<'a> SeamVisitor<'a> {
     fn record(&mut self, name: &str, sig: &syn::Signature) {
         let appends = sig.inputs.iter().any(takes_append_channel);
         let returns = match &sig.output {
-            syn::ReturnType::Type(_, ty) => mentions_candidate_vec(ty),
+            syn::ReturnType::Type(_, ty) => {
+                mentions_candidate_vec(ty) || mentions_named_carrier(ty, self.carriers)
+            }
             syn::ReturnType::Default => false,
         };
         let channel = match (appends, returns) {
@@ -1060,6 +1071,39 @@ impl<'ast> Visit<'ast> for SeamVisitor<'_> {
 /// migration has to watch both.
 const CANDIDATE_TYPES: &[&str] = &["CompletionItem", "CompletionCandidate"];
 
+/// Named types that carry a candidate vector in a field.
+///
+/// A producer need not return `Vec<Candidate>` literally: the shared finalizer
+/// returns `CompletionFinalization`, whose `candidates` field is the page. A
+/// signature-only rule misses those, so carriers are discovered from the
+/// scanned source first and the producer scan then treats a return of one as a
+/// candidate return.
+fn discover_candidate_carriers(root: &Path, files: &[String]) -> Result<BTreeSet<String>> {
+    let mut carriers = BTreeSet::new();
+    for file in files {
+        let source = fs::read_to_string(root.join(file))
+            .wrap_err_with(|| format!("failed to read {file}"))?;
+        let parsed = syn::parse_file(&source)
+            .wrap_err_with(|| format!("failed to parse {file} with syn"))?;
+        let mut visitor = CarrierVisitor { carriers: &mut carriers };
+        visitor.visit_file(&parsed);
+    }
+    Ok(carriers)
+}
+
+struct CarrierVisitor<'a> {
+    carriers: &'a mut BTreeSet<String>,
+}
+
+impl<'ast> Visit<'ast> for CarrierVisitor<'_> {
+    fn visit_item_struct(&mut self, node: &'ast syn::ItemStruct) {
+        if node.fields.iter().any(|field| mentions_candidate_vec(&field.ty)) {
+            self.carriers.insert(node.ident.to_string());
+        }
+        syn::visit::visit_item_struct(self, node);
+    }
+}
+
 /// Is this parameter a `&mut Vec<Candidate>` append channel?
 fn takes_append_channel(arg: &syn::FnArg) -> bool {
     let syn::FnArg::Typed(typed) = arg else {
@@ -1094,6 +1138,36 @@ fn mentions_candidate_vec(ty: &syn::Type) -> bool {
         syn::Type::Reference(reference) => mentions_candidate_vec(&reference.elem),
         syn::Type::Paren(paren) => mentions_candidate_vec(&paren.elem),
         syn::Type::Group(group) => mentions_candidate_vec(&group.elem),
+        _ => false,
+    }
+}
+
+/// Does this type mention a named carrier such as `CompletionFinalization`?
+fn mentions_named_carrier(ty: &syn::Type, carriers: &BTreeSet<String>) -> bool {
+    match ty {
+        syn::Type::Path(path) => {
+            if path
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| carriers.contains(&segment.ident.to_string()))
+            {
+                return true;
+            }
+            path.path.segments.iter().any(|segment| match &segment.arguments {
+                syn::PathArguments::AngleBracketed(args) => args.args.iter().any(|arg| match arg {
+                    syn::GenericArgument::Type(inner) => mentions_named_carrier(inner, carriers),
+                    _ => false,
+                }),
+                _ => false,
+            })
+        }
+        syn::Type::Tuple(tuple) => {
+            tuple.elems.iter().any(|elem| mentions_named_carrier(elem, carriers))
+        }
+        syn::Type::Reference(reference) => mentions_named_carrier(&reference.elem, carriers),
+        syn::Type::Paren(paren) => mentions_named_carrier(&paren.elem, carriers),
+        syn::Type::Group(group) => mentions_named_carrier(&group.elem, carriers),
         _ => false,
     }
 }
@@ -1137,11 +1211,15 @@ fn impl_type_name(node: &syn::ItemImpl) -> Option<String> {
     let self_ty = type_name(node.self_ty.as_ref())?;
     match &node.trait_ {
         Some((path, _)) => {
+            // The whole path, not its last segment: `a::Producer` and
+            // `b::Producer` are different traits, and one type may implement
+            // both with the same method name.
             let trait_name = path
                 .segments
-                .last()
+                .iter()
                 .map(|segment| segment.ident.to_string())
-                .unwrap_or_else(|| "?".to_string());
+                .collect::<Vec<_>>()
+                .join("::");
             Some(format!("<{self_ty} as {trait_name}>"))
         }
         None => Some(self_ty),
@@ -1202,13 +1280,20 @@ fn has_test_attribute(attrs: &[syn::Attribute]) -> bool {
 
 /// For each entry point, the functions it calls directly, plus whether it
 /// appends to the candidate binding after the finalizer.
-fn discover_entry_routes(root: &Path) -> Result<(BTreeMap<String, BTreeSet<String>>, Vec<String>)> {
+fn discover_entry_routes(
+    root: &Path,
+    producer_names: &BTreeSet<String>,
+) -> Result<(BTreeMap<String, BTreeSet<String>>, Vec<String>)> {
     let source = fs::read_to_string(root.join(ENTRY_FILE))
         .wrap_err_with(|| format!("failed to read {ENTRY_FILE}"))?;
     let parsed =
         syn::parse_file(&source).wrap_err_with(|| format!("failed to parse {ENTRY_FILE}"))?;
 
-    let mut collector = EntryCollector::default();
+    let mut collector = EntryCollector {
+        producer_names,
+        calls: BTreeMap::new(),
+        post_finalizer_appends: Vec::new(),
+    };
     collector.visit_file(&parsed);
 
     for entry in ENTRY_POINTS {
@@ -1224,13 +1309,13 @@ fn discover_entry_routes(root: &Path) -> Result<(BTreeMap<String, BTreeSet<Strin
     Ok((collector.calls, collector.post_finalizer_appends))
 }
 
-#[derive(Default)]
-struct EntryCollector {
+struct EntryCollector<'a> {
+    producer_names: &'a BTreeSet<String>,
     calls: BTreeMap<String, BTreeSet<String>>,
     post_finalizer_appends: Vec<String>,
 }
 
-impl<'ast> Visit<'ast> for EntryCollector {
+impl<'ast> Visit<'ast> for EntryCollector<'_> {
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
         if has_cfg_test(&node.attrs) {
             return;
@@ -1243,7 +1328,7 @@ impl<'ast> Visit<'ast> for EntryCollector {
         if !ENTRY_POINTS.contains(&name.as_str()) {
             return;
         }
-        let mut body = EntryBodyVisitor::default();
+        let mut body = EntryBodyVisitor::new(self.producer_names);
         body.visit_block(&node.block);
         if body.appended_after_finalizer {
             self.post_finalizer_appends.push(name.clone());
@@ -1258,7 +1343,8 @@ impl<'ast> Visit<'ast> for EntryCollector {
 /// the finalizer call? `syn`'s visitor descends statements and expression
 /// fields in source order, so a monotonic "have I passed the finalizer yet"
 /// flag answers it without needing span locations.
-struct EntryBodyVisitor {
+struct EntryBodyVisitor<'a> {
+    producer_names: &'a BTreeSet<String>,
     called: BTreeSet<String>,
     seen_finalizer: bool,
     appended_after_finalizer: bool,
@@ -1272,9 +1358,10 @@ struct EntryBodyVisitor {
     bindings: BTreeSet<String>,
 }
 
-impl Default for EntryBodyVisitor {
-    fn default() -> Self {
+impl<'a> EntryBodyVisitor<'a> {
+    fn new(producer_names: &'a BTreeSet<String>) -> Self {
         Self {
+            producer_names,
             called: BTreeSet::new(),
             seen_finalizer: false,
             appended_after_finalizer: false,
@@ -1283,11 +1370,21 @@ impl Default for EntryBodyVisitor {
     }
 }
 
-impl EntryBodyVisitor {
+impl EntryBodyVisitor<'_> {
     /// A candidate append is `<candidate>.push(..)`/`.extend(..)`, or handing
     /// `&mut <candidate>` to something else.
     fn note_append(&mut self) {
         if self.seen_finalizer {
+            self.appended_after_finalizer = true;
+        }
+    }
+
+    /// A producer invoked after finalization is an append however its result
+    /// is spelled: `let completions = add_late(completions);` adds candidates
+    /// the finalizer never ranked, and no mutating method or `&mut` borrow
+    /// appears anywhere in that line.
+    fn note_producer_call(&mut self, name: &str) {
+        if self.seen_finalizer && self.producer_names.contains(name) {
             self.appended_after_finalizer = true;
         }
     }
@@ -1350,7 +1447,7 @@ fn pattern_idents(pat: &syn::Pat, out: &mut Vec<String>) {
     }
 }
 
-impl<'ast> Visit<'ast> for EntryBodyVisitor {
+impl<'ast> Visit<'ast> for EntryBodyVisitor<'_> {
     fn visit_local(&mut self, node: &'ast syn::Local) {
         if let Some(init) = &node.init {
             // Visit the initializer first: it is evaluated before the new name
@@ -1373,6 +1470,8 @@ impl<'ast> Visit<'ast> for EntryBodyVisitor {
             self.called.insert(name.clone());
             if name == FINALIZER_CALL {
                 self.seen_finalizer = true;
+            } else {
+                self.note_producer_call(&name);
             }
         }
         syn::visit::visit_expr_call(self, node);
@@ -1384,6 +1483,7 @@ impl<'ast> Visit<'ast> for EntryBodyVisitor {
         if APPEND_METHODS.contains(&method.as_str()) && self.holds_candidates(&node.receiver) {
             self.note_append();
         }
+        self.note_producer_call(&method);
         syn::visit::visit_expr_method_call(self, node);
     }
 
@@ -2686,6 +2786,101 @@ mod tests {
         }
     }
 
+    /// A producer need not return a bare vector. The shared finalizer returns
+    /// `CompletionFinalization`, and a signature-only scan missed it.
+    #[test]
+    fn named_candidate_carriers_are_producers() {
+        let file: syn::File = syn::parse_quote! {
+            pub struct Finalization {
+                pub candidates: Vec<CompletionCandidate>,
+                pub capped: bool,
+            }
+            pub struct Unrelated {
+                pub names: Vec<String>,
+            }
+        };
+        let mut carriers = BTreeSet::new();
+        let mut visitor = CarrierVisitor { carriers: &mut carriers };
+        visitor.visit_file(&file);
+        assert!(carriers.contains("Finalization"), "a struct holding the page is a carrier");
+        assert!(!carriers.contains("Unrelated"), "an unrelated vector must not widen the scan");
+
+        let returns_carrier: syn::ItemFn = syn::parse_quote! {
+            fn finalize() -> Finalization { unimplemented!() }
+        };
+        let mut seam = SeamVisitor::new(PROBE_FILE, &carriers);
+        seam.visit_file(&syn::parse_quote! { fn finalize() -> Finalization { unimplemented!() } });
+        assert_eq!(seam.producers.len(), 1, "returning a carrier is a candidate return");
+        let _ = returns_carrier;
+    }
+
+    /// The live seams this fix recovered. Both participate in the shared
+    /// finalization path and had no row before.
+    #[test]
+    fn the_named_carrier_finalizers_are_inventoried() {
+        let (ledger, discovered) = fixture();
+        for id in [
+            "perl_lsp_rs_core::providers::completion_item::finalize_completion_candidates",
+            "perl_lsp_rs_core::providers::completion_item::candidate::finalize_completion_candidates",
+        ] {
+            assert!(discovered.producers.iter().any(|p| p.id == id), "discovery lost `{id}`");
+            assert!(ledger.producers.iter().any(|row| row.id == id), "the ledger lost `{id}`");
+        }
+    }
+
+    /// Two traits of the same name in different modules are different traits.
+    #[test]
+    fn producer_ids_keep_the_whole_trait_path() {
+        let file: syn::File = syn::parse_quote! {
+            impl a::Producer for Shared {
+                fn add(&self, completions: &mut Vec<CompletionItem>) {}
+            }
+            impl b::Producer for Shared {
+                fn add(&self, completions: &mut Vec<CompletionItem>) {}
+            }
+        };
+        let carriers = BTreeSet::new();
+        let mut visitor = SeamVisitor::new(PROBE_FILE, &carriers);
+        visitor.visit_file(&file);
+        let merged = merge_declarations(visitor.producers).expect("distinct trait paths");
+        assert_eq!(
+            merged.len(),
+            2,
+            "same-named traits from different modules fused: {:?}",
+            merged.iter().map(|p| &p.id).collect::<Vec<_>>()
+        );
+    }
+
+    /// A by-value producer call after finalization adds unranked candidates
+    /// without any mutating method or `&mut` borrow appearing on the line.
+    #[test]
+    fn a_producer_called_after_finalization_is_an_append() {
+        let producers = BTreeSet::from(["add_late_completions".to_string()]);
+        let smuggled: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
+                let completions = add_late_completions(completions);
+            }
+        };
+        let mut visitor = EntryBodyVisitor::new(&producers);
+        visitor.visit_block(&smuggled.block);
+        assert!(
+            visitor.appended_after_finalizer,
+            "a by-value producer call after the finalizer went undetected"
+        );
+
+        // Before the finalizer the same call is ordinary contribution.
+        let ordinary: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let completions = add_late_completions(completions);
+                let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
+            }
+        };
+        let mut visitor = EntryBodyVisitor::new(&producers);
+        visitor.visit_block(&ordinary.block);
+        assert!(!visitor.appended_after_finalizer, "contribution before the finalizer is normal");
+    }
+
     /// Growing the finalized page is an append however it is spelled.
     #[test]
     fn resize_after_finalization_is_an_append() {
@@ -2697,7 +2892,8 @@ mod tests {
                 }}"
             );
             let parsed: syn::ItemFn = syn::parse_str(&source).expect("fixture parses");
-            let mut visitor = EntryBodyVisitor::default();
+            let no_producers = BTreeSet::new();
+            let mut visitor = EntryBodyVisitor::new(&no_producers);
             visitor.visit_block(&parsed.block);
             assert!(
                 visitor.appended_after_finalizer,
@@ -2758,7 +2954,8 @@ mod tests {
                 fn add(&self, completions: &mut Vec<CompletionItem>) {}
             }
         };
-        let mut visitor = SeamVisitor::new(PROBE_FILE);
+        let carriers = BTreeSet::new();
+        let mut visitor = SeamVisitor::new(PROBE_FILE, &carriers);
         visitor.visit_file(&file);
         assert_eq!(visitor.producers.len(), 2, "both trait methods are producers");
 
@@ -2791,7 +2988,8 @@ mod tests {
                 fn add(&self, completions: &mut Vec<CompletionItem>) {}
             }
         };
-        let mut visitor = SeamVisitor::new(PROBE_FILE);
+        let carriers = BTreeSet::new();
+        let mut visitor = SeamVisitor::new(PROBE_FILE, &carriers);
         visitor.visit_file(&file);
         let merged = merge_declarations(visitor.producers).expect("same-file cfg arms merge");
         assert_eq!(merged.len(), 1);
@@ -2849,7 +3047,8 @@ mod tests {
                 let completions = smuggled;
             }
         };
-        let mut visitor = EntryBodyVisitor::default();
+        let no_producers = BTreeSet::new();
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
         visitor.visit_block(&renamed.block);
         assert!(
             visitor.appended_after_finalizer,
@@ -2863,7 +3062,8 @@ mod tests {
                 page.append(&mut extra);
             }
         };
-        let mut visitor = EntryBodyVisitor::default();
+        let no_producers = BTreeSet::new();
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
         visitor.visit_block(&taken.block);
         assert!(visitor.appended_after_finalizer, "`append` through a moved page went undetected");
     }
@@ -2882,7 +3082,8 @@ mod tests {
                 payload.push(items);
             }
         };
-        let mut visitor = EntryBodyVisitor::default();
+        let no_producers = BTreeSet::new();
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
         visitor.visit_block(&ordinary.block);
         assert!(
             !visitor.appended_after_finalizer,

@@ -61,7 +61,7 @@ A producer is a function taking the shared `&mut Vec<CompletionItem>` append cha
 
 | Population | Count |
 | --- | --- |
-| producers | 56 |
+| producers | 58 |
 | candidate classes | 18 |
 | construction-only files | 0 |
 | delegated modules | 2 |
@@ -125,8 +125,10 @@ A producer is a function taking the shared `&mut Vec<CompletionItem>` append cha
 | `perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_symbol_namespace_context` | router | append | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10229 |
 | `perl_lsp_rs_core::providers::completion::completion::request::dispatch::complete_use_or_structural_context` | router | append | core_provider | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | compatibility_adapter_before_shared_finalizer | handle_completion, handle_completion_cancellable | #10229 |
 | `perl_lsp_rs::runtime::language::completion::sort_and_cap_completions` | finalizer | returned | shared_finalizer | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | is_shared_finalizer | handle_completion, handle_completion_cancellable | #10914 |
+| `perl_lsp_rs_core::providers::completion_item::candidate::finalize_completion_candidates` | finalizer | returned | shared_finalizer | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | is_shared_finalizer | handle_completion, handle_completion_cancellable | #10914 |
 | `perl_lsp_rs_core::providers::completion_item::candidate::merge_completion_candidates` | finalizer | returned | shared_finalizer | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | is_shared_finalizer | handle_completion, handle_completion_cancellable | #10914 |
 | `perl_lsp_rs_core::providers::completion_item::deduplicate_and_sort` | finalizer | returned | shared_finalizer | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | is_shared_finalizer | handle_completion, handle_completion_cancellable | #10914 |
+| `perl_lsp_rs_core::providers::completion_item::finalize_completion_candidates` | finalizer | returned | shared_finalizer | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | is_shared_finalizer | handle_completion, handle_completion_cancellable | #10914 |
 | `perl_lsp_rs_core::providers::completion_item::merge_and_sort_completion_candidates` | finalizer | returned | shared_finalizer | not_applicable | not_applicable | not_applicable | not_applicable | legacy_unreported | is_shared_finalizer | handle_completion, handle_completion_cancellable | #10914 |
 
 ## Route divergences

@@ -5,7 +5,7 @@ Basis: main@30efa8a. All commands run from the repository root.
 ## Current inventory state
 
 ```text
-56 producers across 18 candidate classes
+58 producers across 18 candidate classes
  0 construction-only files
  2 delegated modules
  0 post-finalizer appends
@@ -90,7 +90,7 @@ ship). The reviewer's clean results are also recorded: no `HashMap` anywhere,
 byte-identical second generation, self-consistent digest, and no Mermaid node-id
 collision.
 
-Twenty-six ledger falsifiers, each corrupting the reconciled checked-in ledger
+Twenty-nine ledger falsifiers, each corrupting the reconciled checked-in ledger
 along one axis and asserting the refusal names that axis:
 
 | Axis | Refused because |
@@ -121,6 +121,9 @@ along one axis and asserting the refusal names that axis:
 | delegation row for a scanned module | stale once the module is scanned |
 | delegation row nothing reaches | stale reference |
 | a single-file scan root treated as module coverage | the rest of the module is unscanned |
+| a named carrier return missed | a struct field holds the page |
+| same-named traits from different modules fused | the whole trait path identifies the method |
+| a by-value producer call after finalization | candidates added with no mutating method in sight |
 
 Plus positive controls: the checked-in ledger reconciles, the checked-in
 projection is current, generation is byte-identical on a second run, discovery
