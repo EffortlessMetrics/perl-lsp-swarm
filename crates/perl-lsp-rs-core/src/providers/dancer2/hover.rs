@@ -857,8 +857,15 @@ get '/x' => sub { 1 };
             facts.two_x_route_facts.iter().all(|b| b.routes.is_empty()),
             "an excluded route keyword mints no route"
         );
-        // OneX contract marker on the 1.x minted facts.
-        assert!(facts.routes.iter().all(|_| true));
+        // The OneX contract marker holds at the route-family producer for
+        // the 1.x path.
+        assert!(
+            facts.two_x_route_facts.iter().all(|b| {
+                b.contract
+                == perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::TwoX
+            }),
+            "every 2.x bundle must carry the TwoX marker"
+        );
         let one_x_source = "package App;
 use Dancer2;
 get '/x' => sub { 1 };

@@ -410,10 +410,15 @@ fn fold_package_facts(
 ) {
     use perl_semantic_facts::framework_adapters::dancer2_two_x::Dancer2TwoXKeywordState;
 
-    // A compile-time die anywhere in the package dominates the record.
-    if matches!(existing.state, Dancer2TwoXActivationState::ImportDied { .. })
-        || matches!(incoming.state, Dancer2TwoXActivationState::ImportDied { .. })
-    {
+    // A compile-time die anywhere in the package dominates the record:
+    // an odd-arity import aborts compilation, so an incoming die replaces
+    // whatever ran before it, and an earlier die means later imports never
+    // ran at all (#15006 review).
+    if matches!(incoming.state, Dancer2TwoXActivationState::ImportDied { .. }) {
+        *existing = incoming;
+        return;
+    }
+    if matches!(existing.state, Dancer2TwoXActivationState::ImportDied { .. }) {
         return;
     }
     // An exact incoming import folds into an exact record; a non-exact
