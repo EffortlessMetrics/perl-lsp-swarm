@@ -1107,7 +1107,7 @@ impl ContentHashes {
         // covered by the depth-limited render above.
         if let NodeKind::Try { catch_blocks, .. } = &node.kind {
             for (binder, _) in catch_blocks {
-                binder.as_ref().map(|(name, _)| name.as_str()).hash(hasher);
+                binder.as_ref().map(|(name, _)| name).hash(hasher);
             }
         }
 
@@ -1643,6 +1643,34 @@ mod hash_fixtures {
         )
     }
 
+    /// An `if` carrying `elsif` arms.
+    ///
+    /// `elsif` is the one place the visit table reuses a `FieldId` within a
+    /// single variant: `FieldId::CONDITION` labels both the leading condition
+    /// and every `elsif` condition (`kind_schema/visit.rs`). Field names alone
+    /// therefore cannot disambiguate position here, which makes these shapes
+    /// the sharpest test of the ordered child fold.
+    pub(super) fn if_with_elsifs(
+        condition: Node,
+        then_branch: Node,
+        elsif_branches: Vec<(Node, Node)>,
+        else_branch: Option<Node>,
+    ) -> Node {
+        Node::new(
+            NodeKind::If {
+                condition: Box::new(condition),
+                then_branch: Box::new(then_branch),
+                elsif_branches: elsif_branches
+                    .into_iter()
+                    .map(|(cond, body)| (Box::new(cond), Box::new(body)))
+                    .collect(),
+                else_branch: else_branch.map(Box::new),
+                keyword: None,
+            },
+            loc(),
+        )
+    }
+
     /// A `try` whose second child is a catch handler, versus one whose second
     /// child is the identical block in the `finally` role.
     ///
@@ -1713,6 +1741,45 @@ mod hash_fixtures {
             try_node(Some("$other")),
             try_with_second_child_as(SecondChildRole::Catch),
             try_with_second_child_as(SecondChildRole::Finally),
+            // `elsif` reuses FieldId::CONDITION, so only the ordered fold
+            // separates these.
+            if_with_elsifs(number("1"), block(vec![number("2")]), Vec::new(), None),
+            if_with_elsifs(
+                number("1"),
+                block(vec![number("2")]),
+                vec![(number("3"), block(vec![number("4")]))],
+                None,
+            ),
+            if_with_elsifs(
+                number("1"),
+                block(vec![number("2")]),
+                vec![(number("4"), block(vec![number("3")]))],
+                None,
+            ),
+            if_with_elsifs(
+                number("1"),
+                block(vec![number("2")]),
+                vec![(number("3"), block(vec![number("4")]))],
+                Some(block(vec![number("5")])),
+            ),
+            if_with_elsifs(
+                number("1"),
+                block(vec![number("2")]),
+                vec![
+                    (number("3"), block(vec![number("4")])),
+                    (number("5"), block(vec![number("6")])),
+                ],
+                None,
+            ),
+            if_with_elsifs(
+                number("1"),
+                block(vec![number("2")]),
+                vec![
+                    (number("5"), block(vec![number("6")])),
+                    (number("3"), block(vec![number("4")])),
+                ],
+                None,
+            ),
             nest(3, number("1")),
             nest(3, number("2")),
             nest(4, number("1")),
@@ -1823,6 +1890,49 @@ mod content_hash_tests {
             content_hash(&as_catch),
             content_hash(&as_finally),
             "identical children in identical order must not hash alike across field roles"
+        );
+    }
+
+    #[test]
+    fn elsif_arms_are_separated_by_fold_order_not_field_names() {
+        // The visit table labels the leading condition and every `elsif`
+        // condition with the same `FieldId::CONDITION`, so field names alone
+        // cannot tell these apart — only the ordered child fold can.
+        let a = if_with_elsifs(
+            number("1"),
+            block(vec![number("2")]),
+            vec![(number("3"), block(vec![number("4")]))],
+            None,
+        );
+        let swapped_within_arm = if_with_elsifs(
+            number("1"),
+            block(vec![number("2")]),
+            vec![(number("4"), block(vec![number("3")]))],
+            None,
+        );
+        let two_arms_reordered = if_with_elsifs(
+            number("1"),
+            block(vec![number("2")]),
+            vec![(number("5"), block(vec![number("6")])), (number("3"), block(vec![number("4")]))],
+            None,
+        );
+        let two_arms = if_with_elsifs(
+            number("1"),
+            block(vec![number("2")]),
+            vec![(number("3"), block(vec![number("4")])), (number("5"), block(vec![number("6")]))],
+            None,
+        );
+
+        assert_ne!(a.to_sexp(), swapped_within_arm.to_sexp(), "guard: renders differ");
+        assert_ne!(
+            content_hash(&a),
+            content_hash(&swapped_within_arm),
+            "swapping an elsif condition with its body must change the hash"
+        );
+        assert_ne!(
+            content_hash(&two_arms),
+            content_hash(&two_arms_reordered),
+            "reordering two elsif arms must change the hash"
         );
     }
 
