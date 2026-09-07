@@ -897,15 +897,18 @@ impl ProviderReferenceVisitor<'_> {
                     self.walk_use_tree(item, under_providers);
                 }
             }
+            // `self` under `providers` is the namespace itself, not a module
+            // in it — `providers::{self}` imports `providers`, and
+            // `providers::{self as p}` aliases it (collected in the alias
+            // pass). Recording either as a module invents `providers::self`,
+            // which no scan root can cover and no delegation row can name, so
+            // the check would refuse ordinary valid source.
             syn::UseTree::Name(name) => {
-                if under_providers {
+                if under_providers && name.ident != "self" {
                     self.modules.insert(name.ident.to_string());
                 }
             }
             syn::UseTree::Rename(rename) => {
-                // `providers::{self as p}` renames the namespace, not a module
-                // in it; `providers as p` is the same thing spelled shorter and
-                // is collected in the alias pass.
                 if under_providers && rename.ident != "self" {
                     self.modules.insert(rename.ident.to_string());
                 }
@@ -1024,9 +1027,12 @@ fn scanned_files(root: &Path) -> Result<Vec<String>> {
     if !untracked.is_empty() {
         bail!(
             "untracked Rust file(s) under the completion scan roots: {}.\n\
-             Discovery reads tracked files, so an untracked producer would not appear in the \
-             denominator and this check would report a green tree it had not inspected. \
-             `git add` them (or remove them) and run again.",
+             Discovery reads tracked files, so a producer in one of these would not appear in \
+             the denominator and this check would report a green tree it had not inspected. \
+             `git add` them (or remove them) and run again. A file listed here that `git add` \
+             refuses is `.gitignore`d — ignored source under a scan root is as invisible to \
+             this inventory as unadded source, so decide whether it belongs in the tree or \
+             outside the scan roots.",
             untracked.join(", ")
         );
     }
@@ -1036,27 +1042,44 @@ fn scanned_files(root: &Path) -> Result<Vec<String>> {
 
 /// Untracked, non-ignored `.rs` paths under the scan roots.
 fn untracked_scan_root_files(root: &Path) -> Result<Vec<String>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["ls-files", "-z", "--others", "--exclude-standard"])
-        .output()
-        .wrap_err("failed to run `git ls-files --others`")?;
-    if !output.status.success() {
-        bail!(
-            "`git ls-files --others` failed with status {}{}",
-            output.status,
-            first_stderr_line(&output.stderr)
+    // Two queries, because `--exclude-standard` hides `.gitignore`d paths and
+    // an ignored producer is exactly as invisible as an unadded one: neither is
+    // tracked, so neither is scanned or digested, and only the first would have
+    // been reported. A scan root is a narrow directory of product source, so an
+    // ignored `.rs` file inside one is anomalous by construction — the repo has
+    // 18 ignored Rust files today and none under a scan root, so covering them
+    // costs nothing and closes the gap.
+    let mut paths = Vec::new();
+    for args in [
+        ["ls-files", "-z", "--others", "--exclude-standard"].as_slice(),
+        ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"].as_slice(),
+    ] {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .wrap_err("failed to run `git ls-files --others`")?;
+        if !output.status.success() {
+            bail!(
+                "`git ls-files --others` failed with status {}{}",
+                output.status,
+                first_stderr_line(&output.stderr)
+            );
+        }
+        paths.extend(
+            String::from_utf8_lossy(&output.stdout)
+                .split('\0')
+                .filter(|entry| !entry.is_empty())
+                .filter(|entry| entry.ends_with(".rs"))
+                .filter(|entry| {
+                    SCAN_ROOTS.iter().any(|scope| entry.starts_with(scope) || entry == scope)
+                })
+                .map(str::to_string),
         );
     }
-    let mut paths: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .split('\0')
-        .filter(|entry| !entry.is_empty())
-        .filter(|entry| entry.ends_with(".rs"))
-        .filter(|entry| SCAN_ROOTS.iter().any(|scope| entry.starts_with(scope) || entry == scope))
-        .map(str::to_string)
-        .collect();
     paths.sort();
+    paths.dedup();
     Ok(paths)
 }
 
@@ -2392,9 +2415,26 @@ fn validate_reachability(ledger: &Ledger, discovered: &Discovered) -> Result<()>
             _ => {}
         }
 
+        // A repeated entry point is a malformed row, and refusing it outright
+        // is what keeps the divergence count below honest. Counting the raw
+        // list, a row reached by one entry point could list it twice, match
+        // `ENTRY_POINTS.len()`, and escape naming a `route_divergence_owner` —
+        // hiding exactly the kind of finding the Dancer2 divergence is.
+        let mut seen = BTreeSet::new();
+        for entry in &row.reached_by {
+            if !seen.insert(entry.as_str()) {
+                bail!(
+                    "{LEDGER_PATH} row `{}` lists `{entry}` twice in `reached_by`; an entry \
+                     point reaches a producer or it does not, and a repeated name inflates the \
+                     route count until a one-route producer looks like it serves both",
+                    row.id
+                );
+            }
+        }
+
         // An unreachable producer is not a route divergence: it serves no
         // route at all, and its owner is already named by the reason.
-        let diverges = !unreachable && row.reached_by.len() != ENTRY_POINTS.len();
+        let diverges = !unreachable && seen.len() != ENTRY_POINTS.len();
         let owner = row.route_divergence_owner.as_deref().unwrap_or("");
         let note = row.route_divergence_note.as_deref().unwrap_or("");
         if diverges {
@@ -3961,6 +4001,47 @@ mod tests {
         let mut visitor = ProviderReferenceVisitor { modules: &mut modules, aliases: &mut aliases };
         visitor.visit_file(&unrelated);
         assert!(modules.is_empty(), "an unrelated alias must not widen the plane, got {modules:?}");
+    }
+
+    /// `providers::{self}` imports the namespace, not a module called `self`.
+    ///
+    /// Recording it as a module invents `providers::self`, which no scan root
+    /// can cover and no delegation row can name — so the check would refuse
+    /// ordinary valid source and every command would fail.
+    #[test]
+    fn a_namespace_self_import_is_not_a_module() {
+        let file: syn::File = syn::parse_quote! {
+            use crate::providers::{self};
+            use crate::providers::{self as p, htmx};
+        };
+        let mut modules = BTreeSet::new();
+        let mut aliases = BTreeSet::new();
+        ProviderAliasVisitor { aliases: &mut aliases }.visit_file(&file);
+        let mut visitor = ProviderReferenceVisitor { modules: &mut modules, aliases: &mut aliases };
+        visitor.visit_file(&file);
+        assert!(
+            !modules.contains("self"),
+            "`self` is the namespace, not a module in it, got {modules:?}"
+        );
+        assert!(modules.contains("htmx"), "a real sibling module is still recorded");
+        assert!(aliases.contains("p"), "`self as p` still registers the namespace alias");
+    }
+
+    /// A repeated entry point cannot inflate a row's route count.
+    #[test]
+    fn refuses_a_repeated_entry_point_in_reached_by() {
+        let (mut ledger, discovered) = fixture();
+        let row = ledger
+            .producers
+            .iter_mut()
+            .find(|row| row.reached_by.len() == 1)
+            .expect("the ledger carries a single-route row");
+        let only = row.reached_by[0].clone();
+        // Two copies of one route look like two routes to a length check, so
+        // the divergence owner requirement would be skipped.
+        row.reached_by.push(only.clone());
+        refuses(&ledger, &discovered, "lists `");
+        refuses(&ledger, &discovered, "twice in `reached_by`");
     }
 
     /// A cyclic alias pair terminates instead of resolving forever.

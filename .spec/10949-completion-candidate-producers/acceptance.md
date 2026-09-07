@@ -101,7 +101,7 @@ ship). The reviewer's clean results are also recorded: no `HashMap` anywhere,
 byte-identical second generation, self-consistent digest, and no Mermaid node-id
 collision.
 
-Forty-four ledger falsifiers, each corrupting the reconciled checked-in ledger
+Forty-six ledger falsifiers, each corrupting the reconciled checked-in ledger
 along one axis and asserting the refusal names that axis:
 
 | Axis | Refused because |
@@ -150,6 +150,8 @@ along one axis and asserting the refusal names that axis:
 | a container holding the page through an alias | a field's type may name an alias declared elsewhere |
 | a container holding another carrier | carriers nest, and one pass cannot see the inner one yet |
 | a renamed `providers` namespace | `use crate::providers as p` leaves nothing spelled `providers::` |
+| a repeated entry point in `reached_by` | two copies of one route look like two routes to a length check |
+| a `.gitignore`d producer under a scan root | ignored source is as unscanned as unadded source |
 
 Plus positive controls: the checked-in ledger reconciles, the checked-in
 projection is current, generation is byte-identical on a second run, discovery
@@ -218,8 +220,22 @@ All were applied to product source, confirmed refused, and reverted.
     `providers::` for either arm of the delegation scan to match, so an
     unscanned producer behind the alias needed no row. `check` exits 1 naming
     `providers::color` and the file that reaches it.
+12. **A producer in a `.gitignore`d file under a scan root.** Neither tracked
+    (so not scanned, not digested) nor reported by the untracked control, which
+    passed `--exclude-standard`. `check` reported the tree current with the
+    producer invisible; it now names the path. The repository has 18 ignored
+    Rust files and none under a scan root, so covering them adds no noise.
 
-Mutations 7–11 were each run twice, against the same tree: once with the
+One control was also refusing **valid** source and is repaired here rather than
+recorded. `use crate::providers::{self};` imports the namespace, not a module
+called `self`, but the delegation scan recorded `providers::self` — a module no
+scan root can cover and no delegation row can name, so every command failed on
+ordinary code. Confirmed against real source: refused before, accepted now. It
+was introduced with the namespace-alias fix in the round before, which guarded
+the `Rename` arm and not the `Name` arm; a false alarm on legal source is the
+one failure this checker cannot ask a reader to tolerate.
+
+Mutations 7–12 were each run twice, against the same tree: once with the
 pre-review checker and once with the current one. In every case the checker as it stood before that round, given the digest and a regenerated projection — the state an author
 reaches after re-auditing — exited **0** with *"valid and current: 58 producers
 across 18 classes, 0 construction-only files, 0 post-finalizer appends"* while
