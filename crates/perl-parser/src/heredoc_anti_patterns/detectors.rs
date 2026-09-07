@@ -385,11 +385,17 @@ fn heredoc_is_in_term_position(code: &str, start: usize) -> bool {
         return false;
     }
 
-    // `print {$fh} <<EOF` is a heredoc, `$h{k} << FOO` a shift. The brace group
-    // is an indirect filehandle only when a list operator introduces it.
+    // `print {$fh} <<EOF` and `print ${fh} <<EOF` are heredocs, `$h{k} << FOO`
+    // a shift. A brace group is an indirect filehandle only when a list
+    // operator introduces it — directly for the block form, or through the
+    // sigil for the braced-scalar form.
     if previous == '}' {
-        return matching_open_brace(prefix)
-            .and_then(|open| trailing_bareword(&prefix[..open]))
+        let Some(open) = matching_open_brace(prefix) else {
+            return false;
+        };
+        let before_brace = &prefix[..open];
+        let introducer = before_brace.strip_suffix('$').unwrap_or(before_brace);
+        return trailing_bareword(introducer)
             .is_some_and(|word| FILEHANDLE_OPERATORS.contains(&word));
     }
 
@@ -416,9 +422,16 @@ fn heredoc_is_in_term_position(code: &str, start: usize) -> bool {
     // A sigilled variable is a complete term — `$y << FOO` shifts — unless a
     // list operator precedes it, which makes it an indirect filehandle and puts
     // the `<<` back in argument position: `print $fh <<EOF`.
-    if let Some(without_sigil) = before.strip_suffix(['$', '@', '%', '&']) {
+    //
+    // Only `$` qualifies. An indirect filehandle slot holds a scalar, a block or
+    // a bareword, never an array, hash or code sigil, and `perl -c` 5.38 reads
+    // `print @a <<FOO`, `print %h <<FOO` and `print &f <<FOO` as shifts.
+    if let Some(without_sigil) = before.strip_suffix('$') {
         return trailing_bareword(without_sigil)
             .is_some_and(|word| FILEHANDLE_OPERATORS.contains(&word));
+    }
+    if before.ends_with(['@', '%', '&']) {
+        return false;
     }
 
     if before.ends_with("->") {
@@ -449,6 +462,14 @@ const TERM_TAKING_OPERATORS: [&str; 9] =
 /// arguments, as `print $fh <<EOF` and `print {$fh} <<EOF`.
 const FILEHANDLE_OPERATORS: [&str; 3] = ["print", "printf", "say"];
 
+/// How far back a filehandle block may be matched from its closing brace.
+///
+/// A block used as a filehandle holds an expression yielding a handle, so it is
+/// short even when written across lines; 256 bytes covers `{$fh}` through
+/// `{ $self->{handles}{err} }` with room to spare. Anything longer is not a
+/// filehandle block, and declining to mask costs only coverage.
+const FILEHANDLE_BLOCK_BUDGET: usize = 256;
+
 /// The identifier ending `prefix`, ignoring trailing whitespace.
 fn trailing_bareword(prefix: &str) -> Option<&str> {
     let prefix = prefix.trim_end();
@@ -462,15 +483,17 @@ fn trailing_bareword(prefix: &str) -> Option<&str> {
 
 /// Offset of the `{` matching the `}` that ends `prefix`.
 ///
-/// The search stops at the start of that line. Perl's indirect-filehandle block
-/// sits next to its operator, so nothing valid is lost, and the bound keeps this
-/// from becoming a backwards scan over the whole file at every candidate.
+/// The search is capped at [`FILEHANDLE_BLOCK_BUDGET`] bytes rather than at the
+/// start of the line: a filehandle block may be written across lines, but it is
+/// always short. A fixed budget keeps the cost `O(1)` per candidate, which the
+/// bound exists for — an unbounded backwards scan from every `}` that precedes a
+/// `<<` is quadratic on adversarial input.
 fn matching_open_brace(prefix: &str) -> Option<usize> {
-    let line_start = prefix.rfind('\n').map_or(0, |idx| idx + 1);
+    let floor = prefix.len().saturating_sub(FILEHANDLE_BLOCK_BUDGET);
     let bytes = prefix.as_bytes();
     let mut depth = 0usize;
 
-    for idx in (line_start..bytes.len()).rev() {
+    for idx in (floor..bytes.len()).rev() {
         match bytes[idx] {
             b'}' => depth += 1,
             b'{' => {

@@ -289,6 +289,13 @@ fn antip_left_shift_is_not_a_heredoc_declaration() {
         ("hash subscript operand", "my $x = $h{k}<<FOO;\n", "FOO\n"),
         ("grouped operand", "my $x = ($y)<<FOO;\n", "FOO\n"),
         ("nullary CORE builtin", "my $x = CORE::time<<FOO;\n", "FOO\n"),
+        // An indirect filehandle slot holds a scalar, a block or a bareword —
+        // never an array, hash or code sigil. `perl -c` 5.38 reads all three of
+        // these as shifts even though a list operator introduces them, so the
+        // filehandle admission must not key on "any sigil".
+        ("array after print", "print @a<<FOO;\n", "FOO\n"),
+        ("hash after print", "print %h<<FOO;\n", "FOO\n"),
+        ("code sigil after print", "print &f<<FOO;\n", "FOO\n"),
     ] {
         let code = format!("{declaration}{BLOCK}{terminator}");
         assert!(
@@ -319,6 +326,11 @@ fn antip_left_shift_is_not_a_heredoc_declaration() {
         ("printf filehandle", "qr/x(?{ printf $fh <<'M';\nhas { brace\nM\n})/;\n"),
         ("say filehandle", "qr/x(?{ say $fh <<'M';\nhas { brace\nM\n})/;\n"),
         ("bareword filehandle", "qr/x(?{ print STDERR <<'M';\nhas { brace\nM\n})/;\n"),
+        ("braced scalar filehandle", "qr/x(?{ print ${fh} <<'M';\nhas { brace\nM\n})/;\n"),
+        // A filehandle block may be written across lines. The backward match is
+        // capped by a byte budget rather than by the line, so this still
+        // resolves without reintroducing an unbounded backwards scan.
+        ("block filehandle across lines", "qr/x(?{ print {\n$fh\n} <<'M';\nhas { brace\nM\n})/;\n"),
         ("CORE-qualified list op", "qr/x(?{ CORE::print <<'M';\nhas { brace\nM\n})/;\n"),
         ("CORE::say", "qr/x(?{ CORE::say <<'M';\nhas { brace\nM\n})/;\n"),
     ] {
