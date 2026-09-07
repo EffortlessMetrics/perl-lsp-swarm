@@ -105,6 +105,9 @@ check-all-targets:
     cargo check --workspace --all-targets --all-features --locked
     @echo "Compiling example test modules — cargo check --all-targets checks examples as non-test targets only, so their #[cfg(test)] code bit-rots unseen (#12650)..."
     cargo test --workspace --examples --locked --no-run
+    @echo "Compiling the wire-free perl-parser profiles — default and --all-features both enable lsp-compat, so a wire type reachable without it bit-rots unseen (#14975)..."
+    cargo check -p perl-parser --no-default-features --locked
+    cargo check -p perl-parser --no-default-features --features incremental --locked
     @echo "All targets compile clean."
 
 # Scan every tracked file for committed git conflict marker lines.
