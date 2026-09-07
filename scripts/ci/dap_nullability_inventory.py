@@ -152,6 +152,15 @@ def rust_field_for(wire_name: str, struct: dict) -> tuple[str, dict] | None:
     return None
 
 
+def find_duplicate_wire_names(struct: dict) -> list[str]:
+    """Return wire names claimed by more than one Rust field."""
+    seen: dict[str, int] = {}
+    for rust_name, meta in struct["fields"].items():
+        wire = meta.get("wire_name") or rust_name
+        seen[wire] = seen.get(wire, 0) + 1
+    return [wire for wire, count in seen.items() if count > 1]
+
+
 # Fields the reviewed contract confirms as required-nullable even though the
 # upstream schema generation does not carry a `required` array for them. Each
 # entry is a reviewer-confirmed contract call (#9404 seeding list); unconfirmed
@@ -240,6 +249,11 @@ def build_rows(schema: dict, rust: dict) -> tuple[list[dict], list[str]]:
                 }
                 if mapped is None:
                     row["reason"] = "not modeled in protocol.rs (Rust owner mapping pending)"
+                elif row_class == "required-non-null" and mapped[1].get("optional"):
+                    row["contradiction"] = (
+                        f"schema requires non-null but the Rust owner is Option<> "
+                        f"({mapped[1]['rust_type']})"
+                    )
                 rows.append(row)
             continue
         composed_properties = None
