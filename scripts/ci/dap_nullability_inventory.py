@@ -269,6 +269,7 @@ def build_rows(schema: dict, rust: dict) -> tuple[list[dict], list[str]]:
                         "class": row_class,
                         "rust_owner": f"{def_name}::{mapped[0]}" if mapped else None,
                         "rust_type": mapped[1]["rust_type"] if mapped else None,
+                        "serde_skips_when_none": mapped[1].get("skips_when_none", False) if mapped else None,
                         "reason": None if mapped else "not modeled in protocol.rs",
                     }
                 )

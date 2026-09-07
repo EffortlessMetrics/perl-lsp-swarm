@@ -13,7 +13,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -21,7 +22,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-nullable",
@@ -200,7 +202,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -208,7 +211,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -269,7 +273,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -277,7 +282,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -751,7 +757,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -759,7 +766,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -776,7 +784,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -784,7 +793,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -806,7 +816,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -814,7 +825,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -924,7 +936,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -932,7 +945,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -1009,7 +1023,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1017,7 +1032,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1127,7 +1143,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1135,7 +1152,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -1204,7 +1222,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1212,7 +1231,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -1291,7 +1311,8 @@
       "field": "body",
       "reason": null,
       "rust_owner": "Event::body",
-      "rust_type": "Option<serde_json::Value>"
+      "rust_type": "Option<serde_json::Value>",
+      "serde_skips_when_none": true
     },
     {
       "class": "required-non-null",
@@ -1299,7 +1320,8 @@
       "field": "event",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1307,7 +1329,8 @@
       "field": "type",
       "reason": null,
       "rust_owner": "Event::msg_type",
-      "rust_type": "String"
+      "rust_type": "String",
+      "serde_skips_when_none": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -1432,7 +1455,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1440,7 +1464,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1556,7 +1581,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1564,7 +1590,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -1646,7 +1673,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1654,7 +1682,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1671,7 +1700,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1679,7 +1709,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1813,7 +1844,8 @@
       "field": "body",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1821,7 +1853,8 @@
       "field": "event",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "unsupported",
@@ -1891,7 +1924,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1899,7 +1933,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-nullable",
@@ -1939,7 +1974,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1947,7 +1983,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1971,7 +2008,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -1979,7 +2017,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -2213,7 +2252,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2221,7 +2261,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2267,7 +2308,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2275,7 +2317,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -2371,7 +2414,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2379,7 +2423,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -2566,7 +2611,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2574,7 +2620,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2609,7 +2656,8 @@
       "field": "arguments",
       "reason": null,
       "rust_owner": "Request::arguments",
-      "rust_type": "Option<serde_json::Value>"
+      "rust_type": "Option<serde_json::Value>",
+      "serde_skips_when_none": true
     },
     {
       "class": "required-non-null",
@@ -2617,7 +2665,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2625,7 +2674,8 @@
       "field": "type",
       "reason": null,
       "rust_owner": "Request::msg_type",
-      "rust_type": "String"
+      "rust_type": "String",
+      "serde_skips_when_none": false
     },
     {
       "class": "optional-nullable",
@@ -2633,7 +2683,8 @@
       "field": "body",
       "reason": null,
       "rust_owner": "Response::body",
-      "rust_type": "Option<serde_json::Value>"
+      "rust_type": "Option<serde_json::Value>",
+      "serde_skips_when_none": true
     },
     {
       "class": "required-non-null",
@@ -2641,7 +2692,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -2649,7 +2701,8 @@
       "field": "message",
       "reason": null,
       "rust_owner": "Response::message",
-      "rust_type": "Option<String>"
+      "rust_type": "Option<String>",
+      "serde_skips_when_none": true
     },
     {
       "class": "required-non-null",
@@ -2657,7 +2710,8 @@
       "field": "request_seq",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2665,7 +2719,8 @@
       "field": "success",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2673,7 +2728,8 @@
       "field": "type",
       "reason": null,
       "rust_owner": "Response::msg_type",
-      "rust_type": "String"
+      "rust_type": "String",
+      "serde_skips_when_none": false
     },
     {
       "class": "optional-non-null-when-present",
@@ -2696,7 +2752,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2704,7 +2761,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -2712,7 +2770,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2720,7 +2779,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "unsupported",
@@ -2742,7 +2802,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2750,7 +2811,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2758,7 +2820,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2766,7 +2829,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "unsupported",
@@ -2921,7 +2985,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2929,7 +2994,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2976,7 +3042,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -2984,7 +3051,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3008,7 +3076,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3016,7 +3085,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3055,7 +3125,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3063,7 +3134,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -3110,7 +3182,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3118,7 +3191,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -3204,7 +3278,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3212,7 +3287,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3236,7 +3312,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3244,7 +3321,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3290,7 +3368,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3298,7 +3377,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -3489,7 +3569,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3497,7 +3578,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3602,7 +3684,8 @@
       "field": "includeAll",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -3610,7 +3693,8 @@
       "field": "line",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -3618,7 +3702,8 @@
       "field": "module",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -3626,7 +3711,8 @@
       "field": "parameterNames",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -3634,7 +3720,8 @@
       "field": "parameterTypes",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -3642,7 +3729,8 @@
       "field": "parameterValues",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -3650,7 +3738,8 @@
       "field": "parameters",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -3688,7 +3777,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3696,7 +3786,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3721,7 +3812,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3729,7 +3821,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "unsupported",
@@ -3779,7 +3872,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3787,7 +3881,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -3823,7 +3918,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3831,7 +3927,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -3888,7 +3985,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3896,7 +3994,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3934,7 +4033,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -3942,7 +4042,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -4021,7 +4122,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -4029,7 +4131,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
@@ -4045,7 +4148,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -4053,7 +4157,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-nullable",
@@ -4102,7 +4207,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -4275,7 +4381,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -4283,7 +4390,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -4328,7 +4436,8 @@
       "field": "arguments",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "required-non-null",
@@ -4336,7 +4445,8 @@
       "field": "command",
       "reason": "not modeled in protocol.rs",
       "rust_owner": null,
-      "rust_type": null
+      "rust_type": null,
+      "serde_skips_when_none": null
     },
     {
       "class": "optional-non-null-when-present",
