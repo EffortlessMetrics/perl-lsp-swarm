@@ -91,12 +91,14 @@ pub(super) fn handle_function_call<'a>(
     for arg in args {
         analyzer.analyze_node(arg, scope, ancestors, issues, context);
     }
-    // Parenthesized builtins such as `open(my $fh, '<', 'x')` parse the comma
-    // list as one ArrayLiteral argument. Consume by the inner argument index so
-    // position 0 still names the declared handle (#15051). Walk the original
-    // `args` above so the wrapper itself is analyzed exactly once.
+    // Parenthesized builtins wrap a comma or fat-comma list as one ArrayLiteral
+    // or HashLiteral argument (`build_list_or_hash`). Consume by the inner
+    // positional index so `open(my $fh, ...)` and `pipe(my $r => my $w)` both
+    // mark declared handles used (#15051). Walk the original `args` above so
+    // the wrapper itself is analyzed exactly once.
     if !declaration_arg_positions.is_empty() {
-        for (arg_index, arg) in parenthesized_list_args(args, context.code).iter().enumerate() {
+        for (arg_index, arg) in parenthesized_list_args(args, context.code).into_iter().enumerate()
+        {
             if declaration_arg_positions.contains(&arg_index) {
                 analyzer.mark_builtin_declaration_arg_consumed(arg, scope, context);
             }
@@ -108,18 +110,31 @@ pub(super) fn handle_function_call<'a>(
 /// Argument list used for builtin declaration-slot consumption.
 ///
 /// Bare calls already store one node per argument. A parenthesized call whose
-/// only argument is a `(`-opened [`NodeKind::ArrayLiteral`] is the same list
-/// wrapped by the parser; bracket constructors stay unwrapped.
-fn parenthesized_list_args<'a>(args: &'a [Node], source: &str) -> &'a [Node] {
+/// only argument is a `(`-opened list is the same positional list wrapped by
+/// the parser:
+/// - comma lists → [`NodeKind::ArrayLiteral`]
+/// - even fat-comma lists → [`NodeKind::HashLiteral`]
+///
+/// Bracket and brace constructors stay wrapped. Nested literals inside a pair
+/// or element are not flattened.
+fn parenthesized_list_args<'a>(args: &'a [Node], source: &str) -> Vec<&'a Node> {
     let [arg] = args else {
-        return args;
+        return args.iter().collect();
     };
-    let NodeKind::ArrayLiteral { elements } = &arg.kind else {
-        return args;
-    };
-    match source.as_bytes().get(arg.location.start) {
-        Some(&b'(') => elements.as_slice(),
-        _ => args,
+    if source.as_bytes().get(arg.location.start) != Some(&b'(') {
+        return args.iter().collect();
+    }
+    match &arg.kind {
+        NodeKind::ArrayLiteral { elements } => elements.iter().collect(),
+        NodeKind::HashLiteral { pairs } => {
+            let mut flattened = Vec::with_capacity(pairs.len() * 2);
+            for (key, value) in pairs {
+                flattened.push(key);
+                flattened.push(value);
+            }
+            flattened
+        }
+        _ => args.iter().collect(),
     }
 }
 
