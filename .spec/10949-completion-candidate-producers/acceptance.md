@@ -230,9 +230,11 @@ mutated tree is the finding; the refusals above are its closure.
 
 - Discovery is syntactic, and its ceiling is documented in the module header and
   the projection. A producer using neither the append channel nor a candidate
-  return type would not appear as a row. The append channel now sees through a
-  type alias and a named carrier, so the remaining gap is a producer that takes
-  neither and returns neither.
+  return type would not appear as a row. Both channels resolve names through the
+  same carrier set — which holds type aliases, structs and enums that carry the
+  page, and containers holding any of those — so a `&mut` borrow of any of them
+  is an append channel and a return of any of them is a return channel. The
+  remaining gap is a producer that takes neither and returns neither.
 - The construction plane recognizes struct literals of either candidate shape.
   A candidate built by a constructor, a `From` conversion, or a macro does not
   place its file in that plane. The channel and delegation planes still bound

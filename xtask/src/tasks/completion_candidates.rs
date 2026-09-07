@@ -4082,6 +4082,39 @@ mod tests {
         assert!(
             !unrelated.sig.inputs.iter().any(|arg| takes_append_channel(arg, &BTreeSet::new()))
         );
+
+        // A `&mut` borrow of a named carrier is the same channel: the callee
+        // can reach the page through the field and append to it, exactly as
+        // the wrapper-field case does inside an entry body. Asserted here
+        // because the acceptance record claims the append channel resolves
+        // through carriers, and until now only the alias spelling proved it.
+        let carriers = BTreeSet::from([String::from("Finalization")]);
+        let borrows_carrier: syn::ItemFn = syn::parse_quote! {
+            fn producer(page: &mut Finalization) {}
+        };
+        assert!(
+            borrows_carrier.sig.inputs.iter().any(|arg| takes_append_channel(arg, &carriers)),
+            "`&mut Finalization` reaches the page through its field"
+        );
+
+        // Still gated on `&mut`: a shared borrow of a carrier cannot grow it.
+        let shared_carrier: syn::ItemFn = syn::parse_quote! {
+            fn inspect(page: &Finalization) {}
+        };
+        assert!(
+            !shared_carrier.sig.inputs.iter().any(|arg| takes_append_channel(arg, &carriers)),
+            "a shared borrow of a carrier is not an append channel"
+        );
+
+        // And a carrier the scan never discovered is just a type.
+        assert!(
+            !borrows_carrier
+                .sig
+                .inputs
+                .iter()
+                .any(|arg| takes_append_channel(arg, &BTreeSet::new())),
+            "an undiscovered name must not widen the denominator"
+        );
     }
 
     #[test]
