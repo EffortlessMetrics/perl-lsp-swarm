@@ -57,6 +57,7 @@ The current monorepo and the product/integration repository after every split. R
 | `perl-lsp-rs-core` | swarm-product | published | `workspace_path` | #7384 |
 | `perl-lsp-ux-tests` | swarm-product | private | `workspace_path` | #7369 |
 | `perl-module` | _pending_ | published | `workspace_path` | #7400 |
+| `perl-operation-trace` | swarm-product | private | `workspace_path` | #7369 |
 | `perl-parser` | _pending_ | published | `workspace_path` | #7400 |
 | `perl-parser-bench` | _pending_ | private | `workspace_path` | #7400 |
 | `perl-parser-comparison` | _pending_ | private | `workspace_path` | #7400 |

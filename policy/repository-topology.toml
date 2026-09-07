@@ -400,6 +400,17 @@ current_integration_mode = "workspace_path"
 metadata_authority = "workspace_inherited"
 
 [[packages]]
+name = "perl-operation-trace"
+path = "crates/perl-operation-trace"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
 name = "perl-parser"
 path = "crates/perl-parser"
 current_owner = "swarm-product"

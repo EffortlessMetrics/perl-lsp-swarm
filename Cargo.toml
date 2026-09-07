@@ -8,6 +8,11 @@ members = [
     # Tier 1 leaf — no parser/workspace/LSP/DAP deps. Dependency contract
     # asserted in tests/dependency_contract.rs.
     "crates/perl-source-identity",
+    # perl-operation-trace: ephemeral operation_trace.v1 correlation identity,
+    # event vocabulary, and bounded in-memory recorder (#15021). Tier 1 leaf
+    # — serde only, no parser/workspace/LSP/DAP/hash-function deps.
+    # Dependency contract asserted in tests/dependency_contract.rs.
+    "crates/perl-operation-trace",
     "crates/perl-pragma",
     "crates/perl-regex",
     "crates/perl-lexer",
@@ -237,6 +242,9 @@ perl-ast-v2 = { path = "crates/perl-ast-v2", version = "0.17.0" }
 perl-token = { path = "crates/perl-token", version = "0.17.0" }
 # perl-source-identity: source_identity.v1 core types (#7652). No internal deps.
 perl-source-identity = { path = "crates/perl-source-identity", version = "0.17.0" }
+# perl-operation-trace: operation_trace.v1 correlation identity/event/recorder
+# contract (#15021). No internal deps.
+perl-operation-trace = { path = "crates/perl-operation-trace", version = "0.17.0" }
 perl-regex = { path = "crates/perl-regex", version = "0.17.0" }
 perl-pragma = { path = "crates/perl-pragma", version = "0.17.0" }
 perl-lexer = { path = "crates/perl-lexer", version = "0.17.0" }

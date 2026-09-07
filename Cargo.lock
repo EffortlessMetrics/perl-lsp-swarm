@@ -1998,6 +1998,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "perl-operation-trace"
+version = "0.17.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "perl-parser"
 version = "0.17.0"
 dependencies = [
