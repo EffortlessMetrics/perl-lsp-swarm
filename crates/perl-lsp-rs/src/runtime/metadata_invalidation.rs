@@ -137,10 +137,11 @@ impl LspServer {
     /// genuine metadata.
     ///
     /// Canonicalization needs both paths to exist. When the metadata file has
-    /// been deleted while a case-variant buffer stays open, identity cannot be
-    /// established and no text is returned; the exact-match path above still
-    /// covers the ordinary "open buffer outlives its backing file" case, which
-    /// is the one the delete-race regression depends on.
+    /// been deleted, canonicalization cannot answer, so the directory itself is
+    /// asked whether it folds case — which is what keeps buffer authority
+    /// across an external delete, the behavior this PR's claim boundary
+    /// promises, without letting a name match stand in for identity anywhere
+    /// the filesystem would distinguish the two files.
     fn staged_metadata_text<'a>(
         open_document_text: &'a BTreeMap<PathBuf, String>,
         path: &Path,
@@ -148,21 +149,67 @@ impl LspServer {
         if let Some(text) = open_document_text.get(path) {
             return Some(text);
         }
-        let canonical_target = std::fs::canonicalize(path).ok()?;
-        open_document_text.iter().find_map(|(candidate, text)| {
-            if candidate == path || !Self::paths_equal_ignore_ascii_case(candidate, path) {
-                return None;
+
+        // Nothing beyond this point runs unless some open document is a case
+        // variant of the target, so the probes below stay off the common path.
+        let (candidate, text) = open_document_text.iter().find(|(candidate, _)| {
+            *candidate != path && Self::paths_equal_ignore_ascii_case(candidate, path)
+        })?;
+
+        match (std::fs::canonicalize(path), std::fs::canonicalize(candidate)) {
+            // Both resolve: the filesystem answers identity directly.
+            (Ok(canonical_target), Ok(canonical_candidate)) => {
+                (canonical_candidate == canonical_target).then_some(text)
             }
-            let canonical_candidate = std::fs::canonicalize(candidate).ok()?;
-            (canonical_candidate == canonical_target).then_some(text)
-        })
+            // The metadata file is gone, so canonicalization cannot compare
+            // them. On a case-folding volume the open variant *was* this file
+            // and stays authoritative; on a case-sensitive one it never was.
+            _ => path.parent().is_some_and(Self::directory_folds_case).then_some(text),
+        }
+    }
+
+    /// Whether `dir` resolves entry names case-insensitively.
+    ///
+    /// Probed read-only against an existing entry rather than written, because
+    /// this runs against the user's workspace, and probed rather than inferred
+    /// from `cfg!(windows)`, because macOS folds case by default and a Linux
+    /// volume may be mounted either way.
+    ///
+    /// Returns `false` when the directory cannot be read or holds no entry
+    /// whose name contains an ASCII letter — the conservative answer, since it
+    /// only ever withholds a case-variant match.
+    fn directory_folds_case(dir: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let flipped: String = name
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_lowercase() {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c.to_ascii_lowercase()
+                    }
+                })
+                .collect();
+            if flipped == name {
+                continue;
+            }
+            return dir.join(flipped).symlink_metadata().is_ok();
+        }
+        false
     }
 
     /// Component-wise, ASCII case-insensitive path equality.
     ///
-    /// A cheap pre-filter for the canonicalization above: it keeps the
-    /// syscall off every open document and off any candidate that is not even
-    /// a case variant of the target.
+    /// A cheap pre-filter for the identity checks above: it keeps the syscalls
+    /// off every open document and off any candidate that is not even a case
+    /// variant of the target.
     fn paths_equal_ignore_ascii_case(left: &Path, right: &Path) -> bool {
         left.components().count() == right.components().count()
             && Self::path_contains_ignore_ascii_case(left, right)
@@ -641,6 +688,53 @@ mod tests {
             MetadataSourceRead::Text("requires 'Exact';\n".to_string()),
             "the exactly-spelled document is the one the detector addresses"
         );
+    }
+
+    /// Buffer authority must survive an external delete even when the editor
+    /// spells the document differently, which canonicalization alone cannot
+    /// decide once the file is gone. Where the volume folds case the open
+    /// variant was this file and stays authoritative; where it does not, it
+    /// never was and must not supply text.
+    #[test]
+    fn a_deleted_metadata_file_keeps_a_case_variant_buffer_only_where_case_folds() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        // The probe needs some entry to exist in the directory.
+        std::fs::write(temp.path().join("lib.pm"), "1;\n").expect("write sibling");
+        let mut open = BTreeMap::new();
+        open.insert(temp.path().join("CPANFILE"), "requires 'Staged';\n".to_string());
+
+        let reads = LspServer::capture_metadata_reads(temp.path(), &open);
+        let folds = filesystem_is_case_insensitive(temp.path());
+
+        let expected = if folds {
+            MetadataSourceRead::Text("requires 'Staged';\n".to_string())
+        } else {
+            MetadataSourceRead::Absent
+        };
+        assert_eq!(
+            read_for(&reads, DeclaredDependencySource::Cpanfile),
+            expected,
+            "a deleted file's case variant is authoritative exactly where it was the same file"
+        );
+    }
+
+    /// The fold probe must not claim a case-sensitive directory folds case.
+    #[test]
+    fn the_case_fold_probe_agrees_with_the_filesystem() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(temp.path().join("Probe.txt"), "x").expect("write entry");
+        assert_eq!(
+            LspServer::directory_folds_case(temp.path()),
+            filesystem_is_case_insensitive(temp.path()),
+            "the read-only probe must agree with an actual write/read-back check"
+        );
+    }
+
+    /// An unreadable or missing directory must answer conservatively.
+    #[test]
+    fn the_case_fold_probe_is_false_for_a_missing_directory() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        assert!(!LspServer::directory_folds_case(&temp.path().join("absent")));
     }
 
     /// A case-variant lookup must not reach a different file in the same
