@@ -1,3 +1,4 @@
+use chrono::{NaiveDate, Utc};
 use color_eyre::eyre::{Context, Result, bail};
 use serde::Serialize;
 use serde_yaml_ng::{Mapping, Value};
@@ -6,6 +7,29 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::utils::project_root;
+
+/// Registry of runner isolation profiles for self-hosted capacity that can
+/// execute pull-request-controlled code (#15070, under #7414).
+const SELF_HOSTED_ISOLATION_POLICY: &str = "policy/self-hosted-runner-isolation.toml";
+
+/// Runner substrate lifecycles a profile may declare.
+///
+/// `persistent` is a statement of fact, not a safety claim: it records that
+/// cross-run state survives, which is precisely why #7414 still owns the
+/// runtime decontamination proof.
+const ISOLATION_LIFECYCLES: &[&str] = &["disposable", "reimaged", "persistent"];
+
+/// Triggers from which a pull-request candidate can cause a run to start.
+///
+/// `merge_group` is deliberately excluded: it runs approved content after
+/// review, which is a different trust subject from an open candidate.
+const PR_CONTROLLED_TRIGGERS: &[&str] = &[
+    "pull_request",
+    "pull_request_target",
+    "pull_request_review",
+    "pull_request_review_comment",
+    "issue_comment",
+];
 
 const ALLOWLIST_PR_CONTENTS_WRITE: &[&str] = &["ci.yml", "ci-nightly.yml", "droid-review.yml"];
 const POLICY_WARN_UNPINNED_ACTIONS: bool = true;
@@ -113,6 +137,11 @@ pub fn run(config: WorkflowPolicyLintConfig) -> Result<()> {
         if config.check_lane_whitelist {
             check_lane_whitelist(&root, &mut issues)?;
         }
+
+        // Unconditional: routing pull-request-controlled code onto self-hosted
+        // capacity is a trust-boundary question, not a lane-economics one, so it
+        // is not gated behind `--check-lane-whitelist` (#15070, under #7414).
+        check_self_hosted_isolation(&root, Utc::now().date_naive(), &mut issues)?;
     }
 
     issues.sort_by(|left, right| {
@@ -1119,6 +1148,335 @@ fn check_stale_whitelist_job(
     Ok(())
 }
 
+/// One declared runner isolation profile, keyed by the workflow job it covers.
+#[derive(Debug, Clone)]
+struct IsolationProfile {
+    workflow: String,
+    job: String,
+    runner: Option<String>,
+    lifecycle: Option<String>,
+    candidate_writable: Option<Vec<String>>,
+    runtime_proof: Option<String>,
+    review_after: Option<String>,
+}
+
+fn parse_isolation_profiles(text: &str) -> Result<Vec<IsolationProfile>> {
+    let document: toml::Value =
+        toml::from_str(text).context("parsing self-hosted runner isolation policy")?;
+    let mut profiles = Vec::new();
+    let Some(entries) = document.get("profile").and_then(|value| value.as_array()) else {
+        return Ok(profiles);
+    };
+    for entry in entries {
+        let string = |key: &str| entry.get(key).and_then(|v| v.as_str()).map(ToOwned::to_owned);
+        profiles.push(IsolationProfile {
+            workflow: string("workflow").unwrap_or_default(),
+            job: string("job").unwrap_or_default(),
+            runner: string("runner"),
+            lifecycle: string("lifecycle"),
+            candidate_writable: entry.get("candidate_writable").and_then(|v| v.as_array()).map(
+                |items| items.iter().filter_map(|i| i.as_str()).map(ToOwned::to_owned).collect(),
+            ),
+            runtime_proof: string("runtime_proof"),
+            review_after: string("review_after"),
+        });
+    }
+    Ok(profiles)
+}
+
+/// How a job's `runs-on:` classifies for the trust boundary.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum RunnerTarget {
+    /// Routes to self-hosted capacity. `pool` is the lane-inventory token when
+    /// the label set is one the inventory recognises; `descriptor` always
+    /// describes the actual target for the operator reading the failure.
+    SelfHosted { pool: Option<String>, descriptor: String },
+    /// Cannot be classified statically, so it cannot be cleared statically.
+    Unresolved(String),
+    /// GitHub-hosted, or resolved at runtime from a matrix.
+    Elsewhere,
+}
+
+/// Classify one `runs-on:` value.
+///
+/// Deliberately independent of [`normalize_runs_on`], which maps onto the lane
+/// inventory's known pool tokens and answers `None` for any label set it does
+/// not recognise. `None` is the right answer for a runner-economics comparison
+/// and the wrong one for a trust boundary: `runs-on: self-hosted` and
+/// `runs-on: [self-hosted, some-new-pool]` are both self-hosted capacity even
+/// though the inventory has no token for them. Treating them as clean is the
+/// bypass #7414's recurrence bullet names.
+fn classify_runs_on(runs_on: &Value) -> RunnerTarget {
+    let self_hosted = |labels: &[Value]| -> RunnerTarget {
+        let label_strs: Vec<&str> = labels.iter().filter_map(Value::as_str).collect();
+        if !label_strs.contains(&"self-hosted") {
+            return RunnerTarget::Elsewhere;
+        }
+        RunnerTarget::SelfHosted {
+            pool: normalize_self_hosted_labels(labels),
+            descriptor: label_strs.join(", "),
+        }
+    };
+
+    match runs_on {
+        Value::String(raw) => {
+            let value = raw.trim();
+            if value.contains("${{") || value.contains("matrix.") {
+                // Resolved at runtime from a matrix; the lane inventory records
+                // these as `mixed` and this check makes no claim about them.
+                RunnerTarget::Elsewhere
+            } else if value == "self-hosted" {
+                RunnerTarget::SelfHosted { pool: None, descriptor: value.to_string() }
+            } else {
+                RunnerTarget::Elsewhere
+            }
+        }
+        Value::Sequence(labels) => self_hosted(labels),
+        Value::Mapping(map) => {
+            match map.get(Value::String("labels".to_string())).and_then(Value::as_sequence) {
+                Some(labels) => self_hosted(labels),
+                // A bare `group:` may name self-hosted capacity or a GitHub
+                // larger-runner group. Nothing in the file distinguishes them,
+                // so it cannot be cleared without explicit labels.
+                None if map.contains_key(Value::String("group".to_string())) => {
+                    RunnerTarget::Unresolved("runner group without explicit labels".to_string())
+                }
+                None => RunnerTarget::Elsewhere,
+            }
+        }
+        _ => RunnerTarget::Elsewhere,
+    }
+}
+
+/// Jobs in one workflow whose `runs-on:` is self-hosted or unclassifiable.
+fn self_hosted_jobs(workflow: &Value) -> Vec<(String, RunnerTarget)> {
+    let Some(jobs) = workflow.get("jobs").and_then(Value::as_mapping) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for (job_key, job_value) in jobs {
+        let (Some(job_id), Some(job_map)) = (job_key.as_str(), job_value.as_mapping()) else {
+            continue;
+        };
+        let Some(runs_on) = job_map.get(Value::String("runs-on".to_string())) else {
+            continue;
+        };
+        match classify_runs_on(runs_on) {
+            RunnerTarget::Elsewhere => {}
+            target => found.push((job_id.to_string(), target)),
+        }
+    }
+    found.sort();
+    found
+}
+
+/// `SELF_HOSTED_ISOLATION_*` — every job reachable from a pull-request-controlled
+/// trigger that routes to self-hosted capacity must carry a current, complete
+/// runner isolation profile.
+///
+/// This walk is **job-driven**, not profile-driven: a self-hosted job added with
+/// no profile entry at all must fail, which is exactly the bypass #7414's
+/// recurrence bullet names. A profile-driven walk would silently pass it.
+fn evaluate_self_hosted_isolation(
+    workflow_file: &str,
+    workflow: &Value,
+    profiles: &[IsolationProfile],
+    today: NaiveDate,
+    issues: &mut Vec<LintIssue>,
+) {
+    let workflow_triggers = triggers(workflow);
+    if !workflow_triggers.iter().any(|trigger| PR_CONTROLLED_TRIGGERS.contains(&trigger.as_str())) {
+        return;
+    }
+    let workflow_ref = format!(".github/workflows/{workflow_file}");
+
+    for (job_id, target) in self_hosted_jobs(workflow) {
+        let (pool, descriptor) = match target {
+            RunnerTarget::Unresolved(reason) => {
+                issues.push(LintIssue {
+                    level: "error",
+                    code: "SELF_HOSTED_ISOLATION_UNRESOLVED",
+                    workflow: workflow_file.to_string(),
+                    message: format!(
+                        "job `{job_id}` runs pull-request-controlled code on a runner target that \
+                         cannot be classified statically ({reason}); state the runner labels \
+                         explicitly so the trust boundary is decidable (#7414)"
+                    ),
+                });
+                continue;
+            }
+            RunnerTarget::SelfHosted { pool, descriptor } => (pool, descriptor),
+            // `self_hosted_jobs` never yields this variant.
+            RunnerTarget::Elsewhere => continue,
+        };
+        let actual_runner = pool.clone().unwrap_or_else(|| descriptor.clone());
+
+        let profile =
+            profiles.iter().find(|entry| entry.workflow == workflow_ref && entry.job == job_id);
+        let Some(profile) = profile else {
+            issues.push(LintIssue {
+                level: "error",
+                code: "SELF_HOSTED_ISOLATION_UNDECLARED",
+                workflow: workflow_file.to_string(),
+                message: format!(
+                    "job `{job_id}` runs pull-request-controlled code on `{actual_runner}` but has \
+                     no [[profile]] entry in {SELF_HOSTED_ISOLATION_POLICY}; declare the runner \
+                     lifecycle and candidate-writable surfaces before routing PR work to it (#7414)"
+                ),
+            });
+            continue;
+        };
+
+        let mut invalid = |detail: String| {
+            issues.push(LintIssue {
+                level: "error",
+                code: "SELF_HOSTED_ISOLATION_INVALID",
+                workflow: workflow_file.to_string(),
+                message: format!(
+                    "job `{job_id}` isolation profile in {SELF_HOSTED_ISOLATION_POLICY} {detail}"
+                ),
+            });
+        };
+
+        match profile.lifecycle.as_deref() {
+            None => invalid("declares no `lifecycle`".to_string()),
+            Some(lifecycle) if !ISOLATION_LIFECYCLES.contains(&lifecycle) => invalid(format!(
+                "declares unknown `lifecycle` `{lifecycle}` (expected one of {})",
+                ISOLATION_LIFECYCLES.join(", ")
+            )),
+            Some(_) => {}
+        }
+
+        if profile.candidate_writable.is_none() {
+            invalid(
+                "declares no `candidate_writable` surfaces; use an empty list only when the \
+                 substrate genuinely retains nothing"
+                    .to_string(),
+            );
+        }
+
+        if profile.runtime_proof.as_deref().unwrap_or_default().trim().is_empty() {
+            invalid(
+                "declares no `runtime_proof` owner; a static declaration does not establish \
+                 cross-run decontamination and must name the issue that does"
+                    .to_string(),
+            );
+        }
+
+        // Runner drift: a profile written for one substrate must not silently
+        // cover a job that has since been re-routed to different capacity.
+        // Only comparable when the live label set maps onto a known inventory
+        // pool; an unrecognised self-hosted label set still needs a profile, but
+        // there is no token to compare it against.
+        if let (Some(declared), Some(live_pool)) = (profile.runner.as_deref(), pool.as_deref())
+            && declared != live_pool
+        {
+            invalid(format!(
+                "declares runner `{declared}` but job `{job_id}` runs on `{live_pool}`"
+            ));
+        }
+
+        match profile.review_after.as_deref() {
+            None => invalid("declares no `review_after` date".to_string()),
+            Some(raw) => match NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+                Err(_) => invalid(format!("declares malformed `review_after` `{raw}`")),
+                Ok(review_after) if review_after < today => issues.push(LintIssue {
+                    level: "error",
+                    code: "SELF_HOSTED_ISOLATION_STALE",
+                    workflow: workflow_file.to_string(),
+                    message: format!(
+                        "job `{job_id}` isolation profile lapsed on {raw}; re-establish the \
+                         runner evidence and advance `review_after` in \
+                         {SELF_HOSTED_ISOLATION_POLICY}"
+                    ),
+                }),
+                Ok(_) => {}
+            },
+        }
+    }
+}
+
+/// Report profiles that no longer describe a pull-request-controlled
+/// self-hosted job, so the registry cannot accumulate dead allowances.
+fn check_orphaned_isolation_profiles(
+    workflows_dir: &Path,
+    profiles: &[IsolationProfile],
+    issues: &mut Vec<LintIssue>,
+) -> Result<()> {
+    for profile in profiles {
+        let workflow_file = profile.workflow.trim_start_matches(".github/workflows/");
+        let workflow_path = workflows_dir.join(workflow_file);
+        let still_self_hosted = if workflow_path.exists() {
+            let raw = fs::read_to_string(&workflow_path)
+                .with_context(|| format!("reading {}", workflow_path.display()))?;
+            let workflow: Value = serde_yaml_ng::from_str(&raw)
+                .with_context(|| format!("parsing YAML {}", workflow_path.display()))?;
+            self_hosted_jobs(&workflow).iter().any(|(job, _)| job == &profile.job)
+        } else {
+            false
+        };
+        if !still_self_hosted {
+            issues.push(LintIssue {
+                level: "warning",
+                code: "SELF_HOSTED_ISOLATION_ORPHANED",
+                workflow: workflow_file.to_string(),
+                message: format!(
+                    "{SELF_HOSTED_ISOLATION_POLICY} declares an isolation profile for job `{}` \
+                     but that job no longer routes to self-hosted capacity; remove the stale \
+                     profile",
+                    profile.job
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn check_self_hosted_isolation(
+    root: &Path,
+    today: NaiveDate,
+    issues: &mut Vec<LintIssue>,
+) -> Result<()> {
+    let policy_path = root.join(SELF_HOSTED_ISOLATION_POLICY);
+    let profiles = if policy_path.exists() {
+        let text = fs::read_to_string(&policy_path)
+            .with_context(|| format!("reading {}", policy_path.display()))?;
+        parse_isolation_profiles(&text)?
+    } else {
+        // Absent registry is not "clean": every self-hosted PR-controlled job
+        // below reports as undeclared.
+        Vec::new()
+    };
+
+    let workflows_dir = root.join(".github").join("workflows");
+    if !workflows_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(&workflows_dir)
+        .with_context(|| format!("reading {}", workflows_dir.display()))?
+    {
+        let path = entry.context("reading workflow entry")?.path();
+        let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if ext != "yml" && ext != "yaml" {
+            continue;
+        }
+        let Some(workflow_file) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("reading workflow file {}", path.display()))?;
+        let workflow: Value = serde_yaml_ng::from_str(&raw)
+            .with_context(|| format!("parsing workflow YAML {}", path.display()))?;
+        evaluate_self_hosted_isolation(workflow_file, &workflow, &profiles, today, issues);
+    }
+
+    check_orphaned_isolation_profiles(&workflows_dir, &profiles, issues)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1828,6 +2186,387 @@ labels: [self-hosted, linux, x64, em-ci, cx43, rust-small]
         assert!(
             issues.iter().any(|i| i.code == "STALE_WHITELIST_JOB"),
             "expected STALE_WHITELIST_JOB for jobless workflow, got: {issues:?}"
+        );
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------
+    // #15070 (under #7414): PR-controlled self-hosted capacity must declare a
+    // current runner isolation profile.
+    // ---------------------------------------------------------------------
+
+    /// Fixed evaluation date so the freshness boundary is deterministic rather
+    /// than dependent on when the suite happens to run.
+    fn today() -> Result<NaiveDate> {
+        NaiveDate::from_ymd_opt(2026, 9, 7)
+            .ok_or_else(|| color_eyre::eyre::eyre!("test date is a valid calendar date"))
+    }
+
+    /// A complete, current profile for the exact job under test.
+    fn valid_profiles() -> Result<Vec<IsolationProfile>> {
+        parse_isolation_profiles(
+            r##"
+[[profile]]
+workflow = ".github/workflows/candidate.yml"
+job = "build"
+runner = "self_hosted_cx53"
+lifecycle = "persistent"
+candidate_writable = ["/mnt/ci-cache/cargo-home"]
+runtime_proof = "#7414"
+review_after = "2099-01-01"
+"##,
+        )
+    }
+
+    /// Build a workflow whose single job routes to CX53 under the given triggers.
+    fn self_hosted_workflow(on_block: &str) -> Result<Value> {
+        let yaml = format!(
+            "name: candidate\n\
+             {on_block}\
+             jobs:\n  \
+             build:\n    \
+             runs-on:\n      \
+             group: em-ci-small\n      \
+             labels: [self-hosted, linux, x64, em-ci, cx53, rust-small, trusted-pr]\n    \
+             steps:\n      \
+             - run: cargo test\n"
+        );
+        serde_yaml_ng::from_str(&yaml).with_context(|| format!("parsing fixture workflow:\n{yaml}"))
+    }
+
+    fn evaluate(workflow: &Value, profiles: &[IsolationProfile]) -> Result<Vec<LintIssue>> {
+        let mut issues = Vec::new();
+        evaluate_self_hosted_isolation("candidate.yml", workflow, profiles, today()?, &mut issues);
+        Ok(issues)
+    }
+
+    fn codes(issues: &[LintIssue]) -> Vec<&str> {
+        issues.iter().map(|issue| issue.code).collect()
+    }
+
+    #[test]
+    fn declared_pr_controlled_self_hosted_job_is_clean() -> Result<()> {
+        let workflow = self_hosted_workflow("on:\n  pull_request:\n")?;
+        let issues = evaluate(&workflow, &valid_profiles()?)?;
+        assert!(issues.is_empty(), "complete current profile is accepted: {issues:?}");
+        Ok(())
+    }
+
+    /// The load-bearing anti-bypass property: omitting the profile entirely must
+    /// fail, not silently pass. A profile-driven walk would miss this.
+    #[test]
+    fn undeclared_pr_controlled_self_hosted_job_is_an_error() -> Result<()> {
+        let workflow = self_hosted_workflow("on:\n  pull_request:\n")?;
+        let issues = evaluate(&workflow, &[])?;
+        assert_eq!(codes(&issues), vec!["SELF_HOSTED_ISOLATION_UNDECLARED"]);
+        assert_eq!(issues[0].level, "error");
+        assert!(
+            issues[0].message.contains("self_hosted_cx53"),
+            "names the resolved runner: {}",
+            issues[0].message
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn review_and_comment_triggers_are_pr_controlled() -> Result<()> {
+        for on_block in [
+            "on:\n  pull_request_target:\n",
+            "on:\n  pull_request_review:\n",
+            "on:\n  pull_request_review_comment:\n",
+            "on:\n  issue_comment:\n",
+            "on: [issue_comment]\n",
+        ] {
+            let workflow = self_hosted_workflow(on_block)?;
+            let issues = evaluate(&workflow, &[])?;
+            assert_eq!(
+                codes(&issues),
+                vec!["SELF_HOSTED_ISOLATION_UNDECLARED"],
+                "trigger block should be treated as PR-controlled: {on_block}"
+            );
+        }
+        Ok(())
+    }
+
+    /// `merge_group` runs reviewed content, and `push`/`schedule` are not
+    /// candidate-initiated. Neither may drag a job into this obligation.
+    #[test]
+    fn non_pr_controlled_triggers_are_not_covered() -> Result<()> {
+        for on_block in [
+            "on:\n  merge_group:\n",
+            "on:\n  push:\n    branches: [main]\n",
+            "on:\n  schedule:\n    - cron: '0 0 * * *'\n",
+            "on:\n  workflow_dispatch: {}\n",
+        ] {
+            let workflow = self_hosted_workflow(on_block)?;
+            let issues = evaluate(&workflow, &[])?;
+            assert!(issues.is_empty(), "{on_block} must not require a profile: {issues:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn github_hosted_pr_job_is_not_covered() -> Result<()> {
+        let workflow: Value = serde_yaml_ng::from_str(
+            "name: candidate\non:\n  pull_request:\njobs:\n  build:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: cargo test\n",
+        )
+        .context("parsing GitHub-hosted fixture")?;
+        let issues = evaluate(&workflow, &[])?;
+        assert!(issues.is_empty(), "GitHub-hosted capacity is out of scope: {issues:?}");
+        Ok(())
+    }
+
+    /// `${{ matrix.os }}` stays `mixed` in the inventory and must not produce a
+    /// false obligation.
+    #[test]
+    fn runtime_resolved_runner_expression_is_not_covered() -> Result<()> {
+        let workflow: Value = serde_yaml_ng::from_str(
+            "name: candidate\non:\n  pull_request:\njobs:\n  build:\n    runs-on: ${{ matrix.os }}\n    steps:\n      - run: cargo test\n",
+        )
+        .context("parsing matrix-expression fixture")?;
+        let issues = evaluate(&workflow, &[])?;
+        assert!(issues.is_empty(), "runtime runner expression is not claimed: {issues:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn missing_lifecycle_and_surfaces_are_errors() -> Result<()> {
+        let profiles = parse_isolation_profiles(
+            r##"
+[[profile]]
+workflow = ".github/workflows/candidate.yml"
+job = "build"
+runtime_proof = "#7414"
+review_after = "2099-01-01"
+"##,
+        )?;
+        let workflow = self_hosted_workflow("on:\n  pull_request:\n")?;
+        let issues = evaluate(&workflow, &profiles)?;
+        assert_eq!(issues.len(), 2, "lifecycle and candidate_writable both report: {issues:?}");
+        assert!(issues.iter().all(|issue| issue.code == "SELF_HOSTED_ISOLATION_INVALID"));
+        assert!(issues.iter().any(|issue| issue.message.contains("lifecycle")));
+        assert!(issues.iter().any(|issue| issue.message.contains("candidate_writable")));
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_lifecycle_is_an_error() -> Result<()> {
+        let profiles = parse_isolation_profiles(
+            r##"
+[[profile]]
+workflow = ".github/workflows/candidate.yml"
+job = "build"
+lifecycle = "probably-fine"
+candidate_writable = []
+runtime_proof = "#7414"
+review_after = "2099-01-01"
+"##,
+        )?;
+        let workflow = self_hosted_workflow("on:\n  pull_request:\n")?;
+        let issues = evaluate(&workflow, &profiles)?;
+        assert_eq!(codes(&issues), vec!["SELF_HOSTED_ISOLATION_INVALID"]);
+        assert!(issues[0].message.contains("probably-fine"));
+        Ok(())
+    }
+
+    /// A static declaration must name the owner of the runtime proof it does not
+    /// itself supply, so `lifecycle = "persistent"` can never read as a clearance.
+    #[test]
+    fn missing_runtime_proof_owner_is_an_error() -> Result<()> {
+        let profiles = parse_isolation_profiles(
+            r##"
+[[profile]]
+workflow = ".github/workflows/candidate.yml"
+job = "build"
+lifecycle = "persistent"
+candidate_writable = ["/mnt/ci-cache/sccache"]
+runtime_proof = "  "
+review_after = "2099-01-01"
+"##,
+        )?;
+        let workflow = self_hosted_workflow("on:\n  pull_request:\n")?;
+        let issues = evaluate(&workflow, &profiles)?;
+        assert_eq!(codes(&issues), vec!["SELF_HOSTED_ISOLATION_INVALID"]);
+        assert!(issues[0].message.contains("runtime_proof"));
+        Ok(())
+    }
+
+    /// A profile written for nano capacity must not silently cover a job that
+    /// has been re-routed onto a bigger persistent host.
+    #[test]
+    fn runner_drift_between_profile_and_job_is_an_error() -> Result<()> {
+        let profiles = parse_isolation_profiles(
+            r##"
+[[profile]]
+workflow = ".github/workflows/candidate.yml"
+job = "build"
+runner = "self_hosted_workflow_nano"
+lifecycle = "persistent"
+candidate_writable = []
+runtime_proof = "#7414"
+review_after = "2099-01-01"
+"##,
+        )?;
+        let workflow = self_hosted_workflow("on:\n  pull_request:\n")?;
+        let issues = evaluate(&workflow, &profiles)?;
+        assert_eq!(codes(&issues), vec!["SELF_HOSTED_ISOLATION_INVALID"]);
+        assert!(issues[0].message.contains("self_hosted_workflow_nano"));
+        assert!(issues[0].message.contains("self_hosted_cx53"));
+        Ok(())
+    }
+
+    #[test]
+    fn lapsed_and_malformed_review_dates_are_rejected() -> Result<()> {
+        let lapsed = parse_isolation_profiles(
+            r##"
+[[profile]]
+workflow = ".github/workflows/candidate.yml"
+job = "build"
+runner = "self_hosted_cx53"
+lifecycle = "persistent"
+candidate_writable = []
+runtime_proof = "#7414"
+review_after = "2026-09-06"
+"##,
+        )?;
+        let workflow = self_hosted_workflow("on:\n  pull_request:\n")?;
+        let issues = evaluate(&workflow, &lapsed)?;
+        assert_eq!(codes(&issues), vec!["SELF_HOSTED_ISOLATION_STALE"]);
+        assert_eq!(issues[0].level, "error");
+
+        let malformed = parse_isolation_profiles(
+            r##"
+[[profile]]
+workflow = ".github/workflows/candidate.yml"
+job = "build"
+runner = "self_hosted_cx53"
+lifecycle = "persistent"
+candidate_writable = []
+runtime_proof = "#7414"
+review_after = "March 2027"
+"##,
+        )?;
+        let issues = evaluate(&workflow, &malformed)?;
+        assert_eq!(codes(&issues), vec!["SELF_HOSTED_ISOLATION_INVALID"]);
+        assert!(issues[0].message.contains("review_after"));
+        Ok(())
+    }
+
+    /// The boundary is inclusive: a profile is current on its own review date.
+    #[test]
+    fn profile_is_current_on_its_review_date() -> Result<()> {
+        let profiles = parse_isolation_profiles(
+            r##"
+[[profile]]
+workflow = ".github/workflows/candidate.yml"
+job = "build"
+runner = "self_hosted_cx53"
+lifecycle = "persistent"
+candidate_writable = []
+runtime_proof = "#7414"
+review_after = "2026-09-07"
+"##,
+        )?;
+        let workflow = self_hosted_workflow("on:\n  pull_request:\n")?;
+        assert!(evaluate(&workflow, &profiles)?.is_empty());
+        Ok(())
+    }
+
+    /// A profile naming a different job must not satisfy this job's obligation.
+    #[test]
+    fn profile_for_another_job_does_not_cover_this_one() -> Result<()> {
+        let profiles = parse_isolation_profiles(
+            r##"
+[[profile]]
+workflow = ".github/workflows/candidate.yml"
+job = "some-other-job"
+runner = "self_hosted_cx53"
+lifecycle = "persistent"
+candidate_writable = []
+runtime_proof = "#7414"
+review_after = "2099-01-01"
+"##,
+        )?;
+        let workflow = self_hosted_workflow("on:\n  pull_request:\n")?;
+        assert_eq!(
+            codes(&evaluate(&workflow, &profiles)?),
+            vec!["SELF_HOSTED_ISOLATION_UNDECLARED"]
+        );
+        Ok(())
+    }
+
+    /// Build a PR-triggered workflow with an arbitrary `runs-on:` block.
+    fn workflow_with_runs_on(runs_on_block: &str) -> Result<Value> {
+        let yaml = format!(
+            "name: candidate\n\
+             on:\n  \
+             pull_request:\n\
+             jobs:\n  \
+             build:\n    \
+             runs-on: {runs_on_block}\n    \
+             steps:\n      \
+             - run: echo hi\n"
+        );
+        serde_yaml_ng::from_str(&yaml).with_context(|| format!("parsing fixture:\n{yaml}"))
+    }
+
+    /// `normalize_runs_on` answers `None` for these shapes because the lane
+    /// inventory has no pool token for them. They are still self-hosted capacity
+    /// executing candidate code, so the trust boundary must not clear them.
+    #[test]
+    fn self_hosted_shapes_without_a_known_pool_still_require_a_profile() -> Result<()> {
+        for runs_on in [
+            "self-hosted",
+            "[self-hosted]",
+            "[self-hosted, linux, brand-new-pool]",
+            "{labels: [self-hosted, linux, brand-new-pool]}",
+        ] {
+            let workflow = workflow_with_runs_on(runs_on)?;
+            let issues = evaluate(&workflow, &[])?;
+            assert_eq!(
+                codes(&issues),
+                vec!["SELF_HOSTED_ISOLATION_UNDECLARED"],
+                "`runs-on: {runs_on}` must still require a profile"
+            );
+        }
+        Ok(())
+    }
+
+    /// A bare runner `group:` names either self-hosted capacity or a GitHub
+    /// larger-runner group. Nothing in the file distinguishes them, so it cannot
+    /// be cleared statically.
+    #[test]
+    fn runner_group_without_labels_is_unresolved() -> Result<()> {
+        let workflow = workflow_with_runs_on("{group: em-ci-small}")?;
+        let issues = evaluate(&workflow, &[])?;
+        assert_eq!(codes(&issues), vec!["SELF_HOSTED_ISOLATION_UNRESOLVED"]);
+        assert_eq!(issues[0].level, "error");
+        Ok(())
+    }
+
+    /// Ordinary GitHub-hosted spellings must not be dragged in by the widened
+    /// classifier.
+    #[test]
+    fn github_hosted_shapes_stay_out_of_scope() -> Result<()> {
+        for runs_on in ["ubuntu-24.04", "ubuntu-latest", "windows-latest", "[ubuntu-24.04]"] {
+            let workflow = workflow_with_runs_on(runs_on)?;
+            let issues = evaluate(&workflow, &[])?;
+            assert!(issues.is_empty(), "`runs-on: {runs_on}` must stay out of scope: {issues:?}");
+        }
+        Ok(())
+    }
+
+    /// Every self-hosted job in the shipped tree is declared, and every shipped
+    /// declaration still describes a real self-hosted job. This is the assertion
+    /// that keeps the registry and `.github/workflows/**` from drifting apart.
+    #[test]
+    fn shipped_tree_has_no_undeclared_or_orphaned_self_hosted_capacity() -> Result<()> {
+        let root = project_root()?;
+        let mut issues = Vec::new();
+        check_self_hosted_isolation(&root, Utc::now().date_naive(), &mut issues)?;
+        assert!(
+            issues.is_empty(),
+            "current tree must be clean under the isolation gate: {issues:?}"
         );
         Ok(())
     }
