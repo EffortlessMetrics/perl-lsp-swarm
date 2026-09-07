@@ -289,6 +289,7 @@ impl MeasurementHarness {
 pub fn raw_facts_digest(record: &MeasurementRecord) -> Result<String> {
     let bytes = serde_json::to_vec(&json!({
     "cell_id": record.cell.canonical_id(),
+    "preparation_description": record.preparation_description,
     "command": record.command,
     "environment": record.environment,
     "timings": record.timings,
