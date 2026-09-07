@@ -42,6 +42,19 @@
 //! called directly from a runtime entry point are mechanically reconciled
 //! against the call site. Every row records which of those two it is, so no
 //! reader mistakes a declared reach for a proven one.
+//!
+//! The post-finalizer control walks an entry body in source order with one
+//! monotonic "have I passed the finalizer" flag rather than a control-flow
+//! graph. That conflates mutually exclusive branches: a body that finalizes
+//! and returns inside one branch, then contributes candidates on the
+//! fallthrough before finalizing again, would be reported even though no
+//! runtime path appends after its own finalization. The error is a false
+//! alarm, never a miss — the flag can only be set too early, so an append it
+//! reports may be legitimate but an append it misses is impossible on that
+//! axis. Neither shipped entry point has that shape today. Trading a false
+//! alarm an author can restructure around for a control-flow analysis this
+//! task would have to keep correct is the deliberate choice; the alternative
+//! risks a checker complex enough to be wrong quietly.
 
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
@@ -1166,6 +1179,20 @@ impl<'ast> Visit<'ast> for CarrierVisitor<'_> {
         }
         syn::visit::visit_item_struct(self, node);
     }
+
+    /// Enums carry candidates too: the provider dispatch returns
+    /// `CompletionFlow`, whose `Return` variant holds the page. A struct-only
+    /// scan would label those seams append-only and understate what they do.
+    fn visit_item_enum(&mut self, node: &'ast syn::ItemEnum) {
+        if node
+            .variants
+            .iter()
+            .any(|variant| variant.fields.iter().any(|field| mentions_candidate_vec(&field.ty)))
+        {
+            self.carriers.insert(node.ident.to_string());
+        }
+        syn::visit::visit_item_enum(self, node);
+    }
 }
 
 /// Is this parameter a `&mut Vec<Candidate>` append channel?
@@ -1583,6 +1610,23 @@ impl<'ast> Visit<'ast> for EntryBodyVisitor<'_> {
             self.note_append();
         }
         syn::visit::visit_expr_reference(self, node);
+    }
+
+    /// Building a candidate after the finalizer is an append whatever happens
+    /// next.
+    ///
+    /// This is the backstop for reconstruction: `completions.into_iter()
+    /// .chain(once(CompletionItem { .. })).collect()` names no append method,
+    /// borrows nothing mutably, and rebinds the result — but it cannot add a
+    /// candidate without first constructing one, and the entry point has no
+    /// legitimate reason to construct a candidate after ranking and capping.
+    fn visit_expr_struct(&mut self, node: &'ast syn::ExprStruct) {
+        if self.seen_finalizer
+            && CANDIDATE_TYPES.iter().any(|name| last_segment_is(&node.path, name))
+        {
+            self.appended_after_finalizer = true;
+        }
+        syn::visit::visit_expr_struct(self, node);
     }
 }
 
@@ -2543,6 +2587,15 @@ fn node_id(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    // A fixture that cannot be built is a broken test, and the fastest way to
+    // say so is to fail loudly at the point of breakage. `refuses` likewise
+    // panics with the axis it expected, which is the assertion's whole value.
+    #![allow(
+        clippy::expect_used,
+        clippy::panic,
+        reason = "test fixtures report their own breakage by panicking"
+    )]
+
     use super::*;
 
     /// The checked-in ledger reconciled against the real tree is the valid
@@ -3049,6 +3102,61 @@ mod tests {
         let mut visitor = EntryBodyVisitor::new(&no_producers);
         visitor.visit_block(&tuple_wrapped.block);
         assert!(visitor.appended_after_finalizer, "a tuple-field append went undetected");
+    }
+
+    /// Reconstruction backstop: no append method, no `&mut`, no producer call
+    /// — but a candidate has to be built before it can be added.
+    #[test]
+    fn constructing_a_candidate_after_finalization_is_an_append() {
+        let no_producers = BTreeSet::new();
+        let rebuilt: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
+                let completions: Vec<CompletionItem> = completions
+                    .into_iter()
+                    .chain(std::iter::once(CompletionItem { label: "sneaky".into() }))
+                    .collect();
+            }
+        };
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
+        visitor.visit_block(&rebuilt.block);
+        assert!(
+            visitor.appended_after_finalizer,
+            "a candidate rebuilt into the page after the finalizer went undetected"
+        );
+
+        // Before the finalizer, constructing a candidate is the normal thing
+        // an entry point does.
+        let ordinary: syn::ItemFn = syn::parse_quote! {
+            fn entry() {
+                let mut completions = vec![CompletionItem { label: "ok".into() }];
+                let (completions, is_incomplete) = sort_and_cap_completions(completions, cap);
+            }
+        };
+        let mut visitor = EntryBodyVisitor::new(&no_producers);
+        visitor.visit_block(&ordinary.block);
+        assert!(!visitor.appended_after_finalizer, "construction before the finalizer is normal");
+    }
+
+    /// The provider dispatch returns `CompletionFlow`, whose `Return` variant
+    /// holds the page, so enums carry candidates as well as structs.
+    #[test]
+    fn enum_variants_are_candidate_carriers() {
+        let file: syn::File = syn::parse_quote! {
+            enum Flow {
+                SortAndReturn,
+                Return(Vec<CompletionItem>),
+                Cancelled,
+            }
+            enum Unrelated {
+                Text(String),
+            }
+        };
+        let mut carriers = BTreeSet::new();
+        let mut visitor = CarrierVisitor { carriers: &mut carriers };
+        visitor.visit_file(&file);
+        assert!(carriers.contains("Flow"), "an enum variant holding the page is a carrier");
+        assert!(!carriers.contains("Unrelated"), "an unrelated enum must not widen the scan");
     }
 
     /// Growing the finalized page is an append however it is spelled.

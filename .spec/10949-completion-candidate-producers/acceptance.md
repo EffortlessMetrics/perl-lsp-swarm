@@ -90,7 +90,7 @@ ship). The reviewer's clean results are also recorded: no `HashMap` anywhere,
 byte-identical second generation, self-consistent digest, and no Mermaid node-id
 collision.
 
-Thirty-three ledger falsifiers, each corrupting the reconciled checked-in ledger
+Thirty-five ledger falsifiers, each corrupting the reconciled checked-in ledger
 along one axis and asserting the refusal names that axis:
 
 | Axis | Refused because |
@@ -128,6 +128,8 @@ along one axis and asserting the refusal names that axis:
 | same-terminal-name self types fused | `a::Shared` and `b::Shared` are two types |
 | an append through a wrapper field | wrapping is a rename with extra steps |
 | an append through a tuple field | same, by index |
+| a candidate rebuilt into the page after finalization | construction after the finalizer is an append |
+| an enum variant carrying the page | `CompletionFlow::Return` holds candidates |
 
 Plus positive controls: the checked-in ledger reconciles, the checked-in
 projection is current, generation is byte-identical on a second run, discovery

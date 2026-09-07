@@ -101,6 +101,12 @@ behavior, so neither is fixed here.
   returned a candidate vector would not appear as a row; the construction plane
   bounds that at file granularity and the delegation plane bounds it at module
   granularity, and the module documents the ceiling.
+- The post-finalizer control is source-order, not control-flow aware. It can
+  raise a false alarm on a body that finalizes inside one branch and
+  contributes on another; it cannot miss an append on that axis. Neither
+  shipped entry point has that shape. A control-flow analysis was judged
+  disproportionate for a control-plane inventory — a checker complex enough to
+  be wrong quietly is worse than one that occasionally asks a question.
 - Reachability is proven only for rows an entry point calls directly. Rows
   reached through the provider call declare their reach, and every row records
   which of the two it is.
