@@ -4758,12 +4758,12 @@ broad_glob_reason = "bulk classification of the #14861 unclassified-file census:
 [[allow]]
 id = "non-rust-dir-tree-sitter-perl"
 glob = "tree-sitter-perl/**/*"
-kind = "grammar_source"
-language = "c_scm"
+kind = "vendored_grammar_tree"
+language = "mixed"
 surface = "testing"
-classification = "generated"
+classification = "test"
 owner = "release/ci"
-reason = "Vendored tree-sitter-perl grammar sources (C and scm): pinned upstream content, not hand-maintained source. (96 tracked files under tree-sitter-perl/)"
+reason = "Vendored read-only tree-sitter-perl checkout used as parser-corpus comparison input. The tree mixes generated parser artifacts WITH handwritten upstream content (grammar.js, scanner, bindings, workflows, manifests), so it is classified as a whole as vendored test input consumed read-only - maintenance and review of that content happen upstream, not here. (96 tracked files under tree-sitter-perl/)"
 covered_by = [
   "cargo xtask check-file-policy",
   "cargo xtask non-rust inventory",
