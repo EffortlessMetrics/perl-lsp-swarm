@@ -545,6 +545,12 @@ fn term_is_trusted_event_equality(term: &str) -> bool {
             | "github.event_name==\"workflow_dispatch\""
             | "github.event_name=='push'"
             | "github.event_name==\"push\""
+            // `merge_group` runs content that has already passed review, so a
+            // job anchored to it is as excluded from an open candidate as one
+            // anchored to `push`. Omitting it made a merge-group-only job read
+            // as pull-request-reachable.
+            | "github.event_name=='merge_group'"
+            | "github.event_name==\"merge_group\""
     )
 }
 
@@ -1219,6 +1225,48 @@ enum RunnerTarget {
 /// `runs-on: [self-hosted, some-new-pool]` are both self-hosted capacity even
 /// though the inventory has no token for them. Treating them as clean is the
 /// bypass #7414's recurrence bullet names.
+/// The single `${{ matrix.<key> }}` reference a `runs-on:` may be, if that is
+/// all it is. A compound expression that merely mentions `matrix.` is not
+/// resolvable here and must stay unresolved.
+fn simple_matrix_reference(value: &str) -> Option<&str> {
+    let inner = value.strip_prefix("${{")?.strip_suffix("}}")?.trim();
+    let key = inner.strip_prefix("matrix.")?;
+    if key.is_empty() || !key.chars().all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '-') {
+        return None;
+    }
+    Some(key)
+}
+
+/// Literal values a job's `strategy.matrix` gives one key, from both the direct
+/// list and `include:` rows.
+///
+/// Any non-literal shape — a `fromJSON(...)` matrix, a value that is not a
+/// plain string, a key that is not declared — answers `None`, which the caller
+/// treats as unresolvable rather than clean.
+fn matrix_values(job: &Mapping, key: &str) -> Option<Vec<String>> {
+    let matrix = job
+        .get(Value::String("strategy".to_string()))?
+        .as_mapping()?
+        .get(Value::String("matrix".to_string()))?
+        .as_mapping()?;
+    let mut values = Vec::new();
+
+    if let Some(direct) = matrix.get(Value::String(key.to_string())) {
+        for entry in direct.as_sequence()? {
+            values.push(entry.as_str()?.to_string());
+        }
+    }
+    if let Some(include) = matrix.get(Value::String("include".to_string())) {
+        for row in include.as_sequence()? {
+            if let Some(entry) = row.as_mapping()?.get(Value::String(key.to_string())) {
+                values.push(entry.as_str()?.to_string());
+            }
+        }
+    }
+
+    if values.is_empty() { None } else { Some(values) }
+}
+
 fn classify_runs_on(runs_on: &Value) -> RunnerTarget {
     // GitHub matches runner labels case-insensitively, so `Self-Hosted` routes
     // to self-hosted capacity exactly like `self-hosted`.
@@ -1257,16 +1305,14 @@ fn classify_runs_on(runs_on: &Value) -> RunnerTarget {
         Value::String(raw) => {
             let value = raw.trim();
             if value.contains("${{") {
-                // A matrix reference is the lane inventory's documented `mixed`
-                // case. Any other expression computes the runner target at run
-                // time from data this walk cannot see, so it cannot be cleared.
-                return if value.contains("matrix.") {
-                    RunnerTarget::Elsewhere
-                } else {
-                    RunnerTarget::Unresolved(
-                        "runner target is computed from an expression".to_string(),
-                    )
-                };
+                // A matrix reference is resolvable when the matrix lists literal
+                // values: classify the values the job can actually select. It is
+                // not enough that the expression mentions `matrix.` — a matrix
+                // can select self-hosted capacity, so an unresolvable one stays
+                // unresolved rather than clean.
+                return RunnerTarget::Unresolved(
+                    "runner target is computed from an expression".to_string(),
+                );
             }
             if is_self_hosted_label(value) {
                 RunnerTarget::SelfHosted { pool: None, descriptor: value.to_string() }
@@ -1301,6 +1347,38 @@ fn classify_runs_on(runs_on: &Value) -> RunnerTarget {
     }
 }
 
+/// Classify one job's `runs-on:`, resolving a `${{ matrix.<key> }}` reference
+/// against that job's own literal matrix values where possible.
+fn classify_job_runner(job: &Mapping, runs_on: &Value) -> RunnerTarget {
+    if let Value::String(raw) = runs_on
+        && let Some(key) = simple_matrix_reference(raw.trim())
+    {
+        let Some(values) = matrix_values(job, key) else {
+            return RunnerTarget::Unresolved(format!(
+                "`matrix.{key}` does not resolve to literal runner values"
+            ));
+        };
+        // Every value the matrix can select is a runner target in its own
+        // right. One self-hosted row makes the whole job self-hosted.
+        let selected: Vec<Value> =
+            values.iter().map(|value| Value::String(value.clone())).collect();
+        let mut worst = RunnerTarget::Elsewhere;
+        for value in &selected {
+            match classify_runs_on(value) {
+                RunnerTarget::SelfHosted { pool, descriptor } => {
+                    return RunnerTarget::SelfHosted { pool, descriptor };
+                }
+                RunnerTarget::Unresolved(reason) => {
+                    worst = RunnerTarget::Unresolved(format!("`matrix.{key}`: {reason}"));
+                }
+                RunnerTarget::Elsewhere => {}
+            }
+        }
+        return worst;
+    }
+    classify_runs_on(runs_on)
+}
+
 /// Jobs in one workflow whose `runs-on:` is self-hosted or unclassifiable.
 fn self_hosted_jobs(workflow: &Value) -> Vec<(String, RunnerTarget)> {
     let Some(jobs) = workflow.get("jobs").and_then(Value::as_mapping) else {
@@ -1314,7 +1392,7 @@ fn self_hosted_jobs(workflow: &Value) -> Vec<(String, RunnerTarget)> {
         let Some(runs_on) = job_map.get(Value::String("runs-on".to_string())) else {
             continue;
         };
-        match classify_runs_on(runs_on) {
+        match classify_job_runner(job_map, runs_on) {
             RunnerTarget::Elsewhere => {}
             target => found.push((job_id.to_string(), target)),
         }
@@ -1433,15 +1511,18 @@ fn evaluate_self_hosted_isolation(
 
         // Runner drift: a profile written for one substrate must not silently
         // cover a job that has since been re-routed to different capacity.
-        // Only comparable when the live label set maps onto a known inventory
-        // pool; an unrecognised self-hosted label set still needs a profile, but
-        // there is no token to compare it against.
-        if let (Some(declared), Some(live_pool)) = (profile.runner.as_deref(), pool.as_deref())
-            && declared != live_pool
-        {
-            invalid(format!(
+        match (profile.runner.as_deref(), pool.as_deref()) {
+            (Some(declared), Some(live_pool)) if declared != live_pool => invalid(format!(
                 "declares runner `{declared}` but job `{job_id}` runs on `{live_pool}`"
-            ));
+            )),
+            // A declared pool that no longer maps onto any known token cannot be
+            // confirmed. Accepting it would let a profile written for one
+            // persistent substrate keep covering a job re-routed to another.
+            (Some(declared), None) => invalid(format!(
+                "declares runner `{declared}` but job `{job_id}` now routes to an unrecognised \
+                 self-hosted target (`{descriptor}`); the declaration can no longer be confirmed"
+            )),
+            _ => {}
         }
 
         match profile.review_after.as_deref() {
@@ -2424,16 +2505,17 @@ review_after = "2099-01-01"
         Ok(())
     }
 
-    /// `${{ matrix.os }}` stays `mixed` in the inventory and must not produce a
-    /// false obligation.
+    /// A `matrix.` reference with no matrix to read is unresolvable, not clean.
+    /// A matrix whose values *are* readable is classified by those values —
+    /// see `matrix_of_github_hosted_labels_is_not_covered` and
+    /// `matrix_selecting_self_hosted_requires_a_profile`.
     #[test]
-    fn runtime_resolved_runner_expression_is_not_covered() -> Result<()> {
+    fn matrix_reference_without_a_declared_matrix_is_unresolved() -> Result<()> {
         let workflow: Value = serde_yaml_ng::from_str(
             "name: candidate\non:\n  pull_request:\njobs:\n  build:\n    runs-on: ${{ matrix.os }}\n    steps:\n      - run: cargo test\n",
         )
         .context("parsing matrix-expression fixture")?;
-        let issues = evaluate(&workflow, &[])?;
-        assert!(issues.is_empty(), "runtime runner expression is not claimed: {issues:?}");
+        assert_eq!(codes(&evaluate(&workflow, &[])?), vec!["SELF_HOSTED_ISOLATION_UNRESOLVED"]);
         Ok(())
     }
 
@@ -2696,9 +2778,6 @@ review_after = "2099-01-01"
                 "`runs-on: {runs_on}` must not be cleared"
             );
         }
-        // The documented exception stays out of scope.
-        let matrix = workflow_with_runs_on("${{ matrix.os }}")?;
-        assert!(evaluate(&matrix, &[])?.is_empty());
         Ok(())
     }
 
@@ -2721,6 +2800,116 @@ review_after = "2099-01-01"
         // A recognised GitHub-hosted label in the set still clears it.
         let hosted = workflow_with_runs_on("{group: larger-runners, labels: [ubuntu-24.04]}")?;
         assert!(evaluate(&hosted, &[])?.is_empty());
+        Ok(())
+    }
+
+    /// Build a PR-triggered workflow whose job selects its runner from a matrix.
+    fn matrix_workflow(matrix_block: &str) -> Result<Value> {
+        let yaml = format!(
+            "name: candidate\n\
+             on:\n  \
+             pull_request:\n\
+             jobs:\n  \
+             build:\n    \
+             strategy:\n      \
+             matrix:\n        \
+             {matrix_block}\n    \
+             runs-on: ${{{{ matrix.os }}}}\n    \
+             steps:\n      \
+             - run: echo hi\n"
+        );
+        serde_yaml_ng::from_str(&yaml).with_context(|| format!("parsing fixture:\n{yaml}"))
+    }
+
+    fn evaluate_workflow(workflow: &Value) -> Result<Vec<LintIssue>> {
+        let mut issues = Vec::new();
+        evaluate_self_hosted_isolation("candidate.yml", workflow, &[], today()?, &mut issues);
+        Ok(issues)
+    }
+
+    /// A matrix that can select self-hosted capacity carries the obligation. It
+    /// is not enough that the expression mentions `matrix.`.
+    #[test]
+    fn matrix_selecting_self_hosted_requires_a_profile() -> Result<()> {
+        for matrix in [
+            "os: [ubuntu-24.04, self-hosted]",
+            "os: [Self-Hosted]",
+            "include:\n          - os: ubuntu-24.04\n          - os: self-hosted",
+        ] {
+            let workflow = matrix_workflow(matrix)?;
+            assert_eq!(
+                codes(&evaluate_workflow(&workflow)?),
+                vec!["SELF_HOSTED_ISOLATION_UNDECLARED"],
+                "matrix `{matrix}` can select self-hosted capacity"
+            );
+        }
+        Ok(())
+    }
+
+    /// A matrix of only GitHub-hosted labels stays out of scope, so resolving
+    /// the values does not create false obligations.
+    #[test]
+    fn matrix_of_github_hosted_labels_is_not_covered() -> Result<()> {
+        for matrix in [
+            "os: [ubuntu-latest, macos-latest, windows-latest]",
+            "include:\n          - os: ubuntu-24.04\n          - os: macos-14",
+        ] {
+            let workflow = matrix_workflow(matrix)?;
+            let issues = evaluate_workflow(&workflow)?;
+            assert!(issues.is_empty(), "matrix `{matrix}` is GitHub-hosted: {issues:?}");
+        }
+        Ok(())
+    }
+
+    /// A matrix this walk cannot read is unresolvable, not clean.
+    #[test]
+    fn unresolvable_matrix_is_unresolved() -> Result<()> {
+        for matrix in [
+            "os: ${{ fromJSON(needs.plan.outputs.runners) }}",
+            "arch: [x64]",
+            "os: [[self-hosted, linux]]",
+        ] {
+            let workflow = matrix_workflow(matrix)?;
+            assert_eq!(
+                codes(&evaluate_workflow(&workflow)?),
+                vec!["SELF_HOSTED_ISOLATION_UNRESOLVED"],
+                "matrix `{matrix}` must not be cleared"
+            );
+        }
+        Ok(())
+    }
+
+    /// `merge_group` runs reviewed content, so a job anchored to it is excluded
+    /// from an open candidate exactly like a `push`-anchored one.
+    #[test]
+    fn merge_group_only_job_needs_no_profile() -> Result<()> {
+        let workflow = mixed_trigger_workflow("github.event_name == 'merge_group'")?;
+        let issues = evaluate(&workflow, &[])?;
+        assert!(issues.is_empty(), "a merge-group-only job is not candidate-reachable: {issues:?}");
+        Ok(())
+    }
+
+    /// A profile whose declared pool no longer maps onto the live target cannot
+    /// be confirmed, so it must not keep covering the job.
+    #[test]
+    fn declared_pool_that_no_longer_resolves_is_an_error() -> Result<()> {
+        let profiles = parse_isolation_profiles(
+            r##"
+[[profile]]
+workflow = ".github/workflows/candidate.yml"
+job = "build"
+runner = "self_hosted_cx53"
+lifecycle = "persistent"
+candidate_writable = []
+runtime_proof = "#7414"
+review_after = "2099-01-01"
+"##,
+        )?;
+        // A self-hosted label set the lane inventory has no token for.
+        let workflow = workflow_with_runs_on("[self-hosted, linux, brand-new-pool]")?;
+        let issues = evaluate(&workflow, &profiles)?;
+        assert_eq!(codes(&issues), vec!["SELF_HOSTED_ISOLATION_INVALID"]);
+        assert!(issues[0].message.contains("no longer be confirmed"));
         Ok(())
     }
 
