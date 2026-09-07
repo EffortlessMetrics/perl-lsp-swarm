@@ -231,7 +231,7 @@ use perl_core_harness_types::{
     SemanticBoundaryRegistry, SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
     SemanticBoundaryReplacementStrategy, SeriesManifest, SmokeFailureKind, SmokeReport,
     SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, validate_execution_mechanism,
-    validate_file_result_mechanisms, workstream_for_bucket,
+    validate_file_result_mechanisms, validate_series_rail_mechanisms, workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
 use run_authority::{
@@ -1532,7 +1532,7 @@ fn load_compatibility_series(
         landed_sha: bundle.index.lineage.landed_sha.clone(),
         evidence_bundle_id: bundle.index.bundle_id.clone(),
     };
-    Ok(CompilerCompatibilitySeries {
+    let series = CompilerCompatibilitySeries {
         identity,
         current_observation: observation,
         transition_candidate: CompatibilityTransitionCandidate {
@@ -1555,7 +1555,13 @@ fn load_compatibility_series(
         differential_oracle: unavailable_rail("differential-oracle receipt was not supplied"),
         eir: unavailable_rail("EIR evaluation receipt was not supplied"),
         claim_boundary: "compile-harness and typed receipt state only; general semantics and runtime correctness are not implied".into(),
-    })
+    };
+    // The published series is what #4748/#4749/#5172/#5174 consume, so an
+    // inadmissible rail claim must fail here rather than reach a reader.
+    if let Err(violation) = validate_series_rail_mechanisms(&series) {
+        bail!("compatibility series {}: {violation}", series.identity.series_id);
+    }
+    Ok(series)
 }
 
 fn validate_authority_artifact_bindings(
@@ -1766,6 +1772,8 @@ fn load_registry_state(
         SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION,
         format!("validated {} registry entries", registry.entries.len()),
         vec![format!("series:{}", baseline.series_id)],
+        // The boundary registry represents no execution, so it names no rail.
+        None,
     ))
 }
 
@@ -1820,6 +1828,8 @@ fn load_cluster_history_state(
             FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
             format!("validated {} history entries", history.entries.len()),
             history_bundle_id.clone().into_iter().collect(),
+            // Cluster history represents no execution, so it names no rail.
+            None,
         ),
         CompatibilityClusterState {
             active_count: clusters.clusters.len(),
@@ -1846,12 +1856,47 @@ fn load_execution_rail(
     {
         bail!("execution rail identity does not match series {}", series.series_id);
     }
+    // The rail stamps `RUN_REPORT_SCHEMA_VERSION` as its own schema identity,
+    // so a report declaring a different version would be relabeled current —
+    // the same kind of unearned identity this rail exists to stop. Parse and
+    // compile propagate the report's actual version instead; the execution
+    // rail publishes a constant, so it has to earn it here.
+    if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
+        bail!("execution rail report schema is not the supported run-report schema");
+    }
     ensure_valid_report_shape(&report)?;
+    let mechanism = execution_receipt_mechanism(&report)?;
     Ok(available_rail(
         RUN_REPORT_SCHEMA_VERSION,
-        "selected execution receipt validated".into(),
+        format!("selected execution receipt validated; mechanism {mechanism}"),
         vec![format!("bundle:{bundle_id}")],
+        Some(mechanism),
     ))
+}
+
+/// The one mechanism every file result of an execution receipt agrees on.
+///
+/// `read_run_report` already rejects an execute report whose file results
+/// carry no mechanism or an inadmissible one, through
+/// `reject_inadmissible_report_mechanisms`, but it does not require them to
+/// agree. A receipt mixing rails describes no single rail, so it cannot be
+/// summarized as one and fails closed here rather than having one mechanism
+/// picked for it (#8254).
+fn execution_receipt_mechanism(report: &RunReport) -> Result<ExecutionMechanism> {
+    let mut mechanisms: Vec<ExecutionMechanism> =
+        report.file_results.iter().filter_map(|result| result.mechanism).collect();
+    mechanisms.sort_unstable();
+    mechanisms.dedup();
+    match mechanisms.as_slice() {
+        [mechanism] => Ok(*mechanism),
+        [] => {
+            bail!("execution rail receipt names no execution mechanism, so it cannot claim a rail")
+        }
+        many => bail!(
+            "execution rail receipt mixes execution mechanisms ({}), so it describes no single rail",
+            many.iter().map(|mechanism| mechanism.as_str()).collect::<Vec<_>>().join(", ")
+        ),
+    }
 }
 
 fn build_compatibility_debt_state(
@@ -1890,6 +1935,7 @@ fn unavailable_rail(reason: &str) -> CompatibilityRailState {
         reason: reason.into(),
         schema_version: None,
         evidence_refs: Vec::new(),
+        mechanism: None,
     }
 }
 
@@ -1897,12 +1943,14 @@ fn available_rail(
     schema_version: &str,
     reason: String,
     evidence_refs: Vec<String>,
+    mechanism: Option<ExecutionMechanism>,
 ) -> CompatibilityRailState {
     CompatibilityRailState {
         availability: CompatibilityRailAvailability::Available,
         reason,
         schema_version: Some(schema_version.into()),
         evidence_refs,
+        mechanism,
     }
 }
 
@@ -9184,6 +9232,118 @@ mod tests {
     }
 
     #[test]
+    fn a_published_series_names_its_execution_rail_as_fixture_replay() -> TestResult {
+        // End-to-end over the real loader: before #14763 the execute receipt's
+        // mechanism was validated and then dropped, so the published series
+        // said only `available` and left "scaffold, not evaluated" to prose.
+        let temp = tempfile::tempdir()?;
+        let series = build_series_manifest(
+            &sample_discovery_report(),
+            &sample_series_config(),
+            "2026-07-02T00:00:00Z".into(),
+        )?;
+        let baseline = baseline_v2_from_report(
+            &sample_compile_report(),
+            &series,
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        let series_path = temp.path().join("series.json");
+        let parse_path = temp.path().join("parse.json");
+        let compile_path = temp.path().join("compile.json");
+        let baseline_path = temp.path().join("baseline.json");
+        let execute_path = temp.path().join("execute.json");
+        let accepted_path = temp.path().join("accepted-baseline.json");
+        let index_path = temp.path().join("bundle").join("index.json");
+        let normalized = index_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing bundle parent"))?
+            .join("normalized");
+        fs::create_dir_all(&normalized)?;
+        fs::write(&series_path, serde_json::to_string_pretty(&series)?)?;
+        write_run_report(&parse_path, &sample_parse_report())?;
+        write_run_report(&compile_path, &sample_compile_report())?;
+        write_compile_baseline_v2(&baseline_path, &baseline)?;
+        write_compile_baseline_v2(&accepted_path, &baseline)?;
+
+        // The execute receipt has to answer to the same series identity the
+        // rail loader checks, otherwise it is rejected before the mechanism
+        // is ever read.
+        let mut execute = sample_execute_report();
+        execute.commit = series.repository_commit.clone();
+        execute.perl_ref = series.perl_resolved_ref.clone();
+        execute.profile = series.profile;
+        execute.runner = series.runner;
+        write_run_report(&execute_path, &execute)?;
+
+        fs::write(
+            normalized.join("semantic-boundaries.json"),
+            serde_json::to_string_pretty(&baseline.semantic_boundaries)?,
+        )?;
+        fs::write(normalized.join("compile.json"), fs::read_to_string(&compile_path)?)?;
+        let mut index = sample_boundary_bundle().index;
+        index.series_id = series.series_id.clone();
+        index.manifest_hash = series.manifest_hash.clone();
+        index.repository_commit = series.repository_commit.clone();
+        index.profile = series.profile;
+        index.perl_resolved_ref = series.perl_resolved_ref.clone();
+        index.artifacts = vec![
+            EvidenceBundleArtifact {
+                kind: "semantic_boundaries".into(),
+                logical_path: "normalized/semantic-boundaries.json".into(),
+            },
+            EvidenceBundleArtifact {
+                kind: "compile_report".into(),
+                logical_path: "normalized/compile.json".into(),
+            },
+        ];
+        fs::write(&index_path, serde_json::to_string_pretty(&index)?)?;
+
+        let state = load_compatibility_state(CompatibilityLoadConfig {
+            inputs: vec![CompatibilitySeriesInput {
+                series_manifest: series_path,
+                parse_report: parse_path,
+                compile_report: normalized.join("compile.json"),
+                compile_baseline: baseline_path,
+                accepted_baseline: Some(accepted_path),
+                evidence_bundle: index_path,
+                boundary_registry: None,
+                cluster_history: None,
+                execute_report: Some(execute_path),
+                current_authority: None,
+            }],
+            repository_commit: "abc".into(),
+        })?;
+
+        let published = &state.series[0];
+        assert_eq!(published.execution.availability, CompatibilityRailAvailability::Available);
+        assert_eq!(
+            published.execution.mechanism,
+            Some(ExecutionMechanism::FixtureReplay),
+            "an available execution rail must name the rail that produced it"
+        );
+        assert_eq!(
+            published.current_observation.execution.mechanism,
+            Some(ExecutionMechanism::FixtureReplay),
+            "the observation a consumer reads must carry it too"
+        );
+        // The rails that would imply evaluation stay absent and name nothing.
+        assert_eq!(published.eir.availability, CompatibilityRailAvailability::NotAvailable);
+        assert!(published.eir.mechanism.is_none());
+        assert!(published.differential_oracle.mechanism.is_none());
+        assert!(published.curated_gold.mechanism.is_none());
+
+        // The mechanism has to survive the wire, since that is where every
+        // downstream consumer reads it.
+        let encoded = serde_json::to_string_pretty(&state)?;
+        assert!(encoded.contains("\"mechanism\": \"fixture_replay\""), "{encoded}");
+        let decoded: CompilerCompatibilityState = serde_json::from_str(&encoded)?;
+        assert_eq!(decoded, state);
+        Ok(())
+    }
+
+    #[test]
     fn compatibility_transition_classifies_regression_without_lowering_ratchet() -> TestResult {
         let series = build_series_manifest(
             &sample_discovery_report(),
@@ -9828,6 +9988,224 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn the_execution_rail_carries_the_mechanism_its_receipt_declares() -> TestResult {
+        // Before #14763 this receipt produced a bare `available` rail whose
+        // only hint was the reason sentence; the mechanism was read, validated,
+        // and then dropped.
+        use perl_core_harness_types::{CompatibilityRailRole, validate_rail_mechanism};
+
+        let mechanism = execution_receipt_mechanism(&sample_execute_report())?;
+        assert_eq!(mechanism, ExecutionMechanism::FixtureReplay);
+
+        let rail = available_rail(
+            RUN_REPORT_SCHEMA_VERSION,
+            format!("selected execution receipt validated; mechanism {mechanism}"),
+            vec!["bundle:bundle-1".into()],
+            Some(mechanism),
+        );
+        if let Err(violation) = validate_rail_mechanism(CompatibilityRailRole::Execution, &rail) {
+            bail!("derived execution rail is inadmissible: {violation}");
+        }
+        assert_eq!(rail.mechanism, Some(ExecutionMechanism::FixtureReplay));
+        Ok(())
+    }
+
+    #[test]
+    fn the_published_schema_states_the_same_rail_rule_as_the_validator() -> TestResult {
+        // The schema is the contract a consumer validates against. If it and
+        // `validate_rail_mechanism` disagree, one of them is decoration —
+        // which is how the mechanism came to live in prose in the first place.
+        use perl_core_harness_types::{CompatibilityRailRole, SUPPORTED_EXECUTION_MECHANISMS};
+
+        let root = project_root()?;
+        let schema: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+            root.join("schemas").join("compiler_compatibility.v1.schema.json"),
+        )?)?;
+        let defs = &schema["$defs"];
+
+        let published: Vec<&str> = defs["rail"]["properties"]["mechanism"]["enum"]
+            .as_array()
+            .ok_or_else(|| color_eyre::eyre::eyre!("rail.mechanism publishes no enum"))?
+            .iter()
+            .map(|tag| tag.as_str().unwrap_or_default())
+            .collect();
+        let known: Vec<&str> =
+            ExecutionMechanism::ALL.iter().map(|mechanism| mechanism.as_str()).collect();
+        if published != known {
+            bail!("schema publishes mechanisms {published:?}, but the enum is {known:?}");
+        }
+
+        for (def, role) in [
+            ("selected_execution_rail", CompatibilityRailRole::Execution),
+            ("eir_rail", CompatibilityRailRole::Eir),
+            ("differential_oracle_rail", CompatibilityRailRole::DifferentialOracle),
+        ] {
+            let expected = role
+                .admissible_mechanism()
+                .ok_or_else(|| color_eyre::eyre::eyre!("{role} rail declares no mechanism"))?;
+            let published = defs[def]["allOf"][1]["properties"]["mechanism"]["const"]
+                .as_str()
+                .ok_or_else(|| color_eyre::eyre::eyre!("{def} pins no mechanism"))?;
+            if published != expected.as_str() {
+                bail!("schema pins {def} to {published}, but the validator admits {expected}");
+            }
+        }
+
+        // Rails representing no execution must be forbidden a mechanism, not
+        // merely left unconstrained.
+        if defs["non_execution_rail"]["allOf"][1]["not"]["required"][0] != "mechanism" {
+            bail!("schema does not forbid a mechanism on rails representing no execution");
+        }
+
+        // "Has evidence" must mean the same thing in both contracts. `stale`
+        // evidence exists but is not current, so it keeps its mechanism.
+        let evidence: Vec<&str> =
+            defs["execution_like_rail"]["allOf"][1]["if"]["properties"]["availability"]["enum"]
+                .as_array()
+                .ok_or_else(|| color_eyre::eyre::eyre!("schema pins no evidence-bearing states"))?
+                .iter()
+                .map(|state| state.as_str().unwrap_or_default())
+                .collect();
+        if evidence != ["available", "partial", "stale"] {
+            bail!(
+                "schema treats {evidence:?} as evidence-bearing; the validator uses available, partial, and stale"
+            );
+        }
+
+        // A rail whose mechanism is not yet supported must be unable to carry
+        // evidence in the schema too, or a schema-only consumer would accept
+        // evaluation evidence the producer refuses to emit.
+        for (def, role) in [
+            ("selected_execution_rail", CompatibilityRailRole::Execution),
+            ("eir_rail", CompatibilityRailRole::Eir),
+            ("differential_oracle_rail", CompatibilityRailRole::DifferentialOracle),
+        ] {
+            let mechanism = role
+                .admissible_mechanism()
+                .ok_or_else(|| color_eyre::eyre::eyre!("{role} rail declares no mechanism"))?;
+            let supported = SUPPORTED_EXECUTION_MECHANISMS.contains(&mechanism);
+            let constrained = defs[def]["allOf"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|entry| entry["$ref"] == "#/$defs/unsupported_execution_rail");
+            if supported == constrained {
+                bail!(
+                    "{def} carries mechanism {mechanism} (supported={supported}) but its \
+                     not_available constraint is {constrained}; the schema and \
+                     SUPPORTED_EXECUTION_MECHANISMS disagree about which rails may hold evidence"
+                );
+            }
+        }
+        if defs["unsupported_execution_rail"]["properties"]["availability"]["const"]
+            != "not_available"
+        {
+            bail!("the unsupported-rail constraint does not pin availability to not_available");
+        }
+
+        // Every rail slot the schema declares must be one the Rust walk
+        // reaches. The debt rails were bound to `non_execution_rail` here while
+        // `validate_series_rail_mechanisms` never visited them, so the two
+        // contracts disagreed about a slot neither test noticed. Pinning the
+        // slot inventory makes a newly added rail fail here until it is wired
+        // into the walk, rather than silently escaping it.
+        let mut slots: Vec<String> = Vec::new();
+        for (def_name, def) in
+            defs.as_object().ok_or_else(|| color_eyre::eyre::eyre!("schema has no $defs"))?
+        {
+            let Some(properties) = def["properties"].as_object() else {
+                continue;
+            };
+            for (property, value) in properties {
+                if let Some(reference) = value["$ref"].as_str()
+                    && reference.ends_with("rail")
+                {
+                    slots.push(format!("{def_name}.{property}"));
+                }
+            }
+        }
+        slots.sort();
+        let walked = [
+            "debt.history",
+            "debt.registry",
+            "observation.curated_gold",
+            "observation.differential_oracle",
+            "observation.eir",
+            "observation.execution",
+            "series.curated_gold",
+            "series.differential_oracle",
+            "series.eir",
+            "series.execution",
+        ];
+        if slots != walked {
+            bail!(
+                "schema declares rail slots {slots:?}, but validate_series_rail_mechanisms walks \
+                 {walked:?}; wire the new slot into the walk before publishing it"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_execution_receipt_of_another_schema_cannot_claim_a_current_rail() -> TestResult {
+        // The rail publishes RUN_REPORT_SCHEMA_VERSION as its own identity, so
+        // accepting a report that declares a different one would relabel it
+        // current.
+        let temp = tempfile::tempdir()?;
+        let series = build_series_manifest(
+            &sample_discovery_report(),
+            &sample_series_config(),
+            "2026-07-02T00:00:00Z".into(),
+        )?;
+        let mut execute = sample_execute_report();
+        execute.commit = series.repository_commit.clone();
+        execute.perl_ref = series.perl_resolved_ref.clone();
+        execute.profile = series.profile;
+        execute.runner = series.runner;
+        execute.schema_version = "perl_core_harness.report.v0".into();
+
+        let path = temp.path().join("execute.json");
+        fs::write(&path, serde_json::to_string_pretty(&execute)?)?;
+        let Err(error) = load_execution_rail(&path, &series, "bundle-1") else {
+            bail!("a report of another schema must not produce a current rail");
+        };
+        assert!(error.to_string().contains("not the supported run-report schema"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_execution_receipt_naming_no_mechanism_cannot_claim_a_rail() -> TestResult {
+        // `read_run_report` rejects this shape on decode, so the rail
+        // derivation is not the only guard — but it must not be a hole either:
+        // a receipt that names nothing summarizes to nothing.
+        let mut report = sample_execute_report();
+        for result in &mut report.file_results {
+            result.mechanism = None;
+        }
+        let Err(error) = execution_receipt_mechanism(&report) else {
+            bail!("a receipt naming no mechanism must not produce a rail");
+        };
+        assert!(error.to_string().contains("names no execution mechanism"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_execution_receipt_mixing_mechanisms_fails_closed() -> TestResult {
+        // A receipt spanning two rails describes neither. Summarizing it as one
+        // would let a single relabeled file move the whole rail.
+        let mut report = sample_execute_report();
+        report.file_results[0].mechanism = Some(ExecutionMechanism::EirExecution);
+        let Err(error) = execution_receipt_mechanism(&report) else {
+            bail!("a receipt mixing mechanisms must not produce one rail");
+        };
+        let rendered = error.to_string();
+        assert!(rendered.contains("mixes execution mechanisms"), "{rendered}");
+        assert!(rendered.contains("fixture_replay"), "{rendered}");
+        assert!(rendered.contains("eir_execution"), "{rendered}");
         Ok(())
     }
 
@@ -12010,16 +12388,20 @@ exit 1
             RUN_REPORT_SCHEMA_VERSION,
             "selected execution receipt validated".into(),
             vec!["bundle:bundle-1".into()],
+            Some(ExecutionMechanism::FixtureReplay),
         );
         assert_eq!(available.availability, CompatibilityRailAvailability::Available);
         assert_eq!(available.schema_version.as_deref(), Some(RUN_REPORT_SCHEMA_VERSION));
         assert_eq!(available.evidence_refs, vec!["bundle:bundle-1"]);
+        assert_eq!(available.mechanism, Some(ExecutionMechanism::FixtureReplay));
 
         let unavailable = unavailable_rail("no execution receipt was supplied");
         assert_eq!(unavailable.availability, CompatibilityRailAvailability::NotAvailable);
         // An unavailable rail must not advertise a schema or borrow evidence.
         assert!(unavailable.schema_version.is_none());
         assert!(unavailable.evidence_refs.is_empty());
+        // Nor may it name a rail: a mechanism without evidence is a claim.
+        assert!(unavailable.mechanism.is_none());
     }
 }
 
