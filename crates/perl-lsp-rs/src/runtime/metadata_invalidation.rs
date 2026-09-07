@@ -240,3 +240,202 @@ impl LspServer {
         roots
     }
 }
+
+/// Focused proof for the two free helpers above.
+///
+/// `metadata_invalidation_tests` is a sibling module, so it can only reach
+/// these through the server and its strongest nearby assertion is a negative
+/// control. That leaves the per-source resolution in `capture_metadata_reads`
+/// and the subtree predicate in `subtree_touches_metadata` exercised but not
+/// *discriminated*: a test that asserts indexing did not happen cannot fail
+/// when one of these branches returns the wrong variant. These tests call both
+/// helpers directly and assert the exact variant or boolean each input must
+/// produce, so a wrong branch is caught here rather than surviving to a
+/// behavioural test that happens not to look.
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::expect_used,
+        reason = "test-only policy proof: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
+    )]
+
+    use super::LspServer;
+    use perl_lsp_rs_core::config::{DeclaredDependencySource, MetadataSourceRead};
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
+    fn read_for(
+        reads: &[(DeclaredDependencySource, MetadataSourceRead)],
+        source: DeclaredDependencySource,
+    ) -> MetadataSourceRead {
+        reads
+            .iter()
+            .find(|(candidate, _)| *candidate == source)
+            .map(|(_, read)| read.clone())
+            .expect("every declared source must be resolved")
+    }
+
+    /// An open buffer is authoritative even with no backing file (#8041).
+    #[test]
+    fn an_open_buffer_supplies_text_without_any_backing_file() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let mut open = BTreeMap::new();
+        open.insert(temp.path().join("cpanfile"), "requires 'Buffer';\n".to_string());
+
+        let reads = LspServer::capture_metadata_reads(temp.path(), &open);
+
+        assert_eq!(
+            read_for(&reads, DeclaredDependencySource::Cpanfile),
+            MetadataSourceRead::Text("requires 'Buffer';\n".to_string()),
+            "an open buffer outlives the absence of its backing file"
+        );
+    }
+
+    /// Openness is checked before existence, so staged text wins over disk.
+    #[test]
+    fn an_open_buffer_wins_over_disagreeing_disk_bytes() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(temp.path().join("cpanfile"), "requires 'Disk';\n").expect("write disk");
+        let mut open = BTreeMap::new();
+        open.insert(temp.path().join("cpanfile"), "requires 'Buffer';\n".to_string());
+
+        let reads = LspServer::capture_metadata_reads(temp.path(), &open);
+
+        assert_eq!(
+            read_for(&reads, DeclaredDependencySource::Cpanfile),
+            MetadataSourceRead::Text("requires 'Buffer';\n".to_string()),
+            "disk and buffer deliberately disagree; the buffer is the authority"
+        );
+    }
+
+    #[test]
+    fn a_missing_source_is_absent_so_a_delete_can_downgrade() {
+        let temp = tempfile::tempdir().expect("temp dir");
+
+        let reads = LspServer::capture_metadata_reads(temp.path(), &BTreeMap::new());
+
+        assert_eq!(
+            read_for(&reads, DeclaredDependencySource::Cpanfile),
+            MetadataSourceRead::Absent
+        );
+    }
+
+    #[test]
+    fn a_readable_source_yields_exactly_its_disk_bytes() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(temp.path().join("META.json"), "{\"x\":1}\n").expect("write disk");
+
+        let reads = LspServer::capture_metadata_reads(temp.path(), &BTreeMap::new());
+
+        assert_eq!(
+            read_for(&reads, DeclaredDependencySource::MetaJson),
+            MetadataSourceRead::Text("{\"x\":1}\n".to_string())
+        );
+    }
+
+    /// A file that exists but is not UTF-8 must be `Unreadable`, not `Absent`:
+    /// the caller retains prior facts for `Unreadable` and erases them for
+    /// `Absent`, so collapsing the two would silently drop declarations.
+    #[test]
+    fn an_existing_but_undecodable_source_is_unreadable_not_absent() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(temp.path().join("cpanfile"), [0x66, 0x6f, 0xff, 0xfe, 0x6f])
+            .expect("write invalid utf-8");
+
+        let reads = LspServer::capture_metadata_reads(temp.path(), &BTreeMap::new());
+
+        assert_eq!(
+            read_for(&reads, DeclaredDependencySource::Cpanfile),
+            MetadataSourceRead::Unreadable,
+            "an unreadable source must retain prior facts, not declare nothing"
+        );
+    }
+
+    /// Every source is resolved exactly once, in `ALL` order.
+    #[test]
+    fn every_declared_source_is_resolved_exactly_once_in_order() {
+        let temp = tempfile::tempdir().expect("temp dir");
+
+        let reads = LspServer::capture_metadata_reads(temp.path(), &BTreeMap::new());
+
+        let resolved: Vec<DeclaredDependencySource> =
+            reads.iter().map(|(source, _)| *source).collect();
+        assert_eq!(resolved, DeclaredDependencySource::ALL.to_vec());
+    }
+
+    /// One unreadable source must not change how the others resolve.
+    #[test]
+    fn an_unreadable_source_does_not_disturb_its_siblings() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(temp.path().join("cpanfile"), [0xff, 0xfe]).expect("write invalid utf-8");
+        std::fs::write(temp.path().join("META.yml"), "requires: {}\n").expect("write disk");
+
+        let reads = LspServer::capture_metadata_reads(temp.path(), &BTreeMap::new());
+
+        assert_eq!(
+            read_for(&reads, DeclaredDependencySource::Cpanfile),
+            MetadataSourceRead::Unreadable
+        );
+        assert_eq!(
+            read_for(&reads, DeclaredDependencySource::MetaYml),
+            MetadataSourceRead::Text("requires: {}\n".to_string()),
+            "a readable sibling still refreshes"
+        );
+        assert_eq!(
+            read_for(&reads, DeclaredDependencySource::BuildPl),
+            MetadataSourceRead::Absent,
+            "an absent sibling is still absent"
+        );
+    }
+
+    fn root() -> PathBuf {
+        PathBuf::from(if cfg!(windows) { r"C:\ws" } else { "/ws" })
+    }
+
+    fn joined(relative: &str) -> PathBuf {
+        let mut path = root();
+        for component in relative.split('/') {
+            path.push(component);
+        }
+        path
+    }
+
+    #[test]
+    fn an_exact_metadata_file_touches_metadata() {
+        assert!(LspServer::subtree_touches_metadata(&root(), &joined("cpanfile")));
+    }
+
+    /// A directory delete or rename names the container, not each descendant.
+    #[test]
+    fn a_containing_directory_touches_metadata() {
+        for relative in ["local", ".carmel"] {
+            assert!(
+                LspServer::subtree_touches_metadata(&root(), &joined(relative)),
+                "{relative}/ contains governed metadata and must invalidate"
+            );
+        }
+    }
+
+    #[test]
+    fn the_workspace_root_itself_touches_metadata() {
+        assert!(LspServer::subtree_touches_metadata(&root(), &root()));
+    }
+
+    /// Component-wise matching: a sibling sharing a name prefix is not a
+    /// subtree, so it must not trigger a refresh.
+    #[test]
+    fn a_sibling_sharing_a_name_prefix_does_not_touch_metadata() {
+        for relative in ["cpanfile2", "localhost", "src"] {
+            assert!(
+                !LspServer::subtree_touches_metadata(&root(), &joined(relative)),
+                "{relative} is not a governed metadata path or container"
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_outside_the_workspace_does_not_touch_metadata() {
+        let outside = if cfg!(windows) { r"C:\other\local" } else { "/other/local" };
+        assert!(!LspServer::subtree_touches_metadata(&root(), Path::new(outside)));
+    }
+}
