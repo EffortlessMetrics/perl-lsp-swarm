@@ -1337,7 +1337,13 @@ impl ScopeAnalyzer {
                 if matches!(declarator.as_str(), "my" | "state")
                     && let Some(declaration) = scope.pending_declaration_parts(sigil, name)
                 {
-                    *declaration.is_initialized.borrow_mut() = true;
+                    // Same declaration-identity rule as `mark_builtin_declaration_arg_consumed`:
+                    // initialize the pending slot only when this declaration created it. A
+                    // duplicate name in the same statement modifier was rejected, so the
+                    // retained slot belongs to the other declaration and must keep its state.
+                    if declaration.declaration_offset == variable.location.start {
+                        *declaration.is_initialized.borrow_mut() = true;
+                    }
                 } else {
                     for child in node.children() {
                         self.mark_initialized(child, scope, context);
@@ -1392,8 +1398,18 @@ impl ScopeAnalyzer {
                     if matches!(declarator.as_str(), "my" | "state")
                         && let Some(declaration) = scope.pending_declaration_parts(sigil, name)
                     {
-                        *declaration.is_initialized.borrow_mut() = true;
-                        *declaration.is_used.borrow_mut() = true;
+                        // A pending slot for this name exists, so we are inside a statement
+                        // modifier. Consume it only when it is the slot THIS declaration
+                        // created: a duplicate name in the same statement is rejected by
+                        // `declare_variable_parts`, and the slot that was retained belongs to
+                        // the other declaration. Mutating it there would erase a real warning —
+                        // `open my $fh, '<', $p if my $fh; print $fh;` keeps the condition's
+                        // uninitialized binding, and perl 5.38.2 warns
+                        // `Use of uninitialized value $fh` on that read.
+                        if declaration.declaration_offset == variable.location.start {
+                            *declaration.is_initialized.borrow_mut() = true;
+                            *declaration.is_used.borrow_mut() = true;
+                        }
                     } else {
                         let _ = self.initialize_and_use_variable_parts_in_context(
                             scope, sigil, name, context,

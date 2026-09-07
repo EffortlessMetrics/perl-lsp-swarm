@@ -474,3 +474,46 @@ fn a_duplicate_modifier_declaration_keeps_the_textually_later_binding() -> TestR
     }
     Ok(())
 }
+
+/// A declaration *builtin* whose target duplicates a name declared in the same modifier must
+/// not consume the retained binding. The builtin's own declaration was rejected as a
+/// duplicate, so the slot that survives belongs to the other declaration and keeps its state.
+///
+/// Oracle, perl 5.38.2 (runtime):
+/// ```text
+/// $ perl -we 'open my $fh, "<", "/dev/null" if my $fh; print "[$fh]\n";'
+/// "my" variable $fh masks earlier declaration in same statement
+/// Use of uninitialized value $fh in concatenation (.) or string
+/// ```
+///
+/// The condition is false (the later `my $fh` is undef), so the `open` never runs and the
+/// surviving binding stays uninitialized. Looking the pending slot up by name alone marked it
+/// initialized and erased that warning, while the equivalent non-builtin form
+/// (`my $x = 1 if my $x;`) reported it correctly — the inconsistency this row pins.
+#[test]
+fn a_builtin_declaration_target_does_not_consume_a_duplicate_binding() -> TestResult {
+    for code in [
+        "use strict; use warnings;\nopen my $fh, '<', 'f' if my $fh;\nprint $fh;\n",
+        "use strict; use warnings;\ntie my $x, 'C' if my $x;\nprint $x;\n",
+    ] {
+        let issues = scope_issues(code)?;
+        if !issues.iter().any(|i| i.kind == IssueKind::UninitializedVariable) {
+            return Err(format!(
+                "the retained binding is the condition's uninitialized declaration, so the \
+                 following read must be reported in {code:?}: {issues:?}"
+            )
+            .into());
+        }
+    }
+
+    // Negative control — with no duplicate, the builtin really does initialize its target.
+    let no_duplicate =
+        scope_issues("use strict; use warnings;\ntie my $x, 'C' if 1;\nprint $x;\n")?;
+    if no_duplicate.iter().any(|i| i.kind == IssueKind::UninitializedVariable) {
+        return Err(format!(
+            "without a duplicate, the builtin initializes its own pending slot: {no_duplicate:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
