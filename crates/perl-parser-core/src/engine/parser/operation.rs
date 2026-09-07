@@ -96,6 +96,7 @@ pub(crate) struct ParserOperationContext {
     cancellation_check_counter: usize,
     operation_id: ParserOperationId,
     terminal: Option<ParseStopCause>,
+    diagnostics_observed: usize,
 }
 
 impl ParserOperationContext {
@@ -107,6 +108,7 @@ impl ParserOperationContext {
             cancellation_check_counter: 0,
             operation_id: ParserOperationId::next(),
             terminal: None,
+            diagnostics_observed: 0,
         }
     }
 
@@ -117,6 +119,7 @@ impl ParserOperationContext {
         self.tracker = BudgetTracker::new();
         self.cancellation_check_counter = 0;
         self.terminal = None;
+        self.diagnostics_observed = 0;
     }
 
     pub(crate) fn config(&self) -> ParserConfigIdentity {
@@ -272,10 +275,32 @@ impl ParserOperationContext {
         self.tracker.authorize_core(&self.config.budget(), dimension)
     }
 
-    /// Charged usage for one core dimension, for tests and typed reporting.
-    #[cfg(test)]
-    pub(crate) fn core_usage(&self, dimension: ParseCoreDimension) -> usize {
-        self.tracker.core_usage(dimension)
+    /// Note that the parser detected a diagnostic-worthy condition, whether or
+    /// not the diagnostic was retained.
+    ///
+    /// This is **not** a budget authority and gates nothing: it is a detection
+    /// signal, deliberately monotonic and unbounded, so that grammar decisions
+    /// which need to know *whether inner recovery happened* cannot be changed
+    /// by how many diagnostics the configuration allows the parser to keep.
+    ///
+    /// Before #8786 the hash-versus-block disambiguation (#1352) read the
+    /// growth of the retained diagnostic vector. Once retention became bounded
+    /// by the operation's configured `max_errors`, a spent diagnostic budget
+    /// silently made that growth zero and the parser chose a different branch —
+    /// so the same source parsed to a different AST depending only on a
+    /// diagnostic limit. Observation is kept separate from retention to make
+    /// that class of coupling impossible.
+    pub(crate) fn note_diagnostic_observed(&mut self) {
+        self.diagnostics_observed = self.diagnostics_observed.saturating_add(1);
+    }
+
+    /// Diagnostic-worthy conditions detected so far in this operation.
+    ///
+    /// Monotonic within an operation and reset by
+    /// [`ParserOperationContext::begin`]. Compare two readings to learn whether
+    /// inner recovery occurred across a span of parsing.
+    pub(crate) fn diagnostics_observed(&self) -> usize {
+        self.diagnostics_observed
     }
 }
 

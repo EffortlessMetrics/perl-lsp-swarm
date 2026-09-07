@@ -68,10 +68,18 @@ impl<'a> Parser<'a> {
         // Save position to potentially backtrack
         let _saved_pos = self.current_position();
 
-        // Track error count before parsing the first expression so we can detect
-        // whether inner recovery occurred (e.g. an unclosed `[` inside the hash/block).
-        // This is used in the "block" fallback path to prevent premature bail (#1352).
-        let errors_before = self.errors.len();
+        // Track observed recovery before parsing the first expression so we can
+        // detect whether inner recovery occurred (e.g. an unclosed `[` inside the
+        // hash/block). This is used in the "block" fallback path to prevent
+        // premature bail (#1352).
+        //
+        // This reads the operation's observation counter, not the retained
+        // diagnostic vector: retention is bounded by the configured
+        // `max_errors`, so a spent diagnostic budget would otherwise make this
+        // delta zero and silently change which branch is taken — the same
+        // source parsing to a different AST because of a diagnostic limit
+        // (#8786).
+        let errors_before = self.operation.diagnostics_observed();
 
         // Try to parse as expression (which might be hash contents)
         let first_expr = match self.parse_expression() {
@@ -305,7 +313,7 @@ impl<'a> Parser<'a> {
             // In both cases, use expect_closing_delimiter to record the missing `}` error
             // and return immediately, leaving `;` and subsequent tokens for the statement
             // parser to handle so they appear as top-level AST nodes.
-            let had_inner_errors = self.errors.len() > errors_before;
+            let had_inner_errors = self.operation.diagnostics_observed() > errors_before;
             let unclosed_hash =
                 matches!(first_expr.kind, NodeKind::HashLiteral { .. });
             let unclosed_after_inner_error =

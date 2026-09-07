@@ -34,13 +34,26 @@ fn usage_unlimited(source: &str) -> BudgetTracker {
     parse_with_budget(source, ParseBudget::unlimited()).budget_usage
 }
 
+/// An otherwise-unlimited budget with exactly one dimension bounded.
+///
+/// `ParseCoreDimension` is `#[non_exhaustive]`, so this match needs a wildcard.
+/// Rather than let a newly admitted dimension silently fall through untested,
+/// the assertion below fails when the returned budget does not actually bound
+/// the dimension it was asked to bound.
 fn budget_with(dimension: ParseCoreDimension, limit: usize) -> ParseBudget {
     let mut budget = ParseBudget::unlimited();
     match dimension {
         ParseCoreDimension::TokensConsumed => budget.max_tokens_consumed = limit,
         ParseCoreDimension::NodesConstructed => budget.max_nodes_constructed = limit,
         ParseCoreDimension::DiagnosticsEmitted => budget.max_errors = limit,
+        _ => {}
     }
+    assert_eq!(
+        budget.core_limit(dimension),
+        limit,
+        "{dimension} is an admitted core dimension with no case here: add it to `budget_with` \
+         and to the boundary tests rather than leaving it unproven"
+    );
     budget
 }
 
@@ -475,16 +488,92 @@ fn diagnostic_retention_seam_is_unique() {
 /// The pre-#8786 defect must not return: the diagnostic limit is charged
 /// usage against the configured budget, never a hard-coded constant or the
 /// length of the retained vector.
+///
+/// This forbids *every* non-comment read of the retained vector's length in
+/// the production parser, not just the `>=` limit-check shape. A delta
+/// comparison (`self.errors.len() > errors_before`) is just as coupled: once
+/// retention is bounded, the delta silently goes to zero and any grammar
+/// decision reading it changes branch. Use
+/// `ParserOperationContext::diagnostics_observed` for that question.
 #[test]
-fn diagnostic_limit_is_not_reconstructed_from_the_retained_vector() {
+fn diagnostic_vector_length_is_not_a_parser_authority() {
     for (name, body) in production_parser_sources() {
         assert!(
             !body.contains("const MAX_ERRORS"),
             "{name}: a hard-coded diagnostic limit ignores the operation's configured budget"
         );
-        assert!(
-            !body.contains("self.errors.len() >="),
-            "{name}: the diagnostic limit must come from charged usage, not `errors.len()`"
+        for (index, line) in body.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            assert!(
+                !code.contains("errors.len()"),
+                "{name}:{}: the retained diagnostic vector's length is not a parser authority — \
+                 retention is bounded by the configured max_errors, so reading it couples grammar \
+                 or limit decisions to the diagnostic budget. Use `diagnostics_observed()`.\n  {code}",
+                index + 1
+            );
+        }
+    }
+}
+
+/// A diagnostic-retention limit must never change the parsed shape.
+///
+/// Regression control for the coupling #8786 introduced and then removed: the
+/// hash-versus-block disambiguation (#1352) read the growth of the *retained*
+/// diagnostic vector. Once this PR made retention honor the configured
+/// `max_errors`, a spent diagnostic budget made that growth zero, so the same
+/// source parsed to a different AST depending only on a diagnostic limit.
+///
+/// `my $h = { [1,2 ; 3 };` is the discriminating case: it reaches the #1352
+/// branch through an inner recovery. Before the fix, the strict-budget AST
+/// absorbed the trailing `3` into the block instead of taking the
+/// unclosed-brace recovery path.
+#[test]
+fn a_spent_diagnostic_budget_does_not_change_the_parsed_shape() {
+    fn shape(source: &str, max_errors: usize) -> String {
+        let mut budget = ParseBudget::unlimited();
+        budget.max_errors = max_errors;
+        parse_with_budget(source, budget).ast.to_sexp()
+    }
+
+    // Ten independent errors spend a strict budget before the construct.
+    let prefix: String = (0..10).map(|i| format!("my $x{i} = ;\n")).collect();
+
+    for tail in
+        ["my $h = { [1,2 ; 3 };\n", "{ [1,2 ; 3 }\n", "my $h = { a => [1,2 ; };\n", "{ foo( ; }\n"]
+    {
+        let source = format!("{prefix}{tail}");
+        let spent = shape(&source, 10);
+        let generous = shape(&source, 100_000);
+        assert_eq!(
+            spent, generous,
+            "a spent diagnostic budget changed the AST for {tail:?}: retention is a reporting \
+             limit, not a grammar input"
         );
     }
+}
+
+/// Observation is monotonic and unbounded even when retention is refused, and
+/// it resets per operation.
+#[test]
+fn diagnostic_observation_is_independent_of_retention() {
+    const SOURCE: &str = "my $a = ; my $b = ; my $c = ; my $d = ;";
+
+    let mut budget = ParseBudget::unlimited();
+    budget.max_errors = 1;
+    let capped = parse_with_budget(SOURCE, budget);
+
+    let uncapped = parse_with_budget(SOURCE, ParseBudget::unlimited());
+
+    assert_eq!(capped.budget_usage.errors_emitted, 1, "retention stops at the configured limit");
+    assert!(
+        uncapped.budget_usage.errors_emitted > capped.budget_usage.errors_emitted,
+        "the uncapped operation retains strictly more"
+    );
+    // The capped parse still saw every condition: its AST matches the uncapped
+    // one, which it could not if observation had been clipped along with
+    // retention.
+    assert_eq!(capped.ast.to_sexp(), uncapped.ast.to_sexp());
 }

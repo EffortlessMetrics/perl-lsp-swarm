@@ -242,6 +242,7 @@ impl ParseBudget {
 /// members of this set: they are charged by #7074 and #7291 against their own
 /// dimensions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ParseCoreDimension {
     /// Non-EOF tokens taken from the token stream by the parser.
     TokensConsumed,
@@ -299,11 +300,14 @@ pub struct BudgetTracker {
     /// stream, by the single production advance seam. Lookahead (`peek`,
     /// `peek_second`, `peek_third`) is not consumption and is never charged.
     ///
-    /// The synthetic `Eof` token is excluded: `TokenStream::next` makes `Eof`
-    /// *sticky*, returning it indefinitely once the input is exhausted, so
-    /// charging it would let a terminal loop inflate usage without consuming
-    /// any input. This counter therefore measures input actually taken from
-    /// the stream.
+    /// A repeated read of the synthetic `Eof` terminator is excluded:
+    /// `TokenStream::next` makes `Eof` *sticky*, returning it indefinitely once
+    /// the input is exhausted, so charging every read would let a terminal loop
+    /// inflate usage without taking anything from the stream. This counter
+    /// therefore measures input actually taken. In practice the parser peeks
+    /// before it advances, so the terminator is already cached and is not
+    /// charged at all; an advance issued with no prior peek would charge the
+    /// first, fresh `Eof` once, and never again.
     pub tokens_consumed: usize,
 
     /// AST nodes the parser has constructed in this operation (#8786).

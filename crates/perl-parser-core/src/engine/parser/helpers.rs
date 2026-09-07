@@ -767,6 +767,10 @@ impl<'a> Parser<'a> {
     /// complete recovery terminal behavior remains #7074 — so this seam
     /// deliberately returns `()` rather than propagating the typed refusal.
     fn record_error(&mut self, error: ParseError) {
+        // Observation is recorded before authorization and is never refused:
+        // grammar decisions that ask "did inner recovery happen?" must not
+        // change answer because the diagnostic budget is spent.
+        self.operation.note_diagnostic_observed();
         if self.operation.authorize_diagnostic_emit().is_err() {
             return;
         }
