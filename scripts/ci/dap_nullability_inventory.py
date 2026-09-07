@@ -250,10 +250,19 @@ def build_rows(schema: dict, rust: dict) -> tuple[list[dict], list[str]]:
                 if mapped is None:
                     row["reason"] = "not modeled in protocol.rs (Rust owner mapping pending)"
                 elif row_class == "required-non-null" and mapped[1].get("optional"):
-                    row["contradiction"] = (
+                    contradiction = (
                         f"schema requires non-null but the Rust owner is Option<> "
                         f"({mapped[1]['rust_type']})"
                     )
+                    row["contradiction"] = contradiction
+                    # Fail closed exactly like the standard-owner path: an
+                    # unreviewed required-nullable-vs-Option mismatch is a
+                    # build error, not a recorded observation (#14889
+                    # review).
+                    if (def_name, wire_name) not in KNOWN_CONTRADICTIONS:
+                        errors.append(
+                            f"{def_name}.{wire_name}: new contradiction — {contradiction}"
+                        )
                 rows.append(row)
             continue
         composed_properties = None
@@ -306,24 +315,33 @@ def build_rows(schema: dict, rust: dict) -> tuple[list[dict], list[str]]:
                     }
                 )
             continue
+        duplicates = set(find_duplicate_wire_names(owner))
+        for wire in sorted(duplicates):
+            errors.append(
+                f"{owner_name}: ambiguous wire name '{wire}' claimed by multiple Rust fields"
+            )
         for wire_name in sorted(properties):
             property_schema = properties[wire_name]
             schema_nullable = is_nullable_schema(property_schema)
             schema_required = wire_name in required
             row_class = classify(schema_required, schema_nullable)
-            mapped = rust_field_for(wire_name, owner)
+            mapped = None if wire_name in duplicates else rust_field_for(wire_name, owner)
             if mapped is None:
-                # Unmodeled in Rust: the schema-side class is still recorded so
-                # the inventory shows the gap explicitly instead of dropping
-                # the field. Adding the Rust field later turns this into a
-                # fully-owned row.
+                # Unmodeled (or ambiguously modeled) in Rust: the schema-side
+                # class is still recorded so the inventory shows the gap
+                # explicitly instead of dropping the field.
+                reason = (
+                    "ambiguous wire-name mapping (duplicate wire_name in the Rust struct)"
+                    if wire_name in duplicates
+                    else "not modeled in protocol.rs (Rust owner mapping pending)"
+                )
                 rows.append(
                     {
                         "definition": def_name,
                         "field": wire_name,
                         "class": row_class,
                         "rust_owner": None,
-                        "reason": "not modeled in protocol.rs (Rust owner mapping pending)",
+                        "reason": reason,
                     }
                 )
                 continue
@@ -399,8 +417,9 @@ def main() -> int:
         committed = REPORT.read_text(encoding="utf-8")
         if committed != rendered:
             print(
-                "ERROR: committed nullability inventory is stale — rerun with "
-                "--write and review the diff",
+                "ERROR: committed nullability inventory is stale — rerun "
+                "python3 scripts/ci/dap_nullability_inventory.py (it writes "
+                "by default) and review the diff",
                 file=sys.stderr,
             )
             return 1

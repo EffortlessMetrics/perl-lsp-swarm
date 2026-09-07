@@ -52,9 +52,7 @@ RUST = {
                 "optional": True,
                 "skips_when_none": True,
                 "has_default": True,
-                # Deliberate: an explicit rename to the same wire name as
-                # always_present exercises the double-claim falsifier.
-                "wire_name": "alwaysPresent",
+                "wire_name": "maybeAbsent",
             },
         },
     }
@@ -119,10 +117,18 @@ def test_extension_field_is_never_standard():
     """Falsifier: a custom extension field is counted as standard."""
     # build_rows only walks the upstream pinned schema; project-extension
     # definitions live in the manifest's project_extensions and never enter
-    # the definitions walk. The contract is therefore structural: a row's
-    # definition name must originate from the pinned schema walk — modeled
-    # here by asserting the descent reports NO rows when the definition set
-    # is empty (an extension definition cannot invent rows from nothing).
+    # the definitions walk. The structural edge: an extension-shaped
+    # definition set (nothing the pinned schema owns) yields NO rows, while
+    # the same properties under a schema-owned definition do.
+    extension_only = {"x_vendor_extension": {"properties": {"always_present": {"type": "string"}}}}
+    rows, errors = mod.build_rows({"definitions": extension_only}, RUST)
+    assert not errors, errors
+    # The extension definition may surface as an unowned observation, but it
+    # can never mint an OWNED standard row: an implementation that started
+    # attributing extension fields to Rust owners fails here.
+    assert all(
+        row["rust_owner"] is None and row["class"] == "unsupported" for row in rows
+    ), rows
     rows = rows_for({"properties": {}}, RUST)
     assert rows == []
 
@@ -163,8 +169,79 @@ def test_two_properties_never_share_one_rust_owner():
 
 
 def test_data_id_seed_class_is_required_nullable():
-    """The seeded confirmation list drives the dataId contract class."""
-    assert ("DataBreakpointInfoResponse", "dataId") in mod.CONFIRMED_REQUIRED_NULLABLE
+    """The seeded confirmation list drives the dataId contract class — and
+    is load-bearing: with the seed the nullable body field classifies
+    required-nullable, without it the same shape degrades to
+    optional-nullable."""
+    definition = {
+        "allOf": [
+            {"$ref": "#/definitions/Response"},
+            {
+                "properties": {
+                    "body": {
+                        "properties": {"dataId": {"type": ["string", "null"]}},
+                    }
+                }
+            },
+        ]
+    }
+    definitions = {
+        "DataBreakpointInfoResponse": definition,
+        "Response": {"properties": {}},
+    }
+    rows, errors = mod.build_rows({"definitions": definitions}, RUST)
+    assert not errors, errors
+    data_id = next(row for row in rows if row["field"] == "dataId")
+    assert data_id["class"] == "required-nullable", data_id
+    assert data_id["seeded"] is True, data_id
+
+    saved = set(mod.CONFIRMED_REQUIRED_NULLABLE)
+    try:
+        mod.CONFIRMED_REQUIRED_NULLABLE = set()
+        rows, errors = mod.build_rows({"definitions": definitions}, RUST)
+        assert not errors, errors
+        data_id = next(row for row in rows if row["field"] == "dataId")
+        assert data_id["class"] == "optional-nullable", data_id
+        assert data_id["seeded"] is False, data_id
+    finally:
+        mod.CONFIRMED_REQUIRED_NULLABLE = saved
+
+
+def test_duplicate_wire_names_fail_the_build_and_lose_owner():
+    """Falsifier: two Rust fields claiming one wire name are a build error,
+    and the ambiguous row records no owner (declaration order must never
+    decide silently)."""
+    ambiguous = {
+        "UnderTest": {
+            "rename_all": "camelCase",
+            "fields": {
+                "always_present": {
+                    "rust_type": "String",
+                    "optional": False,
+                    "skips_when_none": False,
+                    "has_default": False,
+                    "wire_name": "alwaysPresent",
+                },
+                "shadow": {
+                    "rust_type": "Option<String>",
+                    "optional": True,
+                    "skips_when_none": True,
+                    "has_default": True,
+                    "wire_name": "alwaysPresent",
+                },
+            },
+        }
+    }
+    rows, errors = mod.build_rows(
+        {"definitions": {"UnderTest": {"properties": {"alwaysPresent": {"type": "string"}}}}},
+        ambiguous,
+    )
+    assert any(
+        "ambiguous wire name 'alwaysPresent'" in error for error in errors
+    ), errors
+    row = next(row for row in rows if row["field"] == "alwaysPresent")
+    assert row["rust_owner"] is None, row
+    assert "ambiguous" in row.get("reason", ""), row
 
 
 if __name__ == "__main__":
