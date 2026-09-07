@@ -6,6 +6,7 @@
 //! cargo test -p perl-corpus --test gold_repository_contract
 //! ```
 
+use perl_corpus::byte_fidelity::{ByteFidelity, Encoding, NewlineStyle};
 use perl_corpus::gold::{
     CompletionGoldExpected, DocumentSymbolGoldExpected, GoldAssertion, GoldExpected,
     GotoGoldExpected, HoverGoldExpected, RenameGoldExpected,
@@ -13,12 +14,16 @@ use perl_corpus::gold::{
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const MIN_FIXTURE_DIRECTORIES: usize = 36;
+
+/// Floor on the number of members the byte-fidelity walk must classify, so a
+/// walk that silently finds nothing cannot be mistaken for a clean corpus.
+const MIN_GOLD_MEMBERS: usize = 90;
 
 const SIDECAR_FLOORS: [(&str, usize); 7] = [
     ("expected.json", 28),
@@ -41,17 +46,54 @@ const FIXTURE_FILES: [&str; 8] = [
     "expected_module.json",
 ];
 
+/// A gold member whose bytes deliberately deviate from [`DEFAULT_BYTE_CLASS`].
+///
+/// Deviation is a reviewed, declared property, never an accident: the entry
+/// pins the exact class the member is expected to have, and the member is
+/// admitted only when `.gitattributes` disables git's text normalization for
+/// its path. Without that protection git would be free to rewrite the very
+/// bytes the entry claims are load-bearing.
+#[derive(Debug, Clone, Copy)]
+struct ByteExactDeviation {
+    /// Repository-relative, `/`-separated path.
+    path: &'static str,
+    /// Terminator representation the member is expected to have.
+    newline_style: NewlineStyle,
+    /// Whether the member is expected to end with a terminator.
+    final_newline: bool,
+    /// Whether the member is expected to begin with a UTF-8 BOM.
+    byte_order_mark: bool,
+    /// Why these bytes are load-bearing.
+    reason: &'static str,
+}
+
+/// The class every gold member has unless it is declared in
+/// [`BYTE_EXACT_DEVIATIONS`]: LF terminators, a final newline, and no BOM.
+const DEFAULT_BYTE_CLASS: (NewlineStyle, bool, bool) = (NewlineStyle::Lf, true, false);
+
+/// Gold members that intentionally carry other bytes.
+///
+/// Empty today, and that emptiness is the contract: every member of
+/// `test_corpus/gold` is currently LF-terminated UTF-8 without a BOM, and any
+/// change to that — including one git makes on a contributor's behalf — has to
+/// be declared here and protected in `.gitattributes` before it is admitted.
+const BYTE_EXACT_DEVIATIONS: &[ByteExactDeviation] = &[];
+
 fn contract_error(message: impl Into<String>) -> std::io::Error {
     std::io::Error::other(message.into())
 }
 
-fn gold_root() -> Result<PathBuf, Box<dyn Error>> {
+fn workspace_root() -> Result<PathBuf, Box<dyn Error>> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir
+    let root = manifest_dir
         .parent()
         .and_then(Path::parent)
         .ok_or_else(|| contract_error("perl-corpus must live under <workspace>/crates"))?;
-    Ok(workspace_root.join("test_corpus").join("gold"))
+    Ok(root.to_path_buf())
+}
+
+fn gold_root() -> Result<PathBuf, Box<dyn Error>> {
+    Ok(workspace_root()?.join("test_corpus").join("gold"))
 }
 
 fn fixture_name(directory: &Path) -> Result<String, Box<dyn Error>> {
@@ -495,6 +537,225 @@ fn validate_fixture_directory(
     Ok(())
 }
 
+/// Collect the repository-relative paths `.gitattributes` exempts from git's
+/// text normalization.
+///
+/// Only literal path entries in the repository-root `.gitattributes` carrying
+/// the `-text` attribute are recognised. Git's full pattern language, and its
+/// per-directory `.gitattributes` files, are deliberately not reimplemented
+/// here: a member whose exact bytes matter must be named literally at the root,
+/// which is what the repository already does for the parser-accuracy span
+/// fixtures. Any other spelling reads as unprotected, so the contract errs
+/// toward rejecting a deviation rather than trusting one.
+fn git_text_normalization_disabled(
+    workspace_root: &Path,
+) -> Result<BTreeSet<String>, Box<dyn Error>> {
+    let path = workspace_root.join(".gitattributes");
+    let contents = fs::read_to_string(&path)
+        .map_err(|error| contract_error(format!("reading {}: {error}", path.display())))?;
+    Ok(parse_unnormalized_paths(&contents))
+}
+
+fn parse_unnormalized_paths(contents: &str) -> BTreeSet<String> {
+    let mut protected = BTreeSet::new();
+
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let mut fields = line.split_whitespace();
+        let Some(pattern) = fields.next() else {
+            continue;
+        };
+        // `-text` is the attribute that turns normalization off. `text`,
+        // `text=auto`, and `eol=lf` all leave git free to rewrite the bytes.
+        if fields.any(|attribute| attribute == "-text") {
+            protected.insert(pattern.trim_start_matches("./").to_owned());
+        }
+    }
+
+    protected
+}
+
+fn collect_gold_members(
+    directory: &Path,
+    members: &mut Vec<PathBuf>,
+) -> Result<(), Box<dyn Error>> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+
+        if file_type.is_symlink() {
+            return Err(contract_error(format!(
+                "gold corpus contains a symbolic link: {}",
+                path.display()
+            ))
+            .into());
+        }
+        if file_type.is_dir() {
+            collect_gold_members(&path, members)?;
+        } else if file_type.is_file() {
+            members.push(path);
+        } else {
+            return Err(contract_error(format!(
+                "gold corpus member is not a regular file: {}",
+                path.display()
+            ))
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+fn gold_members(root: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let mut members = Vec::new();
+    collect_gold_members(root, &mut members)?;
+    members.sort();
+    Ok(members)
+}
+
+fn repository_relative(workspace_root: &Path, path: &Path) -> Result<String, Box<dyn Error>> {
+    let relative = path
+        .strip_prefix(workspace_root)
+        .map_err(|_| contract_error(format!("{} is outside the workspace", path.display())))?;
+
+    let mut rendered = String::new();
+    for component in relative.components() {
+        let Some(text) = component.as_os_str().to_str() else {
+            return Err(contract_error(format!(
+                "gold member path is not UTF-8: {}",
+                path.display()
+            ))
+            .into());
+        };
+        if !rendered.is_empty() {
+            rendered.push('/');
+        }
+        rendered.push_str(text);
+    }
+
+    Ok(rendered)
+}
+
+/// Judge one member's observed bytes against the declared contract.
+///
+/// Pure over its inputs so the rejection paths can be exercised directly,
+/// without mutating a tracked fixture to observe a failure.
+fn check_member_byte_fidelity(
+    repository_path: &str,
+    fidelity: ByteFidelity,
+    deviations: &[ByteExactDeviation],
+    protected_paths: &BTreeSet<String>,
+) -> Result<(), String> {
+    if let Encoding::InvalidUtf8 { valid_up_to } = fidelity.encoding {
+        return Err(format!(
+            "{repository_path} is not valid UTF-8: first undecodable byte at offset \
+             {valid_up_to}. Gold members must decode exactly; a replacement character is \
+             not an acceptable substitute for the original byte."
+        ));
+    }
+
+    let Some(declared) = deviations.iter().find(|deviation| deviation.path == repository_path)
+    else {
+        let (newline_style, final_newline, byte_order_mark) = DEFAULT_BYTE_CLASS;
+        if fidelity.newline_style != newline_style
+            || fidelity.final_newline != final_newline
+            || fidelity.byte_order_mark != byte_order_mark
+        {
+            return Err(format!(
+                "{repository_path} has {fidelity}, but an undeclared gold member must be \
+                 newlines={newline_style}, final newline={final_newline}, \
+                 BOM={byte_order_mark}. Restore the bytes, or declare the deviation in \
+                 BYTE_EXACT_DEVIATIONS and give the path a literal `-text` entry in \
+                 .gitattributes."
+            ));
+        }
+        return Ok(());
+    };
+
+    if !protected_paths.contains(repository_path) {
+        return Err(format!(
+            "{repository_path} is declared byte-exact ({}) but .gitattributes does not \
+             disable text normalization for it. Add a literal `{repository_path} -text` \
+             entry so git cannot rewrite the bytes the declaration depends on.",
+            declared.reason
+        ));
+    }
+
+    if fidelity.newline_style != declared.newline_style
+        || fidelity.final_newline != declared.final_newline
+        || fidelity.byte_order_mark != declared.byte_order_mark
+    {
+        return Err(format!(
+            "{repository_path} is declared as newlines={}, final newline={}, BOM={} ({}), \
+             but has {fidelity}. The declared bytes were rewritten.",
+            declared.newline_style,
+            declared.final_newline,
+            declared.byte_order_mark,
+            declared.reason
+        ));
+    }
+
+    Ok(())
+}
+
+/// The first path declared more than once, if any.
+///
+/// Two entries for one member would let the first silently shadow the second,
+/// so a duplicate is a contract error rather than a resolved conflict.
+fn duplicate_declaration(deviations: &[ByteExactDeviation]) -> Option<&'static str> {
+    let mut seen = BTreeSet::new();
+    deviations.iter().find(|deviation| !seen.insert(deviation.path)).map(|deviation| deviation.path)
+}
+
+fn validate_gold_byte_fidelity(root: &Path) -> Result<usize, Box<dyn Error>> {
+    if let Some(path) = duplicate_declaration(BYTE_EXACT_DEVIATIONS) {
+        return Err(contract_error(format!(
+            "BYTE_EXACT_DEVIATIONS declares {path} more than once; one member cannot hold \
+             two byte classes"
+        ))
+        .into());
+    }
+
+    let workspace_root = workspace_root()?;
+    let protected_paths = git_text_normalization_disabled(&workspace_root)?;
+    let members = gold_members(root)?;
+
+    let mut observed_paths = BTreeSet::new();
+    for member in &members {
+        let bytes = fs::read(member)
+            .map_err(|error| contract_error(format!("reading {}: {error}", member.display())))?;
+        let repository_path = repository_relative(&workspace_root, member)?;
+
+        check_member_byte_fidelity(
+            &repository_path,
+            ByteFidelity::classify(&bytes),
+            BYTE_EXACT_DEVIATIONS,
+            &protected_paths,
+        )
+        .map_err(contract_error)?;
+
+        observed_paths.insert(repository_path);
+    }
+
+    // A declaration that no longer names a real member is stale authority.
+    for deviation in BYTE_EXACT_DEVIATIONS {
+        if !observed_paths.contains(deviation.path) {
+            return Err(contract_error(format!(
+                "BYTE_EXACT_DEVIATIONS names {}, which is not a gold corpus member",
+                deviation.path
+            ))
+            .into());
+        }
+    }
+
+    Ok(members.len())
+}
+
 #[test]
 fn gold_repository_contract_holds() -> Result<(), Box<dyn Error>> {
     let root = gold_root()?;
@@ -513,6 +774,19 @@ fn gold_repository_contract_holds() -> Result<(), Box<dyn Error>> {
             "gold corpus shrank to {} fixture directories; floor is {}",
             directories.len(),
             MIN_FIXTURE_DIRECTORIES
+        ))
+        .into());
+    }
+
+    // Byte fidelity gates the decoded views deliberately: every later step
+    // reads members as `String`, so an undecodable member must be reported
+    // here — with its path and the offending offset — rather than surfacing
+    // downstream as an anonymous "stream did not contain valid UTF-8".
+    let classified = validate_gold_byte_fidelity(&root)?;
+    if classified < MIN_GOLD_MEMBERS {
+        return Err(contract_error(format!(
+            "byte-fidelity classification saw only {classified} gold members; floor is \
+             {MIN_GOLD_MEMBERS}. A walk that finds nothing must not pass as a clean corpus."
         ))
         .into());
     }
@@ -774,6 +1048,265 @@ mod tests {
         if !error.contains("symbolic link") {
             return Err(contract_error(format!("unexpected validation error: {error}")).into());
         }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Byte fidelity (#15011)
+    //
+    // The rejection paths are exercised against synthetic members so that
+    // proving the contract bites never requires rewriting a tracked fixture.
+    // -----------------------------------------------------------------------
+
+    const LF_SOURCE: &[u8] = b"use strict;\nmy $x = 1;\n";
+
+    fn protected(paths: &[&str]) -> BTreeSet<String> {
+        paths.iter().map(|path| (*path).to_owned()).collect()
+    }
+
+    fn rejection(
+        repository_path: &str,
+        bytes: &[u8],
+        deviations: &[ByteExactDeviation],
+        protected_paths: &BTreeSet<String>,
+    ) -> Result<String, Box<dyn Error>> {
+        match check_member_byte_fidelity(
+            repository_path,
+            ByteFidelity::classify(bytes),
+            deviations,
+            protected_paths,
+        ) {
+            Ok(()) => Err(contract_error(format!(
+                "{repository_path} was admitted, but the contract must reject it"
+            ))
+            .into()),
+            Err(message) => Ok(message),
+        }
+    }
+
+    #[test]
+    fn an_ordinary_lf_member_is_admitted() -> Result<(), Box<dyn Error>> {
+        check_member_byte_fidelity(
+            "test_corpus/gold/hello_world/fixture.pl",
+            ByteFidelity::classify(LF_SOURCE),
+            BYTE_EXACT_DEVIATIONS,
+            &BTreeSet::new(),
+        )
+        .map_err(contract_error)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_member_converted_to_crlf() -> Result<(), Box<dyn Error>> {
+        let crlf = b"use strict;\r\nmy $x = 1;\r\n";
+        let message = rejection(
+            "test_corpus/gold/hello_world/fixture.pl",
+            crlf,
+            BYTE_EXACT_DEVIATIONS,
+            &BTreeSet::new(),
+        )?;
+        assert!(
+            message.contains("newlines=CRLF"),
+            "message must name the observed class: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_member_that_lost_or_gained_a_final_newline() -> Result<(), Box<dyn Error>> {
+        let stripped = b"use strict;\nmy $x = 1;";
+        let message = rejection(
+            "test_corpus/gold/hello_world/fixture.pl",
+            stripped,
+            BYTE_EXACT_DEVIATIONS,
+            &BTreeSet::new(),
+        )?;
+        assert!(
+            message.contains("final newline=false"),
+            "message must name the missing terminator: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_member_that_gained_a_byte_order_mark() -> Result<(), Box<dyn Error>> {
+        let mut with_bom = vec![0xEF, 0xBB, 0xBF];
+        with_bom.extend_from_slice(LF_SOURCE);
+
+        let message = rejection(
+            "test_corpus/gold/hello_world/fixture.pl",
+            &with_bom,
+            BYTE_EXACT_DEVIATIONS,
+            &BTreeSet::new(),
+        )?;
+        assert!(message.contains("BOM=true"), "message must name the BOM: {message}");
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_undecodable_bytes_by_offset_instead_of_replacing_them() -> Result<(), Box<dyn Error>>
+    {
+        let message = rejection(
+            "test_corpus/gold/hello_world/fixture.pl",
+            b"use strict;\n\xFFmy $x = 1;\n",
+            BYTE_EXACT_DEVIATIONS,
+            &BTreeSet::new(),
+        )?;
+        assert!(
+            message.contains("not valid UTF-8") && message.contains("offset 12"),
+            "message must name the undecodable offset: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_declared_deviation_that_git_may_normalize() -> Result<(), Box<dyn Error>> {
+        let declared = [ByteExactDeviation {
+            path: "test_corpus/gold/crlf_positions/fixture.pl",
+            newline_style: NewlineStyle::Crlf,
+            final_newline: true,
+            byte_order_mark: false,
+            reason: "CRLF position fixture",
+        }];
+
+        let message = rejection(
+            "test_corpus/gold/crlf_positions/fixture.pl",
+            b"use strict;\r\nmy $x = 1;\r\n",
+            &declared,
+            // Nothing protects the path: git is free to rewrite the bytes.
+            &BTreeSet::new(),
+        )?;
+        assert!(
+            message.contains(".gitattributes"),
+            "message must point at the missing git protection: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn admits_a_declared_deviation_that_git_cannot_normalize() -> Result<(), Box<dyn Error>> {
+        let declared = [ByteExactDeviation {
+            path: "test_corpus/gold/crlf_positions/fixture.pl",
+            newline_style: NewlineStyle::Crlf,
+            final_newline: true,
+            byte_order_mark: false,
+            reason: "CRLF position fixture",
+        }];
+
+        check_member_byte_fidelity(
+            "test_corpus/gold/crlf_positions/fixture.pl",
+            ByteFidelity::classify(b"use strict;\r\nmy $x = 1;\r\n"),
+            &declared,
+            &protected(&["test_corpus/gold/crlf_positions/fixture.pl"]),
+        )
+        .map_err(contract_error)?;
+        Ok(())
+    }
+
+    /// The scenario the whole contract exists for: a fixture declared CRLF
+    /// whose bytes arrived as LF because something normalized them. Git
+    /// protection alone cannot catch this; only comparing declared bytes to
+    /// observed bytes can.
+    #[test]
+    fn rejects_a_declared_crlf_member_whose_bytes_arrived_as_lf() -> Result<(), Box<dyn Error>> {
+        let declared = [ByteExactDeviation {
+            path: "test_corpus/gold/crlf_positions/fixture.pl",
+            newline_style: NewlineStyle::Crlf,
+            final_newline: true,
+            byte_order_mark: false,
+            reason: "CRLF position fixture",
+        }];
+
+        let message = rejection(
+            "test_corpus/gold/crlf_positions/fixture.pl",
+            LF_SOURCE,
+            &declared,
+            &protected(&["test_corpus/gold/crlf_positions/fixture.pl"]),
+        )?;
+        assert!(
+            message.contains("declared as newlines=CRLF") && message.contains("newlines=LF"),
+            "message must contrast declared and observed bytes: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn gitattributes_reader_separates_protected_paths_from_normalized_ones() {
+        let protected_paths = parse_unnormalized_paths(
+            "# comment\n\
+             * text eol=lf\n\
+             \n\
+             crates/x/crlf.pl -text !eol whitespace=-blank-at-eol\n\
+             crates/x/normal.pl text\n\
+             *.png binary\n",
+        );
+
+        assert!(protected_paths.contains("crates/x/crlf.pl"));
+        assert!(
+            !protected_paths.contains("crates/x/normal.pl"),
+            "a `text` entry leaves git free to normalize"
+        );
+        assert!(!protected_paths.contains("*"), "the default `* text eol=lf` is not protection");
+        assert!(!protected_paths.contains("*.png"), "`binary` is not the attribute we read");
+    }
+
+    /// Positive and negative control against the repository's real
+    /// `.gitattributes`, so the reader cannot drift from the file it reads.
+    #[test]
+    fn repository_gitattributes_protects_the_span_fixtures_and_not_the_gold_corpus()
+    -> Result<(), Box<dyn Error>> {
+        let protected_paths = git_text_normalization_disabled(&workspace_root()?)?;
+
+        assert!(
+            protected_paths.contains("crates/perl-corpus/fixtures/parser_accuracy/span_crlf.pl"),
+            "the parser-accuracy CRLF fixture is byte-exact and must be protected"
+        );
+        assert!(
+            !protected_paths.contains("test_corpus/gold/hello_world/fixture.pl"),
+            "no gold member is exempt from normalization today; if one becomes exempt it \
+             must also be declared in BYTE_EXACT_DEVIATIONS"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_path_declared_twice_is_a_contract_error_not_a_silent_shadow() {
+        let first = ByteExactDeviation {
+            path: "test_corpus/gold/crlf_positions/fixture.pl",
+            newline_style: NewlineStyle::Crlf,
+            final_newline: true,
+            byte_order_mark: false,
+            reason: "CRLF position fixture",
+        };
+        let shadowing = ByteExactDeviation { newline_style: NewlineStyle::Lf, ..first };
+
+        assert_eq!(duplicate_declaration(&[first]), None);
+        assert_eq!(
+            duplicate_declaration(&[first, shadowing]),
+            Some("test_corpus/gold/crlf_positions/fixture.pl")
+        );
+    }
+
+    #[test]
+    fn every_gold_member_is_classified_and_none_is_skipped() -> Result<(), Box<dyn Error>> {
+        let root = gold_root()?;
+        let members = gold_members(&root)?;
+
+        assert!(
+            members.len() >= MIN_GOLD_MEMBERS,
+            "gold corpus member count regressed to {}",
+            members.len()
+        );
+        assert!(
+            members.iter().any(|member| member.ends_with("fixture.pl")),
+            "the walk must reach fixture sources"
+        );
+        assert!(
+            members
+                .iter()
+                .any(|member| member.extension().is_some_and(|extension| extension == "pm")),
+            "the walk must reach lib payload modules, not just top-level members"
+        );
         Ok(())
     }
 }
