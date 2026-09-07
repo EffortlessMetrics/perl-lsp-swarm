@@ -230,8 +230,11 @@ Behind-only movement still requires no action. Do not rebase after every unrelat
 Before choosing rebase, merge, or a port, establish the branch's relation to current
 `main` from its merge base. The September 3, 2026 `main` history replacement left some
 branches without a merge base, but many older branches still share history; those are
-live candidates to compare at claim level, not orphan ports. Generated projections that
-conflict during integration are regenerated from their authority, never hand-merged.
+live candidates to compare at claim level, not orphan ports. Resolve generated-projection
+conflicts through the owning writer and publication policy, never by hand-merging.
+Feature branches do not regenerate or stage the default-branch publication
+`docs/policy/NON_RUST_INVENTORY.md`; follow [file policy](../FILE_POLICY.md) and
+[non-Rust policy](../policy/NON_RUST_POLICY.md) for its current-tree evidence path.
 Repeated rebases are churn when they have no conflict, interaction, or active-work
 reason; distinct integration work may justify more than one.
 
