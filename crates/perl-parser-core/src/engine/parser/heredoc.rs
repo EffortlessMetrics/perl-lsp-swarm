@@ -146,7 +146,11 @@ impl<'a> Parser<'a> {
             .iter()
             .any(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. }));
         if !already_reported {
-            self.record_error(ParseError::HeredocBudgetExhausted { limit, usage, location });
+            self.retain_terminal_diagnostic(ParseError::HeredocBudgetExhausted {
+                limit,
+                usage,
+                location,
+            });
         }
     }
 
@@ -177,7 +181,7 @@ impl<'a> Parser<'a> {
             .find(|error| matches!(error, ParseError::HeredocBudgetExhausted { .. }))
         {
             Some(existing) => *existing = refusal,
-            None => self.record_error(refusal),
+            None => self.retain_terminal_diagnostic(refusal),
         }
     }
 

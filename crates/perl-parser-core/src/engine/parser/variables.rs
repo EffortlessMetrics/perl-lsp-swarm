@@ -473,7 +473,7 @@ impl<'a> Parser<'a> {
         {
             let inner_text = &name[1..name.len() - 1];
             let (operand, diagnostics, adopted_nodes) =
-                parse_inline_expression(inner_text, token.start() + 2)?;
+                parse_inline_expression(inner_text, token.start() + 2, self.config_identity())?;
             // The nested parse owns its own operation, but its nodes are
             // spliced into this AST and its diagnostics are reported as this
             // parse's own: both must therefore be governed by this operation's
@@ -1689,8 +1689,14 @@ impl<'a> Parser<'a> {
 fn parse_inline_expression(
     source: &str,
     offset: usize,
+    config: ParserConfigIdentity,
 ) -> ParseResult<(Node, Vec<ParseError>, usize)> {
-    let mut parser = Parser::new(source);
+    // The nested parse runs under the *adopting* operation's configuration, not
+    // the default. Adoption can only charge after the nested parse finishes, so
+    // this is what bounds the overshoot: without it a small outer
+    // `max_nodes_constructed` would still permit a nested parse to build up to
+    // the default limit before the outer parse could refuse it (#8786).
+    let mut parser = Parser::with_production_config(source, config);
     let ast = parser.parse().map_err(|error| offset_parse_error(error, offset))?;
     let diagnostics = parser
         .errors()
@@ -1824,7 +1830,7 @@ mod inline_expression_tests {
 
     #[test]
     fn non_expression_inline_statement_reports_offset_location() -> ParseResult<()> {
-        let error = match parse_inline_expression("my $name;", 17) {
+        let error = match parse_inline_expression("my $name;", 17, ParserConfigIdentity::production_default()) {
             Ok(_) => {
                 return Err(ParseError::syntax(
                     "expected a non-expression statement to be rejected",
@@ -1845,7 +1851,7 @@ mod inline_expression_tests {
 
     #[test]
     fn non_expression_after_expression_is_not_discarded() -> Result<(), Box<dyn std::error::Error>> {
-        let error = match parse_inline_expression("$tmp; my $name;", 17) {
+        let error = match parse_inline_expression("$tmp; my $name;", 17, ParserConfigIdentity::production_default()) {
             Ok(_) => return Err("expected a non-expression statement to be rejected".into()),
             Err(error) => error,
         };
@@ -1861,7 +1867,7 @@ mod inline_expression_tests {
 
     #[test]
     fn malformed_inline_expression_reports_outer_offset() -> ParseResult<()> {
-        let error = match parse_inline_expression("(", 17) {
+        let error = match parse_inline_expression("(", 17, ParserConfigIdentity::production_default()) {
             Ok(_) => {
                 return Err(ParseError::syntax(
                     "expected malformed inline expression to be rejected",
@@ -1884,7 +1890,7 @@ mod inline_expression_tests {
 
     #[test]
     fn multi_statement_inline_expression_preserves_every_expression() -> ParseResult<()> {
-        let (node, _, _) = parse_inline_expression("$tmp; 'STDOUT'", 17)?;
+        let (node, _, _) = parse_inline_expression("$tmp; 'STDOUT'", 17, ParserConfigIdentity::production_default())?;
 
         let NodeKind::Block { statements } = node.into_parts().0 else {
             return Err(ParseError::syntax(
@@ -1899,7 +1905,7 @@ mod inline_expression_tests {
     #[test]
     fn inline_expression_forwards_recoverable_diagnostics() -> ParseResult<()> {
         let source = r#""abab" =~ /(?:[^b]*(?=(b)|(a))ab)*/"#;
-        let (_, diagnostics, _) = parse_inline_expression(source, 17)?;
+        let (_, diagnostics, _) = parse_inline_expression(source, 17, ParserConfigIdentity::production_default())?;
         if !diagnostics.iter().any(|diagnostic| {
             matches!(diagnostic, ParseError::Advisory { message, .. }
                 if message.contains("Nested quantifiers detected"))

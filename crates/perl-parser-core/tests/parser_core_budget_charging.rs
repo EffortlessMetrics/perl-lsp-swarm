@@ -477,6 +477,71 @@ fn diagnostics_forwarded_from_a_nested_sub_parse_honor_the_configured_limit() {
     );
 }
 
+/// A nested sub-parse is bounded by the *adopting* operation's configuration.
+///
+/// Adoption can only charge after the nested parse finishes, so the nested
+/// parse's own configuration is what bounds the overshoot. If it ran under the
+/// default budget, a small outer `max_nodes_constructed` would still permit it
+/// to build up to the default limit before the outer parse could refuse — the
+/// refusal would be correct but the work would already be done.
+#[test]
+fn a_nested_sub_parse_is_bounded_by_the_adopting_configuration() {
+    const FUSED: &str = "my $g = *{ $tmp; 'STDOUT' };";
+
+    // A node limit of 1 must refuse. The nested parse needs more than one node,
+    // so if it ran under the default budget it would build them all first; under
+    // the adopting configuration it cannot.
+    let refused = parse_with_budget(FUSED, budget_with(ParseCoreDimension::NodesConstructed, 1));
+    assert!(
+        matches!(
+            refused.stop_cause(),
+            Some(ParseStopCause::CoreBudgetExhausted {
+                dimension: ParseCoreDimension::NodesConstructed,
+                ..
+            })
+        ),
+        "a node limit of 1 must refuse the fused form; got {:?}",
+        refused.stop_cause()
+    );
+    assert!(
+        refused.budget_usage.nodes_constructed <= 1,
+        "no more than the configured limit may be charged, and the nested parse must not have \
+         been allowed to build past it; charged {}",
+        refused.budget_usage.nodes_constructed
+    );
+}
+
+/// A terminal diagnostic outlives an exhausted diagnostic budget.
+///
+/// `ParseStopCause::HeredocBudgetExhausted` carries no location, and its
+/// contract points consumers at the diagnostic vector for the anchor. If
+/// ordinary retention could drop that diagnostic, a terminated parse would
+/// report a cause nobody could locate.
+#[test]
+fn a_terminal_diagnostic_survives_an_exhausted_diagnostic_budget() {
+    let mut budget = ParseBudget::unlimited();
+    budget.max_heredoc_scan_bytes = 0; // refuse the first heredoc collection
+    budget.max_errors = 0; // and spend the diagnostic budget entirely
+    let output = parse_with_budget("my $x = <<EOT;\nbody\nEOT\n", budget);
+
+    assert!(
+        matches!(output.stop_cause(), Some(ParseStopCause::HeredocBudgetExhausted { .. })),
+        "the heredoc budget must terminate this parse; got {:?}",
+        output.stop_cause()
+    );
+
+    let anchored = output
+        .diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic, ParseError::HeredocBudgetExhausted { .. }));
+    assert!(
+        anchored,
+        "the terminal diagnostic carries the only source anchor for this stop cause and must be \
+         retained even at max_errors = 0; got {:?}",
+        output.diagnostics
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Recurrence controls
 // ---------------------------------------------------------------------------
@@ -561,7 +626,7 @@ fn node_construction_seam_is_unique() {
 /// seam itself and the terminal cause that must survive an exhausted budget.
 #[test]
 fn diagnostic_retention_seam_is_unique() {
-    assert_every_raw_use_is_annotated(".errors.push(", 2);
+    assert_every_raw_use_is_annotated(".errors.push(", 3);
 }
 
 /// `push` is not the only way to grow the diagnostic vector.

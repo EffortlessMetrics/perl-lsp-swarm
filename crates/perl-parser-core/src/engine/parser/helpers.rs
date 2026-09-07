@@ -788,6 +788,23 @@ impl<'a> Parser<'a> {
         Ok(Node::new(kind, location))
     }
 
+    /// Retain a *terminal* diagnostic regardless of the diagnostic budget.
+    ///
+    /// A terminal diagnostic is the only source-anchored record of why the
+    /// parse stopped, and its typed `ParseStopCause` carries no location — the
+    /// stop-cause contract directs consumers to the diagnostic vector for the
+    /// anchor. Dropping it because ordinary retention is spent would leave a
+    /// terminated parse with a cause nobody can locate.
+    ///
+    /// It is observed but deliberately **not** charged: charging it could
+    /// itself be refused, which is the failure being avoided. Same exemption as
+    /// the terminal error retained by [`Parser::parse_with_recovery`].
+    fn retain_terminal_diagnostic(&mut self, error: ParseError) {
+        self.operation.note_diagnostic_observed();
+        // #8786: not charged — a terminal diagnostic must outlive the budget.
+        self.errors.push(error);
+    }
+
     /// Consume the next token: the single production token-advance seam
     /// (#8786).
     ///
