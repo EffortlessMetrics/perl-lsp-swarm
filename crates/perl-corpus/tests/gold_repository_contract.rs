@@ -537,49 +537,95 @@ fn validate_fixture_directory(
     Ok(())
 }
 
-/// Collect the repository-relative paths `.gitattributes` exempts from git's
-/// text normalization.
-///
-/// Only literal path entries in the repository-root `.gitattributes` carrying
-/// the `-text` attribute are recognised. Git's full pattern language, and its
-/// per-directory `.gitattributes` files, are deliberately not reimplemented
-/// here: a member whose exact bytes matter must be named literally at the root,
-/// which is what the repository already does for the parser-accuracy span
-/// fixtures. Any other spelling — git's `binary` macro, which resolves to
-/// `-diff -merge -text`, an `[attr]` macro, or `!text` — reads as unprotected
-/// here. That direction is deliberate: `protected_paths` only ever gates
-/// admission of an already-declared deviation, so under-recognising protection
-/// can reject a legitimate declaration but can never admit an unprotected one.
-fn git_text_normalization_disabled(
-    workspace_root: &Path,
-) -> Result<BTreeSet<String>, Box<dyn Error>> {
-    let path = workspace_root.join(".gitattributes");
-    let contents = fs::read_to_string(&path)
-        .map_err(|error| contract_error(format!("reading {}: {error}", path.display())))?;
-    Ok(parse_unnormalized_paths(&contents))
+/// The effective state of git's `text` attribute for one path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextAttribute {
+    /// `-text`: git will not normalize this path. Bytes survive verbatim.
+    Unset,
+    /// `text`, `text=auto`, or any other set/valued state: git may rewrite
+    /// line endings for this path.
+    NormalizationPossible,
 }
 
-fn parse_unnormalized_paths(contents: &str) -> BTreeSet<String> {
-    let mut protected = BTreeSet::new();
+/// Ask git for the effective `text` attribute of one repository-relative path.
+///
+/// Git, not this test, is the authority on attribute resolution. Reading
+/// `.gitattributes` directly cannot answer the question: attributes resolve
+/// last-match-wins across the whole file, patterns use git's own glob
+/// language, macros such as `binary` expand to `-text`, and per-directory
+/// `.gitattributes` files participate. A reader that merely collected `-text`
+/// lines would call a path protected even when a later rule restored `text` —
+/// admitting a member git is free to rewrite. `git check-attr` resolves all of
+/// that exactly as the working tree will.
+///
+/// Fails closed: an unavailable or unparseable answer is an error, never a
+/// silent "protected".
+fn git_text_attribute(
+    workspace_root: &Path,
+    repository_path: &str,
+) -> Result<TextAttribute, Box<dyn Error>> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["check-attr", "text", "--"])
+        .arg(repository_path)
+        .output()
+        .map_err(|error| {
+            contract_error(format!("running `git check-attr` for {repository_path}: {error}"))
+        })?;
 
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        let mut fields = line.split_whitespace();
-        let Some(pattern) = fields.next() else {
-            continue;
-        };
-        // `-text` is the attribute that turns normalization off. `text`,
-        // `text=auto`, and `eol=lf` all leave git free to rewrite the bytes.
-        if fields.any(|attribute| attribute == "-text") {
-            protected.insert(pattern.trim_start_matches("./").to_owned());
-        }
+    if !output.status.success() {
+        return Err(contract_error(format!(
+            "`git check-attr text -- {repository_path}` failed with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+        .into());
     }
 
-    protected
+    let stdout = String::from_utf8(output.stdout).map_err(|error| {
+        contract_error(format!(
+            "`git check-attr` output for {repository_path} is not UTF-8: {error}"
+        ))
+    })?;
+
+    parse_check_attr_text(&stdout).ok_or_else(|| {
+        contract_error(format!(
+            "could not read a `text` attribute state for {repository_path} from `git check-attr` \
+             output: {stdout:?}"
+        ))
+        .into()
+    })
+}
+
+/// Parse `git check-attr text -- <path>` output, whose line shape is
+/// `<path>: text: <state>`.
+fn parse_check_attr_text(stdout: &str) -> Option<TextAttribute> {
+    let line = stdout.lines().next()?.trim_end();
+    let state = line.rsplit_once(": text: ").map(|(_, state)| state)?;
+    match state.trim() {
+        "unset" => Some(TextAttribute::Unset),
+        "" => None,
+        _ => Some(TextAttribute::NormalizationPossible),
+    }
+}
+
+/// Repository-relative paths that git will not normalize, resolved for exactly
+/// the declared deviations.
+///
+/// Only declared deviations need an answer, so an empty deviation table asks
+/// git nothing at all.
+fn git_protected_paths(
+    workspace_root: &Path,
+    deviations: &[ByteExactDeviation],
+) -> Result<BTreeSet<String>, Box<dyn Error>> {
+    let mut protected = BTreeSet::new();
+    for deviation in deviations {
+        if git_text_attribute(workspace_root, deviation.path)? == TextAttribute::Unset {
+            protected.insert(deviation.path.to_owned());
+        }
+    }
+    Ok(protected)
 }
 
 fn collect_gold_members(
@@ -684,7 +730,8 @@ fn check_member_byte_fidelity(
         return Err(format!(
             "{repository_path} is declared byte-exact ({}) but .gitattributes does not \
              disable text normalization for it. Add a literal `{repository_path} -text` \
-             entry so git cannot rewrite the bytes the declaration depends on.",
+             entry so `git check-attr text` reports it unset and git cannot rewrite the \
+             bytes the declaration depends on.",
             declared.reason
         ));
     }
@@ -725,7 +772,7 @@ fn validate_gold_byte_fidelity(root: &Path) -> Result<usize, Box<dyn Error>> {
     }
 
     let workspace_root = workspace_root()?;
-    let protected_paths = git_text_normalization_disabled(&workspace_root)?;
+    let protected_paths = git_protected_paths(&workspace_root, BYTE_EXACT_DEVIATIONS)?;
     let members = gold_members(root)?;
 
     let mut observed_paths = BTreeSet::new();
@@ -1234,41 +1281,112 @@ mod tests {
     }
 
     #[test]
-    fn gitattributes_reader_separates_protected_paths_from_normalized_ones() {
-        let protected_paths = parse_unnormalized_paths(
-            "# comment\n\
-             * text eol=lf\n\
-             \n\
-             crates/x/crlf.pl -text !eol whitespace=-blank-at-eol\n\
-             crates/x/normal.pl text\n\
-             *.png binary\n",
+    fn check_attr_output_is_read_as_a_text_state() {
+        assert_eq!(
+            parse_check_attr_text("path/to/x.pl: text: unset\n"),
+            Some(TextAttribute::Unset)
         );
-
-        assert!(protected_paths.contains("crates/x/crlf.pl"));
-        assert!(
-            !protected_paths.contains("crates/x/normal.pl"),
-            "a `text` entry leaves git free to normalize"
+        assert_eq!(
+            parse_check_attr_text("path/to/x.pl: text: set\n"),
+            Some(TextAttribute::NormalizationPossible)
         );
-        assert!(!protected_paths.contains("*"), "the default `* text eol=lf` is not protection");
-        assert!(!protected_paths.contains("*.png"), "`binary` is not the attribute we read");
+        assert_eq!(
+            parse_check_attr_text("path/to/x.pl: text: unspecified\n"),
+            Some(TextAttribute::NormalizationPossible),
+            "an unspecified attribute leaves git free to normalize"
+        );
+        assert_eq!(
+            parse_check_attr_text("path/to/x.pl: text: auto\n"),
+            Some(TextAttribute::NormalizationPossible)
+        );
+        // A path containing the separator must not confuse the split.
+        assert_eq!(
+            parse_check_attr_text("weird: text: name.pl: text: unset\n"),
+            Some(TextAttribute::Unset)
+        );
+        // Unreadable output must fail closed rather than default to protected.
+        assert_eq!(parse_check_attr_text(""), None);
+        assert_eq!(parse_check_attr_text("garbage\n"), None);
     }
 
-    /// Positive and negative control against the repository's real
-    /// `.gitattributes`, so the reader cannot drift from the file it reads.
+    /// Positive and negative control against the repository's real attributes,
+    /// resolved by git itself.
     #[test]
-    fn repository_gitattributes_protects_the_span_fixtures_and_not_the_gold_corpus()
+    fn repository_attributes_protect_the_span_fixtures_and_not_the_gold_corpus()
     -> Result<(), Box<dyn Error>> {
-        let protected_paths = git_text_normalization_disabled(&workspace_root()?)?;
+        let root = workspace_root()?;
 
-        assert!(
-            protected_paths.contains("crates/perl-corpus/fixtures/parser_accuracy/span_crlf.pl"),
+        assert_eq!(
+            git_text_attribute(&root, "crates/perl-corpus/fixtures/parser_accuracy/span_crlf.pl")?,
+            TextAttribute::Unset,
             "the parser-accuracy CRLF fixture is byte-exact and must be protected"
         );
-        assert!(
-            !protected_paths.contains("test_corpus/gold/hello_world/fixture.pl"),
+        assert_eq!(
+            git_text_attribute(&root, "test_corpus/gold/hello_world/fixture.pl")?,
+            TextAttribute::NormalizationPossible,
             "no gold member is exempt from normalization today; if one becomes exempt it \
              must also be declared in BYTE_EXACT_DEVIATIONS"
         );
+        Ok(())
+    }
+
+    /// A `-text` rule that a later rule overrides is not protection.
+    ///
+    /// Git resolves attributes last-match-wins, so collecting `-text` lines
+    /// out of `.gitattributes` would report this path protected while git
+    /// happily normalizes it — admitting exactly the member the contract
+    /// exists to reject. Asking git removes the whole class.
+    #[test]
+    fn a_later_rule_that_restores_text_defeats_an_earlier_exemption() -> Result<(), Box<dyn Error>>
+    {
+        let repository = tempdir()?;
+        let root = repository.path();
+
+        let git = |args: &[&str]| -> Result<(), Box<dyn Error>> {
+            let output =
+                std::process::Command::new("git").arg("-C").arg(root).args(args).output()?;
+            if !output.status.success() {
+                return Err(contract_error(format!(
+                    "git {args:?} failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ))
+                .into());
+            }
+            Ok(())
+        };
+        git(&["init", "--quiet"])?;
+
+        fs::write(root.join("fixture.pl"), b"my $x = 1;\r\n")?;
+
+        fs::write(root.join(".gitattributes"), "fixture.pl -text\n")?;
+        assert_eq!(
+            git_text_attribute(root, "fixture.pl")?,
+            TextAttribute::Unset,
+            "a lone -text rule is genuine protection"
+        );
+
+        fs::write(root.join(".gitattributes"), "fixture.pl -text\nfixture.pl text\n")?;
+        assert_eq!(
+            git_text_attribute(root, "fixture.pl")?,
+            TextAttribute::NormalizationPossible,
+            "a later literal rule overrides the earlier exemption"
+        );
+
+        fs::write(root.join(".gitattributes"), "fixture.pl -text\n* text\n")?;
+        assert_eq!(
+            git_text_attribute(root, "fixture.pl")?,
+            TextAttribute::NormalizationPossible,
+            "a later matching glob overrides the earlier exemption too"
+        );
+
+        // The macro form resolves to -text, which a literal reader would miss.
+        fs::write(root.join(".gitattributes"), "fixture.pl binary\n")?;
+        assert_eq!(
+            git_text_attribute(root, "fixture.pl")?,
+            TextAttribute::Unset,
+            "git's `binary` macro expands to -text and is real protection"
+        );
+
         Ok(())
     }
 

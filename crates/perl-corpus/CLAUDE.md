@@ -125,8 +125,11 @@ part of the contract, not an implementation detail.
   `-text` line for that path in the repository-root `.gitattributes`. The declaration
   without the git protection is not enough — the repository default is `* text eol=lf`,
   so unprotected bytes are git's to rewrite.
-- Only literal root-`.gitattributes` `-text` entries count as protection. Git's wider
-  pattern language, `[attr]` macros, `binary`, and per-directory attribute files read as
-  unprotected here. That direction is deliberate: it can reject a real declaration, but
-  it can never admit an unprotected one.
+- Protection is resolved by `git check-attr text -- <path>`, not by reading
+  `.gitattributes`. Git owns attribute resolution: rules are last-match-wins across the
+  whole file, patterns use git's glob language, macros such as `binary` expand to
+  `-text`, and per-directory attribute files participate. A reader that collected
+  `-text` lines would call a path protected even after a later rule restored `text`, and
+  so would admit a member git is free to rewrite. An unavailable or unparseable answer
+  is an instrument failure, never a silent pass.
 - The `gen` module is written as `r#gen` in Rust source.
